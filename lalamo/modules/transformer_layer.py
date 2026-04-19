@@ -1,5 +1,5 @@
-from dataclasses import dataclass, field
-from enum import StrEnum
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from functools import partial
 
 import equinox as eqx
@@ -8,14 +8,16 @@ import jax.numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.common import ParameterTree
+from lalamo.exportable import Exportable
+from lalamo.initializer import Initializer
+from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
 
-from .common import ForwardPassMode, Initializer, LalamoModule
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
-from .token_mixers import KVCacheLayer, StateLayerBase, StaticKVCacheLayer, TokenMixerBase, TokenMixerConfig
-from .token_mixers.common import MixerForwardPassConfig
+from .token_mixers import TokenMixerBase, TokenMixerConfig
+from .token_mixers.common import MixerForwardPassConfig, PositionalEmbeddingSelector
+from .token_mixers.state import StateLayerBase
 from .utils import vmap_twice
 
 __all__ = [
@@ -28,19 +30,13 @@ __all__ = [
 ]
 
 
-class PositionalEmbeddingSelector(StrEnum):
-    GLOBAL = "global"
-    LOCAL = "sliding_window"
-    NONE = "none"
-
-
 @dataclass(frozen=True)
 class TransformerLayerForwardPassConfig:
-    mixer: MixerForwardPassConfig = field(default_factory=MixerForwardPassConfig)
-    mlp: MLPForwardPassConfig = field(default_factory=MLPForwardPassConfig)
+    mixer: MixerForwardPassConfig = dataclass_field(default_factory=MixerForwardPassConfig)
+    mlp: MLPForwardPassConfig = dataclass_field(default_factory=MLPForwardPassConfig)
 
 
-class TransformerLayerActivationTrace(eqx.Module):
+class TransformerLayerActivationTrace(Exportable, eqx.Module):
     inputs: Float[Array, "batch suffix_tokens channels"]
     positional_embeddings: PositionalEmbeddings | None
     state: StateLayerBase | None
@@ -53,103 +49,15 @@ class TransformerLayerActivationTrace(eqx.Module):
     mlp: Float[Array, "batch suffix_tokens channels"]
     post_mlp_norm: Float[Array, "batch suffix_tokens channels"] | None
 
-    def export(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = dict(
-            inputs=self.inputs,
-            mlp_inputs=self.mlp_inputs,
-            pre_mixer_norm=self.pre_mixer_norm,
-            mixer=self.mixer,
-            pre_mlp_norm=self.pre_mlp_norm,
-            mlp=self.mlp,
-        )
-        if self.positional_embeddings is not None:
-            result["positional_embeddings"] = self.positional_embeddings.export()
-        if self.state is not None:
-            result["state"] = self.state.export()
-        if self.post_mixer_norm is not None:
-            result["post_mixer_norm"] = self.post_mixer_norm
-        if self.post_mlp_norm is not None:
-            result["post_mlp_norm"] = self.post_mlp_norm
-        return result
 
-
-class TransformerLayerResult(eqx.Module):
+class TransformerLayerResult(Exportable, eqx.Module):
     outputs: Float[Array, "batch tokens channels"]
-    updated_state: KVCacheLayer | None
+    updated_state: StateLayerBase | None
     activation_trace: TransformerLayerActivationTrace | None
 
-    def export(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = dict(
-            outputs=self.outputs,
-        )
-        if self.updated_state is not None:
-            result["updated_state"] = self.updated_state.export()
-        if self.activation_trace is not None:
-            result["activation_trace"] = self.activation_trace.export()
-        return result
-
 
 @dataclass(frozen=True)
-class PLELayerConfig:
-    linear_config: LinearConfig
-    norm_config: NormalizationConfig
-    ple_dim: int
-    activation: Activation
-
-    def init(self, model_dim: int, *, key: PRNGKeyArray) -> "PLELayer":
-        k1, k2 = jax.random.split(key)
-        gate = self.linear_config.random_init(model_dim, (self.ple_dim,), has_biases=False, key=k1)
-        projection = self.linear_config.random_init(self.ple_dim, (model_dim,), has_biases=False, key=k2)
-        norm = self.norm_config.init(model_dim)
-        return PLELayer(config=self, gate=gate, projection=projection, norm=norm)
-
-    def empty(self, model_dim: int) -> "PLELayer":
-        gate = self.linear_config.empty(model_dim, (self.ple_dim,), has_biases=False)
-        projection = self.linear_config.empty(self.ple_dim, (model_dim,), has_biases=False)
-        norm = self.norm_config.empty(model_dim)
-        return PLELayer(config=self, gate=gate, projection=projection, norm=norm)
-
-
-class PLELayer(LalamoModule[PLELayerConfig]):
-    gate: LinearBase
-    projection: LinearBase
-    norm: Normalization
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.gate.activation_precision
-
-    def __call__(
-        self,
-        outputs: Float[Array, "batch suffix_tokens channels"],
-        per_layer_input: Float[Array, "batch suffix_tokens ple_dim"],
-    ) -> Float[Array, "batch suffix_tokens channels"]:
-        (ple_gated,) = vmap(vmap(self.gate))(outputs)
-        ple_gated = self.config.activation(ple_gated)
-        ple_gated = ple_gated * per_layer_input
-        (ple_projected,) = vmap(vmap(self.projection))(ple_gated)
-        ple_normed = vmap_twice(self.norm)(ple_projected)
-        return outputs + ple_normed
-
-    def export_weights(self) -> ParameterTree:
-        return {
-            "gate": self.gate.export_weights(),
-            "projection": self.projection.export_weights(),
-            "norm": self.norm.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        return replace(
-            self,
-            gate=self.gate.import_weights(require_tree(weights["gate"])),
-            projection=self.projection.import_weights(require_tree(weights["projection"])),
-            norm=self.norm.import_weights(require_tree(weights["norm"])),
-        )
-
-
-@dataclass(frozen=True)
-class TransformerLayerConfig:
+class TransformerLayerConfig(LalamoConfig):
     pre_mixer_norm_config: NormalizationConfig | None
     mixer_config: TokenMixerConfig
     post_mixer_norm_config: NormalizationConfig | None
@@ -221,14 +129,14 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: TransformerLayerForwardPassConfig = TransformerLayerForwardPassConfig(),  # noqa: B008
         *,
-        key: Key[Array, ""] | None,
+        dequant_key: Key[Array, ""],
     ) -> TransformerLayerResult:
         if inputs.ndim != 3:
             raise ValueError(
                 f"Inputs to decoder layers must be a 3D arrays of size (batch_size, sequence_length, hidden_dim),"
                 f" got {inputs.shape}",
             )
-        mixer_key, mlp_key = jax.random.split(key) if key is not None else (None, None)
+        mixer_dequant_key, mlp_dequant_key = jax.random.split(dequant_key)
 
         if self.pre_mixer_norm is not None:
             normalized_mixer_inputs = vmap_twice(self.pre_mixer_norm)(inputs)
@@ -240,14 +148,20 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 self.mixer,
                 return_updated_state=return_updated_state or return_activation_trace,
                 forward_pass_config=forward_pass_config.mixer,
-                key=mixer_key,
+                dequant_key=mixer_dequant_key,
+            ),
+            in_axes=(
+                0,
+                0 if positional_embeddings is not None else None,
+                0 if state is not None else None,
+                0 if lengths_without_padding is not None else None,
             ),
         )
         mixer_outputs, updated_state = batched_mixer_fn(
             normalized_mixer_inputs,
             positional_embeddings,
-            state=state,
-            length_without_padding=lengths_without_padding,
+            state,
+            lengths_without_padding,
         )
         if self.post_mixer_norm is not None:
             normalized_mixer_outputs = vmap_twice(self.post_mixer_norm)(mixer_outputs)
@@ -264,7 +178,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
             forward_pass_config=forward_pass_config.mlp,
-            key=mlp_key,
+            dequant_key=mlp_dequant_key,
         )
         if self.post_mlp_norm is not None:
             normalized_mlp_outputs = vmap_twice(self.post_mlp_norm)(mlp_outputs)
@@ -300,7 +214,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             activation_trace=activation_trace,
         )
 
-    def init_static_state(self, batch_size: int, capacity: int) -> StaticKVCacheLayer:
+    def init_static_state(self, batch_size: int, capacity: int) -> StateLayerBase:
         return jax.tree.map(
             lambda array: jnp.repeat(array[None, ...], batch_size, axis=0),
             self.mixer.init_static_state(capacity),

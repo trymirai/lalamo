@@ -5,7 +5,8 @@ import jax.numpy as jnp
 from attr import dataclass
 from jaxtyping import Array, Float
 
-from lalamo.module import register_config_union
+from lalamo.module import LalamoConfig
+from lalamo.utils.registry_abc import RegistryABC
 
 __all__ = [
     "GELU",
@@ -16,13 +17,13 @@ __all__ = [
 
 
 @dataclass(frozen=True)
-class ActivationBase:
+class Activation(LalamoConfig, RegistryABC):
     @abstractmethod
     def __call__(self, x: Float[Array, "*dims"]) -> Float[Array, "*dims"]: ...
 
 
 @dataclass(frozen=True)
-class SiLU(ActivationBase):
+class SiLU(Activation):
     alpha: float = 1.0
 
     def __call__(self, x: Float[Array, "*dims"]) -> Float[Array, "*dims"]:
@@ -30,7 +31,7 @@ class SiLU(ActivationBase):
 
 
 @dataclass(frozen=True)
-class GELU(ActivationBase):
+class GELU(Activation):
     approximate: bool = True
 
     def __call__(self, x: Float[Array, "*dims"]) -> Float[Array, "*dims"]:
@@ -38,12 +39,6 @@ class GELU(ActivationBase):
 
 
 @dataclass(frozen=True)
-class Identity(ActivationBase):
+class Identity(Activation):
     def __call__(self, x: Float[Array, "*dims"]) -> Float[Array, "*dims"]:
         return x
-
-
-Activation = SiLU | GELU | Identity
-
-
-register_config_union(Activation)

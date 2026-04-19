@@ -6,9 +6,8 @@ import jax
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.common import ParameterTree, require_mapping
-
-from .common import Initializer, LalamoModule
+from lalamo.initializer import Initializer
+from lalamo.module import LalamoConfig, LalamoModule
 
 __all__ = [
     "Normalization",
@@ -23,7 +22,7 @@ class UpcastMode(Enum):
 
 
 @dataclass(frozen=True)
-class NormalizationConfig:
+class NormalizationConfig(LalamoConfig):
     epsilon: float
     scale_offset: float | None
     upcast_mode: UpcastMode
@@ -31,9 +30,9 @@ class NormalizationConfig:
     use_bias: bool = False
 
     def init(self, initializer: Initializer, input_dim: int) -> "Normalization":
-        scales = initializer.ones((input_dim,), initializer.precision)
+        scales = initializer.ones((input_dim,))
         if self.use_bias:
-            biases = initializer.zeros((input_dim,), initializer.precision)
+            biases = initializer.zeros((input_dim,))
         else:
             biases = None
         return Normalization(config=self, scales=scales, biases=biases)
@@ -41,7 +40,7 @@ class NormalizationConfig:
 
 class Normalization(LalamoModule[NormalizationConfig]):
     scales: Float[Array, " channels"]
-    biases: Float[Array, " channels"] | None = None
+    biases: Float[Array, " channels"] | None
 
     @property
     def activation_precision(self) -> DTypeLike:

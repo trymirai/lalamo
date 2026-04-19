@@ -19,16 +19,13 @@ def compile_generate_tokens(
     generation_config: "GenerationConfig | None" = None,  # noqa: F821  # type: ignore[name-defined]
     inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
     *,
-    forward_pass_config: "ForwardPassConfig | None" = None,  # noqa: F821  # type: ignore[name-defined]
+    forward_pass_config: "ForwardPassConfig",  # noqa: F821  # type: ignore[name-defined]
+    generation_trace_config: "GenerationTraceConfig | None" = None,  # noqa: F821  # type: ignore[name-defined]
     prompt_token_ids: Int[Array, "batch length"],
     prompt_lengths_without_padding: Int[Array, " batch"],
     keys: Key[Array, " batch"],
+    dequant_key: Key[Array, ""],
 ) -> Compiled:
-    from .language_model import ForwardPassConfig, LanguageModel
-
-    if forward_pass_config is None:
-        forward_pass_config = ForwardPassConfig()
-
     model_id = id(model)
     key = (
         generation_config,
@@ -42,7 +39,7 @@ def compile_generate_tokens(
         weakref.finalize(model, _make_weak_finalizer, model_id)
     if key not in _compile_cache[model_id]:
         generate_tokens_fn = functools.partial(
-            LanguageModel.generate_tokens,
+            type(model).generate_tokens,
             generation_config=generation_config,
             max_output_length=inference_config.max_output_length,
             num_top_logits_to_return=inference_config.num_top_logits_to_return,
@@ -56,6 +53,7 @@ def compile_generate_tokens(
                 prompt_token_ids=prompt_token_ids,
                 prompt_lengths_without_padding=prompt_lengths_without_padding,
                 keys=keys,
+                dequant_key=dequant_key,
             )
             # the autotune levels are (according to https://guides.lw1.at/all-xla-options/#--xla_gpu_autotune_level)
             # 0 - no autotune, gpu shouldn't be touched

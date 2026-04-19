@@ -28,8 +28,8 @@ from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5GatedDeltaNet
 from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextDecoderLayer, Qwen3NextGatedDeltaNet
 from transformers.processing_utils import Unpack
 
-from lalamo.modules import DecoderResult
 from lalamo.modules.classifier import ClassifierResult
+from lalamo.modules.decoder import DecoderResult
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 from tests.common import assert_close
 from tests.tracer.tracer import ActivationTrace, DType, InferenceResult, ModelTracer
@@ -69,7 +69,7 @@ class HFDeltaNetAttention(Protocol):
     def forward(
         self,
         hidden_states: Tensor,
-        cache_params: Any | None = None,
+        cache_params: object | None = None,
         cache_position: Tensor | None = None,
         attention_mask: Tensor | None = None,
     ) -> Tensor: ...
@@ -201,7 +201,7 @@ def _load_hf_model(
             gib = 1024**3
             try:
                 bytes_limit = gpu_devices[0].memory_stats().get("bytes_limit")
-            except:
+            except (AttributeError, NotImplementedError, RuntimeError):
                 bytes_limit = 60 * gib
             if bytes_limit is not None:
                 safe_bytes = int(bytes_limit * 0.9)
@@ -253,7 +253,7 @@ def _build_hf_attention_mask(
         bool_mask = causal
 
     neg_inf = torch.finfo(dtype).min
-    attention_mask = (
+    return (
         torch.where(
             bool_mask,
             torch.tensor(neg_inf, dtype=dtype, device=device),
@@ -263,7 +263,6 @@ def _build_hf_attention_mask(
         .unsqueeze(1)
         .expand(batch, 1, q_len, k_len)
     )
-    return attention_mask
 
 
 def _module_device(module: nn.Module, fallback_device: torch.device) -> torch.device:
@@ -374,7 +373,7 @@ class HFDecoderTracer(
         if "position_embeddings" in signature(attention.forward).parameters:
             forward_kwargs["position_embeddings"] = position_embeddings
 
-        attention_output, _ = attention.forward(**forward_kwargs)  # type: ignore
+        attention_output, _ = attention.forward(**forward_kwargs)  # type: ignore[call-arg]
         return attention_output
 
     def mlp(self, mlp: HFMLP, x: torch.Tensor) -> torch.Tensor:
@@ -417,7 +416,7 @@ class HFDecoderTracer(
 
     def layer_pre_mlp_norm(self, layer: HFTransformerLayer | Gemma3DecoderLayer) -> HFRMSNorm:
         if hasattr(layer, "post_feedforward_layernorm"):
-            return layer.pre_feedforward_layernorm  # type: ignore
+            return layer.pre_feedforward_layernorm  # type: ignore[attr-defined]
 
         return layer.post_attention_layernorm
 
@@ -589,7 +588,7 @@ class ModernBertTracer(
         self.match_attention_custom(
             activation_trace.pre_mixer_norm,
             activation_trace.mixer,
-            ref_layer.attn,  # type: ignore
+            ref_layer.attn,  # type: ignore[arg-type]
             layer_attention_mask,
             (ref_cosines, ref_sines),
             f"Layer {layer_index} Attention",
@@ -605,7 +604,7 @@ class ModernBertTracer(
         self.match_mlp(
             activation_trace.pre_mlp_norm,
             activation_trace.mlp,
-            ref_layer.mlp,  # type: ignore
+            ref_layer.mlp,  # type: ignore[arg-type]
             f"Layer {layer_index} MLP",
         )
         assert_close(

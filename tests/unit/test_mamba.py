@@ -64,7 +64,7 @@ def test_mamba_state_respects_length_without_padding(
         state=None,
         return_updated_state=True,
         length_without_padding=seqlen,
-        key=None,
+        dequant_key=jax.random.key(1),
     )
 
     reference_result = mamba(
@@ -73,7 +73,7 @@ def test_mamba_state_respects_length_without_padding(
         state=None,
         return_updated_state=True,
         length_without_padding=None,
-        key=None,
+        dequant_key=jax.random.key(2),
     )
 
     assert padded_result.state is not None

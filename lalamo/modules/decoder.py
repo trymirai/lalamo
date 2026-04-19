@@ -1,28 +1,26 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 
 import equinox as eqx
-from jax import vmap
+import jax
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.common import ParameterTree
+from lalamo.exportable import Exportable
+from lalamo.initializer import Initializer
+from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
 
-from .common import (
-    ForwardPassMode,
-    Initializer,
-    LalamoModule,
-)
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .linear import LinearBase, LinearConfig
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
-from .token_mixers import State
+from .token_mixers.state import State
 from .transformer import (
     Transformer,
     TransformerConfig,
     TransformerForwardPassConfig,
     TransformerLayerResult,
 )
-from .utils import vmap_twice
+from .utils import vmap_twice_with_dequant_key
 
 __all__ = [
     "Decoder",
@@ -37,10 +35,10 @@ __all__ = [
 
 @dataclass(frozen=True)
 class DecoderForwardPassConfig:
-    transformer: TransformerForwardPassConfig = field(default_factory=TransformerForwardPassConfig)
+    transformer: TransformerForwardPassConfig = dataclass_field(default_factory=TransformerForwardPassConfig)
 
 
-class DecoderActivationTrace(eqx.Module):
+class DecoderActivationTrace(Exportable, eqx.Module):
     token_ids: Int[Array, "batch suffix_tokens"]
     token_positions: Int[Array, "batch suffix_tokens"]
     state: State | None
@@ -51,101 +49,15 @@ class DecoderActivationTrace(eqx.Module):
 
     output_norm: Float[Array, "batch suffix_tokens channels"]
 
-    def export(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = dict(
-            token_ids=self.token_ids,
-            token_positions=self.token_positions,
-            layer_results=[layer_result.export() for layer_result in self.layer_results],
-            output_norm=self.output_norm,
-        )
-        if self.state is not None:
-            result["state"] = [state_layer.export() for state_layer in self.state]
-        if self.rope_embeddings is not None:
-            result["rope_embeddings"] = [emb.export() for emb in self.rope_embeddings]
-        return result
 
-
-class DecoderResult(eqx.Module):
+class DecoderResult(Exportable, eqx.Module):
     logits: Float[Array, "batch suffix_tokens channels"]
     updated_state: State | None = None
     activation_trace: DecoderActivationTrace | None = None
 
-    def export(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = dict(
-            logits=self.logits,
-        )
-        if self.updated_state is not None:
-            result["updated_state"] = [state_layer.export() for state_layer in self.updated_state]
-        if self.activation_trace is not None:
-            result["activation_trace"] = self.activation_trace.export()
-        return result
-
 
 @dataclass(frozen=True)
-class PLEModelConfig:
-    ple_dim: int
-    num_layers: int
-    ple_vocab_size: int
-    ple_embed_scale: float
-    model_projection_scale: float
-    input_scale: float
-    linear_config: LinearConfig
-    norm_config: NormalizationConfig
-
-
-class PerLayerEmbedding(LalamoModule[PLEModelConfig]):
-    token_embedding: Float[Array, "vocab ple_total_dim"]
-    model_projection: LinearBase
-    projection_norm: Normalization
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.model_projection.activation_precision
-
-    def __call__(
-        self,
-        token_ids: Int[Array, "batch suffix_tokens"],
-        inner_features: Float[Array, "batch suffix_tokens channels"],
-    ) -> tuple[Float[Array, "batch suffix_tokens ple_dim"], ...]:
-        cfg = self.config
-        token_ple = self.token_embedding[token_ids] * cfg.ple_embed_scale
-        token_ple = rearrange(
-            token_ple,
-            "batch seq (layers ple_dim) -> batch seq layers ple_dim",
-            layers=cfg.num_layers,
-            ple_dim=cfg.ple_dim,
-        )
-        (model_ple,) = vmap(vmap(self.model_projection))(inner_features)
-        model_ple = model_ple * cfg.model_projection_scale
-        model_ple = rearrange(
-            model_ple,
-            "batch seq (layers ple_dim) -> batch seq layers ple_dim",
-            layers=cfg.num_layers,
-            ple_dim=cfg.ple_dim,
-        )
-        model_ple = vmap(vmap(vmap(self.projection_norm)))(model_ple)
-        combined = (model_ple + token_ple) * cfg.input_scale
-        return tuple(combined[:, :, i, :] for i in range(cfg.num_layers))
-
-    def export_weights(self) -> ParameterTree:
-        return {
-            "token_embedding": self.token_embedding,
-            "model_projection": self.model_projection.export_weights(),
-            "projection_norm": self.projection_norm.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        return replace(
-            self,
-            token_embedding=require_array(weights["token_embedding"]),
-            model_projection=self.model_projection.import_weights(require_tree(weights["model_projection"])),
-            projection_norm=self.projection_norm.import_weights(require_tree(weights["projection_norm"])),
-        )
-
-
-@dataclass(frozen=True)
-class DecoderConfig:
+class DecoderConfig(LalamoConfig):
     embedding_config: EmbeddingConfig
     transformer_config: TransformerConfig
 
@@ -194,7 +106,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),  # noqa: B008
         *,
-        key: Key[Array, ""] | None = None,
+        dequant_key: Key[Array, ""],
     ) -> DecoderResult:
         if token_ids.ndim != 2:
             raise ValueError(
@@ -205,7 +117,12 @@ class Decoder(LalamoModule[DecoderConfig]):
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
             )
-        inner_features = vmap(self.embedding.embed)(token_ids)
+        embedding_dequant_key, transformer_dequant_key, readout_dequant_key = jax.random.split(dequant_key, 3)
+        inner_features = vmap_twice_with_dequant_key(
+            self.embedding.embed,
+            token_ids,
+            dequant_key=embedding_dequant_key,
+        )
 
         if self.per_layer_embedding is not None:
             per_layer_inputs = self.per_layer_embedding(token_ids, inner_features)
@@ -222,10 +139,14 @@ class Decoder(LalamoModule[DecoderConfig]):
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
             forward_pass_config=forward_pass_config.transformer,
-            key=key,
+            dequant_key=transformer_dequant_key,
         )
 
-        logits = vmap_twice(self.embedding.readout)(transformer_result.outputs)
+        logits = vmap_twice_with_dequant_key(
+            self.embedding.readout,
+            transformer_result.outputs,
+            dequant_key=readout_dequant_key,
+        )
 
         if return_activation_trace:
             assert transformer_result.layer_results is not None

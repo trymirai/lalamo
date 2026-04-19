@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.module import Initializer
-from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
+from lalamo.initializer import Initializer
+from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfig
 
 from .nanocodec_modules import (
     CausalHiFiGANDecoder,
@@ -14,7 +14,7 @@ from .nanocodec_modules import (
 
 
 @dataclass(frozen=True)
-class NanoCodecConfig(TTSAudioDecoderConfigBase):
+class NanoCodecConfig(TTSAudioDecoderConfig):
     quantizer_config: GroupFiniteScalarQuantizerConfig
     decoder_config: CausalHiFiGANDecoderConfig
     samplerate: int
@@ -73,6 +73,8 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
     def __call__(
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
+        *,
+        dequant_key: Key[Array, ""],  # noqa: ARG002
     ) -> Float[Array, "batch audio_samples"]:
         """Decode discrete tokens to audio waveform."""
         # Transpose from [B, C, T] to [B, T, C] for Lalamo quantizer (NSC format)
@@ -82,11 +84,9 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
         z = self.quantizer.decode(indices_nsc)
 
         # Decode to audio [B, T_audio]
-        audio = self.decoder(z)
+        return self.decoder(z)
 
-        return audio
-
-    def audio_from_codes(self, indices: Array) -> Array:
+    def audio_from_codes(self, indices: Array, *, dequant_key: Key[Array, ""]) -> Array:
         """Convenience method to decode a single sequence of codes to audio.
 
         Args:
@@ -97,4 +97,4 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
         """
         if len(indices.shape) == 2:
             indices = indices[None, :, :]
-        return self(indices)[0, :]
+        return self(indices, dequant_key=dequant_key)[0, :]

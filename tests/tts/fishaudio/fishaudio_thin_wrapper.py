@@ -386,7 +386,12 @@ class FishAudioAudioDecoder_Foreign(TTSAudioDecoder):
         audio_samples = torch_to_jax(audio_samples[0, 0])
         return audio_samples
 
-    def audio_from_codes(self, indices: Array) -> Array:
+    def audio_from_codes(
+        self,
+        indices: Array,
+        *,
+        dequant_key: Key[Array, ""],  # noqa: ARG002
+    ) -> Array:
         return self(indices)
 
 
@@ -520,7 +525,9 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder):
         self,
         text_tokens: Int[Array, "batch tokens"],
         sampling_policy: SamplingPolicy | None = None,
-        key: Key[Array, ""] | None = None,  # noqa: ARG002
+        *,
+        key: Key[Array, ""],  # noqa: ARG002
+        dequant_key: Key[Array, ""],  # noqa: ARG002
     ) -> Int[Array, "num_codebooks tokens"]:
         text_tokens_torch = jax_to_torch(text_tokens)
         sampling_params = sampling_params_from_policy(sampling_policy)

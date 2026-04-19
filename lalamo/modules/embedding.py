@@ -3,11 +3,12 @@ from dataclasses import dataclass
 
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
-from lalamo.weight_matrix import EmbeddingMatrix, WeightMatrix
+from lalamo.utils.registry_abc import RegistryABC
+from lalamo.weight_matrix import EmbeddingMatrix, FullPrecisionSpec, Layout, MatmulConfig, WeightMatrix
 
 from .utils import apply_soft_capping
 
@@ -22,7 +23,7 @@ __all__ = [
 
 
 @dataclass(frozen=True)
-class EmbeddingConfigBase(LalamoConfig):
+class EmbeddingConfig(LalamoConfig, RegistryABC):
     input_scale: float | None
     logit_soft_cap: float | None
 
@@ -35,7 +36,11 @@ class EmbeddingConfigBase(LalamoConfig):
     ) -> "EmbeddingBase": ...
 
 
-class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
+class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
+    @property
+    @abstractmethod
+    def activation_precision(self) -> DTypeLike: ...
+
     @property
     @abstractmethod
     def embedding_matrix(self) -> EmbeddingMatrix: ...
@@ -53,69 +58,84 @@ class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
     def model_dim(self) -> int: ...
 
     @eqx.filter_jit
-    def embed(self, x: int | Int[Array, ""]) -> Float[Array, " channels"]:
-        result = self.embedding_matrix.get_embedding(x)
+    def embed(
+        self,
+        x: int | Int[Array, ""],
+        *,
+        dequant_key: Key[Array, ""],
+        forward_pass_config: MatmulConfig | None = None,
+    ) -> Float[Array, " channels"]:
+        result = self.embedding_matrix.lookup_embedding(
+            x,
+            dequant_key=dequant_key,
+            forward_pass_config=forward_pass_config,
+        )
         if self.config.input_scale is not None:
             result = result * jnp.array(self.config.input_scale, dtype=result.dtype)
         return result
 
     @eqx.filter_jit
-    def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
-        logits = self.readout_matrix.dot(x)
+    def readout(
+        self,
+        x: Float[Array, " channels"],
+        *,
+        dequant_key: Key[Array, ""],
+        forward_pass_config: MatmulConfig | None = None,
+    ) -> Float[Array, " vocabulary"]:
+        logits = self.readout_matrix.dot(x, dequant_key=dequant_key, forward_pass_config=forward_pass_config)
         if self.config.logit_soft_cap is not None:
             logits = apply_soft_capping(logits, self.config.logit_soft_cap)
         return logits
 
 
 @dataclass(frozen=True)
-class TiedEmbeddingConfig(EmbeddingConfigBase):
-    quantization: EmbeddingQuantConfig | None = None
-
+class TiedEmbeddingConfig(EmbeddingConfig):
     def init(
         self,
         initializer: Initializer,
         vocab_size: int,
         model_dim: int,
     ) -> "TiedEmbedding":
-        embedding = _make_embedding(initializer, vocab_size, model_dim, self.quantization)
+        embedding = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).init(initializer, (), vocab_size, model_dim)
         return TiedEmbedding(config=self, embedding=embedding)
 
 
 class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
-    embedding: CompressedEmbedding
+    embedding: EmbeddingMatrix
 
     @property
     def activation_precision(self) -> DTypeLike:
         return self.embedding.dtype
 
     @property
+    def embedding_matrix(self) -> EmbeddingMatrix:
+        return self.embedding
+
+    @property
+    def readout_matrix(self) -> WeightMatrix:
+        return self.embedding
+
+    @property
     def model_dim(self) -> int:
-        return self.embedding.model_dim
+        model_dim, _ = self.embedding.shape
+        return model_dim
 
     @property
     def vocab_size(self) -> int:
-        return self.embedding.vocab_size
-
-    def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
-        return self.embedding.materialize()
-
-    def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
-        return self.embedding.materialize()
+        _, vocab_size = self.embedding.shape
+        return vocab_size
 
 
 @dataclass(frozen=True)
-class UntiedEmbeddingConfig(EmbeddingConfigBase):
-    input_quantization: EmbeddingQuantConfig | None = None
-    output_quantization: EmbeddingQuantConfig | None = None
-
+class UntiedEmbeddingConfig(EmbeddingConfig):
     def init(
         self,
         initializer: Initializer,
         vocab_size: int,
         model_dim: int,
     ) -> "UntiedEmbedding":
-        input_embedding = _make_embedding(initializer, vocab_size, model_dim, self.input_quantization)
-        output_embedding = _make_embedding(initializer, vocab_size, model_dim, self.output_quantization)
+        input_embedding = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).init(initializer, (), vocab_size, model_dim)
+        output_embedding = FullPrecisionSpec().init(initializer, (), vocab_size, model_dim)
         return UntiedEmbedding(
             config=self,
             input_embedding=input_embedding,
@@ -124,28 +144,27 @@ class UntiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
-    input_embedding: CompressedEmbedding
-    output_embedding: CompressedEmbedding
+    input_embedding: EmbeddingMatrix
+    output_embedding: WeightMatrix
 
     @property
     def activation_precision(self) -> DTypeLike:
         return self.input_embedding.dtype
 
     @property
+    def embedding_matrix(self) -> EmbeddingMatrix:
+        return self.input_embedding
+
+    @property
+    def readout_matrix(self) -> WeightMatrix:
+        return self.output_embedding
+
+    @property
     def model_dim(self) -> int:
-        return self.input_embedding.model_dim
+        model_dim, _ = self.input_embedding.shape
+        return model_dim
 
     @property
     def vocab_size(self) -> int:
-        return self.input_embedding.vocab_size
-
-    def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
-        return self.input_embedding.materialize()
-
-    def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
-        return self.output_embedding.materialize()
-
-
-EmbeddingConfig = TiedEmbeddingConfig | UntiedEmbeddingConfig
-
-register_config_union(EmbeddingConfig)
+        _, vocab_size = self.input_embedding.shape
+        return vocab_size

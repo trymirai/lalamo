@@ -10,6 +10,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Annotated
 
+import jax
 import jax.profiler
 import requests
 import soundfile as sf
@@ -31,6 +32,7 @@ from rich.progress import (
 )
 from rich.prompt import Confirm
 from rich.table import Table
+from rich.text import Text
 from typer import Argument, Context, Exit, Option, Typer
 
 from lalamo.audio.utils import play_mono_audio
@@ -144,6 +146,8 @@ def chat(
         ),
     ] = 8192,
 ) -> None:
+    generation_key = jax.random.key(0)
+    dequant_key = jax.random.key(1)
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -154,7 +158,8 @@ def chat(
         model = LanguageModelConfig.load_model(model_path)
         progress.remove_task(loading_task)
         warmup_task = progress.add_task("🔥 Warming up compilation cache...")
-        list(model.stream_reply_text([UserMessage("")], max_output_length=1))
+        generation_key, warmup_key = jax.random.split(generation_key)
+        list(model.stream_reply_text([UserMessage("")], max_output_length=1, key=warmup_key, dequant_key=dequant_key))
         progress.remove_task(warmup_task)
 
     if message is None:
@@ -168,14 +173,26 @@ def chat(
 
             console.print("[red]assistant> [/red]", end="")
             model_response_tokens = []
-            for token in model.stream_reply_text(messages, max_output_length=max_tokens):
+            generation_key, reply_key = jax.random.split(generation_key)
+            for token in model.stream_reply_text(
+                messages,
+                max_output_length=max_tokens,
+                key=reply_key,
+                dequant_key=dequant_key,
+            ):
                 console.print(token, end="")
                 model_response_tokens.append(token)
             console.print()
             model_response_text = "".join(model_response_tokens)
             messages.append(model.message_processor.parse_response(model_response_text))
     else:
-        for token in model.stream_reply_text([UserMessage(message)], max_output_length=max_tokens):
+        generation_key, reply_key = jax.random.split(generation_key)
+        for token in model.stream_reply_text(
+            [UserMessage(message)],
+            max_output_length=max_tokens,
+            key=reply_key,
+            dequant_key=dequant_key,
+        ):
             console.print(token, end="")
         console.print()
 
@@ -190,6 +207,7 @@ def classify(
         ),
     ],
 ) -> None:
+    dequant_key = jax.random.key(1)
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -199,7 +217,7 @@ def classify(
         model = ClassifierModelConfig.load_model(model_path)
         progress.remove_task(loading_task)
         warmup_task = progress.add_task("🔥 Warming up...")
-        model.classify_chat([UserMessage(content="warmup message")])
+        model.classify_chat([UserMessage(content="warmup message")], dequant_key=dequant_key)
         progress.remove_task(warmup_task)
     console.print(f"🤖 Classifying input with [blue]{model_path}[/blue]:")
     while True:
@@ -207,7 +225,7 @@ def classify(
         user_message = UserMessage(user_text)
 
         console.print("[red]assistant> [/red]", end="")
-        result = model.classify_chat([user_message])
+        result = model.classify_chat([user_message], dequant_key=dequant_key)
         for label, confidence in result.items():
             console.print(f"{label} : {confidence}", end="")
         console.print()
@@ -358,6 +376,8 @@ def tts(
     model = TTSGenerator.load_model(model_path)
 
     assert model is not None
+    generation_key = jax.random.key(0)
+    dequant_key = jax.random.key(1)
     _stop_word = "/stop"
     while True:
         user_text = console.input(f"[cyan]input text to generate speech({_stop_word} to exit)> [/cyan]")
@@ -369,7 +389,12 @@ def tts(
 
         user_message = TTSMessage(content=user_text, speaker_id="speaker:0", style="interleave")
 
-        tts_result = model.generate_speech([user_message])
+        generation_key, utterance_key = jax.random.split(generation_key)
+        tts_result = model.generate_speech(
+            [user_message],
+            key=utterance_key,
+            dequant_key=dequant_key,
+        )
 
         if replay:
             play_mono_audio(tts_result.audio, tts_result.audio_params.samplerate)
@@ -1089,8 +1114,6 @@ def view_traces(
     )
     table.add_column("Prefix")
     table.add_column("Completion")
-
-    from rich.text import Text
 
     for completion in islice(traces, num_completions):
         detokenized_prefix = model.message_processor.detokenize(completion.prefix_token_ids)

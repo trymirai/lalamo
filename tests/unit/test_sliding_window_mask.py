@@ -6,13 +6,11 @@ from lalamo.modules import (
     Decoder,
     DecoderConfig,
     DenseMLPConfig,
-    DynamicKVCacheLayer,
     ForwardPassMode,
     Identity,
     LinearConfig,
     NormalizationConfig,
     RandomInitializer,
-    StaticKVCacheLayer,
     TiedEmbeddingConfig,
     TransformerConfig,
     TransformerLayerConfig,
@@ -20,6 +18,7 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.token_mixers.state import DynamicKVCacheLayer, StaticKVCacheLayer
 from tests.common import assert_close
 
 

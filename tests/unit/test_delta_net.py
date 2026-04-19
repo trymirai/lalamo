@@ -1,17 +1,14 @@
-from typing import Any
-
 import jax
 import jax.numpy as jnp
-import pytest
-from hypothesis import given, settings
-from hypothesis import strategies as st
-
-pytest.importorskip("torch")
-
+import torch
 from lalamo.common import ParameterPath
+from transformers.models.qwen3_next.configuration_qwen3_next import Qwen3NextConfig
+from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextGatedDeltaNet
+
 from lalamo.model_import.loaders.huggingface import load_delta_net_attention
 from lalamo.module import RandomInitializer
 from lalamo.modules import (
+    DeltaNetAttention,
     DeltaNetAttentionConfig,
     LinearConfig,
     NormalizationConfig,
@@ -22,10 +19,7 @@ from lalamo.modules.torch_interop import torch_to_jax
 from tests.common import assert_close
 
 
-def _make_hf_delta_net() -> tuple[Any, Any]:
-    from transformers.models.qwen3_next.configuration_qwen3_next import Qwen3NextConfig
-    from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextGatedDeltaNet
-
+def _make_hf_delta_net() -> tuple[Qwen3NextGatedDeltaNet, Qwen3NextConfig]:
     config = Qwen3NextConfig(
         hidden_size=64,
         linear_num_key_heads=2,
@@ -47,8 +41,7 @@ def _make_hf_delta_net() -> tuple[Any, Any]:
     return Qwen3NextGatedDeltaNet(config, layer_idx=0), config
 
 
-def _make_lalamo_delta_net(hf_config: Any):
-    precision = jnp.float32
+def _make_lalamo_delta_net(hf_config: Qwen3NextConfig) -> DeltaNetAttention:
     norm_config = NormalizationConfig(
         epsilon=hf_config.rms_norm_eps,
         scale_offset=None,
@@ -73,8 +66,6 @@ def _make_lalamo_delta_net(hf_config: Any):
 
 
 def test_delta_net_attention_matches_hf() -> None:
-    import torch
-
     torch.manual_seed(0)
     hf_module, hf_config = _make_hf_delta_net()
     hf_module = hf_module.eval()
@@ -107,7 +98,7 @@ def test_delta_net_attention_matches_hf() -> None:
         state=None,
         return_updated_state=False,
         length_without_padding=None,
-        key=None,
+        dequant_key=jax.random.key(1),
     ).outputs
 
     assert_close(

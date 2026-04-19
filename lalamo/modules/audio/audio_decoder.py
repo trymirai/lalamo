@@ -1,30 +1,27 @@
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from dataclasses import dataclass
 
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike, Key
 
-from lalamo.module import Initializer, LalamoModule
+from lalamo.initializer import Initializer
+from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.utils.registry_abc import RegistryABC
 
 
 @dataclass(frozen=True)
-class TTSAudioDecoderConfigBase(ABC):
+class TTSAudioDecoderConfig(LalamoConfig, RegistryABC):
     @abstractmethod
     def init(self, initializer: Initializer) -> "TTSAudioDecoder": ...
 
 
-class TTSAudioDecoder[ConfigT: TTSAudioDecoderConfigBase](LalamoModule[ConfigT]):
+class TTSAudioDecoder[ConfigT: TTSAudioDecoderConfig](LalamoModule[ConfigT]):
+    @property
     @abstractmethod
-    def export_weights(self) -> ParameterTree[Array]: ...
-
-    @abstractmethod
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self: ...
+    def activation_precision(self) -> DTypeLike: ...
 
     @property
     @abstractmethod
     def samplerate(self) -> int: ...
 
     @abstractmethod
-    def audio_from_codes(self, indices: Array) -> Array: ...
+    def audio_from_codes(self, indices: Array, *, dequant_key: Key[Array, ""]) -> Array: ...

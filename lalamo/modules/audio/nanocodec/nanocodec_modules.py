@@ -6,12 +6,12 @@ Reference: Mentzer et al., Finite Scalar Quantization: VQ-VAE Made Simple (https
 
 from dataclasses import dataclass
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.module import Initializer, LalamoModule
+from lalamo.initializer import Initializer
+from lalamo.module import LalamoConfig, LalamoModule, field
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
     CausalConv1dConfig,
@@ -42,7 +42,7 @@ __all__ = [
 
 
 @dataclass(frozen=True)
-class FiniteScalarQuantizerConfig:
+class FiniteScalarQuantizerConfig(LalamoConfig):
     num_levels: tuple[int, ...]
     eps: float
 
@@ -110,10 +110,9 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         input_shift = jnp.tan(output_offset / output_scale)
 
         # Apply compression: scale * tanh(input + shift) - offset
-        output = (
+        return (
             output_scale[None, :, None] * jnp.tanh(inputs + input_shift[None, :, None]) - output_offset[None, :, None]
         )
-        return output
 
     def _round_ste(self, inputs: Float[Array, "batch dim seq"]) -> Float[Array, "batch dim seq"]:
         """Round to nearest integer with straight-through estimator."""
@@ -132,8 +131,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         codes = self._round_ste(compressed)
         # Normalize to [-1, 1]
         scale = (self.num_levels_buffer // 2).astype(codes.dtype)
-        codes = codes / scale[None, :, None]
-        return codes
+        return codes / scale[None, :, None]
 
     def _codes_to_nonnegative(self, codes: Float[Array, "batch dim seq"]) -> Float[Array, "batch dim seq"]:
         """Convert codes centered around zero to nonnegative integer indices."""
@@ -171,9 +169,8 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
     ) -> Int[Array, "batch seq"]:
         """Encode continuous inputs to discrete indices."""
         codes = self._inputs_to_codes(inputs)
-        indices = self._codes_to_indices(codes)
         # Add codebook dimension for compatibility with RVQ API
-        return indices
+        return self._codes_to_indices(codes)
 
     def decode(
         self,
@@ -193,7 +190,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
 
 
 @dataclass(frozen=True)
-class GroupFiniteScalarQuantizerConfig:
+class GroupFiniteScalarQuantizerConfig(LalamoConfig):
     num_groups: int
     quantizer_config: FiniteScalarQuantizerConfig
 
@@ -273,7 +270,7 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
 
 
 @dataclass(frozen=True)
-class HalfSnakeConfig:
+class HalfSnakeConfig(LalamoConfig):
     snake_config: Snake1dConfig
     leaky_relu_negative_slope: float
 
@@ -295,7 +292,7 @@ class HalfSnake(LalamoModule[HalfSnakeConfig]):
     """
 
     snake: Snake1d
-    total_channels: int = eqx.field(static=True)
+    total_channels: int = field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -328,7 +325,7 @@ class HalfSnake(LalamoModule[HalfSnakeConfig]):
 
 
 @dataclass(frozen=True)
-class ResidualBlockConfig:
+class ResidualBlockConfig(LalamoConfig):
     """Configuration for ResidualBlock.
 
     A residual block that applies activation -> conv -> activation -> conv + residual.
@@ -405,7 +402,7 @@ class ResidualBlock(LalamoModule[ResidualBlockConfig]):
 
 
 @dataclass(frozen=True)
-class HiFiGANResBlockConfig:
+class HiFiGANResBlockConfig(LalamoConfig):
     """Configuration for HiFiGANResBlock.
 
     Wraps multiple ResidualBlocks with different dilations, applied sequentially.
@@ -459,7 +456,7 @@ class HiFiGANResBlock(LalamoModule[HiFiGANResBlockConfig]):
 
 
 @dataclass(frozen=True)
-class HiFiGANResLayerConfig:
+class HiFiGANResLayerConfig(LalamoConfig):
     """Configuration for HiFiGANResLayer.
 
     Creates multiple HiFiGANResBlocks with different kernel sizes.
@@ -513,7 +510,7 @@ class HiFiGANResLayer(LalamoModule[HiFiGANResLayerConfig]):
 
 
 @dataclass(frozen=True)
-class CausalHiFiGANDecoderConfig:
+class CausalHiFiGANDecoderConfig(LalamoConfig):
     activation_config: HalfSnakeConfig
     pre_conv_config: CausalConv1dConfig
     transpose_conv_config: CausalTransposeConv1dConfig
@@ -614,7 +611,7 @@ class CausalHiFiGANDecoder(LalamoModule[CausalHiFiGANDecoderConfig]):
     res_layers: tuple[HiFiGANResLayer, ...]
     post_activation: HalfSnake
     post_conv: CausalConv1d
-    up_sample_rates: tuple[int, ...] = eqx.field(static=True)
+    up_sample_rates: tuple[int, ...] = field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -642,6 +639,4 @@ class CausalHiFiGANDecoder(LalamoModule[CausalHiFiGANDecoderConfig]):
         out = self.post_conv(out)  # [B, T_audio, 1]
 
         audio = jnp.tanh(out)
-        audio = audio[:, :, 0]  # [B, T_audio]
-
-        return audio
+        return audio[:, :, 0]  # [B, T_audio]

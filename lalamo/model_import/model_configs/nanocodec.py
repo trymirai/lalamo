@@ -13,7 +13,7 @@ from jaxtyping import Array, DTypeLike
 from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
 from lalamo.model_import.model_configs import ForeignTTSConfig
-from lalamo.modules import LalamoModule, TTSConfig, TTSModel, VocoderConfig
+from lalamo.modules import LalamoModule, TTSConfig, TTSModel
 from lalamo.modules.audio.common_modules import CausalConv1dConfig
 from lalamo.modules.audio.fishaudio.fishaudio_modules import Snake1dConfig
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec, NanoCodecConfig
@@ -36,6 +36,7 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     ResidualBlockConfig,
 )
 from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder, StubTextDecoderConfig
+from lalamo.modules.audio.vocoders import NoopVocoderConfig
 
 __all__ = ["NanoCodecForeignConfig"]
 
@@ -132,7 +133,7 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
         return TTSConfig(
             text_decoder_config=text_decoder_config,
             audio_decoder_config=audio_decoder_config,
-            vocoder_config=VocoderConfig(),
+            vocoder_config=NoopVocoderConfig(),
         )
 
     def _load_weights(

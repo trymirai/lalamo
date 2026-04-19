@@ -16,9 +16,9 @@ from fish_speech.models.dac.rvq import ConvNeXtBlock as PyTorchConvNeXtBlock
 from fish_speech.tokenizer import FishTokenizer
 from jax import numpy as jnp
 from jax import vmap
+from lalamo.common import ParameterPath
 
 from lalamo import FileSpec
-from lalamo.common import ParameterPath
 from lalamo.model_import.loaders.fishaudio_loaders import (
     _permute_for_rope_rotate_half,
     load_audio_decoder,
@@ -235,7 +235,7 @@ def test_residual_vector_quantize_from_codes() -> None:
     dac_output = dac_output.permute(0, 2, 1)  # (B, T, input_dim) for comparison
 
     # Lalamo __call__ handles batching internally via vmap
-    lalamo_output = lalamo_rvq(test_codes_jax)  # (B, T, input_dim)
+    lalamo_output = lalamo_rvq(test_codes_jax, dequant_key=jax.random.key(0))  # (B, T, input_dim)
 
     # Compare outputs
     dac_output_jax = torch_to_jax(dac_output)
@@ -708,7 +708,7 @@ def test_convnext_block_matches_pytorch() -> None:
 
     # Run both
     torch_output = torch_block(test_input_torch, apply_residual=True)
-    lalamo_output = lalamo_block(test_input_jax, apply_residual=True)
+    lalamo_output = lalamo_block(test_input_jax, apply_residual=True, dequant_key=jax.random.key(0))
 
     # Compare - transpose JAX output back for comparison
     torch_output_jax = torch_to_jax(torch_output)
@@ -723,7 +723,7 @@ def test_convnext_block_matches_pytorch() -> None:
 
 
 @torch.no_grad
-def test_upsampling_block_matches_pytorch(fish_audio_local_model_path) -> None:
+def test_upsampling_block_matches_pytorch(fish_audio_local_model_path: Path) -> None:
     """Test that Lalamo UpsamplingBlock matches PyTorch upsampling block from DAC model.
 
     This test loads a real DAC model checkpoint, extracts the first upsampling block,
@@ -742,7 +742,7 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path) -> None:
     downsample_dims = config["quantizer"].get("downsample_dims") or [input_dim] * len(downsample_factor)
 
     # Build all_dims: (input_dim,) + tuple(downsample_dims)
-    all_dims = (input_dim,) + tuple(downsample_dims)
+    all_dims = (input_dim, *tuple(downsample_dims))
 
     # Extract the first upsampling block from the quantizer.
     # Upsample blocks are in reversed order of downsample factors.
@@ -808,7 +808,7 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path) -> None:
     torch_output = fish_upsampler_block(test_input_torch)
     with jax.disable_jit():
         lalamo_block = load_upsampling_block(lalamo_block, weights_dict, path)
-        lalamo_output = lalamo_block(test_input_jax)
+        lalamo_output = lalamo_block(test_input_jax, dequant_key=jax.random.key(0))
 
     # Compare - transpose JAX output back for comparison
     torch_output_jax = torch_to_jax(torch_output)
@@ -827,7 +827,7 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path) -> None:
 
 
 @torch.no_grad
-def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
+def test_upsampler_matches_pytorch(fish_audio_local_model_path: Path) -> None:
     """Test that Lalamo Upsampler matches the full DAC quantizer upsampler.
 
     This test loads a real DAC model checkpoint, extracts all upsampling blocks,
@@ -846,7 +846,7 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
     downsample_dims = config["quantizer"].get("downsample_dims") or [input_dim] * len(downsample_factor)
 
     # Build all_dims: (input_dim,) + tuple(downsample_dims)
-    all_dims = (input_dim,) + tuple(downsample_dims)
+    all_dims = (input_dim, *tuple(downsample_dims))
 
     # Get the full upsampler from DAC
     fish_upsampler = model.quantizer.upsample
@@ -925,7 +925,7 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
 
     with jax.disable_jit():
         lalamo_upsampler = load_upsampler(lalamo_upsampler, weights_dict, path)
-        lalamo_output = lalamo_upsampler(test_input_jax)
+        lalamo_output = lalamo_upsampler(test_input_jax, dequant_key=jax.random.key(0))
 
     # Compare - transpose JAX output back for comparison
     torch_output_jax = torch_to_jax(torch_output)
@@ -1225,7 +1225,11 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     assert len(lalamo_transformer.ropes) > 0
     pos_emb_lalamo = vmap(lalamo_transformer.ropes[0])(input_pos_lalamo)
     lalamo_layer = lalamo_transformer.layers[0]
-    lalamo_layer_result = lalamo_layer(embedded_input_lalamo, pos_emb_lalamo, key=None)
+    lalamo_layer_result = lalamo_layer(
+        embedded_input_lalamo,
+        pos_emb_lalamo,
+        dequant_key=jax.random.key(0),
+    )
 
     # Compare outputs per token position
     fish_output_jax = torch_to_jax(fish_layer_result)
@@ -1322,7 +1326,7 @@ def test_audio_transformer_inference() -> None:
         lengths_without_padding=None,
         forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
         forward_pass_config=TransformerForwardPassConfig(),
-        key=None,
+        dequant_key=jax.random.key(1),
     )
     lalamo_output = lalamo_result.outputs
 

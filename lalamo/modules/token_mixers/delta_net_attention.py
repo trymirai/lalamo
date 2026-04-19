@@ -7,14 +7,20 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.module import Initializer, PositionalEmbeddingSelector
+from lalamo.initializer import Initializer
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
-from lalamo.modules.utils import vmap_with_key
+from lalamo.modules.utils import vmap_with_dequant_key
 
-from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
+from .common import (
+    MixerForwardPassConfig,
+    PositionalEmbeddingSelector,
+    TokenMixerBase,
+    TokenMixerConfig,
+    TokenMixerResult,
+)
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 
 __all__ = [
@@ -39,7 +45,7 @@ def _delta_dims(
 
 
 @dataclass(frozen=True)
-class DeltaNetAttentionConfig(TokenMixerConfigBase):
+class DeltaNetAttentionConfig(TokenMixerConfig):
     in_proj_config: LinearConfig
     conv_config: SeparableCausalConvConfig
     out_proj_config: LinearConfig
@@ -87,8 +93,8 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
             has_biases=False,
         )
         norm = self.norm_config.init(initializer, self.value_head_dim)
-        dt_bias = initializer.zeros((self.num_heads,), initializer.precision)
-        a_log = initializer.zeros((self.num_heads,), initializer.precision)
+        dt_bias = initializer.zeros((self.num_heads,))
+        a_log = initializer.zeros((self.num_heads,))
         return DeltaNetAttention(
             config=self,
             in_proj=in_proj,
@@ -347,17 +353,17 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
         *,
-        key: Key[Array, ""] | None,
+        dequant_key: Key[Array, ""],
     ) -> DeltaNetAttentionResult:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for DeltaNetAttention.")
 
-        in_key, out_key = jax.random.split(key) if key is not None else (None, None)
+        in_dequant_key, out_dequant_key = jax.random.split(dequant_key)
         num_tokens, *_ = inputs.shape
-        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = vmap_with_key(
+        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = vmap_with_dequant_key(
             partial(self.in_proj, forward_pass_config=forward_pass_config.arrays),
             inputs,
-            key=in_key,
+            dequant_key=in_dequant_key,
         )
         assert proj_query.shape[0] == num_tokens
 
@@ -440,10 +446,10 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         core_attn_out = jax.vmap(jax.vmap(norm_gate))(core_attn_out, gate)
         core_attn_out = core_attn_out.reshape(num_tokens, -1)
 
-        (outputs,) = vmap_with_key(
+        (outputs,) = vmap_with_dequant_key(
             partial(self.out_proj, forward_pass_config=forward_pass_config.arrays),
             core_attn_out,
-            key=out_key,
+            dequant_key=out_dequant_key,
         )
 
         if return_updated_state:

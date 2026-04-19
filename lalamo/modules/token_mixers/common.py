@@ -1,13 +1,15 @@
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import NamedTuple
 
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.module import Initializer, LalamoModule, PositionalEmbeddingSelector
+from lalamo.initializer import Initializer
+from lalamo.module import LalamoConfig, LalamoModule
 from lalamo.modules.rope import PositionalEmbeddings
+from lalamo.utils.registry_abc import RegistryABC
 from lalamo.weight_matrix import MatmulConfig
 
 from .state.common import StateLayerBase
@@ -16,8 +18,9 @@ __all__ = [
     "AttentionForwardPassConfig",
     "AttentionImplementation",
     "MixerForwardPassConfig",
+    "PositionalEmbeddingSelector",
     "TokenMixerBase",
-    "TokenMixerConfigBase",
+    "TokenMixerConfig",
     "TokenMixerResult",
 ]
 
@@ -44,8 +47,18 @@ class TokenMixerResult[StateLayerT](NamedTuple):
     state: StateLayerT | None = None
 
 
+class PositionalEmbeddingSelector(StrEnum):
+    GLOBAL = "global"
+    LOCAL = "sliding_window"
+    NONE = "none"
+
+
 @dataclass(frozen=True)
-class TokenMixerConfigBase(ABC):
+class TokenMixerConfig(LalamoConfig, RegistryABC):
+    @property
+    @abstractmethod
+    def rope_dim(self) -> int | None: ...
+
     @abstractmethod
     def init(
         self,
@@ -54,7 +67,7 @@ class TokenMixerConfigBase(ABC):
     ) -> "TokenMixerBase": ...
 
 
-class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]):
+class TokenMixerBase[ConfigT: TokenMixerConfig, StateLayerT: StateLayerBase](LalamoModule[ConfigT]):
     @property
     @abstractmethod
     def model_dim(self) -> int: ...
@@ -69,7 +82,7 @@ class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
         *,
-        key: Key[Array, ""] | None,
+        dequant_key: Key[Array, ""],
     ) -> TokenMixerResult[StateLayerT]: ...
 
     @abstractmethod

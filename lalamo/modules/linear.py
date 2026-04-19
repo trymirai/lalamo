@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Key
 
 from lalamo.initializer import Initializer
-from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.module import LalamoConfig, LalamoModule, field
 from lalamo.weight_matrix import FullPrecisionSpec, MatmulConfig, WeightMatrix
 
 __all__ = [
@@ -46,13 +46,13 @@ class LinearConfig(LalamoConfig):
         return Linear(
             config=self,
             weights=weight_spec.init(initializer, (mixture_size,), total_output_dim, input_dim),
-            biases=initializer.zeros((total_output_dim,)) if has_biases else None,
+            biases=initializer.zeros((mixture_size, total_output_dim)) if has_biases else None,
             output_dims=output_dims,
         )
 
 
 class Linear(LalamoModule[LinearConfig]):
-    output_dims: tuple[int, ...] = eqx.field(static=True)
+    output_dims: tuple[int, ...] = field(static=True)
     weights: WeightMatrix
     biases: Float[Array, "*batch total_out_channels"] | None
 
@@ -188,11 +188,11 @@ class FullPrecisionLinear(LinearBase["FullPrecisionLinearConfig"]):
         self,
         inputs: Float[Array, " in_channels"],
         *,
-        key: Key[Array, ""] | None,
+        dequant_key: Key[Array, ""],
         forward_pass_config: MatmulConfig | None = None,
     ) -> tuple[Float[Array, " out_channels"], ...]:
         forward_pass_config = forward_pass_config or MatmulConfig()
-        result = self.weights.dot(inputs, key=key, forward_pass_config=forward_pass_config)
+        result = self.weights.dot(inputs, dequant_key=dequant_key, forward_pass_config=forward_pass_config)
         if self.biases is not None:
             result = result + self.biases
         return tuple(jnp.split(result, self.get_split_points(self.output_dims)))

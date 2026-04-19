@@ -5,12 +5,18 @@ import equinox as eqx
 import jax
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.module import Initializer, PositionalEmbeddingSelector
+from lalamo.initializer import Initializer
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
-from lalamo.modules.utils import vmap_with_key
+from lalamo.modules.utils import vmap_with_dequant_key
 
-from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
+from .common import (
+    MixerForwardPassConfig,
+    PositionalEmbeddingSelector,
+    TokenMixerBase,
+    TokenMixerConfig,
+    TokenMixerResult,
+)
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .state import ShortConvStateLayer
 
@@ -25,7 +31,7 @@ ShortConvResult = TokenMixerResult[ShortConvStateLayer]
 
 
 @dataclass(frozen=True)
-class ShortConvConfig(TokenMixerConfigBase):
+class ShortConvConfig(TokenMixerConfig):
     in_projection_config: LinearConfig
     conv_config: SeparableCausalConvConfig
     out_projection_config: LinearConfig
@@ -85,25 +91,25 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
         *,
-        key: Key[Array, ""] | None,
+        dequant_key: Key[Array, ""],
     ) -> TokenMixerResult[ShortConvStateLayer]:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for ShortConv.")
 
-        in_key, out_key = jax.random.split(key) if key is not None else (None, None)
-        pre_conv_gate, post_conv_gate, x = vmap_with_key(
+        in_dequant_key, out_dequant_key = jax.random.split(dequant_key)
+        pre_conv_gate, post_conv_gate, x = vmap_with_dequant_key(
             partial(self.in_projection, forward_pass_config=forward_pass_config.arrays),
             inputs,
-            key=in_key,
+            dequant_key=in_dequant_key,
         )
 
         prev_conv_state = state.conv_state if state is not None else None
         conv_output = self.conv(x * pre_conv_gate, length_without_padding, prev_conv_state, return_updated_state)
 
-        (outputs,) = vmap_with_key(
+        (outputs,) = vmap_with_dequant_key(
             partial(self.out_projection, forward_pass_config=forward_pass_config.arrays),
             conv_output.outputs * post_conv_gate,
-            key=out_key,
+            dequant_key=out_dequant_key,
         )
         updated_conv_state = conv_output.state
 

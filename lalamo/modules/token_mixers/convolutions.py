@@ -7,7 +7,8 @@ import jax.numpy as jnp
 from einops import einsum
 from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.module import Initializer, LalamoModule
+from lalamo.initializer import Initializer
+from lalamo.module import LalamoConfig, LalamoModule
 
 __all__ = [
     "CausalConvResult",
@@ -22,7 +23,7 @@ class CausalConvResult(NamedTuple):
 
 
 @dataclass(frozen=True)
-class SeparableCausalConvConfig:
+class SeparableCausalConvConfig(LalamoConfig):
     has_biases: bool
 
     def init(
@@ -32,9 +33,9 @@ class SeparableCausalConvConfig:
         kernel_size: int,
     ) -> "SeparableCausalConv":
         scale = 1 / math.sqrt(kernel_size * input_dim)
-        weights = initializer.normal(scale, (input_dim, kernel_size), initializer.precision)
+        weights = initializer.normal(scale, (input_dim, kernel_size))
         if self.has_biases:
-            biases = initializer.zeros((input_dim,), initializer.precision)
+            biases = initializer.zeros((input_dim,))
         else:
             biases = None
         return SeparableCausalConv(

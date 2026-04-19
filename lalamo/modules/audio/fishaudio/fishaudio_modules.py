@@ -1,12 +1,11 @@
 from dataclasses import dataclass
-from functools import partial
 
 import jax
 from jax import numpy as jnp
-from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.module import ForwardPassMode, Initializer, LalamoModule
+from lalamo.initializer import Initializer
+from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
 from lalamo.modules.activations import Activation
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
@@ -20,6 +19,7 @@ from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
+from lalamo.modules.utils import vmap_twice, vmap_twice_with_dequant_key, vmap_with_dequant_key
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ class ConvNeXtSpatialParams:
 
 
 @dataclass(frozen=True)
-class ConvNeXtBlockConfig:
+class ConvNeXtBlockConfig(LalamoConfig):
     activation: Activation
     dwconv_config: CausalConv1dConfig
     norm_config: NormalizationConfig
@@ -108,14 +108,25 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
         self,
         x: Float[Array, "batch sequence channels"],
         apply_residual: bool = True,
+        *,
+        dequant_key: Key[Array, ""],
     ) -> Float[Array, "batch sequence channels"]:
         residual = x
 
+        step1_dequant_key, step2_dequant_key = jax.random.split(dequant_key)
         x = self.depthwise_conv(x)
-        x = jax.vmap(jax.vmap(self.norm))(x)
-        (x,) = jax.vmap(jax.vmap(partial(self.pointwise_conv_step1, key=None)))(x)
-        x = jax.vmap(jax.vmap(self.config.activation))(x)
-        (x,) = jax.vmap(jax.vmap(partial(self.pointwise_conv_step2, key=None)))(x)
+        x = vmap_twice(self.norm)(x)
+        (x,) = vmap_twice_with_dequant_key(
+            self.pointwise_conv_step1,
+            x,
+            dequant_key=step1_dequant_key,
+        )
+        x = vmap_twice(self.config.activation)(x)
+        (x,) = vmap_twice_with_dequant_key(
+            self.pointwise_conv_step2,
+            x,
+            dequant_key=step2_dequant_key,
+        )
         if apply_residual:
             x = residual + x
 
@@ -131,7 +142,7 @@ class TransposeConvSpatialParams:
 
 
 @dataclass(frozen=True)
-class UpsamplingBlockConfig:
+class UpsamplingBlockConfig(LalamoConfig):
     trans_conv_config: CausalTransposeConv1dConfig
     convnext_config: ConvNeXtBlockConfig
 
@@ -191,15 +202,15 @@ class UpsamplingBlock(LalamoModule[UpsamplingBlockConfig]):
     def __call__(
         self,
         x: Float[Array, "batch sequence in_channels"],
+        *,
+        dequant_key: Key[Array, ""],
     ) -> Float[Array, "batch sequence_out out_channels"]:
         x = self.trans_conv(x)
-        x = self.convnext(x)
-
-        return x
+        return self.convnext(x, dequant_key=dequant_key)
 
 
 @dataclass(frozen=True)
-class UpsamplerConfig:
+class UpsamplerConfig(LalamoConfig):
     block_configs: tuple[UpsamplingBlockConfig, ...]
 
     def init(
@@ -250,14 +261,17 @@ class Upsampler(LalamoModule[UpsamplerConfig]):
     def __call__(
         self,
         x: Float[Array, "batch sequence in_channels"],
+        *,
+        dequant_key: Key[Array, ""],
     ) -> Float[Array, "batch sequence_out out_channels"]:
-        for block in self.blocks:
-            x = block(x)
+        block_dequant_keys = jax.random.split(dequant_key, len(self.blocks))
+        for block, block_dequant_key in zip(self.blocks, block_dequant_keys, strict=True):
+            x = block(x, dequant_key=block_dequant_key)
         return x
 
 
 @dataclass(frozen=True)
-class VectorQuantizeConfig:
+class VectorQuantizeConfig(LalamoConfig):
     codebook_config: TiedEmbeddingConfig
     out_proj_config: LinearConfig
 
@@ -306,9 +320,15 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
     def codebook_dim(self) -> int:
         return self.codebook.model_dim
 
-    def decode_code(self, embed_id: Int[Array, " tokens"]) -> Float[Array, "tokens code_size"]:
-        z_p = self.codebook.embed(embed_id)
-        (z_q,) = vmap(lambda x: self.out_proj(x, key=None))(z_p)
+    def decode_code(
+        self,
+        embed_id: Int[Array, " tokens"],
+        *,
+        dequant_key: Key[Array, ""],
+    ) -> Float[Array, "tokens code_size"]:
+        embed_dequant_key, out_dequant_key = jax.random.split(dequant_key)
+        z_p = self.codebook.embed(embed_id, dequant_key=embed_dequant_key)
+        (z_q,) = vmap_with_dequant_key(self.out_proj, z_p, dequant_key=out_dequant_key)
         return z_q
 
 
@@ -320,7 +340,7 @@ class VectorQuantizerParams:
 
 
 @dataclass(frozen=True)
-class ResidualVectorQuantizeConfig:
+class ResidualVectorQuantizeConfig(LalamoConfig):
     vq_config: VectorQuantizeConfig
 
     def init(
@@ -366,19 +386,39 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
     def n_codebooks(self) -> int:
         return len(self.quantizers)
 
-    def from_codes(self, codes: Int[Array, "n_codebooks tokens"]) -> Float[Array, "tokens code_size"]:
-        n_codebooks = codes.shape[0]
-        z_q = self.quantizers[0].decode_code(codes[0])
-        for i in range(1, n_codebooks):
-            z_q = z_q + self.quantizers[i].decode_code(codes[i])
+    def from_codes(
+        self,
+        codes: Int[Array, "n_codebooks tokens"],
+        *,
+        dequant_key: Key[Array, ""],
+    ) -> Float[Array, "tokens code_size"]:
+        first_quantizer, *remaining_quantizers = self.quantizers
+        first_codes, *remaining_codes = codes
+        first_quantizer_dequant_key, *remaining_quantizer_dequant_keys = jax.random.split(
+            dequant_key,
+            self.n_codebooks,
+        )
+        z_q = first_quantizer.decode_code(first_codes, dequant_key=first_quantizer_dequant_key)
+        for quantizer, quantizer_codes, quantizer_dequant_key in zip(
+            remaining_quantizers,
+            remaining_codes,
+            remaining_quantizer_dequant_keys,
+            strict=True,
+        ):
+            z_q = z_q + quantizer.decode_code(quantizer_codes, dequant_key=quantizer_dequant_key)
         return z_q
 
-    def __call__(self, codes: Int[Array, "batch n_codebooks tokens"]) -> Float[Array, "batch tokens code_size"]:
-        return vmap(self.from_codes)(codes)
+    def __call__(
+        self,
+        codes: Int[Array, "batch n_codebooks tokens"],
+        *,
+        dequant_key: Key[Array, ""],
+    ) -> Float[Array, "batch tokens code_size"]:
+        return vmap_with_dequant_key(self.from_codes, codes, dequant_key=dequant_key)
 
 
 @dataclass(frozen=True)
-class DownsampleResidualVectorQuantizeConfig:
+class DownsampleResidualVectorQuantizeConfig(LalamoConfig):
     semantic_quantizer_config: ResidualVectorQuantizeConfig
     quantizer_config: ResidualVectorQuantizeConfig
     post_module_config: TransformerConfig
@@ -456,12 +496,26 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
     def decode(
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
+        *,
+        dequant_key: Key[Array, ""],
     ) -> Float[Array, "batch upsampled_tokens channels"]:
+        semantic_dequant_key, residual_dequant_key, post_dequant_key, upsampler_dequant_key = jax.random.split(
+            dequant_key,
+            4,
+        )
         semantic_indices = jnp.clip(indices[:, :1], 0, self.semantic_codebook_size - 1)
         residual_indices = jnp.clip(indices[:, 1:], 0, self.quantizer_codebook_size - 1)
 
-        z_q_semantic = vmap(self.semantic_quantizer.from_codes)(semantic_indices)
-        z_q_residual = vmap(self.quantizer.from_codes)(residual_indices)
+        z_q_semantic = vmap_with_dequant_key(
+            self.semantic_quantizer.from_codes,
+            semantic_indices,
+            dequant_key=semantic_dequant_key,
+        )
+        z_q_residual = vmap_with_dequant_key(
+            self.quantizer.from_codes,
+            residual_indices,
+            dequant_key=residual_dequant_key,
+        )
 
         z_q = z_q_semantic + z_q_residual
 
@@ -478,19 +532,18 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
             lengths_without_padding=None,
             forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
             forward_pass_config=TransformerForwardPassConfig(),
-            key=None,
+            dequant_key=post_dequant_key,
         )
         z_q = post_result.outputs
-
-        z_q = self.upsampler(z_q)
-
-        return z_q
+        return self.upsampler(z_q, dequant_key=upsampler_dequant_key)
 
     def __call__(
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
+        *,
+        dequant_key: Key[Array, ""],
     ) -> Float[Array, "batch upsampled_tokens channels"]:
-        return self.decode(indices)
+        return self.decode(indices, dequant_key=dequant_key)
 
 
 @dataclass(frozen=True)
@@ -500,7 +553,7 @@ class ResidualUnitSpatialParams:
 
 
 @dataclass(frozen=True)
-class ResidualUnitConfig:
+class ResidualUnitConfig(LalamoConfig):
     snake_config: Snake1dConfig
     conv_config: CausalConv1dConfig
     causal: bool = True
@@ -610,7 +663,7 @@ class AudioDecoderBlockSpatialParams:
 
 
 @dataclass(frozen=True)
-class DACDecoderBlockConfig:
+class DACDecoderBlockConfig(LalamoConfig):
     snake_config: Snake1dConfig
     trans_conv_config: CausalTransposeConv1dConfig
     res_unit_config: ResidualUnitConfig
@@ -689,8 +742,7 @@ class DACDecoderBlock(LalamoModule[DACDecoderBlockConfig]):
         x = self.trans_conv(x)
         x = self.res_unit1(x)
         x = self.res_unit2(x)
-        x = self.res_unit3(x)
-        return x
+        return self.res_unit3(x)
 
 
 @dataclass(frozen=True)
@@ -702,7 +754,7 @@ class DACDecoderSpatialParams:
 
 
 @dataclass(frozen=True)
-class DACDecoderConfig:
+class DACDecoderConfig(LalamoConfig):
     conv_config: CausalConv1dConfig
     snake_config: Snake1dConfig
     decoder_block_config: DACDecoderBlockConfig
@@ -816,6 +868,4 @@ class DACDecoder(LalamoModule[DACDecoderConfig]):
         x = self.final_conv(x)
 
         # Tanh to constrain output to [-1, 1]
-        x = jnp.tanh(x)
-
-        return x
+        return jnp.tanh(x)

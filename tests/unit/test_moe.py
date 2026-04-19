@@ -1,9 +1,9 @@
 import jax
 import jax.numpy as jnp
 import pytest
-
 from lalamo.arrays import FullPrecisionArray
 from lalamo.common import ParameterPath
+
 from lalamo.model_import.loaders.huggingface import load_moe
 from lalamo.module import RandomInitializer
 from lalamo.modules import (
@@ -61,8 +61,8 @@ def test_moe_prefill_vs_decode_match() -> None:
     inputs = jax.random.normal(inputs_key, (batch, suffix_tokens, model_dim), dtype=jnp.float32)
 
     # Compare PREFILL vs DECODE
-    out_prefill = moe(inputs, forward_pass_mode=ForwardPassMode.MULTI_TOKEN, key=None)
-    out_decode = moe(inputs, forward_pass_mode=ForwardPassMode.SINGLE_TOKEN, key=None)
+    out_prefill = moe(inputs, forward_pass_mode=ForwardPassMode.MULTI_TOKEN, dequant_key=jax.random.key(2))
+    out_decode = moe(inputs, forward_pass_mode=ForwardPassMode.SINGLE_TOKEN, dequant_key=jax.random.key(3))
 
     assert_close(result=out_decode, reference=out_prefill)
 

@@ -90,7 +90,7 @@ class WeightMatrix(RegistryABC, eqx.Module, Generic[WeightMatrixSpecT_co]):  # n
         self,
         vector: Float[Array, " in_channels"],
         *,
-        key: Key[Array, ""] | None,
+        dequant_key: Key[Array, ""],
         forward_pass_config: MatmulConfig | None = None,
     ) -> Float[Array, "... out_channels"]: ...
 
@@ -101,7 +101,7 @@ class EmbeddingMatrix(WeightMatrix[WeightMatrixSpecT_co]):
         self,
         index: int | Int[Array, ""],
         *,
-        key: Key[Array, ""] | None,
+        dequant_key: Key[Array, ""],
         forward_pass_config: MatmulConfig | None = None,
     ) -> Float[Array, "... out_channels"]: ...
 
@@ -157,7 +157,13 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
     def decompress(self) -> Float[Array, "... out_channels in_channels"]:
         return self.weights
 
-    def lookup_embedding(self, index: int | Int[Array, ""]) -> Float[Array, "... out_channels"]:
+    def lookup_embedding(
+        self,
+        index: int | Int[Array, ""],
+        *,
+        dequant_key: Key[Array, ""],  # noqa: ARG002
+        forward_pass_config: MatmulConfig | None = None,  # noqa: ARG002
+    ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()
         if self.spec.layout == Layout.INPUT_OUTPUT:
             return self.weights[:, index]
@@ -167,7 +173,7 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         self,
         vector: Float[Array, " in_channels"],
         *,
-        key: Key[Array, ""] | None,  # noqa: ARG002
+        dequant_key: Key[Array, ""],  # noqa: ARG002
         forward_pass_config: MatmulConfig | None = None,
     ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()

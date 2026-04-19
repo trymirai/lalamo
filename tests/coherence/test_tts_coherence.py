@@ -1,5 +1,4 @@
-from pathlib import Path
-
+import jax
 import numpy as np
 import pytest
 from transformers import pipeline
@@ -19,16 +18,22 @@ coherence_tts_specs = filter_specs(model_type=ModelType.TTS_MODEL, repos=frozens
 
 
 @pytest.mark.parametrize("spec", coherence_tts_specs, ids=[s.repo for s in coherence_tts_specs])
-def test_tts_coherence(spec: ModelSpec, convert_model: ConvertModel, tmp_path: Path) -> None:
+def test_tts_coherence(spec: ModelSpec, convert_model: ConvertModel) -> None:
     converted_path = convert_model(spec.repo)
     model = TTSGenerator.load_model(converted_path)
 
     asr = pipeline("automatic-speech-recognition", model="openai/whisper-tiny.en")
 
     failures: list[str] = []
-    for text, expected_keywords in PHRASES:
+    generation_key = jax.random.key(0)
+    dequant_key = jax.random.key(1)
+    for index, (text, expected_keywords) in enumerate(PHRASES):
         message = TTSMessage(content=text, speaker_id="speaker:0", style="interleave")
-        result = model.generate_speech([message])
+        result = model.generate_speech(
+            [message],
+            key=jax.random.fold_in(generation_key, index),
+            dequant_key=dequant_key,
+        )
 
         audio = np.squeeze(result.audio).astype(np.float32)
         transcription: str = asr({"sampling_rate": result.audio_params.samplerate, "raw": audio})["text"]

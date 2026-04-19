@@ -1,10 +1,10 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.module import Initializer
-from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
+from lalamo.initializer import Initializer
+from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfig
 
 from .fishaudio_modules import (
     ConvNeXtSpatialParams,
@@ -19,7 +19,7 @@ from .fishaudio_modules import (
 
 
 @dataclass(frozen=True)
-class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
+class DescriptAudioCodecConfig(TTSAudioDecoderConfig):
     quantizer_config: DownsampleResidualVectorQuantizeConfig
     decoder_config: DACDecoderConfig
     samplerate: int
@@ -172,13 +172,13 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
     def __call__(
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
+        *,
+        dequant_key: Key[Array, ""],
     ) -> Float[Array, "batch audio_samples 1"]:
-        z = self.quantizer.decode(indices)
-        audio = self.decoder(z)
+        z = self.quantizer.decode(indices, dequant_key=dequant_key)
+        return self.decoder(z)
 
-        return audio
-
-    def audio_from_codes(self, indices: Array) -> Array:
+    def audio_from_codes(self, indices: Array, *, dequant_key: Key[Array, ""]) -> Array:
         if len(indices.shape) == 2:
             indices = indices[None, :]
-        return self(indices)[0, :, 0]
+        return self(indices, dequant_key=dequant_key)[0, :, 0]

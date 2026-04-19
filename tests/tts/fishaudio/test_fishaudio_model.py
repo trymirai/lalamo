@@ -75,6 +75,7 @@ def test_decode_one_token_matches_pytorch(fish_audio_local_model_path: Path) -> 
         input_pos=input_pos,
         sampling_policy=sampling_policy,
         key=key,
+        dequant_key=jax.random.key(456),
     )
     output_lalamo = decode_result.token_codes
 
@@ -125,7 +126,7 @@ def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
     z_fish = fish_dac.quantizer.decode(test_codes_torch)  # (batch, latent_dim, tokens_upsampled)
     audio_fish = fish_dac.decoder(z_fish)  # (batch, 1, audio_samples)
     # Run Lalamo DAC inference
-    audio_lalamo = lalamo_dac(test_codes_jax)  # (batch, audio_samples, 1) - NTC format
+    audio_lalamo = lalamo_dac(test_codes_jax, dequant_key=jax.random.key(0))  # (batch, audio_samples, 1) - NTC format
 
     # Convert for comparison (both to NTC format)
     audio_fish_ntc = torch_to_jax(audio_fish).transpose(0, 2, 1)  # NCT -> NTC

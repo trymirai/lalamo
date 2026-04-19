@@ -3,7 +3,7 @@ from typing import NamedTuple, Self
 import jax.tree_util as jtu
 from jaxtyping import Array
 
-from lalamo.utils.JSON import JSON
+from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.surgery import load_as
 
@@ -36,8 +36,10 @@ class Exportable:
                         result_arrays[str(key / sub_key)] = leaf_arrays[sub_key]
                     if sub_key in leaf_metadata:
                         result_metadata[str(key / sub_key)] = leaf_metadata[sub_key]
+            elif leaf is None:
+                continue
             else:
-                result_arrays[key] = leaf
+                result_arrays[str(key)] = leaf
         return ExportResults(result_arrays, result_metadata)
 
     def load_exported(
@@ -50,11 +52,13 @@ class Exportable:
         if prefix is None:
             prefix = ParameterPath()
 
-        def restore(jax_path: tuple[object, ...], subtree: Exportable | Array) -> Exportable | Array:
+        def restore(jax_path: tuple[object, ...], subtree: Exportable | Array | None) -> Exportable | Array | None:
             path = prefix / jax_path
 
             if isinstance(subtree, Exportable):
                 return subtree.load_exported(expored_data, allow_dtype_cast=allow_dtype_cast, prefix=path)
+            if subtree is None:
+                return None
 
             return load_as(subtree, expored_data.arrays[path], allow_dtype_cast=allow_dtype_cast)
 

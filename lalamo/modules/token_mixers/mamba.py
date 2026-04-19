@@ -7,14 +7,20 @@ import jax.numpy as jnp
 from einops import einsum, rearrange
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.module import Initializer, PositionalEmbeddingSelector
+from lalamo.initializer import Initializer
 from lalamo.modules.activations import Activation
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
-from lalamo.modules.utils import vmap_with_key
+from lalamo.modules.utils import vmap_with_dequant_key
 
-from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
+from .common import (
+    MixerForwardPassConfig,
+    PositionalEmbeddingSelector,
+    TokenMixerBase,
+    TokenMixerConfig,
+    TokenMixerResult,
+)
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 
 __all__ = [
@@ -85,7 +91,7 @@ def fused_ssd_intra_chunk(
 
 
 @dataclass(frozen=True)
-class Mamba2Config(TokenMixerConfigBase):
+class Mamba2Config(TokenMixerConfig):
     in_projection_config: LinearConfig
     out_projection_config: LinearConfig
     conv_config: SeparableCausalConvConfig
@@ -140,9 +146,9 @@ class Mamba2Config(TokenMixerConfigBase):
 
         conv = self.conv_config.init(initializer, self.conv_dim, self.kernel_size)
 
-        skip_connection_weight = initializer.normal(1.0, (self.num_heads,), initializer.precision)
+        skip_connection_weight = initializer.normal(1.0, (self.num_heads,))
 
-        gate_bias = initializer.zeros((self.inner_dim,), initializer.precision)
+        gate_bias = initializer.zeros((self.inner_dim,))
 
         return Mamba2(
             config=self,
@@ -213,12 +219,16 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         state: SSMStateLayer,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
         *,
-        key: Key[Array, ""] | None,
+        dequant_key: Key[Array, ""],
     ) -> Mamba2Result:
         """Optimized path for single-token decode without scan machinery."""
         token = inputs[0]
 
-        conv_in, gate, dt_log = self.in_projection(token, key=key, forward_pass_config=forward_pass_config.arrays)
+        conv_in, gate, dt_log = self.in_projection(
+            token,
+            dequant_key=dequant_key,
+            forward_pass_config=forward_pass_config.arrays,
+        )
         conv_out, new_conv_state = self.conv.step(conv_in, state.conv_state)
         conv_activated = self.config.activation(conv_out)
 
@@ -235,7 +245,11 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         y = y + self.skip_connection_weight[:, None] * values
         y = rearrange(y, "heads head_dim -> (heads head_dim)")
         gated = y * jax.nn.silu(gate + self.gate_bias)
-        (output,) = self.out_projection(gated, key=key, forward_pass_config=forward_pass_config.arrays)
+        (output,) = self.out_projection(
+            gated,
+            dequant_key=dequant_key,
+            forward_pass_config=forward_pass_config.arrays,
+        )
 
         return Mamba2Result(
             outputs=output[None, :],
@@ -452,7 +466,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
         *,
-        key: Key[Array, ""] | None,
+        dequant_key: Key[Array, ""],
     ) -> Mamba2Result:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for Mamba2.")
@@ -468,13 +482,13 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         seq_len, _ = inputs.shape
 
         if seq_len == 1 and return_updated_state:
-            return self._decode_step(inputs, state, forward_pass_config, key=key)
+            return self._decode_step(inputs, state, forward_pass_config, dequant_key=dequant_key)
 
-        in_key, out_key = jax.random.split(key) if key is not None else (None, None)
-        conv_inputs, gate_values, time_delta_log = vmap_with_key(
+        in_dequant_key, out_dequant_key = jax.random.split(dequant_key)
+        conv_inputs, gate_values, time_delta_log = vmap_with_dequant_key(
             partial(self.in_projection, forward_pass_config=forward_pass_config.arrays),
             inputs,
-            key=in_key,
+            dequant_key=in_dequant_key,
         )
 
         conv_output, updated_conv_state = self.conv(
@@ -542,10 +556,10 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             ssm_outputs,
             "suffix_tokens heads head_channels -> suffix_tokens (heads head_channels)",
         )
-        (outputs,) = vmap_with_key(
+        (outputs,) = vmap_with_dequant_key(
             partial(self.out_projection, forward_pass_config=forward_pass_config.arrays),
             ssm_outputs_flat,
-            key=out_key,
+            dequant_key=out_dequant_key,
         )
 
         if return_updated_state:

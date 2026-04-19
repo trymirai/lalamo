@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from functools import partial
 from typing import Any
 
 import jax
@@ -7,17 +6,18 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.module import ForwardPassMode, Initializer
+from lalamo.initializer import Initializer
+from lalamo.module import ForwardPassMode
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_consts import REPEAT_WINDOW_SIZE, SHORT_LOGITS_SIZE
-from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
+from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfig
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.token_mixers.state.common import State
 from lalamo.modules.transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
-from lalamo.modules.utils import vmap_twice
+from lalamo.modules.utils import vmap_twice_with_dequant_key, vmap_with_dequant_key
 from lalamo.sampling import SamplingPolicy
 
 
@@ -29,7 +29,7 @@ class FishAudioTextDecoderResult:
 
 
 @dataclass(frozen=True)
-class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
+class FishAudioTextDecoderConfig(TTSTextDecoderConfig):
     slow_embeddings_config: TiedEmbeddingConfig
     slow_model_config: TransformerConfig
     slow_readout_config: LinearConfig
@@ -132,7 +132,9 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         self,
         text_tokens: Int[Array, "batch tokens"],
         sampling_policy: SamplingPolicy,
+        *,
         key: Key[Array, ""],
+        dequant_key: Key[Array, ""],
         input_pos: Int[Array, "batch tokens"] | None = None,
         state: State | None = None,
     ) -> FishAudioTextDecoderResult:
@@ -148,7 +150,8 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         # ignore it for now
         text_and_codebooks = text_and_codebooks.at[:, 0, :].set(text_tokens)
 
-        embeddings = self.embed(text_and_codebooks)
+        embed_dequant_key, decode_dequant_key = jax.random.split(dequant_key)
+        embeddings = self.embed(text_and_codebooks, dequant_key=embed_dequant_key)
 
         codes, updated_state = decode_next_token(
             model=self,
@@ -158,6 +161,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             sampling_policy=sampling_policy,
             previous_tokens=None,
             key=key,
+            dequant_key=decode_dequant_key,
         )
 
         return FishAudioTextDecoderResult(token_codes=codes, hidden_states=None, state=updated_state)
@@ -166,6 +170,8 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         self,
         inp: Int[Array, "batch codebooks tokens"],
         apply_codebook_embeddings: bool = False,
+        *,
+        dequant_key: Key[Array, ""],
     ) -> Float[Array, "batch tokens embedding"]:
         """
         apply_codebook_embeddings argument should be set to 'True' if audio-prompt is used. In this
@@ -175,13 +181,17 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         vq_masks = (inp[:, 0] >= self.config.semantic_token_begin_id) & (
             inp[:, 0] <= self.config.semantic_token_end_id
         )
-        embeddings = self.embeddings_slow.embed(inp[:, 0])
+        slow_embed_dequant_key, codebook_embed_dequant_key = jax.random.split(dequant_key)
+        embeddings = self.embeddings_slow.embed(inp[:, 0], dequant_key=slow_embed_dequant_key)
 
         if apply_codebook_embeddings or jnp.any(vq_masks):
             _, _, seq_length = inp.shape
             codebook_offsets = (jnp.arange(self.config.num_codebooks) * self.config.codebook_size).reshape(-1, 1)
             codebook_offsets = jnp.tile(codebook_offsets, (1, seq_length))
-            codebook_embeds = vmap(self.codebook_embeddings.embed)(inp[:, 1:, :] + codebook_offsets)
+            codebook_embeds = self.codebook_embeddings.embed(
+                inp[:, 1:, :] + codebook_offsets,
+                dequant_key=codebook_embed_dequant_key,
+            )
 
             vq_embeds_sum = codebook_embeds.sum(axis=1)
             vq_embeds_sum = vq_embeds_sum.at[~vq_masks].set(0)
@@ -200,7 +210,9 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         self,
         text_tokens: Int[Array, "batch tokens"],
         sampling_policy: SamplingPolicy | None = None,
-        key: Key[Array, ""] | None = None,
+        *,
+        key: Key[Array, ""],
+        dequant_key: Key[Array, ""],
     ) -> Int[Array, "num_codebooks tokens"]:
         """
         Generate semantic tokens for a full utterance given text tokens in an autoregressive
@@ -221,8 +233,6 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
 
         if sampling_policy is None:
             sampling_policy = default_fishaudio_sampling_policy()
-        if key is None:
-            key = jax.random.key(123)
 
         max_new_tokens = max_seq_len - prompt_length
 
@@ -239,14 +249,17 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         previous_tokens = jnp.zeros((codebook_dim, max_seq_len), dtype=jnp.int32)
 
         input_pos = jnp.arange(prompt_length)[None, :]
-        embeddings = self.embed(prompt)
+        first_decode_key, loop_sampling_key = jax.random.split(key)
+        embed_dequant_key, decode_dequant_key = jax.random.split(dequant_key)
+        embeddings = self.embed(prompt, dequant_key=embed_dequant_key)
         first_codes, state_slow = decode_next_token(
             model=self,
             x=embeddings,
             state_slow=None,
             input_pos=input_pos,
             sampling_policy=sampling_policy,
-            key=key,
+            key=first_decode_key,
+            dequant_key=decode_dequant_key,
             previous_tokens=None,
         )
 
@@ -254,8 +267,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         previous_tokens = previous_tokens.at[:, 0].set(first_codes[0])
 
         if first_codes[0, 0] == self.config.im_end_token_id:
-            codes = seq[1:, prompt_length : prompt_length + 1]
-            return codes
+            return seq[1:, prompt_length : prompt_length + 1]
 
         cur_token = first_codes
         generated_count = 1
@@ -269,14 +281,10 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             else:
                 window = previous_tokens[:, i - win_size : i]
 
-            embeddings = self.embed(cur_token_expanded)
+            loop_sampling_key, decode_key = jax.random.split(loop_sampling_key)
+            embeddings = self.embed(cur_token_expanded, dequant_key=embed_dequant_key)
 
             input_pos = jnp.array([[prompt_length + i - 1]])
-
-            if key is not None:
-                key, subkey = jax.random.split(key)
-            else:
-                subkey = None
 
             next_codes, state_slow = decode_next_token(
                 model=self,
@@ -284,7 +292,8 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
                 state_slow=state_slow,
                 input_pos=input_pos,
                 sampling_policy=sampling_policy,
-                key=subkey,
+                key=decode_key,
+                dequant_key=decode_dequant_key,
                 previous_tokens=window,
             )
 
@@ -311,10 +320,20 @@ def decode_next_token(
     input_pos: Array,
     sampling_policy: SamplingPolicy,
     key: Key[Array, ""],
+    dequant_key: Key[Array, ""],
     previous_tokens: Array | None = None,  # noqa: ARG001, reserved for future when repetition penalty is done
 ) -> tuple[Int[Array, "batch codes"], State | None]:
     batch_size = x.shape[0]
     assert batch_size == 1, "Batching not supported yet"
+    (
+        slow_transformer_dequant_key,
+        fast_projection_dequant_key,
+        slow_readout_dequant_key,
+        fast_transformer_dequant_key,
+        fast_readout_dequant_key,
+        fast_embed_dequant_key,
+    ) = jax.random.split(dequant_key, 6)
+    slow_sampling_key, loop_sampling_key = jax.random.split(key)
 
     slow_model_result = model.transformer_slow(
         inner_features=x,
@@ -326,19 +345,29 @@ def decode_next_token(
         lengths_without_padding=None,
         forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
         forward_pass_config=TransformerForwardPassConfig(),
-        key=key,
+        dequant_key=slow_transformer_dequant_key,
     )
     assert slow_model_result.layer_results is not None
     hidden_states = slow_model_result.layer_results[-1].outputs[:, -1:]
     if model.fast_model_projection is not None:
-        (hidden_states,) = vmap(partial(model.fast_model_projection, key=None))(hidden_states)
+        (hidden_states,) = vmap_with_dequant_key(
+            model.fast_model_projection,
+            hidden_states,
+            dequant_key=fast_projection_dequant_key,
+        )
 
-    (logits,) = vmap_twice(lambda x: model.readout_slow(x, key=None))(slow_model_result.outputs)
+    (logits,) = vmap_twice_with_dequant_key(
+        model.readout_slow,
+        slow_model_result.outputs,
+        dequant_key=slow_readout_dequant_key,
+    )
 
     n_codes = model.config.num_codebooks + 1
 
     codebooks = jnp.zeros((batch_size, n_codes), dtype=jnp.int32)
-    codebooks = codebooks.at[0, 0].set(vmap(lambda x: sampling_policy(x, key=key))(logits[:, -1, :])[0])
+    slow_sampling_keys = jax.random.split(slow_sampling_key, batch_size)
+    first_code = vmap(lambda x, sample_key: sampling_policy(x, key=sample_key))(logits[:, -1, :], slow_sampling_keys)
+    codebooks = codebooks.at[0, 0].set(first_code[0])
     first_fast_code = jnp.array([codebooks[0, 0] - model.config.semantic_token_begin_id])
     first_fast_code = first_fast_code.at[first_fast_code < 0].set(0)
     codebooks = codebooks.at[0, 1].set(first_fast_code[0])
@@ -356,16 +385,18 @@ def decode_next_token(
         lengths_without_padding=None,
         forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
         forward_pass_config=TransformerForwardPassConfig(),
-        key=None,
+        dequant_key=fast_transformer_dequant_key,
     )
     state_fast = fast_first_result.updated_state
 
-    embedded_logits = model.embeddings_fast.embed(first_fast_code)
+    embedded_logits = model.embeddings_fast.embed(first_fast_code, dequant_key=fast_embed_dequant_key)
+    loop_sampling_keys = jax.random.split(loop_sampling_key, max(n_codes - 2, 0))
 
     def loop_iteration(
         iteration_state: tuple[State | None, Array, Any],
-        index: jnp.int32,
+        loop_input: tuple[jnp.int32, Key[Array, ""]],
     ) -> tuple[tuple[State | None, Array, Any], None]:
+        index, sample_key = loop_input
         transformer_state, logits, codebooks = iteration_state
         logits = logits.reshape(logits.shape[0], 1, -1)
         input_pos_fast = jnp.array([index - 1])[None, :]
@@ -379,22 +410,27 @@ def decode_next_token(
             lengths_without_padding=None,
             forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
             forward_pass_config=TransformerForwardPassConfig(),
-            key=None,
+            dequant_key=fast_transformer_dequant_key,
         )
-        (fast_logits,) = vmap_twice(lambda x: model.readout_fast(x, key=None))(fast_result.outputs)
+        (fast_logits,) = vmap_twice_with_dequant_key(
+            model.readout_fast,
+            fast_result.outputs,
+            dequant_key=fast_readout_dequant_key,
+        )
         new_state = fast_result.updated_state
 
         short_logits = fast_logits[:, :, : model.config.short_logits_size]
-        code = vmap(lambda x: sampling_policy(x, key=key))(short_logits[:, -1, :])
+        sample_keys = jax.random.split(sample_key, short_logits.shape[0])
+        code = vmap(lambda x, current_key: sampling_policy(x, key=current_key))(short_logits[:, -1, :], sample_keys)
 
-        new_logits = model.embeddings_fast.embed(code)
+        new_logits = model.embeddings_fast.embed(code, dequant_key=fast_embed_dequant_key)
         codebooks = codebooks.at[0, index].set(code[0])
         return (new_state, new_logits, codebooks), None
 
     scan_result, _ = jax.lax.scan(
         loop_iteration,
         (state_fast, embedded_logits, codebooks),
-        jnp.arange(2, n_codes, dtype=jnp.int32),
+        (jnp.arange(2, n_codes, dtype=jnp.int32), loop_sampling_keys),
     )
     _, _, codebooks = scan_result
 

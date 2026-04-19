@@ -3,30 +3,20 @@ from dataclasses import dataclass
 import equinox as eqx
 from jaxtyping import Array
 
-from lalamo.module import Initializer, LalamoModule, register_config_union
+from lalamo.initializer import Initializer
+from lalamo.module import LalamoConfig, LalamoModule
 from lalamo.sampling import SamplingPolicy, make_policy
 
-from .audio_decoder import TTSAudioDecoder
-from .fishaudio.fishaudio_audio_decoding import DescriptAudioCodecConfig
-from .fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig
-from .nanocodec.audio_decoding import NanoCodecConfig
-from .nanocodec.stub_text_decoder import StubTextDecoderConfig
-from .text_decoder import TTSTextDecoder
+from .audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfig
+from .text_decoder import TTSTextDecoder, TTSTextDecoderConfig
 from .vocoders import Vocoder, VocoderConfig
 
 DEFAULT_TTS_SAMPLING_POLICY: SamplingPolicy = CompositePolicy((TemperaturePolicy(0.3), TopPPolicy(0.9)))
 DEFAULT_TTS_REPETITION_PENALTY: float = 1.1
 
 
-TTSAudioDecoderConfig = DescriptAudioCodecConfig | NanoCodecConfig
-register_config_union(TTSAudioDecoderConfig)
-
-TTSTextDecoderConfig = FishAudioTextDecoderConfig | StubTextDecoderConfig
-register_config_union(TTSTextDecoderConfig)
-
-
 @dataclass(frozen=True)
-class TTSConfig:
+class TTSConfig(LalamoConfig):
     text_decoder_config: TTSTextDecoderConfig
     audio_decoder_config: TTSAudioDecoderConfig
     vocoder_config: VocoderConfig

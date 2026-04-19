@@ -3,8 +3,6 @@ from typing import Self
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.common import ParameterTree
-
 from .common import StateLayerBase
 
 __all__ = ["SSMStateLayer"]
@@ -39,9 +37,3 @@ class SSMStateLayer(StateLayerBase):
         conv_state = jnp.zeros((kernel_size - 1, conv_dim), dtype=dtype)
         ssm_state = jnp.zeros(ssm_state_shape, dtype=dtype)
         return cls(conv_state=conv_state, ssm_state=ssm_state)
-
-    def export(self) -> ParameterTree:
-        return dict(
-            conv_state=self.conv_state,
-            ssm_state=self.ssm_state,
-        )

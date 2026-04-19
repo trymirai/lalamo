@@ -5,7 +5,7 @@ from pathlib import Path
 import jax
 from jax import Array
 from jax import numpy as jnp
-from jaxtyping import Float
+from jaxtyping import Float, Key
 
 from lalamo.message_processor import Message, MessageProcessor
 from lalamo.modules import Classifier, ClassifierConfig, LalamoModule
@@ -50,10 +50,16 @@ class ClassifierModel(TextModel[ClassifierModelConfig, Classifier]):
     def classify_chat(
         self,
         messages: Iterable[Message],
+        *,
+        dequant_key: Key[Array, ""],
     ) -> dict[str, float]:
         token_ids = jnp.array(self.message_processor.tokenize_request(messages), dtype=jnp.int32)[None, :]
         _, sequence_length = token_ids.shape
         token_positions = jnp.arange(sequence_length, dtype=jnp.int32)[None, :]
-        classifier_output = self.model(token_ids=token_ids, token_positions=token_positions)
+        classifier_output = self.model(
+            token_ids=token_ids,
+            token_positions=token_positions,
+            dequant_key=dequant_key,
+        )
 
         return {k: float(v.item()) for k, v in self.label_output_logits(classifier_output.logits).items()}

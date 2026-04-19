@@ -1,3 +1,7 @@
+from collections.abc import Mapping
+from pathlib import Path
+
+import jax
 import jax.numpy as jnp
 
 from lalamo.audio.tts_message_processor import TTSMessage
@@ -409,7 +413,7 @@ def test_lalamo_nanocodec_matches_torch(cached_nemo_model: tuple[Mapping, Mappin
 
     # Lalamo forward using audio_from_codes (expects [C, T] format)
     tokens_jax = jnp.array(tokens_np)
-    audio_lalamo = lalamo_model.audio_from_codes(tokens_jax)
+    audio_lalamo = lalamo_model.audio_from_codes(tokens_jax, dequant_key=jax.random.key(0))
 
     # Compare outputs
     # Use relaxed tolerances for end-to-end test as small numerical differences
@@ -438,7 +442,11 @@ def test_nanocodec_model_spec_loading() -> None:
     assert isinstance(generator.tts_model.text_decoder, StubTextDecoder)
     assert isinstance(generator.tts_model.audio_decoder, NanoCodec)
 
-    generation_result = generator.generate_speech([message_to_generate])
+    generation_result = generator.generate_speech(
+        [message_to_generate],
+        key=jax.random.key(0),
+        dequant_key=jax.random.key(1),
+    )
     audio = generation_result.audio
 
     assert float(jnp.min(audio)) >= -1.0

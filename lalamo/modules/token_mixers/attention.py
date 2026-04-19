@@ -8,13 +8,19 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key
 
-from lalamo.module import Initializer, PositionalEmbeddingSelector
+from lalamo.initializer import Initializer
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
-from lalamo.modules.utils import apply_soft_capping, vmap_with_key
+from lalamo.modules.utils import apply_soft_capping, vmap_with_dequant_key
 
-from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
+from .common import (
+    MixerForwardPassConfig,
+    PositionalEmbeddingSelector,
+    TokenMixerBase,
+    TokenMixerConfig,
+    TokenMixerResult,
+)
 from .state import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 
 __all__ = [
@@ -76,7 +82,7 @@ AttentionResult = TokenMixerResult[KVCacheLayer]
 
 
 @dataclass(frozen=True)
-class AttentionConfig(TokenMixerConfigBase):
+class AttentionConfig(TokenMixerConfig):
     qkv_projection_config: LinearConfig
     out_projection_config: LinearConfig
 
@@ -149,7 +155,7 @@ class AttentionConfig(TokenMixerConfigBase):
             key_norm = None
 
         if self.has_sinks:
-            sinks = initializer.zeros((self.num_heads,), initializer.precision)
+            sinks = initializer.zeros((self.num_heads,))
         else:
             sinks = None
 
@@ -208,19 +214,19 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
         *,
-        key: Key[Array, ""] | None,
+        dequant_key: Key[Array, ""],
     ) -> AttentionResult:
-        qkv_key, gate_key, out_key = jax.random.split(key, 3) if key is not None else (None, None, None)
-        queries, keys, values = vmap_with_key(
+        qkv_dequant_key, gate_dequant_key, out_dequant_key = jax.random.split(dequant_key, 3)
+        queries, keys, values = vmap_with_dequant_key(
             partial(self.qkv_projection, forward_pass_config=forward_pass_config.arrays),
             inputs,
-            key=qkv_key,
+            dequant_key=qkv_dequant_key,
         )
         if self.gate_projection is not None:
-            (gate,) = vmap_with_key(
+            (gate,) = vmap_with_dequant_key(
                 partial(self.gate_projection, forward_pass_config=forward_pass_config.arrays),
                 inputs,
-                key=gate_key,
+                dequant_key=gate_dequant_key,
             )
         else:
             gate = None
@@ -301,10 +307,10 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         )
         if gate is not None:
             attention_output = attention_output * jax.nn.sigmoid(gate)
-        (result,) = vmap_with_key(
+        (result,) = vmap_with_dequant_key(
             partial(self.out_projection, forward_pass_config=forward_pass_config.arrays),
             attention_output,
-            key=out_key,
+            dequant_key=out_dequant_key,
         )
 
         if not return_updated_state:

@@ -2,6 +2,7 @@ from collections.abc import Callable, Iterable
 from itertools import chain
 from typing import NamedTuple
 
+import jax
 import numpy as np
 
 from lalamo.data.lalamo_completions import LalamoCompletion
@@ -20,7 +21,7 @@ def inference_collect_traces(
     model: LanguageModel,
     conversations: Iterable[Iterable[Message]],
     num_logits_per_token: int = 1024,
-    trace_layers: tuple[int, ...] = tuple(),
+    trace_layers: tuple[int, ...] = (),
     batch_size: int = 1,
     max_input_length: int = 1024,
     max_output_length: int = 1024,
@@ -49,6 +50,8 @@ def inference_collect_traces(
             filtered_prefixes,
             inference_config=config,
             generation_trace_config=trace_config,
+            keys=jax.random.split(jax.random.key(0), len(filtered_prefixes)),
+            dequant_key=jax.random.key(1),
         ),
     ):
         token_ids = generated.token_ids.tolist()

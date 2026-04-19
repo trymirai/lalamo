@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import cast
 
 import equinox as eqx
+import jax
 import polars as pl
 import requests
 import thefuzz.fuzz
@@ -195,7 +196,7 @@ def convert(
     )
 
     if precision is not None:
-        precision_dtype = config_converter.structure(precision.value, DTypeLike)  # type: ignore
+        precision_dtype = config_converter.structure(precision.value, DTypeLike)  # type: ignore[arg-type]
     else:
         precision_dtype = None
 
@@ -412,7 +413,7 @@ def collect_traces(
     dataset_path: Path,
     output_path: Path,
     num_logits_per_token: int = 1024,
-    trace_layers: tuple[int, ...] = tuple(),
+    trace_layers: tuple[int, ...] = (),
     max_input_length: int = 1024,
     max_output_length: int = 1024,
     batch_size: int = 1,
@@ -690,12 +691,15 @@ def generate_replies(
         )
 
     with use_sharding(sharding_config):
+        dataset = list(dataset)
         replies: list[tuple[int, AssistantMessage]] = []
         for rows_processed, (idx, reply) in enumerate(
             model.reply_many(
                 dataset,
                 generation_config=generation_config,
                 inference_config=inference_config,
+                keys=jax.random.split(jax.random.key(0), len(dataset)),
+                dequant_key=jax.random.key(1),
                 vram_bytes=max_vram,
                 batch_sizes_callback=callbacks.batch_sizes_computed,
             ),

@@ -74,17 +74,24 @@ class TTSGenerator(eqx.Module):
         text_tokens: Array,
         sampling_policy: SamplingPolicy,
         repetition_penalty: float,  # noqa: ARG002, reserved for near future
-        random_key: Key[Array, ""] | None = None,
+        *,
+        key: Key[Array, ""],
+        dequant_key: Key[Array, ""],
     ) -> Array:
-        random_key = jax.random.key(123) if random_key is None else random_key
         return self.tts_model.text_decoder.decode_utterance(
             text_tokens,
             sampling_policy=sampling_policy,
-            key=random_key,
+            key=key,
+            dequant_key=dequant_key,
         )
 
-    def decode_audio(self, semantic_tokens: Array) -> Array:
-        return self.tts_model.audio_decoder.audio_from_codes(semantic_tokens)
+    def decode_audio(
+        self,
+        semantic_tokens: Array,
+        *,
+        dequant_key: Key[Array, ""],
+    ) -> Array:
+        return self.tts_model.audio_decoder.audio_from_codes(semantic_tokens, dequant_key=dequant_key)
 
     def generate_waveform(self, audio_features: Array) -> Array:
         return self.tts_model.vocoder(audio_features)
@@ -103,18 +110,22 @@ class TTSGenerator(eqx.Module):
         messages: Iterable[TTSMessage],
         sampling_policy: SamplingPolicy = DEFAULT_TTS_SAMPLING_POLICY,
         repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,
-        random_key: Key[Array, ""] | None = None,
+        *,
+        key: Key[Array, ""],
+        dequant_key: Key[Array, ""],
     ) -> TTSGenerationResult:
+        text_dequant_key, audio_dequant_key = jax.random.split(dequant_key)
         text_tokens = self.tokenize_text(messages)
 
         semantic_tokens = self.decode_text(
             text_tokens,
             sampling_policy=sampling_policy,
             repetition_penalty=repetition_penalty,
-            random_key=random_key,
+            key=key,
+            dequant_key=text_dequant_key,
         )
 
-        audio_features = self.decode_audio(semantic_tokens)
+        audio_features = self.decode_audio(semantic_tokens, dequant_key=audio_dequant_key)
 
         audio_waveform = self.tts_model.vocoder(audio_features)
 
@@ -161,24 +172,28 @@ class FishAudioTTSGenerator(TTSGenerator):
         text_tokens: Int[Array, "batch sequence"],
         sampling_policy: SamplingPolicy | None = None,
         repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002, reserved for near future
-        random_key: Key[Array, ""] | None = None,
+        *,
+        key: Key[Array, ""],
+        dequant_key: Key[Array, ""],
     ) -> Int[Array, "num_codebooks sequence"]:
         assert isinstance(self.tts_model.text_decoder, FishAudioTextDecoder)
 
         sampling_policy = sampling_policy if sampling_policy is not None else default_fishaudio_sampling_policy()
 
-        random_key = jax.random.key(123) if random_key is None else random_key
         return self.tts_model.text_decoder.decode_utterance(
             text_tokens,
             sampling_policy=sampling_policy,
-            key=random_key,
+            key=key,
+            dequant_key=dequant_key,
         )
 
     def decode_audio(
         self,
         semantic_tokens: Int[Array, "batch n_codebooks sequence"],
+        *,
+        dequant_key: Key[Array, ""],
     ) -> Float[Array, "batch audio_samples 1"]:
-        return super().decode_audio(semantic_tokens)
+        return super().decode_audio(semantic_tokens, dequant_key=dequant_key)
 
     def generate_waveform(self, audio_features: Array) -> Array:
         return super().generate_waveform(audio_features)

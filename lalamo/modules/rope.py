@@ -22,21 +22,23 @@ import equinox as eqx
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.common import ParameterTree
-from lalamo.module import Initializer, LalamoModule, register_config_union
+from lalamo.exportable import Exportable
+from lalamo.initializer import Initializer
+from lalamo.module import LalamoConfig, LalamoModule, field
+from lalamo.utils.registry_abc import RegistryABC
 
 __all__ = [
     "LinearScalingRoPEConfig",
     "LlamaRoPEConfig",
     "PositionalEmbeddings",
     "RoPE",
-    "RoPEConfigBase",
+    "RoPEConfig",
     "UnscaledRoPEConfig",
     "YARNRoPEConfig",
 ]
 
 
-class PositionalEmbeddings(eqx.Module):
+class PositionalEmbeddings(Exportable, eqx.Module):
     cosines: Float[Array, "*batch tokens head_channels"]
     sines: Float[Array, "*batch tokens head_channels"]
 
@@ -64,15 +66,9 @@ class PositionalEmbeddings(eqx.Module):
             return rotated
         return jnp.concatenate([rotated, heads[..., head_dim:]], axis=-1)
 
-    def export(self) -> ParameterTree:
-        return dict(
-            cosines=self.cosines,
-            sines=self.sines,
-        )
-
 
 @dataclass(frozen=True)
-class RoPEConfigBase:
+class RoPEConfig(LalamoConfig, RegistryABC):
     base: float
     max_sequence_length: int
     head_dim: int
@@ -111,14 +107,14 @@ class RoPEConfigBase:
         inverse_frequencies = self._mask_inverse_frequencies(inverse_frequencies, head_dim)
         outer_inverse_frequencies = jnp.outer(timesteps, inverse_frequencies)
         embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
-        cosines = (jnp.cos(embeddings) * self._attention_scaling_factor).astype(initializer.precision)
-        sines = (jnp.sin(embeddings) * self._attention_scaling_factor).astype(initializer.precision)
+        cosines = (jnp.cos(embeddings) * self._attention_scaling_factor).astype(initializer.dtype)
+        sines = (jnp.sin(embeddings) * self._attention_scaling_factor).astype(initializer.dtype)
         return RoPE(config=self, sines=sines, cosines=cosines)
 
 
-class RoPE(LalamoModule[RoPEConfigBase]):
-    sines: Float[Array, "tokens head_channels"]
-    cosines: Float[Array, "tokens head_channels"]
+class RoPE(LalamoModule[RoPEConfig]):
+    sines: Float[Array, "tokens head_channels"] = field(trainable=False)
+    cosines: Float[Array, "tokens head_channels"] = field(trainable=False)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -142,12 +138,12 @@ class RoPE(LalamoModule[RoPEConfigBase]):
         )
 
 
-class UnscaledRoPEConfig(RoPEConfigBase):
+class UnscaledRoPEConfig(RoPEConfig):
     pass
 
 
 @dataclass(frozen=True)
-class LlamaRoPEConfig(RoPEConfigBase):
+class LlamaRoPEConfig(RoPEConfig):
     scaling_factor: float
     original_context_length: int
     low_frequency_factor: float
@@ -178,13 +174,11 @@ class LlamaRoPEConfig(RoPEConfigBase):
 
         result = inverse_frequencies * high_frequency_mask.astype(jnp.float32)
         result = result + smoothly_scaled_frequencies * mid_frequency_mask.astype(jnp.float32)
-        result = result + scaled_frequencies * low_frequency_mask.astype(jnp.float32)
-
-        return result
+        return result + scaled_frequencies * low_frequency_mask.astype(jnp.float32)
 
 
 @dataclass(frozen=True)
-class YARNRoPEConfig(RoPEConfigBase):
+class YARNRoPEConfig(RoPEConfig):
     scaling_factor: float
     original_context_length: int
     beta_fast: float
@@ -220,8 +214,7 @@ class YARNRoPEConfig(RoPEConfigBase):
         min_v = jnp.float32(min_value)
         max_v = jnp.float32(max_value)
         linear_func = (jnp.arange(dim, dtype=jnp.float32) - min_v) / (max_v - min_v)
-        ramp_func = jnp.clip(linear_func, 0, 1)
-        return ramp_func
+        return jnp.clip(linear_func, 0, 1)
 
     def _scale_inverse_frequencies(
         self,
@@ -249,7 +242,7 @@ class YARNRoPEConfig(RoPEConfigBase):
 
 
 @dataclass(frozen=True)
-class LinearScalingRoPEConfig(RoPEConfigBase):
+class LinearScalingRoPEConfig(RoPEConfig):
     scaling_factor: float
 
     def _scale_inverse_frequencies(
@@ -259,8 +252,3 @@ class LinearScalingRoPEConfig(RoPEConfigBase):
         max_sequence_length: int,  # noqa: ARG002
     ) -> Float[Array, " tokens"]:
         return inverse_frequencies / self.scaling_factor
-
-
-RoPEConfig = UnscaledRoPEConfig | LlamaRoPEConfig | YARNRoPEConfig | LinearScalingRoPEConfig
-
-register_config_union(RoPEConfig)

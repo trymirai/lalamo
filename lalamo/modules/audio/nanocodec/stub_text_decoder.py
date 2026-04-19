@@ -6,20 +6,20 @@ This is a placeholder until a real text decoder is implemented for NanoCodec.
 
 from dataclasses import dataclass
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Int, Key
 
-from lalamo.module import Initializer
-from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
+from lalamo.initializer import Initializer
+from lalamo.module import field
+from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfig
 from lalamo.sampling import SamplingPolicy
 
 __all__ = ["StubTextDecoder", "StubTextDecoderConfig"]
 
 
 @dataclass(frozen=True)
-class StubTextDecoderConfig(TTSTextDecoderConfigBase):
+class StubTextDecoderConfig(TTSTextDecoderConfig):
     num_codebooks: int
     codebook_size: int
 
@@ -31,7 +31,7 @@ class StubTextDecoderConfig(TTSTextDecoderConfigBase):
 
 
 class StubTextDecoder(TTSTextDecoder[StubTextDecoderConfig]):
-    seed: int = eqx.field(static=True)
+    seed: int = field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -41,11 +41,12 @@ class StubTextDecoder(TTSTextDecoder[StubTextDecoderConfig]):
         self,
         text_tokens: Int[Array, "batch sequence"],
         sampling_policy: SamplingPolicy | None = None,  # noqa: ARG002
-        key: Key[Array, ""] | None = None,
+        *,
+        key: Key[Array, ""],
+        dequant_key: Key[Array, ""],  # noqa: ARG002
     ) -> Int[Array, "batch num_codebooks tokens"]:
         """Generate random codebook indices with length derived from input tokens."""
-        if key is None:
-            key = jax.random.key(self.seed)
+        key = jax.random.fold_in(key, self.seed)
 
         batch_size = text_tokens.shape[0]
         output_length = text_tokens.shape[1]

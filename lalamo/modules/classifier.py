@@ -2,26 +2,22 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 import equinox as eqx
+import jax
 from jax import numpy as jnp
-from jax import vmap
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.common import ParameterTree
-from lalamo.modules import Activation
-from lalamo.modules.normalization import NormalizationConfig
-from lalamo.modules.transformer import (
-    Normalization,
-    Transformer,
-    TransformerConfig,
-    TransformerForwardPassConfig,
-)
-from lalamo.modules.utils import vmap_twice
+from lalamo.exportable import Exportable
+from lalamo.initializer import Initializer
+from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
 
-from .common import ForwardPassMode, Initializer, LalamoModule
+from .activations import Activation
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .linear import Linear, LinearConfig
+from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
+from .transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
 from .transformer_layer import TransformerLayerResult
+from .utils import vmap_twice, vmap_twice_with_dequant_key, vmap_with_dequant_key
 
 __all__ = [
     "Classifier",
@@ -37,7 +33,7 @@ class PoolingType(StrEnum):
 
 
 @dataclass(frozen=True)
-class PredictionHeadConfig:
+class PredictionHeadConfig(LalamoConfig):
     dense_config: LinearConfig
     activation: Activation
     normalization_config: NormalizationConfig
@@ -73,17 +69,29 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
     norm: Normalization
     readout: Linear
 
-    def __call__(self, inner_features: Float[Array, "batch channels"]) -> Float[Array, "batch logits"]:
-        return vmap(self.call_unbatched)(inner_features)
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.dense.activation_precision
+
+    def __call__(
+        self,
+        inner_features: Float[Array, "batch channels"],
+        *,
+        dequant_key: Key[Array, ""],
+    ) -> Float[Array, "batch logits"]:
+        return vmap_with_dequant_key(self.call_unbatched, inner_features, dequant_key=dequant_key)
 
     def call_unbatched(
         self,
         inner_features: Float[Array, " in_channels"],
+        *,
+        dequant_key: Key[Array, ""],
     ) -> Float[Array, " logits"]:
-        (dense_outs,) = self.dense(inner_features, key=None)
+        dense_dequant_key, readout_dequant_key = jax.random.split(dequant_key)
+        (dense_outs,) = self.dense(inner_features, dequant_key=dense_dequant_key)
         dense_outs = self.activation(dense_outs)
         norm_outs = self.norm(dense_outs)
-        (result,) = self.readout(norm_outs, key=None)
+        (result,) = self.readout(norm_outs, dequant_key=readout_dequant_key)
         return result
 
     def export_weights(self) -> ParameterTree:
@@ -104,7 +112,7 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
         )
 
 
-class ClassifierActivationTrace(eqx.Module):
+class ClassifierActivationTrace(Exportable, eqx.Module):
     token_ids: Int[Array, "batch tokens"]
     token_positions: Int[Array, "batch tokens"]
 
@@ -116,35 +124,14 @@ class ClassifierActivationTrace(eqx.Module):
     output_pooling: Float[Array, "batch channels"]
     logits: Float[Array, "batch logits"]
 
-    def export(self) -> ParameterTree:
-        result = dict(
-            token_ids=self.token_ids,
-            token_positions=self.token_positions,
-            layer_results=[layer_result.export() for layer_result in self.layer_results],
-            output_norm=self.output_norm,
-            output_pooling=self.output_pooling,
-            logits=self.logits,
-        )
-        if self.rope_embeddings is not None:
-            result["rope_embeddings"] = [emb.export() for emb in self.rope_embeddings]
-        return result
 
-
-class ClassifierResult(eqx.Module):
+class ClassifierResult(Exportable, eqx.Module):
     logits: Float[Array, "batch logits"]
     activation_trace: ClassifierActivationTrace | None = None
 
-    def export(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = dict(
-            logits=self.logits,
-        )
-        if self.activation_trace is not None:
-            result["activation_trace"] = self.activation_trace.export()
-        return result
-
 
 @dataclass(frozen=True)
-class ClassifierConfig:
+class ClassifierConfig(LalamoConfig):
     embedding_config: EmbeddingConfig
     embedding_norm_config: NormalizationConfig
     transformer_config: TransformerConfig
@@ -199,8 +186,18 @@ class Classifier(LalamoModule[ClassifierConfig]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),  # noqa: B008
+        *,
+        dequant_key: Key[Array, ""],
     ) -> ClassifierResult:
-        inner_features = self.embedding.embed(token_ids)
+        embedding_dequant_key, transformer_dequant_key, prediction_head_dequant_key = jax.random.split(
+            dequant_key,
+            3,
+        )
+        inner_features = vmap_twice_with_dequant_key(
+            self.embedding.embed,
+            token_ids,
+            dequant_key=embedding_dequant_key,
+        )
         normalized_embeddings = vmap_twice(self.embedding_norm)(inner_features)
 
         transformer_result = self.transformer(
@@ -213,7 +210,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
             forward_pass_config=forward_pass_config,
-            key=None,
+            dequant_key=transformer_dequant_key,
         )
 
         if self.config.classifier_pooling == PoolingType.CLS:
@@ -224,7 +221,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
         else:
             raise TypeError(f"classifier_pooling of unknown type: {self.config.classifier_pooling}")
 
-        logits = self.prediction_head(pooled_output)
+        logits = self.prediction_head(pooled_output, dequant_key=prediction_head_dequant_key)
 
         if return_activation_trace:
             assert transformer_result.layer_results is not None

@@ -1,32 +1,44 @@
+from abc import abstractmethod
 from dataclasses import dataclass
 
 from jaxtyping import Array, Float
 
-from lalamo.module import Initializer, LalamoModule
+from lalamo.initializer import Initializer
+from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.utils.registry_abc import RegistryABC
 
 
 @dataclass(frozen=True)
-class NoopVocoderConfig:
+class VocoderConfig(LalamoConfig, RegistryABC):
+    @abstractmethod
+    def init(self, initializer: Initializer) -> "Vocoder": ...
+
+
+class Vocoder[ConfigT: VocoderConfig](LalamoModule[ConfigT]):
+    @property
+    @abstractmethod
+    def activation_precision(self) -> DTypeLike: ...
+
+    @abstractmethod
+    def __call__(
+        self,
+        audio_features: Float[Array, "batch audio_channels samples"],
+    ) -> Float[Array, "batch audio_channels samples"]: ...
+
+
+@dataclass(frozen=True)
+class NoopVocoderConfig(VocoderConfig):
     def init(self, initializer: Initializer) -> "NoopVocoder":  # noqa: ARG002
         return NoopVocoder(config=self)
 
 
-class NoopVocoder(LalamoModule[NoopVocoderConfig]):
-    def export_weights(self) -> ParameterTree[Array]:
-        return {}
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],  # noqa: ARG002
-    ) -> Self:
-        return self
+class NoopVocoder(Vocoder[NoopVocoderConfig]):
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return jnp.float32
 
     def __call__(
         self,
         audio_features: Float[Array, "batch audio_channels samples"],
     ) -> Float[Array, "batch audio_channels samples"]:
         return audio_features
-
-
-VocoderConfig = NoopVocoderConfig
-Vocoder = NoopVocoder

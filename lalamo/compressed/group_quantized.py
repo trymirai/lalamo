@@ -98,7 +98,7 @@ class AWQArray(CompressedArray[AWQSpec]):
         self,
         vector: Float[Array, " in_channels"],
         *,
-        key: Key[Array, ""] | None,
+        key: Key[Array, ""],
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
     ) -> Float[Array, "... out_channels"]:
         match forward_pass_config.gradient_estimator:
@@ -108,7 +108,6 @@ class AWQArray(CompressedArray[AWQSpec]):
                 q = quantize_to_grid(self.weights, self.spec.bits)
                 q = self.weights + jax.lax.stop_gradient(q - self.weights)
             case GradientEstimator.STOCHASTIC_DROPOUT:
-                assert key is not None
                 q = quantize_to_grid(self.weights, self.spec.bits)
                 q = self.weights + jax.lax.stop_gradient(q - self.weights)
                 mean = self.dequantize(q) @ vector

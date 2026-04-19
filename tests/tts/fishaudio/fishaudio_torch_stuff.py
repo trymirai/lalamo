@@ -27,12 +27,16 @@ from lalamo.modules.activations import SiLU
 from lalamo.modules.audio.fishaudio.fishaudio_consts import IM_END_TOKEN
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig
 from lalamo.modules.audio.text_to_speech import TTSConfig, TTSModel
-from lalamo.modules.audio.vocoders import NoopVocoder, VocoderConfig
+from lalamo.modules.audio.vocoders import NoopVocoder, NoopVocoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.torch_interop import torch_to_jax
 
-from .fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign
+from .fishaudio_thin_wrapper import (
+    FishAudioTextDecoder_Foreign,
+    FishAudioTextDecoderConfig_Foreign,
+    load_fish_audio_audio_decoder,
+)
 
 
 def from_fish_audio_config(
@@ -189,8 +193,7 @@ class FishAudioFromTorch:
             fishspeech_tokenizer = FishTokenizer.from_pretrained(path_to_chkpt)
 
             convert_tiktoken_to_fast(fishspeech_tokenizer.tkt_model, output_temp_dir)
-            tokenizer = Tokenizer.from_file(output_temp_dir + "/tokenizer.json")
-            return tokenizer
+            return Tokenizer.from_file(output_temp_dir + "/tokenizer.json")
         finally:
             shutil.rmtree(output_temp_dir)
 
@@ -200,8 +203,6 @@ class FishAudioFromTorch:
         device: str = "cpu",
         precision: torch.dtype = torch.bfloat16,
     ) -> "TTSGenerator":
-        from .fishaudio_thin_wrapper import FishAudioTextDecoder_Foreign, load_fish_audio_audio_decoder
-
         text_decoder_config = FishAudioTextDecoderConfig_Foreign.from_config_file(path_to_checkpoints / "config.json")
         text_decoder: FishAudioTextDecoder_Foreign = text_decoder_config.load_model(
             path_to_checkpoints,
@@ -225,7 +226,7 @@ class FishAudioFromTorch:
         tts_config = TTSConfig(
             text_decoder.config,
             audio_decoder.config,
-            VocoderConfig(),
+            NoopVocoderConfig(),
         )
 
         tts_model = TTSModel(

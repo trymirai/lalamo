@@ -1,16 +1,19 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 
 import equinox as eqx
 import jax
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.common import ParameterTree
+from lalamo.exportable import Exportable
+from lalamo.initializer import Initializer
+from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
 
-from .common import ForwardPassMode, Initializer, LalamoModule
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
-from .token_mixers import AttentionConfig, State
+from .token_mixers import AttentionConfig
+from .token_mixers.state import State
 from .transformer_layer import (
     PositionalEmbeddingSelector,
     TransformerLayer,
@@ -30,30 +33,20 @@ __all__ = [
 
 @dataclass(frozen=True)
 class TransformerForwardPassConfig:
-    layer: TransformerLayerForwardPassConfig = field(default_factory=TransformerLayerForwardPassConfig)
+    layer: TransformerLayerForwardPassConfig = dataclass_field(default_factory=TransformerLayerForwardPassConfig)
 
 
-class TransformerResult(eqx.Module):
+class TransformerResult(Exportable, eqx.Module):
     outputs: Float[Array, "batch suffix_tokens channels"]
     updated_state: State | None = None
     layer_results: tuple[TransformerLayerResult, ...] | None = None
     rope_embeddings: tuple[PositionalEmbeddings, ...] | None = None
 
-    def export(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = dict(
-            outputs=self.outputs,
-        )
-        if self.updated_state is not None:
-            result["updated_state"] = [state_layer.export() for state_layer in self.updated_state]
-        if self.layer_results is not None:
-            result["layer_results"] = [layer_result.export() for layer_result in self.layer_results]
-        if self.rope_embeddings is not None:
-            result["rope_embeddings"] = [emb.export() for emb in self.rope_embeddings]
-        return result
-
 
 @dataclass(frozen=True)
-class TransformerConfig:
+class TransformerConfig(LalamoConfig):
+    global_rope_config: RoPEConfig | None
+    local_rope_config: RoPEConfig | None
     layer_configs: tuple[TransformerLayerConfig, ...]
     output_norm_config: NormalizationConfig
     model_dim: int
@@ -128,7 +121,7 @@ class Transformer(LalamoModule[TransformerConfig]):
         forward_pass_mode: ForwardPassMode,
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),  # noqa: B008
         *,
-        key: Key[Array, ""] | None,
+        dequant_key: Key[Array, ""],
     ) -> TransformerResult:
         if inner_features.ndim != 3:
             raise ValueError(
@@ -147,11 +140,16 @@ class Transformer(LalamoModule[TransformerConfig]):
         else:
             state_by_layer: dict[int, None] = {}
 
-        layer_keys = jax.random.split(key, len(self.layers)) if key is not None else [None] * len(self.layers)
+        layer_dequant_keys = jax.random.split(dequant_key, len(self.layers))
         updated_state_layers = []
         layer_results = []
 
-        for layer, state_layer, layer_key in zip(self.layers, maybe_state, layer_keys, strict=True):
+        for layer, state_layer, layer_dequant_key in zip(
+            self.layers,
+            maybe_state,
+            layer_dequant_keys,
+            strict=True,
+        ):
             match layer.positional_embedding_selector:
                 case PositionalEmbeddingSelector.LOCAL:
                     positional_embeddings_to_use = local_positional_embeddings
@@ -169,7 +167,7 @@ class Transformer(LalamoModule[TransformerConfig]):
                 lengths_without_padding=lengths_without_padding,
                 forward_pass_mode=forward_pass_mode,
                 forward_pass_config=forward_pass_config.layer,
-                key=layer_key,
+                dequant_key=layer_dequant_key,
             )
 
             inner_features = layer_result.outputs

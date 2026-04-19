@@ -29,7 +29,6 @@ from lalamo.modules import (
     TTSModel,
     UnscaledRoPEConfig,
     UpcastMode,
-    VocoderConfig,
 )
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
@@ -54,6 +53,7 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     UpsamplingBlockConfig,
     VectorQuantizeConfig,
 )
+from lalamo.modules.audio.vocoders import NoopVocoderConfig
 
 __all__ = ["FishAudioConfig"]
 
@@ -127,15 +127,15 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
     hidden_dim = config["intermediate_size"]
     context_length = config["block_size"]
 
-    transformer_cfg = TransformerConfig(
+    return TransformerConfig(
+        global_rope_config=global_rope_config,
+        local_rope_config=local_rope_config,
         layer_configs=tuple([layer_config] * config["n_layer"]),
         output_norm_config=norm_config_pre,
         model_dim=input_dim,
         hidden_dim=hidden_dim,
         context_length=context_length,
     )
-
-    return transformer_cfg
 
 
 def instantiate_dac_config_from_fishaudio_config(
@@ -410,7 +410,7 @@ class FishAudioConfig(ForeignTTSConfig):
         return TTSConfig(
             text_decoder_config=text_decoder_config,
             audio_decoder_config=audio_decoder_config,
-            vocoder_config=VocoderConfig(),
+            vocoder_config=NoopVocoderConfig(),
         )
 
     def _load_weights(
