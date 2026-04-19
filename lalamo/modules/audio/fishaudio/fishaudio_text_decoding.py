@@ -4,7 +4,7 @@ from typing import Any
 import jax
 from jax import numpy as jnp
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, Float, Int, Key
 
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode
@@ -15,7 +15,7 @@ from lalamo.modules.audio.fishaudio.fishaudio_consts import REPEAT_WINDOW_SIZE, 
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfig
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import Linear, LinearConfig
-from lalamo.modules.token_mixers.state.common import State
+from lalamo.modules.token_mixer import State
 from lalamo.modules.transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
 from lalamo.modules.utils import vmap_twice_with_dequant_key, vmap_with_dequant_key
 from lalamo.sampling import SamplingPolicy
@@ -120,10 +120,6 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
 
     codebook_embeddings: TiedEmbedding
     fast_model_projection: Linear | None
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.embeddings_slow.activation_precision
 
     def embed_slow_model(self) -> Array:
         return jnp.zeros((1, 2, 3))
@@ -372,7 +368,7 @@ def decode_next_token(
     first_fast_code = first_fast_code.at[first_fast_code < 0].set(0)
     codebooks = codebooks.at[0, 1].set(first_fast_code[0])
 
-    state_fast = model.transformer_fast.init_static_state(batch_size, n_codes)
+    state_fast = model.transformer_fast.init_static_state(batch_size, n_codes, hidden_states.dtype)
 
     input_pos_fast = jnp.zeros((batch_size, 1), dtype=jnp.int32)
     fast_first_result = model.transformer_fast(

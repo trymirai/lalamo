@@ -1,8 +1,5 @@
 from dataclasses import dataclass
 
-import equinox as eqx
-from jaxtyping import Array
-
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
 from lalamo.sampling import SamplingPolicy, make_policy
@@ -37,17 +34,3 @@ class TTSModel(LalamoModule[TTSConfig]):
     text_decoder: TTSTextDecoder
     audio_decoder: TTSAudioDecoder
     vocoder: Vocoder
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {}
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        return replace(
-            self,
-            text_decoder=self.text_decoder.import_weights(require_tree(weights["text_decoder"])),
-            audio_decoder=self.audio_decoder.import_weights(require_tree(weights["audio_decoder"])),
-        )

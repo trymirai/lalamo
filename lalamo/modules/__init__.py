@@ -20,7 +20,7 @@ from .normalization import Normalization, NormalizationConfig
 from .rope import (
     RoPEConfig,
 )
-from .token_mixers import (
+from .token_mixer import (
     TokenMixerBase,
     TokenMixerConfig,
 )

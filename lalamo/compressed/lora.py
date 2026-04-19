@@ -1,61 +1,86 @@
-from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
 
-from jaxtyping import Array, DTypeLike, Float, Key
+import jax.numpy as jnp
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.common import ParameterPath
-from lalamo.modules.common import Initializer
+from lalamo.initializer import Initializer
+from lalamo.weight_matrix import EmbeddingMatrix, Layout, MatmulConfig, WeightMatrixSpec
 
-from .base import ArrayForwardPassConfig, CompressedArray, CompressedArraySpec
+__all__ = [
+    "LoRAMatrix",
+    "LoRASpec",
+]
 
 
 @dataclass(frozen=True)
-class LoRASpec(CompressedArraySpec):
+class LoRASpec(WeightMatrixSpec):
     rank: int
+    layout: Layout = Layout.OUTPUT_INPUT
 
-    def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> CompressedArray:
+    def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "LoRAMatrix":
         raise NotImplementedError("LoRA does not support compression from full-precision weights")
 
     def init(
         self,
-        initializer: "Initializer",
+        initializer: Initializer,
         leading_dims: tuple[int, ...],
-        out_channels: int,
-        in_channels: int,
-    ) -> "LoRAArray":
-        return LoRAArray(
+        output_dim: int,
+        input_dim: int,
+    ) -> "LoRAMatrix":
+        if self.layout == Layout.INPUT_OUTPUT:
+            down_shape = (*leading_dims, input_dim, self.rank)
+            up_shape = (*leading_dims, self.rank, output_dim)
+        else:
+            down_shape = (*leading_dims, output_dim, self.rank)
+            up_shape = (*leading_dims, self.rank, input_dim)
+        return LoRAMatrix(
             spec=self,
-            down=initializer.zeros((*leading_dims, out_channels, self.rank), initializer.precision),
-            up=initializer.zeros((*leading_dims, self.rank, in_channels), initializer.precision),
+            down=initializer.zeros(down_shape),
+            up=initializer.zeros(up_shape),
         )
 
-    def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "LoRAArray":
-        return LoRAArray(spec=self, down=data[prefix / "down"], up=data[prefix / "up"])
 
-
-class LoRAArray(CompressedArray[LoRASpec]):
-    down: Float[Array, "... out_channels rank"]
-    up: Float[Array, "... rank in_channels"]
+class LoRAMatrix(EmbeddingMatrix[LoRASpec]):
+    down: Float[Array, "..."]
+    up: Float[Array, "..."]
 
     @property
     def shape(self) -> tuple[int, ...]:
-        *leading, out_channels, _rank = self.down.shape
-        *_, in_channels = self.up.shape
-        return (*leading, out_channels, in_channels)
+        if self.spec.layout == Layout.INPUT_OUTPUT:
+            *leading_dims, input_dim, _rank = self.down.shape
+            *_, output_dim = self.up.shape
+            return (*leading_dims, input_dim, output_dim)
+        *leading_dims, output_dim, _rank = self.down.shape
+        *_, input_dim = self.up.shape
+        return (*leading_dims, output_dim, input_dim)
 
     @property
     def dtype(self) -> DTypeLike:
-        return self.down.dtype
+        return jnp.result_type(self.down.dtype, self.up.dtype)
 
-    def materialize(self) -> Float[Array, "... out_channels in_channels"]:
+    def decompress(self) -> Float[Array, "..."]:
         return self.down @ self.up
+
+    def lookup_embedding(
+        self,
+        index: int | Int[Array, ""],
+        *,
+        dequant_key: Key[Array, ""],  # noqa: ARG002
+        forward_pass_config: MatmulConfig | None = None,  # noqa: ARG002
+    ) -> Float[Array, "... out_channels"]:
+        self._raise_if_batched()
+        if self.spec.layout == Layout.INPUT_OUTPUT:
+            return self.down @ self.up[:, index]
+        return self.down[index, :] @ self.up
 
     def dot(
         self,
         vector: Float[Array, " in_channels"],
         *,
-        key: Key[Array, ""],  # noqa: ARG002
-        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: ARG002, B008
-    ) -> Float[Array, " out_channels"]:
+        dequant_key: Key[Array, ""],  # noqa: ARG002
+        forward_pass_config: MatmulConfig | None = None,  # noqa: ARG002
+    ) -> Float[Array, "... out_channels"]:
+        self._raise_if_batched()
+        if self.spec.layout == Layout.INPUT_OUTPUT:
+            return (vector @ self.down) @ self.up
         return self.down @ (self.up @ vector)

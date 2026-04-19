@@ -11,17 +11,17 @@ from lalamo.initializer import Initializer
 from lalamo.modules.activations import Activation
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
-from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
-from lalamo.modules.utils import vmap_with_dequant_key
-
-from .common import (
+from lalamo.modules.token_mixer import (
     MixerForwardPassConfig,
     PositionalEmbeddingSelector,
     TokenMixerBase,
     TokenMixerConfig,
     TokenMixerResult,
 )
+from lalamo.modules.utils import vmap_with_dequant_key
+
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
+from .ssm_state import SSMStateLayer
 
 __all__ = [
     "Mamba2",
@@ -167,10 +167,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
 
     skip_connection_weight: Float[Array, " heads"]
     gate_bias: Float[Array, " inner_channels"]
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.in_projection.activation_precision
 
     @property
     def model_dim(self) -> int:
@@ -476,7 +472,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
                 self.config.kernel_size,
                 self.conv_dim,
                 (self.config.num_heads, self.config.head_dim, self.config.state_dim),
-                self.in_projection.activation_precision,
+                inputs.dtype,
             )
 
         seq_len, _ = inputs.shape
@@ -573,10 +569,10 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             state=updated_state,
         )
 
-    def init_static_state(self, capacity: int) -> SSMStateLayer:  # noqa: ARG002
+    def init_static_state(self, capacity: int, dtype: DTypeLike) -> SSMStateLayer:  # noqa: ARG002
         return SSMStateLayer.init(
             self.config.kernel_size,
             self.conv_dim,
             (self.config.num_heads, self.config.head_dim, self.config.state_dim),
-            self.in_projection.activation_precision,
+            dtype,
         )

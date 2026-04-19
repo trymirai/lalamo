@@ -30,7 +30,7 @@ from transformers.processing_utils import Unpack
 
 from lalamo.modules.classifier import ClassifierResult
 from lalamo.modules.decoder import DecoderResult
-from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
+from lalamo.utils.torch_interop import jax_to_torch, torch_to_jax
 from tests.common import assert_close
 from tests.tracer.tracer import ActivationTrace, DType, InferenceResult, ModelTracer
 

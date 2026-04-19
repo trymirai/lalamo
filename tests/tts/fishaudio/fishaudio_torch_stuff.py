@@ -30,7 +30,7 @@ from lalamo.modules.audio.text_to_speech import TTSConfig, TTSModel
 from lalamo.modules.audio.vocoders import NoopVocoder, NoopVocoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
-from lalamo.modules.torch_interop import torch_to_jax
+from lalamo.utils.torch_interop import torch_to_jax
 
 from .fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,

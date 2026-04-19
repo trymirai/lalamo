@@ -15,10 +15,6 @@ class VocoderConfig(LalamoConfig, RegistryABC):
 
 
 class Vocoder[ConfigT: VocoderConfig](LalamoModule[ConfigT]):
-    @property
-    @abstractmethod
-    def activation_precision(self) -> DTypeLike: ...
-
     @abstractmethod
     def __call__(
         self,
@@ -33,10 +29,6 @@ class NoopVocoderConfig(VocoderConfig):
 
 
 class NoopVocoder(Vocoder[NoopVocoderConfig]):
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return jnp.float32
-
     def __call__(
         self,
         audio_features: Float[Array, "batch audio_channels samples"],

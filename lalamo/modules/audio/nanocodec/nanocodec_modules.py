@@ -380,10 +380,6 @@ class ResidualBlock(LalamoModule[ResidualBlockConfig]):
     skip_conv: CausalConv1d
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.input_conv.activation_precision
-
-    @property
     def channels(self) -> int:
         return self.input_conv.in_channels
 
@@ -438,10 +434,6 @@ class HiFiGANResBlock(LalamoModule[HiFiGANResBlockConfig]):
     res_blocks: tuple[ResidualBlock, ...]
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.res_blocks[0].activation_precision
-
-    @property
     def channels(self) -> int:
         return self.res_blocks[0].channels
 
@@ -492,10 +484,6 @@ class HiFiGANResLayer(LalamoModule[HiFiGANResLayerConfig]):
     """
 
     res_blocks: tuple[HiFiGANResBlock, ...]
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.res_blocks[0].activation_precision
 
     @property
     def channels(self) -> int:
@@ -612,10 +600,6 @@ class CausalHiFiGANDecoder(LalamoModule[CausalHiFiGANDecoderConfig]):
     post_activation: HalfSnake
     post_conv: CausalConv1d
     up_sample_rates: tuple[int, ...] = field(static=True)
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.pre_conv.activation_precision
 
     def __call__(
         self,

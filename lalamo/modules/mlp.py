@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from jax import vmap
-from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key
+from jaxtyping import Array, Bool, Float, Int, Key
 
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
@@ -52,10 +52,6 @@ class MLPConfig(LalamoConfig, RegistryABC):
 class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
     @property
     @abstractmethod
-    def activation_precision(self) -> DTypeLike: ...
-
-    @property
-    @abstractmethod
     def model_dim(self) -> int: ...
 
     @property
@@ -68,7 +64,7 @@ class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
+        forward_pass_config: MLPForwardPassConfig | None = None,
         *,
         dequant_key: Key[Array, ""],
     ) -> Float[Array, "batch suffix_tokens channels"]: ...
@@ -131,10 +127,6 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
     down_projection: LinearBase
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.up_projection.activation_precision
-
-    @property
     def model_dim(self) -> int:
         return self.up_projection.input_dim
 
@@ -146,33 +138,18 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
     def mixture_size(self) -> int | None:
         return self.up_projection.mixture_size
 
-    def __post_init__(self) -> None:
-        up_output_dim, gate_output_dim = self.up_projection.output_dims
-        if up_output_dim != gate_output_dim:
-            raise ValueError(
-                f"Up projection output dimension {up_output_dim} does not match"
-                f" the gate output dimension {gate_output_dim}",
-            )
-        (down_output_dim,) = self.down_projection.output_dims
-        if (self.up_projection.input_dim, up_output_dim) != (
-            down_output_dim,
-            self.down_projection.input_dim,
-        ):
-            raise ValueError(
-                f"Down projection dimensions {self.down_projection.input_dim, down_output_dim} do not match"
-                f" the up projection output dimensions {self.up_projection.input_dim, up_output_dim}",
-            )
-
     @eqx.filter_jit
     def __call__(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,  # noqa: ARG002
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,  # noqa: ARG002
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
+        forward_pass_config: MLPForwardPassConfig | None = None,
         *,
         dequant_key: Key[Array, ""],
     ) -> Float[Array, "batch suffix_tokens channels"]:
+        if forward_pass_config is None:
+            forward_pass_config = MLPForwardPassConfig()
         return vmap_twice_with_dequant_key(
             partial(self.call_unbatched, forward_pass_config=forward_pass_config),
             inputs,
@@ -183,10 +160,12 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
     def call_unbatched(
         self,
         inputs: Float[Array, " channels"],
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
+        forward_pass_config: MLPForwardPassConfig | None = None,
         *,
         dequant_key: Key[Array, ""],
     ) -> Float[Array, " channels"]:
+        if forward_pass_config is None:
+            forward_pass_config = MLPForwardPassConfig()
         if self.mixture_size is not None:
             raise ValueError(
                 "Mixtures of linear layers cannot be called directly."
@@ -267,19 +246,6 @@ class MixtureOfExpertsConfig(MLPConfig):
     expert_hidden_dim: int
     gate_config: LinearConfig | None = None
 
-    def __post_init__(self) -> None:
-        if self.num_routed_experts <= 0:
-            raise ValueError("num_routed_experts (total size of the pool of experts-to-be-routed) must be positive.")
-        if self.num_shared_experts < 0:
-            raise ValueError("num_shared_experts must be non-negative.")
-        if self.num_active_routed_experts <= 0:
-            raise ValueError("num_active_routed_experts must be positive.")
-        if self.num_active_routed_experts > self.num_routed_experts:
-            raise ValueError(
-                "num_active_routed_experts must be <= num_routed_experts, got "
-                f"{self.num_active_routed_experts} > {self.num_routed_experts}",
-            )
-
     @property
     def mixture_size(self) -> int:
         return self.num_routed_experts + self.num_shared_experts
@@ -298,7 +264,6 @@ class MixtureOfExpertsConfig(MLPConfig):
             self.expert_hidden_dim,
         )
 
-        gate = None
         if self.gate_config is not None:
             gate = self.gate_config.init(
                 initializer,
@@ -306,6 +271,8 @@ class MixtureOfExpertsConfig(MLPConfig):
                 (1,),
                 has_biases=False,
             )
+        else:
+            gate = None
 
         return MixtureOfExperts(
             config=self,
@@ -321,36 +288,12 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     gate: LinearBase | None
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.experts.activation_precision
-
-    @property
     def model_dim(self) -> int:
         return self.experts.model_dim
 
     @property
     def hidden_dim(self) -> int:
         return self.experts.hidden_dim
-
-    def __post_init__(self) -> None:
-        if self.router.input_dim != self.experts.model_dim:
-            raise ValueError(
-                f"Router input dimension ({self.router.input_dim}) must match experts model_dim"
-                f" ({self.experts.model_dim}).",
-            )
-
-        (router_output_dim,) = self.router.output_dims
-        if router_output_dim != self.config.num_routed_experts:
-            raise ValueError(
-                f"Router output dimension ({router_output_dim}) must equal"
-                f" number of routed experts ({self.config.num_routed_experts}).",
-            )
-
-        if self.experts.mixture_size != self.config.mixture_size:
-            raise ValueError(
-                f"Experts mixture_size ({self.experts.mixture_size}) does not match specified mixture_size"
-                f" ({self.config.mixture_size}).",
-            )
 
     def __call__(
         self,
@@ -377,10 +320,12 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     def _shared_expert_weight(
         self,
         inputs: Float[Array, " channels"],
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
+        forward_pass_config: MLPForwardPassConfig | None,
         *,
         dequant_key: Key[Array, ""],
     ) -> Float[Array, " one"]:
+        if forward_pass_config is None:
+            forward_pass_config = MLPForwardPassConfig()
         if self.gate is not None:
             (gate_value,) = self.gate(
                 inputs,
@@ -394,10 +339,13 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     def call_decode_mode(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
+        forward_pass_config: MLPForwardPassConfig | None,
         *,
         dequant_key: Key[Array, ""],
     ) -> Float[Array, "batch suffix_tokens channels"]:
+        if forward_pass_config is None:
+            forward_pass_config = MLPForwardPassConfig()
+
         def per_token(
             token_input: Float[Array, " channels"],
             *,
@@ -464,10 +412,12 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
+        forward_pass_config: MLPForwardPassConfig | None = None,
         *,
         dequant_key: Key[Array, ""],
     ) -> Float[Array, "batch suffix_tokens channels"]:
+        if forward_pass_config is None:
+            forward_pass_config = MLPForwardPassConfig()
         batch_size, sequence_length, _ = inputs.shape
         num_tokens = batch_size * sequence_length
         if lengths_without_padding is None:

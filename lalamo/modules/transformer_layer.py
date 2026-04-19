@@ -15,9 +15,13 @@ from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
-from .token_mixers import TokenMixerBase, TokenMixerConfig
-from .token_mixers.common import MixerForwardPassConfig, PositionalEmbeddingSelector
-from .token_mixers.state import StateLayerBase
+from .token_mixer import (
+    MixerForwardPassConfig,
+    PositionalEmbeddingSelector,
+    StateLayerBase,
+    TokenMixerBase,
+    TokenMixerConfig,
+)
 from .utils import vmap_twice
 
 __all__ = [
@@ -110,10 +114,6 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     post_layer_scalar: Float[Array, "1"] | None
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.mlp.activation_precision
-
-    @property
     def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
         return self.mixer.positional_embedding_selector
 
@@ -127,10 +127,12 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: TransformerLayerForwardPassConfig = TransformerLayerForwardPassConfig(),  # noqa: B008
+        forward_pass_config: TransformerLayerForwardPassConfig | None = None,
         *,
         dequant_key: Key[Array, ""],
     ) -> TransformerLayerResult:
+        if forward_pass_config is None:
+            forward_pass_config = TransformerLayerForwardPassConfig()
         if inputs.ndim != 3:
             raise ValueError(
                 f"Inputs to decoder layers must be a 3D arrays of size (batch_size, sequence_length, hidden_dim),"
@@ -214,8 +216,8 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             activation_trace=activation_trace,
         )
 
-    def init_static_state(self, batch_size: int, capacity: int) -> StateLayerBase:
+    def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> StateLayerBase:
         return jax.tree.map(
             lambda array: jnp.repeat(array[None, ...], batch_size, axis=0),
-            self.mixer.init_static_state(capacity),
+            self.mixer.init_static_state(capacity, dtype),
         )

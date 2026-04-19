@@ -65,7 +65,7 @@ class WeightMatrix(RegistryABC, eqx.Module, Generic[WeightMatrixSpecT_co]):  # n
     spec: WeightMatrixSpecT_co = field(static=True)
 
     def _raise_if_batched(self) -> None:
-        if self.ndim != 3:
+        if self.ndim != 2:
             raise ValueError(
                 "Attempted to call a method directly on a batched version of WeightMatrix. Use vmap instead.",
             )

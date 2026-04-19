@@ -1,7 +1,7 @@
 from abc import abstractmethod
 from dataclasses import dataclass
 
-from jaxtyping import Array, DTypeLike, Key
+from jaxtyping import Array, Key
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
@@ -15,10 +15,6 @@ class TTSAudioDecoderConfig(LalamoConfig, RegistryABC):
 
 
 class TTSAudioDecoder[ConfigT: TTSAudioDecoderConfig](LalamoModule[ConfigT]):
-    @property
-    @abstractmethod
-    def activation_precision(self) -> DTypeLike: ...
-
     @property
     @abstractmethod
     def samplerate(self) -> int: ...

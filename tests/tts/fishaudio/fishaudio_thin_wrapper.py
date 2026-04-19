@@ -23,8 +23,8 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.audio.text_to_speech import TTSAudioDecoder
-from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 from lalamo.sampling import SamplingPolicy
+from lalamo.utils.torch_interop import jax_to_torch, torch_to_jax
 from tests.tts.fishaudio.fishaudio_sampling import (
     FishAudioSamplingParams,
     sampling_params_from_policy,

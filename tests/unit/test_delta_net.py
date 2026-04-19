@@ -15,7 +15,7 @@ from lalamo.modules import (
     SeparableCausalConvConfig,
     UpcastMode,
 )
-from lalamo.modules.torch_interop import torch_to_jax
+from lalamo.utils.torch_interop import torch_to_jax
 from tests.common import assert_close
 
 

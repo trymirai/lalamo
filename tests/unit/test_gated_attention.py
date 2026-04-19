@@ -1,11 +1,12 @@
 import jax
 import jax.numpy as jnp
 
-from lalamo.module import RandomInitializer
-from lalamo.modules import AttentionConfig, LinearConfig
+from lalamo.initializer import RandomInitializer
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
 
 
-def test_gated_attention_export_import_roundtrip() -> None:
+def test_gated_attention_export_roundtrip() -> None:
     config = AttentionConfig(
         qkv_projection_config=LinearConfig(precision=jnp.float32),
         out_projection_config=LinearConfig(precision=jnp.float32),
@@ -24,8 +25,12 @@ def test_gated_attention_export_import_roundtrip() -> None:
         gate_projection_config=LinearConfig(precision=jnp.float32),
     )
     model_dim = 16
-    attn = config.init(RandomInitializer(precision=jnp.bfloat16, key=jax.random.key(0)), model_dim=model_dim)
-    target = config.init(RandomInitializer(precision=jnp.bfloat16, key=jax.random.key(1)), model_dim=model_dim)
-    imported = target.import_weights(attn.export_weights())
+    attn = config.init(RandomInitializer(mesh=None, dtype=jnp.bfloat16, key=jax.random.key(0)), model_dim=model_dim)
+    target = config.init(RandomInitializer(mesh=None, dtype=jnp.bfloat16, key=jax.random.key(1)), model_dim=model_dim)
+    imported = target.load_exported(attn.export())
+    assert attn.gate_projection is not None
     assert imported.gate_projection is not None
-    assert jnp.array_equal(attn.gate_projection.weights.value, imported.gate_projection.weights.value)
+    assert jnp.array_equal(
+        attn.gate_projection.weights.decompress(),
+        imported.gate_projection.weights.decompress(),
+    )

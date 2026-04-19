@@ -13,7 +13,7 @@ from .embedding import EmbeddingBase, EmbeddingConfig
 from .linear import LinearBase, LinearConfig
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
-from .token_mixers.state import State
+from .token_mixer import State
 from .transformer import (
     Transformer,
     TransformerConfig,
@@ -87,10 +87,6 @@ class Decoder(LalamoModule[DecoderConfig]):
     per_layer_embedding: PerLayerEmbedding | None
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.embedding.activation_precision
-
-    @property
     def vocab_size(self) -> int:
         return self.embedding.vocab_size
 
@@ -104,10 +100,12 @@ class Decoder(LalamoModule[DecoderConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),  # noqa: B008
+        forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
         dequant_key: Key[Array, ""],
     ) -> DecoderResult:
+        if forward_pass_config is None:
+            forward_pass_config = DecoderForwardPassConfig()
         if token_ids.ndim != 2:
             raise ValueError(
                 f"token_ids must be a 2D array of size (batch_size, sequence_length), got {token_ids.shape}",
@@ -168,5 +166,5 @@ class Decoder(LalamoModule[DecoderConfig]):
             activation_trace=activation_trace,
         )
 
-    def init_static_state(self, batch_size: int, capacity: int) -> State:
-        return self.transformer.init_static_state(batch_size, capacity)
+    def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> State:
+        return self.transformer.init_static_state(batch_size, capacity, dtype)

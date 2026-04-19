@@ -16,7 +16,7 @@ from transformers.models.lfm2.modeling_lfm2 import (
 )
 
 from lalamo.modules.decoder import DecoderResult
-from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
+from lalamo.utils.torch_interop import jax_to_torch, torch_to_jax
 from tests.tracer.tracer import DType, InferenceResult, ModelTracer
 from tests.tracer.tracer_huggingface import _build_hf_attention_mask, _load_hf_model
 

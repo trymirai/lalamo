@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from jax.lax import dynamic_update_slice_in_dim
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
-from .common import StateLayerBase
+from lalamo.modules.token_mixer import StateLayerBase
 
 __all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
 

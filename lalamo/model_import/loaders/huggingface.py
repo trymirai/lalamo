@@ -3,39 +3,23 @@ from collections.abc import Mapping
 import equinox as eqx
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, DTypeLike
+from jaxtyping import Array
 
-from lalamo.arrays import AWQArray, FullPrecisionArray, FullPrecisionSpec, MLXArray
-from lalamo.arrays.awq import AWQSpec
-from lalamo.arrays.embedding import (
-    CompressedEmbedding,
-    FullPrecisionEmbedding,
-    FullPrecisionEmbeddingSpec,
-    MLXQuantizedEmbedding,
-)
-from lalamo.arrays.mlx import MLXSpec
-from lalamo.common import ParameterPath
-from lalamo.modules import (
-    Attention,
-    AttentionConfig,
-    Decoder,
-    DeltaNetAttention,
-    DeltaNetAttentionConfig,
-    DenseMLP,
-    Linear,
-    Mamba2,
-    Mamba2Config,
-    Normalization,
-    SeparableCausalConv,
-    ShortConv,
-    ShortConvConfig,
-    TiedEmbedding,
-    TiedEmbeddingConfig,
-    TransformerLayer,
-    UntiedEmbedding,
-)
+from lalamo.compressed import AWQMatrix, AWQSpec, MLXMatrix, MLXSpec
 from lalamo.modules.classifier import Classifier
-from lalamo.modules.mlp import MixtureOfExperts, MLPBase
+from lalamo.modules.decoder import Decoder
+from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding
+from lalamo.modules.linear import Linear
+from lalamo.modules.mlp import DenseMLP, MixtureOfExperts, MLPBase
+from lalamo.modules.normalization import Normalization
+from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConv
+from lalamo.modules.token_mixers.deltanet import DeltaNetAttention, DeltaNetAttentionConfig
+from lalamo.modules.token_mixers.mamba import Mamba2, Mamba2Config
+from lalamo.modules.token_mixers.short_conv import ShortConv, ShortConvConfig
+from lalamo.modules.transformer_layer import TransformerLayer
+from lalamo.utils.parameter_path import ParameterPath
+from lalamo.weight_matrix import FullPrecisionSpec, Layout, WeightMatrix
 
 from .common import load_parameters
 from .utils import decode_mxfp4, deinterleave_pairwise_columns
@@ -75,18 +59,12 @@ def unpack_int32(packed_weights: Array, bits: int) -> Array:
     )
 
 
-def _process_quantized_tensor(
-    quantized: Array,
-    bits: int,
-    activation_precision: DTypeLike,
-    reverse_order: Array | None = None,
-) -> Array:
-    unpacked = unpack_int32(quantized, bits)
-    if reverse_order is not None:
-        assert bits == 4, "reverse order only supported on 4-bit quantization"
-        unpacked = _reverse_uint4_order(unpacked, reverse_order)
-
-    return unpacked.astype(activation_precision)
+def _input_dim(weights: WeightMatrix) -> int:
+    if getattr(weights.spec, "layout", Layout.OUTPUT_INPUT) == Layout.INPUT_OUTPUT:
+        *_, input_dim, _output_dim = weights.shape
+        return input_dim
+    *_, _output_dim, input_dim = weights.shape
+    return input_dim
 
 
 def _fuse_full_precision_weights(
@@ -171,7 +149,9 @@ def _load_awq_array(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
-) -> AWQArray:
+    *,
+    layout: Layout,
+) -> AWQMatrix:
     packed_qweights, packed_qzeros, scales = _fuse_awq_weights(weights_dict, path, sublayers_to_fuse)
     # AWQ HF layout: qweight [in_channels, out_packed], scales [num_groups, out_channels]
     out_channels = scales.shape[1]
@@ -186,20 +166,30 @@ def _load_awq_array(
         unpacked_weights = _reverse_uint4_order(unpacked_weights, AWQ_UINT4_REVERSE_ORDER)
         unpacked_zeros = _reverse_uint4_order(unpacked_zeros, AWQ_UINT4_REVERSE_ORDER)
 
-    return AWQArray(
-        spec=AWQSpec(bits=bits, group_size=group_size, float_dtype=scales.dtype),
-        weights=unpacked_weights.T.astype(scales.dtype),
-        scales=scales.T.astype(scales.dtype),
-        zero_points=unpacked_zeros.T.astype(scales.dtype),
+    weight_values = unpacked_weights.T.astype(scales.dtype)
+    scale_values = scales.T.astype(scales.dtype)
+    zero_point_values = unpacked_zeros.T.astype(scales.dtype)
+    if layout == Layout.INPUT_OUTPUT:
+        weight_values = weight_values.T
+        scale_values = scale_values.T
+        zero_point_values = zero_point_values.T
+
+    return AWQMatrix(
+        spec=AWQSpec(bits=bits, group_size=group_size, float_dtype=scales.dtype, layout=layout),
+        weights=weight_values,
+        scales=scale_values,
+        zero_points=zero_point_values,
     )
 
 
-def _load_mlx_array(
+def _load_mlx_matrix(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
     expected_in_channels: int,
-) -> MLXArray:
+    *,
+    layout: Layout,
+) -> MLXMatrix:
     packed_weights, deq_biases, scales = _fuse_mlx_weights(weights_dict, path, sublayers_to_fuse)
     # MLX HF layout: weight [out_channels, packed_in], scales [out_channels, num_groups]
     packed_in = packed_weights.shape[-1]
@@ -213,11 +203,19 @@ def _load_mlx_array(
     group_size = expected_in_channels // num_groups
     unpacked_weights = unpack_int32(packed_weights, bits)
 
-    return MLXArray(
-        spec=MLXSpec(bits=bits, group_size=group_size, float_dtype=scales.dtype),
-        weights=unpacked_weights.astype(scales.dtype),
-        scales=scales,
-        biases=deq_biases,
+    weight_values = unpacked_weights.astype(scales.dtype)
+    scale_values = scales.astype(scales.dtype)
+    bias_values = deq_biases.astype(scales.dtype)
+    if layout == Layout.INPUT_OUTPUT:
+        weight_values = weight_values.T
+        scale_values = scale_values.T
+        bias_values = bias_values.T
+
+    return MLXMatrix(
+        spec=MLXSpec(bits=bits, group_size=group_size, float_dtype=scales.dtype, layout=layout),
+        weights=weight_values,
+        scales=scale_values,
+        biases=bias_values,
     )
 
 
@@ -229,13 +227,20 @@ def load_linear(
 ) -> Linear:
     bias = _load_bias(module, weights_dict, path, sublayers_to_fuse)
 
+    layout = module.weights.spec.layout
     if _is_awq(weights_dict, path, sublayers_to_fuse):
-        weights = _load_awq_array(weights_dict, path, sublayers_to_fuse)
+        weights = _load_awq_array(weights_dict, path, sublayers_to_fuse, layout=layout)
     elif _is_mlx(weights_dict, path, sublayers_to_fuse):
-        weights = _load_mlx_array(weights_dict, path, sublayers_to_fuse, module.input_dim)
+        weights = _load_mlx_matrix(
+            weights_dict,
+            path,
+            sublayers_to_fuse,
+            module.input_dim,
+            layout=layout,
+        )
     else:
-        weights = FullPrecisionArray(
-            spec=FullPrecisionSpec(), weights=_fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)
+        weights = FullPrecisionSpec(layout=layout).compress(
+            _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse).astype(module.activation_precision),
         )
 
     return eqx.tree_at(lambda m: (m.weights, m.biases), module, (weights, bias))
@@ -316,7 +321,12 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         up_projection = eqx.tree_at(
             lambda m: (m.weights, m.biases),
             module.experts.up_projection,
-            (FullPrecisionArray(spec=FullPrecisionSpec(), weights=combined_up_gate_weights), combined_up_gate_biases),
+            (
+                FullPrecisionSpec(layout=module.experts.up_projection.weights.spec.layout).compress(
+                    combined_up_gate_weights.astype(module.experts.up_projection.activation_precision),
+                ),
+                combined_up_gate_biases,
+            ),
         )
 
         down_weights = decode_mxfp4(
@@ -333,7 +343,12 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         down_projection = eqx.tree_at(
             lambda m: (m.weights, m.biases),
             module.experts.down_projection,
-            (FullPrecisionArray(spec=FullPrecisionSpec(), weights=down_weights), down_biases),
+            (
+                FullPrecisionSpec(layout=module.experts.down_projection.weights.spec.layout).compress(
+                    down_weights.astype(module.experts.down_projection.activation_precision),
+                ),
+                down_biases,
+            ),
         )
 
         experts = load_parameters(
@@ -384,13 +399,23 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         up_projection = eqx.tree_at(
             lambda m: (m.weights, m.biases),
             module.experts.up_projection,
-            (FullPrecisionArray(spec=FullPrecisionSpec(), weights=combined_up_gate_weights), None),
+            (
+                FullPrecisionSpec(layout=module.experts.up_projection.weights.spec.layout).compress(
+                    combined_up_gate_weights.astype(module.experts.up_projection.activation_precision),
+                ),
+                None,
+            ),
         )
 
         down_projection = eqx.tree_at(
             lambda m: (m.weights, m.biases),
             module.experts.down_projection,
-            (FullPrecisionArray(spec=FullPrecisionSpec(), weights=down_weights), None),
+            (
+                FullPrecisionSpec(layout=module.experts.down_projection.weights.spec.layout).compress(
+                    down_weights.astype(module.experts.down_projection.activation_precision),
+                ),
+                None,
+            ),
         )
 
         experts = load_parameters(
@@ -444,7 +469,12 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         up_projection = eqx.tree_at(
             lambda m: (m.weights, m.biases),
             module.experts.up_projection,
-            (FullPrecisionArray(spec=FullPrecisionSpec(), weights=combined_up_gate_weights), combined_up_gate_biases),
+            (
+                FullPrecisionSpec(layout=module.experts.up_projection.weights.spec.layout).compress(
+                    combined_up_gate_weights.astype(module.experts.up_projection.activation_precision),
+                ),
+                combined_up_gate_biases,
+            ),
         )
 
         stacked_down = jnp.stack(down_weight_list, axis=0)
@@ -452,7 +482,12 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         down_projection = eqx.tree_at(
             lambda m: (m.weights, m.biases),
             module.experts.down_projection,
-            (FullPrecisionArray(spec=FullPrecisionSpec(), weights=stacked_down), stacked_down_biases),
+            (
+                FullPrecisionSpec(layout=module.experts.down_projection.weights.spec.layout).compress(
+                    stacked_down.astype(module.experts.down_projection.activation_precision),
+                ),
+                stacked_down_biases,
+            ),
         )
 
         experts = load_parameters(
@@ -794,7 +829,9 @@ def load_delta_net_attention(
                 ],
                 axis=0,
             )
-            new_weights = FullPrecisionArray(spec=FullPrecisionSpec(), weights=merged)
+            new_weights = FullPrecisionSpec(layout=module.in_proj.weights.spec.layout).compress(
+                merged.astype(module.in_proj.activation_precision),
+            )
         else:
             per_branch = [
                 tuple(_permute_rows(tensor, perm) for tensor in _fuse_mlx_weights(weights_dict, bp, None))
@@ -813,11 +850,23 @@ def load_delta_net_attention(
                 raise ValueError(f"Cannot infer MLX bits: packed_in={packed_in}, expected_in={expected_in_channels}")
             group_size = expected_in_channels // num_groups
             unpacked_weights = unpack_int32(fused_qweights, bits)
-            new_weights = MLXArray(
-                spec=MLXSpec(bits=bits, group_size=group_size, float_dtype=fused_scales.dtype),
-                weights=unpacked_weights.astype(fused_scales.dtype),
-                scales=fused_scales,
-                biases=fused_deq_biases,
+            new_weight_values = unpacked_weights.astype(fused_scales.dtype)
+            new_scale_values = fused_scales.astype(fused_scales.dtype)
+            new_bias_values = fused_deq_biases.astype(fused_scales.dtype)
+            if module.in_proj.weights.spec.layout == Layout.INPUT_OUTPUT:
+                new_weight_values = new_weight_values.T
+                new_scale_values = new_scale_values.T
+                new_bias_values = new_bias_values.T
+            new_weights = MLXMatrix(
+                spec=MLXSpec(
+                    bits=bits,
+                    group_size=group_size,
+                    float_dtype=fused_scales.dtype,
+                    layout=module.in_proj.weights.spec.layout,
+                ),
+                weights=new_weight_values,
+                scales=new_scale_values,
+                biases=new_bias_values,
             )
         in_proj = eqx.tree_at(lambda m: (m.weights, m.biases), module.in_proj, (new_weights, None))
     conv = _load_conv(module.conv, weights_dict, path, permute_conv)
@@ -956,30 +1005,24 @@ def load_transformer_layer(
     )
 
 
-def _load_compressed_embedding(
-    embedding: CompressedEmbedding,
+def _load_weight_matrix(
+    matrix: WeightMatrix,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
-) -> CompressedEmbedding:
-    if isinstance(embedding, FullPrecisionEmbedding):
-        weights = weights_dict[path / "weight"].astype(embedding.dtype)
-        return FullPrecisionEmbedding(spec=FullPrecisionEmbeddingSpec(), weights=weights)
-    if isinstance(embedding, MLXQuantizedEmbedding):
-        weights = _process_quantized_tensor(
-            weights_dict[path / "weight"],
-            embedding.spec.bits,
-            embedding.dtype,
+) -> WeightMatrix:
+    layout = matrix.spec.layout
+    if _is_awq(weights_dict, path, None):
+        return _load_awq_array(weights_dict, path, None, layout=layout)
+    if _is_mlx(weights_dict, path, None):
+        return _load_mlx_matrix(
+            weights_dict,
+            path,
             None,
+            _input_dim(matrix),
+            layout=layout,
         )
-        scales = weights_dict[path / "scales"].astype(embedding.dtype)
-        biases = weights_dict[path / "biases"].astype(embedding.dtype)
-        return MLXQuantizedEmbedding(
-            spec=embedding.spec,
-            weights=weights,
-            scales=scales,
-            biases=biases,
-        )
-    raise TypeError(f"Unsupported embedding type: {type(embedding)}")
+    weights = weights_dict[path / "weight"].astype(matrix.dtype)
+    return FullPrecisionSpec(layout=layout).compress(weights)
 
 
 def load_tied_embedding(
@@ -987,8 +1030,8 @@ def load_tied_embedding(
     weights_dict: Mapping[str, Array],
     embedding_path: ParameterPath,
 ) -> TiedEmbedding:
-    embedding = _load_compressed_embedding(module.embedding, weights_dict, embedding_path)
-    return load_parameters(lambda m: (m.embedding,), module, (embedding,))
+    embedding = _load_weight_matrix(module.embedding, weights_dict, embedding_path)
+    return eqx.tree_at(lambda m: (m.embedding,), module, (embedding,))
 
 
 def load_untied_embedding(
@@ -997,13 +1040,31 @@ def load_untied_embedding(
     embedding_path: ParameterPath,
     lm_head_path: ParameterPath,
 ) -> UntiedEmbedding:
-    input_emb = _load_compressed_embedding(module.input_embedding, weights_dict, embedding_path)
-    output_emb = _load_compressed_embedding(module.output_embedding, weights_dict, lm_head_path)
-    return load_parameters(
+    input_emb = _load_weight_matrix(module.input_embedding, weights_dict, embedding_path)
+    output_emb = _load_weight_matrix(module.output_embedding, weights_dict, lm_head_path)
+    return eqx.tree_at(
         lambda m: (m.input_embedding, m.output_embedding),
         module,
         (input_emb, output_emb),
     )
+
+
+def _get_mixer_key(
+    mixer_key: dict[type[object], str],
+    layer: TransformerLayer,
+) -> str:
+    mixer_config = layer.config.mixer_config
+    match mixer_config:
+        case AttentionConfig():
+            return mixer_key[AttentionConfig]
+        case DeltaNetAttentionConfig():
+            return mixer_key[DeltaNetAttentionConfig]
+        case Mamba2Config():
+            return mixer_key[Mamba2Config]
+        case ShortConvConfig():
+            return mixer_key[ShortConvConfig]
+        case _:
+            raise TypeError(f"Unsupported mixer config: {type(mixer_config)}")
 
 
 def load_huggingface_decoder(
@@ -1023,6 +1084,7 @@ def load_huggingface_decoder(
     is_llamba_full_precision = any(key.startswith("backbone.") for key in weights_dict)
     is_llamba_mlx = any(key.startswith("embedding.encoder.") for key in weights_dict)
     is_lfm2 = any(key.startswith("model.layers.0.operator_norm.weight") for key in weights_dict)
+    mixer_key: dict[type[object], str]
     if is_llamba_full_precision:
         decoder_path = base_path / "backbone"
         embedding_path = decoder_path / "embedding"
@@ -1056,10 +1118,7 @@ def load_huggingface_decoder(
         embedding_path = decoder_path / "embed_tokens"
         pre_mixer_norm_key = "operator_norm"
         mixer_key = {ShortConvConfig: "conv", AttentionConfig: "self_attn"}
-        permute_conv = (
-            isinstance(module.config.embedding_config, TiedEmbeddingConfig)
-            and module.config.embedding_config.quantization is not None
-        )
+        permute_conv = _is_mlx(weights_dict, embedding_path, None)
         pre_mlp_norm_key = "ffn_norm"
         mlp_key = "feed_forward"
         up_proj_key = "w3"
@@ -1096,7 +1155,7 @@ def load_huggingface_decoder(
             weights_dict,
             decoder_path / "layers" / ((i * 2) if alternating_layers else i),
             decoder_path / "layers" / ((i * 2 + 1) if alternating_layers else i),
-            mixer_key[type(layer.config.mixer_config)],
+            _get_mixer_key(mixer_key, layer),
             mlp_key,
             pre_mixer_norm_key,
             pre_mlp_norm_key,
@@ -1126,10 +1185,10 @@ def load_huggingface_classifier(
         decoder_path: ParameterPath,
     ) -> TiedEmbedding:
         weights = weights_dict[decoder_path / "embeddings" / "tok_embeddings" / "weight"]
-        embedding = FullPrecisionEmbedding(
-            spec=FullPrecisionEmbeddingSpec(), weights=weights.astype(module.activation_precision)
+        embedding = FullPrecisionSpec(layout=module.embedding.spec.layout).compress(
+            weights.astype(module.activation_precision),
         )
-        return load_parameters(lambda m: (m.embedding,), module, (embedding,))
+        return eqx.tree_at(lambda m: (m.embedding,), module, (embedding,))
 
     def load_linear_with_reshufling(
         module: Linear,
@@ -1143,7 +1202,9 @@ def load_huggingface_classifier(
         weights = weights_dict[path / "weight"]
         rows, _ = weights.shape
         shuffled_weights = jnp.vstack((weights[rows // 2 :, :], weights[: rows // 2, :]))
-        new_weights = FullPrecisionArray(spec=FullPrecisionSpec(), weights=shuffled_weights)
+        new_weights = FullPrecisionSpec(layout=module.weights.spec.layout).compress(
+            shuffled_weights.astype(module.activation_precision),
+        )
         return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, None))
 
     def load_attention_local(

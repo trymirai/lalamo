@@ -3,7 +3,7 @@ from itertools import accumulate
 
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, Key
+from jaxtyping import Array, Float, Key
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule, field
@@ -76,10 +76,6 @@ class Linear(LalamoModule[LinearConfig]):
                 return num_components
             case _:
                 return None
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.weights.dtype
 
     @staticmethod
     def get_split_points(output_dims: Sequence[int]) -> tuple[int, ...]:

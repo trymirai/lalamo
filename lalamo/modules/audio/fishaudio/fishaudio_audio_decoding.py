@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, Float, Int, Key
 
 from lalamo.initializer import Initializer
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfig
@@ -147,10 +147,6 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
 
     quantizer: DownsampleResidualVectorQuantize
     decoder: DACDecoder
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.decoder.activation_precision
 
     @property
     def samplerate(self) -> int:

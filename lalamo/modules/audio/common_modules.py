@@ -67,10 +67,6 @@ class CausalConv1d(LalamoModule[CausalConv1dConfig]):
     effective_kernel_size: int = field(static=True)
 
     @property
-    def activation_precision(self) -> jnp.dtype:
-        return self.weights.dtype
-
-    @property
     def out_channels(self) -> int:
         out_channels, _, _ = self.weights.shape
         return out_channels
@@ -171,10 +167,6 @@ class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
     in_channels: int = field(static=True)
     stride: int = field(static=True)
     groups: int = field(static=True)
-
-    @property
-    def activation_precision(self) -> jnp.dtype:
-        return self.weights.dtype
 
     @property
     def out_channels(self) -> int:

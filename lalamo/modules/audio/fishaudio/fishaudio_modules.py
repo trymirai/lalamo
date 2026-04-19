@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import jax
 from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, Float, Int, Key
 
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
@@ -97,10 +97,6 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
     pointwise_conv_step2: Linear
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.depthwise_conv.activation_precision
-
-    @property
     def dim(self) -> int:
         return self.depthwise_conv.out_channels
 
@@ -188,10 +184,6 @@ class UpsamplingBlock(LalamoModule[UpsamplingBlockConfig]):
     convnext: ConvNeXtBlock
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.trans_conv.activation_precision
-
-    @property
     def in_channels(self) -> int:
         return self.trans_conv.in_channels
 
@@ -249,12 +241,6 @@ class Upsampler(LalamoModule[UpsamplerConfig]):
     blocks: tuple[UpsamplingBlock, ...]
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        if len(self.blocks) > 0:
-            return self.blocks[0].activation_precision
-        raise ValueError("Upsampler has no blocks")
-
-    @property
     def num_blocks(self) -> int:
         return len(self.blocks)
 
@@ -307,10 +293,6 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
 
     codebook: TiedEmbedding
     out_proj: Linear
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.out_proj.activation_precision
 
     @property
     def codebook_size(self) -> int:
@@ -377,10 +359,6 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
     """
 
     quantizers: tuple[VectorQuantize, ...]
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.quantizers[0].activation_precision
 
     @property
     def n_codebooks(self) -> int:
@@ -480,10 +458,6 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
     quantizer: ResidualVectorQuantize
     post_module: Transformer
     upsampler: Upsampler
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.semantic_quantizer.activation_precision
 
     @property
     def semantic_codebook_size(self) -> int:
@@ -620,10 +594,6 @@ class ResidualUnit(LalamoModule[ResidualUnitConfig]):
     conv2: CausalConv1d
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.conv1.activation_precision
-
-    @property
     def dim(self) -> int:
         return self.snake1.channels
 
@@ -721,10 +691,6 @@ class DACDecoderBlock(LalamoModule[DACDecoderBlockConfig]):
     res_unit1: ResidualUnit
     res_unit2: ResidualUnit
     res_unit3: ResidualUnit
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.trans_conv.activation_precision
 
     @property
     def input_dim(self) -> int:
@@ -838,10 +804,6 @@ class DACDecoder(LalamoModule[DACDecoderConfig]):
     decoder_blocks: tuple[DACDecoderBlock, ...]
     final_snake: Snake1d
     final_conv: CausalConv1d
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.first_conv.activation_precision
 
     @property
     def input_channels(self) -> int:

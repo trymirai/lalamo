@@ -20,8 +20,8 @@ from .common import (
 from .quantization_helpers import quantize_to_grid
 
 __all__ = [
-    "MLXMatrix",
-    "MLXSpec",
+    "AWQMatrix",
+    "AWQSpec",
 ]
 
 
@@ -34,13 +34,13 @@ def _expand_lookup_parameter(
 
 
 @dataclass(frozen=True)
-class MLXSpec(WeightMatrixSpec):
+class AWQSpec(WeightMatrixSpec):
     bits: int
     group_size: int
     float_dtype: DTypeLike = jnp.float32
     layout: Layout = Layout.OUTPUT_INPUT
 
-    def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "MLXMatrix":
+    def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "AWQMatrix":
         stored_weights = store_weights(weights.astype(self.float_dtype), self.layout)
         grouped = group_by_input_axis(stored_weights, layout=self.layout, group_size=self.group_size)
         group_mins = jnp.min(grouped, axis=-1)
@@ -48,17 +48,18 @@ class MLXSpec(WeightMatrixSpec):
         quant_levels = (2**self.bits) - 1
         scales = jnp.maximum((group_maxs - group_mins) / quant_levels, jnp.finfo(stored_weights.dtype).eps)
         safe_scales = expand_group_parameter(scales, layout=self.layout, group_size=self.group_size)
-        expanded_biases = expand_group_parameter(
-            group_mins,
+        zero_points = jnp.clip(jnp.round(-group_mins / scales), 0, quant_levels)
+        expanded_zero_points = expand_group_parameter(
+            zero_points,
             layout=self.layout,
             group_size=self.group_size,
         )
-        quantized_weights = quantize_to_grid((stored_weights - expanded_biases) / safe_scales, self.bits)
-        return MLXMatrix(
+        quantized_weights = quantize_to_grid(stored_weights / safe_scales + expanded_zero_points, self.bits)
+        return AWQMatrix(
             spec=self,
             weights=quantized_weights,
             scales=scales.astype(self.float_dtype),
-            biases=group_mins.astype(self.float_dtype),
+            zero_points=zero_points.astype(self.float_dtype),
         )
 
     def init(
@@ -67,7 +68,7 @@ class MLXSpec(WeightMatrixSpec):
         leading_dims: tuple[int, ...],
         output_dim: int,
         input_dim: int,
-    ) -> "MLXMatrix":
+    ) -> "AWQMatrix":
         if input_dim % self.group_size != 0:
             raise ValueError(f"Input dimension {input_dim} must be divisible by group size {self.group_size}")
         num_groups = input_dim // self.group_size
@@ -77,18 +78,21 @@ class MLXSpec(WeightMatrixSpec):
         else:
             weight_shape = (*leading_dims, output_dim, input_dim)
             grouped_shape = (*leading_dims, output_dim, num_groups)
-        return MLXMatrix(
+        return AWQMatrix(
             spec=self,
             weights=initializer.zeros(weight_shape, partition=weight_matrix_partition(self.layout, leading_dims)),
             scales=initializer.ones(grouped_shape, partition=group_parameter_partition(self.layout, leading_dims)),
-            biases=initializer.zeros(grouped_shape, partition=group_parameter_partition(self.layout, leading_dims)),
+            zero_points=initializer.zeros(
+                grouped_shape,
+                partition=group_parameter_partition(self.layout, leading_dims),
+            ),
         )
 
 
-class MLXMatrix(EmbeddingMatrix[MLXSpec]):
+class AWQMatrix(EmbeddingMatrix[AWQSpec]):
     weights: Float[Array, "..."]
     scales: Float[Array, "..."]
-    biases: Float[Array, "..."]
+    zero_points: Float[Array, "..."]
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -107,12 +111,12 @@ class MLXMatrix(EmbeddingMatrix[MLXSpec]):
             layout=self.spec.layout,
             group_size=self.spec.group_size,
         )
-        expanded_biases = expand_group_parameter(
-            self.biases,
+        expanded_zero_points = expand_group_parameter(
+            self.zero_points,
             layout=self.spec.layout,
             group_size=self.spec.group_size,
         )
-        return quantized_weights * expanded_scales + expanded_biases
+        return (quantized_weights - expanded_zero_points) * expanded_scales
 
     def _quantized_weights(self) -> Float[Array, "..."]:
         return quantize_to_grid(self.weights, self.spec.bits)
@@ -128,10 +132,10 @@ class MLXMatrix(EmbeddingMatrix[MLXSpec]):
     ) -> Float[Array, " in_channels"]:
         quantized_output = lookup_output(quantized_weights, layout=self.spec.layout, index=index)
         scales = lookup_group_parameter(self.scales, layout=self.spec.layout, index=index)
-        biases = lookup_group_parameter(self.biases, layout=self.spec.layout, index=index)
+        zero_points = lookup_group_parameter(self.zero_points, layout=self.spec.layout, index=index)
         expanded_scales = _expand_lookup_parameter(scales, group_size=self.spec.group_size)
-        expanded_biases = _expand_lookup_parameter(biases, group_size=self.spec.group_size)
-        return quantized_output * expanded_scales + expanded_biases
+        expanded_zero_points = _expand_lookup_parameter(zero_points, group_size=self.spec.group_size)
+        return (quantized_output - expanded_zero_points) * expanded_scales
 
     def _lookup_variance(
         self,

@@ -27,7 +27,6 @@ from lalamo.message_processor import (
 from lalamo.model_import import ModelSpec, import_model
 from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFieldSpec, ModelType, UseCase, WeightsType
 from lalamo.models import ClassifierModel, LanguageModel
-from lalamo.module import ShardingConfig, pad_and_apply_data_sharding
 from lalamo.speculator import (
     CollectTracesEvent,
     SpeculatorTrainingEvent,
@@ -53,7 +52,6 @@ __all__ = [
     "ModelSpec",
     "ModelType",
     "Precision",
-    "ShardingConfig",
     "SpeculatorTrainingEvent",
     "SystemMessage",
     "ToolSchema",
@@ -65,6 +63,5 @@ __all__ = [
     "convert",
     "estimate_batchsize",
     "import_model",
-    "pad_and_apply_data_sharding",
     "train",
 ]

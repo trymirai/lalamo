@@ -12,16 +12,16 @@ from lalamo.initializer import Initializer
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
-from lalamo.modules.utils import apply_soft_capping, vmap_with_dequant_key
-
-from .common import (
+from lalamo.modules.token_mixer import (
     MixerForwardPassConfig,
     PositionalEmbeddingSelector,
     TokenMixerBase,
     TokenMixerConfig,
     TokenMixerResult,
 )
-from .state import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
+from lalamo.modules.utils import apply_soft_capping, vmap_with_dequant_key
+
+from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 
 __all__ = [
     "Attention",
@@ -212,10 +212,12 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         state: KVCacheLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
+        forward_pass_config: MixerForwardPassConfig | None = None,
         *,
         dequant_key: Key[Array, ""],
     ) -> AttentionResult:
+        if forward_pass_config is None:
+            forward_pass_config = MixerForwardPassConfig()
         qkv_dequant_key, gate_dequant_key, out_dequant_key = jax.random.split(dequant_key, 3)
         queries, keys, values = vmap_with_dequant_key(
             partial(self.qkv_projection, forward_pass_config=forward_pass_config.arrays),
@@ -321,11 +323,11 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             state=updated_state,
         )
 
-    def init_static_state(self, capacity: int) -> StaticKVCacheLayer:
+    def init_static_state(self, capacity: int, dtype: DTypeLike) -> StaticKVCacheLayer:
         return StaticKVCacheLayer.init(
             self.has_sinks,
             capacity,
             self.config.num_groups,
             self.config.head_dim,
-            self.qkv_projection.activation_precision,
+            dtype,
         )

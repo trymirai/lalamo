@@ -4,7 +4,7 @@ from enum import StrEnum
 import equinox as eqx
 import jax
 from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, Float, Int, Key
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
@@ -68,10 +68,6 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
     activation: Activation
     norm: Normalization
     readout: Linear
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.dense.activation_precision
 
     def __call__(
         self,
@@ -185,10 +181,12 @@ class Classifier(LalamoModule[ClassifierConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),  # noqa: B008
+        forward_pass_config: TransformerForwardPassConfig | None = None,
         *,
         dequant_key: Key[Array, ""],
     ) -> ClassifierResult:
+        if forward_pass_config is None:
+            forward_pass_config = TransformerForwardPassConfig()
         embedding_dequant_key, transformer_dequant_key, prediction_head_dequant_key = jax.random.split(
             dequant_key,
             3,

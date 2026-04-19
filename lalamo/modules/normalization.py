@@ -27,11 +27,11 @@ class NormalizationConfig(LalamoConfig):
     scale_offset: float | None
     upcast_mode: UpcastMode
     subtract_mean: bool
-    use_bias: bool = False
+    has_biases: bool = False
 
     def init(self, initializer: Initializer, input_dim: int) -> "Normalization":
         scales = initializer.ones((input_dim,))
-        if self.use_bias:
+        if self.has_biases:
             biases = initializer.zeros((input_dim,))
         else:
             biases = None
@@ -41,10 +41,6 @@ class NormalizationConfig(LalamoConfig):
 class Normalization(LalamoModule[NormalizationConfig]):
     scales: Float[Array, " channels"]
     biases: Float[Array, " channels"] | None
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.scales.dtype
 
     @property
     def input_dim(self) -> int:

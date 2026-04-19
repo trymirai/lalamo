@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, Float, Int, Key
 
 from lalamo.initializer import Initializer
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfig
@@ -57,10 +57,6 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
 
     quantizer: GroupFiniteScalarQuantizer
     decoder: CausalHiFiGANDecoder
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.decoder.activation_precision
 
     @property
     def samplerate(self) -> int:

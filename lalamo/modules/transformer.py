@@ -9,11 +9,11 @@ from jaxtyping import Array, DTypeLike, Float, Int, Key
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
+from lalamo.modules.token_mixers import AttentionConfig
 
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
-from .token_mixers import AttentionConfig
-from .token_mixers.state import State
+from .token_mixer import State
 from .transformer_layer import (
     PositionalEmbeddingSelector,
     TransformerLayer,
@@ -104,10 +104,6 @@ class Transformer(LalamoModule[TransformerConfig]):
     layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
 
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.output_norm.activation_precision
-
     @eqx.filter_jit
     def __call__(
         self,
@@ -119,10 +115,12 @@ class Transformer(LalamoModule[TransformerConfig]):
         return_positional_embeddings: bool,
         lengths_without_padding: Int[Array, " batch"] | None,
         forward_pass_mode: ForwardPassMode,
-        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),  # noqa: B008
+        forward_pass_config: TransformerForwardPassConfig | None = None,
         *,
         dequant_key: Key[Array, ""],
     ) -> TransformerResult:
+        if forward_pass_config is None:
+            forward_pass_config = TransformerForwardPassConfig()
         if inner_features.ndim != 3:
             raise ValueError(
                 "inner_features must be a 3D array of size (batch_size, sequence_length, hidden_dim),"
@@ -189,5 +187,5 @@ class Transformer(LalamoModule[TransformerConfig]):
             rope_embeddings=rope_embeddings if return_positional_embeddings else None,
         )
 
-    def init_static_state(self, batch_size: int, capacity: int) -> State:
-        return State(layer.init_static_state(batch_size, capacity) for layer in self.layers)
+    def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> State:
+        return State(layer.init_static_state(batch_size, capacity, dtype) for layer in self.layers)

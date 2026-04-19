@@ -11,26 +11,26 @@ from lalamo.initializer import Initializer
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
-from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
-from lalamo.modules.utils import vmap_with_dequant_key
-
-from .common import (
+from lalamo.modules.token_mixer import (
     MixerForwardPassConfig,
     PositionalEmbeddingSelector,
     TokenMixerBase,
     TokenMixerConfig,
     TokenMixerResult,
 )
+from lalamo.modules.utils import vmap_with_dequant_key
+
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
+from .ssm_state import SSMStateLayer
 
 __all__ = [
-    "DeltaNetAttention",
-    "DeltaNetAttentionConfig",
-    "DeltaNetAttentionResult",
+    "DeltaNet",
+    "DeltaNetConfig",
+    "DeltaNetResult",
 ]
 
 
-DeltaNetAttentionResult = TokenMixerResult[SSMStateLayer]
+DeltaNetResult = TokenMixerResult[SSMStateLayer]
 
 
 def _delta_dims(
@@ -45,7 +45,7 @@ def _delta_dims(
 
 
 @dataclass(frozen=True)
-class DeltaNetAttentionConfig(TokenMixerConfig):
+class DeltaNetConfig(TokenMixerConfig):
     in_proj_config: LinearConfig
     conv_config: SeparableCausalConvConfig
     out_proj_config: LinearConfig
@@ -65,7 +65,7 @@ class DeltaNetAttentionConfig(TokenMixerConfig):
         self,
         initializer: Initializer,
         model_dim: int,
-    ) -> "DeltaNetAttention":
+    ) -> "DeltaNet":
         key_dim, value_dim, conv_dim = _delta_dims(
             self.num_heads,
             self.num_groups,
@@ -95,7 +95,7 @@ class DeltaNetAttentionConfig(TokenMixerConfig):
         norm = self.norm_config.init(initializer, self.value_head_dim)
         dt_bias = initializer.zeros((self.num_heads,))
         a_log = initializer.zeros((self.num_heads,))
-        return DeltaNetAttention(
+        return DeltaNet(
             config=self,
             in_proj=in_proj,
             conv=conv,
@@ -106,17 +106,13 @@ class DeltaNetAttentionConfig(TokenMixerConfig):
         )
 
 
-class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
-    in_proj: LinearBase
+class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
+    in_proj: Linear
     conv: SeparableCausalConv
     out_proj: Linear
     norm: Normalization
     dt_bias: Float[Array, " heads"]
     a_log: Float[Array, " heads"]
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.in_proj.activation_precision
 
     @property
     def model_dim(self) -> int:
@@ -354,7 +350,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
         *,
         dequant_key: Key[Array, ""],
-    ) -> DeltaNetAttentionResult:
+    ) -> DeltaNetResult:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for DeltaNetAttention.")
 
@@ -375,7 +371,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
                 self.config.kernel_size,
                 self.conv_dim,
                 (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
-                self.in_proj.activation_precision,
+                inputs.dtype,
             )
 
         conv_output, updated_conv_state = self.conv(
@@ -460,10 +456,10 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
 
         return TokenMixerResult(outputs, updated_state)
 
-    def init_static_state(self, capacity: int) -> SSMStateLayer:  # noqa: ARG002
+    def init_static_state(self, capacity: int, dtype: DTypeLike) -> SSMStateLayer:  # noqa: ARG002
         return SSMStateLayer.init(
             self.config.kernel_size,
             self.conv_dim,
             (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
-            self.in_proj.activation_precision,
+            dtype,
         )

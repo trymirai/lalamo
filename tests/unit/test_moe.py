@@ -1,19 +1,15 @@
 import jax
 import jax.numpy as jnp
 import pytest
-from lalamo.arrays import FullPrecisionArray
-from lalamo.common import ParameterPath
 
+from lalamo.initializer import RandomInitializer
 from lalamo.model_import.loaders.huggingface import load_moe
-from lalamo.module import RandomInitializer
-from lalamo.modules import (
-    GELU,
-    DenseMLPConfig,
-    ForwardPassMode,
-    LinearConfig,
-    MixtureOfExpertsConfig,
-    SoftmaxRouting,
-)
+from lalamo.module import ForwardPassMode
+from lalamo.modules.activations import GELU
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, SoftmaxRouting
+from lalamo.utils.parameter_path import ParameterPath
+from lalamo.weight_matrix import FullPrecisionMatrix
 from tests.common import assert_close
 
 
@@ -51,7 +47,9 @@ def test_moe_prefill_vs_decode_match() -> None:
     # Initialize MoE
     key = jax.random.key(0)
     moe = moe_config.init(
-        RandomInitializer(precision=jnp.bfloat16, key=key), model_dim=model_dim, hidden_dim=hidden_dim
+        RandomInitializer(mesh=None, dtype=jnp.bfloat16, key=key),
+        model_dim=model_dim,
+        hidden_dim=hidden_dim,
     )
 
     # Random inputs
@@ -91,7 +89,7 @@ def test_load_moe_gpt_oss_fused_weights_wraps_linear_arrays(
         expert_hidden_dim=hidden_dim,
     )
     module = moe_config.init(
-        RandomInitializer(precision=jnp.float32, key=jax.random.key(0)),
+        RandomInitializer(mesh=None, dtype=jnp.float32, key=jax.random.key(0)),
         model_dim=model_dim,
         hidden_dim=hidden_dim,
     )
@@ -128,7 +126,7 @@ def test_load_moe_gpt_oss_fused_weights_wraps_linear_arrays(
         ParameterPath("moe"),
     )
 
-    assert isinstance(loaded.experts.up_projection.weights, FullPrecisionArray)
-    assert isinstance(loaded.experts.down_projection.weights, FullPrecisionArray)
-    assert loaded.experts.up_projection.weights.materialize().shape == (2, hidden_dim * 2, model_dim)
-    assert loaded.experts.down_projection.weights.materialize().shape == (2, model_dim, hidden_dim)
+    assert isinstance(loaded.experts.up_projection.weights, FullPrecisionMatrix)
+    assert isinstance(loaded.experts.down_projection.weights, FullPrecisionMatrix)
+    assert loaded.experts.up_projection.weights.decompress().shape == (2, hidden_dim * 2, model_dim)
+    assert loaded.experts.down_projection.weights.decompress().shape == (2, model_dim, hidden_dim)

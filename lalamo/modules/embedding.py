@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, Float, Int, Key
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
@@ -37,10 +37,6 @@ class EmbeddingConfig(LalamoConfig, RegistryABC):
 
 
 class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
-    @property
-    @abstractmethod
-    def activation_precision(self) -> DTypeLike: ...
-
     @property
     @abstractmethod
     def embedding_matrix(self) -> EmbeddingMatrix: ...
@@ -104,10 +100,6 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     embedding: EmbeddingMatrix
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.embedding.dtype
-
-    @property
     def embedding_matrix(self) -> EmbeddingMatrix:
         return self.embedding
 
@@ -146,10 +138,6 @@ class UntiedEmbeddingConfig(EmbeddingConfig):
 class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
     input_embedding: EmbeddingMatrix
     output_embedding: WeightMatrix
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.input_embedding.dtype
 
     @property
     def embedding_matrix(self) -> EmbeddingMatrix:

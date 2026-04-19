@@ -64,8 +64,8 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.modules.transformer import TransformerForwardPassConfig
+from lalamo.utils.torch_interop import torch_to_jax
 from tests.common import assert_close
 from tests.tts.fishaudio.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,

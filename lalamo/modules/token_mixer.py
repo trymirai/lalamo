@@ -1,28 +1,47 @@
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
-from typing import NamedTuple
+from typing import NamedTuple, Self
 
+import equinox as eqx
 from jax import numpy as jnp
+from jax.tree_util import register_pytree_node_class
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
+from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
-from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.weight_matrix import MatmulConfig
 
-from .state.common import StateLayerBase
+from .rope import PositionalEmbeddings
 
 __all__ = [
-    "AttentionForwardPassConfig",
     "AttentionImplementation",
     "MixerForwardPassConfig",
     "PositionalEmbeddingSelector",
+    "State",
+    "StateLayerBase",
     "TokenMixerBase",
     "TokenMixerConfig",
     "TokenMixerResult",
 ]
+
+
+class StateLayerBase(Exportable, eqx.Module):
+    pass
+
+
+@register_pytree_node_class
+class State(tuple[StateLayerBase, ...]):
+    __slots__ = ()
+
+    def tree_flatten(self) -> tuple[tuple[StateLayerBase, ...], None]:
+        return (tuple(self), None)
+
+    @classmethod
+    def tree_unflatten(cls, aux_data: None, children: tuple[StateLayerBase, ...]) -> Self:  # noqa: ARG003
+        return cls(children)
 
 
 class AttentionImplementation(Enum):
@@ -33,13 +52,10 @@ class AttentionImplementation(Enum):
 
 
 @dataclass(frozen=True)
-class AttentionForwardPassConfig:
+class MixerForwardPassConfig:
     implementation: AttentionImplementation = AttentionImplementation.STABLE_REDUCTION
     upcast_dtype: DTypeLike | None = jnp.float32
     arrays: MatmulConfig = field(default_factory=MatmulConfig)
-
-
-MixerForwardPassConfig = AttentionForwardPassConfig
 
 
 class TokenMixerResult[StateLayerT](NamedTuple):
@@ -80,10 +96,10 @@ class TokenMixerBase[ConfigT: TokenMixerConfig, StateLayerT: StateLayerBase](Lal
         state: StateLayerT | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
+        forward_pass_config: MixerForwardPassConfig | None = None,
         *,
         dequant_key: Key[Array, ""],
     ) -> TokenMixerResult[StateLayerT]: ...
 
     @abstractmethod
-    def init_static_state(self, capacity: int) -> StateLayerT: ...
+    def init_static_state(self, capacity: int, dtype: DTypeLike) -> StateLayerT: ...

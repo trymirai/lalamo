@@ -1,30 +1,52 @@
 from dataclasses import dataclass
 from functools import partial
+from typing import Self
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.initializer import Initializer
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
-from lalamo.modules.utils import vmap_with_dequant_key
-
-from .common import (
+from lalamo.modules.token_mixer import (
     MixerForwardPassConfig,
     PositionalEmbeddingSelector,
+    StateLayerBase,
     TokenMixerBase,
     TokenMixerConfig,
     TokenMixerResult,
 )
-from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
-from .state import ShortConvStateLayer
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConv, SeparableCausalConvConfig
+from lalamo.modules.utils import vmap_with_dequant_key
 
 __all__ = [
     "ShortConv",
     "ShortConvConfig",
     "ShortConvResult",
+    "ShortConvStateLayer",
 ]
+
+
+class ShortConvStateLayer(StateLayerBase):
+    conv_state: Float[Array, "*batch tokens conv_channels"]
+
+    def __post_init__(self) -> None:
+        if self.conv_state.ndim not in (2, 3):
+            raise ValueError(
+                f"Conv state must have 2 or 3 dimensions: [batch], tokens, conv_channels,"
+                f" got shape {self.conv_state.shape}",
+            )
+
+    @classmethod
+    def init(
+        cls,
+        kernel_size: int,
+        model_dim: int,
+        dtype: DTypeLike,
+    ) -> Self:
+        return cls(conv_state=jnp.zeros((kernel_size - 1, model_dim), dtype=dtype))
 
 
 ShortConvResult = TokenMixerResult[ShortConvStateLayer]
@@ -74,10 +96,6 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
     out_projection: Linear
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.in_projection.activation_precision
-
-    @property
     def model_dim(self) -> int:
         return self.in_projection.input_dim
 
@@ -121,9 +139,5 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
 
         return TokenMixerResult(outputs, updated_state)
 
-    def init_static_state(self, capacity: int) -> ShortConvStateLayer:  # noqa: ARG002
-        return ShortConvStateLayer.init(
-            self.config.kernel_size,
-            self.in_projection.input_dim,
-            self.in_projection.activation_precision,
-        )
+    def init_static_state(self, capacity: int, dtype: DTypeLike) -> ShortConvStateLayer:  # noqa: ARG002
+        return ShortConvStateLayer.init(self.config.kernel_size, self.in_projection.input_dim, dtype)
