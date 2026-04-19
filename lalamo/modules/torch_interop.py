@@ -3,6 +3,7 @@ from typing import overload
 import jax.numpy as jnp
 import torch
 from jaxtyping import Array
+from torch.utils import dlpack as _dlpack
 
 __all__ = ["jax_to_torch", "torch_to_jax"]
 
@@ -59,6 +60,7 @@ def torch_to_jax(value: torch.Tensor | str | torch.dtype) -> Array | jnp.dtype: 
         return jnp.array(value.numpy())
     if isinstance(value, str | torch.dtype):
         return dtype_to_jax(value)
+    raise TypeError(f"Unsupported value: {value}")
 
 
 @overload
@@ -69,9 +71,8 @@ def jax_to_torch(value: Array | str | jnp.dtype) -> torch.Tensor | torch.dtype:
     if isinstance(value, str | jnp.dtype):
         return dtype_to_torch(value)
     if isinstance(value, Array):
-        from torch.utils import dlpack as _dlpack
-
         if value.dtype == jnp.bfloat16:
             intermediate_array = value.view(jnp.uint16)
             return _dlpack.from_dlpack(intermediate_array).view(torch.bfloat16)
         return _dlpack.from_dlpack(value)
+    raise TypeError(f"Unsupported value: {value}")

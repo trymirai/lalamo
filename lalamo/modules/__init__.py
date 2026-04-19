@@ -1,17 +1,7 @@
 from lalamo.initializer import EmptyInitializer, Initializer, RandomInitializer
 from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
 
-from .activations import GELU, Activation, Identity, SiLU
-from .audio import (
-    TTSAudioDecoder,
-    TTSAudioDecoderConfig,
-    TTSConfig,
-    TTSModel,
-    TTSTextDecoder,
-    TTSTextDecoderConfig,
-    Vocoder,
-    VocoderConfig,
-)
+from .activations import GELU, Activation
 from .classifier import Classifier, ClassifierConfig
 from .decoder import Decoder, DecoderConfig, DecoderForwardPassConfig
 from .embedding import (
@@ -19,39 +9,18 @@ from .embedding import (
     EmbeddingConfig,
     TiedEmbedding,
     TiedEmbeddingConfig,
-    UntiedEmbedding,
-    UntiedEmbeddingConfig,
 )
 from .linear import Linear, LinearConfig
 from .mlp import (
-    DenseMLP,
-    DenseMLPConfig,
-    MixtureOfExperts,
-    MixtureOfExpertsConfig,
     MLPBase,
     MLPConfig,
     MLPForwardPassConfig,
-    SoftmaxRouting,
 )
 from .normalization import Normalization, NormalizationConfig, UpcastMode
 from .rope import (
-    LinearScalingRoPEConfig,
-    LlamaRoPEConfig,
     RoPEConfig,
-    UnscaledRoPEConfig,
-    YARNRoPEConfig,
 )
 from .token_mixers import (
-    Attention,
-    AttentionConfig,
-    DeltaNetAttention,
-    DeltaNetAttentionConfig,
-    Mamba2,
-    Mamba2Config,
-    SeparableCausalConv,
-    SeparableCausalConvConfig,
-    ShortConv,
-    ShortConvConfig,
     TokenMixerBase,
     TokenMixerConfig,
 )
@@ -61,52 +30,27 @@ from .transformer_layer import TransformerLayer, TransformerLayerConfig, Transfo
 __all__ = [
     "GELU",
     "Activation",
-    "Attention",
-    "AttentionConfig",
     "Classifier",
     "ClassifierConfig",
     "Decoder",
     "DecoderConfig",
     "DecoderForwardPassConfig",
-    "DeltaNetAttention",
-    "DeltaNetAttentionConfig",
-    "DenseMLP",
-    "DenseMLPConfig",
     "EmbeddingBase",
     "EmbeddingConfig",
     "EmptyInitializer",
     "ForwardPassMode",
-    "Identity",
     "Initializer",
     "LalamoConfig",
     "LalamoModule",
     "Linear",
     "LinearConfig",
-    "LinearScalingRoPEConfig",
-    "LlamaRoPEConfig",
     "MLPBase",
     "MLPConfig",
     "MLPForwardPassConfig",
-    "Mamba2",
-    "Mamba2Config",
-    "MixtureOfExperts",
-    "MixtureOfExpertsConfig",
     "Normalization",
     "NormalizationConfig",
     "RandomInitializer",
     "RoPEConfig",
-    "SeparableCausalConv",
-    "SeparableCausalConvConfig",
-    "ShortConv",
-    "ShortConvConfig",
-    "SiLU",
-    "SoftmaxRouting",
-    "TTSAudioDecoder",
-    "TTSAudioDecoderConfig",
-    "TTSConfig",
-    "TTSModel",
-    "TTSTextDecoder",
-    "TTSTextDecoderConfig",
     "TiedEmbedding",
     "TiedEmbeddingConfig",
     "TokenMixerBase",
@@ -117,11 +61,4 @@ __all__ = [
     "TransformerLayer",
     "TransformerLayerConfig",
     "TransformerLayerForwardPassConfig",
-    "UnscaledRoPEConfig",
-    "UntiedEmbedding",
-    "UntiedEmbeddingConfig",
-    "UpcastMode",
-    "Vocoder",
-    "VocoderConfig",
-    "YARNRoPEConfig",
 ]

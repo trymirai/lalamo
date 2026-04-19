@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-import mlx.core as mx  # type: ignore
+import mlx.core as mx
 from jaxtyping import Array
 
 __all__ = ["jax_to_mlx", "mlx_to_jax"]
