@@ -16,7 +16,7 @@ from .mlp import (
     MLPConfig,
     MLPForwardPassConfig,
 )
-from .normalization import Normalization, NormalizationConfig, UpcastMode
+from .normalization import Normalization, NormalizationConfig
 from .rope import (
     RoPEConfig,
 )
