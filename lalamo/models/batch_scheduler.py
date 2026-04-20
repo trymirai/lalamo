@@ -9,12 +9,14 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from einops import rearrange
 from jaxtyping import Array, Bool, Float, Int, Key, Shaped
 
 from lalamo.common import get_usable_memory_from_bytes
 from lalamo.message_processor import AssistantMessage, Message
 from lalamo.modules import ForwardPassMode, ShardingConfig, State, get_current_sharding_config
 from lalamo.modules.common import use_sharding
+from lalamo.sampling import SamplingPolicy
 
 from .common import (
     BatchSizeInfo,
@@ -103,9 +105,6 @@ class PrefillSource:
         return self.cursor >= len(self.tokenized)
 
     def request(self, max_n: int, model: LanguageModel) -> PrefillBatch:
-        """
-        Returns a PrefillBatch of width prefill_batch_size; padding rows are False in the mask.
-        """
         n = min(max_n, self.prefill_batch_size, self.remaining)
         seqs = self.tokenized[self.cursor : self.cursor + n]
         seq_id_slice = np.zeros(self.prefill_batch_size, dtype=np.int32)
@@ -135,15 +134,8 @@ def append_block_tokens(
     num_generated: Int[Array, " num_lines"],
     block_tokens: Int[Array, "block_size num_lines"],
 ) -> tuple[Int[Array, "num_lines max_output"], Int[Array, " num_lines"]]:
-    """Append one block of per-line tokens into ``token_buffer``.
-
-    Writes past ``max_output`` are dropped via ``mode="drop"`` so a line
-    that keeps decoding past its budget never corrupts the last slot.
-    ``num_generated`` is still incremented by ``block_size`` — callers that
-    need a bounded cursor should clamp at read time.
-    """
     num_lines, _ = token_buffer.shape
-    block_size = block_tokens.shape[0]
+    block_size, _ = block_tokens.shape
     offsets = num_generated[:, None] + jnp.arange(block_size)
     new_buffer = token_buffer.at[jnp.arange(num_lines)[:, None], offsets].set(block_tokens.T, mode="drop")
     return new_buffer, num_generated + block_size
@@ -157,10 +149,10 @@ class BlockContinuousState(eqx.Module):
     token_buffer: Int[Array, "num_lines max_output"]
     num_generated: Int[Array, " num_lines"]
     keys: Key[Array, " num_lines"]
-    line_to_seq: Int[Array, " num_lines"]  # sequence id currently assigned to each line
+    line_to_seq: Int[Array, " num_lines"]
 
     def __check_init__(self) -> None:
-        num_lines = self.line_to_seq.shape[0]
+        (num_lines,) = self.line_to_seq.shape
         for leaf in jax.tree.leaves(self):
             if leaf.ndim == 0:
                 continue
@@ -187,11 +179,12 @@ class BlockContinuousState(eqx.Module):
         )
 
     def empty_lines(self) -> list[int]:
-        stopped = np.array(self.stop_flags)
-        return [i for i in range(self.line_to_seq.shape[0]) if stopped[i]]
+        stopped = np.asarray(self.stop_flags)
+        (num_lines,) = self.line_to_seq.shape
+        return [i for i in range(num_lines) if stopped[i]]
 
     def is_empty(self) -> bool:
-        return bool(np.all(np.array(self.stop_flags)))
+        return bool(jnp.all(self.stop_flags))
 
 
 class BlockContinuousDecoder(eqx.Module):
@@ -199,7 +192,7 @@ class BlockContinuousDecoder(eqx.Module):
     max_output_length: int
 
     language_model: LanguageModel
-    sampling_policy: eqx.Module
+    sampling_policy: SamplingPolicy
     forward_pass_config: ForwardPassConfig | None
 
     @classmethod
@@ -208,13 +201,9 @@ class BlockContinuousDecoder(eqx.Module):
         max_output_length: int,
         block_size: int,
         model: LanguageModel,
-        generation_config: GenerationConfig | None,
+        sampling_policy: SamplingPolicy,
         forward_pass_config: ForwardPassConfig | None,
     ) -> "BlockContinuousDecoder":
-        sampling_policy = model.default_sampling_policy()
-        if generation_config is not None:
-            sampling_policy = generation_config.default_policy()
-
         return cls(
             block_size=block_size,
             max_output_length=max_output_length,
@@ -236,11 +225,14 @@ class BlockContinuousDecoder(eqx.Module):
 
         logits = decode_state.last_token_logits.astype(jnp.float32)
         processed = jax.vmap(self.sampling_policy.process_logits)(logits)
-        next_tokens = jax.vmap(lambda k, lg: jax.random.categorical(k, lg))(sample_keys, processed)
+        next_tokens = jax.vmap(jax.random.categorical)(sample_keys, processed)
         next_tokens = jnp.where(decode_state.stop_flags, 0, next_tokens)
 
         next_indices = decode_state.last_token_indices + 1
-        stop_flags = decode_state.stop_flags | jnp.any(next_tokens[:, None] == eos_token_ids[None, :], axis=-1)
+        stop_flags = jnp.logical_or(
+            decode_state.stop_flags,
+            jnp.any(next_tokens[:, None] == eos_token_ids[None, :], axis=-1),
+        )
 
         outputs = self.language_model.model(
             next_tokens[:, None],
@@ -252,7 +244,7 @@ class BlockContinuousDecoder(eqx.Module):
         )
         assert outputs.updated_state is not None
         new_decode_state = DecodingState(
-            outputs.logits.squeeze(1).astype(jnp.float32),
+            rearrange(outputs.logits, "num_lines 1 vocab -> num_lines vocab").astype(jnp.float32),
             next_indices,
             outputs.updated_state,
             stop_flags,
@@ -260,7 +252,7 @@ class BlockContinuousDecoder(eqx.Module):
         return (new_decode_state, next_keys), next_tokens
 
     def fill_lines(self, state: BlockContinuousState, batch: PrefillBatch) -> BlockContinuousState:
-        prefill_bs = batch.results.last_token_indices.shape[0]
+        (prefill_bs,) = batch.results.last_token_indices.shape
         prefill_state = DecodingState(
             batch.results.last_token_logits,
             batch.results.last_token_indices,
@@ -277,7 +269,7 @@ class BlockContinuousDecoder(eqx.Module):
         empty_lines = state.stop_flags
         lines_passed = jnp.sum(batch.mask)
         source_idx = jnp.cumsum(empty_lines, dtype=jnp.int32) - 1
-        need_updating = empty_lines & (source_idx < lines_passed)
+        need_updating = jnp.logical_and(empty_lines, source_idx < lines_passed)
 
         def apply_updates(
             new: Shaped[Array, "num_lines ..."],
@@ -316,10 +308,8 @@ class BlockContinuousDecoder(eqx.Module):
         )
 
         new_buffer, new_num_generated = append_block_tokens(state.token_buffer, state.num_generated, block_tokens)
-        combined_stop = new_decode_state.stop_flags | (new_num_generated >= self.max_output_length)
-
-        # A line is "completed this block" iff it was active at entry and is stopped at exit.
-        completed_mask = ~state.stop_flags & combined_stop
+        combined_stop = jnp.logical_or(new_decode_state.stop_flags, new_num_generated >= self.max_output_length)
+        completed_mask = jnp.logical_and(jnp.logical_not(state.stop_flags), combined_stop)
 
         return BlockContinuousState(
             last_token_logits=new_decode_state.last_token_logits,
@@ -355,15 +345,6 @@ class BatchScheduler(ABC):
         sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
     ) -> Iterator[tuple[int, GenerationResults]]: ...
-
-    # with continuous batching bucketing is rarely worth it: bucketing is great if prefill time
-    # is important, but usually its not really - unless the length is comparable with decode length
-    # the cost of tuning for a different setting is 3 x compilation time == 2 minutes on H100;
-    # The whole dataset - 10_000 samples - is evaluated in about 20 minutes. Thus its basically never
-    # worth it to actually employ bucketing, unless the longest prompt is _very_ long;
-    # to give you a perspective, for 1024 length of prompt and it takes less than 10% of the whole execution time.
-    # Thus, this scales quadratically, so basically it starts to matter when the longest prompt is ... above 1024?
-    # So, we still keep bucketing, but make it a bunch less agressive - gap of 4x between buckets, etc
 
     def reply_many(
         self,
@@ -451,7 +432,7 @@ class BatchScheduler(ABC):
                 inference_config=bucket_inference_config,
                 fast_peak_memory=False,
                 forward_pass_config=forward_pass_config,
-                keys=keys[np.array(sequence_ids)],
+                keys=keys[jnp.asarray(sequence_ids)],
                 sharding_config=sharding_config,
             )
 
@@ -523,12 +504,13 @@ class ContinuousBatchScheduler(BatchScheduler):
     prefill generator. Replacement sequences are prefilled and scattered into the
     vacated KV-cache lines so all data stays on device except for a small
     ``[num_lines]`` boolean stop-flag read on the host for scheduling decisions.
+
+    Heuristics: defaults were tuned on a ~12k-row workload and may underperform
+    on small ones. prefill_batch_fraction encodes a guess at mean completion
+    length as a fraction of block_size (0.2 ≈ 1280 tokens at block_size=256).
     """
 
     continuous_batching_block_size: int = 256
-    # the next value roughly corresponds to our prediction of the mean length of completion, in
-    # terms of continuous_batching_block_size, e.g. value of 0.2 corresponds to us predicting average
-    # completion length being about 256/0.2 = 1280 tokens. This is a very hand-wavy heuristic in practice.
     prefill_batch_fraction: float = 0.2
     min_allowed_batch_fraction: float = 0.2
 
@@ -562,6 +544,12 @@ class ContinuousBatchScheduler(BatchScheduler):
 
         assert inference_config.batch_size is not None
 
+        sampling_policy = (
+            generation_config.default_policy()
+            if generation_config is not None
+            else self.model.default_sampling_policy()
+        )
+
         def fn(num_lines: int) -> Iterator[tuple[int, GenerationResults]]:
             max_output_length = inference_config.max_output_length
             padded_length = inference_config.padded_length
@@ -582,7 +570,7 @@ class ContinuousBatchScheduler(BatchScheduler):
                 max_output_length,
                 block_size,
                 self.model,
-                generation_config,
+                sampling_policy,
                 forward_pass_config,
             )
             state = BlockContinuousState.init(num_lines, max_output_length, state_capacity, self.model)

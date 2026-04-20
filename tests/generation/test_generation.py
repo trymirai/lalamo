@@ -154,7 +154,10 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
     assert batch_response == streaming_response
 
 
-_FUZZ_MODEL_REPO = "Qwen/Qwen2.5-0.5B-Instruct"
+_FUZZ_MODEL_REPOS = (
+    "Qwen/Qwen2.5-0.5B-Instruct",
+    "cartesia-ai/Llamba-1B",
+)
 
 _FUZZ_PROMPTS = (
     "Say hi.",
@@ -168,9 +171,9 @@ _FUZZ_PROMPTS = (
 )
 
 
-@pytest.fixture(scope="module")
-def fuzz_language_model(_convert_model_session: ConvertModel) -> LanguageModel:
-    model_dir = _convert_model_session(_FUZZ_MODEL_REPO, cached=True)
+@pytest.fixture(scope="module", params=_FUZZ_MODEL_REPOS, ids=_FUZZ_MODEL_REPOS)
+def fuzz_language_model(request: pytest.FixtureRequest, _convert_model_session: ConvertModel) -> LanguageModel:
+    model_dir = _convert_model_session(request.param, cached=True)
     return LanguageModelConfig.load_model(model_dir)
 
 
@@ -182,9 +185,9 @@ def fuzz_language_model(_convert_model_session: ConvertModel) -> LanguageModel:
         # (under-filled batch, misaligned)   10%8=2, lines stay empty forever
         (1, 1, 4, 8, 10, 48),
         # (exact fit, misaligned)            12%8=4, no refill
-        (2, 4, 4, 8, 12, 32),
+        (2, 4, 4, 8, 12, 56),
         # (heavy refill, misaligned)         14%4=2, many churns
-        (3, 12, 2, 4, 14, 40),
+        (3, 12, 2, 4, 14, 56),
         # (block_size=1)                     every step is a boundary
         (4, 3, 2, 1, 8, 64),
         # (block > max_output)               block clamps to max_output

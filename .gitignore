@@ -61,5 +61,8 @@ _tmp
 # Git worktrees
 .worktrees/
 
+# jax cache
+.jax_cache/
+
 # preserve github folder
 !.github

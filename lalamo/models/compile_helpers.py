@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import functools
-import threading
 import weakref
 from typing import TYPE_CHECKING
 
@@ -29,7 +28,6 @@ _compile_cache: dict[
         Compiled,
     ],
 ] = {}
-_compile_lock = threading.Lock()
 
 
 def _make_weak_finalizer(model_id: int) -> None:
@@ -57,44 +55,31 @@ def compile_generate_tokens(
         generation_trace_config,
         prompt_token_ids.sharding,
     )
-
-    with _compile_lock:
-        if model_id not in _compile_cache:
-            _compile_cache[model_id] = {}
-            weakref.finalize(model, _make_weak_finalizer, model_id)
-        if key in _compile_cache[model_id]:
-            return _compile_cache[model_id][key]
-
-    # Compile outside the lock — .compile() releases the GIL so other threads can compile concurrently
-    generate_tokens_fn = functools.partial(
-        LanguageModel.generate_tokens,
-        generation_config=generation_config,
-        max_output_length=inference_config.max_output_length,
-        num_top_logits_to_return=inference_config.num_top_logits_to_return,
-        forward_pass_config=forward_pass_config,
-        generation_trace_config=generation_trace_config,
-    )
-    compiled = (
-        jax.jit(generate_tokens_fn)
-        .lower(
-            model,
-            prompt_token_ids=prompt_token_ids,
-            prompt_lengths_without_padding=prompt_lengths_without_padding,
-            keys=keys,
+    if model_id not in _compile_cache:
+        _compile_cache[model_id] = {}
+        weakref.finalize(model, _make_weak_finalizer, model_id)
+    if key not in _compile_cache[model_id]:
+        generate_tokens_fn = functools.partial(
+            LanguageModel.generate_tokens,
+            generation_config=generation_config,
+            max_output_length=inference_config.max_output_length,
+            num_top_logits_to_return=inference_config.num_top_logits_to_return,
+            forward_pass_config=forward_pass_config,
+            generation_trace_config=generation_trace_config,
         )
-        # the autotune levels are (according to https://guides.lw1.at/all-xla-options/#--xla_gpu_autotune_level)
-        # 0 - no autotune, gpu shouldn't be touched
-        # 1 - basic level, gpu should be touched veeery little
-        # 2,3 - gpu touched more and more
-        # 4 (default) - gpu might allocate more memory than the run would require!
-        .compile(
-            compiler_options={
-                "xla_gpu_autotune_level": "0",
-                # "xla_disable_hlo_passes": "hlo-rematerialization",
-            }
+        _compile_cache[model_id][key] = (
+            jax.jit(generate_tokens_fn)
+            .lower(
+                model,
+                prompt_token_ids=prompt_token_ids,
+                prompt_lengths_without_padding=prompt_lengths_without_padding,
+                keys=keys,
+            )
+            # the autotune levels are (according to https://guides.lw1.at/all-xla-options/#--xla_gpu_autotune_level)
+            # 0 - no autotune, gpu shouldn't be touched
+            # 1 - basic level, gpu should be touched veeery little
+            # 2,3 - gpu touched more and more
+            # 4 (default) - gpu might allocate more memory than the run would require!
+            .compile(compiler_options={"xla_gpu_autotune_level": "0"})
         )
-    )
-
-    with _compile_lock:
-        _compile_cache[model_id].setdefault(key, compiled)
     return _compile_cache[model_id][key]

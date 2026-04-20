@@ -358,19 +358,15 @@ def estimate_batchsize(
     probe_sequence = [0] * max_input_length
     current_step = [0]
 
+    scheduler = FixedBatchScheduler(model)
+
     def run_batch(batchsize: int) -> None:
         callbacks.estimating_batchsize(batchsize, current_step[0], 2)
         current_step[0] += 1
-        batch = tuple(probe_sequence for _ in range(batchsize))
-        batch_keys = tuple(jax.random.split(jax.random.key(0), num=batchsize))
-        results = model._generate_tokens_batch(
-            batch,
-            batch_keys,
-            generation_config=None,
+        results = scheduler.generate_tokens_many(
+            [probe_sequence] * batchsize,
             inference_config=dataclasses.replace(inference_config, batch_size=batchsize),
-            forward_pass_config=None,
-            generation_trace_config=None,
-            sharding_config=None,
+            fast_peak_memory=True,
         )
         first_result = next(results, None)
         if first_result is not None:
