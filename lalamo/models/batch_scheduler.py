@@ -103,11 +103,8 @@ class PrefillSource:
         return self.cursor >= len(self.tokenized)
 
     def request(self, max_n: int, model: LanguageModel) -> PrefillBatch:
-        """Prefill up to ``min(max_n, prefill_batch_size, remaining)`` sequences.
-
-        Always returns a ``PrefillBatch`` of width ``prefill_batch_size``; padding
-        rows are marked ``False`` in ``mask`` and their keys/seq_ids repeat the
-        first real entry (gathered value is masked out downstream).
+        """
+        Returns a PrefillBatch of width prefill_batch_size; padding rows are False in the mask.
         """
         n = min(max_n, self.prefill_batch_size, self.remaining)
         seqs = self.tokenized[self.cursor : self.cursor + n]
@@ -121,9 +118,8 @@ class PrefillSource:
             lengths[i] = len(s)
 
         result = self.jitted_prefill(model, token_ids=padded, lengths_without_padding=jnp.array(lengths))
-        jax.block_until_ready(result)
 
-        mask = np.zeros(self.prefill_batch_size, dtype=np.bool_)
+        mask = np.zeros(self.prefill_batch_size, dtype=bool)
         mask[:n] = True
         seq_ids_jnp = jnp.asarray(seq_id_slice)
         return PrefillBatch(
@@ -171,6 +167,10 @@ class BlockContinuousState(eqx.Module):
             if leaf.shape[0] != num_lines:
                 raise ValueError(f"BlockContinuousState leaf has first dim {leaf.shape[0]} != num_lines={num_lines}")
 
+    @property
+    def num_lines(self) -> int:
+        return len(self.last_token_logits)
+
     @staticmethod
     def init(
         num_lines: int, max_output_length: int, state_capacity: int, model: LanguageModel
@@ -179,7 +179,7 @@ class BlockContinuousState(eqx.Module):
             last_token_logits=jnp.zeros((num_lines, model.model.vocab_size), dtype=jnp.float32),
             last_token_indices=jnp.zeros(num_lines, dtype=jnp.int32),
             kv_state=model.model.init_static_state(num_lines, state_capacity),
-            stop_flags=jnp.ones(num_lines, dtype=jnp.bool),
+            stop_flags=jnp.ones(num_lines, dtype=bool),
             token_buffer=jnp.zeros((num_lines, max_output_length), dtype=jnp.int32),
             num_generated=jnp.zeros(num_lines, dtype=jnp.int32),
             keys=jax.random.split(jax.random.key(0), num_lines),
@@ -265,7 +265,7 @@ class BlockContinuousDecoder(eqx.Module):
             batch.results.last_token_logits,
             batch.results.last_token_indices,
             batch.results.state,
-            jnp.zeros(prefill_bs, dtype=jnp.bool),
+            jnp.zeros(prefill_bs, dtype=bool),
         )
         current_decode_state = DecodingState(
             state.last_token_logits,
@@ -413,10 +413,7 @@ class BatchScheduler(ABC):
                     sharding_config=sharding_config,
                     fast_peak_memory=True,
                 )
-                # ``fast_peak_memory`` runs exactly one decode block then returns. If no line hit
-                # EOS in that block the generator yields nothing — we still need to let the
-                # memory-polling thread observe the peak, which happens inside the synchronous
-                # work dispatched by the first ``next`` call.
+                # "fast_peak_memory" runs exactly one decode block then returns
                 first_result = next(iterator, None)
                 if first_result is not None:
                     jax.block_until_ready(first_result)
@@ -533,7 +530,7 @@ class ContinuousBatchScheduler(BatchScheduler):
     # terms of continuous_batching_block_size, e.g. value of 0.2 corresponds to us predicting average
     # completion length being about 256/0.2 = 1280 tokens. This is a very hand-wavy heuristic in practice.
     prefill_batch_fraction: float = 0.2
-    tail_coverage_batch_fraction: float = 0.3
+    min_allowed_batch_fraction: float = 0.2
 
     def generate_tokens_many(
         self,
@@ -571,8 +568,7 @@ class ContinuousBatchScheduler(BatchScheduler):
             block_size = min(self.continuous_batching_block_size, max_output_length)
             state_capacity = padded_length + max_output_length
             prefill_batch_size = max(1, min(int(num_lines * self.prefill_batch_fraction + 1), num_lines))
-            small_num_lines = max(1, int(num_lines * self.tail_coverage_batch_fraction))
-            tail_state = False
+            min_allowed_lines = max(1, int(num_lines * self.min_allowed_batch_fraction))
 
             prefills = PrefillSource.create(
                 tokenized,
@@ -595,7 +591,7 @@ class ContinuousBatchScheduler(BatchScheduler):
             jitted_decode = eqx.filter_jit(decoder.decode_block, donate="all")
 
             while True:
-                # Loop prefills to saturate the decoder
+                # Loop prefills in small chunks to make sure that the state decode gets is complete
                 while True:
                     n_empty = len(state.empty_lines())
                     if n_empty == 0 or prefills.exhausted:
@@ -606,25 +602,12 @@ class ContinuousBatchScheduler(BatchScheduler):
                         break
 
                     state = jitted_fill(state, batch)
+
                     # Explicit deletion of batch is crucial. For some reason
                     # buffer donation does not instantly free up memory, but instead
                     # has it accessible for a bit. This bit is enough to cause double
                     # allocation, and this delete prevents it.
                     del batch
-
-                if state.is_empty():
-                    break
-
-                if prefills.exhausted and not tail_state:
-                    active_mask = np.logical_not(np.asarray(state.stop_flags))
-                    active_count = int(active_mask.sum())
-                    if active_count <= small_num_lines:
-                        active_idx_np = np.flatnonzero(active_mask)
-                        stopped_idx_np = np.flatnonzero(np.logical_not(active_mask))
-                        pad = stopped_idx_np[: small_num_lines - active_count]
-                        gather_idx = jnp.asarray(np.concatenate([active_idx_np, pad]).astype(np.int32))
-                        state = jax.tree.map(lambda x: x[gather_idx], state)
-                        tail_state = True
 
                 state, completed_mask = jitted_decode(state)
 
@@ -639,6 +622,26 @@ class ContinuousBatchScheduler(BatchScheduler):
                             top_k_token_logits=None,
                         ),
                     )
+
+                if prefills.exhausted:
+                    active_mask = np.logical_not(np.asarray(state.stop_flags))
+                    active_count = int(active_mask.sum())
+
+                    candidate_num_lines = state.num_lines // 2
+
+                    if (
+                        active_count > min_allowed_lines // 2
+                        and candidate_num_lines >= min_allowed_lines
+                        and candidate_num_lines >= active_count
+                    ):
+                        active_idx_np = np.flatnonzero(active_mask)
+                        stopped_idx_np = np.flatnonzero(np.logical_not(active_mask))
+                        pad = stopped_idx_np[: candidate_num_lines - active_count]
+                        gather_idx = jnp.asarray(np.concatenate([active_idx_np, pad]).astype(np.int32))
+                        state = jax.tree.map(lambda x: x[gather_idx], state)  # noqa: B023
+
+                if state.is_empty() and prefills.exhausted:
+                    break
 
                 if fast_peak_memory:
                     break
