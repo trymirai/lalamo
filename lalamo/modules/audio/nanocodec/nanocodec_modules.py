@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule, field
@@ -84,10 +84,6 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
 
     num_levels_buffer: Int[Array, " dim"]
     dim_base_index: Int[Array, " dim"]
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return jnp.float32
 
     def _compress(self, inputs: Float[Array, "batch dim seq"]) -> Float[Array, "batch dim seq"]:
         """Apply tanh compression to map continuous values to quantization range.
@@ -227,10 +223,6 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
 
     quantizers: tuple[FiniteScalarQuantizer, ...]
 
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.quantizers[0].activation_precision
-
     def encode(
         self,
         inputs: Float[Array, "batch channels seq"],
@@ -293,10 +285,6 @@ class HalfSnake(LalamoModule[HalfSnakeConfig]):
 
     snake: Snake1d
     total_channels: int = field(static=True)
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.snake.activation_precision
 
     @property
     def channels(self) -> int:

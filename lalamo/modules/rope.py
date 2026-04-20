@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 import equinox as eqx
 from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
@@ -115,10 +115,6 @@ class RoPEConfig(LalamoConfig, RegistryABC):
 class RoPE(LalamoModule[RoPEConfig]):
     sines: Float[Array, "tokens head_channels"] = field(trainable=False)
     cosines: Float[Array, "tokens head_channels"] = field(trainable=False)
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.sines.dtype
 
     @property
     def head_dim(self) -> int:

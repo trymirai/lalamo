@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 import equinox as eqx
 import jax
@@ -16,7 +16,7 @@ __all__ = [
 ]
 
 
-class UpcastMode(Enum):
+class UpcastMode(StrEnum):
     ONLY_NORMALIZATION = "only_normalization"
     FULL_LAYER = "full_layer"
 

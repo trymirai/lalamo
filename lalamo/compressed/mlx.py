@@ -1,23 +1,31 @@
 from dataclasses import dataclass
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
+from lalamo.compressed.utils import into_layout
 from lalamo.initializer import Initializer
-from lalamo.weight_matrix import EmbeddingMatrix, GradientEstimator, Layout, MatmulConfig, WeightMatrixSpec
+from lalamo.weight_matrix import (
+    EmbeddingMatrix,
+    GradientEstimator,
+    Layout,
+    MatmulConfig,
+    Preconditioner,
+    WeightMatrixSpec,
+)
 
-from .common import (
+from .quantization_helpers import quantize_to_grid
+from .utils import (
     expand_group_parameter,
-    group_by_input_axis,
+    group_by_last_axis,
     group_parameter_partition,
     lookup_group_parameter,
     lookup_output,
     matmul_with_layout,
-    store_weights,
     weight_matrix_partition,
 )
-from .quantization_helpers import quantize_to_grid
 
 __all__ = [
     "MLXMatrix",
@@ -35,14 +43,15 @@ def _expand_lookup_parameter(
 
 @dataclass(frozen=True)
 class MLXSpec(WeightMatrixSpec):
-    bits: int
+    bits: Literal[4, 8]
     group_size: int
-    float_dtype: DTypeLike = jnp.float32
     layout: Layout = Layout.OUTPUT_INPUT
 
-    def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "MLXMatrix":
-        stored_weights = store_weights(weights.astype(self.float_dtype), self.layout)
-        grouped = group_by_input_axis(stored_weights, layout=self.layout, group_size=self.group_size)
+    def compress(
+        self, weights: Float[Array, "... out_channels in_channels"], preconditioner: Preconditioner | None = None
+    ) -> "MLXMatrix":
+        stored_weights = into_layout(weights, self.layout)
+        grouped = group_by_last_axis(stored_weights, group_size=self.group_size)
         group_mins = jnp.min(grouped, axis=-1)
         group_maxs = jnp.max(grouped, axis=-1)
         quant_levels = (2**self.bits) - 1

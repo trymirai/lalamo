@@ -22,7 +22,7 @@ class Initializer(ABC):
     mesh: Mesh | None
     dtype: DTypeLike
 
-    def partition_to_sharding(
+    def _partition_to_sharding(
         self,
         shape: tuple[int, ...],
         partition: tuple[ShardingAxis | None, ...] | None = None,
@@ -56,6 +56,7 @@ class Initializer(ABC):
     ) -> Array: ...
 
 
+@dataclass
 class EmptyInitializer(Initializer):
     def _dummy_array(
         self,
@@ -65,7 +66,7 @@ class EmptyInitializer(Initializer):
     ) -> Array:
         if isinstance(shape, int):
             shape = (shape,)
-        sharding = self.partition_to_sharding(shape, partition)
+        sharding = self._partition_to_sharding(shape, partition)
         return cast("Array", ShapeDtypeStruct(shape=shape, dtype=dtype, sharding=sharding))
 
     def normal(
@@ -101,7 +102,7 @@ class RandomInitializer(Initializer):
         shape: tuple[int, ...],
         partition: tuple[ShardingAxis | None, ...] | None = None,
     ) -> Array:
-        sharding = self.partition_to_sharding(shape, partition)
+        sharding = self._partition_to_sharding(shape, partition)
         self.key, key = jax.random.split(self.key)
         return jax.random.normal(key, shape, self.dtype, out_sharding=sharding) * std
 
@@ -110,7 +111,7 @@ class RandomInitializer(Initializer):
         shape: tuple[int, ...],
         partition: tuple[ShardingAxis | None, ...] | None = None,
     ) -> Array:
-        sharding = self.partition_to_sharding(shape, partition)
+        sharding = self._partition_to_sharding(shape, partition)
         return jnp.ones(shape, self.dtype, out_sharding=sharding)
 
     def zeros(
@@ -118,5 +119,5 @@ class RandomInitializer(Initializer):
         shape: tuple[int, ...],
         partition: tuple[ShardingAxis | None, ...] | None = None,
     ) -> Array:
-        sharding = self.partition_to_sharding(shape, partition)
+        sharding = self._partition_to_sharding(shape, partition)
         return jnp.zeros(shape, self.dtype, out_sharding=sharding)

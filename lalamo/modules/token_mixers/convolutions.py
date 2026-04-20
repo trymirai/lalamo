@@ -5,7 +5,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from einops import einsum
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
@@ -48,10 +48,6 @@ class SeparableCausalConvConfig(LalamoConfig):
 class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
     weights: Float[Array, "channels kernel"]
     biases: Float[Array, " channels"] | None
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.weights.dtype
 
     def __post_init__(self) -> None:
         input_dim, _ = self.weights.shape

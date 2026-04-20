@@ -8,7 +8,7 @@ from typing import Self
 import equinox as eqx
 import jax
 from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike, Key
+from jaxtyping import Array, Key
 from tokenizers import Tokenizer
 
 from lalamo.common import ParameterPath, is_abstract_array
@@ -106,15 +106,6 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
 class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule[ConfigT]):
     model: ModelT
     message_processor: MessageProcessor = eqx.field(static=True)
-
-    def export_weights(self) -> ParameterTree:
-        return self.model.export_weights()  # type: ignore
-
-    def from_uzu(self, weights: dict[str, Array], prefix: str = "") -> Self:
-        return replace(
-            self,
-            model=self.model.from_uzu(weights, prefix=prefix),
-        )
 
     def record_trace(self, messages: Iterable[Message] | None = None) -> ClassifierResult | DecoderResult:
         if messages is None:

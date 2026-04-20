@@ -4,7 +4,6 @@ from pathlib import Path
 
 import torch
 from fish_speech.models.dac.modded_dac import DAC
-from fish_speech.models.dac.rvq import ResidualVectorQuantize
 from fish_speech.models.text2semantic.llama import (
     BaseModelArgs,
     BaseTransformerForwardResult,
@@ -15,7 +14,7 @@ from fish_speech.models.text2semantic.llama import (
 )
 from fish_speech.tokenizer import IM_END_TOKEN, FishTokenizer
 from hydra.utils import instantiate
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, Float, Int, Key
 from omegaconf import DictConfig
 from torch._tensor import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -367,10 +366,6 @@ class FishAudioAudioDecoder_Foreign(TTSAudioDecoder):
     def samplerate(self) -> int:
         return self.dac_model.sample_rate
 
-    @property
-    def activation_precision(self) -> DTypeLike:
-        semantic_quantizer = self.dac_model.quantizer
-        assert isinstance(semantic_quantizer, ResidualVectorQuantize)
         return torch_to_jax(semantic_quantizer.quantizers[0].codebook.weight.dtype)
 
     def __call__(self, rvq_codes: Int[Array, " codes tokens"]) -> Array:
@@ -462,10 +457,6 @@ class FishAudioTextDecoderConfig_Foreign:
 class FishAudioTextDecoder_Foreign(TTSTextDecoder):
     config: FishAudioTextDecoderConfig_Foreign
     fish_model: DualARTransformer
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return torch_to_jax(self.fish_model.embeddings.weight.dtype)
 
     def __call__(
         self,

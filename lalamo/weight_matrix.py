@@ -5,6 +5,7 @@ from enum import StrEnum
 from typing import ClassVar, Generic, Self, TypeVar, dataclass_transform
 
 import equinox as eqx
+import jax.numpy as jnp
 from cattrs import GenConverter
 from jax import default_matmul_precision
 from jax.lax import Precision
@@ -18,9 +19,62 @@ from lalamo.utils.registry_abc import RegistryABC, make_registry_abc_converter
 __all__ = [
     "GradientEstimator",
     "MatmulConfig",
+    "Preconditioner",
     "WeightMatrix",
     "WeightMatrixSpec",
 ]
+
+
+@eqx.filter_jit
+def sym_to_tril(sym_matrix: Float[Array, "n n"]) -> Float[Array, " n*(n+1)//2"]:
+    tril_indices = jnp.tril_indices_from(sym_matrix)
+    return sym_matrix[tril_indices]
+
+
+@eqx.filter_jit
+def tril_to_sym(tril_vector: Float[Array, " n*(n+1)//2"]) -> Float[Array, "n n"]:
+    (numel,) = tril_vector.shape
+    num_rows = int(math.sqrt(8 * numel + 1) - 1) // 2
+    result = jnp.empty((num_rows, num_rows), dtype=tril_vector.dtype)
+    tril_rows, tril_cols = jnp.tril_indices_from(result)
+    return result.at[tril_cols, tril_rows].set(tril_vector)
+
+
+class Preconditioner(eqx.Module):
+    input_block_tril: Float[Array, " input_channels*(input_channels+1)//2"] | None
+    output_block_tril: Float[Array, " output_channels*(output_channels+1)//2"] | None
+
+    @property
+    def input_block(self) -> Float[Array, "input_channels input_channels"] | None:
+        if self.input_block_tril is None:
+            return None
+        return tril_to_sym(self.input_block_tril)
+
+    @property
+    def output_block(
+        self,
+    ) -> Float[Array, "output_channels output_channels"] | None:
+        if self.output_block_tril is None:
+            return None
+        return tril_to_sym(self.output_block_tril)
+
+    @classmethod
+    def init(
+        cls,
+        input_block: Float[Array, "input_channels input_channels"] | None = None,
+        output_block: Float[Array, "output_channels output_channels"] | None = None,
+    ) -> Self:
+        return cls(
+            input_block_tril=sym_to_tril(input_block) if input_block is not None else None,
+            output_block_tril=sym_to_tril(output_block) if output_block is not None else None,
+        )
+
+    @classmethod
+    def identity(cls) -> Self:
+        return cls(
+            input_block_tril=None,
+            output_block_tril=None,
+        )
 
 
 class GradientEstimator(StrEnum):
@@ -45,7 +99,11 @@ class WeightMatrixSpec(RegistryABC):
     def to_json(self) -> JSON:
         return self._converter.unstructure(self)
 
-    def compress(self, weights: Float[Array, "*components out_channels in_channels"]) -> "WeightMatrix": ...
+    def compress(
+        self,
+        weights: Float[Array, "*components out_channels in_channels"],
+        preconditioner: Preconditioner | None = None,
+    ) -> "WeightMatrix": ...
 
     @abstractmethod
     def init(
@@ -115,7 +173,11 @@ class Layout(StrEnum):
 class FullPrecisionSpec(WeightMatrixSpec):
     layout: Layout = Layout.OUTPUT_INPUT
 
-    def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "FullPrecisionMatrix":
+    def compress(
+        self,
+        weights: Float[Array, "... out_channels in_channels"],
+        preconditioner: Preconditioner | None = None,  # noqa: ARG002
+    ) -> "FullPrecisionMatrix":
         if self.layout == Layout.INPUT_OUTPUT:
             weights = weights.swapaxes(-1, -2)
         return FullPrecisionMatrix(spec=self, weights=weights)
@@ -167,7 +229,7 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         self._raise_if_batched()
         if self.spec.layout == Layout.INPUT_OUTPUT:
             return self.weights[:, index]
-        return self.weights[index, :]
+        raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
 
     def dot(
         self,

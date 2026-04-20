@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Int, Key
+from jaxtyping import Array, Int, Key
 
 from lalamo.initializer import Initializer
 from lalamo.module import field
@@ -32,10 +32,6 @@ class StubTextDecoderConfig(TTSTextDecoderConfig):
 
 class StubTextDecoder(TTSTextDecoder[StubTextDecoderConfig]):
     seed: int = field(static=True)
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return jnp.int32
 
     def decode_utterance(
         self,

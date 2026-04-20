@@ -10,15 +10,15 @@ __all__ = [
     "expand_group_parameter",
     "group_by_input_axis",
     "group_parameter_partition",
+    "into_layout",
     "lookup_group_parameter",
     "lookup_output",
     "matmul_with_layout",
-    "store_weights",
     "weight_matrix_partition",
 ]
 
 
-def store_weights(
+def into_layout(
     weights: Float[Array, "... out_channels in_channels"],
     layout: Layout,
 ) -> Float[Array, "..."]:
@@ -27,21 +27,14 @@ def store_weights(
     return weights
 
 
-def group_by_input_axis(
-    weights: Float[Array, "..."],
+def group_by_last_axis(
+    weights: Float[Array, "... out_channels in_channels"],
     *,
-    layout: Layout,
     group_size: int,
-) -> Float[Array, "..."]:
-    if layout == Layout.OUTPUT_INPUT:
-        return rearrange(
-            weights,
-            "... out_channels (groups group_size) -> ... out_channels groups group_size",
-            group_size=group_size,
-        )
+) -> Float[Array, "... out_channels groups group_channels"]:
     return rearrange(
         weights,
-        "... (groups group_size) out_channels -> ... groups out_channels group_size",
+        "... out_channels (groups group_size) -> ... out_channels groups group_size",
         group_size=group_size,
     )
 

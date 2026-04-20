@@ -235,10 +235,6 @@ class Snake1d(LalamoModule[Snake1dConfig]):
     alpha: Float[Array, " channels"]
 
     @property
-    def activation_precision(self) -> jnp.dtype:
-        return self.alpha.dtype
-
-    @property
     def channels(self) -> int:
         return self.alpha.shape[0]
 
