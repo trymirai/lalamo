@@ -1,4 +1,4 @@
-name: "Tests"
+name: "Tests (Pull Request)"
 
 on:
   push:
@@ -126,33 +126,3 @@ jobs:
           LALAMO_MEMORY_FOR_TRACE: "40 G"
         run: |
           pytest tests/tracer
-
-  cli:
-    name: "CLI: ${{ matrix.suite }} (${{ matrix.device }}) / ${{ matrix.python }}"
-    runs-on: ${{ fromJSON(matrix.runner) }}
-    needs: [unit, config]
-    if: ${{ needs.config.outputs.run-tests == 'true' }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ${{ fromJSON(needs.config.outputs.latest-deps-python-versions) }}
-        device: [cpu, gpu]
-        include:
-          - device: cpu
-            runner: '["ubuntu-latest"]'
-          - device: gpu
-            runner: '["self-hosted", "linux", "gpu"]' # gpu only :(
-
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "${{ matrix.python == 'py313' && '3.13' || '3.14' }}"
-      - uses: ./.github/actions/setup
-        with:
-          install-dependencies: 'false'
-
-      - name: Run tox
-        run: |
-          uvx tox -e cli-${{ matrix.device }}-${{ matrix.python }}

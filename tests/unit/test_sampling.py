@@ -5,6 +5,9 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 import pytest
+
+pytest.importorskip("torch")
+
 import torch
 from transformers import GenerationConfig as TransformersGenerationConfig
 from transformers.generation.utils import GenerationMixin
