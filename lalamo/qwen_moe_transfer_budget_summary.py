@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+
+from lalamo.qwen_moe_ewma_eval import EwmaEvalResult
+from lalamo.qwen_moe_payloads import read_payload, variant_label, write_payload
+from lalamo.qwen_moe_routing import RoutingAnalysisResult
 
 
 @dataclass(frozen=True)
@@ -21,7 +23,7 @@ class VariantTradeoff:
 class CacheBudgetTradeoff:
     cache_size: int
     resident_gib_total: float
-    recommended_alpha_without_nll_regression: str | None
+    recommended_alpha_without_nll_regression: str
     variants: tuple[VariantTradeoff, ...]
 
 
@@ -44,93 +46,106 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text())
-
-
-def dataset_name(payload: dict[str, Any]) -> str:
-    dataset = str(payload["config"]["dataset"])
-    return Path(dataset).stem or dataset
-
-
-def alpha_label(alpha: float | str) -> str:
-    return str(alpha)
-
-
-def continuation_transfer_budget_lookup(payload: dict[str, Any]) -> dict[str, dict[int, dict[str, Any]]]:
+def continuation_transfer_budget_lookup(payload: RoutingAnalysisResult) -> dict[str, dict[int, float]]:
     lookup = {
         "baseline": {
-            int(budget["cache_size"]): budget for budget in payload["continuation_statistics"]["resident_budgets"]
+            budget.cache_size: budget.sequence_weighted_transfer_bytes_per_token / (1024**2)
+            for budget in payload.continuation_statistics.resident_budgets
         }
     }
-    lookup.update(
-        {
-            alpha_label(ewma["alpha"]): {
-                int(budget["cache_size"]): budget for budget in ewma["continuation_statistics"]["resident_budgets"]
-            }
-            for ewma in payload["ewma_statistics"]
+    for ewma in payload.ewma_statistics:
+        lookup[variant_label(ewma.alpha)] = {
+            budget.cache_size: budget.sequence_weighted_transfer_bytes_per_token / (1024**2)
+            for budget in ewma.continuation_statistics.resident_budgets
         }
-    )
     return lookup
 
 
-def continuation_nll_lookup(payload: dict[str, Any]) -> dict[str, float]:
+def continuation_hit_rate_lookup(payload: RoutingAnalysisResult) -> dict[str, dict[int, float]]:
+    lookup = {
+        "baseline": {
+            budget.cache_size: budget.sequence_weighted_hit_rate
+            for budget in payload.continuation_statistics.resident_budgets
+        }
+    }
+    for ewma in payload.ewma_statistics:
+        lookup[variant_label(ewma.alpha)] = {
+            budget.cache_size: budget.sequence_weighted_hit_rate
+            for budget in ewma.continuation_statistics.resident_budgets
+        }
+    return lookup
+
+
+def continuation_resident_gib_lookup(payload: RoutingAnalysisResult) -> dict[int, float]:
     return {
-        "baseline": float(payload["baseline"]["statistics"]["token_weighted_mean_continuation_nll"]),
+        budget.cache_size: budget.resident_gib_total for budget in payload.continuation_statistics.resident_budgets
+    }
+
+
+def continuation_nll_lookup(payload: EwmaEvalResult) -> dict[str, float]:
+    return {
+        "baseline": payload.baseline.statistics.token_weighted_mean_continuation_nll,
         **{
-            alpha_label(variant["alpha"]): float(variant["statistics"]["token_weighted_mean_continuation_nll"])
-            for variant in payload["ewma_variants"]
+            variant_label(variant.alpha): variant.statistics.token_weighted_mean_continuation_nll
+            for variant in payload.ewma_variants
         },
     }
 
 
 def summarize_transfer_budget(
-    routing_payloads: list[dict[str, Any]],
-    nll_payloads: list[dict[str, Any]],
+    routing_payloads: list[RoutingAnalysisResult],
+    nll_payloads: list[EwmaEvalResult],
 ) -> TransferBudgetSummary:
-    routing_by_dataset = {dataset_name(payload): payload for payload in routing_payloads}
-    nll_by_dataset = {dataset_name(payload): payload for payload in nll_payloads}
+    routing_by_dataset: dict[str, RoutingAnalysisResult] = {}
+    nll_by_dataset: dict[str, EwmaEvalResult] = {}
+    for payload in routing_payloads:
+        dataset = payload.config.dataset
+        if dataset in routing_by_dataset:
+            raise ValueError(f"Duplicate routing payload for {dataset}.")
+        routing_by_dataset[dataset] = payload
+    for payload in nll_payloads:
+        dataset = payload.config.dataset
+        if dataset in nll_by_dataset:
+            raise ValueError(f"Duplicate NLL payload for {dataset}.")
+        nll_by_dataset[dataset] = payload
     if set(routing_by_dataset) != set(nll_by_dataset):
         raise ValueError(
-            f"Expected routing and NLL payloads for the same datasets, got {sorted(routing_by_dataset)} and "
-            f"{sorted(nll_by_dataset)}."
+            "Expected routing and NLL payloads for the same datasets, got "
+            f"{sorted(routing_by_dataset)} and {sorted(nll_by_dataset)}."
         )
-    datasets: list[DatasetTradeoff] = []
+    datasets = []
     for dataset in sorted(routing_by_dataset):
         routing_payload = routing_by_dataset[dataset]
         nll_payload = nll_by_dataset[dataset]
-        budget_lookup = continuation_transfer_budget_lookup(routing_payload)
+        transfer_lookup = continuation_transfer_budget_lookup(routing_payload)
+        hit_rate_lookup = continuation_hit_rate_lookup(routing_payload)
+        resident_gib_lookup = continuation_resident_gib_lookup(routing_payload)
         nll_lookup = continuation_nll_lookup(nll_payload)
         baseline_nll = nll_lookup["baseline"]
-        baseline_budgets = budget_lookup["baseline"]
-        budgets: list[CacheBudgetTradeoff] = []
-        for cache_size in sorted(baseline_budgets):
-            baseline_budget = baseline_budgets[cache_size]
-            baseline_transfer = float(baseline_budget["sequence_weighted_transfer_bytes_per_token"]) / (1024**2)
-            variants = [
+        budgets = []
+        for cache_size in sorted(resident_gib_lookup):
+            baseline_transfer = transfer_lookup["baseline"][cache_size]
+            variants = tuple(
                 VariantTradeoff(
                     alpha=alpha,
                     token_nll=nll_lookup[alpha],
                     delta_token_nll_vs_baseline=nll_lookup[alpha] - baseline_nll,
-                    transfer_mib_per_token=float(budget_lookup[alpha][cache_size]["sequence_weighted_transfer_bytes_per_token"])
-                    / (1024**2),
-                    delta_transfer_mib_per_token_vs_baseline=(
-                        float(budget_lookup[alpha][cache_size]["sequence_weighted_transfer_bytes_per_token"])
-                        / (1024**2)
-                        - baseline_transfer
-                    ),
-                    hit_rate=float(budget_lookup[alpha][cache_size]["sequence_weighted_hit_rate"]),
+                    transfer_mib_per_token=transfer_lookup[alpha][cache_size],
+                    delta_transfer_mib_per_token_vs_baseline=transfer_lookup[alpha][cache_size] - baseline_transfer,
+                    hit_rate=hit_rate_lookup[alpha][cache_size],
                 )
-                for alpha in ("baseline", *sorted(alpha for alpha in budget_lookup if alpha != "baseline"))
-            ]
+                for alpha in ("baseline", *sorted(alpha for alpha in transfer_lookup if alpha != "baseline"))
+            )
             non_regressing = [variant for variant in variants if variant.token_nll <= baseline_nll]
-            recommended_alpha = min(non_regressing, key=lambda variant: variant.transfer_mib_per_token).alpha
             budgets.append(
                 CacheBudgetTradeoff(
                     cache_size=cache_size,
-                    resident_gib_total=float(baseline_budget["resident_gib_total"]),
-                    recommended_alpha_without_nll_regression=recommended_alpha,
-                    variants=tuple(variants),
+                    resident_gib_total=resident_gib_lookup[cache_size],
+                    recommended_alpha_without_nll_regression=min(
+                        non_regressing,
+                        key=lambda variant: variant.transfer_mib_per_token,
+                    ).alpha,
+                    variants=variants,
                 )
             )
         datasets.append(DatasetTradeoff(dataset=dataset, budgets=tuple(budgets)))
@@ -139,12 +154,13 @@ def summarize_transfer_budget(
 
 def main() -> None:
     args = parse_args()
-    summary = summarize_transfer_budget(
-        routing_payloads=[load_json(path) for path in args.routing_results],
-        nll_payloads=[load_json(path) for path in args.nll_results],
+    write_payload(
+        args.output,
+        summarize_transfer_budget(
+            routing_payloads=[read_payload(path, RoutingAnalysisResult) for path in args.routing_results],
+            nll_payloads=[read_payload(path, EwmaEvalResult) for path in args.nll_results],
+        ),
     )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(asdict(summary), indent=2))
 
 
 if __name__ == "__main__":

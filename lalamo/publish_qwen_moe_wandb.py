@@ -1,11 +1,38 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
-from typing import Any
 
 import wandb
+
+from lalamo.qwen_moe_ewma_eval import EwmaEvalResult
+from lalamo.qwen_moe_ewma_study_summary import StudySummary
+from lalamo.qwen_moe_payloads import read_payload
+from lalamo.qwen_moe_routing import RoutingAnalysisResult
+from lalamo.qwen_moe_rows import (
+    continuation_agreement_chart_rows as _continuation_agreement_chart_rows,
+)
+from lalamo.qwen_moe_rows import (
+    continuation_cache_chart_rows as _continuation_cache_chart_rows,
+)
+from lalamo.qwen_moe_rows import (
+    continuation_locality_chart_rows as _continuation_locality_chart_rows,
+)
+from lalamo.qwen_moe_rows import (
+    continuation_transfer_chart_rows as _continuation_transfer_chart_rows,
+)
+from lalamo.qwen_moe_rows import (
+    nll_rows as _nll_rows,
+)
+from lalamo.qwen_moe_rows import (
+    quality_transfer_rows as _quality_transfer_rows,
+)
+from lalamo.qwen_moe_rows import (
+    routing_rows as _routing_rows,
+)
+from lalamo.qwen_moe_rows import (
+    study_rows as _study_rows,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,387 +50,143 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text())
-
-
-def dataset_name(payload: dict[str, Any]) -> str:
-    dataset = str(payload["config"]["dataset"])
-    return Path(dataset).stem or dataset
-
-
-def alpha_label(alpha: float | str) -> str:
-    return str(alpha)
-
-
-def continuation_locality_chart_rows(payload: dict[str, Any], dataset: str) -> list[list[object]]:
-    rows = [
-        [
-            dataset,
-            "baseline",
-            window["window_size"],
-            window["sequence_weighted_mean_distinct_experts_overall"],
-        ]
-        for window in payload["continuation_statistics"]["windows"]
-    ]
-    rows.extend(
-        [
-            dataset,
-            alpha_label(ewma["alpha"]),
-            window["window_size"],
-            window["sequence_weighted_mean_distinct_experts_overall"],
-        ]
-        for ewma in payload["ewma_statistics"]
-        for window in ewma["continuation_statistics"]["windows"]
-    )
-    return rows
-
-
-def continuation_cache_chart_rows(payload: dict[str, Any], dataset: str, cache_size: int) -> list[list[object]]:
-    rows = []
-
-    def append_rows(alpha: float | str, windows: list[dict[str, Any]]) -> None:
-        for window in windows:
-            for cache in window["oracle_cache_hit_rates"]:
-                if int(cache["cache_size"]) != cache_size:
-                    continue
-                rows.append(
-                    [
-                        dataset,
-                        alpha_label(alpha),
-                        window["window_size"],
-                        cache["sequence_weighted_hit_rate"],
-                    ]
-                )
-
-    append_rows("baseline", payload["continuation_statistics"]["windows"])
-    for ewma in payload["ewma_statistics"]:
-        append_rows(ewma["alpha"], ewma["continuation_statistics"]["windows"])
-    return rows
-
-
-def continuation_transfer_chart_rows(payload: dict[str, Any], dataset: str) -> list[list[object]]:
-    rows = [
-        [
-            dataset,
-            "baseline",
-            budget["cache_size"],
-            budget["resident_gib_total"],
-            budget["sequence_weighted_transfer_bytes_per_token"] / (1024**2),
-        ]
-        for budget in payload["continuation_statistics"]["resident_budgets"]
-    ]
-    rows.extend(
-        [
-            dataset,
-            alpha_label(ewma["alpha"]),
-            budget["cache_size"],
-            budget["resident_gib_total"],
-            budget["sequence_weighted_transfer_bytes_per_token"] / (1024**2),
-        ]
-        for ewma in payload["ewma_statistics"]
-        for budget in ewma["continuation_statistics"]["resident_budgets"]
-    )
-    return rows
-
-
-def continuation_agreement_chart_rows(payload: dict[str, Any], dataset: str) -> list[list[object]]:
-    return [
-        [
-            dataset,
-            float(ewma["alpha"]),
-            ewma["continuation_agreement"]["sequence_weighted_mean_retained_fraction_overall"],
-            ewma["continuation_agreement"]["sequence_weighted_exact_match_rate"],
-        ]
-        for ewma in payload["ewma_statistics"]
-    ]
-
-
-def nll_chart_rows(payload: dict[str, Any], dataset: str) -> list[list[object]]:
-    rows = [
-        [
-            dataset,
-            "baseline",
-            payload["baseline"]["statistics"]["token_weighted_mean_continuation_nll"],
-            payload["baseline"]["statistics"]["token_weighted_continuation_perplexity"],
-        ]
-    ]
-    rows.extend(
-        [
-            dataset,
-            alpha_label(variant["alpha"]),
-            variant["statistics"]["token_weighted_mean_continuation_nll"],
-            variant["statistics"]["token_weighted_continuation_perplexity"],
-        ]
-        for variant in payload["ewma_variants"]
-    )
-    return rows
-
-
-def quality_transfer_chart_rows(
-    routing_payload: dict[str, Any],
-    nll_payload: dict[str, Any],
-    dataset: str,
-) -> list[list[object]]:
-    nll_by_alpha = {
-        "baseline": nll_payload["baseline"]["statistics"]["token_weighted_mean_continuation_nll"],
-        **{
-            alpha_label(variant["alpha"]): variant["statistics"]["token_weighted_mean_continuation_nll"]
-            for variant in nll_payload["ewma_variants"]
-        },
-    }
-    rows = [
-        [
-            dataset,
-            "baseline",
-            budget["cache_size"],
-            budget["resident_gib_total"],
-            budget["sequence_weighted_transfer_bytes_per_token"] / (1024**2),
-            nll_by_alpha["baseline"],
-        ]
-        for budget in routing_payload["continuation_statistics"]["resident_budgets"]
-    ]
-    rows.extend(
-        [
-            dataset,
-            alpha_label(ewma["alpha"]),
-            budget["cache_size"],
-            budget["resident_gib_total"],
-            budget["sequence_weighted_transfer_bytes_per_token"] / (1024**2),
-            nll_by_alpha[alpha_label(ewma["alpha"])],
-        ]
-        for ewma in routing_payload["ewma_statistics"]
-        for budget in ewma["continuation_statistics"]["resident_budgets"]
-    )
-    return rows
-
-
-def phase_locality_rows(
-    phase_statistics: dict[str, Any],
-    dataset: str,
-    phase: str,
-    alpha: float | str,
-) -> list[list[object]]:
-    return [
-        [
-            dataset,
-            phase,
-            alpha_label(alpha),
-            window["window_size"],
-            window["sequence_weighted_mean_distinct_experts_overall"],
-            window["sequence_weighted_mean_distinct_experts_overall_ci95"],
-            window["random_baseline_distinct_experts"],
-            window["sequence_weighted_observed_to_random_ratio"],
-        ]
-        for window in phase_statistics["windows"]
-    ]
-
-
-def phase_cache_rows(
-    phase_statistics: dict[str, Any],
-    dataset: str,
-    phase: str,
-    alpha: float | str,
-) -> list[list[object]]:
-    return [
-        [
-            dataset,
-            phase,
-            alpha_label(alpha),
-            window["window_size"],
-            cache["cache_size"],
-            cache["sequence_weighted_hit_rate"],
-            cache["sequence_weighted_hit_rate_ci95"],
-        ]
-        for window in phase_statistics["windows"]
-        for cache in window["oracle_cache_hit_rates"]
-    ]
-
-
-def phase_resident_budget_rows(
-    phase_statistics: dict[str, Any],
-    dataset: str,
-    phase: str,
-    alpha: float | str,
-) -> list[list[object]]:
-    return [
-        [
-            dataset,
-            phase,
-            alpha_label(alpha),
-            budget["cache_size"],
-            budget["resident_gib_total"],
-            budget["sequence_weighted_hit_rate"],
-            budget["sequence_weighted_hit_rate_ci95"],
-            budget["sequence_weighted_expert_loads_per_token"],
-            budget["sequence_weighted_expert_loads_per_token_ci95"],
-            budget["sequence_weighted_transfer_bytes_per_token"] / (1024**2),
-            budget["sequence_weighted_transfer_bytes_per_token_ci95"] / (1024**2),
-        ]
-        for budget in phase_statistics["resident_budgets"]
-    ]
-
-
-def agreement_rows(payload: dict[str, Any], dataset: str) -> list[list[object]]:
-    rows: list[list[object]] = []
-    for ewma in payload["ewma_statistics"]:
-        for phase in ("prompt", "continuation"):
-            agreement = ewma[f"{phase}_agreement"]
-            rows.append(
-                [
-                    dataset,
-                    phase,
-                    alpha_label(ewma["alpha"]),
-                    agreement["sequence_weighted_mean_retained_fraction_overall"],
-                    agreement["sequence_weighted_mean_retained_fraction_overall_ci95"],
-                    agreement["sequence_weighted_exact_match_rate"],
-                    agreement["sequence_weighted_exact_match_rate_ci95"],
-                ]
-            )
-    return rows
-
-
-def nll_rows(payload: dict[str, Any], dataset: str) -> list[list[object]]:
-    baseline = payload["baseline"]
-    rows: list[list[object]] = [
-        [
-            dataset,
-            alpha_label("baseline"),
-            baseline["statistics"]["token_weighted_mean_continuation_nll"],
-            baseline["statistics"]["token_weighted_continuation_perplexity"],
-            baseline["statistics"]["sequence_weighted_mean_continuation_nll"],
-            baseline["statistics"]["sequence_weighted_continuation_perplexity"],
-            0.0,
-            0.0,
-        ]
-    ]
-    rows.extend(
-        [
-            dataset,
-            alpha_label(variant["alpha"]),
-            variant["statistics"]["token_weighted_mean_continuation_nll"],
-            variant["statistics"]["token_weighted_continuation_perplexity"],
-            variant["statistics"]["sequence_weighted_mean_continuation_nll"],
-            variant["statistics"]["sequence_weighted_continuation_perplexity"],
-            variant["delta_token_weighted_mean_continuation_nll_vs_baseline"],
-            variant["delta_sequence_weighted_mean_continuation_nll_vs_baseline"],
-        ]
-        for variant in payload["ewma_variants"]
-    )
-    return rows
-
-
-def study_rows(payload: dict[str, Any]) -> list[list[object]]:
-    return [
-        [
-            alpha_summary["alpha"],
-            dataset_summary["dataset"],
-            window["window_size"],
-            window["baseline_distinct"],
-            window["ewma_distinct"],
-            window["delta_distinct"],
-            window["baseline_cache_hit_rate"],
-            window["ewma_cache_hit_rate"],
-            window["delta_cache_hit_rate"],
-            dataset_summary["retained_fraction"],
-            dataset_summary["exact_match_rate"],
-            dataset_summary["passes_minimal_intervention_rule"],
-        ]
-        for alpha_summary in payload["alphas"]
-        for dataset_summary in alpha_summary["datasets"]
-        for window in dataset_summary["windows"]
-    ]
-
-
-def routing_tables(payloads: list[dict[str, Any]]) -> dict[str, wandb.Table]:
-    locality_columns = [
-        "dataset",
-        "phase",
-        "alpha",
-        "window_size",
-        "distinct_experts",
-        "distinct_ci95",
-        "random_baseline",
-        "observed_to_random_ratio",
-    ]
-    cache_columns = [
-        "dataset",
-        "phase",
-        "alpha",
-        "window_size",
-        "cache_size",
-        "cache_hit_rate",
-        "cache_hit_ci95",
-    ]
-    agreement_columns = [
-        "dataset",
-        "phase",
-        "alpha",
-        "retained_fraction",
-        "retained_ci95",
-        "exact_match_rate",
-        "exact_match_ci95",
-    ]
-    resident_budget_columns = [
-        "dataset",
-        "phase",
-        "alpha",
-        "cache_size",
-        "resident_gib_total",
-        "hit_rate",
-        "hit_rate_ci95",
-        "expert_loads_per_token",
-        "expert_loads_per_token_ci95",
-        "transfer_mib_per_token",
-        "transfer_mib_per_token_ci95",
-    ]
-    locality_data: list[list[object]] = []
-    cache_data: list[list[object]] = []
-    agreement_data: list[list[object]] = []
-    resident_budget_data: list[list[object]] = []
+def routing_tables(payloads: list[RoutingAnalysisResult]) -> dict[str, wandb.Table]:
+    locality_rows = []
+    cache_rows = []
+    resident_budget_rows = []
+    agreement_rows = []
     for payload in payloads:
-        dataset = dataset_name(payload)
-        for phase in ("prompt", "continuation"):
-            phase_statistics = payload[f"{phase}_statistics"]
-            locality_data.extend(phase_locality_rows(phase_statistics, dataset, phase, "baseline"))
-            cache_data.extend(phase_cache_rows(phase_statistics, dataset, phase, "baseline"))
-            resident_budget_data.extend(phase_resident_budget_rows(phase_statistics, dataset, phase, "baseline"))
-        agreement_data.extend(agreement_rows(payload, dataset))
-        for ewma in payload["ewma_statistics"]:
-            for phase in ("prompt", "continuation"):
-                phase_statistics = ewma[f"{phase}_statistics"]
-                locality_data.extend(phase_locality_rows(phase_statistics, dataset, phase, ewma["alpha"]))
-                cache_data.extend(phase_cache_rows(phase_statistics, dataset, phase, ewma["alpha"]))
-                resident_budget_data.extend(
-                    phase_resident_budget_rows(phase_statistics, dataset, phase, ewma["alpha"])
-                )
+        payload_locality, payload_cache, payload_resident_budgets, payload_agreement = _routing_rows(payload)
+        locality_rows.extend(payload_locality)
+        cache_rows.extend(payload_cache)
+        resident_budget_rows.extend(payload_resident_budgets)
+        agreement_rows.extend(payload_agreement)
     return {
-        "routing/locality_table": wandb.Table(columns=locality_columns, data=locality_data),
-        "routing/cache_table": wandb.Table(columns=cache_columns, data=cache_data),
-        "routing/agreement_table": wandb.Table(columns=agreement_columns, data=agreement_data),
-        "routing/resident_budget_table": wandb.Table(columns=resident_budget_columns, data=resident_budget_data),
+        "routing/locality_table": wandb.Table(
+            columns=[
+                "dataset",
+                "phase",
+                "alpha",
+                "window_size",
+                "distinct_experts",
+                "distinct_ci95",
+                "random_baseline",
+                "observed_to_random_ratio",
+            ],
+            data=[
+                [
+                    row.dataset,
+                    row.phase,
+                    row.alpha,
+                    row.window_size,
+                    row.distinct_experts,
+                    row.distinct_ci95,
+                    row.random_baseline,
+                    row.observed_to_random_ratio,
+                ]
+                for row in locality_rows
+            ],
+        ),
+        "routing/cache_table": wandb.Table(
+            columns=["dataset", "phase", "alpha", "window_size", "cache_size", "cache_hit_rate", "cache_hit_ci95"],
+            data=[
+                [
+                    row.dataset,
+                    row.phase,
+                    row.alpha,
+                    row.window_size,
+                    row.cache_size,
+                    row.cache_hit_rate,
+                    row.cache_hit_ci95,
+                ]
+                for row in cache_rows
+            ],
+        ),
+        "routing/agreement_table": wandb.Table(
+            columns=[
+                "dataset",
+                "phase",
+                "alpha",
+                "retained_fraction",
+                "retained_ci95",
+                "exact_match_rate",
+                "exact_match_ci95",
+            ],
+            data=[
+                [
+                    row.dataset,
+                    row.phase,
+                    row.alpha,
+                    row.retained_fraction,
+                    row.retained_ci95,
+                    row.exact_match_rate,
+                    row.exact_match_ci95,
+                ]
+                for row in agreement_rows
+            ],
+        ),
+        "routing/resident_budget_table": wandb.Table(
+            columns=[
+                "dataset",
+                "phase",
+                "alpha",
+                "cache_size",
+                "resident_gib_total",
+                "hit_rate",
+                "hit_rate_ci95",
+                "expert_loads_per_token",
+                "expert_loads_per_token_ci95",
+                "transfer_mib_per_token",
+                "transfer_mib_per_token_ci95",
+            ],
+            data=[
+                [
+                    row.dataset,
+                    row.phase,
+                    row.alpha,
+                    row.cache_size,
+                    row.resident_gib_total,
+                    row.hit_rate,
+                    row.hit_rate_ci95,
+                    row.expert_loads_per_token,
+                    row.expert_loads_per_token_ci95,
+                    row.transfer_mib_per_token,
+                    row.transfer_mib_per_token_ci95,
+                ]
+                for row in resident_budget_rows
+            ],
+        ),
     }
 
 
-def routing_charts(payloads: list[dict[str, Any]]) -> dict[str, object]:
+def routing_charts(payloads: list[RoutingAnalysisResult]) -> dict[str, object]:
     charts: dict[str, object] = {}
     for payload in payloads:
-        dataset = dataset_name(payload)
+        locality_rows = _continuation_locality_chart_rows(payload)
+        cache_rows = _continuation_cache_chart_rows(payload, cache_size=16)
+        transfer_rows = _continuation_transfer_chart_rows(payload)
+        agreement_rows = _continuation_agreement_chart_rows(payload)
+        dataset = locality_rows[0].dataset
         locality_table = wandb.Table(
             columns=["dataset", "alpha", "window_size", "distinct_experts"],
-            data=continuation_locality_chart_rows(payload, dataset),
+            data=[[row.dataset, row.alpha, row.window_size, row.distinct_experts] for row in locality_rows],
         )
         cache_table = wandb.Table(
             columns=["dataset", "alpha", "window_size", "cache_hit_rate"],
-            data=continuation_cache_chart_rows(payload, dataset, cache_size=16),
+            data=[[row.dataset, row.alpha, row.window_size, row.cache_hit_rate] for row in cache_rows],
         )
         transfer_table = wandb.Table(
             columns=["dataset", "alpha", "cache_size", "resident_gib_total", "transfer_mib_per_token"],
-            data=continuation_transfer_chart_rows(payload, dataset),
+            data=[
+                [row.dataset, row.alpha, row.cache_size, row.resident_gib_total, row.transfer_mib_per_token]
+                for row in transfer_rows
+            ],
         )
         agreement_table = wandb.Table(
             columns=["dataset", "alpha", "retained_fraction", "exact_match_rate"],
-            data=continuation_agreement_chart_rows(payload, dataset),
+            data=[
+                [row.dataset, float(row.alpha), row.retained_fraction, row.exact_match_rate] for row in agreement_rows
+            ],
         )
         charts[f"charts/{dataset}/continuation_distinct_experts"] = wandb.plot.line(
             locality_table,
@@ -428,10 +211,7 @@ def routing_charts(payloads: list[dict[str, Any]]) -> dict[str, object]:
         )
         charts[f"charts/{dataset}/continuation_routing_agreement"] = wandb.plot.line_series(
             xs=[agreement_table.get_column("alpha"), agreement_table.get_column("alpha")],
-            ys=[
-                agreement_table.get_column("retained_fraction"),
-                agreement_table.get_column("exact_match_rate"),
-            ],
+            ys=[agreement_table.get_column("retained_fraction"), agreement_table.get_column("exact_match_rate")],
             keys=["retained_fraction", "exact_match_rate"],
             title=f"{dataset}: continuation agreement vs alpha",
             xname="alpha",
@@ -439,32 +219,45 @@ def routing_charts(payloads: list[dict[str, Any]]) -> dict[str, object]:
     return charts
 
 
-def nll_table(payloads: list[dict[str, Any]]) -> wandb.Table | None:
+def nll_table(payloads: list[EwmaEvalResult]) -> wandb.Table | None:
     if not payloads:
         return None
-    columns = [
-        "dataset",
-        "alpha",
-        "token_nll",
-        "token_ppl",
-        "sequence_nll",
-        "sequence_ppl",
-        "delta_token_nll_vs_baseline",
-        "delta_sequence_nll_vs_baseline",
-    ]
-    data: list[list[object]] = []
-    for payload in payloads:
-        data.extend(nll_rows(payload, dataset_name(payload)))
-    return wandb.Table(columns=columns, data=data)
+    rows = [row for payload in payloads for row in _nll_rows(payload)]
+    return wandb.Table(
+        columns=[
+            "dataset",
+            "alpha",
+            "token_nll",
+            "token_ppl",
+            "sequence_nll",
+            "sequence_ppl",
+            "delta_token_nll_vs_baseline",
+            "delta_sequence_nll_vs_baseline",
+        ],
+        data=[
+            [
+                row.dataset,
+                row.alpha,
+                row.token_nll,
+                row.token_ppl,
+                row.sequence_nll,
+                row.sequence_ppl,
+                row.delta_token_nll_vs_baseline,
+                row.delta_sequence_nll_vs_baseline,
+            ]
+            for row in rows
+        ],
+    )
 
 
-def nll_charts(payloads: list[dict[str, Any]]) -> dict[str, object]:
+def nll_charts(payloads: list[EwmaEvalResult]) -> dict[str, object]:
     charts: dict[str, object] = {}
     for payload in payloads:
-        dataset = dataset_name(payload)
+        rows = _nll_rows(payload)
+        dataset = rows[0].dataset
         table = wandb.Table(
             columns=["dataset", "variant", "token_nll", "token_ppl"],
-            data=nll_chart_rows(payload, dataset),
+            data=[[row.dataset, row.alpha, row.token_nll, row.token_ppl] for row in rows],
         )
         charts[f"charts/{dataset}/continuation_token_nll"] = wandb.plot.bar(
             table,
@@ -482,18 +275,17 @@ def nll_charts(payloads: list[dict[str, Any]]) -> dict[str, object]:
 
 
 def quality_transfer_charts(
-    routing_payloads: list[dict[str, Any]],
-    nll_payloads: list[dict[str, Any]],
+    routing_payloads: list[RoutingAnalysisResult],
+    nll_payloads: list[EwmaEvalResult],
 ) -> dict[str, object]:
+    nll_by_dataset = {payload.config.dataset: payload for payload in nll_payloads}
+    if {payload.config.dataset for payload in routing_payloads} != set(nll_by_dataset):
+        raise ValueError("Routing and NLL datasets must match exactly for quality/transfer charts.")
     charts: dict[str, object] = {}
-    nll_by_dataset = {dataset_name(payload): payload for payload in nll_payloads}
     for routing_payload in routing_payloads:
-        dataset = dataset_name(routing_payload)
-        nll_payload = nll_by_dataset.get(dataset)
-        if nll_payload is None:
-            continue
-        tradeoff_rows = quality_transfer_chart_rows(routing_payload, nll_payload, dataset)
-        for cache_size in sorted({int(row[2]) for row in tradeoff_rows}):
+        tradeoff_rows = _quality_transfer_rows(routing_payload, nll_by_dataset[routing_payload.config.dataset])
+        dataset = tradeoff_rows[0].dataset
+        for cache_size in sorted({row.cache_size for row in tradeoff_rows}):
             tradeoff_table = wandb.Table(
                 columns=[
                     "dataset",
@@ -503,7 +295,18 @@ def quality_transfer_charts(
                     "transfer_mib_per_token",
                     "token_nll",
                 ],
-                data=[row for row in tradeoff_rows if int(row[2]) == cache_size],
+                data=[
+                    [
+                        row.dataset,
+                        row.alpha,
+                        row.cache_size,
+                        row.resident_gib_total,
+                        row.transfer_mib_per_token,
+                        row.token_nll,
+                    ]
+                    for row in tradeoff_rows
+                    if row.cache_size == cache_size
+                ],
             )
             charts[f"charts/{dataset}/quality_vs_transfer_cache{cache_size}"] = wandb.plot.scatter(
                 tradeoff_table,
@@ -514,32 +317,46 @@ def quality_transfer_charts(
     return charts
 
 
-def study_table(payload: dict[str, Any] | None) -> wandb.Table | None:
+def study_table(payload: StudySummary | None) -> wandb.Table | None:
     if payload is None:
         return None
-    columns = [
-        "alpha",
-        "dataset",
-        "window_size",
-        "baseline_distinct",
-        "ewma_distinct",
-        "delta_distinct",
-        "baseline_cache_hit_rate",
-        "ewma_cache_hit_rate",
-        "delta_cache_hit_rate",
-        "retained_fraction",
-        "exact_match_rate",
-        "passes_rule",
-    ]
-    return wandb.Table(columns=columns, data=study_rows(payload))
+    rows = _study_rows(payload)
+    return wandb.Table(
+        columns=[
+            "alpha",
+            "dataset",
+            "window_size",
+            "baseline_distinct",
+            "ewma_distinct",
+            "delta_distinct",
+            "baseline_cache_hit_rate",
+            "ewma_cache_hit_rate",
+            "delta_cache_hit_rate",
+            "retained_fraction",
+            "exact_match_rate",
+            "passes_rule",
+        ],
+        data=[
+            [
+                row.alpha,
+                row.dataset,
+                row.window_size,
+                row.baseline_distinct,
+                row.ewma_distinct,
+                row.delta_distinct,
+                row.baseline_cache_hit_rate,
+                row.ewma_cache_hit_rate,
+                row.delta_cache_hit_rate,
+                row.retained_fraction,
+                row.exact_match_rate,
+                row.passes_rule,
+            ]
+            for row in rows
+        ],
+    )
 
 
-def log_artifact(
-    run: object,
-    routing_paths: list[Path],
-    nll_paths: list[Path],
-    study_path: Path | None,
-) -> None:
+def log_artifact(run: object, routing_paths: list[Path], nll_paths: list[Path], study_path: Path | None) -> None:
     artifact = wandb.Artifact(name=f"{run.id}-outputs", type="qwen-moe-study")
     for path in routing_paths + nll_paths:
         artifact.add_file(str(path), name=path.name)
@@ -550,9 +367,9 @@ def log_artifact(
 
 def main() -> None:
     args = parse_args()
-    routing_payloads = [load_json(path) for path in args.routing_results]
-    nll_payloads = [load_json(path) for path in args.nll_results]
-    study_payload = None if args.study_summary is None else load_json(args.study_summary)
+    routing_payloads = [read_payload(path, RoutingAnalysisResult) for path in args.routing_results]
+    nll_payloads = [read_payload(path, EwmaEvalResult) for path in args.nll_results]
+    study_payload = None if args.study_summary is None else read_payload(args.study_summary, StudySummary)
     first = routing_payloads[0]
     run = wandb.init(
         project=args.project,
@@ -563,24 +380,24 @@ def main() -> None:
         tags=[tag for tag in args.tags.split(",") if tag],
         notes=args.notes,
         config={
-            "model_repo": first["config"]["model_repo"],
-            "seed": first["config"]["seed"],
-            "window_sizes": first["config"]["window_sizes"],
-            "ewma_alphas": first["config"]["ewma_alphas"],
-            "max_rows": first["config"]["max_rows"],
-            "max_prompts": first["config"]["max_prompts"],
-            "max_prompt_tokens": first["config"]["max_prompt_tokens"],
-            "max_continuation_tokens": first["config"]["max_continuation_tokens"],
+            "model_repo": first.config.model_repo,
+            "seed": first.config.seed,
+            "window_sizes": first.config.window_sizes,
+            "ewma_alphas": first.config.ewma_alphas,
+            "max_rows": first.config.max_rows,
+            "max_prompts": first.config.max_prompts,
+            "max_prompt_tokens": first.config.max_prompt_tokens,
+            "max_continuation_tokens": first.config.max_continuation_tokens,
         },
     )
     assert run is not None
     try:
         for payload in routing_payloads:
-            dataset = dataset_name(payload)
-            run.summary[f"{dataset}/prompts_processed"] = payload["prompts_processed"]
-            run.summary[f"{dataset}/dataset_rows_processed"] = payload["dataset_rows_processed"]
+            dataset = payload.config.dataset
+            run.summary[f"{dataset}/prompts_processed"] = payload.prompts_processed
+            run.summary[f"{dataset}/dataset_rows_processed"] = payload.dataset_rows_processed
         if study_payload is not None:
-            run.summary["study/recommended_alpha"] = study_payload["recommended_alpha"]
+            run.summary["study/recommended_alpha"] = study_payload.recommended_alpha
         run.log(routing_tables(routing_payloads))
         run.log(routing_charts(routing_payloads))
         quality_table = nll_table(nll_payloads)

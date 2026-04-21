@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 import time
 from collections import OrderedDict
 from contextlib import contextmanager, nullcontext
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MethodType
 from typing import TYPE_CHECKING
@@ -13,17 +12,18 @@ from typing import TYPE_CHECKING
 import torch
 from transformers import AutoTokenizer
 
-from lalamo.qwen_moe_ewma_eval import (
+from lalamo.qwen_moe_eval_common import (
     LossAccumulator,
     LossStatistics,
+    PreparedSamples,
     SequenceEWMARouter,
-    next_token_nll,
     patched_ewma_routing,
+    prepare_samples,
+    teacher_forced_token_nll,
 )
+from lalamo.qwen_moe_payloads import write_payload
 from lalamo.qwen_moe_routing import (
-    IndexedConversationSample,
     ModelRoutingConfig,
-    ProcessedSample,
     RuntimeInfo,
     dataset_fingerprint,
     indexed_conversation_samples,
@@ -32,7 +32,6 @@ from lalamo.qwen_moe_routing import (
     model_routing_config,
     parse_ewma_alphas,
     parse_window_sizes,
-    prompt_and_continuation_ids,
     runtime_info,
 )
 
@@ -40,7 +39,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from transformers.models.qwen3_5_moe import Qwen3_5MoeForCausalLM
-    from transformers.tokenization_utils import PreTrainedTokenizer
+
+    from lalamo.qwen_moe_routing import ProcessedSample
 
 
 OFFLOAD_AUTO_DEVICE_MAP_HEADROOM_GIB = 40
@@ -272,6 +272,13 @@ def timed_phase(accumulator: PhaseTransferAccumulator) -> Iterator[None]:
         accumulator.elapsed_seconds += time.perf_counter() - start_time
 
 
+@contextmanager
+def continuation_phase(controller: OffloadRuntimeController) -> Iterator[None]:
+    controller.switch_to_continuation()
+    with timed_phase(controller.state.continuation):
+        yield
+
+
 def pin_if_cuda(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.pin_memory() if torch.cuda.is_available() else tensor
 
@@ -342,161 +349,46 @@ def install_expert_offload(
     )
 
 
-
-
-def first_valid_prompt_and_continuation_ids(
-    samples: tuple[IndexedConversationSample, ...],
-    tokenizer: PreTrainedTokenizer,
-    max_prompt_tokens: int,
-    max_continuation_tokens: int,
-) -> tuple[torch.Tensor, torch.Tensor] | None:
-    for indexed_sample in samples:
-        prompt_ids, continuation_ids, skip_reason = prompt_and_continuation_ids(
-            tokenizer=tokenizer,
-            sample=indexed_sample.sample,
-            max_prompt_tokens=max_prompt_tokens,
-            max_continuation_tokens=max_continuation_tokens,
-        )
-        if skip_reason is None:
-            assert prompt_ids is not None
-            assert continuation_ids is not None
-            return prompt_ids, continuation_ids
-    return None
-
-
 def warmup_variant(
     model: Qwen3_5MoeForCausalLM,
     controller: OffloadRuntimeController,
-    samples: tuple[IndexedConversationSample, ...],
-    tokenizer: PreTrainedTokenizer,
-    max_prompt_tokens: int,
-    max_continuation_tokens: int,
+    prepared_samples: PreparedSamples,
     routing_state: SequenceEWMARouter | None = None,
 ) -> None:
-    first_valid_ids = first_valid_prompt_and_continuation_ids(
-        samples,
-        tokenizer,
-        max_prompt_tokens,
-        max_continuation_tokens,
-    )
-    if first_valid_ids is None:
+    if not prepared_samples.samples:
         return
-    prompt_ids, continuation_ids = first_valid_ids
-    input_device = model.get_input_embeddings().weight.device
+    sample = prepared_samples.samples[0]
     controller.reset_variant()
     if routing_state is not None:
         routing_state.reset_sequence()
-    with torch.inference_mode():
-        outputs = model(
-            input_ids=prompt_ids.to(input_device),
-            use_cache=True,
-            output_router_logits=False,
-            return_dict=True,
-        )
-        past_key_values = outputs.past_key_values
-        for token_index in range(continuation_ids.shape[1] - 1):
-            outputs = model(
-                input_ids=continuation_ids[:, token_index : token_index + 1].to(input_device),
-                past_key_values=past_key_values,
-                use_cache=True,
-                output_router_logits=False,
-                return_dict=True,
-            )
-            past_key_values = outputs.past_key_values
-    del outputs, past_key_values
+    teacher_forced_token_nll(model=model, prompt_ids=sample.prompt_ids, continuation_ids=sample.continuation_ids)
+    controller.reset_variant()
     if routing_state is not None:
         routing_state.reset_sequence()
-    controller.reset_variant()
 
 
 def evaluate_variant(
     model: Qwen3_5MoeForCausalLM,
     controller: OffloadRuntimeController,
-    samples: tuple[IndexedConversationSample, ...],
-    tokenizer: PreTrainedTokenizer,
-    max_prompt_tokens: int,
-    max_continuation_tokens: int,
+    prepared_samples: PreparedSamples,
     routing_state: SequenceEWMARouter | None = None,
-) -> tuple[LossAccumulator, TransferStatistics, int, int, int, int, tuple[ProcessedSample, ...]]:
-    accumulator = LossAccumulator()
-    prompts_processed = 0
-    skipped_prompt_too_long = 0
-    skipped_continuation_too_long = 0
-    skipped_empty_continuation = 0
+) -> tuple[LossStatistics, TransferStatistics]:
+    loss_accumulator = LossAccumulator()
     continuation_token_count = 0
-    processed_samples: list[ProcessedSample] = []
-    input_device = model.get_input_embeddings().weight.device
-    for indexed_sample in samples:
-        prompt_ids, continuation_ids, skip_reason = prompt_and_continuation_ids(
-            tokenizer=tokenizer,
-            sample=indexed_sample.sample,
-            max_prompt_tokens=max_prompt_tokens,
-            max_continuation_tokens=max_continuation_tokens,
-        )
-        if skip_reason == "prompt_too_long":
-            skipped_prompt_too_long += 1
-            continue
-        if skip_reason == "continuation_too_long":
-            skipped_continuation_too_long += 1
-            continue
-        if skip_reason == "empty_continuation":
-            skipped_empty_continuation += 1
-            continue
-        assert prompt_ids is not None
-        assert continuation_ids is not None
-        prompt_length = prompt_ids.shape[1]
-        continuation_length = continuation_ids.shape[1]
+    for sample in prepared_samples.samples:
         controller.reset_sequence()
         if routing_state is not None:
             routing_state.reset_sequence()
-        token_losses: list[torch.Tensor] = []
-        with torch.inference_mode():
-            with timed_phase(controller.state.prompt):
-                outputs = model(
-                    input_ids=prompt_ids.to(input_device),
-                    use_cache=True,
-                    output_router_logits=False,
-                    return_dict=True,
-                )
-            token_losses.append(next_token_nll(outputs.logits[:, -1, :], continuation_ids[:, 0].to(input_device)))
-            past_key_values = outputs.past_key_values
-            controller.switch_to_continuation()
-            with timed_phase(controller.state.continuation):
-                for token_index in range(continuation_length - 1):
-                    outputs = model(
-                        input_ids=continuation_ids[:, token_index : token_index + 1].to(input_device),
-                        past_key_values=past_key_values,
-                        use_cache=True,
-                        output_router_logits=False,
-                        return_dict=True,
-                    )
-                    token_losses.append(
-                        next_token_nll(outputs.logits[:, -1, :], continuation_ids[:, token_index + 1].to(input_device))
-                    )
-                    past_key_values = outputs.past_key_values
-        del outputs, past_key_values
-        token_nll = torch.cat(token_losses)
-        accumulator.update(token_nll)
-        continuation_token_count += continuation_length
-        prompts_processed += 1
-        processed_samples.append(
-            ProcessedSample(
-                row_id=indexed_sample.row_id,
-                conversation_index=indexed_sample.conversation_index,
-                assistant_turn_index=indexed_sample.assistant_turn_index,
-                prompt_tokens=prompt_length,
-                continuation_tokens=continuation_length,
-            )
+        token_nll = teacher_forced_token_nll(
+            model=model,
+            prompt_ids=sample.prompt_ids,
+            continuation_ids=sample.continuation_ids,
+            prompt_context=timed_phase(controller.state.prompt),
+            continuation_context=continuation_phase(controller),
         )
-    return (
-        accumulator,
-        controller.finalize(continuation_token_count),
-        prompts_processed,
-        skipped_prompt_too_long,
-        skipped_continuation_too_long,
-        skipped_empty_continuation,
-        tuple(processed_samples),
-    )
+        loss_accumulator.update(token_nll)
+        continuation_token_count += sample.continuation_ids.shape[1]
+    return loss_accumulator.finalize(), controller.finalize(continuation_token_count)
 
 
 def parse_args() -> OffloadEvalConfig:
@@ -533,16 +425,34 @@ def parse_args() -> OffloadEvalConfig:
     )
 
 
+def variant_result(
+    name: str,
+    alpha: float,
+    statistics: LossStatistics,
+    transfer: TransferStatistics,
+    baseline: LossStatistics,
+) -> OffloadVariantResult:
+    return OffloadVariantResult(
+        name=name,
+        alpha=alpha,
+        statistics=statistics,
+        transfer=transfer,
+        delta_token_weighted_mean_continuation_nll_vs_baseline=(
+            statistics.token_weighted_mean_continuation_nll - baseline.token_weighted_mean_continuation_nll
+        ),
+        delta_sequence_weighted_mean_continuation_nll_vs_baseline=(
+            statistics.sequence_weighted_mean_continuation_nll - baseline.sequence_weighted_mean_continuation_nll
+        ),
+    )
+
+
 def evaluate_cache_budget(
     cache_size: int,
-    samples: tuple[IndexedConversationSample, ...],
-    tokenizer: PreTrainedTokenizer,
+    prepared_samples: PreparedSamples,
     config: OffloadEvalConfig,
     expert_bytes: int,
 ) -> tuple[CacheBudgetResult, RuntimeInfo]:
-    def run_variant(
-        alpha: float,
-    ) -> tuple[OffloadVariantResult, int, int, int, int, tuple[ProcessedSample, ...], RuntimeInfo]:
+    def run_variant(alpha: float) -> tuple[OffloadVariantResult, RuntimeInfo]:
         model = load_model(
             config.model_repo,
             config.device_map_mode,
@@ -553,108 +463,38 @@ def evaluate_cache_budget(
         current_runtime = runtime_info(model, config.device_map_mode)
         routing_context = nullcontext(None) if alpha == 0.0 else patched_ewma_routing(model, alpha)
         with routing_context as routing_state:
-            warmup_variant(
-                model,
-                controller,
-                samples,
-                tokenizer,
-                config.max_prompt_tokens,
-                config.max_continuation_tokens,
-                routing_state=routing_state,
-            )
-            (
-                accumulator,
-                transfer,
-                prompts_processed,
-                skipped_prompt_too_long,
-                skipped_continuation_too_long,
-                skipped_empty_continuation,
-                processed_samples,
-            ) = evaluate_variant(
-                model=model,
-                controller=controller,
-                samples=samples,
-                tokenizer=tokenizer,
-                max_prompt_tokens=config.max_prompt_tokens,
-                max_continuation_tokens=config.max_continuation_tokens,
-                routing_state=routing_state,
-            )
-        result = OffloadVariantResult(
-            name="baseline" if alpha == 0.0 else f"ewma_{alpha:.3f}",
-            alpha=alpha,
-            statistics=accumulator.finalize(),
-            transfer=transfer,
-            delta_token_weighted_mean_continuation_nll_vs_baseline=0.0,
-            delta_sequence_weighted_mean_continuation_nll_vs_baseline=0.0,
-        )
+            warmup_variant(model, controller, prepared_samples, routing_state=routing_state)
+            statistics, transfer = evaluate_variant(model, controller, prepared_samples, routing_state=routing_state)
         del controller, model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        return (
-            result,
-            prompts_processed,
-            skipped_prompt_too_long,
-            skipped_continuation_too_long,
-            skipped_empty_continuation,
-            processed_samples,
-            current_runtime,
-        )
+        return OffloadVariantResult(
+            name="baseline" if alpha == 0.0 else f"ewma_{alpha:.3f}",
+            alpha=alpha,
+            statistics=statistics,
+            transfer=transfer,
+            delta_token_weighted_mean_continuation_nll_vs_baseline=0.0,
+            delta_sequence_weighted_mean_continuation_nll_vs_baseline=0.0,
+        ), current_runtime
 
-    (
-        baseline,
-        prompts_processed,
-        skipped_prompt_too_long,
-        skipped_continuation_too_long,
-        skipped_empty_continuation,
-        processed_samples,
-        current_runtime,
-    ) = run_variant(0.0)
-    ewma_variants: list[OffloadVariantResult] = []
+    baseline, current_runtime = run_variant(0.0)
+    ewma_variants = []
     for alpha in config.ewma_alphas:
-        (
-            variant,
-            alpha_prompts_processed,
-            alpha_skipped_prompt_too_long,
-            alpha_skipped_continuation_too_long,
-            alpha_skipped_empty_continuation,
-            alpha_processed_samples,
-            _,
-        ) = run_variant(alpha)
-        if (
-            alpha_prompts_processed != prompts_processed
-            or alpha_skipped_prompt_too_long != skipped_prompt_too_long
-            or alpha_skipped_continuation_too_long != skipped_continuation_too_long
-            or alpha_skipped_empty_continuation != skipped_empty_continuation
-            or alpha_processed_samples != processed_samples
-        ):
-            raise ValueError("EWMA offload evaluation changed the sampled prompt set.")
+        variant, _ = run_variant(alpha)
         ewma_variants.append(
-            OffloadVariantResult(
-                name=variant.name,
-                alpha=variant.alpha,
-                statistics=variant.statistics,
-                transfer=variant.transfer,
-                delta_token_weighted_mean_continuation_nll_vs_baseline=(
-                    variant.statistics.token_weighted_mean_continuation_nll
-                    - baseline.statistics.token_weighted_mean_continuation_nll
-                ),
-                delta_sequence_weighted_mean_continuation_nll_vs_baseline=(
-                    variant.statistics.sequence_weighted_mean_continuation_nll
-                    - baseline.statistics.sequence_weighted_mean_continuation_nll
-                ),
-            )
+            variant_result(variant.name, variant.alpha, variant.statistics, variant.transfer, baseline.statistics)
         )
     return CacheBudgetResult(
         cache_size=cache_size,
         resident_gib_total=baseline.transfer.resident_gib_total,
         baseline=baseline,
         ewma_variants=tuple(ewma_variants),
-        dataset_rows_processed=len(samples),
-        prompts_processed=prompts_processed,
-        skipped_prompt_too_long=skipped_prompt_too_long,
-        skipped_continuation_too_long=skipped_continuation_too_long,
-        skipped_empty_continuation=skipped_empty_continuation,
-        processed_samples=processed_samples,
+        dataset_rows_processed=prepared_samples.prompts_processed,
+        prompts_processed=prepared_samples.prompts_processed,
+        skipped_prompt_too_long=prepared_samples.skipped_prompt_too_long,
+        skipped_continuation_too_long=prepared_samples.skipped_continuation_too_long,
+        skipped_empty_continuation=prepared_samples.skipped_empty_continuation,
+        processed_samples=prepared_samples.processed_samples,
     ), current_runtime
 
 
@@ -667,31 +507,37 @@ def main() -> None:
     if config.max_prompts is not None:
         samples = samples[: config.max_prompts]
     tokenizer = AutoTokenizer.from_pretrained(config.model_repo)
+    prepared_samples = prepare_samples(
+        samples=samples,
+        tokenizer=tokenizer,
+        max_prompt_tokens=config.max_prompt_tokens,
+        max_continuation_tokens=config.max_continuation_tokens,
+    )
+    if not prepared_samples.samples:
+        raise ValueError("Offload evaluation produced no valid prompts.")
     cache_budgets: list[CacheBudgetResult] = []
     runtime: RuntimeInfo | None = None
     for cache_size in config.cache_sizes:
         cache_budget, runtime = evaluate_cache_budget(
             cache_size=cache_size,
-            samples=samples,
-            tokenizer=tokenizer,
+            prepared_samples=prepared_samples,
             config=config,
             expert_bytes=routing_config.expert_bytes,
         )
         cache_budgets.append(cache_budget)
     assert runtime is not None
-    result = OffloadEvalResult(
-        config=config,
-        model=routing_config,
-        runtime=runtime,
-        dataset_fingerprint=dataset_fingerprint(rows),
-        dataset_rows_total=dataset_rows_total,
-        assistant_turns_total=assistant_turns_total,
-        cache_budgets=tuple(cache_budgets),
+    write_payload(
+        config.output_path,
+        OffloadEvalResult(
+            config=config,
+            model=routing_config,
+            runtime=runtime,
+            dataset_fingerprint=dataset_fingerprint(rows),
+            dataset_rows_total=dataset_rows_total,
+            assistant_turns_total=assistant_turns_total,
+            cache_budgets=tuple(cache_budgets),
+        ),
     )
-    payload = asdict(result)
-    payload["config"]["output_path"] = str(config.output_path)
-    config.output_path.parent.mkdir(parents=True, exist_ok=True)
-    config.output_path.write_text(json.dumps(payload, indent=2))
 
 
 if __name__ == "__main__":

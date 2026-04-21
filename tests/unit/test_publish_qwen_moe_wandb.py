@@ -1,273 +1,152 @@
 import pytest
 
-from lalamo.publish_qwen_moe_wandb import (
-    agreement_rows,
+from lalamo.qwen_moe_ewma_eval import EwmaEvalResult, VariantResult
+from lalamo.qwen_moe_ewma_study_summary import StudySummary, WindowDelta
+from lalamo.qwen_moe_routing import RoutingAnalysisResult
+from lalamo.qwen_moe_rows import (
     continuation_agreement_chart_rows,
     continuation_cache_chart_rows,
     continuation_locality_chart_rows,
     continuation_transfer_chart_rows,
-    dataset_name,
-    nll_chart_rows,
     nll_rows,
-    phase_cache_rows,
-    phase_locality_rows,
-    phase_resident_budget_rows,
-    quality_transfer_chart_rows,
+    quality_transfer_rows,
+    routing_rows,
     study_rows,
+)
+from tests.unit.qwen_moe_test_builders import (
+    agreement,
+    cache_hit,
+    ewma_eval_result,
+    ewma_statistics,
+    loss_statistics,
+    phase_stats,
+    resident_budget,
+    routing_result,
+    study_summary,
+    window,
 )
 
 pytestmark = pytest.mark.fast
 
 
-def sample_routing_payload() -> dict:
-    return {
-        "config": {"dataset": "/tmp/hermes.parquet"},
-        "prompt_statistics": {
-            "windows": [
-                {
-                    "window_size": 4,
-                    "sequence_weighted_mean_distinct_experts_overall": 10.0,
-                    "sequence_weighted_mean_distinct_experts_overall_ci95": 0.5,
-                    "random_baseline_distinct_experts": 12.0,
-                    "sequence_weighted_observed_to_random_ratio": 0.8,
-                    "oracle_cache_hit_rates": [
-                        {"cache_size": 8, "sequence_weighted_hit_rate": 0.4, "sequence_weighted_hit_rate_ci95": 0.03},
-                    ],
-                }
-            ],
-            "resident_budgets": [
-                {
-                    "cache_size": 8,
-                    "resident_gib_total": 1.5,
-                    "sequence_weighted_hit_rate": 0.4,
-                    "sequence_weighted_hit_rate_ci95": 0.03,
-                    "sequence_weighted_expert_loads_per_token": 10.0,
-                    "sequence_weighted_expert_loads_per_token_ci95": 0.5,
-                    "sequence_weighted_transfer_bytes_per_token": 10.0 * 1024**2,
-                    "sequence_weighted_transfer_bytes_per_token_ci95": 0.5 * 1024**2,
-                }
-            ],
-        },
-        "continuation_statistics": {
-            "windows": [
-                {
-                    "window_size": 8,
-                    "sequence_weighted_mean_distinct_experts_overall": 20.0,
-                    "sequence_weighted_mean_distinct_experts_overall_ci95": 1.0,
-                    "random_baseline_distinct_experts": 24.0,
-                    "sequence_weighted_observed_to_random_ratio": 0.9,
-                    "oracle_cache_hit_rates": [
-                        {"cache_size": 16, "sequence_weighted_hit_rate": 0.6, "sequence_weighted_hit_rate_ci95": 0.02},
-                    ],
-                }
-            ],
-            "resident_budgets": [
-                {
-                    "cache_size": 16,
-                    "resident_gib_total": 3.0,
-                    "sequence_weighted_hit_rate": 0.6,
-                    "sequence_weighted_hit_rate_ci95": 0.02,
-                    "sequence_weighted_expert_loads_per_token": 8.0,
-                    "sequence_weighted_expert_loads_per_token_ci95": 0.4,
-                    "sequence_weighted_transfer_bytes_per_token": 8.0 * 1024**2,
-                    "sequence_weighted_transfer_bytes_per_token_ci95": 0.4 * 1024**2,
-                }
-            ],
-        },
-        "ewma_statistics": [
-            {
-                "alpha": 0.8,
-                "prompt_statistics": {
-                    "windows": [
-                        {
-                            "window_size": 4,
-                            "sequence_weighted_mean_distinct_experts_overall": 9.5,
-                            "sequence_weighted_mean_distinct_experts_overall_ci95": 0.4,
-                            "random_baseline_distinct_experts": 12.0,
-                            "sequence_weighted_observed_to_random_ratio": 0.79,
-                            "oracle_cache_hit_rates": [
-                                {
-                                    "cache_size": 8,
-                                    "sequence_weighted_hit_rate": 0.42,
-                                    "sequence_weighted_hit_rate_ci95": 0.02,
-                                },
-                            ],
-                        }
-                    ],
-                    "resident_budgets": [
-                        {
-                            "cache_size": 8,
-                            "resident_gib_total": 1.5,
-                            "sequence_weighted_hit_rate": 0.42,
-                            "sequence_weighted_hit_rate_ci95": 0.02,
-                            "sequence_weighted_expert_loads_per_token": 9.0,
-                            "sequence_weighted_expert_loads_per_token_ci95": 0.4,
-                            "sequence_weighted_transfer_bytes_per_token": 9.0 * 1024**2,
-                            "sequence_weighted_transfer_bytes_per_token_ci95": 0.4 * 1024**2,
-                        }
-                    ],
-                },
-                "continuation_statistics": {
-                    "windows": [
-                        {
-                            "window_size": 8,
-                            "sequence_weighted_mean_distinct_experts_overall": 19.0,
-                            "sequence_weighted_mean_distinct_experts_overall_ci95": 0.8,
-                            "random_baseline_distinct_experts": 24.0,
-                            "sequence_weighted_observed_to_random_ratio": 0.85,
-                            "oracle_cache_hit_rates": [
-                                {
-                                    "cache_size": 16,
-                                    "sequence_weighted_hit_rate": 0.64,
-                                    "sequence_weighted_hit_rate_ci95": 0.02,
-                                },
-                            ],
-                        }
-                    ],
-                    "resident_budgets": [
-                        {
-                            "cache_size": 16,
-                            "resident_gib_total": 3.0,
-                            "sequence_weighted_hit_rate": 0.64,
-                            "sequence_weighted_hit_rate_ci95": 0.02,
-                            "sequence_weighted_expert_loads_per_token": 7.0,
-                            "sequence_weighted_expert_loads_per_token_ci95": 0.3,
-                            "sequence_weighted_transfer_bytes_per_token": 7.0 * 1024**2,
-                            "sequence_weighted_transfer_bytes_per_token_ci95": 0.3 * 1024**2,
-                        }
-                    ],
-                },
-                "prompt_agreement": {
-                    "sequence_weighted_mean_retained_fraction_overall": 0.9,
-                    "sequence_weighted_mean_retained_fraction_overall_ci95": 0.01,
-                    "sequence_weighted_exact_match_rate": 0.3,
-                    "sequence_weighted_exact_match_rate_ci95": 0.02,
-                },
-                "continuation_agreement": {
-                    "sequence_weighted_mean_retained_fraction_overall": 0.88,
-                    "sequence_weighted_mean_retained_fraction_overall_ci95": 0.01,
-                    "sequence_weighted_exact_match_rate": 0.34,
-                    "sequence_weighted_exact_match_rate_ci95": 0.02,
-                },
-            }
-        ],
-    }
+def sample_routing_result() -> RoutingAnalysisResult:
+    prompt = phase_stats(
+        windows=(window(4, 10.0, (cache_hit(8, 0.4, 0.03),), distinct_ci95=0.5, random_baseline=12.0),),
+        resident_budgets=(resident_budget(8, 1.5, 0.4, 10.0, 10.0, hit_ci95=0.03, loads_ci95=0.5, transfer_ci95=0.5),),
+    )
+    continuation = phase_stats(
+        windows=(window(8, 20.0, (cache_hit(16, 0.6, 0.02),), distinct_ci95=1.0, random_baseline=24.0),),
+        resident_budgets=(resident_budget(16, 3.0, 0.6, 8.0, 8.0, hit_ci95=0.02, loads_ci95=0.4, transfer_ci95=0.4),),
+    )
+    ewma = ewma_statistics(
+        0.8,
+        prompt_statistics=phase_stats(
+            windows=(window(4, 9.5, (cache_hit(8, 0.42, 0.02),), distinct_ci95=0.4, random_baseline=12.0),),
+            resident_budgets=(
+                resident_budget(8, 1.5, 0.42, 9.0, 9.0, hit_ci95=0.02, loads_ci95=0.4, transfer_ci95=0.4),
+            ),
+        ),
+        continuation_statistics=phase_stats(
+            windows=(window(8, 19.0, (cache_hit(16, 0.64, 0.02),), distinct_ci95=0.8, random_baseline=24.0),),
+            resident_budgets=(
+                resident_budget(16, 3.0, 0.64, 7.0, 7.0, hit_ci95=0.02, loads_ci95=0.3, transfer_ci95=0.3),
+            ),
+        ),
+        prompt_agreement=agreement(0.9, 0.3, retained_ci95=0.01, exact_ci95=0.02),
+        continuation_agreement=agreement(0.88, 0.34, retained_ci95=0.01, exact_ci95=0.02),
+    )
+    return routing_result(
+        "/tmp/hermes.parquet",
+        prompt_statistics=prompt,
+        continuation_statistics=continuation,
+        ewma_statistics=(ewma,),
+    )
 
 
-def test_dataset_name_uses_path_stem() -> None:
-    assert dataset_name(sample_routing_payload()) == "hermes"
+def sample_nll_result() -> EwmaEvalResult:
+    baseline = VariantResult(
+        name="baseline",
+        alpha=0.0,
+        statistics=loss_statistics(1.0, 1.1),
+        delta_token_weighted_mean_continuation_nll_vs_baseline=0.0,
+        delta_sequence_weighted_mean_continuation_nll_vs_baseline=0.0,
+    )
+    variant = VariantResult(
+        name="ewma_0.800",
+        alpha=0.8,
+        statistics=loss_statistics(1.05, 1.15),
+        delta_token_weighted_mean_continuation_nll_vs_baseline=0.05,
+        delta_sequence_weighted_mean_continuation_nll_vs_baseline=0.05,
+    )
+    return ewma_eval_result("/tmp/hermes.parquet", baseline, (variant,))
 
 
-def test_phase_row_extractors_keep_window_and_alpha() -> None:
-    payload = sample_routing_payload()
-    locality = phase_locality_rows(payload["continuation_statistics"], "hermes", "continuation", 0.8)
-    cache = phase_cache_rows(payload["continuation_statistics"], "hermes", "continuation", 0.8)
-    resident = phase_resident_budget_rows(payload["continuation_statistics"], "hermes", "continuation", 0.8)
+def test_routing_row_extractors_keep_window_and_alpha() -> None:
+    locality_rows, cache_rows, resident_rows, agreement_rows = routing_rows(sample_routing_result())
 
-    assert locality == [["hermes", "continuation", "0.8", 8, 20.0, 1.0, 24.0, 0.9]]
-    assert cache == [["hermes", "continuation", "0.8", 8, 16, 0.6, 0.02]]
-    assert resident == [["hermes", "continuation", "0.8", 16, 3.0, 0.6, 0.02, 8.0, 0.4, 8.0, 0.4]]
+    continuation_locality = next(row for row in locality_rows if row.phase == "continuation" and row.alpha == "0.8")
+    continuation_cache = next(row for row in cache_rows if row.phase == "continuation" and row.alpha == "0.8")
+    continuation_resident = next(row for row in resident_rows if row.phase == "continuation" and row.alpha == "0.8")
+    continuation_agreement = next(row for row in agreement_rows if row.phase == "continuation")
 
-
-def test_agreement_rows_emit_one_row_per_phase() -> None:
-    rows = agreement_rows(sample_routing_payload(), "hermes")
-
-    assert rows == [
-        ["hermes", "prompt", "0.8", 0.9, 0.01, 0.3, 0.02],
-        ["hermes", "continuation", "0.8", 0.88, 0.01, 0.34, 0.02],
-    ]
+    assert continuation_locality.dataset == "hermes"
+    assert (continuation_locality.window_size, continuation_locality.distinct_experts) == (8, 19.0)
+    assert (continuation_cache.cache_size, continuation_cache.cache_hit_rate) == (16, 0.64)
+    assert (continuation_resident.cache_size, continuation_resident.transfer_mib_per_token) == (16, 7.0)
+    assert (continuation_agreement.retained_fraction, continuation_agreement.exact_match_rate) == (0.88, 0.34)
 
 
 def test_continuation_chart_rows_are_dataset_scoped() -> None:
-    payload = sample_routing_payload()
+    payload = sample_routing_result()
 
-    assert continuation_locality_chart_rows(payload, "hermes") == [
-        ["hermes", "baseline", 8, 20.0],
-        ["hermes", "0.8", 8, 19.0],
-    ]
-    assert continuation_cache_chart_rows(payload, "hermes", cache_size=16) == [
-        ["hermes", "baseline", 8, 0.6],
-        ["hermes", "0.8", 8, 0.64],
-    ]
-    assert continuation_transfer_chart_rows(payload, "hermes") == [
-        ["hermes", "baseline", 16, 3.0, 8.0],
-        ["hermes", "0.8", 16, 3.0, 7.0],
-    ]
-    assert continuation_agreement_chart_rows(payload, "hermes") == [[
-        "hermes",
-        0.8,
-        0.88,
-        0.34,
-    ]]
+    assert [
+        (row.dataset, row.alpha, row.window_size, row.distinct_experts)
+        for row in continuation_locality_chart_rows(payload)
+    ] == [("hermes", "baseline", 8, 20.0), ("hermes", "0.8", 8, 19.0)]
+    assert [
+        (row.dataset, row.alpha, row.window_size, row.cache_hit_rate)
+        for row in continuation_cache_chart_rows(payload, cache_size=16)
+    ] == [("hermes", "baseline", 8, 0.6), ("hermes", "0.8", 8, 0.64)]
+    assert [
+        (row.dataset, row.alpha, row.cache_size, row.transfer_mib_per_token)
+        for row in continuation_transfer_chart_rows(payload)
+    ] == [("hermes", "baseline", 16, 8.0), ("hermes", "0.8", 16, 7.0)]
+    assert [
+        (row.dataset, row.alpha, row.retained_fraction, row.exact_match_rate)
+        for row in continuation_agreement_chart_rows(payload)
+    ] == [("hermes", "0.8", 0.88, 0.34)]
 
 
 def test_nll_rows_include_baseline_and_variant() -> None:
-    payload = {
-        "baseline": {
-            "statistics": {
-                "token_weighted_mean_continuation_nll": 1.0,
-                "token_weighted_continuation_perplexity": 2.0,
-                "sequence_weighted_mean_continuation_nll": 1.1,
-                "sequence_weighted_continuation_perplexity": 2.2,
-            }
-        },
-        "ewma_variants": [
-            {
-                "alpha": 0.8,
-                "statistics": {
-                    "token_weighted_mean_continuation_nll": 1.05,
-                    "token_weighted_continuation_perplexity": 2.1,
-                    "sequence_weighted_mean_continuation_nll": 1.15,
-                    "sequence_weighted_continuation_perplexity": 2.3,
-                },
-                "delta_token_weighted_mean_continuation_nll_vs_baseline": 0.05,
-                "delta_sequence_weighted_mean_continuation_nll_vs_baseline": 0.05,
-            }
-        ],
-    }
+    payload = sample_nll_result()
+    rows = nll_rows(payload)
 
-    rows = nll_rows(payload, "hermes")
-
-    assert rows == [
-        ["hermes", "baseline", 1.0, 2.0, 1.1, 2.2, 0.0, 0.0],
-        ["hermes", "0.8", 1.05, 2.1, 1.15, 2.3, 0.05, 0.05],
+    assert [(row.dataset, row.alpha, row.token_nll, row.token_ppl) for row in rows] == [
+        ("hermes", "baseline", 1.0, 2.0),
+        ("hermes", "0.8", 1.05, 2.05),
     ]
-    assert nll_chart_rows(payload, "hermes") == [
-        ["hermes", "baseline", 1.0, 2.0],
-        ["hermes", "0.8", 1.05, 2.1],
-    ]
-    assert quality_transfer_chart_rows(sample_routing_payload(), payload, "hermes") == [
-        ["hermes", "baseline", 16, 3.0, 8.0, 1.0],
-        ["hermes", "0.8", 16, 3.0, 7.0, 1.05],
-    ]
+    assert [
+        (row.dataset, row.alpha, row.transfer_mib_per_token, row.token_nll)
+        for row in quality_transfer_rows(sample_routing_result(), payload)
+    ] == [("hermes", "baseline", 8.0, 1.0), ("hermes", "0.8", 7.0, 1.05)]
 
 
 def test_study_rows_expand_each_window() -> None:
-    payload = {
-        "alphas": [
-            {
-                "alpha": 0.8,
-                "datasets": [
-                    {
-                        "dataset": "hermes",
-                        "retained_fraction": 0.88,
-                        "exact_match_rate": 0.34,
-                        "passes_minimal_intervention_rule": True,
-                        "windows": [
-                            {
-                                "window_size": 32,
-                                "baseline_distinct": 77.0,
-                                "ewma_distinct": 70.0,
-                                "delta_distinct": -7.0,
-                                "baseline_cache_hit_rate": 0.55,
-                                "ewma_cache_hit_rate": 0.58,
-                                "delta_cache_hit_rate": 0.03,
-                            }
-                        ],
-                    }
-                ],
-            }
-        ]
-    }
+    payload: StudySummary = study_summary(
+        0.8,
+        WindowDelta(
+            window_size=32,
+            baseline_distinct=77.0,
+            ewma_distinct=70.0,
+            delta_distinct=-7.0,
+            baseline_cache_hit_rate=0.55,
+            ewma_cache_hit_rate=0.58,
+            delta_cache_hit_rate=0.03,
+        ),
+    )
+    rows = study_rows(payload)
 
-    assert study_rows(payload) == [[0.8, "hermes", 32, 77.0, 70.0, -7.0, 0.55, 0.58, 0.03, 0.88, 0.34, True]]
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row.alpha, row.dataset, row.window_size) == (0.8, "hermes", 32)
+    assert (row.delta_distinct, row.delta_cache_hit_rate, row.passes_rule) == (-7.0, 0.03, True)
