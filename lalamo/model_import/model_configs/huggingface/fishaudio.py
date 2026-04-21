@@ -1,11 +1,12 @@
 from collections import ChainMap
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
 
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
+
 from lalamo.common import ParameterPath, WeightShard
 from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.fishaudio_loaders import (

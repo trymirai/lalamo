@@ -4,7 +4,6 @@ from typing import Self
 import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_array, require_mapping, require_tree

@@ -298,7 +298,9 @@ def _prepare_fishaudio_tokenizer(
     model_spec: ModelSpec,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> tuple[FishAudioConfig, Tokenizer]:
-    tokenizer_path = model_spec.origin.resolve_file(model_spec.configs.tokenizer, progress_callback)
+    tokenizer_spec = model_spec.configs.tokenizer
+    assert isinstance(tokenizer_spec, FileSpec)
+    tokenizer_path = model_spec.origin.resolve_file(tokenizer_spec, progress_callback)
     special_tokens_path = model_spec.origin.resolve_file(FileSpec(filename="special_tokens.json"), progress_callback)
     tokenizer, special_inference_tokens = load_tokenizer_from_fishaudio_tiktoken(tokenizer_path, special_tokens_path)
     updated_config = replace(

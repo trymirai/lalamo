@@ -33,11 +33,18 @@ __all__ = [
 ]
 
 
+@dataclass(frozen=True)
+class TalkerInputs:
+    prefill: Float[Array, "batch_size prefill_size num_channels"]
+    text_continuation: Float[Array, "batch_size tail_size num_channels"]
+    text_pad: Float[Array, "batch_size 1 num_channels"]
+
+
 def _sample_token_ids(
-    logits: Float[Array, "batch vocabulary"],
+    logits: Float[Array, "batch_size vocab_size"],
     sampling_policy: SamplingPolicy,
     key: PRNGKeyArray,
-) -> Int[Array, " batch"]:
+) -> Int[Array, " batch_size"]:
     batch_size, _ = logits.shape
     processed_logits = vmap(sampling_policy.process_logits)(logits)
     sample_keys = jax.random.split(key, batch_size)
@@ -319,8 +326,8 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
 
     def _project_text_embeddings(
         self,
-        text_tokens: Int[Array, "batch tokens"],
-    ) -> Float[Array, "batch tokens channels"]:
+        text_tokens: Int[Array, "batch_size num_tokens"],
+    ) -> Float[Array, "batch_size num_tokens num_channels"]:
         x = vmap(self.text_embedding.embed)(text_tokens)
         (x,) = vmap_twice(self.text_projection_fc1)(x)
         x = jax.nn.silu(x)
@@ -329,8 +336,8 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
 
     def _to_predictor_space(
         self,
-        x: Float[Array, "batch tokens talker_hidden"],
-    ) -> Float[Array, "batch tokens predictor_hidden"]:
+        x: Float[Array, "batch_size num_tokens talker_hidden_size"],
+    ) -> Float[Array, "batch_size num_tokens predictor_hidden_size"]:
         if self.talker_to_predictor_projection is None:
             return x
         (y,) = vmap_twice(self.talker_to_predictor_projection)(x)
@@ -339,9 +346,9 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
     def _embed_special_text_tokens(
         self,
     ) -> tuple[
-        Float[Array, "batch 1 channels"],
-        Float[Array, "batch 1 channels"],
-        Float[Array, "batch 1 channels"],
+        Float[Array, "batch_size 1 num_channels"],
+        Float[Array, "batch_size 1 num_channels"],
+        Float[Array, "batch_size 1 num_channels"],
     ]:
         ids = jnp.asarray(
             [[self.config.tts_bos_token_id, self.config.tts_eos_token_id, self.config.tts_pad_token_id]],
@@ -351,88 +358,146 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         bos, eos, pad = jnp.split(hidden, 3, axis=1)
         return bos, eos, pad
 
-    def _build_codec_tag_ids(
-        self,
-        *,
-        speaker_codec_id: int | None,
-        language_codec_id: int | None,
-    ) -> tuple[int, ...]:
+    def _build_codec_prefix_ids(self, context: TTSDecodingContext) -> tuple[int, ...]:
         cfg = self.config
+        speaker_codec_id = cfg.speaker_id.get(context.speaker) if context.speaker is not None else None
+        language_codec_id = cfg.language_id.get(context.language.lower()) if context.language is not None else None
         if language_codec_id is None:
-            tags = (cfg.codec_nothink_id, cfg.codec_think_bos_id, cfg.codec_think_eos_id)
+            prefix = (cfg.codec_nothink_id, cfg.codec_think_bos_id, cfg.codec_think_eos_id)
         else:
-            tags = (cfg.codec_think_id, cfg.codec_think_bos_id, language_codec_id, cfg.codec_think_eos_id)
+            prefix = (cfg.codec_think_id, cfg.codec_think_bos_id, language_codec_id, cfg.codec_think_eos_id)
         if speaker_codec_id is not None:
-            tags = (*tags, speaker_codec_id)
-        return (*tags, cfg.codec_pad_id, cfg.codec_bos_id)
+            prefix = (*prefix, speaker_codec_id)
+        return (*prefix, cfg.codec_pad_id, cfg.codec_bos_id)
 
-    def _build_talker_prompt(
+    def _prepare_talker_inputs(
         self,
-        text_tokens: Int[Array, "batch tokens"],
-        *,
-        speaker_codec_id: int | None = None,
-        language_codec_id: int | None = None,
-        instruction_tokens: Int[Array, "batch tokens"] | None = None,
-    ) -> tuple[
-        Float[Array, "batch prompt_tokens channels"],
-        Float[Array, "batch trailing_tokens channels"],
-        Float[Array, "batch 1 channels"],
-    ]:
+        text_tokens: Int[Array, "batch_size num_tokens"],
+        codec_prefix_ids: tuple[int, ...],
+        instruction_tokens: Int[Array, "batch_size num_tokens"] | None,
+    ) -> TalkerInputs:
         text_hidden = self._project_text_embeddings(text_tokens)
-        _, text_length, _ = text_hidden.shape
-        batch_size, _, hidden_dim = text_hidden.shape
+        batch_size, text_length, hidden_dim = text_hidden.shape
 
-        tts_bos_embed, tts_eos_embed, tts_pad_embed = self._embed_special_text_tokens()
+        tts_bos, tts_eos, tts_pad = self._embed_special_text_tokens()
+        codec_prefix = vmap(self.codec_embedding.embed)(jnp.asarray([codec_prefix_ids], dtype=jnp.int32))
 
-        # Codec prefill: tag sequence embedded through codec_embedding
-        tag_ids = self._build_codec_tag_ids(speaker_codec_id=speaker_codec_id, language_codec_id=language_codec_id)
-        codec_prefill_embed = vmap(self.codec_embedding.embed)(jnp.asarray([tag_ids], dtype=jnp.int32))
-
-        # Split text into role tokens (first 3), content tokens, and the
-        # trailing <|im_end|> token (last 1) which must be excluded from content
-        # to avoid vocalizing it.
-        # The prompt interleaves text and codec embeddings: positions that carry both
-        # text and codec information are summed element-wise.
         role_length = min(3, text_length)
         role_hidden = text_hidden[:, :role_length, :]
-
         content_hidden = text_hidden[:, role_length:-1, :]
         content_length = int(content_hidden.shape[1])
-        first_content = content_hidden[:, :1, :] if content_length > 0 else tts_pad_embed
+        first_content = content_hidden[:, :1, :] if content_length > 0 else tts_pad
         trailing_content = (
             content_hidden[:, 1:, :]
             if content_length > 1
             else jnp.zeros((batch_size, 0, hidden_dim), dtype=text_hidden.dtype)
         )
 
-        # Build the codec prompt: pad-biased prefill body summed with [pad..., bos]
-        codec_prefill_body = codec_prefill_embed[:, :-1, :]
-        left_pad_count = int(codec_prefill_body.shape[1]) - 1
-        codec_bias = jnp.concatenate(
-            [jnp.repeat(tts_pad_embed, left_pad_count, axis=1), tts_bos_embed],
-            axis=1,
-        )
-        codec_prompt = codec_bias + codec_prefill_body
+        codec_prefix_body = codec_prefix[:, :-1, :]
+        left_pad_count = int(codec_prefix_body.shape[1]) - 1
+        text_bias = jnp.concatenate([jnp.repeat(tts_pad, left_pad_count, axis=1), tts_bos], axis=1)
+        fused_prefix = text_bias + codec_prefix_body
+        first_position = first_content + codec_prefix[:, -1:, :]
 
-        # First content position gets both text and the last codec prefill token summed
-        first_position = first_content + codec_prefill_embed[:, -1:, :]
-
-        prompt_parts = (role_hidden, codec_prompt, first_position)
+        prompt_parts = (role_hidden, fused_prefix, first_position)
         if instruction_tokens is not None:
             prompt_parts = (self._project_text_embeddings(instruction_tokens), *prompt_parts)
-        prompt = jnp.concatenate(prompt_parts, axis=1)
-        trailing_text_hidden = jnp.concatenate([trailing_content, tts_eos_embed], axis=1)
-        return prompt, trailing_text_hidden, tts_pad_embed
+        prefill = jnp.concatenate(prompt_parts, axis=1)
+        text_continuation = jnp.concatenate([trailing_content, tts_eos], axis=1)
+        return TalkerInputs(prefill=prefill, text_continuation=text_continuation, text_pad=tts_pad)
+
+    def _prefill_talker(
+        self,
+        prefill: Float[Array, "batch_size num_tokens num_channels"],
+    ) -> tuple[Float[Array, "batch_size num_tokens num_channels"], object]:
+        batch_size, length, _ = prefill.shape
+        positions = jnp.broadcast_to(jnp.arange(length, dtype=jnp.int32)[None, :], (batch_size, length))
+        result = self.talker_transformer(
+            inner_features=prefill,
+            token_positions=positions,
+            state=None,
+            return_updated_state=True,
+            return_layer_results=False,
+            return_positional_embeddings=False,
+            lengths_without_padding=None,
+            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
+            forward_pass_config=None,
+        )
+        return result.outputs, result.updated_state
+
+    def _step_talker(
+        self,
+        step_input: Float[Array, "batch_size 1 num_channels"],
+        state: object,
+        position: int,
+    ) -> tuple[Float[Array, "batch_size 1 num_channels"], object]:
+        result = self.talker_transformer(
+            inner_features=step_input,
+            token_positions=jnp.array([[position]], dtype=jnp.int32),
+            state=state,
+            return_updated_state=True,
+            return_layer_results=False,
+            return_positional_embeddings=False,
+            lengths_without_padding=None,
+            forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
+            forward_pass_config=None,
+        )
+        return result.outputs, result.updated_state
+
+    def _generate_codes(
+        self,
+        inputs: TalkerInputs,
+        sampling_policy: SamplingPolicy,
+        key: PRNGKeyArray,
+    ) -> list[Int[Array, " num_codebooks"]]:
+        prefill_length = int(inputs.prefill.shape[1])
+        max_new_tokens = max(
+            0,
+            min(
+                self.config.max_new_tokens,
+                self.config.talker_transformer_config.context_length - prefill_length,
+            ),
+        )
+        talker_hidden, talker_state = self._prefill_talker(inputs.prefill)
+        tail_length = int(inputs.text_continuation.shape[1])
+
+        codes: list[Int[Array, " num_codebooks"]] = []
+        for step in range(max_new_tokens):
+            last_hidden = talker_hidden[:, -1:, :]
+            (codec_logits,) = vmap_twice(self.codec_head)(last_hidden)
+            codec_logits = jnp.squeeze(codec_logits, axis=1)
+
+            key, codec_key = jax.random.split(key)
+            first_codec_id = _sample_token_ids(codec_logits, sampling_policy, codec_key)
+            if int(first_codec_id[0]) == self.config.codec_eos_token_id:
+                break
+
+            key, predictor_key = jax.random.split(key)
+            step_codes, step_codec_hidden = self._decode_code_groups(
+                last_hidden,
+                first_codec_id,
+                sampling_policy,
+                predictor_key,
+            )
+            codes.append(step_codes[0])
+
+            text_slice = inputs.text_continuation[:, step : step + 1, :] if step < tail_length else inputs.text_pad
+            talker_hidden, talker_state = self._step_talker(
+                step_codec_hidden + text_slice,
+                talker_state,
+                prefill_length + step,
+            )
+        return codes
 
     def _decode_code_groups(
         self,
-        last_hidden: Float[Array, "batch 1 channels"],
-        first_codec_id: Int[Array, " batch"],
+        last_hidden: Float[Array, "batch_size 1 num_channels"],
+        first_codec_id: Int[Array, " batch_size"],
         sampling_policy: SamplingPolicy,
         key: PRNGKeyArray,
     ) -> tuple[
-        Int[Array, "batch codebooks"],
-        Float[Array, "batch 1 channels"],
+        Int[Array, "batch_size num_codebooks"],
+        Float[Array, "batch_size 1 num_channels"],
     ]:
         first_codec_embedding = vmap(self.codec_embedding.embed)(first_codec_id[:, None])
         predictor_inputs = jnp.concatenate([last_hidden, first_codec_embedding], axis=1)
@@ -496,105 +561,19 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
 
     def decode_utterance(
         self,
-        text_tokens: Int[Array, "batch tokens"],
+        text_tokens: Int[Array, "batch_size num_tokens"],
         *,
         context: TTSDecodingContext,
         sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray,
     ) -> CodebookCodes:
-        if text_tokens.ndim != 2:
-            raise ValueError(f"text_tokens must be rank 2, got {text_tokens.shape}")
-        batch_size, _ = text_tokens.shape
-        if batch_size != 1:
-            raise ValueError("Qwen3-TTS decoder currently supports batch_size=1 only.")
-
-        if sampling_policy is None:
-            sampling_policy = make_policy(temperature=0.9, top_p=1.0, top_k=50)
-
-        speaker_codec_id = self.config.speaker_id.get(context.speaker) if context.speaker is not None else None
-        language_codec_id = (
-            self.config.language_id.get(context.language.lower()) if context.language is not None else None
-        )
-
-        talker_prompt, trailing_text_hidden, tts_pad_embed = self._build_talker_prompt(
-            text_tokens,
-            speaker_codec_id=speaker_codec_id,
-            language_codec_id=language_codec_id,
-            instruction_tokens=context.instruction_tokens,
-        )
-        generated_step_codes: list[Array] = []
-
-        prompt_length = int(talker_prompt.shape[1])
-        max_new_tokens = min(
-            self.config.max_new_tokens,
-            self.config.talker_transformer_config.context_length - prompt_length,
-        )
-        max_new_tokens = max(max_new_tokens, 0)
-
-        prompt_positions = jnp.broadcast_to(
-            jnp.arange(prompt_length, dtype=jnp.int32)[None, :],
-            (batch_size, prompt_length),
-        )
-        talker_result = self.talker_transformer(
-            inner_features=talker_prompt,
-            token_positions=prompt_positions,
-            state=None,
-            return_updated_state=True,
-            return_layer_results=False,
-            return_positional_embeddings=False,
-            lengths_without_padding=None,
-            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-            forward_pass_config=None,
-        )
-        talker_hidden = talker_result.outputs
-        talker_state = talker_result.updated_state
-
-        for step in range(max_new_tokens):
-            last_hidden = talker_hidden[:, -1:, :]
-            (codec_logits,) = vmap_twice(self.codec_head)(last_hidden)
-            codec_logits = jnp.squeeze(codec_logits, axis=1)
-
-            key, codec_key = jax.random.split(key)
-            first_codec_id = _sample_token_ids(codec_logits, sampling_policy, codec_key)
-
-            if int(first_codec_id[0]) == self.config.codec_eos_token_id:
-                break
-
-            key, predictor_key = jax.random.split(key)
-            step_codec_ids, step_codec_hidden = self._decode_code_groups(
-                last_hidden,
-                first_codec_id,
-                sampling_policy,
-                predictor_key,
-            )
-            generated_step_codes.append(step_codec_ids[0])
-
-            if step < trailing_text_hidden.shape[1]:
-                next_talker_input = step_codec_hidden + trailing_text_hidden[:, step : step + 1, :]
-            else:
-                next_talker_input = step_codec_hidden + tts_pad_embed
-
-            step_pos = jnp.array([[prompt_length + step]], dtype=jnp.int32)
-            talker_result = self.talker_transformer(
-                inner_features=next_talker_input,
-                token_positions=step_pos,
-                state=talker_state,
-                return_updated_state=True,
-                return_layer_results=False,
-                return_positional_embeddings=False,
-                lengths_without_padding=None,
-                forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
-                forward_pass_config=None,
-            )
-            talker_hidden = talker_result.outputs
-            talker_state = talker_result.updated_state
-
-        all_codes = jnp.stack(generated_step_codes, axis=1).astype(jnp.int32)
+        sampling_policy = sampling_policy or make_policy(temperature=0.9, top_p=1.0, top_k=50)
+        codec_prefix_ids = self._build_codec_prefix_ids(context)
+        inputs = self._prepare_talker_inputs(text_tokens, codec_prefix_ids, context.instruction_tokens)
+        step_codes = self._generate_codes(inputs, sampling_policy, key)
+        codes = jnp.stack(step_codes, axis=1).astype(jnp.int32)
         num_semantic = self.config.num_semantic
-        return CodebookCodes(
-            semantic=all_codes[:num_semantic, :],
-            acoustic=all_codes[num_semantic:, :],
-        )
+        return CodebookCodes(semantic=codes[:num_semantic, :], acoustic=codes[num_semantic:, :])
 
     def export_weights(self) -> ParameterTree[Array]:
         if self.talker_to_predictor_projection is None:

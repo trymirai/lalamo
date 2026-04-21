@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import NamedTuple
 
 import huggingface_hub
-from jaxtyping import DTypeLike
 import yaml
+from jaxtyping import DTypeLike
 
 from lalamo.common import WeightShard, cast_if_float
 from lalamo.registry_abc import RegistryABC

@@ -8,8 +8,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import lax
-
-from lalamo.modules.utils import vmap_twice
 from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
@@ -17,6 +15,7 @@ from lalamo.modules.activations import Activation
 from lalamo.modules.common import LalamoModule, register_config_union
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
+from lalamo.modules.utils import vmap_twice
 
 
 class Conv1dPadding(Enum):

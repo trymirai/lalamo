@@ -52,19 +52,19 @@ class ConfigMap:
     extra_configs: tuple[FileSpec, ...] = ()
 
 
-def _is_foreign_config_type(t: Any) -> bool:
+def _is_foreign_config_type(t: object) -> bool:
     origin = get_origin(t)
     args = get_args(t)
     return origin is type and len(args) == 1 and isinstance(args[0], type) and issubclass(args[0], ForeignConfig)
 
 
 def _structure_foreign_config_factory(
-    t: Any,  # noqa: ARG001
+    t: object,  # noqa: ARG001
     c: cattrs.Converter,  # noqa: ARG001
-) -> Callable[[Any, Any], type[ForeignConfig]]:
+) -> Callable[[object, object], type[ForeignConfig]]:
     name_to_type = {t.__name__: t for t in ForeignConfig.__descendants__()}
 
-    def _hook(v: Any, _t: Any) -> type[ForeignConfig]:
+    def _hook(v: object, _t: object) -> type[ForeignConfig]:
         if isinstance(v, type) and issubclass(v, ForeignConfig):
             return v
         return name_to_type[cast("str", v)]
@@ -72,37 +72,37 @@ def _structure_foreign_config_factory(
     return _hook
 
 
-def _unstructure_foreign_config_factory(t: Any, c: cattrs.Converter) -> Callable[[type[ForeignConfig]], str]:  # noqa: ARG001
+def _unstructure_foreign_config_factory(t: object, c: cattrs.Converter) -> Callable[[type[ForeignConfig]], str]:  # noqa: ARG001
     def _hook(v: type[ForeignConfig]) -> str:
         return v.__name__
 
     return _hook
 
 
-def _structure_system_prompt(value: Any, _type: Any) -> FileSpec | str | None:
+def _structure_system_prompt(value: object, _type: object) -> FileSpec | str | None:
     if value is None:
         return None
     if isinstance(value, str):
         return value
-    if isinstance(value, dict):
-        if "filename" in value:
-            return FileSpec(**value)
+    if isinstance(value, dict) and "filename" in value:
+        return FileSpec(**cast("dict[str, Any]", value))
     raise ValueError(f"Invalid system_prompt value: {value}")
 
 
-def _structure_chat_template(value: Any, _type: Any) -> FileSpec | JSONFieldSpec | str | None:
+def _structure_chat_template(value: object, _type: object) -> FileSpec | JSONFieldSpec | str | None:
     if value is None:
         return None
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        if "file_spec" in value and "field_name" in value:
+        value_dict = cast("dict[str, Any]", value)
+        if "file_spec" in value_dict and "field_name" in value_dict:
             return JSONFieldSpec(
-                file_spec=FileSpec(**value["file_spec"]),
-                field_name=value["field_name"],
+                file_spec=FileSpec(**value_dict["file_spec"]),
+                field_name=value_dict["field_name"],
             )
-        if "filename" in value:
-            return FileSpec(**value)
+        if "filename" in value_dict:
+            return FileSpec(**value_dict)
     raise ValueError(f"Invalid chat_template value: {value}")
 
 
