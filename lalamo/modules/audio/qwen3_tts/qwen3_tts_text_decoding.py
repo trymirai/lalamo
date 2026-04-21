@@ -415,7 +415,7 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         codec_prompt = codec_bias + codec_prefill_body
 
         # First content position gets both text and the last codec prefill token summed
-        first_position = first_content + codec_prefill_body
+        first_position = first_content + codec_prefill_embed[:, -1:, :]
 
         prompt_parts = (role_hidden, codec_prompt, first_position)
         if instruction_tokens is not None:
