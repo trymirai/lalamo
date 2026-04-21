@@ -59,21 +59,21 @@ class StubTextDecoder(TTSTextDecoder["StubTextDecoderConfig"]):
     ) -> CodebookCodes:
         batch_size = text_tokens.shape[0]
         output_length = text_tokens.shape[1]
-        n_sem = 1
-        n_aco = self.config.num_codebooks - n_sem
+        num_semantic = 1
+        num_acoustic = self.config.num_codebooks - num_semantic
 
-        key_sem, key_aco = jax.random.split(key)
+        key_semantic, key_acoustic = jax.random.split(key)
         return CodebookCodes(
             semantic=jax.random.randint(
-                key_sem,
-                shape=(batch_size, n_sem, output_length),
+                key_semantic,
+                shape=(batch_size, num_semantic, output_length),
                 minval=0,
                 maxval=self.config.codebook_size,
                 dtype=jnp.int32,
             ),
             acoustic=jax.random.randint(
-                key_aco,
-                shape=(batch_size, n_aco, output_length),
+                key_acoustic,
+                shape=(batch_size, num_acoustic, output_length),
                 minval=0,
                 maxval=self.config.codebook_size,
                 dtype=jnp.int32,

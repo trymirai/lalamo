@@ -77,6 +77,16 @@ LLAMA32 = [
     ModelSpec(
         vendor="Meta",
         family="Llama-3.2",
+        name="Llama-3.2-3B-Instruct-AWQ",
+        size="3B",
+        quantization=QuantizationMode.UINT4,
+        origin=HuggingFaceOrigin(repo="trymirai/Llama-3.2-3B-Instruct-AWQ"),
+        config_type=HFLlamaConfig,
+        use_cases=tuple(),
+    ),
+    ModelSpec(
+        vendor="Meta",
+        family="Llama-3.2",
         name="Llama-3.2-3B-Instruct-4bit",
         size="3B",
         quantization=QuantizationMode.UINT4,

@@ -5,6 +5,10 @@ from lalamo.model_import.model_specs.origins import (
     LocalOrigin,
 )
 
+from pathlib import Path
+
+from lalamo.model_import.model_specs.origins import FileSpec
+
 EXAMPLE_JSON = {
     "vendor": "Meta",
     "family": "Llama-3.2",
@@ -82,10 +86,6 @@ def test_origin_from_json_local_defaults() -> None:
 
 
 def test_local_origin_resolve_file() -> None:
-    from pathlib import Path
-
-    from lalamo.model_import.model_specs.origins import FileSpec
-
     origin = LocalOrigin(root="/tmp/models")
     assert origin.resolve_file(FileSpec("config.json")) == Path("/tmp/models/config.json")
 

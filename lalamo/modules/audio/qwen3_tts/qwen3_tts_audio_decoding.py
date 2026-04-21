@@ -30,6 +30,7 @@ from lalamo.modules.mlp import DenseMLP, DenseMLPConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import RoPE, UnscaledRoPEConfig
 from lalamo.modules.token_mixers import Attention, AttentionConfig
+from lalamo.modules.utils import vmap_twice
 
 from .qwen3_tts_modules import (
     ResidualVectorQuantizer,
@@ -102,7 +103,7 @@ class Qwen3TTSPreTransformerLayer(LalamoModule[Qwen3TTSPreTransformerLayerConfig
         position_embeddings: object,
     ) -> Float[Array, "batch tokens channels"]:
         residual = hidden_states
-        hidden_states = vmap(vmap(self.input_layernorm))(hidden_states)
+        hidden_states = vmap_twice(self.input_layernorm)(hidden_states)
         batched_attention_fn = vmap(partial(self.self_attn, return_updated_state=False))
         attention_outputs, _ = batched_attention_fn(
             hidden_states,
@@ -113,7 +114,7 @@ class Qwen3TTSPreTransformerLayer(LalamoModule[Qwen3TTSPreTransformerLayerConfig
         hidden_states = residual + attention_outputs * self.self_attn_layer_scale[None, None, :]
 
         residual = hidden_states
-        hidden_states = vmap(vmap(self.post_attention_layernorm))(hidden_states)
+        hidden_states = vmap_twice(self.post_attention_layernorm)(hidden_states)
         hidden_states = self.mlp(
             hidden_states,
             lengths_without_padding=None,
@@ -247,7 +248,7 @@ class Qwen3TTSPreTransformer(LalamoModule[Qwen3TTSPreTransformerConfig]):
         self,
         hidden_states: Float[Array, "batch tokens channels"],
     ) -> Float[Array, "batch tokens channels"]:
-        (hidden_states,) = vmap(vmap(self.input_projection))(hidden_states)
+        (hidden_states,) = vmap_twice(self.input_projection)(hidden_states)
 
         batch_size, seq_length, _ = hidden_states.shape
         token_positions = jnp.broadcast_to(jnp.arange(seq_length, dtype=jnp.int32)[None, :], (batch_size, seq_length))
@@ -256,8 +257,8 @@ class Qwen3TTSPreTransformer(LalamoModule[Qwen3TTSPreTransformerConfig]):
         for layer in self.layers:
             hidden_states = layer(hidden_states, position_embeddings)
 
-        hidden_states = vmap(vmap(self.output_norm))(hidden_states)
-        (hidden_states,) = vmap(vmap(self.output_projection))(hidden_states)
+        hidden_states = vmap_twice(self.output_norm)(hidden_states)
+        (hidden_states,) = vmap_twice(self.output_projection)(hidden_states)
         return hidden_states
 
     def export_weights(self) -> ParameterTree[Array]:
@@ -305,18 +306,10 @@ class Qwen3TTSAudioDecoderConfig(TTSAudioDecoderConfigBase):
     upsampling_ratios: tuple[int, ...]
     decoder_dim: int
 
-    def _dac_spatial_params(self) -> DACDecoderSpatialParams:
-        return DACDecoderSpatialParams(
-            input_channel=self.latent_dim,
-            channels=self.decoder_dim,
-            rates=self.upsample_rates,
-            out_channels=1,
-        )
-
     def empty(self) -> "Qwen3TTSAudioDecoder":
         quantizer = self.quantizer_config.empty(
             dimension=self.codebook_dim // 2,
-            n_q=self.num_quantizers,
+            num_quantizers=self.num_quantizers,
             bins=self.codebook_size,
             output_dimension=self.codebook_dim,
         )
@@ -345,7 +338,13 @@ class Qwen3TTSAudioDecoderConfig(TTSAudioDecoderConfigBase):
             for factor in self.upsampling_ratios
         )
 
-        dac_decoder = self.dac_decoder_config.empty(self._dac_spatial_params())
+        dac_params = DACDecoderSpatialParams(
+            input_channel=self.latent_dim,
+            channels=self.decoder_dim,
+            rates=self.upsample_rates,
+            out_channels=1,
+        )
+        dac_decoder = self.dac_decoder_config.empty(dac_params)
 
         total_upsample = math.prod((*self.upsample_rates, *self.upsampling_ratios))
 
@@ -370,7 +369,7 @@ class Qwen3TTSAudioDecoderConfig(TTSAudioDecoderConfigBase):
 
         quantizer = self.quantizer_config.random_init(
             dimension=self.codebook_dim // 2,
-            n_q=self.num_quantizers,
+            num_quantizers=self.num_quantizers,
             bins=self.codebook_size,
             output_dimension=self.codebook_dim,
             key=quantizer_key,
@@ -403,8 +402,14 @@ class Qwen3TTSAudioDecoderConfig(TTSAudioDecoderConfigBase):
             for factor, block_key in zip(self.upsampling_ratios, upsample_keys, strict=True)
         )
 
+        dac_params = DACDecoderSpatialParams(
+            input_channel=self.latent_dim,
+            channels=self.decoder_dim,
+            rates=self.upsample_rates,
+            out_channels=1,
+        )
         dac_decoder = self.dac_decoder_config.random_init(
-            self._dac_spatial_params(),
+            dac_params,
             key=dac_decoder_key,
         )
 

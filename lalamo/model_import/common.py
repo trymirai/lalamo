@@ -13,6 +13,7 @@ from lalamo.audio.tts_message_processor import TTSMessageProcessor, TTSMessagePr
 from lalamo.audio.utils import dummy_char_level_tokenizer_config
 from lalamo.common import WeightShard
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
+from lalamo.model_import.loaders.fishaudio_loaders import load_tokenizer_from_fishaudio_tiktoken
 from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
 from lalamo.model_import.model_configs.nanocodec import NanoCodecForeignConfig
 from lalamo.model_registry import ModelRegistry
@@ -80,18 +81,6 @@ class ImportResults(NamedTuple):
     metadata: ModelMetadata
 
 
-def token_ids_to_text(tokenizer: Tokenizer, token_ids: int | list[int] | None) -> str | None:
-    match token_ids:
-        case int(tid):
-            return tokenizer.decode([tid], skip_special_tokens=False)
-        case [int(), *_] as ids if all(isinstance(i, int) for i in ids):
-            return tokenizer.decode([ids[0]], skip_special_tokens=False)
-        case None:
-            return None
-        case _:
-            raise ValueError(f"Expected int, list[int], or None, got {token_ids!r}")
-
-
 def _instantiate_tokenizer_from_model_spec(
     model_spec: ModelSpec,
     progress_callback: Callable[[StatusEvent], None] | None = None,
@@ -102,8 +91,6 @@ def _instantiate_tokenizer_from_model_spec(
             return Tokenizer.from_file(str(tokenizer_file))
         case None if model_spec.config_type is NanoCodecForeignConfig:
             return Tokenizer.from_str(dummy_char_level_tokenizer_config())
-        case None:
-            raise ValueError(f"Model {model_spec.name} has no tokenizer configured but is not a NanoCodec model.")
         case _:
             raise ValueError(f"Expected FileSpec or None for tokenizer, got {type(model_spec.configs.tokenizer)}")
 
@@ -155,10 +142,11 @@ def import_message_processor(
 
         if bos_token is None:
             bos_token_id: int | list[int] | None = foreign_decoder_json.get("bos_token_id")
-            bos_token = token_ids_to_text(tokenizer, bos_token_id)
+            bos_token = tokenizer.decode(list(bos_token_id), skip_special_tokens=False)
+
         if eos_token is None:
             eos_token_id: int | list[int] | None = foreign_decoder_json.get("eos_token_id")
-            eos_token = token_ids_to_text(tokenizer, eos_token_id)
+            eos_token = tokenizer.decode(list(eos_token_id), skip_special_tokens=True)
 
     system_prompt_text = None
     match model_spec.configs.system_prompt:
@@ -167,10 +155,6 @@ def import_message_processor(
             system_prompt_text = system_prompt_file.read_text()
         case str() as sp:
             system_prompt_text = sp
-        case None:
-            pass
-        case _:
-            raise ValueError(f"Unexpected system_prompt type: {type(model_spec.configs.system_prompt)}")
 
     message_processor_config = MessageProcessorConfig(
         prompt_template=prompt_template,
@@ -191,7 +175,9 @@ def _resolve_configs(
 ) -> tuple[Path, tuple[Path, ...]]:
     origin = model_spec.origin
     config_path = origin.resolve_file(model_spec.configs.model_config, progress_callback)
-    extra_config_paths = tuple(origin.resolve_file(ec, progress_callback) for ec in model_spec.configs.extra_configs)
+    extra_config_paths = tuple(
+        origin.resolve_file(config, progress_callback) for config in model_spec.configs.extra_configs
+    )
     return (config_path, extra_config_paths)
 
 
@@ -307,6 +293,23 @@ def _import_classifier(
     return classifier_model, classifier_model_config
 
 
+def _prepare_fishaudio_tokenizer(
+    foreign_tts_config: FishAudioConfig,
+    model_spec: ModelSpec,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> tuple[FishAudioConfig, Tokenizer]:
+    tokenizer_path = model_spec.origin.resolve_file(model_spec.configs.tokenizer, progress_callback)
+    special_tokens_path = model_spec.origin.resolve_file(FileSpec(filename="special_tokens.json"), progress_callback)
+    tokenizer, special_inference_tokens = load_tokenizer_from_fishaudio_tiktoken(tokenizer_path, special_tokens_path)
+    updated_config = replace(
+        foreign_tts_config,
+        semantic_token_begin_id=special_inference_tokens.semantic_begin_id,
+        semantic_token_end_id=special_inference_tokens.semantic_end_id,
+        im_end_token_id=special_inference_tokens.im_end_token_id,
+    )
+    return updated_config, tokenizer
+
+
 def _import_tts_model(
     model_spec: ModelSpec,
     *,
@@ -321,7 +324,7 @@ def _import_tts_model(
         precision = foreign_tts_config.default_precision
     # TODO @knyazer: transition to tokenizer enum so this FishAudio special-case goes away
     if isinstance(foreign_tts_config, FishAudioConfig):
-        foreign_tts_config, tokenizer = foreign_tts_config.prepare_tokenizer(model_spec, progress_callback)
+        foreign_tts_config, tokenizer = _prepare_fishaudio_tokenizer(foreign_tts_config, model_spec, progress_callback)
     else:
         tokenizer = _instantiate_tokenizer_from_model_spec(model_spec, progress_callback)
 

@@ -83,10 +83,9 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
         with (path / "config.json").open() as config_file:
             config_json = json.load(config_file)
         config = config_converter.structure(config_json["model_config"], cls)
-        with (path / "model.safetensors").open("rb") as fd:
-            _, weights_dict = safe_read(fd)
-            weights = unflatten_parameters(weights_dict)
-            model = config.model_config.empty().import_weights(weights)  # type: ignore
+        weights_dict, _ = safe_read(path / "model.safetensors")
+        weights = unflatten_parameters(weights_dict)
+        model = config.model_config.empty().import_weights(weights)  # type: ignore
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = MessageProcessor(config.message_processor_config, tokenizer)
         return config.init(model, message_processor)

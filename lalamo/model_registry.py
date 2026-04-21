@@ -8,7 +8,7 @@ from importlib.metadata import entry_points
 
 from lalamo.common import LalamoWarning
 from lalamo.model_import.model_specs import ALL_MODEL_LISTS
-from lalamo.model_import.model_specs.common import ModelSpec, build_quantized_models
+from lalamo.model_import.model_specs.common import ModelSpec
 
 __all__ = [
     "ModelRegistry",
@@ -60,9 +60,7 @@ class ModelRegistry:
     @classmethod
     @functools.cache
     def build(cls, allow_third_party_plugins: bool = True) -> "ModelRegistry":
-        base_models = [model for model_list in ALL_MODEL_LISTS for model in model_list]
-        quantized_models = build_quantized_models(base_models)
-        models = tuple(base_models + quantized_models)
+        models = tuple(model for model_list in ALL_MODEL_LISTS for model in model_list)
 
         if allow_third_party_plugins:
             models += load_third_party_specs("lalamo_plugins.specs.v1")

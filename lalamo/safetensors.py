@@ -1,16 +1,19 @@
 import json
+import mmap
 import struct
 from collections.abc import Mapping
 from dataclasses import dataclass
-from io import BufferedReader, BufferedWriter
-from typing import Any, ClassVar, Self
+from io import BufferedWriter
+from pathlib import Path
+from typing import ClassVar, Self
 
 import cattrs
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 
+from lalamo.common import WeightShard, cast_if_float
 from lalamo.utils import LazyDict
 
 SF2J = {
@@ -63,19 +66,28 @@ class SFTensorInfo:
         return self._converter.unstructure(self)
 
 
-def safe_read(fd: BufferedReader) -> tuple[dict[str, str] | None, LazyDict[str, Array]]:
-    header_size = struct.unpack("<Q", fd.read(8))[0]
-    header: dict[str, dict[str, Any]] = json.loads(fd.read(header_size))
-    metadata: dict[str, str] | None = header.pop("__metadata__", None)
-    data_offset = fd.tell()
+# mmap is at least as fast as lazy fd reads, while not requiring an open descriptor.
+# See https://arxiv.org/abs/2505.23072v1 for analysis of safetensors I/O patterns.
+def safe_read(path: Path | str, float_dtype: DTypeLike | None = None) -> WeightShard:
+    path = Path(path)
+    fd = path.open("rb")
+    mm = mmap.mmap(fd.fileno(), 0, access=mmap.ACCESS_READ)
+    fd.close()
+
+    header_size = struct.unpack("<Q", mm[:8])[0]
+    header: dict[str, dict] = json.loads(mm[8 : 8 + header_size])
+    metadata: dict[str, str] = header.pop("__metadata__", None) or {}
+    data_offset = 8 + header_size
 
     def _load_tensor(key: str) -> Array:
         info = SFTensorInfo.from_dict(header[key])
-        fd.seek(data_offset + info.start)
-        return jnp.asarray(np.fromfile(fd, info.dtype, info.size // info.dtype.itemsize)).reshape(info.shape)
+        buf = mm[data_offset + info.start : data_offset + info.end]
+        tensor = jnp.asarray(np.frombuffer(buf, dtype=info.dtype).reshape(info.shape))
+        if float_dtype is not None:
+            tensor = cast_if_float(tensor, float_dtype)
+        return tensor
 
-    lazy_tensors = LazyDict(set(header.keys()), _load_tensor)
-    return (metadata, lazy_tensors)
+    return LazyDict(set(header.keys()), _load_tensor), metadata
 
 
 def safe_write(fd: BufferedWriter, tensors: Mapping[str, Array]) -> None:

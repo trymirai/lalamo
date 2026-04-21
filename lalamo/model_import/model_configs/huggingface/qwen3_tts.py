@@ -109,6 +109,7 @@ class Qwen3TTSTalkerCodePredictorConfig:
     sliding_window: int | None
     vocab_size: int
     layer_types: tuple[str, ...]
+    rope_scaling: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,7 @@ class Qwen3TTSTalkerConfig:
     spk_id: dict[str, int]
     codec_language_id: dict[str, int]
     layer_types: tuple[str, ...] | None = None
+    rope_scaling: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -313,7 +315,7 @@ def _build_audio_decoder_config(
             project_out_config=linear_config,
         ),
         output_projection_config=linear_config,
-        n_q_semantic=dc.num_semantic_quantizers,
+        num_semantic=dc.num_semantic_quantizers,
     )
 
     conv_config = Conv1dConfig(precision=precision, has_biases=True)
@@ -372,6 +374,16 @@ def _build_text_decoder_config(
     linear_config = FullPrecisionLinearConfig(precision=precision)
     embedding_config = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
 
+    # MRoPE metadata (`mrope_section`, `interleaved`) is ignored: with text-only inputs
+    # all three position axes coincide, so MRoPE collapses to plain RoPE numerically.
+    # Revisit if vision/audio conditioning is ever fed into the talker/predictor.
+    for component, rope_scaling in (("talker", talker.rope_scaling), ("predictor", predictor.rope_scaling)):
+        if rope_scaling is not None and rope_scaling.get("rope_type", rope_scaling.get("type")) != "default":
+            raise NotImplementedError(
+                f"Qwen3-TTS {component} rope_scaling is not implemented (got {rope_scaling!r}); "
+                "only unscaled RoPE is supported.",
+            )
+
     talker_layer_types = talker.layer_types or ("full_attention",) * talker.num_hidden_layers
     predictor_layer_types = predictor.layer_types or ("full_attention",) * predictor.num_hidden_layers
 
@@ -425,7 +437,7 @@ def _build_text_decoder_config(
         predictor_hidden_size=predictor.hidden_size,
         predictor_vocab_size=predictor.vocab_size,
         num_code_groups=talker.num_code_groups,
-        n_q_semantic=decoder_config.num_semantic_quantizers,
+        num_semantic=decoder_config.num_semantic_quantizers,
         max_new_tokens=min(context_length, talker.max_position_embeddings),
         codec_bos_id=talker.codec_bos_id,
         codec_eos_token_id=talker.codec_eos_token_id,

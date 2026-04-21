@@ -11,7 +11,7 @@ from lalamo.model_import.model_configs import ForeignConfig
 from lalamo.models.language_model import GenerationConfig
 from lalamo.quantization import QuantizationMode
 
-from .origins import FileSpec, HuggingFaceOrigin, Origin
+from .origins import FileSpec, Origin
 
 __all__ = [
     "ConfigMap",
@@ -20,8 +20,6 @@ __all__ = [
     "ModelSpec",
     "ModelType",
     "UseCase",
-    "awq_model_spec",
-    "build_quantized_models",
     "structure_origin",
 ]
 
@@ -54,19 +52,19 @@ class ConfigMap:
     extra_configs: tuple[FileSpec, ...] = ()
 
 
-def _is_foreign_config_type(t: object) -> bool:
+def _is_foreign_config_type(t: Any) -> bool:
     origin = get_origin(t)
     args = get_args(t)
     return origin is type and len(args) == 1 and isinstance(args[0], type) and issubclass(args[0], ForeignConfig)
 
 
 def _structure_foreign_config_factory(
-    t: object,  # noqa: ARG001
+    t: Any,  # noqa: ARG001
     c: cattrs.Converter,  # noqa: ARG001
-) -> Callable[[object, object], type[ForeignConfig]]:
+) -> Callable[[Any, Any], type[ForeignConfig]]:
     name_to_type = {t.__name__: t for t in ForeignConfig.__descendants__()}
 
-    def _hook(v: object, _t: object) -> type[ForeignConfig]:
+    def _hook(v: Any, _t: Any) -> type[ForeignConfig]:
         if isinstance(v, type) and issubclass(v, ForeignConfig):
             return v
         return name_to_type[cast("str", v)]
@@ -74,32 +72,30 @@ def _structure_foreign_config_factory(
     return _hook
 
 
-def _unstructure_foreign_config_factory(t: object, c: cattrs.Converter) -> Callable[[type[ForeignConfig]], str]:  # noqa: ARG001
+def _unstructure_foreign_config_factory(t: Any, c: cattrs.Converter) -> Callable[[type[ForeignConfig]], str]:  # noqa: ARG001
     def _hook(v: type[ForeignConfig]) -> str:
         return v.__name__
 
     return _hook
 
 
-def _structure_system_prompt(value: object, _type: object) -> FileSpec | str | None:
+def _structure_system_prompt(value: Any, _type: Any) -> FileSpec | str | None:
     if value is None:
         return None
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        value = cast("dict[Any, Any]", value)
         if "filename" in value:
             return FileSpec(**value)
     raise ValueError(f"Invalid system_prompt value: {value}")
 
 
-def _structure_chat_template(value: object, _type: object) -> FileSpec | JSONFieldSpec | str | None:
+def _structure_chat_template(value: Any, _type: Any) -> FileSpec | JSONFieldSpec | str | None:
     if value is None:
         return None
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        value = cast("dict[Any, Any]", value)  # ty bug??? Why is just `dict` != `dict[Any, Any]`?
         if "file_spec" in value and "field_name" in value:
             return JSONFieldSpec(
                 file_spec=FileSpec(**value["file_spec"]),
@@ -169,45 +165,3 @@ class ModelSpec:
 
     def to_json(self) -> dict:
         return self._converter.unstructure(self)
-
-
-def awq_model_spec(
-    model_spec: ModelSpec,
-    origin: Origin,
-    quantization: QuantizationMode = QuantizationMode.UINT4,
-) -> ModelSpec:
-    return ModelSpec(
-        vendor=model_spec.vendor,
-        family=model_spec.family,
-        name=f"{model_spec.name}-AWQ",
-        size=model_spec.size,
-        quantization=quantization,
-        origin=origin,
-        config_type=model_spec.config_type,
-        configs=model_spec.configs,
-        use_cases=model_spec.use_cases,
-        grammar_start_tokens=model_spec.grammar_start_tokens,
-    )
-
-
-def build_quantized_models(model_specs: list[ModelSpec]) -> list[ModelSpec]:
-    quantization_compatible_repos: list[str] = [
-        "Qwen/Qwen2.5-3B-Instruct",
-        "Qwen/Qwen2.5-7B-Instruct",
-        "Qwen/Qwen2.5-Coder-3B-Instruct",
-        "Qwen/Qwen2.5-Coder-7B-Instruct",
-        "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
-        "HuggingFaceTB/SmolLM2-1.7B-Instruct",
-        "meta-llama/Llama-3.2-3B-Instruct",
-    ]
-
-    quantized_model_specs: list[ModelSpec] = []
-    for model_spec in model_specs:
-        if not isinstance(model_spec.origin, HuggingFaceOrigin):
-            continue
-        if model_spec.origin.repo not in quantization_compatible_repos:
-            continue
-        quantized_origin = HuggingFaceOrigin(repo="trymirai/{}-AWQ".format(model_spec.origin.repo.split("/")[-1]))
-        quantized_model_spec = awq_model_spec(model_spec, quantized_origin)
-        quantized_model_specs.append(quantized_model_spec)
-    return quantized_model_specs

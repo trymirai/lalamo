@@ -18,6 +18,7 @@ from lalamo.modules.audio.common_modules import (
 )
 from lalamo.modules.common import LalamoModule
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
+from lalamo.modules.utils import vmap_twice
 
 __all__ = [
     "DecoderBlock",
@@ -155,7 +156,7 @@ class VectorQuantization(LalamoModule[VectorQuantizationConfig]):
     ) -> Float[Array, "batch channels tokens"]:
         quantized = self.codebook.decode(codes)
         if self.project_out is not None:
-            (quantized,) = vmap(vmap(self.project_out))(quantized)
+            (quantized,) = vmap_twice(self.project_out)(quantized)
         quantized = rearrange(quantized, "batch tokens channels -> batch channels tokens")
         return quantized
 
@@ -196,7 +197,7 @@ def apply_projection(
     projection: FullPrecisionLinear,
 ) -> Float[Array, "batch channels tokens"]:
     quantized_nsc = rearrange(quantized, "batch channels tokens -> batch tokens channels")
-    (quantized_nsc,) = vmap(vmap(projection))(quantized_nsc)
+    (quantized_nsc,) = vmap_twice(projection)(quantized_nsc)
     return rearrange(quantized_nsc, "batch tokens channels -> batch channels tokens")
 
 
@@ -205,24 +206,26 @@ class ResidualVectorQuantizerConfig:
     precision: DTypeLike
     vector_quantization_config: VectorQuantizationConfig
     output_projection_config: FullPrecisionLinearConfig
-    n_q_semantic: int
+    num_semantic: int
 
     def empty(
         self,
         dimension: int,
-        n_q: int,
+        num_quantizers: int,
         bins: int,
         output_dimension: int,
     ) -> "ResidualVectorQuantizer":
-        if n_q <= self.n_q_semantic:
-            raise ValueError(f"n_q must be > n_q_semantic ({self.n_q_semantic}), got {n_q}")
-
+        if num_quantizers <= self.num_semantic:
+            raise ValueError(
+                f"number of quantizers must be > num of semantic components({self.num_semantic}), got {num_quantizers}"
+            )
         vq = self.vector_quantization_config
         semantic_layers = tuple(
-            vq.empty(dim=dimension, codebook_size=bins, codebook_dim=dimension) for _ in range(self.n_q_semantic)
+            vq.empty(dim=dimension, codebook_size=bins, codebook_dim=dimension) for _ in range(self.num_semantic)
         )
         acoustic_layers = tuple(
-            vq.empty(dim=dimension, codebook_size=bins, codebook_dim=dimension) for _ in range(n_q - self.n_q_semantic)
+            vq.empty(dim=dimension, codebook_size=bins, codebook_dim=dimension)
+            for _ in range(num_quantizers - self.num_semantic)
         )
         semantic_projection = self.output_projection_config.empty(
             input_dim=dimension,
@@ -246,22 +249,24 @@ class ResidualVectorQuantizerConfig:
     def random_init(
         self,
         dimension: int,
-        n_q: int,
+        num_quantizers: int,
         bins: int,
         output_dimension: int,
         *,
         key: PRNGKeyArray,
     ) -> "ResidualVectorQuantizer":
-        if n_q <= self.n_q_semantic:
-            raise ValueError(f"n_q must be > n_q_semantic ({self.n_q_semantic}), got {n_q}")
+        if num_quantizers <= self.num_semantic:
+            raise ValueError(
+                f"number of quantizers must be > num of semantic components({self.num_semantic}), got {num_quantizers}"
+            )
 
         key_sem, key_aco, key_sem_proj, key_aco_proj = jax.random.split(key, 4)
         vq = self.vector_quantization_config
-        sem_keys = jax.random.split(key_sem, self.n_q_semantic)
+        sem_keys = jax.random.split(key_sem, self.num_semantic)
         semantic_layers = tuple(
             vq.random_init(dim=dimension, codebook_size=bins, codebook_dim=dimension, key=k) for k in sem_keys
         )
-        aco_keys = jax.random.split(key_aco, n_q - self.n_q_semantic)
+        aco_keys = jax.random.split(key_aco, num_quantizers - self.num_semantic)
         acoustic_layers = tuple(
             vq.random_init(dim=dimension, codebook_size=bins, codebook_dim=dimension, key=k) for k in aco_keys
         )
@@ -297,10 +302,6 @@ class ResidualVectorQuantizer(LalamoModule[ResidualVectorQuantizerConfig]):
     def activation_precision(self) -> DTypeLike:
         return self.config.precision
 
-    @property
-    def n_q_semantic(self) -> int:
-        return self.config.n_q_semantic
-
     def decode(
         self,
         semantic_codes: Int[Array, "batch n_q_semantic tokens"],
@@ -314,37 +315,32 @@ class ResidualVectorQuantizer(LalamoModule[ResidualVectorQuantizerConfig]):
 
     def export_weights(self) -> ParameterTree[Array]:
         return {
-            "rvq_first": {
-                "rvq": {"layers": [layer.export_weights() for layer in self.semantic_layers]},
-                "output_projection": self.semantic_projection.export_weights(),
+            "semantic": {
+                "layers": [layer.export_weights() for layer in self.semantic_layers],
+                "output_proj": self.semantic_projection.export_weights(),
             },
-            "rvq_rest": {
-                "rvq": {"layers": [layer.export_weights() for layer in self.acoustic_layers]},
-                "output_projection": self.acoustic_projection.export_weights(),
+            "acoustic": {
+                "layers": [layer.export_weights() for layer in self.acoustic_layers],
+                "output_proj": self.acoustic_projection.export_weights(),
             },
         }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = require_mapping(weights)
-        rvq_first = require_mapping(weights["rvq_first"])
-        rvq_rest = require_mapping(weights["rvq_rest"])
 
-        first_layers = require_mapping(rvq_first["rvq"])
-        first_layer_weights = first_layers["layers"]
-
-        rest_layers = require_mapping(rvq_rest["rvq"])
-        rest_layer_weights = rest_layers["layers"]
+        semantic = require_mapping(weights["semantic"])
+        acoustic = require_mapping(weights["acoustic"])
 
         return replace(
             self,
             semantic_layers=tuple(
                 layer.import_weights(require_tree(lw))
-                for layer, lw in zip(self.semantic_layers, first_layer_weights, strict=True)
+                for layer, lw in zip(self.semantic_layers, semantic["layers"], strict=True)
             ),
             acoustic_layers=tuple(
                 layer.import_weights(require_tree(lw))
-                for layer, lw in zip(self.acoustic_layers, rest_layer_weights, strict=True)
+                for layer, lw in zip(self.acoustic_layers, acoustic["layers"], strict=True)
             ),
-            semantic_projection=self.semantic_projection.import_weights(require_tree(rvq_first["output_projection"])),
-            acoustic_projection=self.acoustic_projection.import_weights(require_tree(rvq_rest["output_projection"])),
+            semantic_projection=self.semantic_projection.import_weights(semantic["output_proj"]),
+            acoustic_projection=self.acoustic_projection.import_weights(acoustic["output_proj"]),
         )

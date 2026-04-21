@@ -13,7 +13,7 @@ from lalamo.modules.common import ParameterTree, PositionalEmbeddingSelector, re
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
-from lalamo.modules.utils import apply_soft_capping
+from lalamo.modules.utils import apply_soft_capping, vmap_twice
 
 from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
 from .state import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
@@ -404,9 +404,9 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         )
 
         if self.query_norm is not None:
-            queries = vmap(vmap(self.query_norm))(queries)
+            queries = vmap_twice(self.query_norm)(queries)
         if self.key_norm is not None:
-            keys = vmap(vmap(self.key_norm))(keys)
+            keys = vmap_twice(self.key_norm)(keys)
 
         if positional_embeddings is not None:
             apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)

@@ -134,10 +134,9 @@ class TTSGenerator(eqx.Module):
 
         config = config_converter.structure(config_json["model_config"], TTSGeneratorConfig)
         assert isinstance(config, TTSGeneratorConfig)
-        with (path / "model.safetensors").open("rb") as fd:
-            _, weights_dict = safe_read(fd)
-            weights = unflatten_parameters(weights_dict)
-            model = config.tts_config.empty().import_weights(weights)
+        weights_dict, _ = safe_read(path / "model.safetensors")
+        weights = unflatten_parameters(weights_dict)
+        model = config.tts_config.empty().import_weights(weights)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = TTSMessageProcessor(config.message_processor_config, tokenizer)
 

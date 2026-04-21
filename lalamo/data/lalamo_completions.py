@@ -101,9 +101,8 @@ def save_completions(path: Path, completions: list[LalamoCompletion]) -> None:
 
 
 def load_completions(path: Path) -> list[LalamoCompletion]:
-    with path.open("rb") as fd:
-        _, lazy = safe_read(fd)
-        tensors = {k: lazy[k] for k in lazy}  # eagerly materialize before fd closes
+    lazy, _ = safe_read(path)
+    tensors = {k: lazy[k] for k in lazy}
     prefixes = _unpack_ragged(tensors["prefix_offsets"], tensors["prefix_tokens"])
     completion_tokens = _unpack_ragged(tensors["completion_offsets"], tensors["completion_tokens"])
     layer_indices = tuple(np.asarray(tensors["layer_indices"], dtype=np.int32).tolist())

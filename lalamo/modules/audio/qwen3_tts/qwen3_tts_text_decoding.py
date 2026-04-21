@@ -24,6 +24,7 @@ from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers import AttentionConfig
 from lalamo.modules.transformer import Transformer, TransformerConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.modules.utils import vmap_twice
 from lalamo.sampling import SamplingPolicy, make_policy
 
 __all__ = [
@@ -140,7 +141,7 @@ class Qwen3TTSTextDecoderConfig(TTSTextDecoderConfigBase):
     predictor_hidden_size: int
     predictor_vocab_size: int
     num_code_groups: int
-    n_q_semantic: int
+    num_semantic: int
     max_new_tokens: int
 
     codec_bos_id: int
@@ -321,9 +322,9 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         text_tokens: Int[Array, "batch tokens"],
     ) -> Float[Array, "batch tokens channels"]:
         x = vmap(self.text_embedding.embed)(text_tokens)
-        (x,) = vmap(vmap(self.text_projection_fc1))(x)
+        (x,) = vmap_twice(self.text_projection_fc1)(x)
         x = jax.nn.silu(x)
-        (x,) = vmap(vmap(self.text_projection_fc2))(x)
+        (x,) = vmap_twice(self.text_projection_fc2)(x)
         return x
 
     def _to_predictor_space(
@@ -332,7 +333,7 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
     ) -> Float[Array, "batch tokens predictor_hidden"]:
         if self.talker_to_predictor_projection is None:
             return x
-        (y,) = vmap(vmap(self.talker_to_predictor_projection))(x)
+        (y,) = vmap_twice(self.talker_to_predictor_projection)(x)
         return y
 
     def _embed_special_text_tokens(
@@ -414,7 +415,7 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         codec_prompt = codec_bias + codec_prefill_body
 
         # First content position gets both text and the last codec prefill token summed
-        first_position = first_content + codec_prefill_embed[:, -1:, :]
+        first_position = first_content + codec_prefill_body
 
         prompt_parts = (role_hidden, codec_prompt, first_position)
         if instruction_tokens is not None:
@@ -464,7 +465,7 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         for idx, (predictor_embedding, predictor_head) in enumerate(
             zip(self.predictor_embeddings, self.predictor_heads, strict=True),
         ):
-            (step_logits,) = vmap(vmap(predictor_head))(predictor_hidden[:, -1:, :])
+            (step_logits,) = vmap_twice(predictor_head)(predictor_hidden[:, -1:, :])
 
             key, step_key = jax.random.split(key)
             next_codec_id = _sample_token_ids(jnp.squeeze(step_logits, axis=1), sampling_policy, step_key)
@@ -511,7 +512,9 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
             sampling_policy = make_policy(temperature=0.9, top_p=1.0, top_k=50)
 
         speaker_codec_id = self.config.speaker_id.get(context.speaker) if context.speaker is not None else None
-        language_codec_id = self.config.language_id.get(context.language) if context.language is not None else None
+        language_codec_id = (
+            self.config.language_id.get(context.language.lower()) if context.language is not None else None
+        )
 
         talker_prompt, trailing_text_hidden, tts_pad_embed = self._build_talker_prompt(
             text_tokens,
@@ -548,7 +551,7 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
 
         for step in range(max_new_tokens):
             last_hidden = talker_hidden[:, -1:, :]
-            (codec_logits,) = vmap(vmap(self.codec_head))(last_hidden)
+            (codec_logits,) = vmap_twice(self.codec_head)(last_hidden)
             codec_logits = jnp.squeeze(codec_logits, axis=1)
 
             key, codec_key = jax.random.split(key)
@@ -587,10 +590,10 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
             talker_state = talker_result.updated_state
 
         all_codes = jnp.stack(generated_step_codes, axis=1).astype(jnp.int32)
-        n_q_sem = self.config.n_q_semantic
+        num_semantic = self.config.num_semantic
         return CodebookCodes(
-            semantic=all_codes[:n_q_sem, :],
-            acoustic=all_codes[n_q_sem:, :],
+            semantic=all_codes[:num_semantic, :],
+            acoustic=all_codes[num_semantic:, :],
         )
 
     def export_weights(self) -> ParameterTree[Array]:

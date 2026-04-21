@@ -19,6 +19,16 @@ HUGGINGFACE_MODELS = [
     ),
     ModelSpec(
         vendor="HuggingFace",
+        family="SmolLM2",
+        name="SmolLM2-1.7B-Instruct-AWQ",
+        size="1.7B",
+        quantization=QuantizationMode.UINT4,
+        origin=HuggingFaceOrigin(repo="trymirai/SmolLM2-1.7B-Instruct-AWQ"),
+        config_type=HFLlamaConfig,
+        use_cases=tuple(),
+    ),
+    ModelSpec(
+        vendor="HuggingFace",
         family="SmolLM3",
         name="SmolLM3-3B",
         size="3B",

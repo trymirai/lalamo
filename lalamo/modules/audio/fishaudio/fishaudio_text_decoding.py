@@ -406,7 +406,6 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
 
         # Extract codebook codes (exclude text token row and prompt, exclude last token which is end token)
         all_codes = seq[1:, prompt_length : prompt_length + generated_count - 1]
-        assert jnp.all(all_codes >= 0), "Negative code found"
 
         return CodebookCodes(semantic=all_codes[:1, :], acoustic=all_codes[1:, :])
 

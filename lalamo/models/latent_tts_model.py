@@ -99,10 +99,9 @@ class LatentTTSGenerator(eqx.Module):
         config = config_converter.structure(config_json["model_config"], LatentTTSGeneratorConfig)
         assert isinstance(config, LatentTTSGeneratorConfig)
 
-        with (path / "model.safetensors").open("rb") as fd:
-            _, weights_dict = safe_read(fd)
-            weights = unflatten_parameters(weights_dict)
-            model = config.latent_tts_config.empty().import_weights(weights)
+        weights_dict, _ = safe_read(path / "model.safetensors")
+        weights = unflatten_parameters(weights_dict)
+        model = config.latent_tts_config.empty().import_weights(weights)
 
         tokenizer = config.latent_tts_config.create_tokenizer(path)
         message_processor = config.latent_tts_config.create_message_processor(

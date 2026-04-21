@@ -554,22 +554,6 @@ def load_residual_unit(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> ResidualUnit:
-    """Loads a ResidualUnit module from weights.
-
-    Expected weight structure at path (PyTorch block is nn.Sequential):
-        - block.0.alpha (Snake1d)
-        - block.1.conv.parametrizations.weight.original0/1, block.1.conv.bias (CausalWNConv1d, kernel=7)
-        - block.2.alpha (Snake1d)
-        - block.3.conv.parametrizations.weight.original0/1, block.3.conv.bias (CausalWNConv1d, kernel=1)
-
-    Args:
-        module: The ResidualUnit module to load weights into.
-        weights_dict: Dictionary mapping parameter paths to weight arrays.
-        path: Base path for this module's weights.
-
-    Returns:
-        ResidualUnit module with loaded weights.
-    """
     assert isinstance(module.act1, Snake1d)
     assert isinstance(module.act2, Snake1d)
     act1 = load_snake1d(module.act1, weights_dict, path / "block" / "0")

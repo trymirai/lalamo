@@ -1,18 +1,16 @@
 from collections import ChainMap
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
 
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
-
 from lalamo.common import ParameterPath, WeightShard
 from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.fishaudio_loaders import (
     load_fishaudio_audio_decoder,
     load_fishaudio_text_decoder,
-    load_tokenizer_from_fishaudio_tiktoken,
 )
 from lalamo.model_import.model_configs import ForeignTTSConfig
 from lalamo.modules import (
@@ -302,29 +300,6 @@ class FishAudioConfig(ForeignTTSConfig):
     # Defaults for TTS generation — read from config.json if present, otherwise fall back.
     default_speaker: str = "speaker:0"
     default_style: str = "interleave"
-
-    def prepare_tokenizer(
-        self,
-        model_spec: "ModelSpec",  # noqa: F821  # ty: ignore[unresolved-reference]
-        progress_callback: "Callable[[StatusEvent], None] | None" = None,  # noqa: F821  # ty: ignore[unresolved-reference]
-    ) -> "tuple[Self, Tokenizer]":  # noqa: F821  # ty: ignore[unresolved-reference]
-        from lalamo.model_import.model_specs.common import FileSpec
-
-        assert isinstance(model_spec.configs.tokenizer, FileSpec)
-        tokenizer_path = model_spec.origin.resolve_file(model_spec.configs.tokenizer, progress_callback)
-        special_tokens_path = model_spec.origin.resolve_file(
-            FileSpec(filename="special_tokens.json"), progress_callback
-        )
-        tokenizer, special_inference_tokens = load_tokenizer_from_fishaudio_tiktoken(
-            tokenizer_path, special_tokens_path
-        )
-        updated = replace(
-            self,
-            semantic_token_begin_id=special_inference_tokens.semantic_begin_id,
-            semantic_token_end_id=special_inference_tokens.semantic_end_id,
-            im_end_token_id=special_inference_tokens.im_end_token_id,
-        )
-        return updated, tokenizer
 
     def extract_textual_transformer_configs(
         self,

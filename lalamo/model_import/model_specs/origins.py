@@ -1,7 +1,5 @@
 import functools
 import json
-import mmap
-import struct
 import tarfile
 import tempfile
 from abc import abstractmethod
@@ -12,34 +10,13 @@ from pathlib import Path
 from typing import NamedTuple
 
 import huggingface_hub
-import jax.numpy as jnp
-import numpy as np
-from jaxtyping import Array, DTypeLike
+from jaxtyping import DTypeLike
+import yaml
 
 from lalamo.common import WeightShard, cast_if_float
 from lalamo.registry_abc import RegistryABC
-from lalamo.safetensors import SFTensorInfo
-from lalamo.utils import LazyDict, MapDictValues
-
-
-# mmap is at least as fast as lazy fd reads, while not requiring an open descriptor.
-# See https://arxiv.org/abs/2505.23072v1 for analysis of safetensors I/O patterns.
-def load_safetensors(path: Path, float_dtype: DTypeLike) -> WeightShard:
-    fd = path.open("rb")
-    mm = mmap.mmap(fd.fileno(), 0, access=mmap.ACCESS_READ)
-    fd.close()
-
-    header_size = struct.unpack("<Q", mm[:8])[0]
-    header: dict[str, dict] = json.loads(mm[8 : 8 + header_size])
-    metadata: dict[str, str] = header.pop("__metadata__", None) or {}
-    data_offset = 8 + header_size
-
-    def _load_tensor(key: str) -> Array:
-        info = SFTensorInfo.from_dict(header[key])
-        buf = mm[data_offset + info.start : data_offset + info.end]
-        return cast_if_float(jnp.asarray(np.frombuffer(buf, dtype=info.dtype).reshape(info.shape)), float_dtype)
-
-    return LazyDict(set(header.keys()), _load_tensor), metadata
+from lalamo.safetensors import safe_read
+from lalamo.utils import MapDictValues
 
 
 def load_torch_weights(path: Path, float_dtype: DTypeLike, *, weights_only: bool = True) -> WeightShard:
@@ -155,37 +132,13 @@ class HuggingFaceOrigin(Origin):
         paths = hf_resolve_weights(self.repo, self.weight_format.value, progress_callback)
         match self.weight_format:
             case WeightFormat.SAFETENSORS:
-                return [load_safetensors(path, precision) for path in paths]
+                return [safe_read(path, precision) for path in paths]
             case WeightFormat.TORCH:
                 return [load_torch_weights(path, precision) for path in paths]
 
     @property
     def description(self) -> str:
         return self.repo
-
-
-@functools.cache
-def extract_nemo_archive(nemo_path: Path) -> tuple[tuple[Path, ...], Path]:
-    import yaml
-
-    tmpdir = Path(tempfile.mkdtemp())
-    with tarfile.open(nemo_path, "r") as tar:
-        for member in tar.getmembers():
-            if not (member.name.startswith("..") or Path(member.name).is_absolute() or member.size == 0):
-                tar.extract(member.name, path=tmpdir)
-
-    weights_paths = tuple(tmpdir.glob("*.ckpt"))
-    if not weights_paths:
-        raise FileNotFoundError("Failed to find Nemo model weights")
-    (yaml_path,) = list(tmpdir.glob("*.yaml"))
-
-    with open(yaml_path) as f:
-        config_yaml = yaml.safe_load(f)
-    config_json_path = yaml_path.with_suffix(".json")
-    with open(config_json_path, "w") as f:
-        json.dump(config_yaml, f)
-
-    return weights_paths, config_json_path
 
 
 @dataclass(frozen=True)
@@ -197,7 +150,7 @@ class NemoOrigin(Origin):
     ) -> Path:
         if file_spec.filename.endswith(".nemo"):
             (nemo_path,) = hf_resolve_weights(self.repo, ".nemo", progress_callback)
-            _, config_path = extract_nemo_archive(nemo_path)
+            _, config_path = NemoOrigin.extract_nemo_archive(nemo_path)
             return config_path
         return hf_resolve_file(self.repo, file_spec, progress_callback)
 
@@ -207,12 +160,34 @@ class NemoOrigin(Origin):
         progress_callback: Callable[[StatusEvent], None] | None = None,
     ) -> Sequence[WeightShard]:
         (nemo_path,) = hf_resolve_weights(self.repo, ".nemo", progress_callback)
-        weight_paths, _ = extract_nemo_archive(nemo_path)
+        weight_paths, _ = NemoOrigin.extract_nemo_archive(nemo_path)
         return [load_torch_weights(path, precision) for path in weight_paths]
 
     @property
     def description(self) -> str:
         return self.repo
+
+    @classmethod
+    @functools.cache
+    def extract_nemo_archive(cls, nemo_path: Path) -> tuple[tuple[Path, ...], Path]:
+        tmpdir = Path(tempfile.mkdtemp())
+        with tarfile.open(nemo_path, "r") as tar:
+            for member in tar.getmembers():
+                if not (member.name.startswith("..") or Path(member.name).is_absolute() or member.size == 0):
+                    tar.extract(member.name, path=tmpdir)
+
+        weights_paths = tuple(tmpdir.glob("*.ckpt"))
+        if not weights_paths:
+            raise FileNotFoundError("Failed to find Nemo model weights")
+        (yaml_path,) = tmpdir.glob("*.yaml")
+
+        with open(yaml_path) as f:
+            config_yaml = yaml.safe_load(f)
+        config_json_path = yaml_path.with_suffix(".json")
+        with open(config_json_path, "w") as f:
+            json.dump(config_yaml, f)
+
+        return weights_paths, config_json_path
 
 
 @dataclass(frozen=True)

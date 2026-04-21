@@ -7,7 +7,9 @@ from typing import Self
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jax import lax, vmap
+from jax import lax
+
+from lalamo.modules.utils import vmap_twice
 from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
@@ -557,10 +559,10 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
     ) -> Float[Array, "batch tokens channels"]:
         residual = x
         x = self.depthwise_conv(x)
-        x = vmap(vmap(self.norm))(x)
-        (x,) = vmap(vmap(self.pointwise_conv1))(x)
-        x = vmap(vmap(self.config.activation))(x)
-        (x,) = vmap(vmap(self.pointwise_conv2))(x)
+        x = vmap_twice(self.norm)(x)
+        (x,) = vmap_twice(self.pointwise_conv1)(x)
+        x = vmap_twice(self.config.activation)(x)
+        (x,) = vmap_twice(self.pointwise_conv2)(x)
         if self.gamma is not None:
             x = x * self.gamma[None, None, :]
         return residual + x
