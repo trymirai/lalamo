@@ -7,7 +7,7 @@ from .origins import HuggingFaceOrigin
 
 __all__ = ["QWEN3_TTS_MODELS"]
 
-QWEN3_TTS_FULL_CHAT_TEMPLATE = "{{ '<|im_start|>assistant\\n' ~ messages[0].content ~ '<|im_end|>' }}"
+QWEN3_TTS_FULL_CHAT_TEMPLATE = "{{ '<|im_start|>assistant\\n' ~ messages[0].content }}"
 
 
 def _qwen3_tts_model(*, name: str, size: str, repo: str) -> ModelSpec:

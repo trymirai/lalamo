@@ -21,6 +21,7 @@ from lalamo.modules import (
     LinearBase,
     MLPBase,
     Normalization,
+    TiedEmbedding,
     Transformer,
     TransformerLayer,
 )
@@ -38,7 +39,6 @@ from lalamo.modules.audio.fishaudio.fishaudio_consts import (
 )
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     DownsampleResidualVectorQuantize,
-    ResidualVectorQuantize,
     Upsampler,
     VectorQuantize,
 )
@@ -76,14 +76,12 @@ def _permute_for_rope_rotate_half(
     https://github.com/huggingface/transformers/blob/e42587f596181396e1c4b63660abf0c736b10dae/src/transformers/models/llama/convert_llama_weights_to_hf.py
     """
     if len(weight.shape) == 1:
-        # For 1D vectors: swap interleaved pairs to grouped halves
         return rearrange(weight, "(half_dim pair) -> (pair half_dim)", pair=2)
 
     out_features, _ = weight.shape
     assert out_features == num_heads * head_dim, (
         f"Output features {out_features} must equal num_heads * head_dim = {num_heads * head_dim}"
     )
-    # For 2D matrices: swap interleaved pairs to grouped halves within each head
     return rearrange(
         weight,
         "(heads half_dim pair) in_features -> (heads pair half_dim) in_features",
@@ -205,7 +203,6 @@ def load_transformer_block(
         )
         assert isinstance(qkv_projection, FullPrecisionLinear)
 
-        # Permute QKV weights from interleaved RoPE format to rotate-half format
         permuted_qkv_weights = _permute_qkv_for_rope_rotate_half(
             qkv_projection.weights,
             num_heads=attn_module.num_heads,
@@ -272,7 +269,6 @@ def load_transformer_block(
         scaling_to_fuze: Array | None = None,
     ) -> MLPBase:
         assert isinstance(module, DenseMLP)
-        # Standard dense MLP with separate sublayers.
         up_projection = load_linear_and_fuse_scaling(
             module.up_projection,
             weights_dict,
@@ -405,86 +401,58 @@ def load_fish_audio_text_decoding_modules(
     return (transformer, output)
 
 
+def _load_single_codebook(
+    codebook: TiedEmbedding,
+    out_proj: FullPrecisionLinear,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+) -> tuple[TiedEmbedding, FullPrecisionLinear]:
+    codebook_weight = weights_dict[path / "codebook" / "weight"]
+    loaded_codebook = load_parameters(lambda m: (m.weights,), codebook, (codebook_weight,))
+
+    out_proj_weight, out_proj_bias = fuse_weight_norm_conv1d_as_linear(weights_dict, path / "out_proj")
+    out_proj_weight = rearrange(out_proj_weight, "out_ch in_ch 1 -> out_ch in_ch")
+    loaded_out_proj = load_parameters(
+        lambda m: (m.weights, m.biases),
+        out_proj,
+        (out_proj_weight, out_proj_bias),
+    )
+    return loaded_codebook, loaded_out_proj
+
+
+def load_single_vector_quantize(
+    module: VectorQuantize,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+) -> VectorQuantize:
+    """Load a 1-codebook quantizer with weights at path/codebook/..., path/out_proj/... (standalone DAC layout)."""
+    assert module.num_codebooks == 1
+    (codebook,) = module.codebooks
+    (out_proj,) = module.out_projs
+    loaded_codebook, loaded_out_proj = _load_single_codebook(codebook, out_proj, weights_dict, path)
+    return load_parameters(
+        lambda m: (m.codebooks, m.out_projs),
+        module,
+        ((loaded_codebook,), (loaded_out_proj,)),
+    )
+
+
 def load_vector_quantize(
     module: VectorQuantize,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> VectorQuantize:
-    """Loads a VectorQuantize module from weights.
-
-    The in_proj and out_proj layers use weight normalization in the original PyTorch model.
-    This function fuses the weight_g and weight_v parameters using PyTorch's remove_weight_norm.
-
-    Expected weight structure at path:
-        - in_proj.weight_g, in_proj.weight_v, in_proj.bias (unused in decode-only mode)
-        - out_proj.weight_g, out_proj.weight_v, out_proj.bias
-        - codebook.weight
-
-    Args:
-        module: The VectorQuantize module to load weights into.
-        weights_dict: Dictionary mapping parameter paths to weight arrays.
-        path: Base path for this module's weights.
-
-    Returns:
-        VectorQuantize module with loaded weights.
-    """
-    # Load codebook weights
-    codebook_weight = weights_dict[path / "codebook" / "weight"]
-    codebook = load_parameters(
-        lambda m: (m.weights,),
-        module.codebook,
-        (codebook_weight,),
-    )
-
-    # Load out_proj with weight norm fusion
-    # The original is a Conv1d with kernel_size=1, so weight shape is (out, in, 1)
-    # Our FullPrecisionLinear expects (out, in), so we remove the kernel dimension
-    out_proj_weight, out_proj_bias = fuse_weight_norm_conv1d_as_linear(weights_dict, path / "out_proj")
-    # Remove kernel dimension: (out_channels, in_channels, 1) -> (out_channels, in_channels)
-    out_proj_weight = rearrange(out_proj_weight, "out_ch in_ch 1 -> out_ch in_ch")
-    out_proj = load_parameters(
-        lambda m: (m.weights, m.biases),
-        module.out_proj,
-        (out_proj_weight, out_proj_bias),
-    )
-
+    """Load an N-codebook (residual) quantizer; each layer lives at path/quantizers/i."""
+    loaded_pairs = [
+        _load_single_codebook(codebook, out_proj, weights_dict, path / "quantizers" / i)
+        for i, (codebook, out_proj) in enumerate(zip(module.codebooks, module.out_projs, strict=True))
+    ]
+    new_codebooks = tuple(cb for cb, _ in loaded_pairs)
+    new_out_projs = tuple(proj for _, proj in loaded_pairs)
     return load_parameters(
-        lambda m: (m.codebook, m.out_proj),
+        lambda m: (m.codebooks, m.out_projs),
         module,
-        (codebook, out_proj),
-    )
-
-
-def load_residual_vector_quantize(
-    module: ResidualVectorQuantize,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> ResidualVectorQuantize:
-    """Loads a ResidualVectorQuantize module from weights.
-
-    Expected weight structure at path:
-        - quantizers.0.in_proj.weight_g, quantizers.0.in_proj.weight_v, etc.
-        - quantizers.0.out_proj.weight_g, quantizers.0.out_proj.weight_v, etc.
-        - quantizers.0.codebook.weight
-        - quantizers.1..., quantizers.2..., etc.
-
-    Args:
-        module: The ResidualVectorQuantize module to load weights into.
-        weights_dict: Dictionary mapping parameter paths to weight arrays.
-        path: Base path for this module's weights.
-
-    Returns:
-        ResidualVectorQuantize module with loaded weights.
-    """
-    quantizers = tuple(
-        load_vector_quantize(quantizer, weights_dict, path / "quantizers" / i)
-        for i, quantizer in enumerate(module.quantizers)
-    )
-
-    return load_parameters(
-        lambda m: (m.quantizers,),
-        module,
-        (quantizers,),
+        (new_codebooks, new_out_projs),
     )
 
 
@@ -493,21 +461,6 @@ def load_upsampler(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Upsampler:
-    """Loads an Upsampler module from weights.
-
-    Expected weight structure at path:
-        - 0.0.conv.weight, 0.1.gamma, etc. (first UpsamplingBlock)
-        - 1.0.conv.weight, 1.1.gamma, etc. (second UpsamplingBlock)
-        - ...
-
-    Args:
-        module: The Upsampler module to load weights into.
-        weights_dict: Dictionary mapping parameter paths to weight arrays.
-        path: Base path for this module's weights.
-
-    Returns:
-        Upsampler module with loaded weights.
-    """
     blocks = tuple(load_upsampling_block(block, weights_dict, path / i) for i, block in enumerate(module.blocks))
 
     return load_parameters(
@@ -522,13 +475,13 @@ def load_downsample_rvq(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> DownsampleResidualVectorQuantize:
-    semantic_quantizer = load_residual_vector_quantize(
+    semantic_quantizer = load_vector_quantize(
         module.semantic_quantizer,
         weights_dict,
         path / "semantic_quantizer",
     )
 
-    quantizer = load_residual_vector_quantize(
+    quantizer = load_vector_quantize(
         module.quantizer,
         weights_dict,
         path / "quantizer",

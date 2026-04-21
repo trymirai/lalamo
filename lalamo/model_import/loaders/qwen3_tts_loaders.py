@@ -1,10 +1,11 @@
 from collections.abc import Mapping
 
 from einops import rearrange
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 
 from lalamo.common import ParameterPath
 from lalamo.modules import FullPrecisionLinear, Transformer
+from lalamo.modules.activations import SiLU
 from lalamo.modules.audio.common_modules import (
     ResidualUnit,
     SnakeBeta,
@@ -20,6 +21,13 @@ from lalamo.modules.audio.qwen3_tts.qwen3_tts_modules import (
     VectorQuantization,
 )
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_text_decoding import Qwen3TTSTextDecoder
+from lalamo.modules.linear import FullPrecisionLinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.token_mixers import AttentionConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .audio_loaders import load_dac_decoder, load_upsampling_block
 from .common import load_parameters
@@ -27,6 +35,7 @@ from .huggingface import load_attention, load_mlp, load_transformer_layer
 from .nanocodec_loaders import load_causal_conv1d
 
 __all__ = [
+    "build_transformer_config",
     "load_qwen3_tts_audio_decoder",
     "load_qwen3_tts_pre_transformer",
     "load_qwen3_tts_residual_unit",
@@ -35,6 +44,86 @@ __all__ = [
     "load_qwen3_tts_text_decoder",
     "load_qwen3_tts_vector_quantization",
 ]
+
+
+def build_transformer_config(
+    *,
+    precision: DTypeLike,
+    hidden_size: int,
+    intermediate_size: int,
+    num_hidden_layers: int,
+    num_attention_heads: int,
+    num_key_value_heads: int,
+    head_dim: int,
+    max_position_embeddings: int,
+    rope_theta: float,
+    rms_norm_eps: float,
+    attention_bias: bool,
+    sliding_window_sizes: tuple[int | None, ...],
+) -> TransformerConfig:
+    linear_config = FullPrecisionLinearConfig(precision=precision)
+    norm_config = NormalizationConfig(
+        scale_precision=precision,
+        accumulation_precision=precision,
+        epsilon=rms_norm_eps,
+        scale_offset=None,
+        upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+        subtract_mean=False,
+    )
+    mlp_config = DenseMLPConfig(
+        linear_config=linear_config,
+        activation=SiLU(),
+        has_up_biases=False,
+        has_down_biases=False,
+        gate_clipping=None,
+        up_clipping=None,
+    )
+
+    if len(sliding_window_sizes) != num_hidden_layers:
+        raise ValueError(
+            f"Expected {num_hidden_layers} sliding-window entries, got {len(sliding_window_sizes)}",
+        )
+
+    layer_configs = tuple(
+        TransformerLayerConfig(
+            pre_mixer_norm_config=norm_config,
+            mixer_config=AttentionConfig(
+                qkv_projection_config=linear_config,
+                out_projection_config=linear_config,
+                query_norm_config=norm_config,
+                key_norm_config=norm_config,
+                num_heads=num_attention_heads,
+                num_groups=num_key_value_heads,
+                head_dim=head_dim,
+                is_causal=True,
+                scale=None,
+                sliding_window_size=window_size,
+                logit_soft_cap=None,
+                has_sinks=False,
+                has_qkv_biases=attention_bias,
+                has_out_biases=attention_bias,
+            ),
+            post_mixer_norm_config=None,
+            pre_mlp_norm_config=norm_config,
+            mlp_config=mlp_config,
+            post_mlp_norm_config=None,
+        )
+        for window_size in sliding_window_sizes
+    )
+
+    return TransformerConfig(
+        global_rope_config=UnscaledRoPEConfig(
+            precision=precision,
+            base=rope_theta,
+            max_sequence_length=max_position_embeddings,
+        ),
+        local_rope_config=None,
+        layer_configs=layer_configs,
+        output_norm_config=norm_config,
+        model_dim=hidden_size,
+        hidden_dim=intermediate_size,
+        context_length=max_position_embeddings,
+    )
 
 
 def load_qwen3_tts_snake_beta(

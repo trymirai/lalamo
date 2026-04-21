@@ -58,7 +58,6 @@ from lalamo.modules.audio.common_modules import (
 )
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
-    ResidualVectorQuantizeConfig,
     UpsamplerConfig,
     VectorQuantizeConfig,
 )
@@ -165,21 +164,18 @@ def test_vector_quantize_decode_code() -> None:
     )
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(dac_vq.state_dict(), prefix="vq")
-    lalamo_vq = load_vector_quantize(lalamo_vq, weights_dict, ParameterPath("vq"))
+    lalamo_vq = load_single_vector_quantize(lalamo_vq, weights_dict, ParameterPath("vq"))
 
     torch.manual_seed(42)
     test_indices_torch = torch.randint(0, codebook_size, (batch_size, num_tokens))
     test_indices_jax = torch_to_jax(test_indices_torch).astype(jnp.int32)
 
-    # DAC decode_code:
-    # returns (B, D, T) - just embedding + transpose, no out_proj Then out_proj is applied: (B, input_dim, T)
-    dac_embedded = dac_vq.decode_code(test_indices_torch)  # (B, codebook_dim, T)
-    dac_output = dac_vq.out_proj(dac_embedded)  # (B, input_dim, T)
-    dac_output = dac_output.permute(0, 2, 1)  # (B, T, input_dim) for comparison
+    dac_embedded = dac_vq.decode_code(test_indices_torch)
+    dac_output = dac_vq.out_proj(dac_embedded)
+    dac_output = dac_output.permute(0, 2, 1)
 
-    # Lalamo decode_code:
-    # applies out_proj and returns (tokens, input_dim)
-    lalamo_output = vmap(lalamo_vq.decode_code)(test_indices_jax)  # (B, T, input_dim)
+    # Feed as (batch, num_codebooks=1, tokens) to the unified VectorQuantize
+    lalamo_output = lalamo_vq(test_indices_jax[:, None, :])
 
     dac_output_jax = torch_to_jax(dac_output)
     assert_close(
@@ -207,7 +203,7 @@ def test_residual_vector_quantize_from_codes() -> None:
     )
     dac_rvq.eval()
 
-    vq_config = VectorQuantizeConfig(
+    lalamo_rvq_config = VectorQuantizeConfig(
         precision=jnp.float32,
         codebook_config=TiedEmbeddingConfig(
             input_scale=None,
@@ -216,10 +212,6 @@ def test_residual_vector_quantize_from_codes() -> None:
         ),
         out_proj_config=FullPrecisionLinearConfig(precision=jnp.float32),
     )
-    lalamo_rvq_config = ResidualVectorQuantizeConfig(
-        precision=jnp.float32,
-        vq_config=vq_config,
-    )
     lalamo_rvq = lalamo_rvq_config.empty(
         input_dim=input_dim,
         codebook_size=codebook_size,
@@ -227,7 +219,7 @@ def test_residual_vector_quantize_from_codes() -> None:
     )
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(dac_rvq.state_dict(), prefix="rvq")
-    lalamo_rvq = load_residual_vector_quantize(lalamo_rvq, weights_dict, ParameterPath("rvq"))
+    lalamo_rvq = load_vector_quantize(lalamo_rvq, weights_dict, ParameterPath("rvq"))
 
     torch.manual_seed(42)
     test_codes_torch = torch.randint(0, codebook_size, (batch_size, n_codebooks, num_tokens))

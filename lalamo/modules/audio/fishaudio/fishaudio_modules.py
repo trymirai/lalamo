@@ -113,6 +113,13 @@ class Upsampler(LalamoModule[UpsamplerConfig]):
 
 
 @dataclass(frozen=True)
+class VectorQuantizerParams:
+    input_dim: int
+    codebook_size: int
+    codebook_dim: int | list[int]
+
+
+@dataclass(frozen=True)
 class VectorQuantizeConfig:
     precision: DTypeLike
     codebook_config: TiedEmbeddingConfig
@@ -122,203 +129,95 @@ class VectorQuantizeConfig:
         self,
         input_dim: int,
         codebook_size: int,
-        codebook_dim: int,
+        codebook_dim: int | list[int],
     ) -> "VectorQuantize":
-        codebook = self.codebook_config.empty(codebook_size, codebook_dim)
-        assert isinstance(codebook, TiedEmbedding)
-
-        out_proj = self.out_proj_config.empty(
-            input_dim=codebook_dim,
-            output_dims=(input_dim,),
-            has_biases=True,
+        codebook_dims = [codebook_dim] if isinstance(codebook_dim, int) else list(codebook_dim)
+        codebooks = tuple(self.codebook_config.empty(codebook_size, dim) for dim in codebook_dims)
+        out_projs = tuple(
+            self.out_proj_config.empty(input_dim=dim, output_dims=(input_dim,), has_biases=True)
+            for dim in codebook_dims
         )
-        assert isinstance(out_proj, FullPrecisionLinear)
-
-        return VectorQuantize(
-            config=self,
-            codebook=codebook,
-            out_proj=out_proj,
-        )
+        return VectorQuantize(config=self, codebooks=codebooks, out_projs=out_projs)
 
     def random_init(
         self,
         input_dim: int,
         codebook_size: int,
-        codebook_dim: int,
+        codebook_dim: int | list[int],
         key: PRNGKeyArray,
     ) -> "VectorQuantize":
-        codebook_key, proj_key = jax.random.split(key)
-
-        codebook = self.codebook_config.random_init(codebook_size, codebook_dim, key=codebook_key)
-        assert isinstance(codebook, TiedEmbedding)
-
-        out_proj = self.out_proj_config.random_init(
-            input_dim=codebook_dim,
-            output_dims=(input_dim,),
-            has_biases=True,
-            key=proj_key,
+        codebook_dims = [codebook_dim] if isinstance(codebook_dim, int) else list(codebook_dim)
+        codebook_keys = jax.random.split(key, 2 * len(codebook_dims))
+        codebooks = tuple(
+            self.codebook_config.random_init(codebook_size, dim, key=k)
+            for dim, k in zip(codebook_dims, codebook_keys[: len(codebook_dims)], strict=True)
         )
-        assert isinstance(out_proj, FullPrecisionLinear)
-
-        return VectorQuantize(
-            config=self,
-            codebook=codebook,
-            out_proj=out_proj,
+        out_projs = tuple(
+            self.out_proj_config.random_init(input_dim=dim, output_dims=(input_dim,), has_biases=True, key=k)
+            for dim, k in zip(codebook_dims, codebook_keys[len(codebook_dims) :], strict=True)
         )
+        return VectorQuantize(config=self, codebooks=codebooks, out_projs=out_projs)
 
 
 class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
-    """Vector Quantization module (decoding path only).
+    """Residual vector quantizer (decoding path). A single codebook is just len(codebooks) == 1."""
 
-    Decodes codebook indices back to input space by:
-    1. Looking up codebook vectors
-    2. Projecting from codebook_dim to input_dim via out_proj
-    """
-
-    codebook: TiedEmbedding
-    out_proj: FullPrecisionLinear
+    codebooks: tuple[TiedEmbedding, ...]
+    out_projs: tuple[FullPrecisionLinear, ...]
 
     @property
     def activation_precision(self) -> DTypeLike:
         return self.config.precision
 
     @property
-    def codebook_size(self) -> int:
-        return self.codebook.vocab_size
+    def num_codebooks(self) -> int:
+        return len(self.codebooks)
 
-    @property
-    def codebook_dim(self) -> int:
-        return self.codebook.model_dim
-
-    def decode_code(self, embed_id: Int[Array, " tokens"]) -> Float[Array, "tokens code_size"]:
-        z_p = self.codebook.embed(embed_id)
-        (z_q,) = vmap(self.out_proj)(z_p)
+    def _decode_layer(
+        self,
+        codebook: TiedEmbedding,
+        out_proj: FullPrecisionLinear,
+        embed_id: Int[Array, " tokens"],
+    ) -> Float[Array, "tokens code_size"]:
+        z_p = codebook.embed(embed_id)
+        (z_q,) = vmap(out_proj)(z_p)
         return z_q
 
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "codebook": self.codebook.export_weights(),
-            "out_proj": self.out_proj.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        codebook_weights = weights["codebook"]
-        out_proj_weights = weights["out_proj"]
-        assert isinstance(codebook_weights, Mapping)
-        assert isinstance(out_proj_weights, Mapping)
-        return replace(
-            self,
-            codebook=self.codebook.import_weights(require_tree(codebook_weights)),
-            out_proj=self.out_proj.import_weights(require_tree(out_proj_weights)),
-        )
-
-
-@dataclass(frozen=True)
-class VectorQuantizerParams:
-    input_dim: int
-    codebook_size: int
-    codebook_dim: int | list[int]
-
-
-@dataclass(frozen=True)
-class ResidualVectorQuantizeConfig:
-    precision: DTypeLike
-    vq_config: VectorQuantizeConfig
-
-    def empty(
-        self,
-        input_dim: int,
-        codebook_size: int,
-        codebook_dim: int | list[int],
-    ) -> "ResidualVectorQuantize":
-        if isinstance(codebook_dim, int):
-            codebook_dims = [codebook_dim]
-        else:
-            codebook_dims = list(codebook_dim)
-
-        quantizers = [
-            self.vq_config.empty(
-                input_dim=input_dim,
-                codebook_size=codebook_size,
-                codebook_dim=dim,
-            )
-            for dim in codebook_dims
+    def from_codes(self, codes: Int[Array, "num_codebooks tokens"]) -> Float[Array, "tokens code_size"]:
+        decoded = [
+            self._decode_layer(codebook, out_proj, layer_codes)
+            for codebook, out_proj, layer_codes in zip(self.codebooks, self.out_projs, codes, strict=True)
         ]
+        return jnp.sum(jnp.stack(decoded, axis=0), axis=0)
 
-        return ResidualVectorQuantize(
-            config=self,
-            quantizers=tuple(quantizers),
-        )
-
-    def random_init(
-        self,
-        input_dim: int,
-        codebook_size: int,
-        codebook_dim: int | list[int],
-        key: PRNGKeyArray,
-    ) -> "ResidualVectorQuantize":
-        if isinstance(codebook_dim, int):
-            codebook_dims = [codebook_dim]
-        else:
-            codebook_dims = list(codebook_dim)
-
-        quantizers = [
-            self.vq_config.random_init(input_dim=input_dim, codebook_size=codebook_size, codebook_dim=dim, key=key)
-            for dim in codebook_dims
-        ]
-
-        return ResidualVectorQuantize(
-            config=self,
-            quantizers=tuple(quantizers),
-        )
-
-
-class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
-    """Residual Vector Quantization module (decoding path only).
-    Decodes codes from multiple codebooks by summing their decoded outputs.
-    """
-
-    quantizers: tuple[VectorQuantize, ...]
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
-    def n_codebooks(self) -> int:
-        return len(self.quantizers)
-
-    def from_codes(self, codes: Int[Array, "n_codebooks tokens"]) -> Float[Array, "tokens code_size"]:
-        n_codebooks = codes.shape[0]
-        z_q = self.quantizers[0].decode_code(codes[0])
-        for i in range(1, n_codebooks):
-            z_q = z_q + self.quantizers[i].decode_code(codes[i])
-        return z_q
-
-    def __call__(self, codes: Int[Array, "batch n_codebooks tokens"]) -> Float[Array, "batch tokens code_size"]:
+    def __call__(self, codes: Int[Array, "batch num_codebooks tokens"]) -> Float[Array, "batch tokens code_size"]:
         return vmap(self.from_codes)(codes)
 
     def export_weights(self) -> ParameterTree[Array]:
         return {
-            "quantizers": [q.export_weights() for q in self.quantizers],
+            "quantizers": [
+                {"codebook": codebook.export_weights(), "out_proj": out_proj.export_weights()}
+                for codebook, out_proj in zip(self.codebooks, self.out_projs, strict=True)
+            ],
         }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
-        quantizer_weights = weights["quantizers"]
-        new_quantizers = []
-        for q, w in zip(self.quantizers, quantizer_weights, strict=True):
+        layer_weights = weights["quantizers"]
+        new_codebooks: list[TiedEmbedding] = []
+        new_out_projs: list[FullPrecisionLinear] = []
+        for codebook, out_proj, w in zip(self.codebooks, self.out_projs, layer_weights, strict=True):
             assert isinstance(w, Mapping)
-            new_quantizers.append(q.import_weights(w))
-        return replace(self, quantizers=tuple(new_quantizers))
+            new_codebooks.append(codebook.import_weights(require_tree(w["codebook"])))
+            new_out_projs.append(out_proj.import_weights(require_tree(w["out_proj"])))
+        return replace(self, codebooks=tuple(new_codebooks), out_projs=tuple(new_out_projs))
 
 
 @dataclass(frozen=True)
 class DownsampleResidualVectorQuantizeConfig:
     precision: DTypeLike
-    semantic_quantizer_config: ResidualVectorQuantizeConfig
-    quantizer_config: ResidualVectorQuantizeConfig
+    semantic_quantizer_config: VectorQuantizeConfig
+    quantizer_config: VectorQuantizeConfig
     post_module_config: TransformerConfig
     upsampler_config: UpsamplerConfig
 
@@ -408,8 +307,8 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
     Output: Continuous audio features with shape (batch, upsampled_tokens, channels)
     """
 
-    semantic_quantizer: ResidualVectorQuantize
-    quantizer: ResidualVectorQuantize
+    semantic_quantizer: VectorQuantize
+    quantizer: VectorQuantize
     post_module: Transformer
     upsampler: Upsampler
 
@@ -419,11 +318,11 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
 
     @property
     def semantic_codebook_size(self) -> int:
-        return self.semantic_quantizer.quantizers[0].codebook_size
+        return self.semantic_quantizer.codebooks[0].vocab_size
 
     @property
     def quantizer_codebook_size(self) -> int:
-        return self.quantizer.quantizers[0].codebook_size
+        return self.quantizer.codebooks[0].vocab_size
 
     def decode(
         self,

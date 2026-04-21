@@ -50,7 +50,6 @@ from lalamo.modules.audio.fishaudio import (
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     DownsampleResidualVectorQuantizeConfig,
-    ResidualVectorQuantizeConfig,
     UpsamplerConfig,
     VectorQuantizeConfig,
 )
@@ -200,7 +199,7 @@ def instantiate_dac_config_from_fishaudio_config(
         input_dim=post_module_config_dict["input_dim"],
     )
 
-    vq_config = VectorQuantizeConfig(
+    quantizer_config = VectorQuantizeConfig(
         precision=precision,
         codebook_config=TiedEmbeddingConfig(
             input_scale=None,
@@ -209,15 +208,11 @@ def instantiate_dac_config_from_fishaudio_config(
         ),
         out_proj_config=FullPrecisionLinearConfig(precision=precision),
     )
-    lalamo_rvq_config = ResidualVectorQuantizeConfig(
-        precision=precision,
-        vq_config=vq_config,
-    )
 
     quantizer_full_config = DownsampleResidualVectorQuantizeConfig(
         precision=precision,
-        semantic_quantizer_config=lalamo_rvq_config,
-        quantizer_config=lalamo_rvq_config,
+        semantic_quantizer_config=quantizer_config,
+        quantizer_config=quantizer_config,
         post_module_config=post_module_config,
         upsampler_config=upsampler_config,
     )

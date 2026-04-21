@@ -212,8 +212,8 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
 
     @property
     def n_codebooks(self) -> int:
-        # NOTE: 1 semantic + n residuals
-        return 1 + self.quantizer.quantizer.n_codebooks
+        # 1 semantic + n residuals
+        return 1 + self.quantizer.quantizer.num_codebooks
 
     def __call__(
         self,

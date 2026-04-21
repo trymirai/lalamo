@@ -280,24 +280,23 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         case we expect codebook lines [1:-1] to be filled with something meaningful
         """
 
-        vq_masks = (inp[:, 0] >= self.semantic_begin_id) & (inp[:, 0] <= self.semantic_end_id)
+        semantic_token_masks = (inp[:, 0] >= self.semantic_begin_id) & (inp[:, 0] <= self.semantic_end_id)
         embeddings = self.embeddings_slow.embed(inp[:, 0])
 
-        if apply_codebook_embeddings or jnp.any(vq_masks):
+        if apply_codebook_embeddings or jnp.any(semantic_token_masks):
             _, _, seq_length = inp.shape
             codebook_offsets = (jnp.arange(self.config.num_codebooks) * self.config.codebook_size).reshape(-1, 1)
             codebook_offsets = jnp.tile(codebook_offsets, (1, seq_length))
             codebook_embeds = vmap(self.codebook_embeddings.embed)(inp[:, 1:, :] + codebook_offsets)
 
-            vq_embeds_sum = codebook_embeds.sum(axis=1)
-            vq_embeds_sum = vq_embeds_sum.at[~vq_masks].set(0)
-            embeddings = embeddings + vq_embeds_sum
+            codebook_embeds_sum = codebook_embeds.sum(axis=1)
+            codebook_embeds_sum = codebook_embeds_sum.at[~semantic_token_masks].set(0)
+            embeddings = embeddings + codebook_embeds_sum
 
         if self.config.scale_codebook_embeddings:
-            # Expand vq_masks to match x's shape
-            vq_masks_expanded = jnp.expand_dims(vq_masks, axis=-1)
-            vq_masks_expanded = jnp.broadcast_to(vq_masks_expanded, embeddings.shape)
-            embeddings = jnp.where(vq_masks_expanded, embeddings / jnp.sqrt(self.config.num_codebooks + 1), embeddings)
+            masks_expanded = jnp.expand_dims(semantic_token_masks, axis=-1)
+            masks_expanded = jnp.broadcast_to(masks_expanded, embeddings.shape)
+            embeddings = jnp.where(masks_expanded, embeddings / jnp.sqrt(self.config.num_codebooks + 1), embeddings)
             assert isinstance(embeddings, Array)
 
         return embeddings

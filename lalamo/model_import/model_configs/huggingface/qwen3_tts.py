@@ -9,6 +9,7 @@ from jaxtyping import Array, DTypeLike
 from lalamo.common import ParameterPath, WeightShard
 from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.qwen3_tts_loaders import (
+    build_transformer_config,
     load_qwen3_tts_audio_decoder,
     load_qwen3_tts_text_decoder,
 )
@@ -52,7 +53,6 @@ from lalamo.modules.audio.qwen3_tts.qwen3_tts_modules import (
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_text_decoding import (
     Qwen3TTSTextDecoder,
     Qwen3TTSTextDecoderConfig,
-    build_transformer_config,
 )
 
 __all__ = ["Qwen3TTSTokenizer12HzConfig"]

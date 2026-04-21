@@ -12,8 +12,8 @@ from lalamo.sampling import SamplingPolicy
 
 
 class CodebookCodes(NamedTuple):
-    semantic: Int[Array, "..."]
-    acoustic: Int[Array, "..."]
+    semantic: Int[Array, "batch_size num_codebooks num_tokens"]
+    acoustic: Int[Array, "batch_size num_codebooks num_tokens"]
 
 
 @dataclass(frozen=True)

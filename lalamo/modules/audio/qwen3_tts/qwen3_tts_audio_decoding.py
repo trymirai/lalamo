@@ -487,11 +487,8 @@ class Qwen3TTSAudioDecoder(TTSAudioDecoder[Qwen3TTSAudioDecoderConfig]):
         self,
         codes: CodebookCodes,
     ) -> Float[Array, " samples"]:
-        if codes.semantic.ndim == 2:
-            codes = CodebookCodes(
-                semantic=rearrange(codes.semantic, "codebooks tokens -> 1 codebooks tokens"),
-                acoustic=rearrange(codes.acoustic, "codebooks tokens -> 1 codebooks tokens"),
-            )
+        assert codes.semantic.ndim == 3
+        assert codes.acoustic.ndim == 3
 
         wav = self.chunked_decode(codes)
         (first_wav,) = wav

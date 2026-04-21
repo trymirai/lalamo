@@ -182,13 +182,8 @@ def decode_group(
     layers: tuple[VectorQuantization, ...],
     codes: Int[Array, "batch num_quantizers tokens"],
 ) -> Float[Array, "batch channels tokens"]:
-    codes_qbt = rearrange(codes, "batch num_quantizers tokens -> num_quantizers batch tokens")
-    layer_pairs = zip(layers, codes_qbt, strict=True)
-    first_layer, first_codes = next(layer_pairs)
-    quantized = first_layer.decode(first_codes)
-    for layer, layer_codes in layer_pairs:
-        quantized = quantized + layer.decode(layer_codes)
-    return quantized
+    codes_per_layer = rearrange(codes, "batch num_quantizers tokens -> num_quantizers batch tokens")
+    return sum(layer.decode(layer_codes) for layer, layer_codes in zip(layers, codes_per_layer, strict=True))
 
 
 def apply_projection(
@@ -218,12 +213,13 @@ class ResidualVectorQuantizerConfig:
             raise ValueError(
                 f"number of quantizers must be > num of semantic components({self.num_semantic}), got {num_quantizers}"
             )
-        vq = self.vector_quantization_config
+        layer_config = self.vector_quantization_config
         semantic_layers = tuple(
-            vq.empty(dim=dimension, codebook_size=bins, codebook_dim=dimension) for _ in range(self.num_semantic)
+            layer_config.empty(dim=dimension, codebook_size=bins, codebook_dim=dimension)
+            for _ in range(self.num_semantic)
         )
         acoustic_layers = tuple(
-            vq.empty(dim=dimension, codebook_size=bins, codebook_dim=dimension)
+            layer_config.empty(dim=dimension, codebook_size=bins, codebook_dim=dimension)
             for _ in range(num_quantizers - self.num_semantic)
         )
         semantic_projection = self.output_projection_config.empty(
@@ -260,14 +256,16 @@ class ResidualVectorQuantizerConfig:
             )
 
         key_sem, key_aco, key_sem_proj, key_aco_proj = jax.random.split(key, 4)
-        vq = self.vector_quantization_config
+        layer_config = self.vector_quantization_config
         sem_keys = jax.random.split(key_sem, self.num_semantic)
         semantic_layers = tuple(
-            vq.random_init(dim=dimension, codebook_size=bins, codebook_dim=dimension, key=k) for k in sem_keys
+            layer_config.random_init(dim=dimension, codebook_size=bins, codebook_dim=dimension, key=k)
+            for k in sem_keys
         )
         aco_keys = jax.random.split(key_aco, num_quantizers - self.num_semantic)
         acoustic_layers = tuple(
-            vq.random_init(dim=dimension, codebook_size=bins, codebook_dim=dimension, key=k) for k in aco_keys
+            layer_config.random_init(dim=dimension, codebook_size=bins, codebook_dim=dimension, key=k)
+            for k in aco_keys
         )
         semantic_projection = self.output_projection_config.random_init(
             input_dim=dimension,

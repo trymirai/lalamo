@@ -5,10 +5,9 @@ from typing import Self
 import jax
 import jax.numpy as jnp
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.common import ParameterTree, require_tree
-from lalamo.modules.activations import SiLU
 from lalamo.modules.audio.text_decoder import (
     CodebookCodes,
     TTSDecodingContext,
@@ -18,12 +17,7 @@ from lalamo.modules.audio.text_decoder import (
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
-from lalamo.modules.mlp import DenseMLPConfig
-from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.rope import UnscaledRoPEConfig
-from lalamo.modules.token_mixers import AttentionConfig
 from lalamo.modules.transformer import Transformer, TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
 from lalamo.modules.utils import vmap_twice
 from lalamo.sampling import SamplingPolicy, make_policy
 
@@ -43,92 +37,12 @@ class TalkerInputs:
 def _sample_token_ids(
     logits: Float[Array, "batch_size vocab_size"],
     sampling_policy: SamplingPolicy,
-    key: PRNGKeyArray,
+    key: Key[Array, ""],
 ) -> Int[Array, " batch_size"]:
     batch_size, _ = logits.shape
     processed_logits = vmap(sampling_policy.process_logits)(logits)
     sample_keys = jax.random.split(key, batch_size)
     return jax.vmap(lambda k, row: jax.random.categorical(k, row))(sample_keys, processed_logits).astype(jnp.int32)
-
-
-def build_transformer_config(
-    *,
-    precision: DTypeLike,
-    hidden_size: int,
-    intermediate_size: int,
-    num_hidden_layers: int,
-    num_attention_heads: int,
-    num_key_value_heads: int,
-    head_dim: int,
-    max_position_embeddings: int,
-    rope_theta: float,
-    rms_norm_eps: float,
-    attention_bias: bool,
-    sliding_window_sizes: tuple[int | None, ...],
-) -> TransformerConfig:
-    linear_config = FullPrecisionLinearConfig(precision=precision)
-    norm_config = NormalizationConfig(
-        scale_precision=precision,
-        accumulation_precision=precision,
-        epsilon=rms_norm_eps,
-        scale_offset=None,
-        upcast_mode=UpcastMode.ONLY_NORMALIZATION,
-        subtract_mean=False,
-    )
-    mlp_config = DenseMLPConfig(
-        linear_config=linear_config,
-        activation=SiLU(),
-        has_up_biases=False,
-        has_down_biases=False,
-        gate_clipping=None,
-        up_clipping=None,
-    )
-
-    if len(sliding_window_sizes) != num_hidden_layers:
-        raise ValueError(
-            f"Expected {num_hidden_layers} sliding-window entries, got {len(sliding_window_sizes)}",
-        )
-
-    layer_configs = tuple(
-        TransformerLayerConfig(
-            pre_mixer_norm_config=norm_config,
-            mixer_config=AttentionConfig(
-                qkv_projection_config=linear_config,
-                out_projection_config=linear_config,
-                query_norm_config=norm_config,
-                key_norm_config=norm_config,
-                num_heads=num_attention_heads,
-                num_groups=num_key_value_heads,
-                head_dim=head_dim,
-                is_causal=True,
-                scale=None,
-                sliding_window_size=window_size,
-                logit_soft_cap=None,
-                has_sinks=False,
-                has_qkv_biases=attention_bias,
-                has_out_biases=attention_bias,
-            ),
-            post_mixer_norm_config=None,
-            pre_mlp_norm_config=norm_config,
-            mlp_config=mlp_config,
-            post_mlp_norm_config=None,
-        )
-        for window_size in sliding_window_sizes
-    )
-
-    return TransformerConfig(
-        global_rope_config=UnscaledRoPEConfig(
-            precision=precision,
-            base=rope_theta,
-            max_sequence_length=max_position_embeddings,
-        ),
-        local_rope_config=None,
-        layer_configs=layer_configs,
-        output_norm_config=norm_config,
-        model_dim=hidden_size,
-        hidden_dim=intermediate_size,
-        context_length=max_position_embeddings,
-    )
 
 
 @dataclass(frozen=True)
@@ -166,7 +80,7 @@ class Qwen3TTSTextDecoderConfig(TTSTextDecoderConfigBase):
 
     @classmethod
     def format_instruction(cls, style: str) -> str:
-        return f"<|im_start|>user\n{style}<|im_end|>\n"
+        return f"<|im_start|>user\n{style}\n"
 
     def empty(self) -> "Qwen3TTSTextDecoder":
         codec_embedding = self.codec_embedding_config.empty(
@@ -228,7 +142,7 @@ class Qwen3TTSTextDecoderConfig(TTSTextDecoderConfigBase):
             talker_to_predictor_projection=talker_to_predictor_projection,
         )
 
-    def random_init(self, *, key: PRNGKeyArray) -> "Qwen3TTSTextDecoder":
+    def random_init(self, *, key: Key[Array, ""]) -> "Qwen3TTSTextDecoder":
         (
             key_codec_embedding,
             key_text_embedding,
@@ -359,16 +273,22 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         return bos, eos, pad
 
     def _build_codec_prefix_ids(self, context: TTSDecodingContext) -> tuple[int, ...]:
-        cfg = self.config
-        speaker_codec_id = cfg.speaker_id.get(context.speaker) if context.speaker is not None else None
-        language_codec_id = cfg.language_id.get(context.language.lower()) if context.language is not None else None
+        speaker_codec_id = self.config.speaker_id.get(context.speaker) if context.speaker is not None else None
+        language_codec_id = (
+            self.config.language_id.get(context.language.lower()) if context.language is not None else None
+        )
         if language_codec_id is None:
-            prefix = (cfg.codec_nothink_id, cfg.codec_think_bos_id, cfg.codec_think_eos_id)
+            prefix = (self.config.codec_nothink_id, self.config.codec_think_bos_id, self.config.codec_think_eos_id)
         else:
-            prefix = (cfg.codec_think_id, cfg.codec_think_bos_id, language_codec_id, cfg.codec_think_eos_id)
+            prefix = (
+                self.config.codec_think_id,
+                self.config.codec_think_bos_id,
+                language_codec_id,
+                self.config.codec_think_eos_id,
+            )
         if speaker_codec_id is not None:
             prefix = (*prefix, speaker_codec_id)
-        return (*prefix, cfg.codec_pad_id, cfg.codec_bos_id)
+        return (*prefix, self.config.codec_pad_id, self.config.codec_bos_id)
 
     def _prepare_talker_inputs(
         self,
@@ -384,8 +304,8 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
 
         role_length = min(3, text_length)
         role_hidden = text_hidden[:, :role_length, :]
-        content_hidden = text_hidden[:, role_length:-1, :]
-        content_length = int(content_hidden.shape[1])
+        content_hidden = text_hidden[:, role_length:, :]
+        _, content_length, _ = content_hidden.shape
         first_content = content_hidden[:, :1, :] if content_length > 0 else tts_pad
         trailing_content = (
             content_hidden[:, 1:, :]
@@ -448,9 +368,9 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         self,
         inputs: TalkerInputs,
         sampling_policy: SamplingPolicy,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> list[Int[Array, " num_codebooks"]]:
-        prefill_length = int(inputs.prefill.shape[1])
+        _, prefill_length, _ = inputs.prefill.shape
         max_new_tokens = max(
             0,
             min(
@@ -494,7 +414,7 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         last_hidden: Float[Array, "batch_size 1 num_channels"],
         first_codec_id: Int[Array, " batch_size"],
         sampling_policy: SamplingPolicy,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> tuple[
         Int[Array, "batch_size num_codebooks"],
         Float[Array, "batch_size 1 num_channels"],
@@ -565,15 +485,15 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         *,
         context: TTSDecodingContext,
         sampling_policy: SamplingPolicy | None = None,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> CodebookCodes:
         sampling_policy = sampling_policy or make_policy(temperature=0.9, top_p=1.0, top_k=50)
         codec_prefix_ids = self._build_codec_prefix_ids(context)
         inputs = self._prepare_talker_inputs(text_tokens, codec_prefix_ids, context.instruction_tokens)
         step_codes = self._generate_codes(inputs, sampling_policy, key)
-        codes = jnp.stack(step_codes, axis=1).astype(jnp.int32)
+        codes = jnp.stack(step_codes, axis=1).astype(jnp.int32)[None, :, :]
         num_semantic = self.config.num_semantic
-        return CodebookCodes(semantic=codes[:num_semantic, :], acoustic=codes[num_semantic:, :])
+        return CodebookCodes(semantic=codes[:, :num_semantic, :], acoustic=codes[:, num_semantic:, :])
 
     def export_weights(self) -> ParameterTree[Array]:
         if self.talker_to_predictor_projection is None:
