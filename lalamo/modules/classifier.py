@@ -133,8 +133,7 @@ class ClassifierActivationTrace(eqx.Module):
     token_ids: Int[Array, "batch tokens"]
     token_positions: Int[Array, "batch tokens"]
 
-    local_positional_embeddings: PositionalEmbeddings
-    global_positional_embeddings: PositionalEmbeddings
+    rope_embeddings: tuple[PositionalEmbeddings, ...] | None
 
     embedding_norm_output: Float[Array, "batch tokens channels"]
     layer_results: tuple[TransformerLayerResult, ...]
@@ -146,13 +145,13 @@ class ClassifierActivationTrace(eqx.Module):
         result = dict(
             token_ids=self.token_ids,
             token_positions=self.token_positions,
-            local_positional_embeddings=self.local_positional_embeddings.export(),
-            global_positional_embeddings=self.global_positional_embeddings.export(),
             layer_results=[layer_result.export() for layer_result in self.layer_results],
             output_norm=self.output_norm,
             output_pooling=self.output_pooling,
             logits=self.logits,
         )
+        if self.rope_embeddings is not None:
+            result["rope_embeddings"] = [emb.export() for emb in self.rope_embeddings]
         return result
 
 
@@ -287,13 +286,10 @@ class Classifier(LalamoModule[ClassifierConfig]):
 
         if return_activation_trace:
             assert transformer_result.layer_results is not None
-            assert transformer_result.global_positional_embeddings is not None
-            assert transformer_result.local_positional_embeddings is not None
             activation_trace = ClassifierActivationTrace(
                 token_ids=token_ids,
                 token_positions=token_positions,
-                global_positional_embeddings=transformer_result.global_positional_embeddings,
-                local_positional_embeddings=transformer_result.local_positional_embeddings,
+                rope_embeddings=transformer_result.rope_embeddings,
                 embedding_norm_output=normalized_embeddings,
                 layer_results=tuple(transformer_result.layer_results),
                 output_norm=transformer_result.outputs,

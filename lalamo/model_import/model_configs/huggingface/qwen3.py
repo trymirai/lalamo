@@ -112,6 +112,7 @@ class HFQwen3Config(HuggingFaceLMConfig):
             precision=activation_precision,
             base=self.rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
+            head_dim=self.head_dim,
         )
         rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
@@ -174,11 +175,10 @@ class HFQwen3Config(HuggingFaceLMConfig):
                 pre_mlp_norm_config=rmsnorm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
+                rope_config=rope_config,
             )
             layer_configs.append(transformer_layer_config)
         transformer_config = TransformerConfig(
-            global_rope_config=rope_config,
-            local_rope_config=None,
             layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,

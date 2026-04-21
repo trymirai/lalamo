@@ -6,7 +6,7 @@ from abc import abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Self
+from typing import Any, Self
 
 import jax
 import jax.numpy as jnp
@@ -81,10 +81,9 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     def embedding(self, token_ids: ArrayT) -> ArrayT: ...
 
     @abstractmethod
-    def global_rope(self, x: ArrayT, position_ids: ArrayT) -> tuple[ArrayT, ArrayT]: ...
-
-    @abstractmethod
-    def local_rope(self, x: ArrayT, position_ids: ArrayT) -> tuple[ArrayT, ArrayT]: ...
+    def rope_fns(self) -> list[tuple[str, Any]]:
+        """Returns list of (label, rope_fn) pairs for each unique rope to test."""
+        ...
 
     @abstractmethod
     def rmsnorm(self, rmsnorm: RMSNormT, x: ArrayT) -> ArrayT: ...
@@ -157,16 +156,13 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_global_rope(self, activation_trace: ActivationTrace) -> None:
-        llm_results = activation_trace.global_positional_embeddings
-        assert llm_results is not None
-
-        if llm_results is None:
-            return
+    def match_rope(self, activation_trace: ActivationTrace, rope_index: int, ref_rope: Any, label: str) -> None:
+        assert activation_trace.rope_embeddings is not None
+        llm_results = activation_trace.rope_embeddings[rope_index]
 
         ref_x = self.from_jax(jnp.array((), jnp.float32))
         ref_position_ids = self.from_jax(activation_trace.token_positions)
-        ref_native_cosines, ref_native_sines = self.global_rope(ref_x, ref_position_ids)
+        ref_native_cosines, ref_native_sines = ref_rope(ref_x, ref_position_ids)
         ref_cosines = self.to_jax(ref_native_cosines)
         ref_sines = self.to_jax(ref_native_sines)
 
@@ -174,54 +170,19 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         llm_cosines = llm_results.cosines
         llm_sines = llm_results.sines
         if head_dim == ref_cosines.shape[-1] * 2:
-            # GPT-OSS has a different rope implementation in hf
             llm_cosines = llm_cosines[:, :, : head_dim // 2].astype(jnp.float32)
             llm_sines = llm_sines[:, :, : head_dim // 2].astype(jnp.float32)
 
         assert_close(
             result=llm_cosines,
             reference=ref_cosines,
-            operation_name="Global RoPE Cosines",
+            operation_name=f"{label} RoPE Cosines",
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
         assert_close(
             result=llm_sines,
             reference=ref_sines,
-            operation_name="Global RoPE Sines",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-
-    def match_local_rope(self, activation_trace: ActivationTrace) -> None:
-        llm_results = activation_trace.local_positional_embeddings
-        assert llm_results is not None
-
-        if llm_results is None:
-            return
-
-        ref_x = self.from_jax(jnp.array((), jnp.float32))
-        ref_position_ids = self.from_jax(activation_trace.token_positions)
-        ref_native_cosines, ref_native_sines = self.local_rope(ref_x, ref_position_ids)
-        ref_cosines = self.to_jax(ref_native_cosines)
-        ref_sines = self.to_jax(ref_native_sines)
-
-        _, _, head_dim = llm_results.cosines.shape
-        llm_cosines = llm_results.cosines
-        llm_sines = llm_results.sines
-        if head_dim == ref_cosines.shape[-1] * 2:
-            # GPT-OSS has a different rope implementation in hf
-            llm_cosines = llm_cosines[:, :, : head_dim // 2].astype(jnp.float32)
-            llm_sines = llm_sines[:, :, : head_dim // 2].astype(jnp.float32)
-
-        assert_close(
-            result=llm_cosines,
-            reference=ref_cosines,
-            operation_name="Local RoPE Cosines",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-        assert_close(
-            result=llm_sines,
-            reference=ref_sines,
-            operation_name="Local RoPE Sines",
+            operation_name=f"{label} RoPE Sines",
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
@@ -390,8 +351,8 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     def match_activations(self, result: InferenceResult) -> None:
         # assert isinstance(result, DecoderResult)
         assert result.activation_trace is not None
-        self.match_global_rope(result.activation_trace)
-        self.match_local_rope(result.activation_trace)
+        for i, (label, rope_fn) in enumerate(self.rope_fns()):
+            self.match_rope(result.activation_trace, i, rope_fn, label)
         self.match_embedding(result.activation_trace)
 
         for i, ref_layer in enumerate(self.iterate_layers()):

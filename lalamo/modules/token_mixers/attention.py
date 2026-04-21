@@ -9,13 +9,13 @@ from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import dummy_array, require_mapping
-from lalamo.modules.common import ParameterTree, PositionalEmbeddingSelector, require_array, require_tree
+from lalamo.modules.common import ParameterTree, require_array, require_tree
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.utils import apply_soft_capping
 
-from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
+from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
 from .state import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 
 __all__ = [
@@ -23,6 +23,14 @@ __all__ = [
     "AttentionConfig",
     "AttentionResult",
 ]
+
+
+def _rms_normalize(
+    x: Float[Array, "*batch channels"],
+    eps: float,
+) -> Float[Array, "*batch channels"]:
+    variance = jnp.mean(jnp.square(x.astype(jnp.float32)), axis=-1, keepdims=True) + eps
+    return (x * jax.lax.rsqrt(variance)).astype(x.dtype)
 
 
 def _repeat_kv(
@@ -96,15 +104,8 @@ class AttentionConfig(TokenMixerConfigBase):
     has_qkv_biases: bool
     has_out_biases: bool
     gate_projection_config: LinearConfig | None = None
-    use_rope: bool = True
-    # Per-head rotary dimension; if set smaller than head_dim; RoPE is applied to the start of the embedding
-    partial_rope_dim: int | None = None
-
-    @property
-    def rope_dim(self) -> int | None:
-        if not self.use_rope:
-            return None
-        return self.partial_rope_dim if self.partial_rope_dim is not None else self.head_dim
+    # Scale-free RMS normalization on values
+    normalize_values: bool = False
 
     def random_init(
         self,
@@ -175,7 +176,6 @@ class AttentionConfig(TokenMixerConfigBase):
             is_causal=self.is_causal,
             scale=self.scale,
             sliding_window_size=self.sliding_window_size,
-            use_rope=self.use_rope,
         )
 
     def empty(
@@ -241,7 +241,6 @@ class AttentionConfig(TokenMixerConfigBase):
             is_causal=self.is_causal,
             scale=self.scale,
             sliding_window_size=self.sliding_window_size,
-            use_rope=self.use_rope,
         )
 
 
@@ -263,7 +262,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
     scale: float | None = eqx.field(static=True)
     sliding_window_size: int | None = eqx.field(static=True)
-    use_rope: bool = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -282,22 +280,10 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return self.sliding_window_size is not None
 
     @property
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        if not self.use_rope:
-            return PositionalEmbeddingSelector.NONE
-        if self.use_sliding_window:
-            return PositionalEmbeddingSelector.LOCAL
-        return PositionalEmbeddingSelector.GLOBAL
-
-    @property
     def has_sinks(self) -> bool:
         return self.sinks is not None
 
     def __post_init__(self) -> None:
-        if self.use_rope != self.config.use_rope:
-            raise ValueError(
-                f"use_rope {self.use_rope} does not match the specified config use_rope {self.config.use_rope}",
-            )
         if self.qkv_projection.has_biases != self.config.has_qkv_biases:
             raise ValueError(
                 f"QKV projection has_biases {self.qkv_projection.has_biases} does not match"
@@ -377,6 +363,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         state: KVCacheLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: ARG002, B008
+        attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
     ) -> AttentionResult:
         queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
         if self.gate_projection is not None:
@@ -407,24 +395,30 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             queries = vmap(vmap(self.query_norm))(queries)
         if self.key_norm is not None:
             keys = vmap(vmap(self.key_norm))(keys)
+        if self.config.normalize_values:
+            values = _rms_normalize(values, eps=1e-6)
 
         if positional_embeddings is not None:
             apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)
             queries = apply_positional_embeddings(queries)
             keys = apply_positional_embeddings(keys)
 
+        prefix_length = 0 if state is None else state.current_prefix_length()
         if state is None:
             updated_state = DynamicKVCacheLayer.init(self.has_sinks, keys, values, length=length_without_padding)
         else:
             updated_state = state.extend(keys, values, added_length=length_without_padding)
 
         num_suffix_tokens, _, _ = queries.shape
-        mask = updated_state.attention_mask(
-            num_suffix_tokens,
-            self.is_causal,
-            length_without_padding,
-            self.sliding_window_size,
-        )
+        if attention_parent_indices is not None:
+            mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices)
+        else:
+            mask = updated_state.attention_mask(
+                num_suffix_tokens,
+                self.is_causal,
+                length_without_padding,
+                self.sliding_window_size,
+            )
         if self.sinks is not None:
             sink_bias = jnp.zeros((self.num_heads, *mask.shape), dtype=queries.dtype)
             sink_bias = sink_bias.at[:, :, 0].set(self.sinks[:, None])

@@ -38,7 +38,7 @@ from lalamo.quantization import QuantizationMode
 from .common import load_parameters
 from .utils import decode_mxfp4, deinterleave_pairwise_columns
 
-__all__ = ["load_huggingface_decoder"]
+__all__ = ["load_huggingface_decoder", "load_linear", "load_rmsnorm"]
 
 
 AWQ_UINT4_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
@@ -422,6 +422,37 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
 
         # Combine up and gate for our format: (num_experts, hidden*2, model_dim)
         combined_up_gate_weights = jnp.concatenate([up_weights, gate_weights], axis=1)
+
+        # The fused gate_up_proj tensor only contains routed experts.
+        # If there are shared experts, they are stored separately and must be appended.
+        if num_shared > 0:
+            if (path / "shared_expert" / "up_proj.weight") in weights_dict:
+                if num_shared != 1:
+                    raise ValueError("Single shared expert path found but num_shared_experts != 1.")
+                shared_expert_paths = [path / "shared_expert"]
+            elif (path / "shared_experts" / "0" / "up_proj.weight") in weights_dict:
+                shared_expert_paths = [path / "shared_experts" / str(idx) for idx in range(num_shared)]
+            else:
+                raise KeyError(
+                    f"Model has {num_shared} shared expert(s) but could not find shared expert "
+                    f"weights under {path / 'shared_expert'} or {path / 'shared_experts'}."
+                )
+
+            shared_up_list: list[Array] = []
+            shared_gate_list: list[Array] = []
+            shared_down_list: list[Array] = []
+            for sp in shared_expert_paths:
+                shared_up_list.append(weights_dict[sp / "up_proj.weight"])
+                shared_gate_list.append(weights_dict[sp / "gate_proj.weight"])
+                shared_down_list.append(weights_dict[sp / "down_proj.weight"])
+
+            shared_up = jnp.stack(shared_up_list, axis=0)
+            shared_gate = jnp.stack(shared_gate_list, axis=0)
+            shared_combined = jnp.concatenate([shared_up, shared_gate], axis=1)
+            combined_up_gate_weights = jnp.concatenate([combined_up_gate_weights, shared_combined], axis=0)
+
+            shared_down = jnp.stack(shared_down_list, axis=0)
+            down_weights = jnp.concatenate([down_weights, shared_down], axis=0)
 
         up_projection = load_parameters(
             lambda m: (m.weights, m.biases),

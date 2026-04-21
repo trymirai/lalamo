@@ -176,7 +176,9 @@ class MessageProcessor:
         return result
 
     def render_request(self, messages: Iterable[Message]) -> str:
-        request_dict = self.request_to_dict(messages)
+        # TODO(knyazer): the following is an ugly thing that needs to be fixed
+        # as soon as shoji is alive (avoid hardcoding random flags)
+        request_dict = self.request_to_dict(messages, enable_thinking=True)
         return self.prompt_template.render({**request_dict, "strftime_now": _strftime_now})
 
     def parse_response(self, response: str) -> AssistantMessage:
