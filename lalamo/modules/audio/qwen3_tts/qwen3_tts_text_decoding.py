@@ -496,11 +496,7 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         return CodebookCodes(semantic=codes[:, :num_semantic, :], acoustic=codes[:, num_semantic:, :])
 
     def export_weights(self) -> ParameterTree[Array]:
-        if self.talker_to_predictor_projection is None:
-            projection_weights: ParameterTree[Array] = {}
-        else:
-            projection_weights = self.talker_to_predictor_projection.export_weights()
-        return {
+        weights = {
             "codec_embedding": self.codec_embedding.export_weights(),
             "text_embedding": self.text_embedding.export_weights(),
             "text_projection_fc1": self.text_projection_fc1.export_weights(),
@@ -510,8 +506,11 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
             "predictor_transformer": self.predictor_transformer.export_weights(),
             "predictor_embeddings": [embedding.export_weights() for embedding in self.predictor_embeddings],
             "predictor_heads": [head.export_weights() for head in self.predictor_heads],
-            "talker_to_predictor_projection": projection_weights,
         }
+        if self.talker_to_predictor_projection is not None:
+            weights["talker_to_predictor_projection"] = self.talker_to_predictor_projection.export_weights()
+
+        return weights
 
     def import_weights(
         self,
