@@ -1,6 +1,7 @@
 import functools
 import threading
 import time
+import traceback
 import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -11,27 +12,22 @@ import numpy as np
 from jax.errors import JaxRuntimeError
 from jaxtyping import DTypeLike
 
-from lalamo.common import LalamoWarning, get_usable_memory_from_bytes
+from lalamo.common import LalamoWarning
 
 type TokenSequence = list[int] | np.ndarray | jnp.ndarray
 
 PROMPT_SIZE_BUCKETS: tuple[int, ...] = tuple(256 * 4**i for i in range(8))
-MIN_BATCHES_PER_BUCKET = 10
 
 __all__ = [
-    "MIN_BATCHES_PER_BUCKET",
     "PROMPT_SIZE_BUCKETS",
     "bucket_by_length",
     "bucket_sequences",
     "decrease_batchsize_on_oom",
-    "estimate_batchsize",
     "estimate_batchsize_for_memory_budget",
     "merge_small_buckets",
     "pad_keys_to_size",
     "pad_sequences",
 ]
-
-_MEMORY_POLL_INTERVAL_S = 0.005
 
 
 @dataclass(frozen=True)
@@ -61,21 +57,20 @@ def _get_device_memory_stats() -> DeviceMemoryStats:
     )
 
 
-def _measure_peak_bytes_in_use(fn: Callable[[], None]) -> int:
+def _measure_peak_bytes_in_use(fn: Callable[[], None], poll_interval_ms: float = 5) -> int:
     peak_bytes_in_use = _get_device_memory_stats().bytes_in_use
     should_stop = threading.Event()
-    polling_error: BaseException | None = None
+    polling_error = None
 
     def poll_memory() -> None:
-        nonlocal peak_bytes_in_use
-        nonlocal polling_error
+        nonlocal peak_bytes_in_use, polling_error
 
         try:
             while not should_stop.is_set():
                 peak_bytes_in_use = max(peak_bytes_in_use, _get_device_memory_stats().bytes_in_use)
-                time.sleep(_MEMORY_POLL_INTERVAL_S)
-        except BaseException as error:  # noqa: BLE001
-            polling_error = error
+                time.sleep(poll_interval_ms / 1000.0)
+        except Exception as exc:  # noqa: BLE001
+            polling_error = exc
 
     polling_thread = threading.Thread(target=poll_memory, daemon=True)
     polling_thread.start()
@@ -94,51 +89,30 @@ def _measure_peak_bytes_in_use(fn: Callable[[], None]) -> int:
 def estimate_batchsize_for_memory_budget(
     fn: Callable[[int], None],
     memory_budget: int,
-    starting_batchsize: int = 8,
+    starting_batchsize: int = 2,
     num_steps: int = 2,
 ) -> int:
     batch_size = max(1, starting_batchsize)
-    num_completed_steps = 0
 
-    while num_completed_steps < num_steps:
+    for _ in range(num_steps):
         try:
             peak_bytes_in_use = _measure_peak_bytes_in_use(functools.partial(fn, batch_size))
         except (JaxRuntimeError, ValueError) as error:
             if not _is_oom_error(error):
                 raise
-            next_batch_size = max(1, batch_size // 2)
-            if next_batch_size == batch_size:
-                raise
+
+            # if we are out of memory, use a very conservative fallback
             warnings.warn(
-                f"OOM while estimating batch size at {batch_size}. Retrying with {next_batch_size}.",
+                f"OOM while estimating batch size at {batch_size}. Sticking with {batch_size // 2}.",
                 LalamoWarning,
                 stacklevel=2,
             )
-            batch_size = next_batch_size
-            continue
 
-        if peak_bytes_in_use <= 0:
-            return batch_size
+            return batch_size // 2
 
-        next_batch_size = max(1, int(batch_size * memory_budget / peak_bytes_in_use))
-        batch_size = next_batch_size
-        num_completed_steps += 1
+        batch_size = max(1, int(batch_size * memory_budget / peak_bytes_in_use))
 
     return batch_size
-
-
-def estimate_batchsize(
-    fn: Callable[[int], None],
-    starting_batchsize: int = 8,
-    num_steps: int = 2,
-) -> int:
-    memory_budget = get_usable_memory_from_bytes(_get_device_memory_stats().bytes_limit)
-    return estimate_batchsize_for_memory_budget(
-        fn,
-        memory_budget=memory_budget,
-        starting_batchsize=starting_batchsize,
-        num_steps=num_steps,
-    )
 
 
 def bucket_by_length[T: TokenSequence](
@@ -155,26 +129,16 @@ def bucket_by_length[T: TokenSequence](
 
 def bucket_sequences[T: TokenSequence](
     tokenized: list[T],
-    memory_probe: Callable[..., None],
+    memory_probe: Callable[[int, int], None],
     *,
     max_vram: int,
-    starting_batch_size: int = 8,
-    min_batches_per_bucket: int = MIN_BATCHES_PER_BUCKET,
+    starting_batch_size: int = 2,
+    min_batches_per_bucket: int = 10,
 ) -> tuple[dict[int, list[tuple[int, T]]], dict[int, int]]:
     """Bucket sequences by length and estimate a batch size per bucket.
 
-    ``memory_probe`` is called as ``memory_probe(batch_size=..., padded_length=...)`` and
-    must run one forward pass' worth of work so the estimator can read the peak memory.
-
-    Buckets are processed longest-prompt-first. If the remaining (smaller) buckets can't
-    fill ``min_batches_per_bucket`` batches of the current size, the current estimate is
-    reused for all of them (avoids paying a compile per bucket when the payoff is small).
-
-    On unrecoverable OOM in one bucket's estimation:
-      * if an earlier bucket already produced an estimate, that estimate is reused for
-        this and every remaining bucket;
-      * otherwise the bucket falls back to ``batch_size=1`` and the next bucket is
-        re-estimated from scratch with ``num_steps=2``.
+    `memory_probe` is called as memory_probe(batch_size:int=..., padded_length:int=...) and
+    must run at least one forward pass worth of work so the estimator can read the peak memory.
     """
     sequences_per_bucket = bucket_by_length(tokenized)
     sorted_lengths = sorted(sequences_per_bucket.keys(), reverse=True)
@@ -318,11 +282,10 @@ def decrease_batchsize_on_oom[T](
             new_bs = max(int(0.7 * effective_batch_size - 1), 1)
             if new_bs == 1 and effective_batch_size == 1:
                 raise
-            import traceback
 
-            tb = traceback.format_exc()
             warnings.warn(
-                f"OOM detected. Reducing batch size {effective_batch_size} -> {new_bs}.\nFull traceback:\n{tb}",
+                f"OOM detected. Reducing batch size {effective_batch_size} -> {new_bs}.\n"
+                f"Full traceback:\n{traceback.format_exc()}",
                 LalamoWarning,
                 stacklevel=3,
             )

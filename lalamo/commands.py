@@ -360,9 +360,10 @@ def estimate_batchsize(
 
     scheduler = FixedBatchScheduler(model)
 
-    def run_batch(batchsize: int) -> None:
+    def memory_probe(batchsize: int) -> None:
         callbacks.estimating_batchsize(batchsize, current_step[0], 2)
         current_step[0] += 1
+
         results = scheduler.generate_tokens_many(
             [probe_sequence] * batchsize,
             inference_config=dataclasses.replace(inference_config, batch_size=batchsize),
@@ -372,7 +373,7 @@ def estimate_batchsize(
         if first_result is not None:
             jax.block_until_ready(first_result)
 
-    bs = estimate_batchsize_for_memory_budget(run_batch, mem)
+    bs = estimate_batchsize_for_memory_budget(memory_probe, mem)
 
     callbacks.finished_estimating_batchsize(bs)
     return bs
@@ -644,7 +645,7 @@ def generate_replies(
             )
 
     # Count rows without loading full dataset
-    total_rows: int = pl.scan_parquet(dataset_path).select(pl.len()).collect().item()  # type: ignore[possibly-missing-attribute]
+    total_rows: int = pl.scan_parquet(dataset_path).select(pl.len()).collect().item()
 
     callbacks = callbacks_type(
         model_path,
@@ -661,7 +662,7 @@ def generate_replies(
     callbacks.finished_loading_model()
 
     callbacks.loading_dataset()
-    dataframe: pl.DataFrame = load_hf_parquet(dataset_path).collect()  # type: ignore[possibly-missing-attribute]
+    dataframe: pl.DataFrame = load_hf_parquet(dataset_path).collect()
     conversations = dataframe.get_column("conversation")
     dataset = iter(
         [HFMessage.from_dict(message).as_message() for message in conversation] for conversation in conversations

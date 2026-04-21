@@ -33,7 +33,6 @@ from .language_model import (
     PrefillResults,
 )
 from .lm_helpers import (
-    MIN_BATCHES_PER_BUCKET,
     bucket_by_length,
     bucket_sequences,
     decrease_batchsize_on_oom,
@@ -400,12 +399,10 @@ class BatchScheduler(ABC):
                     jax.block_until_ready(first_result)
 
             sequences_per_bucket, batch_size_per_bucket = bucket_sequences(
-                tokenized,
-                memory_probe,
-                max_vram=get_usable_memory_from_bytes(vram_bytes),
+                tokenized, memory_probe, max_vram=get_usable_memory_from_bytes(vram_bytes), min_batches_per_bucket=10
             )
 
-        buckets = merge_small_buckets(sequences_per_bucket, batch_size_per_bucket, min_batches=MIN_BATCHES_PER_BUCKET)
+        buckets = merge_small_buckets(sequences_per_bucket, batch_size_per_bucket, min_batches=10)
         assert sum(len(bucket) for bucket in buckets.values()) == len(tokenized)
 
         if batch_sizes_callback is not None:

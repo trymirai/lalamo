@@ -21,8 +21,7 @@ dependencies = [
     "xxhash>=3.5.0",
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
     "requests>=2.32.5",
-    "soundfile>=0.13.1",
-    "datasets>=2.21.0",
+    "soundfile>=0.13.1"
 ]
 readme = { file = "README.md", content-type = "text/markdown" }
 dynamic = ["version"]

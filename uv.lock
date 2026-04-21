@@ -1951,7 +1951,6 @@ source = { editable = "." }
 dependencies = [
     { name = "cattrs", extra = ["msgpack"] },
     { name = "click" },
-    { name = "datasets" },
     { name = "einops" },
     { name = "equinox" },
     { name = "huggingface-hub" },
@@ -2037,7 +2036,6 @@ requires-dist = [
     { name = "blobfile", marker = "extra == 'fishaudio'", specifier = ">=3.1.0" },
     { name = "cattrs", extras = ["msgpack"], specifier = ">=24.1.2" },
     { name = "click", specifier = ">=8.1.8" },
-    { name = "datasets", specifier = ">=2.21.0" },
     { name = "einops", specifier = ">=0.8.0" },
     { name = "equinox", specifier = ">=0.11.11" },
     { name = "huggingface-hub", extras = ["hf-transfer"], specifier = ">=0.27.1" },
