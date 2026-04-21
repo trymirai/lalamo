@@ -67,7 +67,7 @@ jobs:
           MENTION: ${{ secrets.CI_ONCALL_MENTION }}
         run: |
           if [ -z "$DISCORD_WEBHOOK" ]; then
-            echo "DISCORD_WEBHOOK secret is not set; cannot deliver message." >&2
+            echo "::error:: DISCORD_WEBHOOK secret is not set; cannot deliver message." >&2
             exit 1
           fi
           case "$STATUS" in
