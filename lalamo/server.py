@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import random
-import shutil
+import time
 import traceback
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -36,9 +36,6 @@ class RequestBody:
     generation_config: GenerationConfig | None = None
     precision: Literal["bfloat16", "float32"] = "bfloat16"
     seed: int | None = None
-
-    def has_distinct_id(self, other: Self) -> bool:
-        return self.sequence_id != other.sequence_id
 
     def shares_batch_params(self, other: Self) -> bool:
         return (
@@ -82,16 +79,26 @@ class Batch:
         return cls._converter.structure(json.loads(path.read_text()), cls)
 
     def save(self) -> None:
-        (app.state.cache_dir / f"{self.id}.json").write_text(json.dumps(self._converter.unstructure(self)))
+        path = app.state.cache_dir / f"{self.id}.json"
+        tmp_path = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        try:
+            tmp_path.write_text(json.dumps(self._converter.unstructure(self)))
+            tmp_path.replace(path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
 
 gpu_lock = asyncio.Lock()
 creation_lock = asyncio.Lock()
 
 
-def cleanup_cache(cache_dir: Path) -> None:
-    shutil.rmtree(cache_dir, ignore_errors=True)
-    cache_dir.mkdir(parents=True, exist_ok=True)
+async def sweep_cache() -> None:
+    while True:
+        cutoff = time.time() - 96 * 3600
+        for path in app.state.cache_dir.glob("batch_*.json"):
+            if path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+        await asyncio.sleep(3600)
 
 
 @asynccontextmanager
@@ -99,9 +106,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     workers = int(os.environ.get("WEB_CONCURRENCY", "1"))
     if workers > 1:
         raise RuntimeError("This app must run with a single worker.")
-    cleanup_cache(app.state.cache_dir)
+    app.state.cache_dir.mkdir(parents=True, exist_ok=True)
     app.state.tasks = set()
+    sweeper = asyncio.create_task(sweep_cache())
     yield
+    sweeper.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -121,12 +130,17 @@ def validate_requests(
 
     reference, *rest = requests
     for request in rest:
-        if not (reference.has_distinct_id(request) and reference.shares_batch_params(request)):
+        if not reference.shares_batch_params(request):
             raise HTTPException(
                 400,
-                "All requests in a batch must specify distinct ids, but identical model, sampling params and "
+                "All requests in a batch must specify identical model, sampling params and "
                 f"token limits, got incompatible {reference} and {request}.",
             )
+
+    sequence_ids = [request.sequence_id for request in requests]
+    if len(set(sequence_ids)) != len(sequence_ids):
+        raise HTTPException(400, "All requests in a batch must specify distinct ids, but found duplicates.")
+
     return requests
 
 
