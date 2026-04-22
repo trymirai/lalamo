@@ -143,6 +143,7 @@ MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = (
     ("mlx-community/Qwen3.5-9B-MLX-8bit", ModelTier.EXTRA),
     ("mlx-community/Qwen3.5-27B-4bit", ModelTier.EXTRA),
     # Qwen3.6
+    ("Qwen/Qwen3.6-27B", ModelTier.EXTRA),
     ("Qwen/Qwen3.6-35B-A3B", ModelTier.EXTRA),
     # AWQ
     ("trymirai/Qwen2.5-3B-Instruct-AWQ", ModelTier.EXTRA),

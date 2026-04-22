@@ -513,6 +513,15 @@ QWEN36 = [
     ModelSpec(
         vendor="Alibaba",
         family="Qwen3.6",
+        name="Qwen3.6-27B",
+        size="27B",
+        quantization=None,
+        repo="Qwen/Qwen3.6-27B",
+        config_type=HFQwen35Config,
+    ),
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen3.6",
         name="Qwen3.6-35B-A3B",
         size="35B",
         quantization=None,
