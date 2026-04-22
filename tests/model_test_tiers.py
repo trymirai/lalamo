@@ -169,6 +169,7 @@ MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = (
     ("fishaudio/s1-mini", ModelTier.EXTRA),
     ("nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps", ModelTier.EXTRA),
     # Other
+    ("openai/privacy-filter", ModelTier.STANDARD),
     ("trymirai/chat-moderation-router", ModelTier.EXTRA),
     ("amd/PARD-Qwen3-0.6B", ModelTier.EXTRA),
     # Bonsai

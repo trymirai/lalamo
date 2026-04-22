@@ -12,6 +12,7 @@ from .mirai import MIRAI_CLASSIFIER_MODELS
 from .mistral import MISTRAL_MODELS
 from .nanbeige import NANBEIGE_MODELS
 from .nanocodec import NANOCODEC_TTS_MODELS
+from .openai import OPENAI_MODELS
 
 # from .pleias import PLEIAS_MODELS
 from .polaris import POLARIS_MODELS
@@ -43,6 +44,7 @@ ALL_MODEL_LISTS = [
     REKA_MODELS,
     MIRAI_CLASSIFIER_MODELS,
     NANBEIGE_MODELS,
+    OPENAI_MODELS,
     RNJ_MODELS,
     TTS_MODELS,
 ]

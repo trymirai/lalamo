@@ -398,19 +398,48 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         elif (experts_path / "gate_up_proj.weight") in weights_dict:
             gate_up_weights = weights_dict[experts_path / "gate_up_proj.weight"]
             down_weights = weights_dict[experts_path / "down_proj.weight"]
+        elif gate_up_path in weights_dict:
+            # Flat layout used by GPT-OSS and openai/privacy-filter: the tensor is stored at
+            # `...experts.gate_up_proj` with no further suffix. Biases live at
+            # `...experts.gate_up_proj_bias` etc. which would also match `startswith` — be exact.
+            gate_up_weights = weights_dict[gate_up_path]
+            down_weights = weights_dict[down_path]
         else:
-            # Find the actual key format
+            # Fuzzy fallback: find a sibling suffix that applies to both gate_up_proj and down_proj.
+            # Skip anything that looks like a bias tensor to avoid collisions.
             gate_up_key = next(
-                (k for k in weights_dict if str(k).startswith(str(gate_up_path))),
+                (
+                    k
+                    for k in weights_dict
+                    if str(k).startswith(str(gate_up_path)) and not str(k).startswith(str(gate_up_path) + "_bias")
+                ),
                 None,
             )
             if gate_up_key is None:
                 raise KeyError(f"Could not find gate_up_proj weights under {gate_up_path}")
-            # Infer the weight key suffix
             suffix = str(gate_up_key)[len(str(gate_up_path)) :]
             gate_up_weights = weights_dict[gate_up_key]
             down_key = str(down_path) + suffix
             down_weights = weights_dict[ParameterPath(down_key)]
+
+        # Lalamo expects up_projection weights in (experts, 2*intermediate, model_dim) layout.
+        # The module splits up/gate from its `output_dims=(hidden, hidden)`, so the fused
+        # first-axis size is `sum(output_dims) == 2 * hidden`.
+        # Two HF conventions exist:
+        #   Qwen2-MoE / Qwen3.5-MoE: (experts, 2*intermediate, model_dim) — already matches.
+        #   GPT-OSS / openai-privacy-filter: (experts, model_dim, 2*intermediate) — axes 1 and 2
+        #     swapped. Detect by comparing to the module's expected fused dim.
+        expected_up_fused = sum(module.experts.up_projection.output_dims)
+        if gate_up_weights.shape[1] == expected_up_fused:
+            pass  # canonical layout
+        elif gate_up_weights.shape[2] == expected_up_fused:
+            gate_up_weights = jnp.swapaxes(gate_up_weights, 1, 2)
+            down_weights = jnp.swapaxes(down_weights, 1, 2)
+        else:
+            raise ValueError(
+                f"Batched MoE gate_up_proj has shape {gate_up_weights.shape} but module expects "
+                f"2*intermediate={expected_up_fused}; cannot identify axis order.",
+            )
 
         # gate_up_proj is [num_experts, intermediate_size*2, hidden_size] - split into gate and up
         intermediate_size_2 = gate_up_weights.shape[1]
@@ -422,6 +451,27 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
 
         # Combine up and gate for our format: (num_experts, hidden*2, model_dim)
         combined_up_gate_weights = jnp.concatenate([up_weights, gate_weights], axis=1)
+
+        # Biases: optional, same gate/up split and reorder rule.
+        if has_up_biases:
+            up_gate_bias_path = ParameterPath(str(gate_up_path) + "_bias")
+            if up_gate_bias_path not in weights_dict:
+                raise KeyError(f"MoE experts have biases but {up_gate_bias_path} not found.")
+            gate_up_bias = weights_dict[up_gate_bias_path]
+            # Shape is (experts, 2*intermediate) — split along axis 1.
+            gate_bias = gate_up_bias[:, :intermediate_size]
+            up_bias = gate_up_bias[:, intermediate_size:]
+            combined_up_gate_biases: Array | None = jnp.concatenate([up_bias, gate_bias], axis=1)
+        else:
+            combined_up_gate_biases = None
+
+        if has_down_biases:
+            down_bias_path = ParameterPath(str(down_path) + "_bias")
+            if down_bias_path not in weights_dict:
+                raise KeyError(f"MoE experts have biases but {down_bias_path} not found.")
+            down_biases_tensor: Array | None = weights_dict[down_bias_path]
+        else:
+            down_biases_tensor = None
 
         # The fused gate_up_proj tensor only contains routed experts.
         # If there are shared experts, they are stored separately and must be appended.
@@ -457,13 +507,13 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         up_projection = load_parameters(
             lambda m: (m.weights, m.biases),
             module.experts.up_projection,
-            (combined_up_gate_weights, None),
+            (combined_up_gate_weights, combined_up_gate_biases),
         )
 
         down_projection = load_parameters(
             lambda m: (m.weights, m.biases),
             module.experts.down_projection,
-            (down_weights, None),
+            (down_weights, down_biases_tensor),
         )
 
         experts = load_parameters(
@@ -1270,6 +1320,13 @@ def load_huggingface_classifier(
     module: Classifier,
     weights_dict: Mapping[str, Array],
 ) -> Classifier:
+    # Dispatch on layout. ModernBERT-style classifiers have `classifier.weight` +
+    # `head.dense.weight`; GPT-OSS / openai-privacy-filter style has `score.weight`
+    # and decoder-style `model.layers.N.self_attn.*` keys with an RMSNorm-only
+    # readout.
+    if ParameterPath("score") / "weight" in weights_dict:
+        return _load_score_head_classifier(module, weights_dict)
+
     def load_tied_embedding_local(
         module: TiedEmbedding,
         weights_dict: Mapping[str, Array],
@@ -1444,3 +1501,68 @@ def load_huggingface_classifier(
             head_readout,
         ),
     )
+
+
+def _load_score_head_classifier(
+    module: Classifier,
+    weights_dict: Mapping[str, Array],
+) -> Classifier:
+    """Load a classifier whose weights follow the decoder-style GPT-OSS layout with a
+    single linear `score` readout (e.g. openai/privacy-filter).
+
+    Layout:
+        model.embed_tokens.weight                 — embedding.input_weights
+        model.layers.N.input_layernorm.weight     — pre-mixer RMS norm
+        model.layers.N.self_attn.{q,k,v,o}_proj.* — GQA attention with biases
+        model.layers.N.self_attn.sinks            — attention sinks
+        model.layers.N.post_attention_layernorm   — pre-MLP RMS norm
+        model.layers.N.mlp.router.{weight,bias}   — MoE router
+        model.layers.N.mlp.experts.gate_up_proj*  — batched experts (with biases)
+        model.layers.N.mlp.experts.down_proj*
+        model.norm.weight                         — transformer output norm
+        score.{weight,bias}                       — classification readout
+    """
+    base_path = ParameterPath()
+    decoder_path = base_path / "model"
+    embedding_path = decoder_path / "embed_tokens"
+
+    assert isinstance(module.embedding, TiedEmbedding), (
+        f"Score-head classifier expects TiedEmbedding, got {type(module.embedding).__name__}"
+    )
+    input_weights = weights_dict[embedding_path / "weight"]
+    embedding = load_parameters(lambda m: (m.weights,), module.embedding, (input_weights,))
+
+    # The decoder-style transformer layer loader (used for causal LMs) knows how
+    # to load attention + MLP/MoE with the standard HF key names.
+    decoder_layers = tuple(
+        load_transformer_layer(
+            layer,
+            weights_dict,
+            decoder_path / "layers" / i,
+            decoder_path / "layers" / i,
+            mixer_key="self_attn",
+            mlp_key="mlp",
+            pre_mixer_norm_key="input_layernorm",
+            pre_mlp_norm_key="post_attention_layernorm",
+            up_proj_key="up_proj",
+            gate_proj_key="gate_proj",
+            down_proj_key="down_proj",
+            permute_conv=False,
+            reorder_q_proj_gate=False,
+        )
+        for i, layer in enumerate(module.transformer.layers)
+    )
+
+    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / "norm")
+
+    score_path = base_path / "score"
+    readout = load_linear(module.prediction_head.readout, weights_dict, score_path)
+
+    selectors = [
+        lambda m: m.embedding,
+        lambda m: m.transformer.layers,
+        lambda m: m.transformer.output_norm,
+        lambda m: m.prediction_head.readout,
+    ]
+    new_values: list[object] = [embedding, decoder_layers, output_norm, readout]
+    return load_parameters(lambda m: tuple(sel(m) for sel in selectors), module, new_values)

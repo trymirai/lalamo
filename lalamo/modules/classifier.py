@@ -36,24 +36,34 @@ __all__ = [
 class PoolingType(StrEnum):
     CLS = "cls"
     MEAN = "mean"
+    NONE = "none"  # Per-token classification: emit logits for every position, no pooling.
 
 
 @dataclass(frozen=True)
 class PredictionHeadConfig:
-    dense_config: LinearConfig
-    activation: Activation
-    normalization_config: NormalizationConfig
     readout_config: LinearConfig
-    use_dense_bias: bool
+    dense_config: LinearConfig | None = None
+    activation: Activation | None = None
+    normalization_config: NormalizationConfig | None = None
+    use_dense_bias: bool = False
+    readout_has_biases: bool = True
 
     def empty(self, input_size: int, num_labels: int) -> "PredictionHead":
-        dense_layer = self.dense_config.empty(
-            input_dim=input_size,
-            output_dims=(input_size,),
-            has_biases=self.use_dense_bias,
+        dense_layer = (
+            self.dense_config.empty(
+                input_dim=input_size,
+                output_dims=(input_size,),
+                has_biases=self.use_dense_bias,
+            )
+            if self.dense_config is not None
+            else None
         )
-        norm = self.normalization_config.empty(input_size)
-        readout = self.readout_config.empty(input_dim=input_size, output_dims=(num_labels,), has_biases=True)
+        norm = self.normalization_config.empty(input_size) if self.normalization_config is not None else None
+        readout = self.readout_config.empty(
+            input_dim=input_size,
+            output_dims=(num_labels,),
+            has_biases=self.readout_has_biases,
+        )
 
         return PredictionHead(
             config=self,
@@ -65,17 +75,21 @@ class PredictionHeadConfig:
 
     def random_init(self, input_size: int, num_labels: int, key: PRNGKeyArray) -> "PredictionHead":
         dense_key, readout_key = jax.random.split(key)
-        dense_layer = self.dense_config.random_init(
-            input_size,
-            (input_size,),
-            has_biases=self.use_dense_bias,
-            key=dense_key,
+        dense_layer = (
+            self.dense_config.random_init(
+                input_size,
+                (input_size,),
+                has_biases=self.use_dense_bias,
+                key=dense_key,
+            )
+            if self.dense_config is not None
+            else None
         )
-        norm = self.normalization_config.empty(input_size)
+        norm = self.normalization_config.empty(input_size) if self.normalization_config is not None else None
         readout = self.readout_config.random_init(
             input_dim=input_size,
             output_dims=(num_labels,),
-            has_biases=True,
+            has_biases=self.readout_has_biases,
             key=readout_key,
         )
 
@@ -89,9 +103,9 @@ class PredictionHeadConfig:
 
 
 class PredictionHead(LalamoModule[PredictionHeadConfig]):
-    dense: LinearBase
-    activation: Activation
-    norm: Normalization
+    dense: LinearBase | None
+    activation: Activation | None
+    norm: Normalization | None
     readout: LinearBase
 
     def __call__(self, inner_features: Float[Array, "batch channels"]) -> Float[Array, "batch logits"]:
@@ -101,30 +115,34 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
         self,
         inner_features: Float[Array, " in_channels"],
     ) -> Float[Array, " logits"]:
-        (dense_outs,) = self.dense(inner_features)
-        dense_outs = self.activation(dense_outs)
-        norm_outs = self.norm(dense_outs)
-        (result,) = self.readout(norm_outs)
+        x = inner_features
+        if self.dense is not None:
+            (x,) = self.dense(x)
+        if self.activation is not None:
+            x = self.activation(x)
+        if self.norm is not None:
+            x = self.norm(x)
+        (result,) = self.readout(x)
         return result
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.dense.activation_precision
+        return self.readout.activation_precision
 
     def export_weights(self) -> ParameterTree:
-        result = dict(
-            dense=self.dense.export_weights(),
-            norm=self.norm.export_weights(),
-            readout=self.readout.export_weights(),
-        )
+        result: dict[str, ParameterTree] = dict(readout=self.readout.export_weights())
+        if self.dense is not None:
+            result["dense"] = self.dense.export_weights()
+        if self.norm is not None:
+            result["norm"] = self.norm.export_weights()
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = require_mapping(weights)
         return replace(
             self,
-            dense=self.dense.import_weights(require_tree(weights["dense"])),
-            norm=self.norm.import_weights(require_tree(weights["norm"])),
+            dense=self.dense.import_weights(require_tree(weights["dense"])) if self.dense is not None else None,
+            norm=self.norm.import_weights(require_tree(weights["norm"])) if self.norm is not None else None,
             readout=self.readout.import_weights(require_tree(weights["readout"])),
         )
 
@@ -171,7 +189,6 @@ class ClassifierResult(eqx.Module):
 @dataclass(frozen=True)
 class ClassifierConfig:
     embedding_config: EmbeddingConfig
-    embedding_norm_config: NormalizationConfig
     transformer_config: TransformerConfig
     prediction_head_config: PredictionHeadConfig
     readout_config: LinearConfig
@@ -186,6 +203,7 @@ class ClassifierConfig:
     classifier_pooling: PoolingType
 
     output_labels: tuple[str, ...] | None
+    embedding_norm_config: NormalizationConfig | None = None
 
     def random_init(
         self,
@@ -198,7 +216,9 @@ class ClassifierConfig:
             model_dim=self.model_dim,
             key=embedding_key,
         )
-        embedding_norm = self.embedding_norm_config.empty(self.model_dim)
+        embedding_norm = (
+            self.embedding_norm_config.empty(self.model_dim) if self.embedding_norm_config is not None else None
+        )
         transformer = self.transformer_config.random_init(
             key=transformer_key,
         )
@@ -220,7 +240,9 @@ class ClassifierConfig:
             vocab_size=self.vocab_size,
             model_dim=self.model_dim,
         )
-        embedding_norm = self.embedding_norm_config.empty(self.model_dim)
+        embedding_norm = (
+            self.embedding_norm_config.empty(self.model_dim) if self.embedding_norm_config is not None else None
+        )
         transformer = self.transformer_config.empty()
         prediction_head = self.prediction_head_config.empty(
             input_size=self.hidden_dim,
@@ -237,7 +259,7 @@ class ClassifierConfig:
 
 class Classifier(LalamoModule[ClassifierConfig]):
     embedding: EmbeddingBase
-    embedding_norm: Normalization
+    embedding_norm: Normalization | None
     transformer: Transformer
     prediction_head: PredictionHead
 
@@ -260,7 +282,10 @@ class Classifier(LalamoModule[ClassifierConfig]):
         forward_pass_config: TransformerForwardPassConfig | None = None,
     ) -> ClassifierResult:
         inner_features = self.embedding.embed(token_ids)
-        normalized_embeddings = vmap_twice(self.embedding_norm)(inner_features)
+        if self.embedding_norm is not None:
+            normalized_embeddings = vmap_twice(self.embedding_norm)(inner_features)
+        else:
+            normalized_embeddings = inner_features
 
         transformer_result = self.transformer(
             inner_features=normalized_embeddings,
@@ -274,15 +299,21 @@ class Classifier(LalamoModule[ClassifierConfig]):
             forward_pass_config=forward_pass_config,
         )
 
-        if self.config.classifier_pooling == PoolingType.CLS:
+        if self.config.classifier_pooling == PoolingType.NONE:
+            # Token classification: apply prediction head at every position.
+            # transformer_result.outputs has shape (batch, tokens, channels);
+            # vmap the head over the token axis.
+            logits = vmap(self.prediction_head, in_axes=1, out_axes=1)(transformer_result.outputs)
+            pooled_output = transformer_result.outputs
+        elif self.config.classifier_pooling == PoolingType.CLS:
             pooled_output = transformer_result.outputs[:, 0, :]
+            logits = self.prediction_head(pooled_output)
         elif self.config.classifier_pooling == PoolingType.MEAN:
             attention_mask = jnp.ones((*token_ids.shape, 1), dtype=transformer_result.outputs.dtype)
             pooled_output = (transformer_result.outputs * attention_mask).sum(axis=1) / attention_mask.sum(axis=1)
+            logits = self.prediction_head(pooled_output)
         else:
             raise TypeError(f"classifier_pooling of unknown type: {self.config.classifier_pooling}")
-
-        logits = self.prediction_head(pooled_output)
 
         if return_activation_trace:
             assert transformer_result.layer_results is not None
@@ -305,12 +336,13 @@ class Classifier(LalamoModule[ClassifierConfig]):
         )
 
     def export_weights(self) -> ParameterTree:
-        result = dict(
+        result: dict[str, ParameterTree] = dict(
             embedding=self.embedding.export_weights(),
-            embedding_norm=self.embedding_norm.export_weights(),
             transformer=self.transformer.export_weights(),
             prediction_head=self.prediction_head.export_weights(),
         )
+        if self.embedding_norm is not None:
+            result["embedding_norm"] = self.embedding_norm.export_weights()
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
@@ -318,7 +350,11 @@ class Classifier(LalamoModule[ClassifierConfig]):
         return replace(
             self,
             embedding=self.embedding.import_weights(require_tree(weights["embedding"])),
-            embedding_norm=self.embedding_norm.import_weights(require_tree(weights["embedding_norm"])),
+            embedding_norm=(
+                self.embedding_norm.import_weights(require_tree(weights["embedding_norm"]))
+                if self.embedding_norm is not None
+                else None
+            ),
             transformer=self.transformer.import_weights(require_tree(weights["transformer"])),
             prediction_head=self.prediction_head.import_weights(require_tree(weights["prediction_head"])),
         )
