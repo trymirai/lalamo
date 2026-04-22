@@ -73,7 +73,7 @@ class Batch:
 
     @classmethod
     def from_id(cls, batch_id: str) -> Self | None:
-        path = app.state.cache_dir / f"{batch_id}.json"
+        path = app.state.cache_dir / f"{Path(batch_id).name}.json"
         if not path.exists():
             return None
         return cls._converter.structure(json.loads(path.read_text()), cls)
@@ -95,7 +95,7 @@ creation_lock = asyncio.Lock()
 async def sweep_cache() -> None:
     while True:
         cutoff = time.time() - 96 * 3600
-        for path in app.state.cache_dir.glob("batch_*.json"):
+        for path in app.state.cache_dir.glob("*.json"):
             if path.stat().st_mtime < cutoff:
                 path.unlink(missing_ok=True)
         await asyncio.sleep(3600)
