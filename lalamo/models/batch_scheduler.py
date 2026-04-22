@@ -1,8 +1,7 @@
-import functools
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
-from enum import Enum
+from enum import StrEnum
 from itertools import batched
 
 import equinox as eqx
@@ -14,7 +13,14 @@ from jaxtyping import Array, Bool, Float, Int, Key, Shaped
 
 from lalamo.common import get_usable_memory_from_bytes
 from lalamo.message_processor import AssistantMessage, Message
-from lalamo.modules import ForwardPassMode, ShardingConfig, State, get_current_sharding_config
+from lalamo.modules import (
+    ForwardPassMode,
+    ShardingConfig,
+    State,
+    get_current_sharding_config,
+    DecoderForwardPassConfig,
+    MLPForwardPassConfig,
+)
 from lalamo.modules.common import use_sharding
 from lalamo.sampling import SamplingPolicy
 
@@ -42,90 +48,97 @@ from .lm_helpers import (
 
 
 class PrefillBatch(eqx.Module):
-    results: PrefillResults
+    prefill_results: PrefillResults
     mask: Bool[Array, " prefill_bs"]
     keys: Key[Array, " prefill_bs"]
-    seq_ids: Int[Array, " prefill_bs"]
+    sequence_ids: Int[Array, " prefill_bs"]
 
     def __check_init__(self) -> None:
-        prefill_bs = self.results.last_token_indices.shape[0]
+        prefill_bs = self.prefill_results.last_token_indices.shape[0]
         if self.mask.shape != (prefill_bs,):
             raise ValueError(f"mask shape {self.mask.shape} != ({prefill_bs},)")
         if self.keys.shape != (prefill_bs,):
             raise ValueError(f"keys shape {self.keys.shape} != ({prefill_bs},)")
-        if self.seq_ids.shape != (prefill_bs,):
-            raise ValueError(f"seq_ids shape {self.seq_ids.shape} != ({prefill_bs},)")
-        if self.results.last_token_logits.shape[0] != prefill_bs:
+        if self.sequence_ids.shape != (prefill_bs,):
+            raise ValueError(f"sequence_ids shape {self.sequence_ids.shape} != ({prefill_bs},)")
+        if self.prefill_results.last_token_logits.shape[0] != prefill_bs:
             raise ValueError(
-                f"results.last_token_logits batch {self.results.last_token_logits.shape[0]} != {prefill_bs}"
+                f"results.last_token_logits batch {self.prefill_results.last_token_logits.shape[0]} != {prefill_bs}"
             )
 
 
 @dataclass
 class PrefillSource:
-    tokenized: list[list[int]]
+    tokenized_messages: list[list[int]]
     keys: Key[Array, " num_sequences"]
     prefill_batch_size: int
     padded_length: int
-    jitted_prefill: Callable
+    state_capacity: int
+    forward_pass_config: ForwardPassConfig
     cursor: int = 0
-
-    @staticmethod
-    def create(
-        tokenized: list[list[int]],
-        keys: Key[Array, " num_sequences"],
-        prefill_batch_size: int,
-        padded_length: int,
-        state_capacity: int,
-        forward_pass_config: ForwardPassConfig | None,
-    ) -> "PrefillSource":
-        jitted_prefill = eqx.filter_jit(
-            functools.partial(
-                LanguageModel._prefill,  # noqa: SLF001
-                state_capacity=state_capacity,
-                forward_pass_config=forward_pass_config,
-                chunk_size=256,
-            )
-        )
-        return PrefillSource(
-            tokenized=tokenized,
-            keys=keys,
-            prefill_batch_size=prefill_batch_size,
-            padded_length=padded_length,
-            jitted_prefill=jitted_prefill,
-        )
 
     @property
     def remaining(self) -> int:
-        return len(self.tokenized) - self.cursor
+        return len(self.tokenized_messages) - self.cursor
 
     @property
     def exhausted(self) -> bool:
-        return self.cursor >= len(self.tokenized)
+        return self.cursor >= len(self.tokenized_messages)
 
-    def request(self, max_n: int, model: LanguageModel) -> PrefillBatch:
-        n = min(max_n, self.prefill_batch_size, self.remaining)
-        seqs = self.tokenized[self.cursor : self.cursor + n]
-        seq_id_slice = np.zeros(self.prefill_batch_size, dtype=np.int32)
-        seq_id_slice[:n] = np.arange(self.cursor, self.cursor + n)
-        self.cursor += n
+    def fill(
+        self,
+        decoder: "BlockContinuousDecoder",
+        state: "BlockContinuousState",
+        jitted_fill_lines: Callable[["BlockContinuousState", "PrefillBatch"], "BlockContinuousState"],
+    ) -> tuple["PrefillSource", "BlockContinuousState"]:
+        source = self
+        # iterate until the decoder state is full (the state that participates in decode loop)
+        while state.empty_lines():
+            if source.exhausted:
+                break
 
-        padded = pad_sequences(seqs, (self.prefill_batch_size, self.padded_length), dtype=jnp.int32)
-        lengths = np.zeros(self.prefill_batch_size, dtype=np.int32)
-        for i, s in enumerate(seqs):
-            lengths[i] = len(s)
+            # generate new partially prefilled batch - we prefill at most a small percentage of the maximum
+            # batch size due to performance reasons, thus its partially prefilled (ie mostly masked)
+            source, partially_prefilled_batch = source.request(len(state.empty_lines()), decoder.language_model)
 
-        result = self.jitted_prefill(model, token_ids=padded, lengths_without_padding=jnp.array(lengths))
+            # update the state with the new samples
+            state = jitted_fill_lines(state, partially_prefilled_batch)
+
+            # Explicit deletion of batch is crucial. GC of Python doesn't collect it instantly,
+            # which causes double allocation, spiking memory consumption.
+            del partially_prefilled_batch
+        return source, state
+
+    def request(self, num_requested: int, model: LanguageModel) -> tuple["PrefillSource", PrefillBatch]:
+        # how many samples should we provide? we cannot provide more than the prefill batch size,
+        # and we cannot more provide more than the number of remaining samples
+        num_designated = min(num_requested, self.prefill_batch_size, self.remaining)
+
+        selected_indices = np.zeros(self.prefill_batch_size, dtype=np.int32)
+        selected_indices[:num_designated] = np.arange(self.cursor, self.cursor + num_designated)
+
+        sequences = self.tokenized_messages[self.cursor : self.cursor + num_designated]
+        lengths_without_padding = np.zeros(self.prefill_batch_size, dtype=np.int32)
+        lengths_without_padding[:num_designated] = [len(s) for s in sequences]
+        padded_sequences = pad_sequences(sequences, (self.prefill_batch_size, self.padded_length), dtype=jnp.int32)
 
         mask = np.zeros(self.prefill_batch_size, dtype=bool)
-        mask[:n] = True
-        seq_ids_jnp = jnp.asarray(seq_id_slice)
-        return PrefillBatch(
-            results=result,
-            mask=jnp.asarray(mask),
-            keys=self.keys[seq_ids_jnp],
-            seq_ids=seq_ids_jnp,
+        mask[:num_designated] = True
+
+        prefilled_state_with_info: PrefillResults = model._prefill(  # noqa: PLF001
+            token_ids=jnp.array(padded_sequences),
+            lengths_without_padding=jnp.array(lengths_without_padding),
+            state_capacity=self.state_capacity,
+            forward_pass_config=self.forward_pass_config,
         )
+
+        batch = PrefillBatch(
+            prefill_results=prefilled_state_with_info,
+            mask=jnp.asarray(mask),
+            keys=self.keys[jnp.asarray(selected_indices)],
+            sequence_ids=jnp.asarray(selected_indices),
+        )
+        return replace(self, cursor=self.cursor + num_designated), batch
 
 
 def append_block_tokens(
@@ -148,10 +161,10 @@ class BlockContinuousState(eqx.Module):
     token_buffer: Int[Array, "num_lines max_output"]
     num_generated: Int[Array, " num_lines"]
     keys: Key[Array, " num_lines"]
-    line_to_seq: Int[Array, " num_lines"]
+    in_batch_index_to_sequence_id: Int[Array, " num_lines"]
 
     def __check_init__(self) -> None:
-        (num_lines,) = self.line_to_seq.shape
+        (num_lines,) = self.in_batch_index_to_sequence_id.shape
         for leaf in jax.tree.leaves(self):
             if leaf.ndim == 0:
                 continue
@@ -174,16 +187,49 @@ class BlockContinuousState(eqx.Module):
             token_buffer=jnp.zeros((num_lines, max_output_length), dtype=jnp.int32),
             num_generated=jnp.zeros(num_lines, dtype=jnp.int32),
             keys=jax.random.split(jax.random.key(0), num_lines),
-            line_to_seq=jnp.zeros(num_lines, dtype=jnp.int32),
+            in_batch_index_to_sequence_id=jnp.zeros(num_lines, dtype=jnp.int32),
         )
 
     def empty_lines(self) -> list[int]:
         stopped = np.asarray(self.stop_flags)
-        (num_lines,) = self.line_to_seq.shape
+        (num_lines,) = self.in_batch_index_to_sequence_id.shape
         return [i for i in range(num_lines) if stopped[i]]
+
+    def extract_completed_sequences(
+        self, completed_mask: Bool[Array, " num_lines"]
+    ) -> Iterator[tuple[int, GenerationResults]]:
+        completed_np = np.asarray(completed_mask)
+        in_batch_index_to_sequence_id_np = np.asarray(self.in_batch_index_to_sequence_id)
+        for line in np.flatnonzero(completed_np):
+            yield (
+                int(in_batch_index_to_sequence_id_np[line]),
+                GenerationResults(
+                    token_ids=self.token_buffer[line],
+                    top_k_token_ids=None,
+                    top_k_token_logits=None,
+                ),
+            )
 
     def is_empty(self) -> bool:
         return bool(jnp.all(self.stop_flags))
+
+    def attempt_halving(self, min_allowed_lines: int) -> "BlockContinuousState":
+        active_mask = np.logical_not(np.asarray(self.stop_flags))
+        active_count = int(active_mask.sum())
+        candidate_num_lines = self.num_lines // 2
+
+        if not (
+            active_count > min_allowed_lines // 2
+            and candidate_num_lines >= min_allowed_lines
+            and candidate_num_lines >= active_count
+        ):
+            return self
+
+        active_idx_np = np.flatnonzero(active_mask)
+        stopped_idx_np = np.flatnonzero(np.logical_not(active_mask))
+        pad = stopped_idx_np[: candidate_num_lines - active_count]
+        gather_idx = jnp.asarray(np.concatenate([active_idx_np, pad]).astype(np.int32))
+        return jax.tree.map(lambda x: x[gather_idx], self)
 
 
 class BlockContinuousDecoder(eqx.Module):
@@ -251,11 +297,11 @@ class BlockContinuousDecoder(eqx.Module):
         return (new_decode_state, next_keys), next_tokens
 
     def fill_lines(self, state: BlockContinuousState, batch: PrefillBatch) -> BlockContinuousState:
-        (prefill_bs,) = batch.results.last_token_indices.shape
+        (prefill_bs,) = batch.prefill_results.last_token_indices.shape
         prefill_state = DecodingState(
-            batch.results.last_token_logits,
-            batch.results.last_token_indices,
-            batch.results.state,
+            batch.prefill_results.last_token_logits,
+            batch.prefill_results.last_token_indices,
+            batch.prefill_results.state,
             jnp.zeros(prefill_bs, dtype=bool),
         )
         current_decode_state = DecodingState(
@@ -287,7 +333,9 @@ class BlockContinuousDecoder(eqx.Module):
             token_buffer=state.token_buffer,
             num_generated=apply_updates(jnp.zeros_like(state.num_generated), state.num_generated),
             keys=apply_updates(batch.keys[source_idx], state.keys),
-            line_to_seq=apply_updates(batch.seq_ids[source_idx], state.line_to_seq),
+            in_batch_index_to_sequence_id=apply_updates(
+                batch.sequence_ids[source_idx], state.in_batch_index_to_sequence_id
+            ),
         )
 
     def decode_block(self, state: BlockContinuousState) -> tuple[BlockContinuousState, Bool[Array, " num_lines"]]:
@@ -318,11 +366,11 @@ class BlockContinuousDecoder(eqx.Module):
             token_buffer=new_buffer,
             num_generated=new_num_generated,
             keys=new_keys,
-            line_to_seq=state.line_to_seq,
+            in_batch_index_to_sequence_id=state.in_batch_index_to_sequence_id,
         ), completed_mask
 
 
-class SchedulerKind(Enum):
+class SchedulerKind(StrEnum):
     FIXED = "fixed"
     CONTINUOUS = "continuous"
 
@@ -335,11 +383,11 @@ class BatchScheduler(ABC):
     def generate_tokens_many(
         self,
         tokenized: Iterable[list[int]],
-        generation_config: GenerationConfig | None = None,
-        inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
+        generation_config: GenerationConfig,
+        inference_config: InferenceConfig,
+        forward_pass_config: ForwardPassConfig,
         *,
         fast_peak_memory: bool = False,
-        forward_pass_config: ForwardPassConfig | None = None,
         generation_trace_config: GenerationTraceConfig | None = None,
         sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
@@ -357,10 +405,16 @@ class BatchScheduler(ABC):
         vram_bytes: int | None = None,
         batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
     ) -> Iterator[tuple[int, AssistantMessage]]:
+        messages = list(messages)
+
         if sharding_config is None:
             sharding_config = get_current_sharding_config()
-
-        messages = list(messages)
+        if generation_config is None:
+            generation_config = GenerationConfig()
+        if inference_config is None:
+            inference_config = InferenceConfig()
+        if forward_pass_config is None:
+            forward_pass_config = MLPForwardPassConfig()  # TODO(knyazer): fix when we get proper fp config setup
 
         if keys is None:
             keys = jax.random.split(jax.random.key(0), num=len(messages))
@@ -445,11 +499,11 @@ class FixedBatchScheduler(BatchScheduler):
     def generate_tokens_many(
         self,
         tokenized: Iterable[list[int]],
-        generation_config: GenerationConfig | None = None,
-        inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
+        generation_config: GenerationConfig,
+        inference_config: InferenceConfig,
+        forward_pass_config: ForwardPassConfig,
         *,
         fast_peak_memory: bool = False,
-        forward_pass_config: ForwardPassConfig | None = None,
         generation_trace_config: GenerationTraceConfig | None = None,
         sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
@@ -514,11 +568,11 @@ class ContinuousBatchScheduler(BatchScheduler):
     def generate_tokens_many(
         self,
         tokenized: Iterable[list[int]],
-        generation_config: GenerationConfig | None = None,
-        inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
+        generation_config: GenerationConfig,
+        inference_config: InferenceConfig,
+        forward_pass_config: ForwardPassConfig,
         *,
         fast_peak_memory: bool = False,
-        forward_pass_config: ForwardPassConfig | None = None,
         generation_trace_config: GenerationTraceConfig | None = None,
         sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
@@ -527,6 +581,11 @@ class ContinuousBatchScheduler(BatchScheduler):
             raise NotImplementedError("generation_trace_config is not supported with ContinuousBatchScheduler")
         if inference_config.num_top_logits_to_return is not None:
             raise NotImplementedError("num_top_logits_to_return is not supported with ContinuousBatchScheduler")
+        if sharding_config is not None:
+            raise NotImplementedError(
+                "Sharding was not tested for continuous batching; we preemptively disallow it since its likely "
+                "going to be just silently ignored. Prefer running an instance per GPU - which is basically DDP."
+            )
 
         tokenized = list(tokenized)
         if len(tokenized) == 0:
@@ -547,93 +606,48 @@ class ContinuousBatchScheduler(BatchScheduler):
             else self.model.default_sampling_policy()
         )
 
-        def fn(num_lines: int) -> Iterator[tuple[int, GenerationResults]]:
-            max_output_length = inference_config.max_output_length
-            padded_length = inference_config.padded_length
-            block_size = min(self.continuous_batching_block_size, max_output_length)
-            state_capacity = padded_length + max_output_length
-            prefill_batch_size = max(1, min(int(num_lines * self.prefill_batch_fraction + 1), num_lines))
-            min_allowed_lines = max(1, int(num_lines * self.min_allowed_batch_fraction))
+        batch_size = inference_config.batch_size
+        max_output_length = inference_config.max_output_length
+        padded_length = inference_config.padded_length
 
-            prefills = PrefillSource.create(
-                tokenized,
-                keys,
-                prefill_batch_size,
-                padded_length,
-                state_capacity,
-                forward_pass_config,
-            )
-            decoder = BlockContinuousDecoder.init(
-                max_output_length,
-                block_size,
-                self.model,
-                sampling_policy,
-                forward_pass_config,
-            )
-            state = BlockContinuousState.init(num_lines, max_output_length, state_capacity, self.model)
+        block_size = min(self.continuous_batching_block_size, max_output_length)
+        state_capacity = padded_length + max_output_length
+        prefill_batch_size = max(1, min(int(batch_size * self.prefill_batch_fraction + 1), batch_size))
+        min_allowed_lines = max(1, int(batch_size * self.min_allowed_batch_fraction))
 
-            jitted_fill = eqx.filter_jit(decoder.fill_lines, donate="all")
-            jitted_decode = eqx.filter_jit(decoder.decode_block, donate="all")
+        prefills = PrefillSource(
+            tokenized_messages=tokenized,
+            keys=keys,
+            prefill_batch_size=prefill_batch_size,
+            padded_length=padded_length,
+            state_capacity=state_capacity,
+            forward_pass_config=forward_pass_config,
+        )
+        decoder = BlockContinuousDecoder.init(
+            max_output_length,
+            block_size,
+            self.model,
+            sampling_policy,
+            forward_pass_config,
+        )
+        state = BlockContinuousState.init(batch_size, max_output_length, state_capacity, self.model)
 
-            while True:
-                # Loop prefills in small chunks to make sure that the state decode gets is complete
-                while True:
-                    n_empty = len(state.empty_lines())
-                    if n_empty == 0 or prefills.exhausted:
-                        break
+        jitted_decode = eqx.filter_jit(decoder.decode_block, donate="all")
+        jitted_fill_lines = eqx.filter_jit(decoder.fill_lines, donate="all")
 
-                    batch = prefills.request(n_empty, self.model)
-                    if not bool(jnp.any(batch.mask)):
-                        break
+        while True:
+            # Loop prefills in small chunks to make sure that the state decode gets is complete
+            prefills, state = prefills.fill(decoder, state, jitted_fill_lines)
 
-                    state = jitted_fill(state, batch)
+            state, completed_mask = jitted_decode(state)
 
-                    # Explicit deletion of batch is crucial. For some reason
-                    # buffer donation does not instantly free up memory, but instead
-                    # has it accessible for a bit. This bit is enough to cause double
-                    # allocation, and this delete prevents it.
-                    del batch
+            yield from state.extract_completed_sequences(completed_mask)
 
-                state, completed_mask = jitted_decode(state)
+            if state.is_empty() and prefills.exhausted:
+                break
 
-                completed_np = np.asarray(completed_mask)
-                line_to_seq_np = np.asarray(state.line_to_seq)
-                for line in np.flatnonzero(completed_np):
-                    yield (
-                        int(line_to_seq_np[line]),
-                        GenerationResults(
-                            token_ids=state.token_buffer[line],
-                            top_k_token_ids=None,
-                            top_k_token_logits=None,
-                        ),
-                    )
+            if prefills.exhausted:
+                state = state.attempt_halving(min_allowed_lines)
 
-                if prefills.exhausted:
-                    active_mask = np.logical_not(np.asarray(state.stop_flags))
-                    active_count = int(active_mask.sum())
-
-                    candidate_num_lines = state.num_lines // 2
-
-                    if (
-                        active_count > min_allowed_lines // 2
-                        and candidate_num_lines >= min_allowed_lines
-                        and candidate_num_lines >= active_count
-                    ):
-                        active_idx_np = np.flatnonzero(active_mask)
-                        stopped_idx_np = np.flatnonzero(np.logical_not(active_mask))
-                        pad = stopped_idx_np[: candidate_num_lines - active_count]
-                        gather_idx = jnp.asarray(np.concatenate([active_idx_np, pad]).astype(np.int32))
-                        state = jax.tree.map(lambda x: x[gather_idx], state)  # noqa: B023
-
-                if state.is_empty() and prefills.exhausted:
-                    break
-
-                if fast_peak_memory:
-                    break
-
-        with use_sharding(sharding_config):
             if fast_peak_memory:
-                yield from fn(inference_config.batch_size)
-                return
-
-            yield from decrease_batchsize_on_oom(fn, starting_batch_size=inference_config.batch_size)
+                break
