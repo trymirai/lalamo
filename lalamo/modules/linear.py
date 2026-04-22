@@ -7,6 +7,7 @@ from typing import Self
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import scipy.linalg
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
@@ -995,6 +996,26 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         return self._empty_general((mixture_size,), input_dim, output_dims, has_biases)
 
 
+
+def _bake_rht_into_lora_down(
+    down_weights: Array,
+    rht_signs: Array,
+    block_size: int,
+) -> Array:
+    """Fuse the RHT input rotation into LoRA A_down at load time.
+
+    After this transform, ``A_down_fused @ x == A_down @ H_rht(x)``
+    where ``H_rht = H @ diag(signs)``.  We apply the transpose
+    ``H_rht^T = diag(signs) @ H`` (Hadamard first, then signs) to each row.
+    """
+    had = jnp.array(scipy.linalg.hadamard(block_size), dtype=jnp.float32) / jnp.sqrt(block_size)
+    n_blocks = down_weights.shape[-1] // block_size
+    signs = rht_signs.reshape(n_blocks, block_size).astype(jnp.float32)
+    blocks = down_weights.reshape(-1, n_blocks, block_size).astype(jnp.float32)
+    fused = jnp.einsum("ij,rbj->rbi", had, blocks) * signs
+    return fused.reshape(down_weights.shape).astype(down_weights.dtype)
+
+
 class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
     lora_down_weights: Float[Array, "*components in_channels total_lora_channels"] = sharded_field(
         tensor_sharding=TensorSharding(
@@ -1100,13 +1121,20 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
         self,
         weights: ParameterTree[Array],
     ) -> "QLoRALinear":
-        params = require_mapping(weights)
-        if "inner_linear" in params:
-            params = require_mapping(params["inner_linear"])
+        raw = require_mapping(weights)
+        if "inner_linear" in raw:
+            rht_signs = require_array(raw["input_factors"])
+            params = require_mapping(raw["inner_linear"])
+            down = _bake_rht_into_lora_down(
+                require_array(params["down_weights"]), rht_signs, self.config.group_size,
+            )
+        else:
+            params = raw
+            down = require_array(params["down_weights"])
         base = super().import_weights(params)
         return replace(
             base,
-            lora_down_weights=require_array(params["down_weights"]),
+            lora_down_weights=down,
             lora_up_weights=tuple(require_array(w) for w in params["up_weights"]),
         )
 
