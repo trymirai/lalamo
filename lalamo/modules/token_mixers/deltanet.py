@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from functools import partial
 
 import einops
 import equinox as eqx
@@ -18,7 +17,7 @@ from lalamo.modules.token_mixer import (
     TokenMixerConfig,
     TokenMixerResult,
 )
-from lalamo.modules.utils import vmap_with_dequant_key
+from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .ssm_state import SSMStateLayer
@@ -356,9 +355,10 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
 
         in_dequant_key, out_dequant_key = jax.random.split(dequant_key)
         num_tokens, *_ = inputs.shape
-        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = vmap_with_dequant_key(
-            partial(self.in_proj, forward_pass_config=forward_pass_config.arrays),
+        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = call_vmapped(
+            self.in_proj,
             inputs,
+            forward_pass_config=forward_pass_config.arrays,
             dequant_key=in_dequant_key,
         )
         assert proj_query.shape[0] == num_tokens
@@ -439,12 +439,13 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
 
         num_tokens, *_ = gate.shape
         gate = gate.reshape(num_tokens, self.config.num_heads, self.config.value_head_dim)
-        core_attn_out = jax.vmap(jax.vmap(norm_gate))(core_attn_out, gate)
+        core_attn_out = call_vmapped_twice(norm_gate, core_attn_out, gate)
         core_attn_out = core_attn_out.reshape(num_tokens, -1)
 
-        (outputs,) = vmap_with_dequant_key(
-            partial(self.out_proj, forward_pass_config=forward_pass_config.arrays),
+        (outputs,) = call_vmapped(
+            self.out_proj,
             core_attn_out,
+            forward_pass_config=forward_pass_config.arrays,
             dequant_key=out_dequant_key,
         )
 

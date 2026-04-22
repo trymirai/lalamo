@@ -3,7 +3,6 @@ from typing import Any
 
 import jax
 from jax import numpy as jnp
-from jax import vmap
 from jaxtyping import Array, Float, Int, Key
 
 from lalamo.initializer import Initializer
@@ -17,7 +16,7 @@ from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.token_mixer import State
 from lalamo.modules.transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
-from lalamo.modules.utils import vmap_twice_with_dequant_key, vmap_with_dequant_key
+from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 from lalamo.sampling import SamplingPolicy
 
 
@@ -346,13 +345,13 @@ def decode_next_token(
     assert slow_model_result.layer_results is not None
     hidden_states = slow_model_result.layer_results[-1].outputs[:, -1:]
     if model.fast_model_projection is not None:
-        (hidden_states,) = vmap_with_dequant_key(
+        (hidden_states,) = call_vmapped(
             model.fast_model_projection,
             hidden_states,
             dequant_key=fast_projection_dequant_key,
         )
 
-    (logits,) = vmap_twice_with_dequant_key(
+    (logits,) = call_vmapped_twice(
         model.readout_slow,
         slow_model_result.outputs,
         dequant_key=slow_readout_dequant_key,
@@ -362,7 +361,7 @@ def decode_next_token(
 
     codebooks = jnp.zeros((batch_size, n_codes), dtype=jnp.int32)
     slow_sampling_keys = jax.random.split(slow_sampling_key, batch_size)
-    first_code = vmap(lambda x, sample_key: sampling_policy(x, key=sample_key))(logits[:, -1, :], slow_sampling_keys)
+    first_code = call_vmapped(sampling_policy, logits[:, -1, :], key=slow_sampling_keys)
     codebooks = codebooks.at[0, 0].set(first_code[0])
     first_fast_code = jnp.array([codebooks[0, 0] - model.config.semantic_token_begin_id])
     first_fast_code = first_fast_code.at[first_fast_code < 0].set(0)
@@ -408,7 +407,7 @@ def decode_next_token(
             forward_pass_config=TransformerForwardPassConfig(),
             dequant_key=fast_transformer_dequant_key,
         )
-        (fast_logits,) = vmap_twice_with_dequant_key(
+        (fast_logits,) = call_vmapped_twice(
             model.readout_fast,
             fast_result.outputs,
             dequant_key=fast_readout_dequant_key,
@@ -417,7 +416,7 @@ def decode_next_token(
 
         short_logits = fast_logits[:, :, : model.config.short_logits_size]
         sample_keys = jax.random.split(sample_key, short_logits.shape[0])
-        code = vmap(lambda x, current_key: sampling_policy(x, key=current_key))(short_logits[:, -1, :], sample_keys)
+        code = call_vmapped(sampling_policy, short_logits[:, -1, :], key=sample_keys)
 
         new_logits = model.embeddings_fast.embed(code, dequant_key=fast_embed_dequant_key)
         codebooks = codebooks.at[0, index].set(code[0])

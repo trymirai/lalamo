@@ -17,7 +17,7 @@ from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
 from .transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
 from .transformer_layer import TransformerLayerResult
-from .utils import vmap_twice, vmap_twice_with_dequant_key, vmap_with_dequant_key
+from .utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
     "Classifier",
@@ -75,7 +75,7 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
         *,
         dequant_key: Key[Array, ""],
     ) -> Float[Array, "batch logits"]:
-        return vmap_with_dequant_key(self.call_unbatched, inner_features, dequant_key=dequant_key)
+        return call_vmapped(self.call_unbatched, inner_features, dequant_key=dequant_key)
 
     def call_unbatched(
         self,
@@ -191,12 +191,12 @@ class Classifier(LalamoModule[ClassifierConfig]):
             dequant_key,
             3,
         )
-        inner_features = vmap_twice_with_dequant_key(
+        inner_features = call_vmapped_twice(
             self.embedding.embed,
             token_ids,
             dequant_key=embedding_dequant_key,
         )
-        normalized_embeddings = vmap_twice(self.embedding_norm)(inner_features)
+        normalized_embeddings = call_vmapped_twice(self.embedding_norm, inner_features)
 
         transformer_result = self.transformer(
             inner_features=normalized_embeddings,

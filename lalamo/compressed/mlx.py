@@ -48,8 +48,12 @@ class MLXSpec(WeightMatrixSpec):
     layout: Layout = Layout.OUTPUT_INPUT
 
     def compress(
-        self, weights: Float[Array, "... out_channels in_channels"], preconditioner: Preconditioner | None = None
+        self,
+        weights: Float[Array, "... out_channels in_channels"],
+        preconditioner: Preconditioner | None = None,
     ) -> "MLXMatrix":
+        if preconditioner is not None:
+            raise ValueError("Preconditioned rounding is not implemented yet.")
         stored_weights = into_layout(weights, self.layout)
         grouped = group_by_last_axis(stored_weights, group_size=self.group_size)
         group_mins = jnp.min(grouped, axis=-1)

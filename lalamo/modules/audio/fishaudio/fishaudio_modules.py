@@ -19,7 +19,7 @@ from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
-from lalamo.modules.utils import vmap_twice, vmap_twice_with_dequant_key, vmap_with_dequant_key
+from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
 
 @dataclass(frozen=True)
@@ -111,14 +111,14 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
 
         step1_dequant_key, step2_dequant_key = jax.random.split(dequant_key)
         x = self.depthwise_conv(x)
-        x = vmap_twice(self.norm)(x)
-        (x,) = vmap_twice_with_dequant_key(
+        x = call_vmapped_twice(self.norm, x)
+        (x,) = call_vmapped_twice(
             self.pointwise_conv_step1,
             x,
             dequant_key=step1_dequant_key,
         )
-        x = vmap_twice(self.config.activation)(x)
-        (x,) = vmap_twice_with_dequant_key(
+        x = call_vmapped_twice(self.config.activation, x)
+        (x,) = call_vmapped_twice(
             self.pointwise_conv_step2,
             x,
             dequant_key=step2_dequant_key,
@@ -310,7 +310,7 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
     ) -> Float[Array, "tokens code_size"]:
         embed_dequant_key, out_dequant_key = jax.random.split(dequant_key)
         z_p = self.codebook.embed(embed_id, dequant_key=embed_dequant_key)
-        (z_q,) = vmap_with_dequant_key(self.out_proj, z_p, dequant_key=out_dequant_key)
+        (z_q,) = call_vmapped(self.out_proj, z_p, dequant_key=out_dequant_key)
         return z_q
 
 
@@ -392,7 +392,7 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
         *,
         dequant_key: Key[Array, ""],
     ) -> Float[Array, "batch tokens code_size"]:
-        return vmap_with_dequant_key(self.from_codes, codes, dequant_key=dequant_key)
+        return call_vmapped(self.from_codes, codes, dequant_key=dequant_key)
 
 
 @dataclass(frozen=True)
@@ -480,12 +480,12 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
         semantic_indices = jnp.clip(indices[:, :1], 0, self.semantic_codebook_size - 1)
         residual_indices = jnp.clip(indices[:, 1:], 0, self.quantizer_codebook_size - 1)
 
-        z_q_semantic = vmap_with_dequant_key(
+        z_q_semantic = call_vmapped(
             self.semantic_quantizer.from_codes,
             semantic_indices,
             dequant_key=semantic_dequant_key,
         )
-        z_q_residual = vmap_with_dequant_key(
+        z_q_residual = call_vmapped(
             self.quantizer.from_codes,
             residual_indices,
             dequant_key=residual_dequant_key,

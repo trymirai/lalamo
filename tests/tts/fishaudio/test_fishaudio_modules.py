@@ -15,7 +15,6 @@ from fish_speech.models.dac.rvq import CausalConvNet, CausalTransConvNet
 from fish_speech.models.dac.rvq import ConvNeXtBlock as PyTorchConvNeXtBlock
 from fish_speech.tokenizer import FishTokenizer
 from jax import numpy as jnp
-from jax import vmap
 from lalamo.common import ParameterPath
 
 from lalamo import FileSpec
@@ -65,6 +64,7 @@ from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.transformer import TransformerForwardPassConfig
+from lalamo.modules.utils import call_vmapped
 from lalamo.utils.torch_interop import torch_to_jax
 from tests.common import assert_close
 from tests.tts.fishaudio.fishaudio_thin_wrapper import (
@@ -178,7 +178,11 @@ def test_vector_quantize_decode_code() -> None:
 
     # Lalamo decode_code:
     # applies out_proj and returns (tokens, input_dim)
-    lalamo_output = vmap(lalamo_vq.decode_code)(test_indices_jax)  # (B, T, input_dim)
+    lalamo_output = call_vmapped(
+        lalamo_vq.decode_code,
+        test_indices_jax,
+        dequant_key=jax.random.key(0),
+    )  # (B, T, input_dim)
 
     dac_output_jax = torch_to_jax(dac_output)
     assert_close(
@@ -1222,8 +1226,8 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     fish_layer = fish_model.layers[0]
     fish_layer_result = fish_layer(embedded_input_torch, freqs_cis, mask, input_pos=input_pos)
 
-    assert len(lalamo_transformer.ropes) > 0
-    pos_emb_lalamo = vmap(lalamo_transformer.ropes[0])(input_pos_lalamo)
+    assert lalamo_transformer.global_rope is not None
+    pos_emb_lalamo = call_vmapped(lalamo_transformer.global_rope, input_pos_lalamo)
     lalamo_layer = lalamo_transformer.layers[0]
     lalamo_layer_result = lalamo_layer(
         embedded_input_lalamo,

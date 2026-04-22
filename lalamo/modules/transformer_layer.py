@@ -1,11 +1,9 @@
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from functools import partial
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.exportable import Exportable
@@ -22,7 +20,7 @@ from .token_mixer import (
     TokenMixerBase,
     TokenMixerConfig,
 )
-from .utils import vmap_twice
+from .utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
     "PositionalEmbeddingSelector",
@@ -141,39 +139,42 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         mixer_dequant_key, mlp_dequant_key = jax.random.split(dequant_key)
 
         if self.pre_mixer_norm is not None:
-            normalized_mixer_inputs = vmap_twice(self.pre_mixer_norm)(inputs)
+            normalized_mixer_inputs = call_vmapped_twice(self.pre_mixer_norm, inputs)
         else:
             normalized_mixer_inputs = inputs
 
-        batched_mixer_fn = vmap(
-            partial(
-                self.mixer,
+        def call_mixer(
+            mixer_inputs: tuple[
+                Float[Array, "suffix_tokens channels"],
+                PositionalEmbeddings | None,
+                StateLayerBase | None,
+                Int[Array, ""] | None,
+            ],
+        ) -> tuple[Float[Array, "suffix_tokens channels"], StateLayerBase | None]:
+            mixer_input, positional_embedding, mixer_state, length_without_padding = mixer_inputs
+            return self.mixer(
+                mixer_input,
+                positional_embedding,
+                mixer_state,
                 return_updated_state=return_updated_state or return_activation_trace,
+                length_without_padding=length_without_padding,
                 forward_pass_config=forward_pass_config.mixer,
                 dequant_key=mixer_dequant_key,
-            ),
-            in_axes=(
-                0,
-                0 if positional_embeddings is not None else None,
-                0 if state is not None else None,
-                0 if lengths_without_padding is not None else None,
-            ),
-        )
-        mixer_outputs, updated_state = batched_mixer_fn(
-            normalized_mixer_inputs,
-            positional_embeddings,
-            state,
-            lengths_without_padding,
+            )
+
+        mixer_outputs, updated_state = call_vmapped(
+            call_mixer,
+            (normalized_mixer_inputs, positional_embeddings, state, lengths_without_padding),
         )
         if self.post_mixer_norm is not None:
-            normalized_mixer_outputs = vmap_twice(self.post_mixer_norm)(mixer_outputs)
+            normalized_mixer_outputs = call_vmapped_twice(self.post_mixer_norm, mixer_outputs)
             mlp_inputs = inputs + normalized_mixer_outputs
         else:
             normalized_mixer_outputs = None
             mlp_inputs = inputs + mixer_outputs
 
         normalized_mlp_inputs = (
-            vmap_twice(self.pre_mlp_norm)(mlp_inputs) if self.pre_mlp_norm is not None else mlp_inputs
+            call_vmapped_twice(self.pre_mlp_norm, mlp_inputs) if self.pre_mlp_norm is not None else mlp_inputs
         )
         mlp_outputs = self.mlp(
             normalized_mlp_inputs,
@@ -183,7 +184,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             dequant_key=mlp_dequant_key,
         )
         if self.post_mlp_norm is not None:
-            normalized_mlp_outputs = vmap_twice(self.post_mlp_norm)(mlp_outputs)
+            normalized_mlp_outputs = call_vmapped_twice(self.post_mlp_norm, mlp_outputs)
             outputs = mlp_inputs + normalized_mlp_outputs
         else:
             normalized_mlp_outputs = None

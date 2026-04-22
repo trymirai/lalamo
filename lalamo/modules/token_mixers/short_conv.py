@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from functools import partial
 from typing import Self
 
 import equinox as eqx
@@ -19,7 +18,7 @@ from lalamo.modules.token_mixer import (
     TokenMixerResult,
 )
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv, SeparableCausalConvConfig
-from lalamo.modules.utils import vmap_with_dequant_key
+from lalamo.modules.utils import call_vmapped
 
 __all__ = [
     "ShortConv",
@@ -115,18 +114,20 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
             raise ValueError("Positional embeddings are not supported for ShortConv.")
 
         in_dequant_key, out_dequant_key = jax.random.split(dequant_key)
-        pre_conv_gate, post_conv_gate, x = vmap_with_dequant_key(
-            partial(self.in_projection, forward_pass_config=forward_pass_config.arrays),
+        pre_conv_gate, post_conv_gate, x = call_vmapped(
+            self.in_projection,
             inputs,
+            forward_pass_config=forward_pass_config.arrays,
             dequant_key=in_dequant_key,
         )
 
         prev_conv_state = state.conv_state if state is not None else None
         conv_output = self.conv(x * pre_conv_gate, length_without_padding, prev_conv_state, return_updated_state)
 
-        (outputs,) = vmap_with_dequant_key(
-            partial(self.out_projection, forward_pass_config=forward_pass_config.arrays),
+        (outputs,) = call_vmapped(
+            self.out_projection,
             conv_output.outputs * post_conv_gate,
+            forward_pass_config=forward_pass_config.arrays,
             dequant_key=out_dequant_key,
         )
         updated_conv_state = conv_output.state

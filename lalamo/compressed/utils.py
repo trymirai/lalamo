@@ -1,30 +1,18 @@
-from collections.abc import Sequence
+from typing import NamedTuple
 
-from einops import rearrange, repeat
+import jax.numpy as jnp
+from einops import rearrange
 from jaxtyping import Array, Float
 
-from lalamo.module import ShardingAxis
-from lalamo.weight_matrix import Layout
-
 __all__ = [
-    "expand_group_parameter",
-    "group_by_input_axis",
-    "group_parameter_partition",
-    "into_layout",
-    "lookup_group_parameter",
-    "lookup_output",
-    "matmul_with_layout",
-    "weight_matrix_partition",
+    "MinMax",
+    "group_by_last_axis",
 ]
 
 
-def into_layout(
-    weights: Float[Array, "... out_channels in_channels"],
-    layout: Layout,
-) -> Float[Array, "..."]:
-    if layout == Layout.INPUT_OUTPUT:
-        return weights.swapaxes(-1, -2)
-    return weights
+class MinMax(NamedTuple):
+    min: Float[Array, "... out_channels in_channels"]
+    max: Float[Array, "... out_channels in_channels"]
 
 
 def group_by_last_axis(
@@ -39,81 +27,18 @@ def group_by_last_axis(
     )
 
 
-def expand_group_parameter(
-    grouped: Float[Array, "..."],
-    *,
-    layout: Layout,
-    group_size: int,
-) -> Float[Array, "..."]:
-    if layout == Layout.OUTPUT_INPUT:
-        return repeat(
-            grouped,
-            "... out_channels groups -> ... out_channels (groups group_size)",
-            group_size=group_size,
-        )
-    return repeat(
-        grouped,
-        "... groups out_channels -> ... (groups group_size) out_channels",
-        group_size=group_size,
+def min_max_within_groups(weights: Float[Array, "... out_channels groups group_channels"]) -> MinMax:
+    return MinMax(
+        min=jnp.min(weights, axis=-1),
+        max=jnp.max(weights, axis=-1),
     )
 
 
-def lookup_group_parameter(
-    grouped: Float[Array, "..."],
-    *,
-    layout: Layout,
-    index: int | Array,
-) -> Float[Array, "..."]:
-    if layout == Layout.OUTPUT_INPUT:
-        return grouped[index, :]
-    return grouped[:, index]
-
-
-def lookup_output(
+def round_to_integers(
     values: Float[Array, "..."],
     *,
-    layout: Layout,
-    index: int | Array,
+    num_bits: int = 8,
 ) -> Float[Array, "..."]:
-    if layout == Layout.OUTPUT_INPUT:
-        return values[index, :]
-    return values[:, index]
-
-
-def matmul_with_layout(
-    matrix: Float[Array, "..."],
-    vector: Float[Array, " in_channels"],
-    *,
-    layout: Layout,
-) -> Float[Array, "..."]:
-    if layout == Layout.INPUT_OUTPUT:
-        return vector @ matrix
-    return matrix @ vector
-
-
-def _leading_partition(leading_dims: Sequence[int]) -> tuple[ShardingAxis, ...]:
-    return (ShardingAxis.EXPERT,) * len(leading_dims)
-
-
-def weight_matrix_partition(
-    layout: Layout,
-    leading_dims: Sequence[int],
-) -> tuple[ShardingAxis | None, ...]:
-    trailing_partition: tuple[ShardingAxis | None, ShardingAxis | None]
-    if layout == Layout.INPUT_OUTPUT:
-        trailing_partition = (None, ShardingAxis.TENSOR)
-    else:
-        trailing_partition = (ShardingAxis.TENSOR, None)
-    return _leading_partition(leading_dims) + trailing_partition
-
-
-def group_parameter_partition(
-    layout: Layout,
-    leading_dims: Sequence[int],
-) -> tuple[ShardingAxis | None, ...]:
-    trailing_partition: tuple[ShardingAxis | None, ShardingAxis | None]
-    if layout == Layout.INPUT_OUTPUT:
-        trailing_partition = (None, ShardingAxis.TENSOR)
-    else:
-        trailing_partition = (ShardingAxis.TENSOR, None)
-    return _leading_partition(leading_dims) + trailing_partition
+    min_value = -(2 ** (num_bits - 1))
+    max_value = 2 ** (num_bits - 1) - 1
+    return jnp.clip(jnp.round(values), min_value, max_value)

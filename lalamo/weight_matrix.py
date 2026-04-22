@@ -2,13 +2,13 @@ import math
 from abc import abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar, Generic, Self, TypeVar, dataclass_transform
+from typing import ClassVar, Generic, Self, TypeVar
 
 import equinox as eqx
 import jax.numpy as jnp
 from cattrs import GenConverter
 from jax import default_matmul_precision
-from jax.lax import Precision
+from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.initializer import Initializer
@@ -85,7 +85,7 @@ class GradientEstimator(StrEnum):
 @dataclass(frozen=True)
 class MatmulConfig:
     gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC
-    precision: Precision = Precision.DEFAULT
+    precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT
 
 
 @dataclass(frozen=True)
@@ -118,7 +118,6 @@ class WeightMatrixSpec(RegistryABC):
 WeightMatrixSpecT_co = TypeVar("WeightMatrixSpecT_co", bound=WeightMatrixSpec, covariant=True)
 
 
-@dataclass_transform(field_specifiers=(eqx.field, field))
 class WeightMatrix(RegistryABC, eqx.Module, Generic[WeightMatrixSpecT_co]):  # noqa: UP046
     spec: WeightMatrixSpecT_co = field(static=True)
 

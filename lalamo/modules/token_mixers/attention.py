@@ -1,11 +1,9 @@
 from dataclasses import dataclass
-from functools import partial
 
 import equinox as eqx
 import jax
 from einops import einsum, rearrange
 from jax import numpy as jnp
-from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key
 
 from lalamo.initializer import Initializer
@@ -19,7 +17,7 @@ from lalamo.modules.token_mixer import (
     TokenMixerConfig,
     TokenMixerResult,
 )
-from lalamo.modules.utils import apply_soft_capping, vmap_with_dequant_key
+from lalamo.modules.utils import apply_soft_capping, call_vmapped, call_vmapped_twice
 
 from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 
@@ -219,15 +217,17 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         if forward_pass_config is None:
             forward_pass_config = MixerForwardPassConfig()
         qkv_dequant_key, gate_dequant_key, out_dequant_key = jax.random.split(dequant_key, 3)
-        queries, keys, values = vmap_with_dequant_key(
-            partial(self.qkv_projection, forward_pass_config=forward_pass_config.arrays),
+        queries, keys, values = call_vmapped(
+            self.qkv_projection,
             inputs,
+            forward_pass_config=forward_pass_config.arrays,
             dequant_key=qkv_dequant_key,
         )
         if self.gate_projection is not None:
-            (gate,) = vmap_with_dequant_key(
-                partial(self.gate_projection, forward_pass_config=forward_pass_config.arrays),
+            (gate,) = call_vmapped(
+                self.gate_projection,
                 inputs,
+                forward_pass_config=forward_pass_config.arrays,
                 dequant_key=gate_dequant_key,
             )
         else:
@@ -253,16 +253,13 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         )
 
         if self.query_norm is not None:
-            queries = vmap(vmap(self.query_norm))(queries)
+            queries = call_vmapped_twice(self.query_norm, queries)
         if self.key_norm is not None:
-            keys = vmap(vmap(self.key_norm))(keys)
-        if self.config.normalize_values:
-            values = _rms_normalize(values, eps=1e-6)
+            keys = call_vmapped_twice(self.key_norm, keys)
 
         if positional_embeddings is not None:
-            apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)
-            queries = apply_positional_embeddings(queries)
-            keys = apply_positional_embeddings(keys)
+            queries = call_vmapped(positional_embeddings.apply, queries, in_axes=1, out_axes=1)
+            keys = call_vmapped(positional_embeddings.apply, keys, in_axes=1, out_axes=1)
 
         prefix_length = 0 if state is None else state.current_prefix_length()
         if state is None:
@@ -309,9 +306,10 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         )
         if gate is not None:
             attention_output = attention_output * jax.nn.sigmoid(gate)
-        (result,) = vmap_with_dequant_key(
-            partial(self.out_projection, forward_pass_config=forward_pass_config.arrays),
+        (result,) = call_vmapped(
+            self.out_projection,
             attention_output,
+            forward_pass_config=forward_pass_config.arrays,
             dequant_key=out_dequant_key,
         )
 

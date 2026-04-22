@@ -20,7 +20,7 @@ from .transformer import (
     TransformerForwardPassConfig,
     TransformerLayerResult,
 )
-from .utils import vmap_twice_with_dequant_key
+from .utils import call_vmapped_twice
 
 __all__ = [
     "Decoder",
@@ -116,7 +116,7 @@ class Decoder(LalamoModule[DecoderConfig]):
                 f" got {token_positions.shape}",
             )
         embedding_dequant_key, transformer_dequant_key, readout_dequant_key = jax.random.split(dequant_key, 3)
-        inner_features = vmap_twice_with_dequant_key(
+        inner_features = call_vmapped_twice(
             self.embedding.embed,
             token_ids,
             dequant_key=embedding_dequant_key,
@@ -140,7 +140,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             dequant_key=transformer_dequant_key,
         )
 
-        logits = vmap_twice_with_dequant_key(
+        logits = call_vmapped_twice(
             self.embedding.readout,
             transformer_result.outputs,
             dequant_key=readout_dequant_key,

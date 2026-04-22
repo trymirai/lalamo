@@ -9,7 +9,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, Key
 
 from lalamo.initializer import Initializer
@@ -19,7 +18,7 @@ from lalamo.weight_matrix import MatmulConfig
 
 from .activations import Activation
 from .linear import Linear, LinearConfig
-from .utils import vmap_twice_with_dequant_key, vmap_with_dequant_key
+from .utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
     "DenseMLP",
@@ -150,11 +149,12 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
     ) -> Float[Array, "batch suffix_tokens channels"]:
         if forward_pass_config is None:
             forward_pass_config = MLPForwardPassConfig()
-        return vmap_twice_with_dequant_key(
-            partial(self.call_unbatched, forward_pass_config=forward_pass_config),
-            inputs,
+        call_unbatched = partial(
+            self.call_unbatched,
+            forward_pass_config=forward_pass_config,
             dequant_key=dequant_key,
         )
+        return call_vmapped_twice(call_unbatched, inputs)
 
     @eqx.filter_jit
     def call_unbatched(
@@ -214,7 +214,7 @@ class RoutingMap(eqx.Module):
 @dataclass(frozen=True)
 class RoutingFunction(LalamoConfig, RegistryABC):
     def __call__(self, logits: Float[Array, "batch_tokens experts"], num_active: int) -> RoutingMap:
-        return vmap(partial(self.call_unbatched, num_active=num_active))(logits)
+        return call_vmapped(partial(self.call_unbatched, num_active=num_active), logits)
 
     @abstractmethod
     def call_unbatched(self, logits: Float[Array, " experts"], num_active: int) -> RoutingMap: ...
@@ -399,9 +399,12 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                     * weight
                 )
 
-            return vmap(apply_one)(active_indices, active_weights, expert_dequant_keys).sum(axis=0)
+            return call_vmapped(
+                lambda expert_inputs: apply_one(*expert_inputs),
+                (active_indices, active_weights, expert_dequant_keys),
+            ).sum(axis=0)
 
-        return vmap_twice_with_dequant_key(
+        return call_vmapped_twice(
             per_token,
             inputs,
             dequant_key=dequant_key,
@@ -430,9 +433,10 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         router_dequant_key, chunk_dequant_key, shared_weight_dequant_key, shared_expert_dequant_key = jax.random.split(
             dequant_key, 4
         )
-        (router_logits,) = vmap_with_dequant_key(
-            partial(self.router, forward_pass_config=forward_pass_config.matmul_config),
+        (router_logits,) = call_vmapped(
+            self.router,
             flattened_inputs,
+            forward_pass_config=forward_pass_config.matmul_config,
             dequant_key=router_dequant_key,
         )
         routing_map = self.config.routing_function(router_logits, self.config.num_active_routed_experts)
@@ -450,7 +454,8 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
 
         chunk_size = math.ceil(num_tokens * forward_pass_config.moe_chunk_size_ratio)
         num_padded_tokens = math.ceil(num_tokens / chunk_size) * chunk_size
-        token_indices = vmap(lambda mask: jnp.flatnonzero(mask, size=num_padded_tokens, fill_value=_SENTINEL))(
+        token_indices = call_vmapped(
+            lambda mask: jnp.flatnonzero(mask, size=num_padded_tokens, fill_value=_SENTINEL),
             token_mask,
         )
         chunked_token_indices = rearrange(
@@ -487,20 +492,17 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                     expert_dequant_key: Key[Array, ""],
                 ) -> Float[Array, "tokens_per_chunk channels"]:
                     chunk_inputs = flattened_inputs.at[indices].get(mode="fill", fill_value=0.0)
-                    return (
-                        vmap_with_dequant_key(
-                            partial(expert.call_unbatched, forward_pass_config=forward_pass_config),
-                            chunk_inputs,
-                            dequant_key=expert_dequant_key,
-                        )
-                        * weights[:, None]
+                    call_unbatched = partial(
+                        expert.call_unbatched,
+                        forward_pass_config=forward_pass_config,
+                        dequant_key=expert_dequant_key,
                     )
+                    expert_outputs = call_vmapped(call_unbatched, chunk_inputs)
+                    return expert_outputs * weights[:, None]
 
-                expert_outputs = vmap(run_expert)(
-                    routed_experts,
-                    token_indices_for_chunk,
-                    weights_for_chunk,
-                    expert_dequant_keys,
+                expert_outputs = call_vmapped(
+                    lambda expert_inputs: run_expert(*expert_inputs),
+                    (routed_experts, token_indices_for_chunk, weights_for_chunk, expert_dequant_keys),
                 )
                 return accumulator.at[token_indices_for_chunk].add(
                     expert_outputs,
@@ -525,24 +527,30 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         expert_result = routed_expert_result
         if self.config.num_shared_experts > 0:
             shared_experts = self.experts.slice_mixture(self.config.num_routed_experts, self.config.mixture_size)
-            shared_weights = vmap_with_dequant_key(
-                partial(self._shared_expert_weight, forward_pass_config=forward_pass_config),
-                flattened_inputs,
+            shared_expert_weight = partial(
+                self._shared_expert_weight,
+                forward_pass_config=forward_pass_config,
                 dequant_key=shared_weight_dequant_key,
             )
+            shared_weights = call_vmapped(shared_expert_weight, flattened_inputs)
             shared_weights = jnp.where(flattened_padding_mask[:, None], shared_weights, 0.0)
 
             shared_expert_dequant_keys = jax.random.split(
                 shared_expert_dequant_key,
                 self.config.num_shared_experts,
             )
-            shared_outputs = vmap(
-                lambda expert, expert_dequant_key: vmap_with_dequant_key(
-                    partial(expert.call_unbatched, forward_pass_config=forward_pass_config),
+            shared_outputs = call_vmapped(
+                lambda expert, expert_dequant_key: call_vmapped(
+                    partial(
+                        expert.call_unbatched,
+                        forward_pass_config=forward_pass_config,
+                        dequant_key=expert_dequant_key,
+                    ),
                     flattened_inputs,
-                    dequant_key=expert_dequant_key,
-                )
-            )(shared_experts, shared_expert_dequant_keys)
+                ),
+                shared_experts,
+                shared_expert_dequant_keys,
+            )
             expert_result = routed_expert_result + shared_weights * shared_outputs.sum(axis=0)
 
         return rearrange(

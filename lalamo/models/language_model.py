@@ -1,5 +1,6 @@
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
+from functools import partial
 from itertools import batched
 from pathlib import Path
 from typing import NamedTuple
@@ -9,7 +10,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from einops import rearrange, repeat
-from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, Key
 
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
@@ -28,6 +28,7 @@ from lalamo.modules.token_mixers.common import AttentionForwardPassConfig, Atten
 from lalamo.modules.token_mixers.state import State
 from lalamo.modules.transformer import TransformerForwardPassConfig
 from lalamo.modules.transformer_layer import TransformerLayerForwardPassConfig
+from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy, make_policy
 from lalamo.weight_matrix import GradientEstimator, MatmulConfig
 
@@ -406,8 +407,11 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         ) -> tuple[DecodingState, GenerationStepResults]:
             def sample_and_update() -> tuple[DecodingState, GenerationStepResults]:
                 upcasted_logits = state.last_token_logits.astype(jnp.float32)
-                processed_logits = vmap(sampling_policy.process_logits)(upcasted_logits)
-                next_token_ids = jax.vmap(jax.random.categorical)(keys, processed_logits)
+                processed_logits = call_vmapped(sampling_policy.process_logits, upcasted_logits)
+                next_token_ids = call_vmapped(
+                    lambda categorical_inputs: jax.random.categorical(*categorical_inputs),
+                    (keys, processed_logits),
+                )
                 next_token_ids = jnp.where(state.stop_flags, jnp.zeros(batch_size, dtype=jnp.int32), next_token_ids)
                 if num_top_logits_to_return is not None:
                     next_top_k_token_logits, next_top_k_token_ids = jax.lax.top_k(
@@ -496,9 +500,10 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
             return jax.lax.cond(jnp.all(state.stop_flags), pad_and_repeat_state, sample_and_update)
 
-        per_step_keys: Key[Array, "batch max_len"] = jax.vmap(
-            lambda k: split_into_rolling_keys(k, max_output_length),
-        )(keys)
+        per_step_keys: Key[Array, "batch max_len"] = call_vmapped(
+            partial(split_into_rolling_keys, num=max_output_length),
+            keys,
+        )
         per_step_keys: Key[Array, "max_len batch"] = jnp.swapaxes(per_step_keys, 0, 1)
         _, generated = jax.lax.scan(loop_iteration, initial_state, per_step_keys)
 

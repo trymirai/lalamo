@@ -3,7 +3,6 @@ from dataclasses import field as dataclass_field
 
 import equinox as eqx
 import jax
-from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.exportable import Exportable
@@ -21,7 +20,7 @@ from .transformer_layer import (
     TransformerLayerForwardPassConfig,
     TransformerLayerResult,
 )
-from .utils import vmap_twice
+from .utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
     "Transformer",
@@ -134,9 +133,13 @@ class Transformer(LalamoModule[TransformerConfig]):
         maybe_state = state or ([None] * len(self.layers))
 
         if self.global_rope is not None:
-            global_positional_embeddings = vmap(self.global_rope)(token_positions)
+            global_positional_embeddings = call_vmapped(self.global_rope, token_positions)
         else:
-            state_by_layer: dict[int, None] = {}
+            global_positional_embeddings = None
+        if self.local_rope is not None:
+            local_positional_embeddings = call_vmapped(self.local_rope, token_positions)
+        else:
+            local_positional_embeddings = global_positional_embeddings
 
         layer_dequant_keys = jax.random.split(dequant_key, len(self.layers))
         updated_state_layers = []
@@ -174,7 +177,7 @@ class Transformer(LalamoModule[TransformerConfig]):
             if kv_source is None:
                 updated_states[i] = layer_result.updated_state
 
-        normalized_outputs = vmap_twice(self.output_norm)(inner_features)
+        normalized_outputs = call_vmapped_twice(self.output_norm, inner_features)
 
         if return_updated_state:
             compact_state = State(updated_states[i] for i in self.source_layer_indices)

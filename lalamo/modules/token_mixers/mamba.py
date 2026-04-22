@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from functools import partial
 
 import equinox as eqx
 import jax
@@ -18,7 +17,7 @@ from lalamo.modules.token_mixer import (
     TokenMixerConfig,
     TokenMixerResult,
 )
-from lalamo.modules.utils import vmap_with_dequant_key
+from lalamo.modules.utils import call_vmapped
 
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .ssm_state import SSMStateLayer
@@ -75,14 +74,15 @@ def fused_ssd_intra_chunk(
         )
 
     def over_heads(chunk_idx: int, group_idx: int) -> Float[Array, "heads_per_group chunk_size head_dim"]:
-        return jax.vmap(lambda head_idx: compute_chunk_group_head(chunk_idx, group_idx, head_idx))(
+        return call_vmapped(
+            lambda head_idx: compute_chunk_group_head(chunk_idx, group_idx, head_idx),
             jnp.arange(heads_per_group),
         )
 
     def over_groups(chunk_idx: int) -> Float[Array, "groups heads_per_group chunk_size head_dim"]:
-        return jax.vmap(lambda group_idx: over_heads(chunk_idx, group_idx))(jnp.arange(groups))
+        return call_vmapped(lambda group_idx: over_heads(chunk_idx, group_idx), jnp.arange(groups))
 
-    result = jax.vmap(over_groups)(jnp.arange(chunks))
+    result = call_vmapped(over_groups, jnp.arange(chunks))
 
     return rearrange(
         result,
@@ -481,9 +481,10 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             return self._decode_step(inputs, state, forward_pass_config, dequant_key=dequant_key)
 
         in_dequant_key, out_dequant_key = jax.random.split(dequant_key)
-        conv_inputs, gate_values, time_delta_log = vmap_with_dequant_key(
-            partial(self.in_projection, forward_pass_config=forward_pass_config.arrays),
+        conv_inputs, gate_values, time_delta_log = call_vmapped(
+            self.in_projection,
             inputs,
+            forward_pass_config=forward_pass_config.arrays,
             dequant_key=in_dequant_key,
         )
 
@@ -552,9 +553,10 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             ssm_outputs,
             "suffix_tokens heads head_channels -> suffix_tokens (heads head_channels)",
         )
-        (outputs,) = vmap_with_dequant_key(
-            partial(self.out_projection, forward_pass_config=forward_pass_config.arrays),
+        (outputs,) = call_vmapped(
+            self.out_projection,
             ssm_outputs_flat,
+            forward_pass_config=forward_pass_config.arrays,
             dequant_key=out_dequant_key,
         )
 

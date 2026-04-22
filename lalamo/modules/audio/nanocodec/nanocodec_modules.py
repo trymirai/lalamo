@@ -20,6 +20,7 @@ from lalamo.modules.audio.common_modules import (
     Snake1d,
     Snake1dConfig,
 )
+from lalamo.modules.utils import call_vmapped
 
 __all__ = [
     "CausalHiFiGANDecoder",
@@ -173,7 +174,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         indices: Int[Array, " seq"],
     ) -> Float[Array, "seq dim"]:
         """Decode discrete indices back to continuous code vectors."""
-        return jax.vmap(self._indices_to_codes)(indices)
+        return call_vmapped(self._indices_to_codes, indices)
 
     def __call__(
         self,
@@ -182,7 +183,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         """
         Forward pass: dequantize batch of input indices vectors to continuous representation.
         """
-        return jax.vmap(self.decode, in_axes=0)(inputs)
+        return call_vmapped(self.decode, inputs)
 
 
 @dataclass(frozen=True)
