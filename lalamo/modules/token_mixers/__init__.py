@@ -1,6 +1,14 @@
 from lalamo.modules.common import register_config_union
 
-from .attention import Attention, AttentionConfig, AttentionResult
+from .attention import (
+    Attention,
+    AttentionConfig,
+    AttentionForwardPassConfig,
+    AttentionImplementation,
+    AttentionResult,
+    DefaultAttention,
+    StableReductionOrderAttention,
+)
 from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerResult
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .delta_net_attention import DeltaNetAttention, DeltaNetAttentionConfig, DeltaNetAttentionResult
@@ -23,7 +31,10 @@ register_config_union(TokenMixerConfig)
 __all__ = [
     "Attention",
     "AttentionConfig",
+    "AttentionForwardPassConfig",
+    "AttentionImplementation",
     "AttentionResult",
+    "DefaultAttention",
     "DeltaNetAttention",
     "DeltaNetAttentionConfig",
     "DeltaNetAttentionResult",
@@ -40,6 +51,7 @@ __all__ = [
     "ShortConvConfig",
     "ShortConvResult",
     "ShortConvStateLayer",
+    "StableReductionOrderAttention",
     "State",
     "StateLayerBase",
     "StaticKVCacheLayer",
