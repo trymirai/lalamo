@@ -74,4 +74,5 @@ def _policy_from_hf_config(
         top_p=hf_config.top_p,
         min_p=hf_config.min_p,
         banned_tokens=banned_tokens,
+        repetition_penalty=hf_config.repetition_penalty,
     )
