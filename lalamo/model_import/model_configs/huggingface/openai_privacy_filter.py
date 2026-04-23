@@ -121,14 +121,21 @@ class HFOpenAIPrivacyFilterConfig(HuggingFaceClassifierConfig):
             truncate=bool(self.rope_parameters.get("truncate", False)),
         )
 
-        # Each expert is a SwiGLU MLP with biases on up+gate and down.
+        # Each expert is GPT-OSS-style: `(up+1) * gate * sigmoid(gate * 1.702)`
+        # with `gate` clipped to (-inf, 7] and `up` clipped to [-7, 7] BEFORE the +1.
+        # Lalamo bakes the +1 into up_bias at load time (see huggingface.py
+        # batched MoE loader) and shifts the up clipping to the post-+1 range
+        # [-6, 8] so `up_proj_clipped = clamp(Wx + (b+1), -6, 8)` equals the HF
+        # `clamp(Wx + b, -7, 7) + 1`. `swiglu_limit` is hard-coded to 7.0 here
+        # (matches the com.microsoft.MoE attribute on the ONNX export).
+        _swiglu_limit = 7.0
         expert_mlp_config = DenseMLPConfig(
             linear_config=linear_config,
-            activation=SiLU(),
+            activation=SiLU(alpha=1.702),
             has_up_biases=True,
             has_down_biases=True,
-            up_clipping=None,
-            gate_clipping=None,
+            up_clipping=(-_swiglu_limit + 1.0, _swiglu_limit + 1.0),
+            gate_clipping=(None, _swiglu_limit),
         )
         moe_config = MixtureOfExpertsConfig(
             num_routed_experts=self.num_local_experts,

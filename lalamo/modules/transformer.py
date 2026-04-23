@@ -223,10 +223,38 @@ class Transformer(LalamoModule[TransformerConfig]):
         return State(self.layers[i].init_static_state(batch_size, capacity) for i in self.source_layer_indices)
 
     def export_weights(self) -> ParameterTree:
-        return dict(
+        result: dict[str, ParameterTree] = dict(
             layers=[layer.export_weights() for layer in self.layers],
             output_norm=self.output_norm.export_weights(),
         )
+        # Export RoPE cos/sin tables under the `global_rope` / `local_rope`
+        # names the uzu runtime expects. Layers with sliding-window attention
+        # use the "local" rope; all other layers use the "global" rope. When
+        # every layer uses sliding-window attention (e.g. openai/privacy-filter)
+        # we still export the single rope as `global_rope` because the uzu
+        # classifier falls back to global_rope when no local_rope_config is
+        # declared at the transformer level.
+        global_rope_idx: int | None = None
+        local_rope_idx: int | None = None
+        for layer_config, rope_idx in zip(self.config.layer_configs, self.rope_indices, strict=True):
+            if rope_idx < 0:
+                continue
+            sliding = getattr(layer_config.mixer_config, "sliding_window_size", None)
+            if sliding is not None:
+                if local_rope_idx is None:
+                    local_rope_idx = rope_idx
+            elif global_rope_idx is None:
+                global_rope_idx = rope_idx
+        if global_rope_idx is None and local_rope_idx is not None:
+            # No non-sliding layer to serve as the global rope — promote the
+            # sliding-only rope so the runtime has a usable table.
+            global_rope_idx = local_rope_idx
+            local_rope_idx = None
+        if global_rope_idx is not None:
+            result["global_rope"] = self.ropes[global_rope_idx].export_weights()
+        if local_rope_idx is not None:
+            result["local_rope"] = self.ropes[local_rope_idx].export_weights()
+        return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = require_mapping(weights)
@@ -234,8 +262,38 @@ class Transformer(LalamoModule[TransformerConfig]):
         layers = [
             layer.import_weights(require_tree(lw)) for layer, lw in zip(self.layers, weights["layers"], strict=True)
         ]
+        # Re-import rope tables if present. These are optional (older exports
+        # don't include them) and are keyed by `global_rope` / `local_rope`
+        # per the uzu-runtime convention used in `export_weights`. Map them
+        # back onto the appropriate `self.ropes` entries based on the same
+        # sliding-window heuristic used on export.
+        ropes = list(self.ropes)
+        if ropes:
+            global_rope_idx: int | None = None
+            local_rope_idx: int | None = None
+            for layer_config, rope_idx in zip(self.config.layer_configs, self.rope_indices, strict=True):
+                if rope_idx < 0:
+                    continue
+                sliding = getattr(layer_config.mixer_config, "sliding_window_size", None)
+                if sliding is not None:
+                    if local_rope_idx is None:
+                        local_rope_idx = rope_idx
+                elif global_rope_idx is None:
+                    global_rope_idx = rope_idx
+            if global_rope_idx is None and local_rope_idx is not None:
+                global_rope_idx = local_rope_idx
+                local_rope_idx = None
+            if global_rope_idx is not None and "global_rope" in weights:
+                ropes[global_rope_idx] = ropes[global_rope_idx].import_weights(
+                    require_tree(weights["global_rope"]),
+                )
+            if local_rope_idx is not None and "local_rope" in weights:
+                ropes[local_rope_idx] = ropes[local_rope_idx].import_weights(
+                    require_tree(weights["local_rope"]),
+                )
         return replace(
             self,
+            ropes=tuple(ropes),
             layers=tuple(layers),
             output_norm=self.output_norm.import_weights(require_tree(weights["output_norm"])),
         )

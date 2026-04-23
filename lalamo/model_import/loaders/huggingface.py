@@ -441,26 +441,38 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
                 f"2*intermediate={expected_up_fused}; cannot identify axis order.",
             )
 
-        # gate_up_proj is [num_experts, intermediate_size*2, hidden_size] - split into gate and up
+        # gate_up_proj has shape (num_experts, 2*intermediate, hidden_size) after
+        # the swapaxes above. Along the 2*intermediate axis the safetensors on
+        # disk use a HALF-SPLIT [gate | up] layout for both HF GPT-OSS
+        # (mxfp4/non-quantized) and openai/privacy-filter — confirmed by
+        # numerical parity against the ONNX export. This disagrees with the
+        # PyTorch `GptOssExperts._apply_gate` which reads via `gate_up[..., ::2]`
+        # / `gate_up[..., 1::2]`; the mismatch is consistent with the checkpoint
+        # being permuted at export time, not at load time.
+        #
+        # The activation is `(up + 1) * gate * sigmoid(gate * alpha)` with
+        # clipping. Lalamo's DenseMLP only runs `up * activation(gate)`, so we
+        # bake the `+1` into up_bias here; the config sets the matching
+        # SiLU(alpha=1.702) + clipping.
         intermediate_size_2 = gate_up_weights.shape[1]
         intermediate_size = intermediate_size_2 // 2
 
-        # Split gate and up: first half is gate, second half is up (or vice versa depending on model)
         gate_weights = gate_up_weights[:, :intermediate_size, :]
         up_weights = gate_up_weights[:, intermediate_size:, :]
 
-        # Combine up and gate for our format: (num_experts, hidden*2, model_dim)
+        # Lalamo's DenseMLP unpacks `up_proj, gate = self.up_projection(inputs)`,
+        # so concat as [up | gate] along the 2*intermediate axis.
         combined_up_gate_weights = jnp.concatenate([up_weights, gate_weights], axis=1)
 
-        # Biases: optional, same gate/up split and reorder rule.
         if has_up_biases:
             up_gate_bias_path = ParameterPath(str(gate_up_path) + "_bias")
             if up_gate_bias_path not in weights_dict:
                 raise KeyError(f"MoE experts have biases but {up_gate_bias_path} not found.")
             gate_up_bias = weights_dict[up_gate_bias_path]
-            # Shape is (experts, 2*intermediate) — split along axis 1.
             gate_bias = gate_up_bias[:, :intermediate_size]
             up_bias = gate_up_bias[:, intermediate_size:]
+            # Bake the `+1` so `(up + 1) * glu` falls out of `up * activation(gate)`.
+            up_bias = up_bias + 1.0
             combined_up_gate_biases: Array | None = jnp.concatenate([up_bias, gate_bias], axis=1)
         else:
             combined_up_gate_biases = None
@@ -1503,6 +1515,59 @@ def load_huggingface_classifier(
     )
 
 
+def _permute_qk_halfsplit_to_interleaved(
+    weights_dict: Mapping[str, Array],
+    *,
+    num_layers: int,
+    num_heads: int,
+    num_kv_heads: int,
+    head_dim: int,
+) -> dict[str, Array]:
+    """Re-bake q_proj/k_proj weights + biases so lalamo's HF half-split RoPE
+    produces the output of GPT-J-style interleaved RoPE.
+
+    openai/privacy-filter's ONNX export uses `RotaryEmbedding(interleaved=1)`,
+    which rotates consecutive pairs `(x[2i], x[2i+1])` per head. Lalamo's RoPE
+    rotates `(x[i], x[i+d/2])` (HF Llama convention). These two schemes are
+    equivalent only when the q/k output features are permuted per head:
+        new[..., i]        = old[..., 2i]       for i in [0, d/2)
+        new[..., i + d/2]  = old[..., 2i + 1]   for i in [0, d/2)
+    i.e. `new = concat([old[..., ::2], old[..., 1::2]], axis=-1)` per head.
+
+    Returns an overlay dict of overrides that the caller merges into the
+    weights_dict before running the normal attention loader. Only the q_proj
+    and k_proj weights and biases are touched; v_proj, o_proj, sinks, and
+    everything MoE-side are untouched.
+    """
+    overrides: dict[str, Array] = {}
+    for layer_idx in range(num_layers):
+        base = ParameterPath() / "model" / "layers" / str(layer_idx) / "self_attn"
+        for proj, num_proj_heads in (
+            ("q_proj", num_heads),
+            ("k_proj", num_kv_heads),
+        ):
+            for suffix in ("weight", "bias"):
+                key = base / proj / suffix
+                if key not in weights_dict:
+                    continue
+                t = weights_dict[key]
+                feat = num_proj_heads * head_dim
+                if suffix == "weight":
+                    # shape (num_proj_heads * head_dim, model_dim)
+                    reshaped = t.reshape(num_proj_heads, head_dim, -1)
+                    permuted = jnp.concatenate(
+                        [reshaped[:, ::2, :], reshaped[:, 1::2, :]], axis=1,
+                    )
+                    overrides[key] = permuted.reshape(feat, -1)
+                else:  # bias
+                    reshaped = t.reshape(num_proj_heads, head_dim)
+                    permuted = jnp.concatenate(
+                        [reshaped[:, ::2], reshaped[:, 1::2]], axis=1,
+                    )
+                    overrides[key] = permuted.reshape(feat)
+    return overrides
+
+
 def _load_score_head_classifier(
     module: Classifier,
     weights_dict: Mapping[str, Array],
@@ -1531,6 +1596,25 @@ def _load_score_head_classifier(
     )
     input_weights = weights_dict[embedding_path / "weight"]
     embedding = load_parameters(lambda m: (m.weights,), module.embedding, (input_weights,))
+
+    # openai/privacy-filter ships with ONNX `RotaryEmbedding(interleaved=1)`
+    # (GPT-J-style pairwise rotation), while lalamo's RoPE is HF-Llama half-split.
+    # Pre-permute q_proj / k_proj weights and biases per head so the half-split
+    # rotation produces the same logits as interleaved rotation on the raw
+    # weights — see _permute_qk_halfsplit_to_interleaved for the math.
+    first_layer = module.transformer.layers[0]
+    mixer = first_layer.mixer
+    assert isinstance(mixer, Attention), (
+        f"Score-head classifier expects Attention mixer, got {type(mixer).__name__}"
+    )
+    qk_overrides = _permute_qk_halfsplit_to_interleaved(
+        weights_dict,
+        num_layers=len(module.transformer.layers),
+        num_heads=mixer.num_heads,
+        num_kv_heads=mixer.num_groups,
+        head_dim=mixer.head_dim,
+    )
+    weights_dict = {**weights_dict, **qk_overrides}
 
     # The decoder-style transformer layer loader (used for causal LMs) knows how
     # to load attention + MLP/MoE with the standard HF key names.

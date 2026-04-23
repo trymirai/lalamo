@@ -191,8 +191,12 @@ class DynamicKVCacheLayer(KVCacheLayer):
                     query_positions[:, None] < (key_positions[None, :] + sliding_window_size),
                 )
         elif sliding_window_size is not None:
-            top_zeroed = jnp.tril(result, k=sliding_window_size // 2)
-            result = jnp.triu(top_zeroed, k=-sliding_window_size // 2)
+            # Bidirectional sliding window: |q_pos - k_pos| <= sliding_window_size,
+            # matching HF's `abs(q-k) <= sw` → band width 2*sw+1. The earlier
+            # `sw//2` formulation gave width sw+1, which silently throttled
+            # every token to ~half the intended receptive field.
+            top_zeroed = jnp.tril(result, k=sliding_window_size)
+            result = jnp.triu(top_zeroed, k=-sliding_window_size)
         if self.has_sinks:
             result = result.at[:, 0].set(True)
         if self.padding_mask is not None:
