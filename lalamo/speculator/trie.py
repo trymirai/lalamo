@@ -8,7 +8,8 @@ from jaxtyping import Int, UInt
 
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.decoder import DecoderResult
-from lalamo.modules.token_mixers.state.common import CompactableStateLayer, State
+from lalamo.modules.token_mixers.state.common import CompactableStateLayer
+from lalamo.modules.token_mixers.state.kv_cache import compact_state_layers
 from lalamo.speculator.common import LMState, SpeculationStep, Speculator
 from lalamo.speculator.sampler import GumbelMaxSampler, GumbelSeed
 from lalamo.speculator.utils import extract_activations, pad_or_trim
@@ -262,14 +263,7 @@ class TreeSpeculator(Speculator[TrieNode]):
         cache_len_arr = jnp.int32(cache_len)
         accepted_idx = jnp.array(pad_or_trim(kept_fwd, max_compact, 0), dtype=jnp.int32)
         num_acc = jnp.int32(total_kept)
-        new_layers = []
-        for layer in fwd.updated_state:
-            if not isinstance(layer, CompactableStateLayer):
-                raise TypeError(
-                    f"speculative decoding requires CompactableStateLayer, got {type(layer).__name__}",
-                )
-            new_layers.append(layer.compact(cache_len_arr, accepted_idx, num_acc, max_compact))
-        new_kv = State(new_layers)
+        new_kv = compact_state_layers(fwd.updated_state, cache_len_arr, accepted_idx, num_acc, max_compact)
 
         last_fwd_idx = int(kept_fwd[total_kept - 1])
         last_logits = jnp.array(fwd.logits[0, last_fwd_idx])

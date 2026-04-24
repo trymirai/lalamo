@@ -9,7 +9,7 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree
 
-from .common import CompactableStateLayer, StateLayerBase
+from .common import CompactableStateLayer, State, StateLayerBase
 
 __all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
 
@@ -63,6 +63,24 @@ def build_tree_attention_mask(
     if has_sinks:
         mask = mask.at[:, 0].set(True)
     return mask
+
+
+@eqx.filter_jit
+def compact_state_layers(
+    state: State,
+    cache_len: Int[Array, ""],
+    accepted_indices: Int[Array, " max_slots"],
+    num_accepted: Int[Array, ""],
+    max_slots: int,
+) -> State:
+    new_layers = []
+    for layer in state:
+        if not isinstance(layer, CompactableStateLayer):
+            raise TypeError(
+                f"speculative decoding requires CompactableStateLayer, got {type(layer).__name__}",
+            )
+        new_layers.append(layer.compact(cache_len, accepted_indices, num_accepted, max_slots))
+    return State(new_layers)
 
 
 class KVCacheLayer(StateLayerBase):
