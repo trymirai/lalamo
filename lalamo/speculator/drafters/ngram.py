@@ -35,10 +35,6 @@ def softmax(logits: Iterable[float]) -> list[float]:
 
 
 def mean_update(probs: dict[int, float], sample: dict[int, float], new_count: int, top_k: int) -> dict[int, float]:
-    """Online mean update with top-K truncation and renormalization.
-
-    Returns a new dict; does not mutate ``probs``.
-    """
     decay = (new_count - 1) / new_count
     inv_n = 1.0 / new_count
     merged = {k: v * decay for k, v in probs.items()}
@@ -101,11 +97,9 @@ class TaggedNGramTable:
     ngram_n: int
     ngram_pad: int
 
-    # Training phase: exact data.
     _exact_data: dict[tuple[int, int], ExactBucket] = field(default_factory=dict, repr=False)
     _context_tokens: dict[tuple[int, int], tuple[int, ...]] = field(default_factory=dict, repr=False)
 
-    # Inference phase: tagged hash table (populated by compress()).
     _tags: array = field(default_factory=lambda: array("Q"), repr=False)
     _keys: array = field(default_factory=lambda: array("I"), repr=False)
     _values: array = field(default_factory=lambda: array("f"), repr=False)
@@ -182,7 +176,6 @@ class TaggedNGramTable:
         return {k: v for k, v in zip(self._keys[k_start:k_end], self._values[k_start:k_end], strict=True) if v > 0.0}
 
     def exact_dist_for(self, seq: Iterable[int]) -> dict[int, float] | None:
-        """Look up exact (pre-compress) distribution for a context."""
         key = seqhash(self._context_for(seq), self.hashtable_size)
         bucket = self._exact_data.get(key)
         return dict(bucket.probs) if bucket is not None else None
@@ -192,7 +185,6 @@ class TaggedNGramTable:
         discount: float,
         lower_order_fn: Callable[[tuple[int, ...]], dict[int, float]],
     ) -> None:
-        """Re-smooth compressed buckets using lower-order interpolation."""
         for (idx, tag), bucket in self._exact_data.items():
             if self._tags[idx] != tag:
                 continue
@@ -254,8 +246,6 @@ def _deserialize_tagged_tables(blob: bytes, offset: int, max_order: int) -> tupl
 
 @dataclass(frozen=True, eq=False)
 class NGramModel:
-    """Multi-order n-gram with Kneser-Ney smoothing."""
-
     max_order: int
     tables: tuple[TaggedNGramTable, ...]
     discount: float = 0.002
@@ -272,7 +262,6 @@ class NGramModel:
             table.train(ids, logits)
 
     def _get_best_lower_order_dist(self, ctx_tokens: tuple[int, ...], max_lower_order: int) -> dict[int, float]:
-        """Find the highest available lower-order distribution for backoff."""
         for order in range(max_lower_order, 0, -1):
             table = self.tables[order - 1]
             shorter_ctx = ctx_tokens[-(order - 1) :] if order > 1 else ()
@@ -319,13 +308,6 @@ class NGramModel:
 
 @dataclass(frozen=True, kw_only=True)
 class NGramSpeculator(TreeSpeculator):
-    """N-gram speculator: queries n-gram model to build a speculation tree.
-
-    Level 0: candidates from LM logits (top-width).
-    Level 1+: candidates from n-gram backoff lookup.
-    Greedy chain follows top-1, width fan-out at every depth.
-    """
-
     name: ClassVar[str] = "ngram"
 
     model: NGramModel
@@ -337,8 +319,6 @@ class NGramSpeculator(TreeSpeculator):
         gseed = self.seed
         root = TrieNode(token=lm.bonus, seed=gseed.derive(1).value)
 
-        # Root children predict P(x_{t+2} | prefix, bonus): condition on bonus,
-        # not on lm.logits (which is P(x_{t+1} | prefix), a level earlier).
         (vocab_size,) = lm.logits.shape
         ctx = [*self.context, lm.bonus]
         node_offset = 2
@@ -347,9 +327,6 @@ class NGramSpeculator(TreeSpeculator):
             probs = self.model.probs(ctx)
             if not probs:
                 break
-            # Rank candidates using the same seed / Gumbel convention the verifier will use
-            # at this node. The set of candidates is the ngram shortlist — not the full vocab —
-            # so this is not strictly identical to the verifier's argmax, just correlated.
             parent_seed = GumbelSeed(chain_node.seed)
             next_candidates = gumbel_rank_from_probs(parent_seed, probs, vocab_size, self.width)
             for i, tok in enumerate(next_candidates):

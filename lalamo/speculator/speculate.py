@@ -24,12 +24,6 @@ class SpeculativeDecodingResult:
 
 
 class SpeculationRun:
-    """Iterator driving a single-prompt speculative-decoding session.
-
-    Holds mutable iteration state (``speculator``, ``lm_state``, ``result``)
-    that evolves as each :meth:`Speculator.step` call lands.
-    """
-
     speculator: Speculator
     lm_state: LMState
     result: SpeculativeDecodingResult
@@ -58,6 +52,5 @@ class SpeculationRun:
             self.lm_state = new_lm
             yield step
 
-        # Emit the un-emitted trailing EOS bonus (step's emitted prefix is the previous bonus, not new_lm's).
         if self.lm_state.bonus in self.speculator.eos_set:
             self.result.generated.append(self.lm_state.bonus)

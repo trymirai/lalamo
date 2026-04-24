@@ -670,7 +670,7 @@ class EvalDatasetName(str, Enum):
     GSM8K = "gsm8k"
     HUMANEVAL = "humaneval"
     MATH500 = "math500"
-    MERGED = "merged"  # gsm8k + mtbench + math500 with source-prefixed categories
+    MERGED = "merged"
 
 
 @dataclass(frozen=True)
@@ -727,7 +727,6 @@ class MATH500Row:
 
 
 def load_mtbench(cache_path: Path) -> list[EvalQuestion]:
-    # Pinned commit so upstream branch movement cannot silently 404 the eval.
     mtbench_url = (
         "https://raw.githubusercontent.com/lm-sys/FastChat/"
         "587d5cfa1609a43d192cedb8441cac3c17db105d/fastchat/llm_judge/data/mt_bench/question.jsonl"
@@ -756,13 +755,6 @@ def load_math500() -> list[EvalQuestion]:
 
 
 def load_merged(mtbench_cache_path: Path) -> list[EvalQuestion]:
-    """Concatenate gsm8k + mtbench + math500 with source-prefixed categories.
-
-    Categories become ``<source>/<subcategory>`` (e.g. ``mtbench/writing``,
-    ``math500/Algebra``, ``gsm8k/math``) so ``print_results`` shows per-source
-    rows side by side. Questions are interleaved round-robin across sources so
-    a ``--num-questions N`` truncation samples roughly evenly from each source.
-    """
     sources = [
         ("gsm8k", load_gsm8k()),
         ("mtbench", load_mtbench(mtbench_cache_path)),

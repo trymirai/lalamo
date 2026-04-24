@@ -16,8 +16,6 @@ from lalamo.speculator.utils import extract_activations, pad_or_trim
 
 @dataclass(frozen=True)
 class TreeVerifyResult:
-    """Intermediate result of tree+Gumbel verification, consumed by ``TreeSpeculator.build_next_state``."""
-
     accepted_tokens: list[int]
     accepted_indices: Int[np.ndarray, " accepted"]
     all_seeds: UInt[np.ndarray, " nodes"]
@@ -26,16 +24,6 @@ class TreeVerifyResult:
 
 @dataclass(frozen=True)
 class FlatTrie:
-    """Tree-to-array layout of a speculation trie.
-
-    Invariants:
-    - Root is always stored at index 0 (``parent_indices[0] == -1``).
-    - Non-root entries store their parent's array index in ``parent_indices[i]``,
-      which is always ``< i`` (DFS order). This lets one forward sweep see each
-      node's parent before reaching the node itself — the property that makes
-      tree-structured attention computable without a second pass.
-    """
-
     token_ids: Int[np.ndarray, " nodes"]
     seeds: UInt[np.ndarray, " nodes"]
     depths: Int[np.ndarray, " nodes"]
@@ -52,14 +40,6 @@ class FlatTrie:
         self,
         sampled_tokens: Int[np.ndarray, " nodes"],
     ) -> tuple[list[int], Int[np.ndarray, " accepted"]]:
-        """Walk trie: accept path where sampled tokens match draft tokens.
-
-        Args:
-            sampled_tokens: (N,) token IDs sampled from LLM logits.
-        Returns:
-            accepted_tokens: list of accepted token IDs (excluding root).
-            accepted_indices: (A,) int32 indices into this FlatTrie.
-        """
         if self.num_nodes == 0:
             return [], np.array([], dtype=np.int32)
 
@@ -194,7 +174,6 @@ class TreeSpeculator(Speculator[TrieNode]):
         return new_self, new_lm, SpeculationStep(accepted=result.accepted_tokens, bonus=new_lm.bonus)
 
     def tree_forward(self, lm: LMState, trie: TrieNode) -> tuple[DecoderResult, FlatTrie]:
-        """Run the target decoder forward pass on a tree-shaped proposal."""
         flat = trie.linearize(include_root=False)
         first_layer = lm.kv_cache[0]
         if not isinstance(first_layer, CompactableStateLayer):
@@ -235,9 +214,6 @@ class TreeSpeculator(Speculator[TrieNode]):
         fwd: DecoderResult,
         flat: FlatTrie,
     ) -> TreeVerifyResult:
-        """Sample one token per tree node via Gumbel-max, accept the longest
-        matching path from the root.
-        """
         max_fwd = 1 + max(self.budget, flat.num_nodes)
 
         root_logits = fwd.logits[0, 0].astype(jnp.float32)
@@ -265,13 +241,6 @@ class TreeSpeculator(Speculator[TrieNode]):
         fwd: DecoderResult,
         result: TreeVerifyResult,
     ) -> tuple[Self, LMState]:
-        """Compact the KV cache to accepted positions, sample the next bonus,
-        and advance the speculator's seed.
-
-        Returns ``(new_self, new_lm)``. Subclasses with additional per-step
-        state (e.g. NGram context) override this method and chain via
-        ``super().build_next_state(...)`` to layer their own update.
-        """
         first_layer = lm.kv_cache[0]
         if not isinstance(first_layer, CompactableStateLayer):
             raise TypeError(

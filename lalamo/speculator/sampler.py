@@ -8,14 +8,6 @@ from jaxtyping import Array, Float, Int
 
 @dataclass(frozen=True)
 class GumbelSeed:
-    """Seed for Gumbel-noise sampling.
-
-    ``derive(depth)`` branches the seed for a child position; ``advance(ctx_len)``
-    advances after a verify step. Both use MurmurHash3-derived mixers. Pin-tested
-    for bit-reproducibility — do not change the constants without updating the
-    test in ``tests/unit/test_sampler.py``.
-    """
-
     value: int
 
     def derive(self, depth: int) -> "GumbelSeed":
@@ -28,7 +20,6 @@ class GumbelSeed:
         return GumbelSeed((self.value * 2654435761 ^ context_len) & 0xFFFFFFFFFFFFFFFF)
 
     def sample(self, logits: Float[Array, " vocab"]) -> int:
-        """Single-position Gumbel-max sample."""
         (vocab,) = logits.shape
         key = jax.random.key(self.value & 0xFFFFFFFF)
         noise = jax.random.gumbel(key, (vocab,), dtype=jnp.float32)
@@ -54,12 +45,6 @@ class GumbelMaxSampler:
 
 
 def gumbel_rank_from_probs(seed: GumbelSeed, probs: dict[int, float], vocab_size: int, k: int) -> list[int]:
-    """Rank ``probs`` candidates by ``log(prob) + gumbel(seed)[token_id]``.
-
-    Uses the same Gumbel noise array the verifier sees (``jax.random.gumbel(key,
-    (vocab_size,))``) so shared-seed tie-breaking works, but scores only the
-    shortlist — top-k is taken within ``probs.keys()``.
-    """
     tokens = np.fromiter(probs.keys(), dtype=np.int32, count=len(probs))
     log_probs = np.log(np.fromiter(probs.values(), dtype=np.float32, count=len(probs)))
     key = jax.random.key(seed.value & 0xFFFFFFFF)

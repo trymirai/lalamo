@@ -320,14 +320,6 @@ class StaticKVCacheLayer(KVCacheLayer, CompactableStateLayer):
         num_accepted: Int[Array, ""],
         max_slots: int,
     ) -> "StaticKVCacheLayer":
-        """Scatter accepted KV entries back into place and advance ``current_length``.
-
-        Speculative decoding runs a draft batch of ``max_slots`` tokens, then
-        accepts the first ``num_accepted`` of them (indexed by
-        ``accepted_indices``). Unaccepted slots become dead weight after the
-        forward pass; this method rewrites them with the accepted entries and
-        updates ``current_length`` to the new head position.
-        """
         dst = jnp.arange(max_slots, dtype=jnp.int32) + cache_len
         src = cache_len + accepted_indices
         valid = jnp.arange(max_slots) < num_accepted

@@ -126,7 +126,6 @@ def test_lm_state_matches_reference_forward_after_bonus_only_step(decoder: Decod
     _ = next(iter(run))
 
     emitted = list(run.result.generated)
-    # Empty speculator has no drafts; only the bonus is emitted.
     assert len(emitted) == 1
 
     full_seq = jnp.array([prompt_ids + emitted], dtype=jnp.int32)

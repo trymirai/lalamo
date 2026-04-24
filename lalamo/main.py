@@ -67,13 +67,15 @@ from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
 from lalamo.speculator.common import SamplerConfig, Speculator
-from lalamo.speculator.drafters import NGramSpeculator  # noqa: F401 (triggers Speculator registration)
+from lalamo.speculator.drafters import NGramSpeculator
 from lalamo.speculator.eval import EvalQuestion, print_results
 from lalamo.speculator.speculate import SpeculativeDecodingResult
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
 DEFAULT_OUTPUT_DIR = Path("models")
+
+_SPECULATOR_TYPES = (NGramSpeculator,)
 
 
 console = Console()
