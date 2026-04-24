@@ -8,8 +8,7 @@ from jaxtyping import Int, UInt
 
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.decoder import DecoderResult
-from lalamo.modules.token_mixers.state.common import State
-from lalamo.modules.token_mixers.state.kv_cache import StaticKVCacheLayer
+from lalamo.modules.token_mixers.state.common import CompactableStateLayer, State
 from lalamo.speculator.common import LMState, SpeculationStep, Speculator
 from lalamo.speculator.sampler import GumbelMaxSampler, GumbelSeed
 from lalamo.speculator.utils import extract_activations, pad_or_trim
@@ -198,11 +197,11 @@ class TreeSpeculator(Speculator[TrieNode]):
         """Run the target decoder forward pass on a tree-shaped proposal."""
         flat = trie.linearize(include_root=False)
         first_layer = lm.kv_cache[0]
-        if not isinstance(first_layer, StaticKVCacheLayer):
+        if not isinstance(first_layer, CompactableStateLayer):
             raise TypeError(
-                f"speculative decoding requires StaticKVCacheLayer, got {type(first_layer).__name__}",
+                f"speculative decoding requires CompactableStateLayer, got {type(first_layer).__name__}",
             )
-        cache_len = int(first_layer.current_length[0])
+        cache_len = first_layer.prefix_length_for_sample(0)
         max_fwd = 1 + max(self.budget, flat.num_nodes)
 
         tok_ids = jnp.array(
@@ -274,11 +273,11 @@ class TreeSpeculator(Speculator[TrieNode]):
         ``super().build_next_state(...)`` to layer their own update.
         """
         first_layer = lm.kv_cache[0]
-        if not isinstance(first_layer, StaticKVCacheLayer):
+        if not isinstance(first_layer, CompactableStateLayer):
             raise TypeError(
-                f"speculative decoding requires StaticKVCacheLayer, got {type(first_layer).__name__}",
+                f"speculative decoding requires CompactableStateLayer, got {type(first_layer).__name__}",
             )
-        cache_len = int(first_layer.current_length[0])
+        cache_len = first_layer.prefix_length_for_sample(0)
         num_accepted = len(result.accepted_tokens)
 
         kept_fwd = np.concatenate(
@@ -294,11 +293,11 @@ class TreeSpeculator(Speculator[TrieNode]):
         cache_len_arr = jnp.int32(cache_len)
         accepted_idx = jnp.array(pad_or_trim(kept_fwd, max_compact, 0), dtype=jnp.int32)
         num_acc = jnp.int32(total_kept)
-        new_layers: list[StaticKVCacheLayer] = []
+        new_layers = []
         for layer in fwd.updated_state:
-            if not isinstance(layer, StaticKVCacheLayer):
+            if not isinstance(layer, CompactableStateLayer):
                 raise TypeError(
-                    f"speculative decoding requires StaticKVCacheLayer, got {type(layer).__name__}",
+                    f"speculative decoding requires CompactableStateLayer, got {type(layer).__name__}",
                 )
             new_layers.append(layer.compact(cache_len_arr, accepted_idx, num_acc, max_compact))
         new_kv = State(new_layers)
@@ -311,7 +310,7 @@ class TreeSpeculator(Speculator[TrieNode]):
         layer_outputs, output_norm = extract_activations(
             fwd.activation_trace,
             sample_index=0,
-            positions=kept_fwd[:total_kept],
+            positions=jnp.array(kept_fwd[:total_kept], dtype=jnp.int32),
             trace_layer_outputs=self.trace_layer_outputs,
             trace_output_norm=self.trace_output_norm,
         )

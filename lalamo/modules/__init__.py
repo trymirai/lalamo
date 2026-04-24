@@ -74,6 +74,7 @@ from .rope import (
 from .token_mixers import (
     Attention,
     AttentionConfig,
+    CompactableStateLayer,
     DeltaNetAttention,
     DeltaNetAttentionConfig,
     DynamicKVCacheLayer,
@@ -106,6 +107,7 @@ __all__ = [
     "AttentionConfig",
     "Classifier",
     "ClassifierConfig",
+    "CompactableStateLayer",
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",

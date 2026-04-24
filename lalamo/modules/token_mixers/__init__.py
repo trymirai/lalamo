@@ -7,6 +7,7 @@ from .delta_net_attention import DeltaNetAttention, DeltaNetAttentionConfig, Del
 from .mamba import Mamba2, Mamba2Config, Mamba2Result
 from .short_conv import ShortConv, ShortConvConfig, ShortConvResult
 from .state import (
+    CompactableStateLayer,
     DynamicKVCacheLayer,
     KVCacheLayer,
     ShortConvStateLayer,
@@ -24,6 +25,7 @@ __all__ = [
     "Attention",
     "AttentionConfig",
     "AttentionResult",
+    "CompactableStateLayer",
     "DeltaNetAttention",
     "DeltaNetAttentionConfig",
     "DeltaNetAttentionResult",

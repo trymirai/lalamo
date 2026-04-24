@@ -9,7 +9,7 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree
 
-from .common import StateLayerBase
+from .common import CompactableStateLayer, StateLayerBase
 
 __all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
 
@@ -226,8 +226,11 @@ class DynamicKVCacheLayer(KVCacheLayer):
         return DynamicKVCacheLayer(self.has_sinks, updated_keys, updated_values, updated_padding_mask)
 
 
-class StaticKVCacheLayer(KVCacheLayer):
+class StaticKVCacheLayer(KVCacheLayer, CompactableStateLayer):
     current_length: Int[Array, "*batch"]
+
+    def prefix_lengths(self) -> Int[Array, "*batch"]:
+        return self.current_length
 
     def current_prefix_length(self) -> Int[Array, ""]:
         self._raise_if_batched()
