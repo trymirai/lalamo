@@ -5,7 +5,7 @@ import torch
 from jax import numpy as jnp
 from scipy.interpolate import CubicSpline
 
-from lalamo.modules.torch_interop import torch_to_jax
+from lalamo.utils.torch_interop import torch_to_jax
 
 
 def prepare_state_dict_for_lalamo_loaders(

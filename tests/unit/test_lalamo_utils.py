@@ -5,7 +5,7 @@ pytest.importorskip("torch")
 import torch
 from jax import numpy as jnp
 
-from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
+from lalamo.utils.torch_interop import jax_to_torch, torch_to_jax
 
 
 def test_dtype_convert_roundtrip() -> None:

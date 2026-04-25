@@ -11,9 +11,11 @@ from jax import default_matmul_precision
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
+from lalamo.exportable import Exportable, ExportResults
 from lalamo.initializer import Initializer
 from lalamo.module import ParameterNorm, ShardingAxis, field
 from lalamo.utils.json import JSON
+from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.registry_abc import RegistryABC, make_registry_abc_converter
 
 __all__ = [
@@ -118,7 +120,7 @@ class WeightMatrixSpec(RegistryABC):
 WeightMatrixSpecT_co = TypeVar("WeightMatrixSpecT_co", bound=WeightMatrixSpec, covariant=True)
 
 
-class WeightMatrix(RegistryABC, eqx.Module, Generic[WeightMatrixSpecT_co]):  # noqa: UP046
+class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpecT_co]):  # noqa: UP046
     spec: WeightMatrixSpecT_co = field(static=True)
 
     def _raise_if_batched(self) -> None:
@@ -150,6 +152,28 @@ class WeightMatrix(RegistryABC, eqx.Module, Generic[WeightMatrixSpecT_co]):  # n
         dequant_key: Key[Array, ""],
         forward_pass_config: MatmulConfig | None = None,
     ) -> Float[Array, "... out_channels"]: ...
+
+    def export(self) -> ExportResults:
+        arrays, metadata = super().export()
+        return ExportResults(
+            arrays=arrays,
+            metadata={"spec": self.spec.to_json(), **metadata},
+        )
+
+    def load_exported(
+        self,
+        expored_data: ExportResults,
+        allow_dtype_cast: bool = False,
+        *,
+        prefix: ParameterPath | None = None,
+    ) -> Self:
+        if prefix is None:
+            prefix = ParameterPath()
+        saved_spec = expored_data.metadata[prefix / "spec"]
+        loaded_spec = self.spec.from_json(saved_spec)
+        if loaded_spec != self.spec:
+            raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
+        return super().load_exported(expored_data, allow_dtype_cast=allow_dtype_cast, prefix=prefix)
 
 
 class EmbeddingMatrix(WeightMatrix[WeightMatrixSpecT_co]):
