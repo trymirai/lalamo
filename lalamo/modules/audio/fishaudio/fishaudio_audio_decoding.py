@@ -1,9 +1,10 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from jaxtyping import Array, Float, Int, Key
+from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
+from lalamo.module import Keychain
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfig
 
 from .fishaudio_modules import (
@@ -169,12 +170,12 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "batch audio_samples 1"]:
-        z = self.quantizer.decode(indices, dequant_key=dequant_key)
+        z = self.quantizer.decode(indices, keychain=keychain)
         return self.decoder(z)
 
-    def audio_from_codes(self, indices: Array, *, dequant_key: Key[Array, ""]) -> Array:
+    def audio_from_codes(self, indices: Array, *, keychain: Keychain) -> Array:
         if len(indices.shape) == 2:
             indices = indices[None, :]
-        return self(indices, dequant_key=dequant_key)[0, :, 0]
+        return self(indices, keychain=keychain)[0, :, 0]

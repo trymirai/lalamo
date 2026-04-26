@@ -8,13 +8,12 @@ from typing import Self
 import equinox as eqx
 import jax
 from jax import numpy as jnp
-from jaxtyping import Array, Key
 from tokenizers import Tokenizer
 
 from lalamo.common import ParameterPath, is_abstract_array
 from lalamo.initializer import EmptyInitializer
 from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig, UserMessage
-from lalamo.modules import Classifier, Decoder, LalamoModule, config_converter
+from lalamo.modules import Classifier, Decoder, Keychain, LalamoModule, config_converter
 from lalamo.modules.classifier import ClassifierConfig, ClassifierResult
 from lalamo.modules.decoder import DecoderConfig, DecoderResult
 from lalamo.safetensors import safe_read
@@ -24,24 +23,7 @@ __all__ = [
     "BatchSizesComputedEvent",
     "TextModel",
     "TextModelConfig",
-    "split_into_rolling_keys",
 ]
-
-
-def split_into_rolling_keys(key: Key[Array, ""], num: int = 2) -> Key[Array, " num"]:
-    """Equivalent to jax.random.split(), but uses lax.scan to produce keys
-    sequentially (rolling), so that keys share consistent prefixes."""
-    if not isinstance(num, int):
-        raise TypeError(f"Expected integer 'num', got {type(num).__name__}")
-    if num < 0:
-        raise ValueError(f"Expected non-negative 'num', got {num}")
-
-    def split_once(carry: Key[Array, ""], _: None) -> tuple[Key[Array, ""], Key[Array, ""]]:
-        next_carry, sample_key = jax.random.split(carry)
-        return next_carry, sample_key
-
-    _, keys = jax.lax.scan(split_once, key, xs=None, length=num)
-    return keys
 
 
 @dataclass(frozen=True)
@@ -88,7 +70,7 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
             weights_dict = {**tensors, **(metadata or {})}
             if all(key.startswith("model.") for key in tensors):
                 weights_dict = {key.removeprefix("model."): value for key, value in weights_dict.items()}
-            model = config.model_config.init(EmptyInitializer(precision=jnp.float32)).from_uzu(weights_dict)  # type: ignore
+            model = config.model_config.init(EmptyInitializer(precision=jnp.float32)).from_uzu(weights_dict)  # type: ignore[attr-defined]
         abstract_leaves = [
             f"{ParameterPath('') / path}: shape={leaf.shape}, dtype={leaf.dtype}"
             for path, leaf in jax.tree_util.tree_flatten_with_path(model)[0]
@@ -114,4 +96,9 @@ class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule[ConfigT]):
         token_ids = jnp.array(self.message_processor.tokenize_request(messages))[None, :]
         _, num_tokens = token_ids.shape
         token_positions = jnp.arange(num_tokens)[None, :]
-        return self.model(token_ids=token_ids, token_positions=token_positions, return_activation_trace=True)
+        return self.model(
+            token_ids=token_ids,
+            token_positions=token_positions,
+            return_activation_trace=True,
+            keychain=Keychain.init(0),
+        )

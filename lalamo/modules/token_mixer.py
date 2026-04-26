@@ -6,11 +6,11 @@ from typing import NamedTuple, Self
 import equinox as eqx
 from jax import numpy as jnp
 from jax.tree_util import register_pytree_node_class
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.module import Keychain, LalamoConfig, LalamoModule
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.weight_matrix import MatmulConfig
 
@@ -96,9 +96,9 @@ class TokenMixerBase[ConfigT: TokenMixerConfig, StateLayerT: StateLayerBase](Lal
         state: StateLayerT | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig | None = None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> TokenMixerResult[StateLayerT]: ...
 
     @abstractmethod

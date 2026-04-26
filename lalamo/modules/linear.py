@@ -3,10 +3,10 @@ from itertools import accumulate
 
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Key
+from jaxtyping import Array, Float
 
 from lalamo.initializer import Initializer
-from lalamo.module import LalamoConfig, LalamoModule, field
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, field
 from lalamo.weight_matrix import FullPrecisionSpec, MatmulConfig, WeightMatrix
 
 __all__ = [
@@ -184,11 +184,10 @@ class FullPrecisionLinear(LinearBase["FullPrecisionLinearConfig"]):
         self,
         inputs: Float[Array, " in_channels"],
         *,
-        dequant_key: Key[Array, ""],
-        forward_pass_config: MatmulConfig | None = None,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> tuple[Float[Array, " out_channels"], ...]:
-        forward_pass_config = forward_pass_config or MatmulConfig()
-        result = self.weights.dot(inputs, dequant_key=dequant_key, forward_pass_config=forward_pass_config)
+        result = self.weights.dot(inputs, keychain=keychain, forward_pass_config=forward_pass_config)
         if self.biases is not None:
             result = result + self.biases
         return tuple(jnp.split(result, self.get_split_points(self.output_dims)))

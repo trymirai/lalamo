@@ -2,13 +2,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 import equinox as eqx
-import jax
 from jax import numpy as jnp
-from jaxtyping import Array, Float, Int, Key
+from jaxtyping import Array, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
 
 from .activations import Activation
 from .embedding import EmbeddingBase, EmbeddingConfig
@@ -73,21 +72,27 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
         self,
         inner_features: Float[Array, "batch channels"],
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "batch logits"]:
-        return call_vmapped(self.call_unbatched, inner_features, dequant_key=dequant_key)
+        return call_vmapped(self.call_unbatched, inner_features, keychain=keychain)
 
     def call_unbatched(
         self,
         inner_features: Float[Array, " in_channels"],
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, " logits"]:
-        dense_dequant_key, readout_dequant_key = jax.random.split(dequant_key)
-        (dense_outs,) = self.dense(inner_features, dequant_key=dense_dequant_key)
+        dense_keychain, readout_keychain = keychain.split()
+        (dense_outs,) = self.dense(
+            inner_features,
+            keychain=dense_keychain,
+        )
         dense_outs = self.activation(dense_outs)
         norm_outs = self.norm(dense_outs)
-        (result,) = self.readout(norm_outs, dequant_key=readout_dequant_key)
+        (result,) = self.readout(
+            norm_outs,
+            keychain=readout_keychain,
+        )
         return result
 
     def export_weights(self) -> ParameterTree:
@@ -181,20 +186,15 @@ class Classifier(LalamoModule[ClassifierConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: TransformerForwardPassConfig | None = None,
+        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> ClassifierResult:
-        if forward_pass_config is None:
-            forward_pass_config = TransformerForwardPassConfig()
-        embedding_dequant_key, transformer_dequant_key, prediction_head_dequant_key = jax.random.split(
-            dequant_key,
-            3,
-        )
+        embedding_keychain, transformer_keychain, prediction_head_keychain = keychain.split(3)
         inner_features = call_vmapped_twice(
             self.embedding.embed,
             token_ids,
-            dequant_key=embedding_dequant_key,
+            keychain=embedding_keychain,
         )
         normalized_embeddings = call_vmapped_twice(self.embedding_norm, inner_features)
 
@@ -208,7 +208,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
             forward_pass_config=forward_pass_config,
-            dequant_key=transformer_dequant_key,
+            keychain=transformer_keychain,
         )
 
         if self.config.classifier_pooling == PoolingType.CLS:
@@ -219,7 +219,10 @@ class Classifier(LalamoModule[ClassifierConfig]):
         else:
             raise TypeError(f"classifier_pooling of unknown type: {self.config.classifier_pooling}")
 
-        logits = self.prediction_head(pooled_output, dequant_key=prediction_head_dequant_key)
+        logits = self.prediction_head(
+            pooled_output,
+            keychain=prediction_head_keychain,
+        )
 
         if return_activation_trace:
             assert transformer_result.layer_results is not None

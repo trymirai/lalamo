@@ -2,11 +2,11 @@ from dataclasses import dataclass
 from typing import Self
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
+from lalamo.module import Keychain
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixer import (
@@ -106,19 +106,19 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         state: ShortConvStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> TokenMixerResult[ShortConvStateLayer]:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for ShortConv.")
 
-        in_dequant_key, out_dequant_key = jax.random.split(dequant_key)
+        in_keychain, out_keychain = keychain.split()
         pre_conv_gate, post_conv_gate, x = call_vmapped(
             self.in_projection,
             inputs,
             forward_pass_config=forward_pass_config.arrays,
-            dequant_key=in_dequant_key,
+            keychain=in_keychain,
         )
 
         prev_conv_state = state.conv_state if state is not None else None
@@ -128,7 +128,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
             self.out_projection,
             conv_output.outputs * post_conv_gate,
             forward_pass_config=forward_pass_config.arrays,
-            dequant_key=out_dequant_key,
+            keychain=out_keychain,
         )
         updated_conv_state = conv_output.state
 

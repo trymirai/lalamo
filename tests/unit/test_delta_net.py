@@ -5,8 +5,9 @@ from lalamo.common import ParameterPath
 from transformers.models.qwen3_next.configuration_qwen3_next import Qwen3NextConfig
 from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextGatedDeltaNet
 
+from lalamo.initializer import RandomInitializer
 from lalamo.model_import.loaders.huggingface import load_delta_net_attention
-from lalamo.module import RandomInitializer
+from lalamo.module import Keychain
 from lalamo.modules import (
     DeltaNetAttention,
     DeltaNetAttentionConfig,
@@ -98,7 +99,7 @@ def test_delta_net_attention_matches_hf() -> None:
         state=None,
         return_updated_state=False,
         length_without_padding=None,
-        dequant_key=jax.random.key(1),
+        keychain=Keychain.init(1),
     ).outputs
 
     assert_close(

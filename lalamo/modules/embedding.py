@@ -3,10 +3,10 @@ from dataclasses import dataclass
 
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Int, Key
+from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.module import Keychain, LalamoConfig, LalamoModule
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.weight_matrix import EmbeddingMatrix, FullPrecisionSpec, Layout, MatmulConfig, WeightMatrix
 
@@ -58,12 +58,12 @@ class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
         self,
         x: int | Int[Array, ""],
         *,
-        dequant_key: Key[Array, ""],
-        forward_pass_config: MatmulConfig | None = None,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, " channels"]:
         result = self.embedding_matrix.lookup_embedding(
             x,
-            dequant_key=dequant_key,
+            keychain=keychain,
             forward_pass_config=forward_pass_config,
         )
         if self.config.input_scale is not None:
@@ -75,10 +75,10 @@ class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
         self,
         x: Float[Array, " channels"],
         *,
-        dequant_key: Key[Array, ""],
-        forward_pass_config: MatmulConfig | None = None,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, " vocabulary"]:
-        logits = self.readout_matrix.dot(x, dequant_key=dequant_key, forward_pass_config=forward_pass_config)
+        logits = self.readout_matrix.dot(x, keychain=keychain, forward_pass_config=forward_pass_config)
         if self.config.logit_soft_cap is not None:
             logits = apply_soft_capping(logits, self.config.logit_soft_cap)
         return logits

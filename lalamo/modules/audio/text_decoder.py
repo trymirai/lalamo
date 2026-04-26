@@ -1,10 +1,10 @@
 from abc import abstractmethod
 from dataclasses import dataclass
 
-from jaxtyping import Array, Key
+from jaxtyping import Array
 
 from lalamo.initializer import Initializer
-from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.module import Keychain, LalamoConfig, LalamoModule
 from lalamo.sampling import SamplingPolicy
 from lalamo.utils.registry_abc import RegistryABC
 
@@ -22,6 +22,5 @@ class TTSTextDecoder[ConfigT: TTSTextDecoderConfig](LalamoModule[ConfigT]):
         text_tokens: Array,
         sampling_policy: SamplingPolicy | None = None,
         *,
-        key: Key[Array, ""],
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Array: ...

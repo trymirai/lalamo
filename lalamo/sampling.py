@@ -7,7 +7,9 @@ from typing import Self
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Int, Key
+from jaxtyping import Array, Float, Int
+
+from lalamo.module import Keychain
 
 __all__ = [
     "BanTokensPolicy",
@@ -30,8 +32,8 @@ class SamplingPolicy(eqx.Module):
     @abstractmethod
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]: ...
 
-    def __call__(self, logits: Float[Array, " vocabulary"], *, key: Key[Array, ""]) -> Int[Array, ""]:
-        return jax.random.categorical(key, self.process_logits(logits))
+    def __call__(self, logits: Float[Array, " vocabulary"], *, keychain: Keychain) -> Int[Array, ""]:
+        return jax.random.categorical(keychain.vmapped_keys, self.process_logits(logits))
 
 
 class GreedyPolicy(SamplingPolicy):

@@ -3,8 +3,9 @@ import weakref
 
 import jax
 from jax._src.stages import Compiled
-from jaxtyping import Array, Int, Key
+from jaxtyping import Array, Int
 
+from lalamo.module import Keychain
 from .common import InferenceConfig
 
 _compile_cache: dict[int, dict[tuple, Compiled]] = {}
@@ -17,14 +18,13 @@ def _make_weak_finalizer(model_id: int) -> None:
 def compile_generate_tokens(
     model: "LanguageModel",  # noqa: F821  # type: ignore[name-defined]
     generation_config: "GenerationConfig | None" = None,  # noqa: F821  # type: ignore[name-defined]
-    inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
+    inference_config: InferenceConfig = InferenceConfig(),
     *,
     forward_pass_config: "ForwardPassConfig",  # noqa: F821  # type: ignore[name-defined]
     generation_trace_config: "GenerationTraceConfig | None" = None,  # noqa: F821  # type: ignore[name-defined]
     prompt_token_ids: Int[Array, "batch length"],
     prompt_lengths_without_padding: Int[Array, " batch"],
-    keys: Key[Array, " batch"],
-    dequant_key: Key[Array, ""],
+    keychain: Keychain,
 ) -> Compiled:
     model_id = id(model)
     key = (
@@ -52,8 +52,7 @@ def compile_generate_tokens(
                 model,
                 prompt_token_ids=prompt_token_ids,
                 prompt_lengths_without_padding=prompt_lengths_without_padding,
-                keys=keys,
-                dequant_key=dequant_key,
+                keychain=keychain,
             )
             # the autotune levels are (according to https://guides.lw1.at/all-xla-options/#--xla_gpu_autotune_level)
             # 0 - no autotune, gpu shouldn't be touched

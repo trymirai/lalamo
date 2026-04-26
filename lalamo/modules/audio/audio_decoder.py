@@ -1,10 +1,10 @@
 from abc import abstractmethod
 from dataclasses import dataclass
 
-from jaxtyping import Array, Key
+from jaxtyping import Array
 
 from lalamo.initializer import Initializer
-from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.module import Keychain, LalamoConfig, LalamoModule
 from lalamo.utils.registry_abc import RegistryABC
 
 
@@ -20,4 +20,4 @@ class TTSAudioDecoder[ConfigT: TTSAudioDecoderConfig](LalamoModule[ConfigT]):
     def samplerate(self) -> int: ...
 
     @abstractmethod
-    def audio_from_codes(self, indices: Array, *, dequant_key: Key[Array, ""]) -> Array: ...
+    def audio_from_codes(self, indices: Array, *, keychain: Keychain) -> Array: ...

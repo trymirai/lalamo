@@ -4,7 +4,7 @@ import pytest
 
 from lalamo.initializer import RandomInitializer
 from lalamo.model_import.loaders.huggingface import load_moe
-from lalamo.module import ForwardPassMode
+from lalamo.module import ForwardPassMode, Keychain
 from lalamo.modules.activations import GELU
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, SoftmaxRouting
@@ -59,8 +59,8 @@ def test_moe_prefill_vs_decode_match() -> None:
     inputs = jax.random.normal(inputs_key, (batch, suffix_tokens, model_dim), dtype=jnp.float32)
 
     # Compare PREFILL vs DECODE
-    out_prefill = moe(inputs, forward_pass_mode=ForwardPassMode.MULTI_TOKEN, dequant_key=jax.random.key(2))
-    out_decode = moe(inputs, forward_pass_mode=ForwardPassMode.SINGLE_TOKEN, dequant_key=jax.random.key(3))
+    out_prefill = moe(inputs, forward_pass_mode=ForwardPassMode.MULTI_TOKEN, keychain=Keychain.init(2))
+    out_decode = moe(inputs, forward_pass_mode=ForwardPassMode.SINGLE_TOKEN, keychain=Keychain.init(3))
 
     assert_close(result=out_decode, reference=out_prefill)
 

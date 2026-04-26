@@ -4,9 +4,10 @@ import equinox as eqx
 import jax
 from einops import einsum, rearrange
 from jax import numpy as jnp
-from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key
+from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
+from lalamo.module import Keychain
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
@@ -210,25 +211,23 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         state: KVCacheLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig | None = None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> AttentionResult:
-        if forward_pass_config is None:
-            forward_pass_config = MixerForwardPassConfig()
-        qkv_dequant_key, gate_dequant_key, out_dequant_key = jax.random.split(dequant_key, 3)
+        qkv_keychain, gate_keychain, out_keychain = keychain.split(3)
         queries, keys, values = call_vmapped(
             self.qkv_projection,
             inputs,
             forward_pass_config=forward_pass_config.arrays,
-            dequant_key=qkv_dequant_key,
+            keychain=qkv_keychain,
         )
         if self.gate_projection is not None:
             (gate,) = call_vmapped(
                 self.gate_projection,
                 inputs,
                 forward_pass_config=forward_pass_config.arrays,
-                dequant_key=gate_dequant_key,
+                keychain=gate_keychain,
             )
         else:
             gate = None
@@ -310,7 +309,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             self.out_projection,
             attention_output,
             forward_pass_config=forward_pass_config.arrays,
-            dequant_key=out_dequant_key,
+            keychain=out_keychain,
         )
 
         if not return_updated_state:

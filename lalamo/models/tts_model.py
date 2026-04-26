@@ -8,7 +8,7 @@ import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
-from jaxtyping import Float, Int, Key
+from jaxtyping import Float, Int
 from tokenizers import Tokenizer
 
 from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
@@ -18,7 +18,8 @@ from lalamo.audio.tts_message_processor import (
     TTSMessageProcessorConfig,
 )
 from lalamo.common import ParameterPath, is_abstract_array
-from lalamo.module import EmptyInitializer
+from lalamo.initializer import EmptyInitializer
+from lalamo.module import Keychain
 from lalamo.modules import TTSModel, config_converter
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
@@ -75,23 +76,21 @@ class TTSGenerator(eqx.Module):
         sampling_policy: SamplingPolicy,
         repetition_penalty: float,  # noqa: ARG002, reserved for near future
         *,
-        key: Key[Array, ""],
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Array:
         return self.tts_model.text_decoder.decode_utterance(
             text_tokens,
             sampling_policy=sampling_policy,
-            key=key,
-            dequant_key=dequant_key,
+            keychain=keychain,
         )
 
     def decode_audio(
         self,
         semantic_tokens: Array,
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Array:
-        return self.tts_model.audio_decoder.audio_from_codes(semantic_tokens, dequant_key=dequant_key)
+        return self.tts_model.audio_decoder.audio_from_codes(semantic_tokens, keychain=keychain)
 
     def generate_waveform(self, audio_features: Array) -> Array:
         return self.tts_model.vocoder(audio_features)
@@ -111,21 +110,19 @@ class TTSGenerator(eqx.Module):
         sampling_policy: SamplingPolicy = DEFAULT_TTS_SAMPLING_POLICY,
         repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,
         *,
-        key: Key[Array, ""],
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> TTSGenerationResult:
-        text_dequant_key, audio_dequant_key = jax.random.split(dequant_key)
+        text_keychain, audio_keychain = keychain.split()
         text_tokens = self.tokenize_text(messages)
 
         semantic_tokens = self.decode_text(
             text_tokens,
             sampling_policy=sampling_policy,
             repetition_penalty=repetition_penalty,
-            key=key,
-            dequant_key=text_dequant_key,
+            keychain=text_keychain,
         )
 
-        audio_features = self.decode_audio(semantic_tokens, dequant_key=audio_dequant_key)
+        audio_features = self.decode_audio(semantic_tokens, keychain=audio_keychain)
 
         audio_waveform = self.tts_model.vocoder(audio_features)
 
@@ -173,8 +170,7 @@ class FishAudioTTSGenerator(TTSGenerator):
         sampling_policy: SamplingPolicy | None = None,
         repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002, reserved for near future
         *,
-        key: Key[Array, ""],
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Int[Array, "num_codebooks sequence"]:
         assert isinstance(self.tts_model.text_decoder, FishAudioTextDecoder)
 
@@ -183,17 +179,16 @@ class FishAudioTTSGenerator(TTSGenerator):
         return self.tts_model.text_decoder.decode_utterance(
             text_tokens,
             sampling_policy=sampling_policy,
-            key=key,
-            dequant_key=dequant_key,
+            keychain=keychain,
         )
 
     def decode_audio(
         self,
         semantic_tokens: Int[Array, "batch n_codebooks sequence"],
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "batch audio_samples 1"]:
-        return super().decode_audio(semantic_tokens, dequant_key=dequant_key)
+        return super().decode_audio(semantic_tokens, keychain=keychain)
 
     def generate_waveform(self, audio_features: Array) -> Array:
         return super().generate_waveform(audio_features)

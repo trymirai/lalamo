@@ -37,7 +37,7 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
     lalamo_transformer_cfg_from_fish_audio_codec_cfg,
 )
 from lalamo.model_import.model_specs.fishaudio import FISHAUDIO_TTS_MODELS
-from lalamo.module import EmptyInitializer
+from lalamo.module import EmptyInitializer, Keychain
 from lalamo.modules import GELU, ForwardPassMode
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
@@ -181,7 +181,7 @@ def test_vector_quantize_decode_code() -> None:
     lalamo_output = call_vmapped(
         lalamo_vq.decode_code,
         test_indices_jax,
-        dequant_key=jax.random.key(0),
+        keychain=Keychain.init(0),
     )  # (B, T, input_dim)
 
     dac_output_jax = torch_to_jax(dac_output)
@@ -239,7 +239,7 @@ def test_residual_vector_quantize_from_codes() -> None:
     dac_output = dac_output.permute(0, 2, 1)  # (B, T, input_dim) for comparison
 
     # Lalamo __call__ handles batching internally via vmap
-    lalamo_output = lalamo_rvq(test_codes_jax, dequant_key=jax.random.key(0))  # (B, T, input_dim)
+    lalamo_output = lalamo_rvq(test_codes_jax, keychain=Keychain.init(0))  # (B, T, input_dim)
 
     # Compare outputs
     dac_output_jax = torch_to_jax(dac_output)
@@ -712,7 +712,7 @@ def test_convnext_block_matches_pytorch() -> None:
 
     # Run both
     torch_output = torch_block(test_input_torch, apply_residual=True)
-    lalamo_output = lalamo_block(test_input_jax, apply_residual=True, dequant_key=jax.random.key(0))
+    lalamo_output = lalamo_block(test_input_jax, apply_residual=True, keychain=Keychain.init(0))
 
     # Compare - transpose JAX output back for comparison
     torch_output_jax = torch_to_jax(torch_output)
@@ -812,7 +812,7 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path: Path) -> 
     torch_output = fish_upsampler_block(test_input_torch)
     with jax.disable_jit():
         lalamo_block = load_upsampling_block(lalamo_block, weights_dict, path)
-        lalamo_output = lalamo_block(test_input_jax, dequant_key=jax.random.key(0))
+        lalamo_output = lalamo_block(test_input_jax, keychain=Keychain.init(0))
 
     # Compare - transpose JAX output back for comparison
     torch_output_jax = torch_to_jax(torch_output)
@@ -929,7 +929,7 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path: Path) -> None:
 
     with jax.disable_jit():
         lalamo_upsampler = load_upsampler(lalamo_upsampler, weights_dict, path)
-        lalamo_output = lalamo_upsampler(test_input_jax, dequant_key=jax.random.key(0))
+        lalamo_output = lalamo_upsampler(test_input_jax, keychain=Keychain.init(0))
 
     # Compare - transpose JAX output back for comparison
     torch_output_jax = torch_to_jax(torch_output)
@@ -1232,7 +1232,7 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     lalamo_layer_result = lalamo_layer(
         embedded_input_lalamo,
         pos_emb_lalamo,
-        dequant_key=jax.random.key(0),
+        keychain=Keychain.init(0),
     )
 
     # Compare outputs per token position
@@ -1330,7 +1330,7 @@ def test_audio_transformer_inference() -> None:
         lengths_without_padding=None,
         forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
         forward_pass_config=TransformerForwardPassConfig(),
-        dequant_key=jax.random.key(1),
+        keychain=Keychain.init(1),
     )
     lalamo_output = lalamo_result.outputs
 

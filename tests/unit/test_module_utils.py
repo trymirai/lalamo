@@ -1,10 +1,10 @@
-from functools import partial
 from typing import Any
 
 import jax
 import jax.numpy as jnp
 import pytest
 
+from lalamo.module import Keychain
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 from tests.common import assert_close
 
@@ -72,57 +72,74 @@ def test_call_vmapped_supports_multi_arg_pytrees_and_unmapped_inputs() -> None:
     assert_close(result=result[1], reference=expected[1])
 
 
-def test_call_vmapped_preserves_forward_pass_config_and_dequant_key_and_vmaps_key() -> None:
-    left = jnp.arange(24, dtype=jnp.float32).reshape(2, 3, 4)
+def test_call_vmapped_preserves_forward_pass_config_and_vmaps_keychain() -> None:
+    left = jnp.arange(24, dtype=jnp.float32).reshape(3, 2, 4)
     right = jnp.arange(24, 48, dtype=jnp.float32).reshape(3, 2, 4)
     forward_pass_config = 3
-    keys = jax.random.split(jax.random.key(0), 3)
-    dequant_key = jax.random.key(1)
+    base_keychain = Keychain.init(0)
+    vmapped_keys = base_keychain.broadcast((3,)).vmapped_keys
+    batch_key = base_keychain.batch_key
 
     def transform(
         left_slice: jax.Array,
         right_slice: jax.Array,
         *,
         forward_pass_config: int,
-        key: jax.Array,
-        dequant_key: jax.Array,
+        keychain: Keychain,
     ) -> jax.Array:
-        key_bias = jax.random.uniform(key, shape=(), dtype=left_slice.dtype)
-        dequant_bias = jnp.asarray(jax.random.key_data(dequant_key).sum(), dtype=left_slice.dtype)
-        return left_slice + right_slice + forward_pass_config + key_bias + dequant_bias
+        token_bias = jax.random.uniform(keychain.vmapped_keys, shape=(), dtype=left_slice.dtype)
+        batch_bias = jnp.asarray(jax.random.key_data(keychain.batch_key).sum(), dtype=left_slice.dtype)
+        return left_slice + right_slice + forward_pass_config + token_bias + batch_bias
 
     expected = jax.vmap(
-        partial(
-            transform,
+        lambda left_slice, right_slice, vmapped_keys: transform(
+            left_slice,
+            right_slice,
             forward_pass_config=forward_pass_config,
-            dequant_key=dequant_key,
+            keychain=Keychain(vmapped_keys=vmapped_keys, batch_key=batch_key),
         ),
-        in_axes=(1, 0),
-        out_axes=1,
-    )(left, right, key=keys)
+        in_axes=(0, 0, 0),
+    )(
+        left,
+        right,
+        vmapped_keys,
+    )
     result = call_vmapped(
         transform,
         left,
         right,
         forward_pass_config=forward_pass_config,
-        key=keys,
-        dequant_key=dequant_key,
-        in_axes=(1, 0),
-        out_axes=1,
+        keychain=base_keychain,
     )
 
     assert_close(result=result, reference=expected)
 
 
-def test_call_vmapped_twice_vmaps_key_over_both_batch_dimensions() -> None:
+def test_call_vmapped_twice_vmaps_keychain_over_both_batch_dimensions() -> None:
     inputs = jnp.arange(24, dtype=jnp.float32).reshape(2, 3, 4)
-    keys = jax.random.split(jax.random.key(2), 6).reshape(2, 3)
+    base_keychain = Keychain.init(2)
+    vmapped_keys = base_keychain.broadcast((2, 3)).vmapped_keys
+    batch_key = base_keychain.batch_key
 
-    def add_key_bias(x: jax.Array, *, key: jax.Array) -> jax.Array:
-        return x + jax.random.uniform(key, shape=(), dtype=x.dtype)
+    def add_keychain_bias(x: jax.Array, *, keychain: Keychain) -> jax.Array:
+        return x + jax.random.uniform(keychain.vmapped_keys, shape=(), dtype=x.dtype)
 
-    expected = jax.vmap(jax.vmap(add_key_bias))(inputs, key=keys)
-    result = call_vmapped_twice(add_key_bias, inputs, key=keys)
+    expected = jax.vmap(
+        jax.vmap(
+            lambda x, vmapped_keys: add_keychain_bias(
+                x,
+                keychain=Keychain(vmapped_keys=vmapped_keys, batch_key=batch_key),
+            ),
+        ),
+    )(
+        inputs,
+        vmapped_keys,
+    )
+    result = call_vmapped_twice(
+        add_keychain_bias,
+        inputs,
+        keychain=base_keychain,
+    )
 
     assert_close(result=result, reference=expected)
 

@@ -11,11 +11,11 @@ from cattrs import GenConverter
 from jax import ShapeDtypeStruct, default_matmul_precision, device_put
 from jax.lax import DotAlgorithmPreset
 from jax.sharding import Sharding
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable, ExportResults
 from lalamo.initializer import Initializer
-from lalamo.module import ParameterNorm, ShardingAxis, field
+from lalamo.module import Keychain, ParameterNorm, ShardingAxis, field
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
@@ -93,8 +93,8 @@ class GradientEstimator(StrEnum):
 
 
 class CompressionImplementation(StrEnum):
-    Training = "training"
-    Inference = "inference"
+    TRAINING = "training"
+    INFERENCE = "inference"
 
 
 @dataclass(frozen=True)
@@ -165,8 +165,8 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
         self,
         vector: Float[Array, " in_channels"],
         *,
-        dequant_key: Key[Array, ""],
-        forward_pass_config: MatmulConfig | None = None,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, "... out_channels"]: ...
 
     def export(self) -> ExportResults:
@@ -198,8 +198,8 @@ class EmbeddingMatrix(WeightMatrix[WeightMatrixSpecT_co]):
         self,
         index: int | Int[Array, ""],
         *,
-        dequant_key: Key[Array, ""],
-        forward_pass_config: MatmulConfig | None = None,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, "... out_channels"]: ...
 
 
@@ -328,8 +328,8 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         self,
         index: int | Int[Array, ""],
         *,
-        dequant_key: Key[Array, ""],  # noqa: ARG002
-        forward_pass_config: MatmulConfig | None = None,  # noqa: ARG002
+        keychain: Keychain,  # noqa: ARG002
+        forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
     ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()
         if self.spec.layout == Layout.INPUT_OUTPUT:
@@ -340,10 +340,9 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         self,
         vector: Float[Array, " in_channels"],
         *,
-        dequant_key: Key[Array, ""],  # noqa: ARG002
-        forward_pass_config: MatmulConfig | None = None,
+        keychain: Keychain,  # noqa: ARG002
+        forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()
-        forward_pass_config = forward_pass_config or MatmulConfig()
         with default_matmul_precision(forward_pass_config.precision):
             return matmul_with_layout(self.weights, vector, layout=self.spec.layout)

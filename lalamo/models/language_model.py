@@ -1,6 +1,5 @@
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
-from functools import partial
 from itertools import batched
 from pathlib import Path
 from typing import NamedTuple
@@ -17,6 +16,7 @@ from lalamo.modules import (
     Decoder,
     DecoderConfig,
     ForwardPassMode,
+    Keychain,
     LalamoModule,
     ShardingConfig,
     get_current_sharding_config,
@@ -38,7 +38,6 @@ from .common import (
     InferenceConfig,
     TextModel,
     TextModelConfig,
-    split_into_rolling_keys,
 )
 from .compile_helpers import compile_generate_tokens
 from .lm_helpers import (
@@ -293,10 +292,10 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         token_ids: Int[Array, "batch tokens"],
         state_capacity: int,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
         chunk_size: int = 512,  # vllm default
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> PrefillResults:
         batch_size, sequence_length = token_ids.shape
 
@@ -321,7 +320,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 lengths_without_padding=chunk.sequence_ends,
                 forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
                 forward_pass_config=forward_pass_config.decoder,
-                dequant_key=dequant_key,
+                keychain=keychain,
             )
             assert decoder_outputs.updated_state is not None
 
@@ -349,12 +348,11 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         prompt_lengths_without_padding: Int[Array, " batch"] | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
         num_top_logits_to_return: int | None = None,
         generation_trace_config: GenerationTraceConfig | None = None,
         *,
-        keys: Key[Array, " batch"],
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> GenerationResults:
         batch_size, sequence_length = prompt_token_ids.shape
 
@@ -378,8 +376,10 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             traced_layers_array = jnp.asarray(traced_layers, dtype=jnp.int32)
             trace_top_k = min(trace_config.num_logits_per_token, self.model.vocab_size)
 
-        if len(keys) != batch_size:
-            raise ValueError(f"Length of 'keys' should be equal to the batch size; got {len(keys)}")
+        if keychain.vmapped_keys.shape != (batch_size,):
+            raise ValueError(
+                f"Expected 'vmapped_keys' to have shape {(batch_size,)}, got {keychain.vmapped_keys.shape}",
+            )
         if max_output_length < 1:
             raise ValueError("max_output_length must be at least 1.")
 
@@ -388,7 +388,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             sequence_length + max_output_length,
             prompt_lengths_without_padding,
             forward_pass_config=forward_pass_config,
-            dequant_key=dequant_key,
+            keychain=keychain,
         )
 
         initial_sampling_policy = vmap(sampling_policy.init)(prompt_token_ids, prompt_lengths_without_padding)
@@ -403,14 +403,23 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
         def loop_iteration(
             state: DecodingState,
-            keys: Key[Array, " batch"],
+            step_vmapped_keys: Key[Array, " batch"],
         ) -> tuple[DecodingState, GenerationStepResults]:
             def sample_and_update() -> tuple[DecodingState, GenerationStepResults]:
                 upcasted_logits = state.last_token_logits.astype(jnp.float32)
                 processed_logits = call_vmapped(sampling_policy.process_logits, upcasted_logits)
+
+                def sample_processed_logits(
+                    logits: Float[Array, " vocabulary"],
+                    *,
+                    keychain: Keychain,
+                ) -> Int[Array, ""]:
+                    return jax.random.categorical(keychain.vmapped_keys, logits)
+
                 next_token_ids = call_vmapped(
-                    lambda categorical_inputs: jax.random.categorical(*categorical_inputs),
-                    (keys, processed_logits),
+                    sample_processed_logits,
+                    processed_logits,
+                    keychain=Keychain(vmapped_keys=step_vmapped_keys, batch_key=keychain.batch_key),
                 )
                 next_token_ids = jnp.where(state.stop_flags, jnp.zeros(batch_size, dtype=jnp.int32), next_token_ids)
                 if num_top_logits_to_return is not None:
@@ -438,7 +447,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     return_activation_trace=trace_config is not None,
                     forward_pass_mode=forward_pass_mode,
                     forward_pass_config=forward_pass_config.decoder,
-                    dequant_key=dequant_key,
+                    keychain=keychain,
                 )
                 assert decoder_outputs.updated_state is not None, "updated_state should not be None"
                 new_state = DecodingState(
@@ -500,12 +509,10 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
             return jax.lax.cond(jnp.all(state.stop_flags), pad_and_repeat_state, sample_and_update)
 
-        per_step_keys: Key[Array, "batch max_len"] = call_vmapped(
-            partial(split_into_rolling_keys, num=max_output_length),
-            keys,
-        )
-        per_step_keys: Key[Array, "max_len batch"] = jnp.swapaxes(per_step_keys, 0, 1)
-        _, generated = jax.lax.scan(loop_iteration, initial_state, per_step_keys)
+        per_step_vmapped_keys: Key[Array, "max_len batch"] = keychain.rolling_broadcast(
+            (max_output_length, *keychain.vmapped_keys.shape),
+        ).vmapped_keys
+        _, generated = jax.lax.scan(loop_iteration, initial_state, per_step_vmapped_keys)
 
         token_ids = rearrange(generated.token_ids, "iteration batch -> batch iteration")
 
@@ -522,14 +529,14 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     def _generate_tokens_batch(
         self,
         batch: tuple[list[int], ...],
-        batch_keys: tuple[Key[Array, ""], ...],
+        batch_vmapped_keys: tuple[Key[Array, ""], ...],
         *,
         generation_config: GenerationConfig | None,
         inference_config: InferenceConfig,
-        forward_pass_config: ForwardPassConfig | None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
         generation_trace_config: GenerationTraceConfig | None,
         sharding_config: ShardingConfig | None,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Iterator[GenerationResults]:
         if sharding_config is None:
             sharding_config = get_current_sharding_config()
@@ -542,10 +549,10 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         padded_lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
         padded_lengths = jnp.pad(padded_lengths, (0, batch_size - len(batch)))
 
-        padded_keys = pad_keys_to_size(batch_keys, batch_size)
+        padded_vmapped_keys = pad_keys_to_size(batch_vmapped_keys, batch_size)
 
-        padded_token_ids, padded_lengths, padded_keys = pad_and_apply_data_sharding(
-            (padded_token_ids, padded_lengths, padded_keys),
+        padded_token_ids, padded_lengths, padded_vmapped_keys = pad_and_apply_data_sharding(
+            (padded_token_ids, padded_lengths, padded_vmapped_keys),
             sharding_config=sharding_config,
             batch_axis=0,
         )
@@ -559,15 +566,13 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             generation_trace_config=generation_trace_config,
             prompt_token_ids=padded_token_ids,
             prompt_lengths_without_padding=padded_lengths,
-            keys=padded_keys,
-            dequant_key=dequant_key,
+            keychain=Keychain(vmapped_keys=padded_vmapped_keys, batch_key=keychain.batch_key),
         )
         results = generate_tokens_fn(
             self,
             prompt_token_ids=padded_token_ids,
             prompt_lengths_without_padding=padded_lengths,
-            keys=padded_keys,
-            dequant_key=dequant_key,
+            keychain=Keychain(vmapped_keys=padded_vmapped_keys, batch_key=keychain.batch_key),
         )
         for i in range(len(batch)):
             trace_i = None
@@ -591,32 +596,37 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         self,
         tokenized: Iterable[list[int]],
         generation_config: GenerationConfig | None = None,
-        inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
+        inference_config: InferenceConfig = InferenceConfig(),
         *,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
+        generation_trace_config: GenerationTraceConfig | None = None,
         sharding_config: ShardingConfig | None = None,
-        keys: Key[Array, " num_sequences"],
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Iterator[GenerationResults]:
         tokenized = list(tokenized)  # load eagerly to RAM
 
-        if len(keys) != len(tokenized):
-            raise ValueError(f"Length of 'keys' should be equal to the number of sequences passed; got {len(keys)}")
+        if keychain.vmapped_keys.shape != (len(tokenized),):
+            raise ValueError(
+                f"Expected 'vmapped_keys' to have shape {(len(tokenized),)}, got {keychain.vmapped_keys.shape}",
+            )
 
-        def process_batches(batch_size: int) -> Iterator[tuple[int, GenerationResults]]:
+        def process_batches(batch_size: int) -> Iterator[GenerationResults]:
             new_inference_config = replace(inference_config, batch_size=batch_size)
 
-            for batch_items in batched(zip(tokenized, keys, strict=True), batch_size):
-                real_batch, batch_keys = zip(*batch_items, strict=True)
+            for batch_items in batched(zip(tokenized, keychain.vmapped_keys, strict=True), batch_size):
+                real_batch, batch_vmapped_keys = zip(*batch_items, strict=True)
                 yield from self._generate_tokens_batch(
                     real_batch,
-                    batch_keys,
+                    batch_vmapped_keys,
                     generation_config=generation_config,
                     inference_config=new_inference_config,
                     forward_pass_config=forward_pass_config,
                     generation_trace_config=generation_trace_config,
                     sharding_config=sharding_config,
-                    dequant_key=dequant_key,
+                    keychain=Keychain(
+                        vmapped_keys=jnp.asarray(batch_vmapped_keys),
+                        batch_key=keychain.batch_key,
+                    ),
                 )
 
         assert inference_config.batch_size is not None
@@ -628,9 +638,10 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     def estimate_memory_consumption(
         self,
         generation_config: GenerationConfig | None = None,
-        inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
+        inference_config: InferenceConfig = InferenceConfig(),
         *,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
+        generation_trace_config: GenerationTraceConfig | None = None,
         sharding_config: ShardingConfig | None = None,
     ) -> int:
         if sharding_config is None:
@@ -641,14 +652,14 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
         dummy_token_ids = jnp.zeros((batch_size, inference_config.padded_length), dtype=jnp.int32)
         dummy_lengths = jnp.zeros((batch_size,), dtype=jnp.int32)
-        dummy_keys = jax.random.split(jax.random.key(0), num=batch_size)
-        dummy_dequant_key = jax.random.key(1)
+        dummy_keychain = Keychain.init(0, shape=(batch_size,))
 
-        dummy_token_ids, dummy_lengths, dummy_keys = pad_and_apply_data_sharding(
-            (dummy_token_ids, dummy_lengths, dummy_keys),
+        dummy_token_ids, dummy_lengths, dummy_vmapped_keys = pad_and_apply_data_sharding(
+            (dummy_token_ids, dummy_lengths, dummy_keychain.vmapped_keys),
             sharding_config=sharding_config,
             batch_axis=0,
         )
+        dummy_keychain = Keychain(vmapped_keys=dummy_vmapped_keys, batch_key=dummy_keychain.batch_key)
 
         memory_analysis = compile_generate_tokens(
             self,
@@ -658,8 +669,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             generation_trace_config=generation_trace_config,
             prompt_token_ids=dummy_token_ids,
             prompt_lengths_without_padding=dummy_lengths,
-            keys=dummy_keys,
-            dequant_key=dummy_dequant_key,
+            keychain=dummy_keychain,
         ).memory_analysis()
 
         assert hasattr(memory_analysis, "argument_size_in_bytes")
@@ -684,19 +694,18 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         messages: Iterable[Message],
         generation_config: GenerationConfig | None = None,
         *,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
         sharding_config: ShardingConfig | None = None,
-        key: Key[Array, ""],
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> AssistantMessage:
         if sharding_config is None:
             sharding_config = get_current_sharding_config()
 
         formatted_messages = self.message_processor.render_request(messages)
         token_ids = jnp.array(self.message_processor.tokenize_text(formatted_messages), dtype=jnp.int32)[None, :]
-        keys = key[None, ...]
-        token_ids, keys = pad_and_apply_data_sharding(
-            (token_ids, keys),
+        vmapped_keys = keychain.vmapped_keys[None, ...]
+        token_ids, vmapped_keys = pad_and_apply_data_sharding(
+            (token_ids, vmapped_keys),
             sharding_config=sharding_config,
             batch_axis=0,
         )
@@ -704,8 +713,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             token_ids,
             generation_config,
             forward_pass_config=forward_pass_config,
-            keys=keys,
-            dequant_key=dequant_key,
+            keychain=Keychain(vmapped_keys=vmapped_keys, batch_key=keychain.batch_key),
         ).token_ids[0]
         trimmed_ids = self._trim_at_eos(response_ids.tolist())
         response_text = self.message_processor.detokenize(trimmed_ids)
@@ -715,19 +723,20 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         self,
         messages: Iterable[Iterable[Message]],
         generation_config: GenerationConfig | None = None,
-        inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
+        inference_config: InferenceConfig = InferenceConfig(),
         *,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
         sharding_config: ShardingConfig | None = None,
-        keys: Key[Array, " num_sequences"],
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
         vram_bytes: int | None = None,
         batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
     ) -> Iterator[tuple[int, AssistantMessage]]:
         messages = list(messages)  # eagerly load the dataset into RAM
 
-        if len(keys) != len(messages):
-            raise ValueError(f"Length of 'keys' should be equal to the number of sequences passed; got {len(keys)}")
+        if keychain.vmapped_keys.shape != (len(messages),):
+            raise ValueError(
+                f"Expected 'vmapped_keys' to have shape {(len(messages),)}, got {keychain.vmapped_keys.shape}",
+            )
 
         if vram_bytes is not None and inference_config.batch_size is not None:
             raise ValueError("You have to specify only one of batch_size and vram_gb, not both.")
@@ -788,8 +797,10 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 generation_config=generation_config,
                 inference_config=bucket_inference_config,
                 forward_pass_config=forward_pass_config,
-                keys=keys[np.array(sequence_ids)],
-                dequant_key=dequant_key,
+                keychain=Keychain(
+                    vmapped_keys=keychain.vmapped_keys[np.array(sequence_ids)],
+                    batch_key=keychain.batch_key,
+                ),
                 sharding_config=sharding_config,
             )
 
@@ -803,10 +814,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         messages: Iterable[Message],
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
         *,
-        key: Key[Array, ""],
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Iterable[str]:
         formatted_messages = self.message_processor.render_request(messages)
         token_ids = jnp.array(self.message_processor.tokenize_text(formatted_messages), dtype=jnp.int32)
@@ -817,8 +827,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             generation_config,
             max_output_length,
             forward_pass_config=forward_pass_config,
-            key=key,
-            dequant_key=dequant_key,
+            keychain=keychain,
         ):
             all_token_ids.append(token_id.item())
             current_text = self.message_processor.detokenize(all_token_ids, hide_invalid_utf_chars=True)
@@ -831,10 +840,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
         *,
-        key: Key[Array, ""],
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Iterable[Int[Array, ""]]:
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
@@ -854,9 +862,11 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             padded_input_length + max_output_length,
             lengths_without_padding=jnp.array([input_length], dtype=jnp.int32),
             forward_pass_config=forward_pass_config,
-            dequant_key=dequant_key,
+            keychain=keychain,
         )
-        keys = split_into_rolling_keys(key, num=max_output_length)
+        per_step_vmapped_keys = keychain.rolling_broadcast(
+            (max_output_length, *keychain.vmapped_keys.shape)
+        ).vmapped_keys
 
         sampling_policy = sampling_policy.init(
             padded_token_ids,
@@ -871,10 +881,10 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             sampling_policy,
         )
 
-        for iter_key in keys:
+        for step_vmapped_key in per_step_vmapped_keys:
             upcasted_logits = state.last_token_logits.astype(jnp.float32)
-            processed_logits = state.sampling_policy.process_logits(upcasted_logits.squeeze(0))
-            next_token_id = jax.random.categorical(iter_key, processed_logits)
+            processed_logits = sampling_policy.process_logits(upcasted_logits.squeeze(0))
+            next_token_id = jax.random.categorical(step_vmapped_key, processed_logits)
 
             yield next_token_id
 
@@ -890,7 +900,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 return_updated_state=True,
                 forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
                 forward_pass_config=forward_pass_config.decoder,
-                dequant_key=dequant_key,
+                keychain=keychain,
             )
             assert decoder_outputs.updated_state is not None, "updated_state should not be None"
             state = DecodingState(

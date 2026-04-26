@@ -1,10 +1,13 @@
 from collections.abc import Callable
 from functools import partial
-from typing import Final, Protocol, cast, overload
+from typing import Final, Protocol, overload
 
 import jax
+import jax.numpy as jnp
 from jax import vmap
-from jaxtyping import Array, Float, Key, PyTree
+from jaxtyping import Array, Float, PyTree, Shaped
+
+from lalamo.module import Keychain
 
 __all__ = [
     "apply_soft_capping",
@@ -13,18 +16,22 @@ __all__ = [
 ]
 
 
-_UNSPECIFIED: Final = object()
+class _Unspecified:
+    pass
 
 
-class VmappableWithKey[*ArgT, ResultT](Protocol):
-    def __call__(self, *args: *ArgT, key: Key[Array, ""]) -> ResultT: ...
+_UNSPECIFIED: Final = _Unspecified()
+
+
+class VmappableWithKeychain[*ArgT, ResultT](Protocol):
+    def __call__(self, *args: *ArgT, keychain: Keychain) -> ResultT: ...
 
 
 @overload
 def call_vmapped[ResultT](
-    fn: object,
+    fn: Callable[..., ResultT],
     /,
-    *args: object,
+    *args: PyTree[Shaped[Array, "..."]],
     in_axes: PyTree[int | None] = 0,
     out_axes: PyTree[int | None] = 0,
 ) -> ResultT: ...
@@ -32,10 +39,10 @@ def call_vmapped[ResultT](
 
 @overload
 def call_vmapped[ResultT](
-    fn: object,
+    fn: Callable[..., ResultT],
     /,
-    *args: object,
-    dequant_key: Key[Array, ""],
+    *args: PyTree[Shaped[Array, "..."]],
+    keychain: Keychain,
     in_axes: PyTree[int | None] = 0,
     out_axes: PyTree[int | None] = 0,
 ) -> ResultT: ...
@@ -43,22 +50,11 @@ def call_vmapped[ResultT](
 
 @overload
 def call_vmapped[ResultT](
-    fn: object,
+    fn: Callable[..., ResultT],
     /,
-    *args: object,
+    *args: PyTree[Shaped[Array, "..."]],
     forward_pass_config: object,
-    dequant_key: Key[Array, ""],
-    in_axes: PyTree[int | None] = 0,
-    out_axes: PyTree[int | None] = 0,
-) -> ResultT: ...
-
-
-@overload
-def call_vmapped[ResultT](
-    fn: object,
-    /,
-    *args: object,
-    key: Key[Array, "..."],
+    keychain: Keychain,
     in_axes: PyTree[int | None] = 0,
     out_axes: PyTree[int | None] = 0,
 ) -> ResultT: ...
@@ -66,10 +62,10 @@ def call_vmapped[ResultT](
 
 @overload
 def call_vmapped[*ArgT, ResultT](
-    fn: VmappableWithKey[*ArgT, ResultT],
+    fn: VmappableWithKeychain[*ArgT, ResultT],
     /,
     *args: *ArgT,
-    key: Key[Array, "..."],
+    keychain: Keychain,
     in_axes: PyTree[int | None] = 0,
     out_axes: PyTree[int | None] = 0,
 ) -> ResultT: ...
@@ -78,52 +74,79 @@ def call_vmapped[*ArgT, ResultT](
 def _bind_shared_kwargs[ResultT](
     fn: Callable[..., ResultT],
     *,
-    forward_pass_config: object = _UNSPECIFIED,
-    dequant_key: Key[Array, ""] | object = _UNSPECIFIED,
+    forward_pass_config: object | _Unspecified = _UNSPECIFIED,
 ) -> Callable[..., ResultT]:
     mapped_fn: Callable[..., ResultT] = fn
-    if forward_pass_config is not _UNSPECIFIED:
+    if not isinstance(forward_pass_config, _Unspecified):
         mapped_fn = partial(mapped_fn, forward_pass_config=forward_pass_config)
-    if dequant_key is not _UNSPECIFIED:
-        mapped_fn = partial(mapped_fn, dequant_key=dequant_key)
     return mapped_fn
 
 
-def _call_with_mapped_key[ResultT](
-    fn: Callable[..., ResultT],
-    /,
-    *args: object,
-    key: Key[Array, "..."] | object = _UNSPECIFIED,
-) -> ResultT:
-    if key is _UNSPECIFIED:
-        return fn(*args)
-    return fn(*args, key=key)
+def _normalize_in_axes(
+    args: tuple[PyTree[Shaped[Array, "..."]], ...],
+    in_axes: PyTree[int | None],
+) -> tuple[PyTree[int | None], ...]:
+    if isinstance(in_axes, tuple) and len(in_axes) == len(args):
+        return in_axes
+    return (in_axes,) * len(args)
+
+
+def _key_shape(args: tuple[PyTree[Shaped[Array, "..."]], ...], in_axes: PyTree[int | None]) -> tuple[int, ...]:
+    def probe(*_args: PyTree[Shaped[Array, "..."]]) -> Shaped[Array, ""]:
+        return jnp.empty((), dtype=jnp.int8)
+
+    return jax.eval_shape(vmap(probe, in_axes=in_axes), *args).shape
+
+
+def _nested_key_shape(
+    args: tuple[PyTree[Shaped[Array, "..."]], ...],
+    outer_in_axes: PyTree[int | None],
+    inner_in_axes: PyTree[int | None],
+) -> tuple[int, ...]:
+    def probe(*_args: PyTree[Shaped[Array, "..."]]) -> Shaped[Array, ""]:
+        return jnp.empty((), dtype=jnp.int8)
+
+    return jax.eval_shape(vmap(vmap(probe, in_axes=inner_in_axes), in_axes=outer_in_axes), *args).shape
+
+
+def _call_with_keychain[ResultT](fn: Callable[..., ResultT], keychain: Keychain) -> Callable[..., ResultT]:
+    def wrapped(*args: PyTree[Shaped[Array, "..."]]) -> ResultT:
+        *mapped_args, vmapped_keys = args
+        if not isinstance(vmapped_keys, jax.Array):
+            raise TypeError(f"Expected JAX array key, got {type(vmapped_keys).__name__}")
+        return fn(*mapped_args, keychain=Keychain(vmapped_keys=vmapped_keys, batch_key=keychain.batch_key))
+
+    return wrapped
 
 
 def call_vmapped[ResultT](
-    fn: object,
+    fn: Callable[..., ResultT],
     /,
-    *args: object,
-    forward_pass_config: object = _UNSPECIFIED,
-    key: Key[Array, "..."] | object = _UNSPECIFIED,
-    dequant_key: Key[Array, ""] | object = _UNSPECIFIED,
+    *args: PyTree[Shaped[Array, "..."]],
+    forward_pass_config: object | _Unspecified = _UNSPECIFIED,
+    keychain: Keychain | _Unspecified = _UNSPECIFIED,
     in_axes: PyTree[int | None] = 0,
     out_axes: PyTree[int | None] = 0,
 ) -> ResultT:
     mapped_fn = _bind_shared_kwargs(
-        cast("Callable[..., ResultT]", fn),
+        fn,
         forward_pass_config=forward_pass_config,
-        dequant_key=dequant_key,
     )
+    if not isinstance(keychain, _Unspecified):
+        mapped_fn = _call_with_keychain(mapped_fn, keychain)
+        keychain = keychain.broadcast(_key_shape(args, in_axes))
+        vmapped_fn = vmap(mapped_fn, in_axes=(*_normalize_in_axes(args, in_axes), 0), out_axes=out_axes)
+        return vmapped_fn(*args, keychain.vmapped_keys)
+
     vmapped_fn = vmap(mapped_fn, in_axes=in_axes, out_axes=out_axes)
-    return _call_with_mapped_key(vmapped_fn, *args, key=key)
+    return vmapped_fn(*args)
 
 
 @overload
 def call_vmapped_twice[ResultT](
-    fn: object,
+    fn: Callable[..., ResultT],
     /,
-    *args: object,
+    *args: PyTree[Shaped[Array, "..."]],
     in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
     out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
 ) -> ResultT: ...
@@ -131,10 +154,10 @@ def call_vmapped_twice[ResultT](
 
 @overload
 def call_vmapped_twice[ResultT](
-    fn: object,
+    fn: Callable[..., ResultT],
     /,
-    *args: object,
-    dequant_key: Key[Array, ""],
+    *args: PyTree[Shaped[Array, "..."]],
+    keychain: Keychain,
     in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
     out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
 ) -> ResultT: ...
@@ -142,22 +165,11 @@ def call_vmapped_twice[ResultT](
 
 @overload
 def call_vmapped_twice[ResultT](
-    fn: object,
+    fn: Callable[..., ResultT],
     /,
-    *args: object,
+    *args: PyTree[Shaped[Array, "..."]],
     forward_pass_config: object,
-    dequant_key: Key[Array, ""],
-    in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
-    out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
-) -> ResultT: ...
-
-
-@overload
-def call_vmapped_twice[ResultT](
-    fn: object,
-    /,
-    *args: object,
-    key: Key[Array, "..."],
+    keychain: Keychain,
     in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
     out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
 ) -> ResultT: ...
@@ -165,50 +177,48 @@ def call_vmapped_twice[ResultT](
 
 @overload
 def call_vmapped_twice[*ArgT, ResultT](
-    fn: VmappableWithKey[*ArgT, ResultT],
+    fn: VmappableWithKeychain[*ArgT, ResultT],
     /,
     *args: *ArgT,
-    key: Key[Array, "..."],
+    keychain: Keychain,
     in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
     out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
 ) -> ResultT: ...
 
 
-def _split_nested_axes(
-    axes: tuple[PyTree[int | None], PyTree[int | None]],
-    *,
-    argument_name: str,
-) -> tuple[PyTree[int | None], PyTree[int | None]]:
-    try:
-        outer_axes, inner_axes = axes
-    except (TypeError, ValueError) as error:
-        raise ValueError(
-            f"{argument_name} for call_vmapped_twice must contain exactly two axis specs: "
-            "the outer axes and the inner axes.",
-        ) from error
-    return outer_axes, inner_axes
-
-
 def call_vmapped_twice[ResultT](
-    fn: object,
+    fn: Callable[..., ResultT],
     /,
-    *args: object,
-    forward_pass_config: object = _UNSPECIFIED,
-    key: Key[Array, "..."] | object = _UNSPECIFIED,
-    dequant_key: Key[Array, ""] | object = _UNSPECIFIED,
+    *args: PyTree[Shaped[Array, "..."]],
+    forward_pass_config: object | _Unspecified = _UNSPECIFIED,
+    keychain: Keychain | _Unspecified = _UNSPECIFIED,
     in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
     out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
 ) -> ResultT:
-    outer_in_axes, inner_in_axes = _split_nested_axes(in_axes, argument_name="in_axes")
-    outer_out_axes, inner_out_axes = _split_nested_axes(out_axes, argument_name="out_axes")
+    outer_in_axes, inner_in_axes = in_axes
+    outer_out_axes, inner_out_axes = out_axes
     mapped_fn = _bind_shared_kwargs(
-        cast("Callable[..., ResultT]", fn),
+        fn,
         forward_pass_config=forward_pass_config,
-        dequant_key=dequant_key,
     )
+    if not isinstance(keychain, _Unspecified):
+        mapped_fn = _call_with_keychain(mapped_fn, keychain)
+        keychain = keychain.broadcast(_nested_key_shape(args, outer_in_axes, inner_in_axes))
+        vmapped_once = vmap(
+            mapped_fn,
+            in_axes=(*_normalize_in_axes(args, inner_in_axes), 0),
+            out_axes=inner_out_axes,
+        )
+        vmapped_twice = vmap(
+            vmapped_once,
+            in_axes=(*_normalize_in_axes(args, outer_in_axes), 0),
+            out_axes=outer_out_axes,
+        )
+        return vmapped_twice(*args, keychain.vmapped_keys)
+
     vmapped_once = vmap(mapped_fn, in_axes=inner_in_axes, out_axes=inner_out_axes)
     vmapped_twice = vmap(vmapped_once, in_axes=outer_in_axes, out_axes=outer_out_axes)
-    return _call_with_mapped_key(vmapped_twice, *args, key=key)
+    return vmapped_twice(*args)
 
 
 def apply_soft_capping(

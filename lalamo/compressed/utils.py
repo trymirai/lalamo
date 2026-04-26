@@ -4,8 +4,9 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, DTypeLike, Float, Key
+from jaxtyping import Array, DTypeLike, Float
 
+from lalamo.module import Keychain
 from lalamo.weight_matrix import GradientEstimator, MatmulConfig
 
 __all__ = [
@@ -124,13 +125,13 @@ def _stochastic_round_to_unsigned_grid_impl(
     values: Float[Array, "..."],
     *,
     bits: int,
-    dequant_key: Key[Array, ""],
+    keychain: Keychain,
 ) -> Float[Array, "..."]:
     clipped_values = _clip_to_unsigned_grid(values, bits=bits)
     lower_bins = jnp.floor(clipped_values)
     upper_probability = clipped_values - lower_bins
     upper_samples = (
-        jax.random.uniform(dequant_key, clipped_values.shape, dtype=clipped_values.dtype) < upper_probability
+        jax.random.uniform(keychain.batch_key, clipped_values.shape, dtype=clipped_values.dtype) < upper_probability
     )
     return lower_bins + upper_samples.astype(clipped_values.dtype)
 
@@ -139,17 +140,17 @@ def _stochastic_round_to_unsigned_grid_impl(
 def _stochastic_round_to_unsigned_grid(
     values: Float[Array, "..."],
     bits: int,
-    dequant_key: Key[Array, ""],
+    keychain: Keychain,
 ) -> Float[Array, "..."]:
-    return _stochastic_round_to_unsigned_grid_impl(values, bits=bits, dequant_key=dequant_key)
+    return _stochastic_round_to_unsigned_grid_impl(values, bits=bits, keychain=keychain)
 
 
 def _stochastic_round_to_unsigned_grid_fwd(
     values: Float[Array, "..."],
     bits: int,
-    dequant_key: Key[Array, ""],
+    keychain: Keychain,
 ) -> tuple[Float[Array, "..."], Float[Array, "..."]]:
-    rounded_values = _stochastic_round_to_unsigned_grid_impl(values, bits=bits, dequant_key=dequant_key)
+    rounded_values = _stochastic_round_to_unsigned_grid_impl(values, bits=bits, keychain=keychain)
     return rounded_values, values
 
 
@@ -171,22 +172,22 @@ def stochastic_round_to_unsigned_grid(
     values: Float[Array, "..."],
     *,
     bits: int,
-    dequant_key: Key[Array, ""],
+    keychain: Keychain,
 ) -> Float[Array, "..."]:
-    return _stochastic_round_to_unsigned_grid(values, bits, dequant_key)
+    return _stochastic_round_to_unsigned_grid(values, bits, keychain)
 
 
 def round_to_unsigned_grid_for_config(
     values: Float[Array, "..."],
     *,
     bits: int,
-    dequant_key: Key[Array, ""],
+    keychain: Keychain,
     forward_pass_config: MatmulConfig,
 ) -> Float[Array, "..."]:
     if forward_pass_config.gradient_estimator == GradientEstimator.DETERMINISTIC_ROUNDING:
         return round_to_unsigned_grid(values, bits=bits)
     if forward_pass_config.gradient_estimator == GradientEstimator.STOCHASTIC_ROUNDING:
-        return stochastic_round_to_unsigned_grid(values, bits=bits, dequant_key=dequant_key)
+        return stochastic_round_to_unsigned_grid(values, bits=bits, keychain=keychain)
     if forward_pass_config.gradient_estimator == GradientEstimator.LOCAL_ADDITIVE_NOISE:
         raise ValueError("Local additive noise is not implemented.")
     raise ValueError(f"Unsupported gradient estimator {forward_pass_config.gradient_estimator}")

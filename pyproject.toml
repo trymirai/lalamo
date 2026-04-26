@@ -144,6 +144,7 @@ ignore = [
     "S",        # flake8-bandit rules: flag likely security issues.
 
     # Complexity, signatures, and object design.
+    "B008",     # Allow frozen dataclass instances as function defaults.
     "C901",     # Flag overly complex functions.
     "FBT001",   # Flag boolean-typed positional parameters.
     "FBT002",   # Flag positional parameters whose default value is boolean.

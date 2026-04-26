@@ -1,5 +1,5 @@
 from lalamo.initializer import EmptyInitializer, Initializer, RandomInitializer
-from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
 
 from .activations import GELU, Activation
 from .classifier import Classifier, ClassifierConfig
@@ -40,6 +40,7 @@ __all__ = [
     "EmptyInitializer",
     "ForwardPassMode",
     "Initializer",
+    "Keychain",
     "LalamoConfig",
     "LalamoModule",
     "Linear",

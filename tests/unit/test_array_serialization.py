@@ -13,6 +13,7 @@ from lalamo.compressed.utils import (
 )
 from lalamo.exportable import Exportable
 from lalamo.initializer import EmptyInitializer
+from lalamo.module import Keychain
 from lalamo.weight_matrix import (
     FullPrecisionSpec,
     GradientEstimator,
@@ -115,11 +116,11 @@ def test_awq_input_output_layout() -> None:
     vector = jax.random.normal(jax.random.key(3), (8,))
 
     assert_close(
-        result=matrix.lookup_embedding(token_index, dequant_key=jax.random.key(4)),
+        result=matrix.lookup_embedding(token_index, keychain=Keychain.init(4)),
         reference=matrix.decompress()[token_index, :],
     )
     assert_close(
-        result=matrix.dot(vector, dequant_key=jax.random.key(5)),
+        result=matrix.dot(vector, keychain=Keychain.init(5)),
         reference=vector @ matrix.decompress(),
     )
 
@@ -181,7 +182,7 @@ def test_awq_stochastic_rounding_quantizes_zero_points() -> None:
 
     result = matrix.lookup_embedding(
         0,
-        dequant_key=jax.random.key(22),
+        keychain=Keychain.init(22),
         forward_pass_config=MatmulConfig(gradient_estimator=GradientEstimator.STOCHASTIC_ROUNDING),
     )
 
@@ -195,11 +196,11 @@ def test_mlx_input_output_layout() -> None:
     vector = jax.random.normal(jax.random.key(7), (6,))
 
     assert_close(
-        result=matrix.lookup_embedding(token_index, dequant_key=jax.random.key(8)),
+        result=matrix.lookup_embedding(token_index, keychain=Keychain.init(8)),
         reference=matrix.decompress()[token_index, :],
     )
     assert_close(
-        result=matrix.dot(vector, dequant_key=jax.random.key(9)),
+        result=matrix.dot(vector, keychain=Keychain.init(9)),
         reference=vector @ matrix.decompress(),
     )
 
@@ -210,7 +211,7 @@ def test_full_precision_input_output_lookup_uses_stored_row() -> None:
     token_index = 2
 
     assert_close(
-        result=matrix.lookup_embedding(token_index, dequant_key=jax.random.key(20)),
+        result=matrix.lookup_embedding(token_index, keychain=Keychain.init(20)),
         reference=matrix.decompress()[token_index, :],
     )
 
@@ -280,7 +281,7 @@ def test_stochastic_unsigned_grid_round_backward_uses_same_clipped_surrogate() -
             stochastic_round_to_unsigned_grid(
                 scalar,
                 bits=4,
-                dequant_key=jax.random.key(18),
+                keychain=Keychain.init(18),
             )
             * -2.0
         ),
@@ -341,7 +342,7 @@ def test_mlx_lookup_embedding_matches_selected_row_dequantization() -> None:
     matrix = MLXSpec(bits=4, group_size=4, layout=Layout.INPUT_OUTPUT).compress(weights)
     index = 5
 
-    result = matrix.lookup_embedding(index, dequant_key=jax.random.key(11))
+    result = matrix.lookup_embedding(index, keychain=Keychain.init(11))
     reference = manual_mlx_dequantize(
         matrix.weights[index, :],
         matrix.scales[index, :],
@@ -383,7 +384,7 @@ def test_mlx_dot_matches_manual_dequantized_matmul(
     )
     reference = vector @ dequantized_weights if layout == Layout.INPUT_OUTPUT else dequantized_weights @ vector
 
-    result = matrix.dot(vector, dequant_key=jax.random.key(16))
+    result = matrix.dot(vector, keychain=Keychain.init(16))
 
     assert_close(result=result, reference=reference)
 
@@ -400,7 +401,7 @@ def test_mlx_stochastic_rounding_is_unbiased_on_fractional_bins() -> None:
 
     result = matrix.dot(
         vector,
-        dequant_key=jax.random.key(17),
+        keychain=Keychain.init(17),
         forward_pass_config=MatmulConfig(gradient_estimator=GradientEstimator.STOCHASTIC_ROUNDING),
     )
 

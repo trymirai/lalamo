@@ -1,4 +1,3 @@
-import jax
 import jax.numpy as jnp
 import pytest
 from lalamo.modules.common import InferenceConfig
@@ -7,6 +6,7 @@ from lalamo.message_processor import UserMessage
 from lalamo.model_import.model_specs.common import ModelType
 from lalamo.models import LanguageModel
 from lalamo.models.language_model import GenerationConfig, LanguageModelConfig
+from lalamo.module import Keychain
 from tests.conftest import ConvertModel, filter_specs, mark_by_size
 from tests.model_test_tiers import ModelTier
 
@@ -27,8 +27,7 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
         token_ids,
         max_output_length=32,
         num_top_logits_to_return=num_top_logits_to_return,
-        keys=jax.random.split(jax.random.key(0), 1),
-        dequant_key=jax.random.key(10),
+        keychain=Keychain.init(0, shape=(1,)),
     )
     token_ids = result.token_ids.squeeze(0)
     eos_ids = language_model.config.generation_config.stop_token_ids
@@ -60,8 +59,7 @@ def test_padding(language_model: LanguageModel) -> None:
         token_ids,
         prompt_lengths_without_padding=jnp.array([0], dtype=jnp.int32),
         max_output_length=32,
-        keys=jax.random.split(jax.random.key(1), 1),
-        dequant_key=jax.random.key(11),
+        keychain=Keychain.init(1, shape=(1,)),
     ).token_ids.squeeze(0)
     response_text = language_model.message_processor.tokenizer.decode(response_token_ids)
     assert "elephants" not in response_text.lower()
@@ -70,8 +68,7 @@ def test_padding(language_model: LanguageModel) -> None:
         token_ids,
         prompt_lengths_without_padding=jnp.array([token_ids.size]),
         max_output_length=32,
-        keys=jax.random.split(jax.random.key(2), 1),
-        dequant_key=jax.random.key(12),
+        keychain=Keychain.init(2, shape=(1,)),
     ).token_ids.squeeze(0)
     response_text = language_model.message_processor.tokenizer.decode(response_token_ids)
     assert "elephants" in response_text.lower()
@@ -90,8 +87,7 @@ def test_batch_generation(language_model: LanguageModel) -> None:
         generation_config=generation_config,
         prompt_lengths_without_padding=batched_prompt_lengths,
         max_output_length=32,
-        keys=jax.random.split(jax.random.key(3), len(prompts)),
-        dequant_key=jax.random.key(13),
+        keychain=Keychain.init(3, shape=(len(prompts),)),
     ).token_ids
 
     pairs = [(0, 1), (1, 2), (0, 2)]
@@ -126,8 +122,7 @@ def test_streaming_generation(language_model: LanguageModel) -> None:
     token_stream = language_model.stream_tokens(
         token_ids,
         max_output_length=32,
-        key=jax.random.key(4),
-        dequant_key=jax.random.key(14),
+        keychain=Keychain.init(4),
     )
     response_token_ids = jnp.array(list(token_stream))
     assert len(response_token_ids) > 0
@@ -139,22 +134,22 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
 
     generation_config = GenerationConfig(temperature=0)
 
-    generation_key = jax.random.key(5)
-    dequant_key = jax.random.key(15)
+    generation_keychain = Keychain.init(5)
     eager_token_ids = language_model.generate_tokens(
         token_ids[None, :],
         generation_config=generation_config,
         max_output_length=10,
-        keys=generation_key[None, ...],
-        dequant_key=dequant_key,
+        keychain=Keychain(
+            vmapped_keys=generation_keychain.vmapped_keys[None, ...],
+            batch_key=generation_keychain.batch_key,
+        ),
     ).token_ids.squeeze(0)
 
     streaming_token_generator = language_model.stream_tokens(
         token_ids,
         generation_config=generation_config,
         max_output_length=10,
-        key=generation_key,
-        dequant_key=dequant_key,
+        keychain=generation_keychain,
     )
     streaming_token_ids = jnp.array(list(streaming_token_generator))
 
@@ -168,8 +163,10 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
             [prompt],
             generation_config=generation_config,
             inference_config=InferenceConfig(batch_size=1, max_output_length=10),
-            keys=generation_key[None, ...],
-            dequant_key=dequant_key,
+            keychain=Keychain(
+                vmapped_keys=generation_keychain.vmapped_keys[None, ...],
+                batch_key=generation_keychain.batch_key,
+            ),
         ),
     )
     assert idx == 0

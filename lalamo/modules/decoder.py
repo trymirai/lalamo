@@ -2,12 +2,11 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 
 import equinox as eqx
-import jax
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
 
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .linear import LinearBase, LinearConfig
@@ -100,12 +99,10 @@ class Decoder(LalamoModule[DecoderConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: DecoderForwardPassConfig | None = None,
+        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> DecoderResult:
-        if forward_pass_config is None:
-            forward_pass_config = DecoderForwardPassConfig()
         if token_ids.ndim != 2:
             raise ValueError(
                 f"token_ids must be a 2D array of size (batch_size, sequence_length), got {token_ids.shape}",
@@ -115,11 +112,11 @@ class Decoder(LalamoModule[DecoderConfig]):
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
             )
-        embedding_dequant_key, transformer_dequant_key, readout_dequant_key = jax.random.split(dequant_key, 3)
+        embedding_keychain, transformer_keychain, readout_keychain = keychain.split(3)
         inner_features = call_vmapped_twice(
             self.embedding.embed,
             token_ids,
-            dequant_key=embedding_dequant_key,
+            keychain=embedding_keychain,
         )
 
         if self.per_layer_embedding is not None:
@@ -137,13 +134,13 @@ class Decoder(LalamoModule[DecoderConfig]):
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
             forward_pass_config=forward_pass_config.transformer,
-            dequant_key=transformer_dequant_key,
+            keychain=transformer_keychain,
         )
 
         logits = call_vmapped_twice(
             self.embedding.readout,
             transformer_result.outputs,
-            dequant_key=readout_dequant_key,
+            keychain=readout_keychain,
         )
 
         if return_activation_trace:

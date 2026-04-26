@@ -4,11 +4,11 @@ from dataclasses import field as dataclass_field
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
 
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
@@ -125,18 +125,16 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: TransformerLayerForwardPassConfig | None = None,
+        forward_pass_config: TransformerLayerForwardPassConfig = TransformerLayerForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> TransformerLayerResult:
-        if forward_pass_config is None:
-            forward_pass_config = TransformerLayerForwardPassConfig()
         if inputs.ndim != 3:
             raise ValueError(
                 f"Inputs to decoder layers must be a 3D arrays of size (batch_size, sequence_length, hidden_dim),"
                 f" got {inputs.shape}",
             )
-        mixer_dequant_key, mlp_dequant_key = jax.random.split(dequant_key)
+        mixer_keychain, mlp_keychain = keychain.split()
 
         if self.pre_mixer_norm is not None:
             normalized_mixer_inputs = call_vmapped_twice(self.pre_mixer_norm, inputs)
@@ -159,7 +157,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 return_updated_state=return_updated_state or return_activation_trace,
                 length_without_padding=length_without_padding,
                 forward_pass_config=forward_pass_config.mixer,
-                dequant_key=mixer_dequant_key,
+                keychain=mixer_keychain,
             )
 
         mixer_outputs, updated_state = call_vmapped(
@@ -181,7 +179,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
             forward_pass_config=forward_pass_config.mlp,
-            dequant_key=mlp_dequant_key,
+            keychain=mlp_keychain,
         )
         if self.post_mlp_norm is not None:
             normalized_mlp_outputs = call_vmapped_twice(self.post_mlp_norm, mlp_outputs)

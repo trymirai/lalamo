@@ -2,9 +2,10 @@ from dataclasses import dataclass
 
 import jax.numpy as jnp
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
+from lalamo.module import Keychain
 from lalamo.weight_matrix import EmbeddingMatrix, Layout, MatmulConfig, Preconditioner, WeightMatrixSpec
 
 __all__ = [
@@ -73,8 +74,8 @@ class LoRAMatrix(EmbeddingMatrix[LoRASpec]):
         self,
         index: int | Int[Array, ""],
         *,
-        dequant_key: Key[Array, ""],  # noqa: ARG002
-        forward_pass_config: MatmulConfig | None = None,  # noqa: ARG002
+        keychain: Keychain,  # noqa: ARG002
+        forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
     ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()
         if self.spec.layout == Layout.INPUT_OUTPUT:
@@ -85,8 +86,8 @@ class LoRAMatrix(EmbeddingMatrix[LoRASpec]):
         self,
         vector: Float[Array, " in_channels"],
         *,
-        dequant_key: Key[Array, ""],  # noqa: ARG002
-        forward_pass_config: MatmulConfig | None = None,  # noqa: ARG002
+        keychain: Keychain,  # noqa: ARG002
+        forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
     ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()
         if self.spec.layout == Layout.INPUT_OUTPUT:

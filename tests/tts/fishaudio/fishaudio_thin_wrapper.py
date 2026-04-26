@@ -14,11 +14,12 @@ from fish_speech.models.text2semantic.llama import (
 )
 from fish_speech.tokenizer import IM_END_TOKEN, FishTokenizer
 from hydra.utils import instantiate
-from jaxtyping import Array, Float, Int, Key
+from jaxtyping import Array, Float, Int
 from omegaconf import DictConfig
 from torch._tensor import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from lalamo.module import Keychain
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.audio.text_to_speech import TTSAudioDecoder
@@ -385,7 +386,7 @@ class FishAudioAudioDecoder_Foreign(TTSAudioDecoder):
         self,
         indices: Array,
         *,
-        dequant_key: Key[Array, ""],  # noqa: ARG002
+        keychain: Keychain,  # noqa: ARG002
     ) -> Array:
         return self(indices)
 
@@ -517,8 +518,7 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder):
         text_tokens: Int[Array, "batch tokens"],
         sampling_policy: SamplingPolicy | None = None,
         *,
-        key: Key[Array, ""],  # noqa: ARG002
-        dequant_key: Key[Array, ""],  # noqa: ARG002
+        keychain: Keychain,  # noqa: ARG002
     ) -> Int[Array, "num_codebooks tokens"]:
         text_tokens_torch = jax_to_torch(text_tokens)
         sampling_params = sampling_params_from_policy(sampling_policy)

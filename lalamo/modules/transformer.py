@@ -2,12 +2,11 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 
 import equinox as eqx
-import jax
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
 from lalamo.modules.token_mixers import AttentionConfig
 
 from .normalization import Normalization, NormalizationConfig
@@ -114,12 +113,10 @@ class Transformer(LalamoModule[TransformerConfig]):
         return_positional_embeddings: bool,
         lengths_without_padding: Int[Array, " batch"] | None,
         forward_pass_mode: ForwardPassMode,
-        forward_pass_config: TransformerForwardPassConfig | None = None,
+        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> TransformerResult:
-        if forward_pass_config is None:
-            forward_pass_config = TransformerForwardPassConfig()
         if inner_features.ndim != 3:
             raise ValueError(
                 "inner_features must be a 3D array of size (batch_size, sequence_length, hidden_dim),"
@@ -141,14 +138,14 @@ class Transformer(LalamoModule[TransformerConfig]):
         else:
             local_positional_embeddings = global_positional_embeddings
 
-        layer_dequant_keys = jax.random.split(dequant_key, len(self.layers))
+        layer_keychains = keychain.split(len(self.layers))
         updated_state_layers = []
         layer_results = []
 
-        for layer, state_layer, layer_dequant_key in zip(
+        for layer, state_layer, layer_keychain in zip(
             self.layers,
             maybe_state,
-            layer_dequant_keys,
+            layer_keychains,
             strict=True,
         ):
             match layer.positional_embedding_selector:
@@ -168,7 +165,7 @@ class Transformer(LalamoModule[TransformerConfig]):
                 lengths_without_padding=lengths_without_padding,
                 forward_pass_mode=forward_pass_mode,
                 forward_pass_config=forward_pass_config.layer,
-                dequant_key=layer_dequant_key,
+                keychain=layer_keychain,
             )
 
             inner_features = layer_result.outputs

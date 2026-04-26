@@ -4,9 +4,10 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import einsum, rearrange
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
+from lalamo.module import Keychain
 from lalamo.modules.activations import Activation
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
@@ -213,16 +214,16 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         self,
         inputs: Float[Array, "1 channels"],
         state: SSMStateLayer,
-        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Mamba2Result:
         """Optimized path for single-token decode without scan machinery."""
         token = inputs[0]
 
         conv_in, gate, dt_log = self.in_projection(
             token,
-            dequant_key=dequant_key,
+            keychain=keychain,
             forward_pass_config=forward_pass_config.arrays,
         )
         conv_out, new_conv_state = self.conv.step(conv_in, state.conv_state)
@@ -243,7 +244,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         gated = y * jax.nn.silu(gate + self.gate_bias)
         (output,) = self.out_projection(
             gated,
-            dequant_key=dequant_key,
+            keychain=keychain,
             forward_pass_config=forward_pass_config.arrays,
         )
 
@@ -460,9 +461,9 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         state: SSMStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Mamba2Result:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for Mamba2.")
@@ -478,14 +479,14 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         seq_len, _ = inputs.shape
 
         if seq_len == 1 and return_updated_state:
-            return self._decode_step(inputs, state, forward_pass_config, dequant_key=dequant_key)
+            return self._decode_step(inputs, state, forward_pass_config, keychain=keychain)
 
-        in_dequant_key, out_dequant_key = jax.random.split(dequant_key)
+        in_keychain, out_keychain = keychain.split()
         conv_inputs, gate_values, time_delta_log = call_vmapped(
             self.in_projection,
             inputs,
             forward_pass_config=forward_pass_config.arrays,
-            dequant_key=in_dequant_key,
+            keychain=in_keychain,
         )
 
         conv_output, updated_conv_state = self.conv(
@@ -557,7 +558,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             self.out_projection,
             ssm_outputs_flat,
             forward_pass_config=forward_pass_config.arrays,
-            dequant_key=out_dequant_key,
+            keychain=out_keychain,
         )
 
         if return_updated_state:

@@ -4,9 +4,10 @@ from typing import Self
 import jax.numpy as jnp
 import pytest
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, DTypeLike, Float, Key
+from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.initializer import Initializer
+from lalamo.module import Keychain
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import MatmulConfig, WeightMatrix, WeightMatrixSpec
 
@@ -44,8 +45,8 @@ class SurgeryWeightMatrixBase(WeightMatrix[SurgeryWeightMatrixSpec]):
         self,
         vector: Float[Array, " in_channels"],
         *,
-        dequant_key: Key[Array, ""],  # noqa: ARG002
-        forward_pass_config: MatmulConfig | None = None,  # noqa: ARG002
+        keychain: Keychain,  # noqa: ARG002
+        forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
     ) -> Float[Array, " out_channels"]:
         return self.weights @ vector
 

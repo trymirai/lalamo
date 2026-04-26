@@ -1,4 +1,3 @@
-import jax
 import numpy as np
 import pytest
 from transformers import pipeline
@@ -6,6 +5,7 @@ from transformers import pipeline
 from lalamo.audio.tts_message_processor import TTSMessage
 from lalamo.model_import.model_specs.common import ModelSpec, ModelType
 from lalamo.models.tts_model import TTSGenerator
+from lalamo.module import Keychain
 from tests.conftest import ConvertModel, filter_specs
 from tests.model_test_tiers import COHERENCE_TTS_REPOS
 
@@ -25,14 +25,13 @@ def test_tts_coherence(spec: ModelSpec, convert_model: ConvertModel) -> None:
     asr = pipeline("automatic-speech-recognition", model="openai/whisper-tiny.en")
 
     failures: list[str] = []
-    generation_key = jax.random.key(0)
-    dequant_key = jax.random.key(1)
-    for index, (text, expected_keywords) in enumerate(PHRASES):
+    keychain = Keychain.init(0)
+    for text, expected_keywords in PHRASES:
         message = TTSMessage(content=text, speaker_id="speaker:0", style="interleave")
+        keychain, phrase_keychain = keychain.split()
         result = model.generate_speech(
             [message],
-            key=jax.random.fold_in(generation_key, index),
-            dequant_key=dequant_key,
+            keychain=phrase_keychain,
         )
 
         audio = np.squeeze(result.audio).astype(np.float32)

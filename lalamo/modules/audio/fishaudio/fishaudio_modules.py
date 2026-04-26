@@ -1,11 +1,10 @@
 from dataclasses import dataclass
 
-import jax
 from jax import numpy as jnp
-from jaxtyping import Array, Float, Int, Key
+from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
 from lalamo.modules.activations import Activation
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
@@ -105,23 +104,23 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
         x: Float[Array, "batch sequence channels"],
         apply_residual: bool = True,
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "batch sequence channels"]:
         residual = x
 
-        step1_dequant_key, step2_dequant_key = jax.random.split(dequant_key)
+        step1_keychain, step2_keychain = keychain.split()
         x = self.depthwise_conv(x)
         x = call_vmapped_twice(self.norm, x)
         (x,) = call_vmapped_twice(
             self.pointwise_conv_step1,
             x,
-            dequant_key=step1_dequant_key,
+            keychain=step1_keychain,
         )
         x = call_vmapped_twice(self.config.activation, x)
         (x,) = call_vmapped_twice(
             self.pointwise_conv_step2,
             x,
-            dequant_key=step2_dequant_key,
+            keychain=step2_keychain,
         )
         if apply_residual:
             x = residual + x
@@ -195,10 +194,10 @@ class UpsamplingBlock(LalamoModule[UpsamplingBlockConfig]):
         self,
         x: Float[Array, "batch sequence in_channels"],
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "batch sequence_out out_channels"]:
         x = self.trans_conv(x)
-        return self.convnext(x, dequant_key=dequant_key)
+        return self.convnext(x, keychain=keychain)
 
 
 @dataclass(frozen=True)
@@ -248,11 +247,10 @@ class Upsampler(LalamoModule[UpsamplerConfig]):
         self,
         x: Float[Array, "batch sequence in_channels"],
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "batch sequence_out out_channels"]:
-        block_dequant_keys = jax.random.split(dequant_key, len(self.blocks))
-        for block, block_dequant_key in zip(self.blocks, block_dequant_keys, strict=True):
-            x = block(x, dequant_key=block_dequant_key)
+        for block, block_keychain in zip(self.blocks, keychain.split(len(self.blocks)), strict=True):
+            x = block(x, keychain=block_keychain)
         return x
 
 
@@ -306,11 +304,18 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
         self,
         embed_id: Int[Array, " tokens"],
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "tokens code_size"]:
-        embed_dequant_key, out_dequant_key = jax.random.split(dequant_key)
-        z_p = self.codebook.embed(embed_id, dequant_key=embed_dequant_key)
-        (z_q,) = call_vmapped(self.out_proj, z_p, dequant_key=out_dequant_key)
+        embed_keychain, out_keychain = keychain.split()
+        z_p = self.codebook.embed(
+            embed_id,
+            keychain=embed_keychain,
+        )
+        (z_q,) = call_vmapped(
+            self.out_proj,
+            z_p,
+            keychain=out_keychain,
+        )
         return z_q
 
 
@@ -368,31 +373,34 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
         self,
         codes: Int[Array, "n_codebooks tokens"],
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "tokens code_size"]:
         first_quantizer, *remaining_quantizers = self.quantizers
         first_codes, *remaining_codes = codes
-        first_quantizer_dequant_key, *remaining_quantizer_dequant_keys = jax.random.split(
-            dequant_key,
-            self.n_codebooks,
+        first_quantizer_keychain, *remaining_quantizer_keychains = keychain.split(self.n_codebooks)
+        z_q = first_quantizer.decode_code(
+            first_codes,
+            keychain=first_quantizer_keychain,
         )
-        z_q = first_quantizer.decode_code(first_codes, dequant_key=first_quantizer_dequant_key)
-        for quantizer, quantizer_codes, quantizer_dequant_key in zip(
+        for quantizer, quantizer_codes, quantizer_keychain in zip(
             remaining_quantizers,
             remaining_codes,
-            remaining_quantizer_dequant_keys,
+            remaining_quantizer_keychains,
             strict=True,
         ):
-            z_q = z_q + quantizer.decode_code(quantizer_codes, dequant_key=quantizer_dequant_key)
+            z_q = z_q + quantizer.decode_code(
+                quantizer_codes,
+                keychain=quantizer_keychain,
+            )
         return z_q
 
     def __call__(
         self,
         codes: Int[Array, "batch n_codebooks tokens"],
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "batch tokens code_size"]:
-        return call_vmapped(self.from_codes, codes, dequant_key=dequant_key)
+        return call_vmapped(self.from_codes, codes, keychain=keychain)
 
 
 @dataclass(frozen=True)
@@ -471,24 +479,21 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "batch upsampled_tokens channels"]:
-        semantic_dequant_key, residual_dequant_key, post_dequant_key, upsampler_dequant_key = jax.random.split(
-            dequant_key,
-            4,
-        )
+        semantic_keychain, residual_keychain, post_keychain, upsampler_keychain = keychain.split(4)
         semantic_indices = jnp.clip(indices[:, :1], 0, self.semantic_codebook_size - 1)
         residual_indices = jnp.clip(indices[:, 1:], 0, self.quantizer_codebook_size - 1)
 
         z_q_semantic = call_vmapped(
             self.semantic_quantizer.from_codes,
             semantic_indices,
-            dequant_key=semantic_dequant_key,
+            keychain=semantic_keychain,
         )
         z_q_residual = call_vmapped(
             self.quantizer.from_codes,
             residual_indices,
-            dequant_key=residual_dequant_key,
+            keychain=residual_keychain,
         )
 
         z_q = z_q_semantic + z_q_residual
@@ -506,18 +511,18 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
             lengths_without_padding=None,
             forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
             forward_pass_config=TransformerForwardPassConfig(),
-            dequant_key=post_dequant_key,
+            keychain=post_keychain,
         )
         z_q = post_result.outputs
-        return self.upsampler(z_q, dequant_key=upsampler_dequant_key)
+        return self.upsampler(z_q, keychain=upsampler_keychain)
 
     def __call__(
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "batch upsampled_tokens channels"]:
-        return self.decode(indices, dequant_key=dequant_key)
+        return self.decode(indices, keychain=keychain)
 
 
 @dataclass(frozen=True)

@@ -1,11 +1,16 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import partial
+from math import prod
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self, TypeVar
 
 import equinox as eqx
+import jax
+import jax.numpy as jnp
 import jax.tree_util as jtu
 from cattrs import GenConverter
+from jaxtyping import Array, Key
 
 from lalamo.utils.json import JSON
 from lalamo.utils.registry_abc import make_registry_abc_converter
@@ -14,6 +19,7 @@ from .exportable import Exportable
 
 __all__ = [
     "ForwardPassMode",
+    "Keychain",
     "LalamoConfig",
     "LalamoModule",
     "ShardingAxis",
@@ -30,6 +36,70 @@ class ShardingAxis(StrEnum):
     DATA = "data"
     TENSOR = "tensor"
     EXPERT = "expert"
+
+
+class Keychain(eqx.Module):
+    vmapped_keys: Key[Array, "..."]
+    batch_key: Key[Array, ""]
+
+    @classmethod
+    def init(cls, seed: int, shape: tuple[int, ...] = ()) -> Self:
+        vmapped_keys, batch_key = jax.random.split(jax.random.key(seed))
+        if shape:
+            vmapped_keys = jnp.reshape(jax.random.split(vmapped_keys, prod(shape)), shape)
+        return cls(vmapped_keys=vmapped_keys, batch_key=batch_key)
+
+    def broadcast(self, shape: tuple[int, ...]) -> Self:
+        leading_shape = _leading_broadcast_shape(self.vmapped_keys.shape, shape)
+        if not leading_shape:
+            return self
+
+        flat_keys = jnp.reshape(self.vmapped_keys, (-1,))
+        split_keys = jax.vmap(partial(jax.random.split, num=prod(leading_shape)))(flat_keys)
+        vmapped_keys = jnp.reshape(jnp.swapaxes(split_keys, 0, 1), shape)
+
+        return type(self)(vmapped_keys=vmapped_keys, batch_key=self.batch_key)
+
+    def split(self, num: int = 2) -> tuple[Self, ...]:
+        vmapped_keys = self.broadcast((num, *self.vmapped_keys.shape)).vmapped_keys
+        batch_keys = jax.random.split(self.batch_key, num)
+        return tuple(
+            type(self)(vmapped_keys=split_vmapped_keys, batch_key=batch_key)
+            for split_vmapped_keys, batch_key in zip(vmapped_keys, batch_keys, strict=True)
+        )
+
+    def rolling_broadcast(self, shape: tuple[int, ...]) -> Self:
+        leading_shape = _leading_broadcast_shape(self.vmapped_keys.shape, shape)
+        if not leading_shape:
+            return self
+
+        def split_once(carry: Key[Array, ""], _: None) -> tuple[Key[Array, ""], Key[Array, ""]]:
+            next_carry, sample_key = jax.random.split(carry)
+            return next_carry, sample_key
+
+        def rolling_broadcast_scalar_key(vmapped_keys: Key[Array, ""]) -> Key[Array, " num"]:
+            _, keys = jax.lax.scan(split_once, vmapped_keys, xs=None, length=prod(leading_shape))
+            return keys
+
+        flat_keys = jnp.reshape(self.vmapped_keys, (-1,))
+        split_keys = jax.vmap(rolling_broadcast_scalar_key)(flat_keys)
+        vmapped_keys = jnp.reshape(jnp.swapaxes(split_keys, 0, 1), shape)
+
+        return type(self)(
+            vmapped_keys=vmapped_keys,
+            batch_key=self.batch_key,
+        )
+
+
+def _leading_broadcast_shape(current_shape: tuple[int, ...], target_shape: tuple[int, ...]) -> tuple[int, ...]:
+    broadcast_shape = jnp.broadcast_shapes(current_shape, target_shape)
+    if broadcast_shape != target_shape:
+        raise ValueError(f"Cannot broadcast vmapped_keys from shape {current_shape} to shape {target_shape}.")
+    if current_shape and target_shape[-len(current_shape) :] != current_shape:
+        raise ValueError(
+            f"Expected target shape {target_shape} to end with existing vmapped_keys shape {current_shape}.",
+        )
+    return target_shape[: len(target_shape) - len(current_shape)]
 
 
 @dataclass(frozen=True)

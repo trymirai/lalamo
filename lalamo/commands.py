@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import cast
 
 import equinox as eqx
-import jax
 import polars as pl
 import requests
 import thefuzz.fuzz
@@ -34,7 +33,7 @@ from lalamo.model_import.common import (
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.models import GenerationConfig, GenerationTraceConfig, LanguageModelConfig, TTSGenerator
 from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
-from lalamo.module import LalamoModule, ShardingConfig, use_sharding
+from lalamo.module import Keychain, LalamoModule, ShardingConfig, use_sharding
 from lalamo.modules import config_converter
 from lalamo.modules.common import BatchSizesComputedEvent, InferenceConfig
 from lalamo.safetensors import safe_write
@@ -698,8 +697,7 @@ def generate_replies(
                 dataset,
                 generation_config=generation_config,
                 inference_config=inference_config,
-                keys=jax.random.split(jax.random.key(0), len(dataset)),
-                dequant_key=jax.random.key(1),
+                keychain=Keychain.init(0, shape=(len(dataset),)),
                 vram_bytes=max_vram,
                 batch_sizes_callback=callbacks.batch_sizes_computed,
             ),

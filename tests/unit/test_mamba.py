@@ -5,7 +5,8 @@ from einops import einsum as einops_einsum
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from lalamo.module import RandomInitializer
+from lalamo.initializer import RandomInitializer
+from lalamo.module import Keychain
 from lalamo.modules import (
     Identity,
     LinearConfig,
@@ -64,7 +65,7 @@ def test_mamba_state_respects_length_without_padding(
         state=None,
         return_updated_state=True,
         length_without_padding=seqlen,
-        dequant_key=jax.random.key(1),
+        keychain=Keychain.init(1),
     )
 
     reference_result = mamba(
@@ -73,7 +74,7 @@ def test_mamba_state_respects_length_without_padding(
         state=None,
         return_updated_state=True,
         length_without_padding=None,
-        dequant_key=jax.random.key(2),
+        keychain=Keychain.init(2),
     )
 
     assert padded_result.state is not None

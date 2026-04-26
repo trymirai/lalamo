@@ -2,14 +2,13 @@ from collections.abc import Callable, Iterable
 from itertools import chain
 from typing import NamedTuple
 
-import jax
 import numpy as np
 
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.data.utils import get_prefixes_ending_in_user_message
 from lalamo.message_processor import Message
 from lalamo.models import GenerationTraceConfig, LanguageModel
-from lalamo.module import InferenceConfig
+from lalamo.module import InferenceConfig, Keychain
 
 
 class CollectTracesEvent(NamedTuple):
@@ -50,8 +49,7 @@ def inference_collect_traces(
             filtered_prefixes,
             inference_config=config,
             generation_trace_config=trace_config,
-            keys=jax.random.split(jax.random.key(0), len(filtered_prefixes)),
-            dequant_key=jax.random.key(1),
+            keychain=Keychain.init(0, shape=(len(filtered_prefixes),)),
         ),
     ):
         token_ids = generated.token_ids.tolist()

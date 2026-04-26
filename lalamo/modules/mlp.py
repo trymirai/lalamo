@@ -9,10 +9,10 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, Bool, Float, Int, Key
+from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.weight_matrix import MatmulConfig
 
@@ -63,9 +63,9 @@ class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: MLPForwardPassConfig | None = None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]: ...
 
 
@@ -143,38 +143,33 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,  # noqa: ARG002
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,  # noqa: ARG002
-        forward_pass_config: MLPForwardPassConfig | None = None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        if forward_pass_config is None:
-            forward_pass_config = MLPForwardPassConfig()
         call_unbatched = partial(
             self.call_unbatched,
             forward_pass_config=forward_pass_config,
-            dequant_key=dequant_key,
         )
-        return call_vmapped_twice(call_unbatched, inputs)
+        return call_vmapped_twice(call_unbatched, inputs, keychain=keychain)
 
     @eqx.filter_jit
     def call_unbatched(
         self,
         inputs: Float[Array, " channels"],
-        forward_pass_config: MLPForwardPassConfig | None = None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, " channels"]:
-        if forward_pass_config is None:
-            forward_pass_config = MLPForwardPassConfig()
         if self.mixture_size is not None:
             raise ValueError(
                 "Mixtures of linear layers cannot be called directly."
                 " They are intended to be used with methods eqx.filter_vmap or lax.scan instead.",
             )
-        up_dequant_key, down_dequant_key = jax.random.split(dequant_key)
+        up_keychain, down_keychain = keychain.split()
         up_proj, gate = self.up_projection(
             inputs,
-            dequant_key=up_dequant_key,
+            keychain=up_keychain,
             forward_pass_config=forward_pass_config.matmul_config,
         )
         if self.config.gate_clipping is not None:
@@ -184,7 +179,7 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         gate = self.config.activation(gate)
         (result,) = self.down_projection(
             up_proj * gate,
-            dequant_key=down_dequant_key,
+            keychain=down_keychain,
             forward_pass_config=forward_pass_config.matmul_config,
         )
         return result
@@ -300,9 +295,9 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]:
         match forward_pass_mode:
             case ForwardPassMode.MULTI_TOKEN:
@@ -310,26 +305,24 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                     inputs,
                     lengths_without_padding,
                     forward_pass_config,
-                    dequant_key=dequant_key,
+                    keychain=keychain,
                 )
             case ForwardPassMode.SINGLE_TOKEN:
-                return self.call_decode_mode(inputs, forward_pass_config, dequant_key=dequant_key)
+                return self.call_decode_mode(inputs, forward_pass_config, keychain=keychain)
             case _:
                 raise ValueError(f"Unsupported forward pass mode: {forward_pass_mode}")
 
     def _shared_expert_weight(
         self,
         inputs: Float[Array, " channels"],
-        forward_pass_config: MLPForwardPassConfig | None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, " one"]:
-        if forward_pass_config is None:
-            forward_pass_config = MLPForwardPassConfig()
         if self.gate is not None:
             (gate_value,) = self.gate(
                 inputs,
-                dequant_key=dequant_key,
+                keychain=keychain,
                 forward_pass_config=forward_pass_config.matmul_config,
             )
             return jax.nn.sigmoid(gate_value)
@@ -339,22 +332,19 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     def call_decode_mode(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
-        forward_pass_config: MLPForwardPassConfig | None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        if forward_pass_config is None:
-            forward_pass_config = MLPForwardPassConfig()
-
         def per_token(
             token_input: Float[Array, " channels"],
             *,
-            dequant_key: Key[Array, ""],
+            keychain: Keychain,
         ) -> Float[Array, " channels"]:
-            router_dequant_key, shared_dequant_key, expert_dequant_key = jax.random.split(dequant_key, 3)
+            router_keychain, shared_keychain, expert_keychain = keychain.split(3)
             (router_logits,) = self.router(
                 token_input,
-                dequant_key=router_dequant_key,
+                keychain=router_keychain,
                 forward_pass_config=forward_pass_config.matmul_config,
             )
             routing = self.config.routing_function.call_unbatched(
@@ -368,7 +358,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 shared_weight = self._shared_expert_weight(
                     token_input,
                     forward_pass_config,
-                    dequant_key=shared_dequant_key,
+                    keychain=shared_keychain,
                 )
                 shared_weights = jnp.broadcast_to(shared_weight, (self.config.num_shared_experts,))
                 expert_weights = jnp.concatenate([routing.expert_weights, shared_weights])
@@ -379,12 +369,12 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             num_active = self.config.num_active_routed_experts + self.config.num_shared_experts
             active_indices = jnp.flatnonzero(expert_mask, size=num_active)
             active_weights = expert_weights[active_indices]
-            expert_dequant_keys = jax.random.split(expert_dequant_key, num_active)
+            expert_keychains = expert_keychain.split(num_active)
 
             def apply_one(
                 idx: Int[Array, ""],
                 weight: Float[Array, ""],
-                one_dequant_key: Key[Array, ""],
+                expert_keychain: Keychain,
             ) -> Float[Array, " channels"]:
                 selected_expert = jax.tree_util.tree_map(
                     lambda leaf: jax.lax.dynamic_index_in_dim(leaf, idx, axis=0, keepdims=False),
@@ -394,20 +384,20 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                     selected_expert.call_unbatched(
                         token_input,
                         forward_pass_config,
-                        dequant_key=one_dequant_key,
+                        keychain=expert_keychain,
                     )
                     * weight
                 )
 
             return call_vmapped(
                 lambda expert_inputs: apply_one(*expert_inputs),
-                (active_indices, active_weights, expert_dequant_keys),
+                (active_indices, active_weights, expert_keychains),
             ).sum(axis=0)
 
         return call_vmapped_twice(
             per_token,
             inputs,
-            dequant_key=dequant_key,
+            keychain=keychain,
         )
 
     @eqx.filter_jit
@@ -415,12 +405,10 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: MLPForwardPassConfig | None = None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
         *,
-        dequant_key: Key[Array, ""],
+        keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        if forward_pass_config is None:
-            forward_pass_config = MLPForwardPassConfig()
         batch_size, sequence_length, _ = inputs.shape
         num_tokens = batch_size * sequence_length
         if lengths_without_padding is None:
@@ -430,14 +418,12 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         flattened_inputs = rearrange(inputs, "batch suffix_tokens channels -> (batch suffix_tokens) channels")
         flattened_padding_mask = rearrange(padding_mask, "batch suffix_tokens -> (batch suffix_tokens)")
 
-        router_dequant_key, chunk_dequant_key, shared_weight_dequant_key, shared_expert_dequant_key = jax.random.split(
-            dequant_key, 4
-        )
+        router_keychain, chunk_keychain, shared_weight_keychain, shared_expert_keychain = keychain.split(4)
         (router_logits,) = call_vmapped(
             self.router,
             flattened_inputs,
             forward_pass_config=forward_pass_config.matmul_config,
-            dequant_key=router_dequant_key,
+            keychain=router_keychain,
         )
         routing_map = self.config.routing_function(router_logits, self.config.num_active_routed_experts)
 
@@ -464,13 +450,13 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             chunk_tokens=chunk_size,
         )
 
-        chunk_dequant_keys = jax.random.split(chunk_dequant_key, chunked_token_indices.shape[0])
+        chunk_keychains = chunk_keychain.split(chunked_token_indices.shape[0])
 
         def loop_iteration(
             expert_accumulator: Float[Array, "tokens channels"],
-            chunk_inputs: tuple[Int[Array, "experts chunk_tokens"], Key[Array, ""]],
+            chunk_inputs: tuple[Int[Array, "experts chunk_tokens"], Keychain],
         ) -> tuple[Float[Array, "tokens channels"], None]:
-            token_indices_for_chunk, current_chunk_dequant_key = chunk_inputs
+            token_indices_for_chunk, current_chunk_keychain = chunk_inputs
 
             def run_experts(
                 accumulator: Float[Array, "tokens channels"],
@@ -483,26 +469,29 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                     fill_value=0.0,
                 )
 
-                expert_dequant_keys = jax.random.split(current_chunk_dequant_key, self.config.num_routed_experts)
+                expert_keychains = current_chunk_keychain.split(self.config.num_routed_experts)
 
                 def run_expert(
                     expert: DenseMLP,
                     indices: Int[Array, " tokens_per_chunk"],
                     weights: Float[Array, " tokens_per_chunk"],
-                    expert_dequant_key: Key[Array, ""],
+                    expert_keychain: Keychain,
                 ) -> Float[Array, "tokens_per_chunk channels"]:
                     chunk_inputs = flattened_inputs.at[indices].get(mode="fill", fill_value=0.0)
                     call_unbatched = partial(
                         expert.call_unbatched,
                         forward_pass_config=forward_pass_config,
-                        dequant_key=expert_dequant_key,
                     )
-                    expert_outputs = call_vmapped(call_unbatched, chunk_inputs)
+                    expert_outputs = call_vmapped(
+                        call_unbatched,
+                        chunk_inputs,
+                        keychain=expert_keychain,
+                    )
                     return expert_outputs * weights[:, None]
 
                 expert_outputs = call_vmapped(
                     lambda expert_inputs: run_expert(*expert_inputs),
-                    (routed_experts, token_indices_for_chunk, weights_for_chunk, expert_dequant_keys),
+                    (routed_experts, token_indices_for_chunk, weights_for_chunk, expert_keychains),
                 )
                 return accumulator.at[token_indices_for_chunk].add(
                     expert_outputs,
@@ -521,7 +510,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         routed_expert_result, _ = jax.lax.scan(
             loop_iteration,
             jnp.zeros_like(flattened_inputs),
-            (chunked_token_indices, chunk_dequant_keys),
+            (chunked_token_indices, chunk_keychains),
         )
 
         expert_result = routed_expert_result
@@ -530,26 +519,26 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             shared_expert_weight = partial(
                 self._shared_expert_weight,
                 forward_pass_config=forward_pass_config,
-                dequant_key=shared_weight_dequant_key,
             )
-            shared_weights = call_vmapped(shared_expert_weight, flattened_inputs)
+            shared_weights = call_vmapped(
+                shared_expert_weight,
+                flattened_inputs,
+                keychain=shared_weight_keychain,
+            )
             shared_weights = jnp.where(flattened_padding_mask[:, None], shared_weights, 0.0)
 
-            shared_expert_dequant_keys = jax.random.split(
-                shared_expert_dequant_key,
-                self.config.num_shared_experts,
-            )
+            shared_expert_keychains = shared_expert_keychain.split(self.config.num_shared_experts)
             shared_outputs = call_vmapped(
-                lambda expert, expert_dequant_key: call_vmapped(
+                lambda expert, expert_keychain: call_vmapped(
                     partial(
                         expert.call_unbatched,
                         forward_pass_config=forward_pass_config,
-                        dequant_key=expert_dequant_key,
                     ),
                     flattened_inputs,
+                    keychain=expert_keychain,
                 ),
                 shared_experts,
-                shared_expert_dequant_keys,
+                shared_expert_keychains,
             )
             expert_result = routed_expert_result + shared_weights * shared_outputs.sum(axis=0)
 

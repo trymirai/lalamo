@@ -66,6 +66,7 @@ from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.model_registry import ModelRegistry
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
+from lalamo.module import Keychain
 from lalamo.modules.common import BatchSizesComputedEvent
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
@@ -146,8 +147,7 @@ def chat(
         ),
     ] = 8192,
 ) -> None:
-    generation_key = jax.random.key(0)
-    dequant_key = jax.random.key(1)
+    inference_keychain = Keychain.init(0)
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -158,8 +158,13 @@ def chat(
         model = LanguageModelConfig.load_model(model_path)
         progress.remove_task(loading_task)
         warmup_task = progress.add_task("🔥 Warming up compilation cache...")
-        generation_key, warmup_key = jax.random.split(generation_key)
-        list(model.stream_reply_text([UserMessage("")], max_output_length=1, key=warmup_key, dequant_key=dequant_key))
+        inference_keychain, warmup_keychain = inference_keychain.split()
+        for _ in model.stream_reply_text(
+            [UserMessage("")],
+            max_output_length=1,
+            keychain=warmup_keychain,
+        ):
+            pass
         progress.remove_task(warmup_task)
 
     if message is None:
@@ -173,12 +178,11 @@ def chat(
 
             console.print("[red]assistant> [/red]", end="")
             model_response_tokens = []
-            generation_key, reply_key = jax.random.split(generation_key)
+            inference_keychain, reply_keychain = inference_keychain.split()
             for token in model.stream_reply_text(
                 messages,
                 max_output_length=max_tokens,
-                key=reply_key,
-                dequant_key=dequant_key,
+                keychain=reply_keychain,
             ):
                 console.print(token, end="")
                 model_response_tokens.append(token)
@@ -186,12 +190,11 @@ def chat(
             model_response_text = "".join(model_response_tokens)
             messages.append(model.message_processor.parse_response(model_response_text))
     else:
-        generation_key, reply_key = jax.random.split(generation_key)
+        inference_keychain, reply_keychain = inference_keychain.split()
         for token in model.stream_reply_text(
             [UserMessage(message)],
             max_output_length=max_tokens,
-            key=reply_key,
-            dequant_key=dequant_key,
+            keychain=reply_keychain,
         ):
             console.print(token, end="")
         console.print()
@@ -207,7 +210,7 @@ def classify(
         ),
     ],
 ) -> None:
-    dequant_key = jax.random.key(1)
+    inference_keychain = Keychain.init(0)
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -217,7 +220,7 @@ def classify(
         model = ClassifierModelConfig.load_model(model_path)
         progress.remove_task(loading_task)
         warmup_task = progress.add_task("🔥 Warming up...")
-        model.classify_chat([UserMessage(content="warmup message")], dequant_key=dequant_key)
+        model.classify_chat([UserMessage(content="warmup message")], keychain=inference_keychain)
         progress.remove_task(warmup_task)
     console.print(f"🤖 Classifying input with [blue]{model_path}[/blue]:")
     while True:
@@ -225,7 +228,7 @@ def classify(
         user_message = UserMessage(user_text)
 
         console.print("[red]assistant> [/red]", end="")
-        result = model.classify_chat([user_message], dequant_key=dequant_key)
+        result = model.classify_chat([user_message], keychain=inference_keychain)
         for label, confidence in result.items():
             console.print(f"{label} : {confidence}", end="")
         console.print()
@@ -376,8 +379,7 @@ def tts(
     model = TTSGenerator.load_model(model_path)
 
     assert model is not None
-    generation_key = jax.random.key(0)
-    dequant_key = jax.random.key(1)
+    inference_keychain = Keychain.init(0)
     _stop_word = "/stop"
     while True:
         user_text = console.input(f"[cyan]input text to generate speech({_stop_word} to exit)> [/cyan]")
@@ -389,11 +391,10 @@ def tts(
 
         user_message = TTSMessage(content=user_text, speaker_id="speaker:0", style="interleave")
 
-        generation_key, utterance_key = jax.random.split(generation_key)
+        inference_keychain, utterance_keychain = inference_keychain.split()
         tts_result = model.generate_speech(
             [user_message],
-            key=utterance_key,
-            dequant_key=dequant_key,
+            keychain=utterance_keychain,
         )
 
         if replay:

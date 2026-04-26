@@ -7,9 +7,10 @@ from typing import Literal, NamedTuple, Self
 import jax.numpy as jnp
 from jax import ShapeDtypeStruct, default_matmul_precision, device_put, lax
 from jax.sharding import Sharding
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
+from lalamo.module import Keychain
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import (
@@ -196,11 +197,10 @@ class AWQMatrix(EmbeddingMatrix[AWQSpec]):
         self,
         index: int | Int[Array, ""],
         *,
-        dequant_key: Key[Array, ""],
-        forward_pass_config: MatmulConfig | None = None,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()
-        forward_pass_config = forward_pass_config or MatmulConfig()
         if self.spec.layout != Layout.INPUT_OUTPUT:
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         return _awq_quantize(
@@ -211,7 +211,7 @@ class AWQMatrix(EmbeddingMatrix[AWQSpec]):
             round_fn=partial(
                 round_to_unsigned_grid_for_config,
                 bits=self.spec.bits,
-                dequant_key=dequant_key,
+                keychain=keychain,
                 forward_pass_config=forward_pass_config,
             ),
         )
@@ -220,11 +220,10 @@ class AWQMatrix(EmbeddingMatrix[AWQSpec]):
         self,
         vector: Float[Array, " in_channels"],
         *,
-        dequant_key: Key[Array, ""],
-        forward_pass_config: MatmulConfig | None = None,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()
-        forward_pass_config = forward_pass_config or MatmulConfig()
         dequantized_weights = _awq_quantize(
             self.weights,
             self.scales,
@@ -233,7 +232,7 @@ class AWQMatrix(EmbeddingMatrix[AWQSpec]):
             round_fn=partial(
                 round_to_unsigned_grid_for_config,
                 bits=self.spec.bits,
-                dequant_key=dequant_key,
+                keychain=keychain,
                 forward_pass_config=forward_pass_config,
             ),
         )

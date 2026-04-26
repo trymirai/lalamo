@@ -15,7 +15,7 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
     instantiate_dac_config_from_fishaudio_config,
     load_fishaudio_text_decoder,
 )
-from lalamo.module import EmptyInitializer
+from lalamo.module import EmptyInitializer, Keychain
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.sampling import GreedyPolicy
 from lalamo.utils.torch_interop import torch_to_jax
@@ -56,7 +56,7 @@ def test_decode_one_token_matches_pytorch(fish_audio_local_model_path: Path) -> 
     )
 
     sampling_policy = GreedyPolicy()
-    key = jax.random.key(123)
+    vmapped_keys = jax.random.key(123)
 
     # Prepare inputs
     tokenized_text = jnp.array(pytorch_tts_generator.message_processor.tokenize_request([tts_message]))[None, :]
@@ -74,8 +74,7 @@ def test_decode_one_token_matches_pytorch(fish_audio_local_model_path: Path) -> 
         text_tokens=tokenized_text,
         input_pos=input_pos,
         sampling_policy=sampling_policy,
-        key=key,
-        dequant_key=jax.random.key(456),
+        keychain=Keychain(vmapped_keys=vmapped_keys, batch_key=jax.random.key(456)),
     )
     output_lalamo = decode_result.token_codes
 
@@ -85,8 +84,8 @@ def test_decode_one_token_matches_pytorch(fish_audio_local_model_path: Path) -> 
     assert output_pytorch[:, 0].tolist() == output_lalamo[0].tolist()
 
 
-@torch.no_grad()
-def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
+@torch.no_grad
+def test_dac_matches_pytorch(fish_audio_local_model_path: Path) -> None:
     """Test that Lalamo DAC matches PyTorch DAC from FishAudio.
 
     This test loads a real DAC model checkpoint, creates a Lalamo DAC module
@@ -126,7 +125,7 @@ def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
     z_fish = fish_dac.quantizer.decode(test_codes_torch)  # (batch, latent_dim, tokens_upsampled)
     audio_fish = fish_dac.decoder(z_fish)  # (batch, 1, audio_samples)
     # Run Lalamo DAC inference
-    audio_lalamo = lalamo_dac(test_codes_jax, dequant_key=jax.random.key(0))  # (batch, audio_samples, 1) - NTC format
+    audio_lalamo = lalamo_dac(test_codes_jax, keychain=Keychain.init(0))  # (batch, audio_samples, 1) - NTC format
 
     # Convert for comparison (both to NTC format)
     audio_fish_ntc = torch_to_jax(audio_fish).transpose(0, 2, 1)  # NCT -> NTC
