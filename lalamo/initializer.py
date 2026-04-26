@@ -1,12 +1,13 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import cast
 
 import jax
-from jax import ShapeDtypeStruct
 from jax import numpy as jnp
-from jax.sharding import Mesh, NamedSharding, PartitionSpec
+from jax.sharding import NamedSharding
 from jaxtyping import Array, DTypeLike, Key
+
+from lalamo.utils.dummy_array import dummy_array
+from lalamo.utils.sharding import make_sharding
 
 from .module import ShardingAxis
 
@@ -19,7 +20,6 @@ __all__ = [
 
 @dataclass
 class Initializer(ABC):
-    mesh: Mesh | None
     dtype: DTypeLike
 
     def _partition_to_sharding(
@@ -27,11 +27,9 @@ class Initializer(ABC):
         shape: tuple[int, ...],
         partition: tuple[ShardingAxis | None, ...] | None = None,
     ) -> NamedSharding | None:
-        if partition is None or self.mesh is None:
-            return None
-        if len(shape) != len(partition):
+        if partition is not None and len(shape) != len(partition):
             raise ValueError(f"Shape {shape} and partition {partition} must have the same length")
-        return NamedSharding(self.mesh, PartitionSpec(partition))
+        return make_sharding(partition)
 
     @abstractmethod
     def normal(
@@ -60,14 +58,12 @@ class Initializer(ABC):
 class EmptyInitializer(Initializer):
     def _dummy_array(
         self,
-        shape: int | tuple[int, ...],
+        shape: tuple[int, ...],
         dtype: DTypeLike,
         partition: tuple[ShardingAxis | None, ...] | None,
     ) -> Array:
-        if isinstance(shape, int):
-            shape = (shape,)
         sharding = self._partition_to_sharding(shape, partition)
-        return cast("Array", ShapeDtypeStruct(shape=shape, dtype=dtype, sharding=sharding))
+        return dummy_array(shape, dtype, sharding)
 
     def normal(
         self,

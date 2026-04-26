@@ -1,10 +1,11 @@
 from dataclasses import dataclass
 
 import jax.numpy as jnp
+from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.initializer import Initializer
-from lalamo.weight_matrix import EmbeddingMatrix, Layout, MatmulConfig, WeightMatrixSpec
+from lalamo.weight_matrix import EmbeddingMatrix, Layout, MatmulConfig, Preconditioner, WeightMatrixSpec
 
 __all__ = [
     "LoRAMatrix",
@@ -17,7 +18,11 @@ class LoRASpec(WeightMatrixSpec):
     rank: int
     layout: Layout = Layout.OUTPUT_INPUT
 
-    def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "LoRAMatrix":
+    def compress(
+        self,
+        weights: Float[Array | ShapeDtypeStruct, "... out_channels in_channels"],
+        preconditioner: Preconditioner | None = None,
+    ) -> "LoRAMatrix":
         raise NotImplementedError("LoRA does not support compression from full-precision weights")
 
     def init(
@@ -57,6 +62,9 @@ class LoRAMatrix(EmbeddingMatrix[LoRASpec]):
     @property
     def dtype(self) -> DTypeLike:
         return jnp.result_type(self.down.dtype, self.up.dtype)
+
+    def astype(self, dtype: DTypeLike) -> "LoRAMatrix":
+        return LoRAMatrix(spec=self.spec, down=self.down.astype(dtype), up=self.up.astype(dtype))
 
     def decompress(self) -> Float[Array, "..."]:
         return self.down @ self.up

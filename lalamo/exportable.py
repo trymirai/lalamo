@@ -5,7 +5,6 @@ from jaxtyping import Array
 
 from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
-from lalamo.utils.surgery import load_as
 
 __all__ = [
     "ExportResults",
@@ -49,6 +48,9 @@ class Exportable:
         *,
         prefix: ParameterPath | None = None,
     ) -> Self:
+        # Local import avoids Exportable -> surgery -> WeightMatrix -> Exportable at module import time.
+        from lalamo.utils.surgery import load_as  # noqa: PLC0415
+
         if prefix is None:
             prefix = ParameterPath()
 

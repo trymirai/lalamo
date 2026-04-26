@@ -1,10 +1,13 @@
 from collections.abc import Callable, Iterable
+from typing import overload
 
 import equinox as eqx
 import jax
 import jax.tree_util as jtu
-from jax import ShapeDtypeStruct
-from jaxtyping import Array, PyTree
+from jax import Array, ShapeDtypeStruct
+from jaxtyping import DTypeLike, PyTree
+
+from lalamo.weight_matrix import WeightMatrix
 
 __all__ = [
     "load_as",
@@ -14,52 +17,139 @@ __all__ = [
     "select_nodes_of_type",
 ]
 
-
-def _get_name(leaf: PyTree, tree: PyTree) -> str:
-    for path, value in jtu.tree_leaves_with_path(tree):
-        if value is leaf:
-            return f"~{jtu.keystr(path)}"
-    raise ValueError(f"Leaf {leaf} not found in tree {tree}")
+type ArrayLike = Array | ShapeDtypeStruct
 
 
-def _check_compatible(old_value: PyTree, new_value: PyTree, parent_node: PyTree | None = None) -> None:
-    if isinstance(old_value, (Array, ShapeDtypeStruct)) and isinstance(new_value, Array):
-        if parent_node is not None:
-            full_name = f" {parent_node}.{_get_name(old_value, parent_node)}"
-        else:
-            full_name = ""
-        if old_value.shape != new_value.shape:
-            raise ValueError(
-                f"Expected parameter{full_name} to have shape {old_value.shape}, got {new_value.shape}",
-            )
-        if old_value.dtype != new_value.dtype:
-            raise ValueError(
-                f"Expected parameter{full_name} to have dtype {old_value.dtype}, got {new_value.dtype}",
-            )
-    elif type(old_value) is not type(new_value):
-        raise TypeError(f"Expected parameter of type {type(old_value)}, got {type(new_value)}")
+def _is_weight_matrix(value: PyTree) -> bool:
+    return isinstance(value, WeightMatrix)
 
 
-def load_as[TreeT: PyTree](template: TreeT, value: TreeT, allow_dtype_cast: bool = False) -> TreeT:
-    template_leaves_with_paths, template_tree_def = jtu.tree_flatten_with_path(template)
-    value_leaves, value_tree_def = jtu.tree_flatten(value)
+def _is_array_like(value: PyTree) -> bool:
+    return isinstance(value, (Array, ShapeDtypeStruct))
+
+
+def _path_name(path: tuple[object, ...]) -> str:
+    if not path:
+        return " at root"
+    return f" at path {jtu.keystr(path)}"
+
+
+def _astype_array_like(value: ArrayLike, dtype: DTypeLike) -> ArrayLike:
+    if isinstance(value, ShapeDtypeStruct):
+        return ShapeDtypeStruct(shape=value.shape, dtype=dtype, sharding=value.sharding)
+    return value.astype(dtype)
+
+
+def _check_array_compatible(
+    path: tuple[object, ...],
+    template_leaf: ArrayLike,
+    value_leaf: ArrayLike,
+    *,
+    allow_dtype_cast: bool,
+) -> None:
+    if template_leaf.shape != value_leaf.shape:
+        raise ValueError(
+            f"Expected parameter{_path_name(path)} to have shape {template_leaf.shape}, got {value_leaf.shape}",
+        )
+    if not allow_dtype_cast and template_leaf.dtype != value_leaf.dtype:
+        raise ValueError(
+            f"Expected parameter{_path_name(path)} to have dtype {template_leaf.dtype}, got {value_leaf.dtype}",
+        )
+    if template_leaf.sharding != value_leaf.sharding:
+        raise ValueError(
+            f"Expected parameter{_path_name(path)} to have sharding {template_leaf.sharding}, "
+            f"got {value_leaf.sharding}",
+        )
+
+
+def _check_weight_matrix_compatible(
+    path: tuple[object, ...],
+    template_leaf: WeightMatrix,
+    value_leaf: WeightMatrix,
+    *,
+    allow_dtype_cast: bool,
+) -> None:
+    if template_leaf.shape != value_leaf.shape:
+        raise ValueError(
+            f"Expected WeightMatrix{_path_name(path)} to have shape {template_leaf.shape}, got {value_leaf.shape}",
+        )
+    if not allow_dtype_cast and template_leaf.dtype != value_leaf.dtype:
+        raise ValueError(
+            f"Expected WeightMatrix{_path_name(path)} to have dtype {template_leaf.dtype}, got {value_leaf.dtype}",
+        )
+
+
+def _check_leaf_compatible(
+    path: tuple[object, ...],
+    template_leaf: PyTree,
+    value_leaf: PyTree,
+    *,
+    allow_dtype_cast: bool,
+) -> None:
+    if isinstance(template_leaf, WeightMatrix) and isinstance(value_leaf, WeightMatrix):
+        _check_weight_matrix_compatible(path, template_leaf, value_leaf, allow_dtype_cast=allow_dtype_cast)
+        return
+    if _is_array_like(template_leaf) and _is_array_like(value_leaf):
+        _check_array_compatible(path, template_leaf, value_leaf, allow_dtype_cast=allow_dtype_cast)
+        return
+    if type(template_leaf) is not type(value_leaf):
+        raise TypeError(
+            f"Expected parameter{_path_name(path)} to have type {type(template_leaf)}, got {type(value_leaf)}",
+        )
+
+
+def _cast_leaf_dtype(template_leaf: PyTree, value_leaf: PyTree) -> PyTree:
+    if isinstance(template_leaf, WeightMatrix) and isinstance(value_leaf, WeightMatrix):
+        if template_leaf.dtype == value_leaf.dtype:
+            return value_leaf
+        return value_leaf.astype(template_leaf.dtype)
+    if _is_array_like(template_leaf) and _is_array_like(value_leaf):
+        if template_leaf.dtype == value_leaf.dtype:
+            return value_leaf
+        return _astype_array_like(value_leaf, template_leaf.dtype)
+    return value_leaf
+
+
+def _check_compatible(
+    old_value: PyTree,
+    new_value: PyTree,
+    parent_node: PyTree | None = None,  # noqa: ARG001
+    *,
+    allow_dtype_cast: bool = False,
+) -> None:
+    template_leaves_with_paths, template_tree_def = jtu.tree_flatten_with_path(old_value, is_leaf=_is_weight_matrix)
+    value_leaves, value_tree_def = jtu.tree_flatten(new_value, is_leaf=_is_weight_matrix)
     if template_tree_def != value_tree_def:
         raise TypeError(
             f"Tried to load a value of shape {value_tree_def} into an incompatible pytree of shape {template_tree_def}"
         )
 
-    result_leaves = []
     for (path, template_leaf), value_leaf in zip(template_leaves_with_paths, value_leaves, strict=True):
-        result_leaf = value_leaf
-        if result_leaf.dtype != template_leaf.dtype:
-            if not allow_dtype_cast:
-                raise ValueError(f"Expected dtype {template_leaf.dtype} at path {path}, got {result_leaf.dtype}")
-            result_leaf = result_leaf.astype(template_leaf.dtype)
-        if result_leaf.shape != template_leaf.shape:
-            raise ValueError(f"Expected shape {template_leaf.shape} at path {path}, got {result_leaf.shape}")
-        if result_leaf.sharding != template_leaf.sharding:
-            result_leaf = jax.device_put(value_leaf, template_leaf.sharding)
-        result_leaves.append(result_leaf)
+        _check_leaf_compatible(path, template_leaf, value_leaf, allow_dtype_cast=allow_dtype_cast)
+
+
+@overload
+def load_as[ValueT: WeightMatrix](
+    template: WeightMatrix,
+    value: ValueT,
+    allow_dtype_cast: bool = False,
+) -> ValueT: ...
+
+
+@overload
+def load_as[TreeT](template: TreeT, value: TreeT, allow_dtype_cast: bool = False) -> TreeT: ...
+
+
+def load_as(template: PyTree, value: PyTree, allow_dtype_cast: bool = False) -> PyTree:
+    _check_compatible(template, value, allow_dtype_cast=allow_dtype_cast)
+
+    template_leaves_with_paths, template_tree_def = jtu.tree_flatten_with_path(template, is_leaf=_is_weight_matrix)
+    value_leaves, _ = jtu.tree_flatten(value, is_leaf=_is_weight_matrix)
+
+    result_leaves = [
+        _cast_leaf_dtype(template_leaf, value_leaf)
+        for (_path, template_leaf), value_leaf in zip(template_leaves_with_paths, value_leaves, strict=True)
+    ]
 
     return jtu.tree_unflatten(template_tree_def, result_leaves)
 

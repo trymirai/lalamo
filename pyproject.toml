@@ -100,8 +100,6 @@ torchaudio = { index = "torch-cpu" }
 cartesia-metal = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="035939e9" , subdirectory = "cartesia-metal" }
 cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="035939e9" , subdirectory = "cartesia-mlx" }
 fish-speech = { git="https://github.com/trymirai/fish-speech.git", tag="c6dd030" }
-orbax-checkpoint = { git = "https://github.com/google/orbax.git", subdirectory = "checkpoint" }  # TODO(norpadon): Remove it when they fix the flax dependency
-equinox = { git = "https://github.com/patrick-kidger/equinox.git" }  # TODO(norpadon): Remove it when they fix the __new__ and __call__ return types in metaclasses
 
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.

@@ -1,19 +1,6 @@
-import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, DTypeLike, Float, Key
-
-
-def quantize_to_grid(weights: Float[Array, "..."], bits: int) -> Float[Array, "..."]:
-    return jnp.clip(jnp.round(weights), 0, (2**bits) - 1)
-
-
-def stochastic_quantize_to_grid(weights: Float[Array, "..."], bits: int, key: Key[Array, ""]) -> Float[Array, "..."]:
-    qmax = (2**bits) - 1
-    floored = jnp.floor(weights)
-    frac = weights - floored
-    rounded = floored + (jax.random.uniform(key, weights.shape) < frac).astype(weights.dtype)
-    return jnp.clip(rounded, 0, qmax)
+from jaxtyping import Array
 
 
 def pack_uint_to_uint8(unpacked: Array, bits: int) -> Array:
@@ -56,11 +43,3 @@ def unpack_uint8_to_uint(packed: Array, bits: int) -> Array:
     mask = jnp.uint8((1 << bits) - 1)
     unpacked = jnp.bitwise_and(jnp.right_shift(packed[..., None], shifts), mask)
     return rearrange(unpacked, "... groups packed_values -> ... (groups packed_values)")
-
-
-def pack_quant_weights(value: Array, bits: int) -> Array:
-    return pack_uint_to_uint8(quantize_to_grid(value, bits).astype(jnp.uint8), bits)
-
-
-def unpack_quant_weights(value: Array, bits: int, dtype: DTypeLike) -> Array:
-    return unpack_uint8_to_uint(value, bits).astype(dtype)

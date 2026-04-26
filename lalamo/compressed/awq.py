@@ -1,23 +1,38 @@
+import math
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
+from typing import Literal, NamedTuple, Self
 
-import jax
 import jax.numpy as jnp
+from jax import ShapeDtypeStruct, default_matmul_precision, device_put, lax
+from jax.sharding import Sharding
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.initializer import Initializer
-from lalamo.weight_matrix import EmbeddingMatrix, GradientEstimator, Layout, MatmulConfig, WeightMatrixSpec
-
-from .common import (
-    expand_group_parameter,
-    group_by_input_axis,
-    group_parameter_partition,
-    lookup_group_parameter,
-    lookup_output,
+from lalamo.utils.dummy_array import dummy_array
+from lalamo.utils.sharding import make_sharding
+from lalamo.weight_matrix import (
+    EmbeddingMatrix,
+    Layout,
+    MatmulConfig,
+    Preconditioner,
+    WeightMatrixSpec,
     matmul_with_layout,
-    store_weights,
-    weight_matrix_partition,
+    partition_and_shape_for_layout,
+    to_stored_layout,
 )
-from .quantization_helpers import quantize_to_grid
+
+from .utils import (
+    expand_last_axis_groups,
+    group_by_last_axis,
+    grouped_last_axis_shape,
+    min_max_scale,
+    min_max_within_groups,
+    round_to_unsigned_grid,
+    round_to_unsigned_grid_for_config,
+    unsigned_qmax,
+)
 
 __all__ = [
     "AWQMatrix",
@@ -25,41 +40,109 @@ __all__ = [
 ]
 
 
-def _expand_lookup_parameter(
-    grouped: Float[Array, " groups"],
+class AWQParameters(NamedTuple):
+    scales: Float[Array, "... rows groups"]
+    zero_points: Float[Array, "... rows groups"]
+
+    @classmethod
+    def from_weights(
+        cls,
+        weights: Float[Array | ShapeDtypeStruct, "... rows cols"],
+        *,
+        bits: int,
+        group_size: int,
+        sharding: Sharding | None,
+    ) -> Self:
+        grouped_shape = grouped_last_axis_shape(weights.shape, group_size=group_size)
+        if isinstance(weights, ShapeDtypeStruct):
+            return cls(
+                scales=dummy_array(grouped_shape, weights.dtype, sharding),
+                zero_points=dummy_array(grouped_shape, weights.dtype, sharding),
+            )
+
+        group_min_max = min_max_within_groups(group_by_last_axis(weights, group_size=group_size))
+        scales = min_max_scale(group_min_max, bits=bits, dtype=weights.dtype)
+        zero_points = jnp.nan_to_num(
+            -group_min_max.min / scales,
+            nan=0,
+            posinf=unsigned_qmax(bits),
+            neginf=0,
+        )
+        return cls(scales=device_put(scales, sharding), zero_points=device_put(zero_points, sharding))
+
+
+def _awq_quantize(
+    weights: Float[Array, "... rows cols"],
+    scales: Float[Array, "... rows groups"],
+    zero_points: Float[Array, "... rows groups"],
     *,
     group_size: int,
-) -> Float[Array, " in_channels"]:
-    return jnp.repeat(grouped, group_size)
+    round_fn: Callable[[Float[Array, "... rows cols"]], Float[Array, "... rows cols"]],
+) -> Float[Array, "... rows cols"]:
+    expanded_scales = lax.stop_gradient(expand_last_axis_groups(scales, group_size=group_size))
+    expanded_zero_points = expand_last_axis_groups(zero_points, group_size=group_size)
+    rounded_weights = round_fn(weights)
+    rounded_zero_points = round_fn(expanded_zero_points)
+    return (rounded_weights - rounded_zero_points) * expanded_scales
+
+
+def _master_weights_from_full_precision(
+    weights: Float[Array, "... rows cols"],
+    scales: Float[Array, "... rows groups"],
+    zero_points: Float[Array, "... rows groups"],
+    *,
+    group_size: int,
+    sharding: Sharding | None,
+) -> Float[Array, "... rows cols"]:
+    if isinstance(weights, ShapeDtypeStruct):
+        return dummy_array(weights.shape, weights.dtype, sharding)
+    expanded_scales = lax.stop_gradient(expand_last_axis_groups(scales, group_size=group_size))
+    expanded_zero_points = expand_last_axis_groups(zero_points, group_size=group_size)
+    master_weights = weights / expanded_scales + expanded_zero_points
+    return device_put(master_weights, sharding)
 
 
 @dataclass(frozen=True)
 class AWQSpec(WeightMatrixSpec):
-    bits: int
+    bits: Literal[4, 8]
     group_size: int
-    float_dtype: DTypeLike = jnp.float32
     layout: Layout = Layout.OUTPUT_INPUT
 
-    def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "AWQMatrix":
-        stored_weights = store_weights(weights.astype(self.float_dtype), self.layout)
-        grouped = group_by_input_axis(stored_weights, layout=self.layout, group_size=self.group_size)
-        group_mins = jnp.min(grouped, axis=-1)
-        group_maxs = jnp.max(grouped, axis=-1)
-        quant_levels = (2**self.bits) - 1
-        scales = jnp.maximum((group_maxs - group_mins) / quant_levels, jnp.finfo(stored_weights.dtype).eps)
-        safe_scales = expand_group_parameter(scales, layout=self.layout, group_size=self.group_size)
-        zero_points = jnp.clip(jnp.round(-group_mins / scales), 0, quant_levels)
-        expanded_zero_points = expand_group_parameter(
-            zero_points,
+    def compress(
+        self,
+        weights: Float[Array | ShapeDtypeStruct, "... out_channels in_channels"],
+        preconditioner: Preconditioner | None = None,
+    ) -> "AWQMatrix":
+        if preconditioner is not None:
+            raise ValueError("Preconditioned rounding is not implemented yet.")
+        *leading_dims, output_dim, input_dim = weights.shape
+        partition = partition_and_shape_for_layout(
             layout=self.layout,
+            leading_dims=leading_dims,
+            output_dim=output_dim,
+            input_dim=input_dim,
+        ).partition
+        sharding = make_sharding(partition)
+
+        stored_weights = to_stored_layout(weights, layout=self.layout, sharding=sharding)
+        parameters = AWQParameters.from_weights(
+            stored_weights,
+            bits=self.bits,
             group_size=self.group_size,
+            sharding=sharding,
         )
-        quantized_weights = quantize_to_grid(stored_weights / safe_scales + expanded_zero_points, self.bits)
+        master_weights = _master_weights_from_full_precision(
+            stored_weights,
+            parameters.scales,
+            parameters.zero_points,
+            group_size=self.group_size,
+            sharding=sharding,
+        )
         return AWQMatrix(
             spec=self,
-            weights=quantized_weights,
-            scales=scales.astype(self.float_dtype),
-            zero_points=zero_points.astype(self.float_dtype),
+            weights=master_weights,
+            scales=parameters.scales,
+            zero_points=parameters.zero_points,
         )
 
     def init(
@@ -69,30 +152,20 @@ class AWQSpec(WeightMatrixSpec):
         output_dim: int,
         input_dim: int,
     ) -> "AWQMatrix":
-        if input_dim % self.group_size != 0:
-            raise ValueError(f"Input dimension {input_dim} must be divisible by group size {self.group_size}")
-        num_groups = input_dim // self.group_size
-        if self.layout == Layout.INPUT_OUTPUT:
-            weight_shape = (*leading_dims, input_dim, output_dim)
-            grouped_shape = (*leading_dims, num_groups, output_dim)
-        else:
-            weight_shape = (*leading_dims, output_dim, input_dim)
-            grouped_shape = (*leading_dims, output_dim, num_groups)
-        return AWQMatrix(
-            spec=self,
-            weights=initializer.zeros(weight_shape, partition=weight_matrix_partition(self.layout, leading_dims)),
-            scales=initializer.ones(grouped_shape, partition=group_parameter_partition(self.layout, leading_dims)),
-            zero_points=initializer.zeros(
-                grouped_shape,
-                partition=group_parameter_partition(self.layout, leading_dims),
-            ),
+        _, weight_shape = partition_and_shape_for_layout(
+            layout=Layout.OUTPUT_INPUT,
+            leading_dims=leading_dims,
+            output_dim=output_dim,
+            input_dim=input_dim,
         )
+        weights = initializer.normal(1 / math.sqrt(input_dim), shape=weight_shape)
+        return self.compress(weights)
 
 
 class AWQMatrix(EmbeddingMatrix[AWQSpec]):
-    weights: Float[Array, "..."]
-    scales: Float[Array, "..."]
-    zero_points: Float[Array, "..."]
+    weights: Float[Array, "... rows cols"]
+    scales: Float[Array, "... rows groups"]
+    zero_points: Float[Array, "... rows groups"]
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -100,59 +173,24 @@ class AWQMatrix(EmbeddingMatrix[AWQSpec]):
 
     @property
     def dtype(self) -> DTypeLike:
-        return self.scales.dtype
+        return self.weights.dtype
 
-    def _dequantize(
-        self,
-        quantized_weights: Float[Array, "..."],
-    ) -> Float[Array, "..."]:
-        expanded_scales = expand_group_parameter(
-            self.scales,
-            layout=self.spec.layout,
-            group_size=self.spec.group_size,
+    def astype(self, dtype: DTypeLike) -> "AWQMatrix":
+        return AWQMatrix(
+            spec=self.spec,
+            weights=self.weights.astype(dtype),
+            scales=self.scales.astype(dtype),
+            zero_points=self.zero_points.astype(dtype),
         )
-        expanded_zero_points = expand_group_parameter(
-            self.zero_points,
-            layout=self.spec.layout,
-            group_size=self.spec.group_size,
-        )
-        return (quantized_weights - expanded_zero_points) * expanded_scales
-
-    def _quantized_weights(self) -> Float[Array, "..."]:
-        return quantize_to_grid(self.weights, self.spec.bits)
-
-    def _projected_weights(self) -> Float[Array, "..."]:
-        quantized_weights = self._quantized_weights()
-        return self.weights + jax.lax.stop_gradient(quantized_weights - self.weights)
-
-    def _lookup_dequantized_output(
-        self,
-        index: int | Int[Array, ""],
-        quantized_weights: Float[Array, "..."],
-    ) -> Float[Array, " in_channels"]:
-        quantized_output = lookup_output(quantized_weights, layout=self.spec.layout, index=index)
-        scales = lookup_group_parameter(self.scales, layout=self.spec.layout, index=index)
-        zero_points = lookup_group_parameter(self.zero_points, layout=self.spec.layout, index=index)
-        expanded_scales = _expand_lookup_parameter(scales, group_size=self.spec.group_size)
-        expanded_zero_points = _expand_lookup_parameter(zero_points, group_size=self.spec.group_size)
-        return (quantized_output - expanded_zero_points) * expanded_scales
-
-    def _lookup_variance(
-        self,
-        index: int | Int[Array, ""],
-        projected_weights: Float[Array, "..."],
-    ) -> Float[Array, " in_channels"]:
-        squared_error = lookup_output(
-            jax.lax.stop_gradient((self.weights - projected_weights) ** 2),
-            layout=self.spec.layout,
-            index=index,
-        )
-        scales = lookup_group_parameter(self.scales, layout=self.spec.layout, index=index)
-        expanded_scale_sq = _expand_lookup_parameter(scales**2, group_size=self.spec.group_size)
-        return squared_error * expanded_scale_sq
 
     def decompress(self) -> Float[Array, "..."]:
-        return self._dequantize(self._quantized_weights())
+        return _awq_quantize(
+            self.weights,
+            self.scales,
+            self.zero_points,
+            group_size=self.spec.group_size,
+            round_fn=partial(round_to_unsigned_grid, bits=self.spec.bits),
+        )
 
     def lookup_embedding(
         self,
@@ -163,13 +201,20 @@ class AWQMatrix(EmbeddingMatrix[AWQSpec]):
     ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()
         forward_pass_config = forward_pass_config or MatmulConfig()
-        projected_weights = self._projected_weights()
-        result = self._lookup_dequantized_output(index, projected_weights)
-        if forward_pass_config.gradient_estimator == GradientEstimator.STOCHASTIC:
-            variance = self._lookup_variance(index, projected_weights)
-            noise = jax.random.normal(dequant_key, result.shape, dtype=result.dtype)
-            result = result + jnp.sqrt(variance + 1e-6) * noise
-        return result
+        if self.spec.layout != Layout.INPUT_OUTPUT:
+            raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
+        return _awq_quantize(
+            self.weights[index, :],
+            self.scales[index, :],
+            self.zero_points[index, :],
+            group_size=self.spec.group_size,
+            round_fn=partial(
+                round_to_unsigned_grid_for_config,
+                bits=self.spec.bits,
+                dequant_key=dequant_key,
+                forward_pass_config=forward_pass_config,
+            ),
+        )
 
     def dot(
         self,
@@ -180,25 +225,17 @@ class AWQMatrix(EmbeddingMatrix[AWQSpec]):
     ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()
         forward_pass_config = forward_pass_config or MatmulConfig()
-        projected_weights = self._projected_weights()
-        mean = matmul_with_layout(
-            self._dequantize(projected_weights),
-            vector,
-            layout=self.spec.layout,
-        )
-        if forward_pass_config.gradient_estimator == GradientEstimator.DETERMINISTIC:
-            return mean
-
-        squared_error = jax.lax.stop_gradient((self.weights - projected_weights) ** 2)
-        expanded_scale_sq = expand_group_parameter(
-            self.scales**2,
-            layout=self.spec.layout,
+        dequantized_weights = _awq_quantize(
+            self.weights,
+            self.scales,
+            self.zero_points,
             group_size=self.spec.group_size,
+            round_fn=partial(
+                round_to_unsigned_grid_for_config,
+                bits=self.spec.bits,
+                dequant_key=dequant_key,
+                forward_pass_config=forward_pass_config,
+            ),
         )
-        variance = matmul_with_layout(
-            squared_error * expanded_scale_sq,
-            vector**2,
-            layout=self.spec.layout,
-        )
-        noise = jax.random.normal(dequant_key, mean.shape, dtype=mean.dtype)
-        return mean + jnp.sqrt(variance + 1e-6) * noise
+        with default_matmul_precision(forward_pass_config.precision):
+            return matmul_with_layout(dequantized_weights, vector, layout=self.spec.layout)
