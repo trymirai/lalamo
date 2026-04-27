@@ -3,14 +3,13 @@ from abc import abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar, Generic, NamedTuple, Self, TypeVar
+from typing import ClassVar, Generic, Self, TypeVar
 
 import equinox as eqx
 import jax.numpy as jnp
 from cattrs import GenConverter
 from jax import ShapeDtypeStruct, default_matmul_precision, device_put
 from jax.lax import DotAlgorithmPreset
-from jax.sharding import Sharding
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable, ExportResults
@@ -23,14 +22,13 @@ from lalamo.utils.registry_abc import RegistryABC, make_registry_abc_converter
 from lalamo.utils.sharding import make_sharding
 
 __all__ = [
+    "CompressionImplementation",
     "GradientEstimator",
+    "Layout",
     "MatmulConfig",
     "Preconditioner",
     "WeightMatrix",
     "WeightMatrixSpec",
-    "matmul_with_layout",
-    "partition_and_shape_for_layout",
-    "to_stored_layout",
 ]
 
 
@@ -118,15 +116,7 @@ class WeightMatrixSpec(RegistryABC):
         self,
         weights: Float[Array | ShapeDtypeStruct, "*components out_channels in_channels"],
         preconditioner: Preconditioner | None = None,
-    ) -> "WeightMatrix": ...
-
-    @abstractmethod
-    def init(
-        self,
-        initializer: Initializer,
-        leading_dims: tuple[int, ...],
-        output_dim: int,
-        input_dim: int,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> "WeightMatrix": ...
 
 
@@ -141,6 +131,9 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
             raise ValueError(
                 "Attempted to call a method directly on a batched version of WeightMatrix. Use vmap instead.",
             )
+
+    def switch_implementation(self, implementation: CompressionImplementation) -> Self:  # noqa: ARG002
+        return self
 
     @property
     @abstractmethod
@@ -207,56 +200,42 @@ class Layout(StrEnum):
     OUTPUT_INPUT = "output_input"
     INPUT_OUTPUT = "input_output"
 
+    def weight_partition(self, num_leading_dims: int) -> tuple[ShardingAxis | None, ...]:
+        if self == Layout.INPUT_OUTPUT:
+            result = (None, ShardingAxis.TENSOR)
+        else:
+            result = (ShardingAxis.TENSOR, None)
+        return (ShardingAxis.EXPERT,) * num_leading_dims + result
 
-class PartitionAndShape(NamedTuple):
-    partition: tuple[ShardingAxis | None, ...]
-    shape: tuple[int, ...]
+    def weight_shape(self, leading_dims: Sequence[int], output_dim: int, input_dim: int) -> tuple[int, ...]:
+        if self == Layout.INPUT_OUTPUT:
+            return (*leading_dims, input_dim, output_dim)
+        return (*leading_dims, output_dim, input_dim)
 
-
-def partition_and_shape_for_layout(
-    *,
-    layout: Layout,
-    leading_dims: Sequence[int],
-    output_dim: int,
-    input_dim: int,
-) -> PartitionAndShape:
-    if layout == Layout.INPUT_OUTPUT:
-        partition = (None, ShardingAxis.TENSOR)
-        shape = (*leading_dims, input_dim, output_dim)
-    else:
-        partition = (ShardingAxis.TENSOR, None)
-        shape = (*leading_dims, output_dim, input_dim)
-    if leading_dims:
-        partition = (ShardingAxis.EXPERT,) * len(leading_dims) + partition
-    return PartitionAndShape(partition=partition, shape=shape)
-
-
-def to_stored_layout(
-    weights: Float[Array | ShapeDtypeStruct, "... out_channels in_channels"],
-    *,
-    layout: Layout,
-    sharding: Sharding | None,
-) -> Float[Array, "..."]:
-    if isinstance(weights, ShapeDtypeStruct):
-        stored_shape = weights.shape
-        if layout == Layout.INPUT_OUTPUT:
+    def convert_weights(
+        self,
+        weights: Float[Array | ShapeDtypeStruct, "... out_channels in_channels"],
+    ) -> Float[Array, "... rows cols"]:
+        sharding = make_sharding(self.weight_partition(weights.ndim - 2))
+        if isinstance(weights, ShapeDtypeStruct):
             *leading_dims, output_dim, input_dim = weights.shape
-            stored_shape = (*leading_dims, input_dim, output_dim)
-        return dummy_array(stored_shape, dtype=weights.dtype, sharding=sharding)
-    if layout == Layout.INPUT_OUTPUT:
-        weights = weights.swapaxes(-1, -2)
-    return device_put(weights, sharding)
+            return dummy_array(
+                shape=self.weight_shape(leading_dims, output_dim, input_dim),
+                dtype=weights.dtype,
+                sharding=sharding,
+            )
+        if self == Layout.INPUT_OUTPUT:
+            weights = weights.swapaxes(-1, -2)
+        return device_put(weights, sharding)
 
-
-def matmul_with_layout(
-    weights: Float[Array, "..."],
-    vector: Float[Array, " in_channels"],
-    *,
-    layout: Layout,
-) -> Float[Array, "... out_channels"]:
-    if layout == Layout.INPUT_OUTPUT:
-        return vector @ weights
-    return weights @ vector
+    def matmul(
+        self,
+        weights: Float[Array, "row cols"],
+        vector: Float[Array, " in_channels"],
+    ) -> Float[Array, " out_channels"]:
+        if self == Layout.INPUT_OUTPUT:
+            return vector @ weights
+        return weights @ vector
 
 
 @dataclass(frozen=True)
@@ -267,24 +246,11 @@ class FullPrecisionSpec(WeightMatrixSpec):
         self,
         weights: Float[Array | ShapeDtypeStruct, "... out_channels in_channels"],
         preconditioner: Preconditioner | None = None,  # noqa: ARG002
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
     ) -> "FullPrecisionMatrix":
-        *leading_dims, output_dim, input_dim = weights.shape
-
-        partition, shape = partition_and_shape_for_layout(
-            layout=self.layout,
-            leading_dims=leading_dims,
-            output_dim=output_dim,
-            input_dim=input_dim,
-        )
-        sharding = make_sharding(partition)
-
-        if isinstance(weights, ShapeDtypeStruct):
-            weights = dummy_array(shape, dtype=weights.dtype, sharding=sharding)
-            return FullPrecisionMatrix(spec=self, weights=weights)
-
         return FullPrecisionMatrix(
             spec=self,
-            weights=to_stored_layout(weights, layout=self.layout, sharding=sharding),
+            weights=self.layout.convert_weights(weights),
         )
 
     def init(
@@ -295,12 +261,8 @@ class FullPrecisionSpec(WeightMatrixSpec):
         input_dim: int,
     ) -> "FullPrecisionMatrix":
         std = 1 / math.sqrt(input_dim)
-        partition, shape = partition_and_shape_for_layout(
-            layout=self.layout,
-            leading_dims=leading_dims,
-            output_dim=output_dim,
-            input_dim=input_dim,
-        )
+        shape = self.layout.weight_shape(leading_dims, output_dim, input_dim)
+        partition = self.layout.weight_partition(len(leading_dims))
         return FullPrecisionMatrix(
             spec=self,
             weights=initializer.normal(std, shape=shape, partition=partition),
@@ -345,4 +307,4 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
     ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()
         with default_matmul_precision(forward_pass_config.precision):
-            return matmul_with_layout(self.weights, vector, layout=self.spec.layout)
+            return self.spec.layout.matmul(self.weights, vector)

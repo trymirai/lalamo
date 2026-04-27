@@ -1,24 +1,20 @@
-from functools import partial
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 from einops import rearrange
+from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.module import Keychain
-from lalamo.weight_matrix import GradientEstimator, MatmulConfig
+from lalamo.utils.dummy_array import dummy_array
 
 __all__ = [
     "MinMax",
     "expand_last_axis_groups",
     "group_by_last_axis",
     "grouped_last_axis_shape",
-    "min_max_scale",
     "min_max_within_groups",
-    "round_to_unsigned_grid",
-    "round_to_unsigned_grid_for_config",
-    "stochastic_round_to_unsigned_grid",
+    "scale_from_min_max",
     "unsigned_qmax",
 ]
 
@@ -47,8 +43,20 @@ def group_by_last_axis(
     )
 
 
-def expand_last_axis_groups(grouped: Float[Array, "... groups"], *, group_size: int) -> Float[Array, "..."]:
+def expand_last_axis_groups[ArrayT: Array | ShapeDtypeStruct](
+    grouped: Float[ArrayT, "... groups"],
+    *,
+    group_size: int,
+) -> Float[Array, "..."]:
+    if isinstance(grouped, ShapeDtypeStruct):
+        *leading_dims, groups = grouped.shape
+        return dummy_array((*leading_dims, groups * group_size), grouped.dtype, grouped.sharding)
+    assert isinstance(grouped, jax.Array)
     return jnp.repeat(grouped, group_size, axis=-1)
+
+
+def unsigned_qmax(bits: int) -> int:
+    return (2**bits) - 1
 
 
 def min_max_within_groups(weights: Float[Array, "... out_channels groups group_channels"]) -> MinMax:
@@ -58,136 +66,8 @@ def min_max_within_groups(weights: Float[Array, "... out_channels groups group_c
     )
 
 
-def unsigned_qmax(bits: int) -> int:
-    return (2**bits) - 1
-
-
-def min_max_scale(min_max: MinMax, *, bits: int, dtype: DTypeLike) -> Float[Array, "..."]:
+def scale_from_min_max(min_max: MinMax, *, bits: int, dtype: DTypeLike) -> Float[Array, "..."]:
     finfo = jnp.finfo(dtype)
     scale_range = min_max.max / unsigned_qmax(bits) - min_max.min / unsigned_qmax(bits)
     scales = jnp.maximum(scale_range, finfo.eps)
     return jnp.nan_to_num(scales, nan=finfo.eps, posinf=finfo.max, neginf=finfo.eps)
-
-
-def _clip_to_unsigned_grid(values: Float[Array, "..."], *, bits: int) -> Float[Array, "..."]:
-    qmax = unsigned_qmax(bits)
-    finite_values = jnp.nan_to_num(values, nan=0, posinf=qmax, neginf=0)
-    return jnp.clip(finite_values, 0, qmax)
-
-
-def _round_to_unsigned_grid_impl(values: Float[Array, "..."], *, bits: int) -> Float[Array, "..."]:
-    return jnp.round(_clip_to_unsigned_grid(values, bits=bits))
-
-
-@partial(jax.custom_vjp, nondiff_argnums=(1,))
-def _round_to_unsigned_grid(values: Float[Array, "..."], bits: int) -> Float[Array, "..."]:
-    return _round_to_unsigned_grid_impl(values, bits=bits)
-
-
-def _round_to_unsigned_grid_fwd(
-    values: Float[Array, "..."],
-    bits: int,
-) -> tuple[Float[Array, "..."], Float[Array, "..."]]:
-    rounded_values = _round_to_unsigned_grid_impl(values, bits=bits)
-    return rounded_values, values
-
-
-def _clip_unsigned_grid_gradients(
-    values: Float[Array, "..."],
-    gradients: Float[Array, "..."],
-    *,
-    bits: int,
-) -> Float[Array, "..."]:
-    qmax = unsigned_qmax(bits)
-    inside_range = (values >= 0) & (values <= qmax)
-    below_range_with_allowed_gradient = (values < 0) & (gradients > 0)
-    above_range_with_allowed_gradient = (values > qmax) & (gradients < 0)
-    allowed_gradients = inside_range | below_range_with_allowed_gradient | above_range_with_allowed_gradient
-    return jnp.where(allowed_gradients, gradients, 0)
-
-
-def _round_to_unsigned_grid_bwd(
-    bits: int,
-    values: Float[Array, "..."],
-    gradients: Float[Array, "..."],
-) -> tuple[Float[Array, "..."]]:
-    return (_clip_unsigned_grid_gradients(values, gradients, bits=bits),)
-
-
-_round_to_unsigned_grid.defvjp(_round_to_unsigned_grid_fwd, _round_to_unsigned_grid_bwd)
-
-
-def round_to_unsigned_grid(values: Float[Array, "..."], *, bits: int) -> Float[Array, "..."]:
-    return _round_to_unsigned_grid(values, bits)
-
-
-def _stochastic_round_to_unsigned_grid_impl(
-    values: Float[Array, "..."],
-    *,
-    bits: int,
-    keychain: Keychain,
-) -> Float[Array, "..."]:
-    clipped_values = _clip_to_unsigned_grid(values, bits=bits)
-    lower_bins = jnp.floor(clipped_values)
-    upper_probability = clipped_values - lower_bins
-    upper_samples = (
-        jax.random.uniform(keychain.batch_key, clipped_values.shape, dtype=clipped_values.dtype) < upper_probability
-    )
-    return lower_bins + upper_samples.astype(clipped_values.dtype)
-
-
-@partial(jax.custom_vjp, nondiff_argnums=(1,))
-def _stochastic_round_to_unsigned_grid(
-    values: Float[Array, "..."],
-    bits: int,
-    keychain: Keychain,
-) -> Float[Array, "..."]:
-    return _stochastic_round_to_unsigned_grid_impl(values, bits=bits, keychain=keychain)
-
-
-def _stochastic_round_to_unsigned_grid_fwd(
-    values: Float[Array, "..."],
-    bits: int,
-    keychain: Keychain,
-) -> tuple[Float[Array, "..."], Float[Array, "..."]]:
-    rounded_values = _stochastic_round_to_unsigned_grid_impl(values, bits=bits, keychain=keychain)
-    return rounded_values, values
-
-
-def _stochastic_round_to_unsigned_grid_bwd(
-    bits: int,
-    values: Float[Array, "..."],
-    gradients: Float[Array, "..."],
-) -> tuple[Float[Array, "..."], None]:
-    return _clip_unsigned_grid_gradients(values, gradients, bits=bits), None
-
-
-_stochastic_round_to_unsigned_grid.defvjp(
-    _stochastic_round_to_unsigned_grid_fwd,
-    _stochastic_round_to_unsigned_grid_bwd,
-)
-
-
-def stochastic_round_to_unsigned_grid(
-    values: Float[Array, "..."],
-    *,
-    bits: int,
-    keychain: Keychain,
-) -> Float[Array, "..."]:
-    return _stochastic_round_to_unsigned_grid(values, bits, keychain)
-
-
-def round_to_unsigned_grid_for_config(
-    values: Float[Array, "..."],
-    *,
-    bits: int,
-    keychain: Keychain,
-    forward_pass_config: MatmulConfig,
-) -> Float[Array, "..."]:
-    if forward_pass_config.gradient_estimator == GradientEstimator.DETERMINISTIC_ROUNDING:
-        return round_to_unsigned_grid(values, bits=bits)
-    if forward_pass_config.gradient_estimator == GradientEstimator.STOCHASTIC_ROUNDING:
-        return stochastic_round_to_unsigned_grid(values, bits=bits, keychain=keychain)
-    if forward_pass_config.gradient_estimator == GradientEstimator.LOCAL_ADDITIVE_NOISE:
-        raise ValueError("Local additive noise is not implemented.")
-    raise ValueError(f"Unsupported gradient estimator {forward_pass_config.gradient_estimator}")
