@@ -26,6 +26,20 @@ env:
   OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
 jobs:
+  unit:
+    name: Unit Tests
+    runs-on: [github-n2hmem16]
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+        with:
+          dev: 'true'
+
+      - name: Run pytest
+        run: |
+          pytest -n=auto tests/unit
+
   config:
     uses: ./.github/workflows/config.yml
 
@@ -60,20 +74,6 @@ jobs:
         run: |
           uv lock --check
           git diff --exit-code -- uv.lock
-
-  unit:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup
-        with:
-          dev: 'true'
-
-      - name: Run pytest
-        run: |
-          pytest -n=auto tests/unit
 
   model-tests:
     name: "Model: ${{ matrix.repo }}"
@@ -137,6 +137,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           install-dependencies: 'false'
+          cuda: ${{ matrix.device == 'gpu' && 'true' || 'false' }}
 
       - name: Run tox
         run: |

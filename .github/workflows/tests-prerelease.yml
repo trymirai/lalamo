@@ -103,6 +103,8 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           install-dependencies: 'false'
+          dev: 'true'
+          cuda: ${{ matrix.device == 'gpu' && 'true' || 'false' }}
 
       - name: Run tox
         run: |

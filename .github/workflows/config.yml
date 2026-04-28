@@ -25,22 +25,10 @@ jobs:
       run-tests: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
       is-prerelease: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease') }}
       latest-deps-python-versions: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'prerelease')) && '["py313", "py314"]' || '["py314"]' }}
-      core-lm-repos: ${{ steps.discover.outputs.core-lm-repos }}
+      core-lm-repos: ${{ steps.model-test-matrix.outputs.core-lm-repos }}
     steps:
       - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup
-      - id: discover
+      - id: model-test-matrix
         run: |
           echo -n "core-lm-repos=" >> "$GITHUB_OUTPUT"
-          python -c "
-          import json
-          from lalamo.model_import.model_specs.common import ModelType
-          from lalamo.model_registry import ModelRegistry
-          from tests.model_test_tiers import TIER_BY_REPO, ModelTier
-          repos = [
-              s.repo for s in ModelRegistry.build(allow_third_party_plugins=False).models
-              if s.model_type == ModelType.LANGUAGE_MODEL
-              and TIER_BY_REPO.get(s.repo, ModelTier.EXTRA) <= ModelTier.CORE
-          ]
-          print(json.dumps(repos))
-          " >> "$GITHUB_OUTPUT"
+          python -c 'import json, tomllib; tiers=tomllib.load(open("tests/model_test_tiers.toml", "rb"))["tiers"]; print(json.dumps(tiers["canonical"] + tiers["core"]))' >> "$GITHUB_OUTPUT"
