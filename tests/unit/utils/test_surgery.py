@@ -1,0 +1,256 @@
+from dataclasses import dataclass
+from typing import Self
+
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import pytest
+from jax import ShapeDtypeStruct
+from jaxtyping import Array, DTypeLike, Float
+
+from lalamo.initializer import Initializer
+from lalamo.module import Keychain
+from lalamo.utils.surgery import load_as, map_nodes_of_type, map_nodes_of_type_with_path, select_nodes_of_type
+from lalamo.weight_matrix import MatmulConfig, WeightMatrix, WeightMatrixSpec
+
+
+@dataclass(frozen=True)
+class SurgeryWeightMatrixSpec(WeightMatrixSpec):
+    def init(
+        self,
+        initializer: Initializer,
+        leading_dims: tuple[int, ...],
+        output_dim: int,
+        input_dim: int,
+    ) -> WeightMatrix:
+        raise NotImplementedError
+
+
+class SurgeryWeightMatrix(WeightMatrix[SurgeryWeightMatrixSpec]):
+    weights: Float[Array, "out_channels in_channels"]
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.weights.shape
+
+    @property
+    def dtype(self) -> DTypeLike:
+        return self.weights.dtype
+
+    def astype(self, dtype: DTypeLike) -> Self:
+        return type(self)(spec=self.spec, weights=self.weights.astype(dtype))
+
+    def decompress(self) -> Float[Array, "out_channels in_channels"]:
+        return self.weights
+
+    def dot(
+        self,
+        vector: Float[Array, " in_channels"],
+        *,
+        keychain: Keychain,  # noqa: ARG002
+        forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
+    ) -> Float[Array, " out_channels"]:
+        return self.weights @ vector
+
+
+class TemplateWeightMatrix(SurgeryWeightMatrix):
+    pass
+
+
+class ValueWeightMatrix(SurgeryWeightMatrix):
+    pass
+
+
+class Linear(eqx.Module):
+    weight: jax.Array
+    bias: jax.Array
+
+
+class Block(eqx.Module):
+    matrix: SurgeryWeightMatrix
+    linears: tuple[Linear, ...]
+
+
+def _template_matrix(
+    shape: tuple[int, int] = (2, 3),
+    dtype: DTypeLike = jnp.float32,
+) -> TemplateWeightMatrix:
+    return TemplateWeightMatrix(spec=SurgeryWeightMatrixSpec(), weights=jnp.zeros(shape, dtype=dtype))
+
+
+def _value_matrix(
+    shape: tuple[int, int] = (2, 3),
+    dtype: DTypeLike = jnp.float32,
+) -> ValueWeightMatrix:
+    return ValueWeightMatrix(spec=SurgeryWeightMatrixSpec(), weights=jnp.ones(shape, dtype=dtype))
+
+
+def test_load_as_loads_matching_array_tree() -> None:
+    template = {"linear": Linear(weight=jnp.zeros((2, 3)), bias=jnp.zeros((2,)))}
+    value = {"linear": Linear(weight=jnp.ones((2, 3)), bias=jnp.ones((2,)))}
+
+    result = load_as(template, value)
+
+    assert jnp.all(result["linear"].weight == 1)
+    assert jnp.all(result["linear"].bias == 1)
+
+
+def test_load_as_rejects_tree_structure_mismatch() -> None:
+    template = {"weight": jnp.zeros((2, 3))}
+    value = {"weight": jnp.ones((2, 3)), "bias": jnp.ones((2,))}
+
+    with pytest.raises(TypeError, match="incompatible pytree"):
+        load_as(template, value)
+
+
+def test_load_as_rejects_array_shape_mismatch() -> None:
+    template = jnp.zeros((2, 3), dtype=jnp.float32)
+    value = jnp.ones((2, 4), dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="shape"):
+        load_as(template, value)
+
+
+def test_load_as_rejects_array_dtype_mismatch() -> None:
+    template = jnp.zeros((2, 3), dtype=jnp.float32)
+    value = jnp.ones((2, 3), dtype=jnp.float16)
+
+    with pytest.raises(ValueError, match="dtype"):
+        load_as(template, value)
+
+
+def test_load_as_casts_array_dtype_when_allowed() -> None:
+    template = jnp.zeros((2, 3), dtype=jnp.float32)
+    value = jnp.ones((2, 3), dtype=jnp.float16)
+
+    result = load_as(template, value, allow_dtype_cast=True)
+
+    assert result.dtype == jnp.float32
+    assert jnp.all(result == 1)
+
+
+def test_load_as_rejects_non_array_leaf_type_mismatch() -> None:
+    template = {"name": "linear"}
+    value = {"name": 1}
+
+    with pytest.raises(TypeError, match="type"):
+        load_as(template, value)
+
+
+def test_load_as_accepts_matching_shape_dtype_struct() -> None:
+    template = ShapeDtypeStruct(shape=(2, 3), dtype=jnp.float32, sharding=None)
+    value = ShapeDtypeStruct(shape=(2, 3), dtype=jnp.float32, sharding=None)
+
+    result = load_as(template, value)
+
+    assert result is value
+
+
+def test_load_as_casts_shape_dtype_struct_when_allowed() -> None:
+    template = ShapeDtypeStruct(shape=(2, 3), dtype=jnp.float32, sharding=None)
+    value = ShapeDtypeStruct(shape=(2, 3), dtype=jnp.float16, sharding=None)
+
+    result = load_as(template, value, allow_dtype_cast=True)
+
+    assert isinstance(result, ShapeDtypeStruct)
+    assert result.shape == value.shape
+    assert result.dtype == jnp.float32
+    assert result.sharding == value.sharding
+
+
+def test_load_as_rejects_shape_dtype_struct_sharding_mismatch() -> None:
+    template = ShapeDtypeStruct(shape=(2, 3), dtype=jnp.float32, sharding=None)
+    value = jnp.ones((2, 3), dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="sharding"):
+        load_as(template, value)
+
+
+def test_load_as_treats_weight_matrices_as_leaf_nodes() -> None:
+    template = {"matrix": _template_matrix()}
+    value = {"matrix": _value_matrix()}
+
+    result = load_as(template, value)
+
+    assert result["matrix"] is value["matrix"]
+
+
+def test_load_as_rejects_weight_matrix_shape_mismatch() -> None:
+    template = _template_matrix(shape=(2, 3))
+    value = _value_matrix(shape=(2, 4))
+
+    with pytest.raises(ValueError, match="shape"):
+        load_as(template, value)
+
+
+def test_load_as_rejects_weight_matrix_dtype_mismatch() -> None:
+    template = _template_matrix(dtype=jnp.float32)
+    value = _value_matrix(dtype=jnp.float16)
+
+    with pytest.raises(ValueError, match="dtype"):
+        load_as(template, value)
+
+
+def test_load_as_casts_weight_matrix_dtype_when_allowed() -> None:
+    template = _template_matrix(dtype=jnp.float32)
+    value = _value_matrix(dtype=jnp.float16)
+
+    result = load_as(template, value, allow_dtype_cast=True)
+
+    assert isinstance(result, ValueWeightMatrix)
+    assert result.dtype == jnp.float32
+    assert jnp.all(result.weights == 1)
+
+
+def test_map_nodes_of_type_updates_only_selected_nodes() -> None:
+    block = Block(
+        matrix=_value_matrix(),
+        linears=(
+            Linear(weight=jnp.ones((2, 2)), bias=jnp.ones((2,))),
+            Linear(weight=jnp.full((2, 2), 2), bias=jnp.full((2,), 2)),
+        ),
+    )
+
+    result = map_nodes_of_type(
+        Linear,
+        lambda linear: Linear(weight=linear.weight + 1, bias=linear.bias),
+        block,
+    )
+
+    assert isinstance(result.matrix, ValueWeightMatrix)
+    assert jnp.array_equal(result.matrix.weights, block.matrix.weights)
+    assert jnp.all(result.linears[0].weight == 2)
+    assert jnp.all(result.linears[1].weight == 3)
+    assert jnp.all(result.linears[0].bias == 1)
+
+
+def test_map_nodes_of_type_with_path_passes_node_path() -> None:
+    block = Block(
+        matrix=_value_matrix(),
+        linears=(Linear(weight=jnp.ones((2, 2)), bias=jnp.ones((2,))),),
+    )
+
+    result = map_nodes_of_type_with_path(
+        Linear,
+        lambda path, linear: Linear(weight=linear.weight, bias=jnp.array([len(path)])),
+        block,
+    )
+
+    assert jnp.array_equal(result.linears[0].bias, jnp.array([2]))
+
+
+def test_select_nodes_of_type_returns_selected_nodes_with_paths() -> None:
+    block = Block(
+        matrix=_value_matrix(),
+        linears=(
+            Linear(weight=jnp.ones((2, 2)), bias=jnp.ones((2,))),
+            Linear(weight=jnp.full((2, 2), 2), bias=jnp.full((2,), 2)),
+        ),
+    )
+
+    selected_nodes = select_nodes_of_type(Linear, block)
+
+    assert [(path, node.weight[0, 0].item()) for path, node in selected_nodes] == [
+        ((".linears", "[0]"), 1.0),
+        ((".linears", "[1]"), 2.0),
+    ]
