@@ -8,6 +8,7 @@ from fish_speech.models.dac.modded_dac import DAC
 from jax import numpy as jnp
 
 from lalamo.audio.tts_codec import TTSMessage
+from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.loaders.fishaudio_loaders import (
     load_descript_audio_codec,
 )
@@ -15,12 +16,11 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
     instantiate_dac_config_from_fishaudio_config,
     load_fishaudio_text_decoder,
 )
-from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.sampling import SamplingPolicy
 from lalamo.utils.torch_interop import torch_to_jax
-from tests.common import assert_close, skip_on_gpu
+from tests.common import assert_close
 from tests.tts.fishaudio.fishaudio_sampling import sampling_params_from_policy
 from tests.tts.fishaudio.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
@@ -32,10 +32,8 @@ from .fishaudio_torch_stuff import from_fish_audio_config, prepare_state_dict_fo
 _testlog = logging.getLogger("tts_test_logger")
 
 
-@torch.no_grad()
-def test_decode_one_token_matches_pytorch(fish_audio_local_model_path: Path) -> None:
-    skip_on_gpu("Flaky on GPU due to torch/jax inconsistencies")
-
+@torch.no_grad
+def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
     test_text = "this is a test message with speaker 0"
     tts_message = TTSMessage(content=test_text, speaker_id="speaker:0", style="interleave")
 

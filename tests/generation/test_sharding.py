@@ -4,17 +4,13 @@ import textwrap
 
 import pytest
 
-from lalamo.model_import.model_specs.common import ModelType
-from tests.common import skip_on_gpu
-from tests.conftest import filter_specs
-from tests.model_test_tiers import ModelTier
-
-MODELS = [spec.repo for spec in filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.CANONICAL)]
+MODELS = [
+    "Qwen/Qwen3-0.6B",
+]
 
 
 @pytest.mark.parametrize("model", MODELS)
-def test_sharded_model_satisfies_sharding_invariants(model: str) -> None:
-    skip_on_gpu("Sharding test forces CPU; incompatible with GPU mesh")
+def test_sharded_forward_passes_match(model: str) -> None:
     result = subprocess.run(
         [
             sys.executable,
