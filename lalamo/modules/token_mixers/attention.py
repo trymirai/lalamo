@@ -80,18 +80,20 @@ def dot_product_attention(
         keys_head_first,
         "heads dst_tokens channels, heads src_tokens channels -> heads dst_tokens src_tokens",
     )
-    if mask is not None:
-        attention_logits = jnp.where(
-            mask,
-            attention_logits,
-            jnp.array(float("-inf"), dtype=attention_logits.dtype),
-        )
     if scale is None:
         scale = head_dim**-0.5
     else:
         scale = float(scale)
     attention_logits = attention_logits * scale
     attention_logits = apply_soft_capping(attention_logits, logit_soft_cap)
+    if bias is not None:
+        attention_logits = attention_logits + bias
+    if mask is not None:
+        attention_logits = jnp.where(
+            mask,
+            attention_logits,
+            jnp.array(float("-inf"), dtype=attention_logits.dtype),
+        )
     attention_weights = jax.nn.softmax(attention_logits, axis=-1)
     return einsum(
         attention_weights,
@@ -112,6 +114,22 @@ def stable_reduction_attention(
     tile_size: int,
     upcast_dtype: DTypeLike | None,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
+    """
+    Stable-reduction dot-product attention via fixed-size tiled parallel scan.
+
+    Standard dot-product attention reduces over the full key sequence length.
+    When JAX JIT-compiles this operation, different sequence lengths produce
+    different XLA reduction trees, which changes floating-point rounding and
+    therefore changes greedy (argmax) token choices at close-call positions.
+
+    This replaces the variable-length reduction with a parallel
+    `jax.lax.associative_scan` over fixed-size tiles, using the online softmax
+    algorithm. All tiles are scored in a single batched einsum, then accumulated
+    via a tree-parallel reduction whose combine kernel shape depends only on
+    (num_heads, query_len, head_dim) — never on source sequence length. XLA
+    therefore compiles identical kernels for any KV-cache size, making greedy
+    token choices deterministic.
+    """
     original_dtype = queries.dtype
     accumulation_dtype = upcast_dtype or original_dtype
 
