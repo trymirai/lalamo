@@ -14,7 +14,7 @@ core_llm_specs = filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=Mode
 
 @pytest.fixture(params=mark_by_size(core_llm_specs), ids=[spec.repo for spec in core_llm_specs])
 def language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) -> LanguageModel:
-    model_dir = convert_model(request.param.repo)
+    model_dir = convert_model(request.param.repo, cached=True)
     return LanguageModelConfig.load_model(model_dir)
 
 

@@ -10,9 +10,10 @@ PARAM_UNITS = ("", "K", "M", "B")
 
 
 class ModelTier(IntEnum):
-    CORE = 0
-    STANDARD = 1
-    EXTRA = 2
+    CANONICAL = 0
+    CORE = 1
+    STANDARD = 2
+    EXTRA = 3
 
 
 class ModelSize(IntEnum):
@@ -40,7 +41,7 @@ def model_size(spec: ModelSpec) -> ModelSize:
 MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = (
     # Liquid
     ("mlx-community/LFM2-350M-8bit", ModelTier.CORE),
-    ("LiquidAI/LFM2-700M", ModelTier.CORE),
+    ("LiquidAI/LFM2-700M", ModelTier.STANDARD),
     ("LiquidAI/LFM2.5-350M", ModelTier.CORE),
     ("mlx-community/LFM2-700M-4bit", ModelTier.STANDARD),
     ("LiquidAI/LFM2-2.6B", ModelTier.STANDARD),
@@ -69,7 +70,7 @@ MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = (
     # DeepSeek
     ("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", ModelTier.STANDARD),
     # Gemma
-    ("google/gemma-3-1b-it", ModelTier.CORE),
+    ("google/gemma-3-1b-it", ModelTier.CANONICAL),
     ("google/gemma-2-2b-it", ModelTier.STANDARD),
     ("mlx-community/gemma-3-1b-it-4bit", ModelTier.STANDARD),
     ("google/gemma-3-4b-it", ModelTier.STANDARD),
@@ -108,7 +109,7 @@ MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = (
     # Essential AI
     ("EssentialAI/rnj-1-instruct", ModelTier.EXTRA),
     # Qwen2.5
-    ("Qwen/Qwen2.5-0.5B-Instruct", ModelTier.CORE),
+    ("Qwen/Qwen2.5-0.5B-Instruct", ModelTier.STANDARD),
     ("Qwen/Qwen2.5-7B-Instruct", ModelTier.STANDARD),
     ("Qwen/Qwen2.5-1.5B-Instruct", ModelTier.EXTRA),
     ("Qwen/Qwen2.5-3B-Instruct", ModelTier.EXTRA),

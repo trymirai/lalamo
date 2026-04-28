@@ -4,11 +4,12 @@ import textwrap
 
 import pytest
 
+from lalamo.model_import.model_specs.common import ModelType
 from tests.common import skip_on_gpu
+from tests.conftest import filter_specs
+from tests.model_test_tiers import ModelTier
 
-MODELS = [
-    "Qwen/Qwen3-0.6B",
-]
+MODELS = [spec.repo for spec in filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.CANONICAL)]
 
 
 @pytest.mark.parametrize("model", MODELS)
