@@ -3,20 +3,10 @@ import os
 # Must run before importing jax / tensorflow, this hides the XLA optimization logs
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
-from lalamo.checkpoint_manager import CheckpointManager
-from lalamo.commands import (
-    CollectTracesCallbacks,
-    ConversionCallbacks,
-    EstimateBatchsizeCallbacks,
-    Precision,
-    TrainCallbacks,
-    collect_traces,
-    convert,
-    estimate_batchsize,
-    train,
-)
-from lalamo.message_processor import (
+from lalamo.chat_codec import (
     AssistantMessage,
+    ChatCodec,
+    ChatCodecConfig,
     ContentBlock,
     Image,
     Message,
@@ -24,26 +14,21 @@ from lalamo.message_processor import (
     ToolSchema,
     UserMessage,
 )
+from lalamo.checkpoint_manager import CheckpointManager
 from lalamo.model_import import ModelSpec, import_model
 from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFieldSpec, ModelType, UseCase, WeightsType
 from lalamo.models import ClassifierModel, LanguageModel
-from lalamo.speculator import (
-    CollectTracesEvent,
-    SpeculatorTrainingEvent,
-)
 
 __version__ = "0.6.13"
 
 __all__ = [
     "AssistantMessage",
+    "ChatCodec",
+    "ChatCodecConfig",
     "CheckpointManager",
     "ClassifierModel",
-    "CollectTracesCallbacks",
-    "CollectTracesEvent",
     "ConfigMap",
     "ContentBlock",
-    "ConversionCallbacks",
-    "EstimateBatchsizeCallbacks",
     "FileSpec",
     "Image",
     "JSONFieldSpec",
@@ -51,17 +36,10 @@ __all__ = [
     "Message",
     "ModelSpec",
     "ModelType",
-    "Precision",
-    "SpeculatorTrainingEvent",
     "SystemMessage",
     "ToolSchema",
-    "TrainCallbacks",
     "UseCase",
     "UserMessage",
     "WeightsType",
-    "collect_traces",
-    "convert",
-    "estimate_batchsize",
     "import_model",
-    "train",
 ]

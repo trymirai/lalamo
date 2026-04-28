@@ -1,7 +1,8 @@
 import jax.numpy as jnp
-from jaxtyping import DTypeLike
+from jaxtyping import Array, DTypeLike
 
 __all__ = [
+    "cast_if_float",
     "dtype_to_str",
     "str_to_dtype",
 ]
@@ -41,3 +42,7 @@ def dtype_to_str(dtype: DTypeLike) -> str:
 
 def str_to_dtype(dtype_str: str) -> jnp.dtype:
     return {str(dtype): dtype for dtype in _ALL_DTYPES}[dtype_str]
+
+
+def cast_if_float(array: Array, dtype: DTypeLike) -> Array:
+    return array.astype(dtype) if jnp.issubdtype(array.dtype, jnp.floating) else array

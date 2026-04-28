@@ -1,103 +1,28 @@
-from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass, field, replace
-from itertools import batched
-from pathlib import Path
+from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import NamedTuple
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
-from einops import rearrange, repeat
-from jaxtyping import Array, Bool, Float, Int, Key
+from einops import rearrange
+from jax import Array
+from jaxtyping import Bool, Float, Int, Key
+from tokenizers import Tokenizer
 
-from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
-from lalamo.modules import (
-    Decoder,
-    DecoderConfig,
-    ForwardPassMode,
-    Keychain,
-    LalamoModule,
-    ShardingConfig,
-    get_current_sharding_config,
-    pad_and_apply_data_sharding,
-)
-from lalamo.modules.decoder import DecoderForwardPassConfig
-from lalamo.modules.mlp import MLPForwardPassConfig
-from lalamo.modules.token_mixers.common import AttentionForwardPassConfig, AttentionImplementation
-from lalamo.modules.token_mixers.state import State
-from lalamo.modules.transformer import TransformerForwardPassConfig
-from lalamo.modules.transformer_layer import TransformerLayerForwardPassConfig
+from lalamo.chat_codec import AssistantMessage, ChatCodec, ChatCodecConfig, Message
+from lalamo.initializer import Initializer
+from lalamo.model import Model, ModelConfig
+from lalamo.modules import Decoder, DecoderConfig, ForwardPassMode, Keychain
+from lalamo.modules.token_mixer import State
 from lalamo.modules.utils import call_vmapped
-from lalamo.sampling import SamplingPolicy, make_policy
-from lalamo.weight_matrix import GradientEstimator, MatmulConfig
-
-from .common import (
-    BatchSizeInfo,
-    BatchSizesComputedEvent,
-    InferenceConfig,
-    TextModel,
-    TextModelConfig,
-)
-from .compile_helpers import compile_generate_tokens
-from .lm_helpers import (
-    decrease_batchsize_on_oom,
-    estimate_batchsizes_from_vram,
-    merge_small_buckets,
-    pad_keys_to_size,
-    pad_sequences,
-)
+from lalamo.sampling import SamplingPolicy
 
 __all__ = [
-    "ForwardPassConfig",
     "GenerationConfig",
-    "GenerationTraceConfig",
+    "GenerationResults",
     "LanguageModel",
     "LanguageModelConfig",
 ]
-
-
-_COMPILED_PROMPT_LENGTHS = [256 * 2**i for i in range(12)]
-
-
-@dataclass(frozen=True)
-class ForwardPassConfig:
-    decoder: DecoderForwardPassConfig = field(default_factory=DecoderForwardPassConfig)
-    deterministic_ops: bool = False
-    xla_autotune_level: int = 0
-
-    @staticmethod
-    def init(
-        *,
-        attention_implementation: AttentionImplementation = AttentionImplementation.STABLE_REDUCTION,
-        attention_upcast_dtype: "jnp.dtype | None" = jnp.float32,
-        moe_chunk_size_ratio: float = 0.2,
-        gradient_estimator: GradientEstimator = GradientEstimator.NONE,
-        deterministic_ops: bool = False,
-        xla_autotune_level: int = 0,
-    ) -> "ForwardPassConfig":
-        arrays = MatmulConfig(
-            gradient_estimator=gradient_estimator,
-        )
-        return ForwardPassConfig(
-            decoder=DecoderForwardPassConfig(
-                transformer=TransformerForwardPassConfig(
-                    layer=TransformerLayerForwardPassConfig(
-                        mixer=AttentionForwardPassConfig(
-                            implementation=attention_implementation,
-                            upcast_dtype=attention_upcast_dtype,
-                            arrays=arrays,
-                        ),
-                        mlp=MLPForwardPassConfig(
-                            moe_chunk_size_ratio=moe_chunk_size_ratio,
-                            matmul_config=arrays,
-                        ),
-                    ),
-                ),
-            ),
-            deterministic_ops=deterministic_ops,
-            xla_autotune_level=xla_autotune_level,
-        )
 
 
 class PrefillResults(NamedTuple):
@@ -114,63 +39,16 @@ class DecodingState(NamedTuple):
     sampling_policy: SamplingPolicy
 
 
-class StepTrace(NamedTuple):
-    top_k_ids: Int[Array, "batch k"]
-    top_k_logits: Float[Array, "batch k"]
-    logsumexp: Float[Array, " batch"]
-    activation_output: Float[Array, "batch hidden"]
-    layer_output: Float[Array, "batch n_layers hidden"]
-    layer_indices: Int[Array, " n_layers"]
-
-    def _collapse_scan_layer_indices(self) -> Int[Array, " n_layers"]:
-        first_step_layer_indices = self.layer_indices[0]
-        return eqx.error_if(
-            first_step_layer_indices,
-            jnp.logical_not(jnp.all(self.layer_indices == first_step_layer_indices[None, :])),
-            "layer_indices must stay constant across generation steps.",
-        )
-
-    def rearrange_from_scan(self) -> "StepTrace":
-        return StepTrace(
-            top_k_ids=rearrange(self.top_k_ids, "generation_step batch top_k -> batch generation_step top_k"),
-            top_k_logits=rearrange(self.top_k_logits, "generation_step batch top_k -> batch generation_step top_k"),
-            logsumexp=rearrange(self.logsumexp, "generation_step batch -> batch generation_step"),
-            activation_output=rearrange(
-                self.activation_output,
-                "generation_step batch hidden -> batch generation_step hidden",
-            ),
-            layer_output=rearrange(
-                self.layer_output,
-                "generation_step batch traced_layer hidden -> batch traced_layer generation_step hidden",
-            ),
-            layer_indices=self._collapse_scan_layer_indices(),
-        )
-
-
 class GenerationStepResults(NamedTuple):
     token_ids: Int[Array, " batch"]
     top_k_token_ids: Int[Array, " batch k"] | None
     top_k_token_logits: Float[Array, " batch k"] | None
-    trace: StepTrace | None = None
 
 
 class GenerationResults(NamedTuple):
     token_ids: Int[Array, "batch response_tokens"]
     top_k_token_ids: Int[Array, "batch response_tokens k"] | None
     top_k_token_logits: Float[Array, "batch response_tokens k"] | None
-    trace: StepTrace | None = None
-
-
-@dataclass(frozen=True)
-class GenerationTraceConfig:
-    num_logits_per_token: int = 1024
-    trace_layers: tuple[int, ...] = ()
-
-    def resolve_layers(self, num_layers: int) -> tuple[int, ...]:
-        resolved = tuple(i if i >= 0 else num_layers + i for i in self.trace_layers)
-        if any(i < 0 or i >= num_layers for i in resolved):
-            raise ValueError("trace_layers index out of range.")
-        return tuple(sorted(set(resolved)))
 
 
 @dataclass(frozen=True)
@@ -185,160 +63,76 @@ class GenerationConfig:
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
 
-    def default_policy(self, vocab_size: int) -> SamplingPolicy:
-        return make_policy(
-            vocab_size=vocab_size,
-            temperature=self.temperature,
-            top_k=self.top_k,
-            top_p=self.top_p,
-            min_p=self.min_p,
-            banned_tokens=self.banned_tokens,
-            repetition_penalty=self.repetition_penalty,
-            presence_penalty=self.presence_penalty,
-            frequency_penalty=self.frequency_penalty,
-        )
+    def default_policy(self) -> SamplingPolicy:
+        return SamplingPolicy.init(self.temperature, self.top_k, self.top_p, self.min_p, self.banned_tokens)
 
 
 @dataclass(frozen=True)
-class LanguageModelConfig(TextModelConfig[DecoderConfig]):
+class LanguageModelConfig(ModelConfig[ChatCodecConfig]):
+    decoder_config: DecoderConfig
     generation_config: GenerationConfig
 
-    def init(
-        self,
-        model: LalamoModule,
-        message_processor: MessageProcessor,
-    ) -> "LanguageModel":
-        assert isinstance(model, Decoder)
-        return LanguageModel(self, model, message_processor)
-
-    @classmethod
-    def load_model(cls, path: Path | str) -> "LanguageModel":
-        result = super().load_model(path)
-        assert isinstance(result, LanguageModel)
-        return result
+    def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "LanguageModel":
+        decoder = self.decoder_config.init(initializer)
+        token_codec = self.token_codec_config.init(tokenizer)
+        return LanguageModel(self, token_codec, decoder)
 
 
-class Chunk(eqx.Module):
-    tokens: Int[Array, "num_chunks batch chunk_size"]
-    indices: Int[Array, "num_chunks batch chunk_size"]
-    sequence_ends: Int[Array, "num_chunks batch"]
-    is_last_token_inside: Bool[Array, "num_chunks batch"]
+class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
+    token_codec: ChatCodec
+    decoder: Decoder
 
-
-class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     def default_sampling_policy(self) -> SamplingPolicy:
         return self.config.generation_config.default_policy(self.model.vocab_size)
 
-    @eqx.filter_jit
-    def _make_chunks(
-        self,
-        token_ids: Int[Array, "batch tokens"],
-        lengths_without_padding: Int[Array, " batch"] | None,
-        chunk_size: int,
-    ) -> Chunk:
-        batch_size, sequence_length = token_ids.shape
-        if lengths_without_padding is None:
-            lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
-
-        # If all sequences fit in a single chunk, use sequence_length as the chunk size
-        chunk_size = min(chunk_size, sequence_length)
-
-        n_chunks = (sequence_length + chunk_size - 1) // chunk_size
-        padded_length = n_chunks * chunk_size
-
-        token_ids = jnp.pad(token_ids, [(0, 0), (0, padded_length - sequence_length)])
-
-        # Reshape tokens to (num_chunks, batch, chunk_size)
-        tokens = rearrange(
-            token_ids,
-            "batch (num_chunks chunk_size) -> num_chunks batch chunk_size",
-            chunk_size=chunk_size,
+    def _trim_at_eos(self, token_ids: list[int]) -> list[int]:
+        if not self.config.generation_config.stop_token_ids:
+            return token_ids
+        stop_token_ids = set(self.config.generation_config.stop_token_ids)
+        response_length = next(
+            (idx + 1 for idx, token_id in enumerate(token_ids) if token_id in stop_token_ids),
+            len(token_ids),
         )
+        return token_ids[:response_length]
 
-        # Create position indices (num_chunks, batch, chunk_size)
-        indices = jnp.arange(padded_length, dtype=jnp.int32)
-        indices = repeat(indices, "token_idx -> batch token_idx", batch=batch_size)
-        indices = rearrange(
-            indices,
-            "batch (num_chunks chunk_size) -> num_chunks batch chunk_size",
-            chunk_size=chunk_size,
-        )
-
-        # sequence_ends: for each chunk, how many valid tokens per batch item
-        chunk_starts = jnp.arange(n_chunks, dtype=jnp.int32) * chunk_size
-        sequence_ends = jnp.clip(
-            lengths_without_padding[None, :] - chunk_starts[:, None],
-            0,
-            chunk_size,
-        )
-
-        # last_token_inside: whether the last valid token (at index length-1) is in this chunk
-        last_token_idx = lengths_without_padding - 1
-        chunk_ends = chunk_starts + chunk_size
-        is_last_token_inside = (last_token_idx[None, :] >= chunk_starts[:, None]) & (
-            last_token_idx[None, :] < chunk_ends[:, None]
-        )
-
-        return Chunk(
-            tokens=tokens,
-            indices=indices,
-            sequence_ends=sequence_ends,
-            is_last_token_inside=is_last_token_inside,
-        )
-
-    @eqx.filter_jit
     def _prefill(
         self,
         token_ids: Int[Array, "batch tokens"],
         state_capacity: int,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
-        chunk_size: int = 512,  # vllm default
         *,
         keychain: Keychain,
     ) -> PrefillResults:
         batch_size, sequence_length = token_ids.shape
-
         if lengths_without_padding is None:
             lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
 
-        chunks = self._make_chunks(token_ids, lengths_without_padding, chunk_size)
-
-        num_chunks, _, chunk_size = chunks.tokens.shape
-        state_capacity = max(state_capacity, num_chunks * chunk_size)
-
-        state = self.model.init_static_state(batch_size, state_capacity)
-        logits_like = jnp.zeros((batch_size, self.model.vocab_size), dtype=jnp.float32)
-
-        def apply_chunk(state_and_logits: tuple, chunk: Chunk) -> tuple:
-            state, prev_logits = state_and_logits
-            decoder_outputs = self.model(
-                chunk.tokens,
-                chunk.indices,
-                state,
-                return_updated_state=True,
-                lengths_without_padding=chunk.sequence_ends,
-                forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-                forward_pass_config=forward_pass_config.decoder,
-                keychain=keychain,
-            )
-            assert decoder_outputs.updated_state is not None
-
-            chunk_logits = decoder_outputs.logits[jnp.arange(batch_size), chunk.sequence_ends - 1, :]
-            new_logits = jnp.where(chunk.is_last_token_inside[:, None], chunk_logits, prev_logits)
-
-            return (decoder_outputs.updated_state, new_logits), None
-
-        (final_state, final_logits), _ = jax.lax.scan(
-            apply_chunk,
-            (state, logits_like),
-            chunks,
+        token_positions = jnp.broadcast_to(
+            jnp.arange(sequence_length, dtype=jnp.int32),
+            (batch_size, sequence_length),
         )
+        state = self.decoder.init_static_state(
+            batch_size,
+            state_capacity,
+            self.decoder.embedding.embedding_matrix.dtype,
+        )
+        decoder_result = self.decoder(
+            token_ids=token_ids,
+            token_positions=token_positions,
+            state=state,
+            return_updated_state=True,
+            lengths_without_padding=lengths_without_padding,
+            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
+            keychain=keychain,
+        )
+        assert decoder_result.updated_state is not None
 
+        last_token_indices = jnp.maximum(lengths_without_padding - 1, 0)
+        last_token_logits = decoder_result.logits[jnp.arange(batch_size), last_token_indices, :]
         return PrefillResults(
-            last_token_logits=final_logits,
-            last_token_indices=jnp.maximum(lengths_without_padding - 1, 0),
-            state=final_state,
+            last_token_logits=last_token_logits.astype(jnp.float32),
+            last_token_indices=last_token_indices,
+            state=decoder_result.updated_state,
         )
 
     def generate_tokens(
@@ -348,491 +142,119 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         prompt_lengths_without_padding: Int[Array, " batch"] | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
         num_top_logits_to_return: int | None = None,
-        generation_trace_config: GenerationTraceConfig | None = None,
         *,
         keychain: Keychain,
     ) -> GenerationResults:
-        batch_size, sequence_length = prompt_token_ids.shape
-
-        if prompt_lengths_without_padding is None:
-            prompt_lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
-
-        sampling_policy = self.default_sampling_policy()
-        if generation_config is not None:
-            sampling_policy = generation_config.default_policy(self.model.vocab_size)
-
-        if eos_token_ids is None:
-            eos_token_ids = jnp.array(self.config.generation_config.stop_token_ids, dtype=jnp.int32)
-
-        trace_config = generation_trace_config
-        hidden_dim = self.model.transformer.config.model_dim
-        traced_layers: tuple[int, ...] = ()
-        traced_layers_array = jnp.zeros(0, dtype=jnp.int32)
-        trace_top_k = 0
-        if trace_config is not None:
-            traced_layers = trace_config.resolve_layers(len(self.model.transformer.layers))
-            traced_layers_array = jnp.asarray(traced_layers, dtype=jnp.int32)
-            trace_top_k = min(trace_config.num_logits_per_token, self.model.vocab_size)
-
-        if keychain.vmapped_keys.shape != (batch_size,):
-            raise ValueError(
-                f"Expected 'vmapped_keys' to have shape {(batch_size,)}, got {keychain.vmapped_keys.shape}",
-            )
         if max_output_length < 1:
             raise ValueError("max_output_length must be at least 1.")
 
+        batch_size, prompt_length = prompt_token_ids.shape
+        sampling_policy = self.default_sampling_policy()
+        if generation_config is not None:
+            sampling_policy = generation_config.default_policy()
+        if eos_token_ids is None:
+            eos_token_ids = jnp.asarray(self.config.generation_config.stop_token_ids, dtype=jnp.int32)
+
+        prefill_keychain, sampling_keychain, decoding_keychain = keychain.split(3)
         prefill_results = self._prefill(
             prompt_token_ids,
-            sequence_length + max_output_length,
+            prompt_length + max_output_length + 1,
             prompt_lengths_without_padding,
-            forward_pass_config=forward_pass_config,
-            keychain=keychain,
+            keychain=prefill_keychain.broadcast((batch_size,)),
         )
-
-        initial_sampling_policy = vmap(sampling_policy.init)(prompt_token_ids, prompt_lengths_without_padding)
-
         initial_state = DecodingState(
-            prefill_results.last_token_logits,
-            prefill_results.last_token_indices,
-            prefill_results.state,
-            jnp.zeros(batch_size, dtype=jnp.bool),
-            initial_sampling_policy,
+            last_token_logits=prefill_results.last_token_logits,
+            last_token_indices=prefill_results.last_token_indices,
+            state=prefill_results.state,
+            stop_flags=jnp.zeros(batch_size, dtype=jnp.bool_),
         )
+
+        def sample_token(
+            logits: Float[Array, " vocabulary"],
+            sample_key: Key[Array, ""],
+        ) -> Int[Array, ""]:
+            return jax.random.categorical(sample_key, logits)
 
         def loop_iteration(
             state: DecodingState,
-            step_vmapped_keys: Key[Array, " batch"],
+            step_keys: tuple[Key[Array, " batch"], Key[Array, " batch"]],
         ) -> tuple[DecodingState, GenerationStepResults]:
-            def sample_and_update() -> tuple[DecodingState, GenerationStepResults]:
-                upcasted_logits = state.last_token_logits.astype(jnp.float32)
-                processed_logits = call_vmapped(sampling_policy.process_logits, upcasted_logits)
+            sampling_keys, decoding_keys = step_keys
+            processed_logits = call_vmapped(
+                sampling_policy.process_logits,
+                state.last_token_logits.astype(jnp.float32),
+            )
+            next_token_ids = call_vmapped(sample_token, processed_logits, sampling_keys)
+            next_token_ids = jnp.where(state.stop_flags, jnp.zeros(batch_size, dtype=jnp.int32), next_token_ids)
 
-                def sample_processed_logits(
-                    logits: Float[Array, " vocabulary"],
-                    *,
-                    keychain: Keychain,
-                ) -> Int[Array, ""]:
-                    return jax.random.categorical(keychain.vmapped_keys, logits)
+            if num_top_logits_to_return is None:
+                top_k_token_ids = None
+                top_k_token_logits = None
+            else:
+                top_k_token_logits, top_k_token_ids = jax.lax.top_k(processed_logits, num_top_logits_to_return)
 
-                next_token_ids = call_vmapped(
-                    sample_processed_logits,
-                    processed_logits,
-                    keychain=Keychain(vmapped_keys=step_vmapped_keys, batch_key=keychain.batch_key),
-                )
-                next_token_ids = jnp.where(state.stop_flags, jnp.zeros(batch_size, dtype=jnp.int32), next_token_ids)
-                if num_top_logits_to_return is not None:
-                    next_top_k_token_logits, next_top_k_token_ids = jax.lax.top_k(
-                        processed_logits,
-                        num_top_logits_to_return,
-                    )
-                else:
-                    next_top_k_token_ids = None
-                    next_top_k_token_logits = None
-                next_token_indices = state.last_token_indices + 1
+            next_token_indices = state.last_token_indices + 1
+            next_stop_flags = state.stop_flags | jnp.any(next_token_ids[:, None] == eos_token_ids[None, :], axis=-1)
+            forward_pass_mode = ForwardPassMode.MULTI_TOKEN
+            if batch_size == 1:
+                forward_pass_mode = ForwardPassMode.SINGLE_TOKEN
+            decoder_result = self.decoder(
+                token_ids=next_token_ids[:, None],
+                token_positions=next_token_indices[:, None],
+                state=state.state,
+                return_updated_state=True,
+                forward_pass_mode=forward_pass_mode,
+                keychain=Keychain(vmapped_keys=decoding_keys, batch_key=decoding_keychain.batch_key),
+            )
+            assert decoder_result.updated_state is not None
 
-                stop_flags = state.stop_flags | jnp.any(next_token_ids[:, None] == eos_token_ids[None, :], axis=-1)
+            return (
+                DecodingState(
+                    last_token_logits=decoder_result.logits[:, 0, :].astype(jnp.float32),
+                    last_token_indices=next_token_indices,
+                    state=decoder_result.updated_state,
+                    stop_flags=next_stop_flags,
+                ),
+                GenerationStepResults(
+                    token_ids=next_token_ids,
+                    top_k_token_ids=top_k_token_ids,
+                    top_k_token_logits=top_k_token_logits,
+                ),
+            )
 
-                if batch_size == 1:
-                    forward_pass_mode = ForwardPassMode.SINGLE_TOKEN
-                else:
-                    forward_pass_mode = ForwardPassMode.MULTI_TOKEN
+        sampling_keys = sampling_keychain.rolling_broadcast((max_output_length, batch_size)).vmapped_keys
+        decoding_keys = decoding_keychain.rolling_broadcast((max_output_length, batch_size)).vmapped_keys
+        _, generated = jax.lax.scan(loop_iteration, initial_state, (sampling_keys, decoding_keys))
 
-                decoder_outputs = self.model(
-                    next_token_ids[:, None],
-                    next_token_indices[:, None],
-                    state.state,
-                    return_updated_state=True,
-                    return_activation_trace=trace_config is not None,
-                    forward_pass_mode=forward_pass_mode,
-                    forward_pass_config=forward_pass_config.decoder,
-                    keychain=keychain,
-                )
-                assert decoder_outputs.updated_state is not None, "updated_state should not be None"
-                new_state = DecodingState(
-                    decoder_outputs.logits.squeeze(1).astype(jnp.float32),
-                    next_token_indices,
-                    decoder_outputs.updated_state,
-                    stop_flags,
-                    vmap(lambda policy, token: policy.update(token))(state.sampling_policy, next_token_ids),
-                )
-                trace = None
-                if trace_config is not None:
-                    assert decoder_outputs.activation_trace is not None
-                    output_logits = new_state.last_token_logits
-                    trace_logits, trace_ids = jax.lax.top_k(output_logits, trace_top_k)
-                    trace_logsumexp = jax.nn.logsumexp(output_logits, axis=-1)
-                    layer_results = decoder_outputs.activation_trace.layer_results
-                    trace = StepTrace(
-                        top_k_ids=trace_ids,
-                        top_k_logits=trace_logits.astype(jnp.bfloat16),
-                        logsumexp=trace_logsumexp,
-                        activation_output=decoder_outputs.activation_trace.output_norm.squeeze(1).astype(jnp.bfloat16),
-                        layer_output=(
-                            jnp.stack(
-                                [layer_results[i].outputs.squeeze(1).astype(jnp.bfloat16) for i in traced_layers],
-                                axis=1,
-                            )
-                            if traced_layers
-                            else jnp.zeros((batch_size, 0, hidden_dim), dtype=jnp.bfloat16)
-                        ),
-                        layer_indices=traced_layers_array,
-                    )
-                return new_state, GenerationStepResults(
-                    next_token_ids,
-                    next_top_k_token_ids,
-                    next_top_k_token_logits,
-                    trace,
-                )
-
-            def pad_and_repeat_state() -> tuple[DecodingState, GenerationStepResults]:
-                (batch_size,) = state.stop_flags.shape
-                pad_token = jnp.zeros(batch_size, dtype=jnp.int32)
-                if num_top_logits_to_return is not None:
-                    top_k_token_ids = jnp.zeros((batch_size, num_top_logits_to_return), dtype=jnp.int32)
-                    top_k_token_logits = jnp.zeros((batch_size, num_top_logits_to_return), dtype=jnp.float32)
-                else:
-                    top_k_token_ids = None
-                    top_k_token_logits = None
-                trace = None
-                if trace_config is not None:
-                    trace = StepTrace(
-                        top_k_ids=jnp.zeros((batch_size, trace_top_k), dtype=jnp.int32),
-                        top_k_logits=jnp.zeros((batch_size, trace_top_k), dtype=jnp.bfloat16),
-                        logsumexp=jnp.zeros(batch_size, dtype=jnp.float32),
-                        activation_output=jnp.zeros((batch_size, hidden_dim), dtype=jnp.bfloat16),
-                        layer_output=jnp.zeros((batch_size, len(traced_layers), hidden_dim), dtype=jnp.bfloat16),
-                        layer_indices=traced_layers_array,
-                    )
-                return state, GenerationStepResults(pad_token, top_k_token_ids, top_k_token_logits, trace)
-
-            return jax.lax.cond(jnp.all(state.stop_flags), pad_and_repeat_state, sample_and_update)
-
-        per_step_vmapped_keys: Key[Array, "max_len batch"] = keychain.rolling_broadcast(
-            (max_output_length, *keychain.vmapped_keys.shape),
-        ).vmapped_keys
-        _, generated = jax.lax.scan(loop_iteration, initial_state, per_step_vmapped_keys)
-
-        token_ids = rearrange(generated.token_ids, "iteration batch -> batch iteration")
-
-        if num_top_logits_to_return is not None:
-            top_k_token_ids = rearrange(generated.top_k_token_ids, "iteration batch k -> batch iteration k")
-            top_k_token_logits = rearrange(generated.top_k_token_logits, "iteration batch k -> batch iteration k")
-        else:
+        token_ids = rearrange(generated.token_ids, "step batch -> batch step")
+        if num_top_logits_to_return is None:
             top_k_token_ids = None
             top_k_token_logits = None
+        else:
+            top_k_token_ids = rearrange(generated.top_k_token_ids, "step batch k -> batch step k")
+            top_k_token_logits = rearrange(generated.top_k_token_logits, "step batch k -> batch step k")
 
-        trace = generated.trace.rearrange_from_scan() if trace_config is not None else None
-        return GenerationResults(token_ids, top_k_token_ids, top_k_token_logits, trace)
-
-    def _generate_tokens_batch(
-        self,
-        batch: tuple[list[int], ...],
-        batch_vmapped_keys: tuple[Key[Array, ""], ...],
-        *,
-        generation_config: GenerationConfig | None,
-        inference_config: InferenceConfig,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
-        generation_trace_config: GenerationTraceConfig | None,
-        sharding_config: ShardingConfig | None,
-        keychain: Keychain,
-    ) -> Iterator[GenerationResults]:
-        if sharding_config is None:
-            sharding_config = get_current_sharding_config()
-
-        assert inference_config.batch_size is not None
-        batch_size = inference_config.batch_size
-
-        padded_token_ids = pad_sequences(batch, (batch_size, inference_config.padded_length), dtype=jnp.int32)
-
-        padded_lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
-        padded_lengths = jnp.pad(padded_lengths, (0, batch_size - len(batch)))
-
-        padded_vmapped_keys = pad_keys_to_size(batch_vmapped_keys, batch_size)
-
-        padded_token_ids, padded_lengths, padded_vmapped_keys = pad_and_apply_data_sharding(
-            (padded_token_ids, padded_lengths, padded_vmapped_keys),
-            sharding_config=sharding_config,
-            batch_axis=0,
+        return GenerationResults(
+            token_ids=token_ids,
+            top_k_token_ids=top_k_token_ids,
+            top_k_token_logits=top_k_token_logits,
         )
-
-        sharded_inference_config = replace(inference_config, batch_size=padded_token_ids.shape[0])
-        generate_tokens_fn = compile_generate_tokens(
-            self,
-            generation_config,
-            sharded_inference_config,
-            forward_pass_config=forward_pass_config,
-            generation_trace_config=generation_trace_config,
-            prompt_token_ids=padded_token_ids,
-            prompt_lengths_without_padding=padded_lengths,
-            keychain=Keychain(vmapped_keys=padded_vmapped_keys, batch_key=keychain.batch_key),
-        )
-        results = generate_tokens_fn(
-            self,
-            prompt_token_ids=padded_token_ids,
-            prompt_lengths_without_padding=padded_lengths,
-            keychain=Keychain(vmapped_keys=padded_vmapped_keys, batch_key=keychain.batch_key),
-        )
-        for i in range(len(batch)):
-            trace_i = None
-            if results.trace is not None:
-                trace_i = StepTrace(
-                    top_k_ids=results.trace.top_k_ids[i],
-                    top_k_logits=results.trace.top_k_logits[i],
-                    logsumexp=results.trace.logsumexp[i],
-                    activation_output=results.trace.activation_output[i],
-                    layer_output=results.trace.layer_output[i],
-                    layer_indices=results.trace.layer_indices,
-                )
-            yield GenerationResults(
-                token_ids=results.token_ids[i],
-                top_k_token_ids=results.top_k_token_ids[i] if results.top_k_token_ids is not None else None,
-                top_k_token_logits=results.top_k_token_logits[i] if results.top_k_token_logits is not None else None,
-                trace=trace_i,
-            )
-
-    def generate_tokens_many(
-        self,
-        tokenized: Iterable[list[int]],
-        generation_config: GenerationConfig | None = None,
-        inference_config: InferenceConfig = InferenceConfig(),
-        *,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
-        generation_trace_config: GenerationTraceConfig | None = None,
-        sharding_config: ShardingConfig | None = None,
-        keychain: Keychain,
-    ) -> Iterator[GenerationResults]:
-        tokenized = list(tokenized)  # load eagerly to RAM
-
-        if keychain.vmapped_keys.shape != (len(tokenized),):
-            raise ValueError(
-                f"Expected 'vmapped_keys' to have shape {(len(tokenized),)}, got {keychain.vmapped_keys.shape}",
-            )
-
-        def process_batches(batch_size: int) -> Iterator[GenerationResults]:
-            new_inference_config = replace(inference_config, batch_size=batch_size)
-
-            for batch_items in batched(zip(tokenized, keychain.vmapped_keys, strict=True), batch_size):
-                real_batch, batch_vmapped_keys = zip(*batch_items, strict=True)
-                yield from self._generate_tokens_batch(
-                    real_batch,
-                    batch_vmapped_keys,
-                    generation_config=generation_config,
-                    inference_config=new_inference_config,
-                    forward_pass_config=forward_pass_config,
-                    generation_trace_config=generation_trace_config,
-                    sharding_config=sharding_config,
-                    keychain=Keychain(
-                        vmapped_keys=jnp.asarray(batch_vmapped_keys),
-                        batch_key=keychain.batch_key,
-                    ),
-                )
-
-        assert inference_config.batch_size is not None
-        yield from decrease_batchsize_on_oom(
-            process_batches,
-            starting_batch_size=inference_config.batch_size,
-        )
-
-    def estimate_memory_consumption(
-        self,
-        generation_config: GenerationConfig | None = None,
-        inference_config: InferenceConfig = InferenceConfig(),
-        *,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
-        generation_trace_config: GenerationTraceConfig | None = None,
-        sharding_config: ShardingConfig | None = None,
-    ) -> int:
-        if sharding_config is None:
-            sharding_config = get_current_sharding_config()
-
-        assert inference_config.batch_size is not None
-        batch_size = inference_config.batch_size
-
-        dummy_token_ids = jnp.zeros((batch_size, inference_config.padded_length), dtype=jnp.int32)
-        dummy_lengths = jnp.zeros((batch_size,), dtype=jnp.int32)
-        dummy_keychain = Keychain.init(0, shape=(batch_size,))
-
-        dummy_token_ids, dummy_lengths, dummy_vmapped_keys = pad_and_apply_data_sharding(
-            (dummy_token_ids, dummy_lengths, dummy_keychain.vmapped_keys),
-            sharding_config=sharding_config,
-            batch_axis=0,
-        )
-        dummy_keychain = Keychain(vmapped_keys=dummy_vmapped_keys, batch_key=dummy_keychain.batch_key)
-
-        memory_analysis = compile_generate_tokens(
-            self,
-            generation_config=generation_config,
-            inference_config=replace(inference_config, batch_size=dummy_token_ids.shape[0]),
-            forward_pass_config=forward_pass_config,
-            generation_trace_config=generation_trace_config,
-            prompt_token_ids=dummy_token_ids,
-            prompt_lengths_without_padding=dummy_lengths,
-            keychain=dummy_keychain,
-        ).memory_analysis()
-
-        assert hasattr(memory_analysis, "argument_size_in_bytes")
-        assert hasattr(memory_analysis, "output_size_in_bytes")
-        assert hasattr(memory_analysis, "temp_size_in_bytes")
-
-        return (
-            memory_analysis.argument_size_in_bytes
-            + memory_analysis.output_size_in_bytes
-            + memory_analysis.temp_size_in_bytes
-        )
-
-    def _trim_at_eos(self, token_ids: list[int]) -> list[int]:
-        if not self.config.generation_config.stop_token_ids:
-            return token_ids
-        stop_set = set(self.config.generation_config.stop_token_ids)
-        end = next((i for i, token_id in enumerate(token_ids) if token_id in stop_set), len(token_ids))
-        return token_ids[: end + 1]
 
     def reply(
         self,
         messages: Iterable[Message],
         generation_config: GenerationConfig | None = None,
         *,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
-        sharding_config: ShardingConfig | None = None,
         keychain: Keychain,
     ) -> AssistantMessage:
-        if sharding_config is None:
-            sharding_config = get_current_sharding_config()
-
-        formatted_messages = self.message_processor.render_request(messages)
-        token_ids = jnp.array(self.message_processor.tokenize_text(formatted_messages), dtype=jnp.int32)[None, :]
-        vmapped_keys = keychain.vmapped_keys[None, ...]
-        token_ids, vmapped_keys = pad_and_apply_data_sharding(
-            (token_ids, vmapped_keys),
-            sharding_config=sharding_config,
-            batch_axis=0,
-        )
+        token_ids = jnp.asarray(self.token_codec.encode_request(messages), dtype=jnp.int32)[None, :]
         response_ids = self.generate_tokens(
             token_ids,
             generation_config,
-            forward_pass_config=forward_pass_config,
-            keychain=Keychain(vmapped_keys=vmapped_keys, batch_key=keychain.batch_key),
+            keychain=keychain.broadcast((1,)),
         ).token_ids[0]
-        trimmed_ids = self._trim_at_eos(response_ids.tolist())
-        response_text = self.message_processor.detokenize(trimmed_ids)
-        return self.message_processor.parse_response(response_text)
-
-    def reply_many(
-        self,
-        messages: Iterable[Iterable[Message]],
-        generation_config: GenerationConfig | None = None,
-        inference_config: InferenceConfig = InferenceConfig(),
-        *,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
-        sharding_config: ShardingConfig | None = None,
-        keychain: Keychain,
-        vram_bytes: int | None = None,
-        batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
-    ) -> Iterator[tuple[int, AssistantMessage]]:
-        messages = list(messages)  # eagerly load the dataset into RAM
-
-        if keychain.vmapped_keys.shape != (len(messages),):
-            raise ValueError(
-                f"Expected 'vmapped_keys' to have shape {(len(messages),)}, got {keychain.vmapped_keys.shape}",
-            )
-
-        if vram_bytes is not None and inference_config.batch_size is not None:
-            raise ValueError("You have to specify only one of batch_size and vram_gb, not both.")
-
-        if vram_bytes is None and inference_config.batch_size is None:
-            raise ValueError("You have to specify either batch_size or vram_gb, but you provided neither.")
-
-        tokenized: list[list[int]] = self.message_processor.tokenize_requests(messages)
-
-        buckets: dict[int, list[tuple[int, list[int]]]] = {}
-        max_prompt_length = max(_COMPILED_PROMPT_LENGTHS)
-        for idx, sequence in enumerate(tokenized):
-            assert len(sequence) <= max_prompt_length, (
-                f"Sequence length {len(sequence)} exceeds largest bucket {max_prompt_length}"
-            )
-            # we choose the smallest size from precomputed ones that is longer or equal to the current sequence
-            padded_len = min(length for length in _COMPILED_PROMPT_LENGTHS if length >= len(sequence))
-            buckets.setdefault(padded_len, []).append((idx, sequence))
-        sorted_lengths = sorted(buckets.keys())
-
-        if inference_config.batch_size is not None:
-            batch_size_per_bucket = dict.fromkeys(sorted_lengths, inference_config.batch_size)
-        else:
-            batch_size_per_bucket = estimate_batchsizes_from_vram(
-                lambda config: self.estimate_memory_consumption(
-                    inference_config=config,
-                    sharding_config=sharding_config,
-                ),
-                sorted_lengths,
-                vram_bytes,  # type: ignore[arg-type]
-                inference_config,
-            )
-
-        buckets = merge_small_buckets(buckets, batch_size_per_bucket, min_batches=2)
-        assert sum(len(bucket) for bucket in buckets.values()) == len(tokenized)
-
-        if batch_sizes_callback is not None:
-            batch_sizes = tuple(
-                BatchSizeInfo(
-                    prefix_length=padded_length,
-                    num_elements=len(buckets[padded_length]),
-                    batch_size=batch_size_per_bucket.get(padded_length, 1),
-                )
-                for padded_length in sorted(buckets.keys())
-            )
-            batch_sizes_callback(BatchSizesComputedEvent(batch_sizes=batch_sizes))
-
-        # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen
-        for padded_length in sorted(buckets.keys(), reverse=True):
-            sequence_ids, sequence_tokenized = zip(*buckets[padded_length], strict=True)
-            sequence_ids = list(sequence_ids)
-            batch_size = batch_size_per_bucket[padded_length]
-
-            bucket_inference_config = replace(inference_config, batch_size=batch_size, padded_length=padded_length)
-
-            all_results = self.generate_tokens_many(
-                sequence_tokenized,
-                generation_config=generation_config,
-                inference_config=bucket_inference_config,
-                forward_pass_config=forward_pass_config,
-                keychain=Keychain(
-                    vmapped_keys=keychain.vmapped_keys[np.array(sequence_ids)],
-                    batch_key=keychain.batch_key,
-                ),
-                sharding_config=sharding_config,
-            )
-
-            for idx, result in zip(sequence_ids, all_results, strict=True):
-                trimmed_ids = self._trim_at_eos(result.token_ids.tolist())
-                response = self.message_processor.parse_tokenized_response(trimmed_ids)
-                yield (idx, response)
-
-    def stream_reply_text(
-        self,
-        messages: Iterable[Message],
-        generation_config: GenerationConfig | None = None,
-        max_output_length: int = 8192,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
-        *,
-        keychain: Keychain,
-    ) -> Iterable[str]:
-        formatted_messages = self.message_processor.render_request(messages)
-        token_ids = jnp.array(self.message_processor.tokenize_text(formatted_messages), dtype=jnp.int32)
-        all_token_ids: list[int] = []
-        previous_text = ""
-        for token_id in self.stream_tokens(
-            token_ids,
-            generation_config,
-            max_output_length,
-            forward_pass_config=forward_pass_config,
-            keychain=keychain,
-        ):
-            all_token_ids.append(token_id.item())
-            current_text = self.message_processor.detokenize(all_token_ids, hide_invalid_utf_chars=True)
-            yield current_text[len(previous_text) :]
-            previous_text = current_text
+        return self.token_codec.decode_response(self._trim_at_eos(response_ids.tolist()))
 
     def stream_tokens(
         self,
@@ -840,73 +262,42 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),
         *,
         keychain: Keychain,
     ) -> Iterable[Int[Array, ""]]:
-        sampling_policy = self.default_sampling_policy()
-        if generation_config is not None:
-            sampling_policy = generation_config.default_policy(self.model.vocab_size)
-
-        if eos_token_ids is None:
-            eos_token_ids = jnp.array(self.config.generation_config.stop_token_ids, dtype=jnp.int32)
-
-        (input_length,) = prompt_token_ids.shape
-
-        padded_input_length = min(length for length in _COMPILED_PROMPT_LENGTHS if length >= input_length)
-        padded_token_ids = jnp.zeros((padded_input_length,), dtype=jnp.int32)
-        padded_token_ids = padded_token_ids.at[:input_length].set(prompt_token_ids)
-
-        prefill_results = self._prefill(
-            padded_token_ids[None, :],
-            padded_input_length + max_output_length,
-            lengths_without_padding=jnp.array([input_length], dtype=jnp.int32),
-            forward_pass_config=forward_pass_config,
-            keychain=keychain,
+        results = self.generate_tokens(
+            prompt_token_ids[None, :],
+            generation_config,
+            max_output_length=max_output_length,
+            eos_token_ids=eos_token_ids,
+            keychain=keychain.broadcast((1,)),
         )
-        per_step_vmapped_keys = keychain.rolling_broadcast(
-            (max_output_length, *keychain.vmapped_keys.shape)
-        ).vmapped_keys
-
-        sampling_policy = sampling_policy.init(
-            padded_token_ids,
-            jnp.asarray(input_length, dtype=jnp.int32),
-        )
-
-        state = DecodingState(
-            prefill_results.last_token_logits,
-            prefill_results.last_token_indices,
-            prefill_results.state,
-            jnp.array([0], dtype=jnp.bool),
-            sampling_policy,
-        )
-
-        for step_vmapped_key in per_step_vmapped_keys:
-            upcasted_logits = state.last_token_logits.astype(jnp.float32)
-            processed_logits = sampling_policy.process_logits(upcasted_logits.squeeze(0))
-            next_token_id = jax.random.categorical(step_vmapped_key, processed_logits)
-
-            yield next_token_id
-
-            if jnp.any(next_token_id == eos_token_ids):
+        stop_token_ids = set(self.config.generation_config.stop_token_ids)
+        if eos_token_ids is not None:
+            stop_token_ids = {int(token_id.item()) for token_id in eos_token_ids}
+        for token_id in results.token_ids[0]:
+            yield token_id
+            if int(token_id.item()) in stop_token_ids:
                 return
 
-            updated_sampling_policy = state.sampling_policy.update(next_token_id)
-            next_token_indices = state.last_token_indices + 1
-            decoder_outputs = self.model(
-                next_token_id.reshape(1, 1),
-                next_token_indices.reshape(1, 1),
-                state.state,
-                return_updated_state=True,
-                forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
-                forward_pass_config=forward_pass_config.decoder,
-                keychain=keychain,
-            )
-            assert decoder_outputs.updated_state is not None, "updated_state should not be None"
-            state = DecodingState(
-                decoder_outputs.logits.squeeze(1),
-                next_token_indices,
-                decoder_outputs.updated_state,
-                state.stop_flags,
-                updated_sampling_policy,
-            )
+    def stream_reply_text(
+        self,
+        messages: Iterable[Message],
+        generation_config: GenerationConfig | None = None,
+        max_output_length: int = 8192,
+        *,
+        keychain: Keychain,
+    ) -> Iterable[str]:
+        token_ids = jnp.asarray(self.token_codec.encode_request(messages), dtype=jnp.int32)
+        response_token_ids: list[int] = []
+        previous_text = ""
+        for token_id in self.stream_tokens(
+            token_ids,
+            generation_config,
+            max_output_length,
+            keychain=keychain,
+        ):
+            response_token_ids.append(int(token_id.item()))
+            current_text = self.token_codec.decode_tokens(response_token_ids, hide_invalid_utf_chars=True)
+            yield current_text[len(previous_text) :]
+            previous_text = current_text

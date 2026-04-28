@@ -7,29 +7,14 @@ from typing import Any, Self
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.common import ParameterPath
 from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.fishaudio_loaders import (
     load_fishaudio_audio_decoder,
     load_fishaudio_text_decoder,
 )
 from lalamo.model_import.model_configs import ForeignTTSConfig
-from lalamo.modules import (
-    GELU,
-    AttentionConfig,
-    DenseMLPConfig,
-    LinearConfig,
-    LalamoModule,
-    NormalizationConfig,
-    SiLU,
-    TiedEmbeddingConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
-    TTSConfig,
-    TTSModel,
-    UnscaledRoPEConfig,
-    UpcastMode,
-)
+from lalamo.module import LalamoModule
+from lalamo.modules.activations import GELU, SiLU
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
 )
@@ -53,7 +38,17 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     UpsamplingBlockConfig,
     VectorQuantizeConfig,
 )
+from lalamo.modules.audio.text_to_speech import TTSConfig, TTSModel
 from lalamo.modules.audio.vocoders import NoopVocoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.utils.parameter_path import ParameterPath
 
 __all__ = ["FishAudioConfig"]
 
@@ -167,7 +162,7 @@ def instantiate_dac_config_from_fishaudio_config(
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=True,
-            use_bias=True,
+            has_biases=True,
         ),
         pwconv_config=FullPrecisionLinearConfig(),
     )

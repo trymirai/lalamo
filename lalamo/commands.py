@@ -16,11 +16,10 @@ import thefuzz.fuzz
 import thefuzz.process
 from jaxtyping import DTypeLike
 
-from lalamo.common import flatten_parameters, get_default_device_bytes
+from lalamo.chat_codec import AssistantMessage, Message
 from lalamo.data import load_hf_parquet, shuffle_dataset
 from lalamo.data.huggingface_message import HFMessage
 from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions, save_completions
-from lalamo.message_processor import AssistantMessage, Message
 from lalamo.model_import import ModelMetadata, ModelSpec, import_model
 from lalamo.model_import.common import (
     DownloadingFileEvent,
@@ -40,6 +39,7 @@ from lalamo.safetensors import safe_write
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import SpeculatorTrainingEvent, train_speculator
+from lalamo.utils.memory import get_available_bytes_on_default_device
 
 
 @dataclass
@@ -224,7 +224,7 @@ def convert(
     callbacks.saving_model()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    model.message_processor.tokenizer.save(str(output_dir / "tokenizer.json"))
+    model.token_codec.tokenizer.save(str(output_dir / "tokenizer.json"))
     serializable_model = model.tts_model if isinstance(model, TTSGenerator) else model
     uzu = cast("LalamoModule", serializable_model).to_uzu()
     del model
@@ -301,7 +301,7 @@ def trace(
     callbacks.finished_tracing_model()
 
     callbacks.saving_trace()
-    traces = flatten_parameters(result.export())
+    traces = result.export().arrays
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with Path(output_path).open("wb") as fd:
         safe_write(fd, traces)
@@ -633,7 +633,7 @@ def generate_replies(
 
     # figure out max_vram if neither batch_size nor max_vram is set
     if max_vram is None and batch_size is None:
-        max_vram = get_default_device_bytes()
+        max_vram = get_available_bytes_on_default_device()
         if max_vram is None:
             raise ValueError(
                 "Unable to determine default device memory capacity; please specify either --vram-gb or --batch-size",

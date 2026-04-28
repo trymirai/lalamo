@@ -1,12 +1,10 @@
 from dataclasses import dataclass
 
-from lalamo.sampling import (
-    CompositePolicy,
-    GreedyPolicy,
-    SamplingPolicy,
-    TemperaturePolicy,
-    TopPPolicy,
-)
+import jax
+import numpy as np
+from jaxtyping import Array
+
+from lalamo.sampling import SamplingPolicy
 
 
 @dataclass(frozen=True)
@@ -29,24 +27,9 @@ def sampling_params_from_policy(
             temperature=0.0,
             repetition_penalty=0.0,
         )
-    temperature = 1.0
-    top_p = 1.0
-    argmax_decoding = False
-
-    policies_to_check: list[SamplingPolicy] = []
-
-    if isinstance(policy, CompositePolicy):
-        policies_to_check.extend(policy.policies)
-    else:
-        policies_to_check.append(policy)
-
-    for p in policies_to_check:
-        if isinstance(p, GreedyPolicy):
-            argmax_decoding = True
-        elif isinstance(p, TemperaturePolicy):
-            temperature = p.temperature
-        elif isinstance(p, TopPPolicy):
-            top_p = p.p
+    temperature = _scalar_float(policy.temperature)
+    top_p = _scalar_float(policy.top_p)
+    argmax_decoding = temperature == 0.0
 
     return FishAudioSamplingParams(
         argmax_decoding=argmax_decoding,
@@ -54,3 +37,9 @@ def sampling_params_from_policy(
         temperature=temperature,
         repetition_penalty=repetition_penalty,
     )
+
+
+def _scalar_float(value: Array) -> float:
+    if value.shape != ():
+        raise ValueError("FishAudio sampling params expect a scalar sampling policy.")
+    return float(np.asarray(jax.device_get(value)).item())

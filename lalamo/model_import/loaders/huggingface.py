@@ -1,11 +1,12 @@
 from collections.abc import Mapping
+from typing import Literal
 
 import equinox as eqx
 import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array
 
-from lalamo.compressed import AWQMatrix, AWQSpec, MLXMatrix, MLXSpec
+from lalamo.compressed import AWQMatrix, AWQMatrixForTraining, AWQSpec, MLXMatrix, MLXMatrixForTraining, MLXSpec
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.decoder import Decoder
 from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding
@@ -14,7 +15,7 @@ from lalamo.modules.mlp import DenseMLP, MixtureOfExperts, MLPBase
 from lalamo.modules.normalization import Normalization
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv
-from lalamo.modules.token_mixers.deltanet import DeltaNetAttention, DeltaNetAttentionConfig
+from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
 from lalamo.modules.token_mixers.mamba import Mamba2, Mamba2Config
 from lalamo.modules.token_mixers.short_conv import ShortConv, ShortConvConfig
 from lalamo.modules.transformer_layer import TransformerLayer
@@ -28,6 +29,14 @@ __all__ = ["load_huggingface_decoder", "load_linear", "load_rmsnorm"]
 
 
 AWQ_UINT4_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
+
+
+def _supported_quantization_bits(bits: int) -> Literal[4, 8]:
+    if bits == 4:
+        return 4
+    if bits == 8:
+        return 8
+    raise ValueError(f"Unsupported quantization bit width: {bits}")
 
 
 def _reverse_uint4_order(array: Array, reverse_order: Array) -> Array:
@@ -132,7 +141,7 @@ def _load_bias(
             [weights_dict[path / proj_name / "bias"] for proj_name in sublayers_to_fuse],
             axis=0,
         )
-    return bias.astype(module.activation_precision)
+    return bias.astype(module.weights.dtype)
 
 
 def _is_awq(weights_dict: Mapping[str, Array], path: ParameterPath, sublayers_to_fuse: list[str] | None) -> bool:
@@ -174,8 +183,8 @@ def _load_awq_array(
         scale_values = scale_values.T
         zero_point_values = zero_point_values.T
 
-    return AWQMatrix(
-        spec=AWQSpec(bits=bits, group_size=group_size, float_dtype=scales.dtype, layout=layout),
+    return AWQMatrixForTraining(
+        spec=AWQSpec(bits=_supported_quantization_bits(bits), group_size=group_size, layout=layout),
         weights=weight_values,
         scales=scale_values,
         zero_points=zero_point_values,
@@ -211,8 +220,8 @@ def _load_mlx_matrix(
         scale_values = scale_values.T
         bias_values = bias_values.T
 
-    return MLXMatrix(
-        spec=MLXSpec(bits=bits, group_size=group_size, float_dtype=scales.dtype, layout=layout),
+    return MLXMatrixForTraining(
+        spec=MLXSpec(bits=_supported_quantization_bits(bits), group_size=group_size, layout=layout),
         weights=weight_values,
         scales=scale_values,
         biases=bias_values,
@@ -240,7 +249,7 @@ def load_linear(
         )
     else:
         weights = FullPrecisionSpec(layout=layout).compress(
-            _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse).astype(module.activation_precision),
+            _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse).astype(module.weights.dtype),
         )
 
     return eqx.tree_at(lambda m: (m.weights, m.biases), module, (weights, bias))
@@ -298,7 +307,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         fused = decode_mxfp4(
             weights_dict[experts_path / "gate_up_proj_blocks"],
             weights_dict[experts_path / "gate_up_proj_scales"],
-            dtype=module.activation_precision,
+            dtype=module.experts.up_projection.weights.dtype,
             flatten=False,
         )
         fused_eio = rearrange(fused, "e o ib ie -> e (ib ie) o")
@@ -323,7 +332,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
             module.experts.up_projection,
             (
                 FullPrecisionSpec(layout=module.experts.up_projection.weights.spec.layout).compress(
-                    combined_up_gate_weights.astype(module.experts.up_projection.activation_precision),
+                    combined_up_gate_weights.astype(module.experts.up_projection.weights.dtype),
                 ),
                 combined_up_gate_biases,
             ),
@@ -332,7 +341,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         down_weights = decode_mxfp4(
             weights_dict[experts_path / "down_proj_blocks"],
             weights_dict[experts_path / "down_proj_scales"],
-            dtype=module.activation_precision,
+            dtype=module.experts.down_projection.weights.dtype,
             flatten=False,
         )
         down_weights = rearrange(down_weights, "e o ib ie -> e o (ib ie)")
@@ -345,7 +354,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
             module.experts.down_projection,
             (
                 FullPrecisionSpec(layout=module.experts.down_projection.weights.spec.layout).compress(
-                    down_weights.astype(module.experts.down_projection.activation_precision),
+                    down_weights.astype(module.experts.down_projection.weights.dtype),
                 ),
                 down_biases,
             ),
@@ -401,7 +410,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
             module.experts.up_projection,
             (
                 FullPrecisionSpec(layout=module.experts.up_projection.weights.spec.layout).compress(
-                    combined_up_gate_weights.astype(module.experts.up_projection.activation_precision),
+                    combined_up_gate_weights.astype(module.experts.up_projection.weights.dtype),
                 ),
                 None,
             ),
@@ -412,7 +421,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
             module.experts.down_projection,
             (
                 FullPrecisionSpec(layout=module.experts.down_projection.weights.spec.layout).compress(
-                    down_weights.astype(module.experts.down_projection.activation_precision),
+                    down_weights.astype(module.experts.down_projection.weights.dtype),
                 ),
                 None,
             ),
@@ -471,7 +480,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
             module.experts.up_projection,
             (
                 FullPrecisionSpec(layout=module.experts.up_projection.weights.spec.layout).compress(
-                    combined_up_gate_weights.astype(module.experts.up_projection.activation_precision),
+                    combined_up_gate_weights.astype(module.experts.up_projection.weights.dtype),
                 ),
                 combined_up_gate_biases,
             ),
@@ -484,7 +493,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
             module.experts.down_projection,
             (
                 FullPrecisionSpec(layout=module.experts.down_projection.weights.spec.layout).compress(
-                    stacked_down.astype(module.experts.down_projection.activation_precision),
+                    stacked_down.astype(module.experts.down_projection.weights.dtype),
                 ),
                 stacked_down_biases,
             ),
@@ -755,11 +764,11 @@ def load_short_conv(
 
 
 def load_delta_net_attention(
-    module: DeltaNetAttention,
+    module: DeltaNet,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     permute_conv: bool,
-) -> DeltaNetAttention:
+) -> DeltaNet:
     def _permute_rows(array: Array, permutation: Array | None) -> Array:
         if permutation is None:
             return array
@@ -811,7 +820,7 @@ def load_delta_net_attention(
             if not ((qkvz_path / "weight") in weights_dict and (ba_path / "weight") in weights_dict):
                 raise ValueError(
                     "Expected in_proj, in_proj_qkvz/in_proj_ba, or "
-                    "in_proj_qkv/in_proj_z/in_proj_b/in_proj_a weights for DeltaNetAttention.",
+                    "in_proj_qkv/in_proj_z/in_proj_b/in_proj_a weights for DeltaNet.",
                 )
             projection_branches = [
                 (qkvz_path, _delta_net_qkvz_perm()),
@@ -820,7 +829,7 @@ def load_delta_net_attention(
 
         (first_branch_path, _), *_ = projection_branches
         if _is_awq(weights_dict, first_branch_path, None):
-            raise ValueError("DeltaNetAttention does not support AWQ quantization.")
+            raise ValueError("DeltaNet does not support AWQ quantization.")
         if not _is_mlx(weights_dict, first_branch_path, None):
             merged = jnp.concatenate(
                 [
@@ -830,7 +839,7 @@ def load_delta_net_attention(
                 axis=0,
             )
             new_weights = FullPrecisionSpec(layout=module.in_proj.weights.spec.layout).compress(
-                merged.astype(module.in_proj.activation_precision),
+                merged.astype(module.in_proj.weights.dtype),
             )
         else:
             per_branch = [
@@ -857,11 +866,10 @@ def load_delta_net_attention(
                 new_weight_values = new_weight_values.T
                 new_scale_values = new_scale_values.T
                 new_bias_values = new_bias_values.T
-            new_weights = MLXMatrix(
+            new_weights = MLXMatrixForTraining(
                 spec=MLXSpec(
-                    bits=bits,
+                    bits=_supported_quantization_bits(bits),
                     group_size=group_size,
-                    float_dtype=fused_scales.dtype,
                     layout=module.in_proj.weights.spec.layout,
                 ),
                 weights=new_weight_values,
@@ -933,7 +941,7 @@ def load_transformer_layer(
             mixer_path / mixer_key,
             reorder_q_proj_gate=reorder_q_proj_gate,
         )
-    elif isinstance(module.mixer, DeltaNetAttention):
+    elif isinstance(module.mixer, DeltaNet):
         mixer = load_delta_net_attention(module.mixer, weights_dict, mixer_path / mixer_key, permute_conv)
     elif isinstance(module.mixer, Mamba2):
         mixer = load_mamba2(module.mixer, weights_dict, mixer_path / mixer_key, permute_conv)
@@ -1057,8 +1065,8 @@ def _get_mixer_key(
     match mixer_config:
         case AttentionConfig():
             return mixer_key[AttentionConfig]
-        case DeltaNetAttentionConfig():
-            return mixer_key[DeltaNetAttentionConfig]
+        case DeltaNetConfig():
+            return mixer_key[DeltaNetConfig]
         case Mamba2Config():
             return mixer_key[Mamba2Config]
         case ShortConvConfig():
@@ -1131,7 +1139,7 @@ def load_huggingface_decoder(
         decoder_path = base_path / "model"
         embedding_path = decoder_path / "embed_tokens"
         pre_mixer_norm_key = "input_layernorm"
-        mixer_key = {AttentionConfig: "self_attn", DeltaNetAttentionConfig: "linear_attn"}
+        mixer_key = {AttentionConfig: "self_attn", DeltaNetConfig: "linear_attn"}
         permute_conv = False
         pre_mlp_norm_key = "post_attention_layernorm"
         mlp_key = "mlp"
@@ -1186,7 +1194,7 @@ def load_huggingface_classifier(
     ) -> TiedEmbedding:
         weights = weights_dict[decoder_path / "embeddings" / "tok_embeddings" / "weight"]
         embedding = FullPrecisionSpec(layout=module.embedding.spec.layout).compress(
-            weights.astype(module.activation_precision),
+            weights.astype(module.embedding.dtype),
         )
         return eqx.tree_at(lambda m: (m.embedding,), module, (embedding,))
 
@@ -1203,7 +1211,7 @@ def load_huggingface_classifier(
         rows, _ = weights.shape
         shuffled_weights = jnp.vstack((weights[rows // 2 :, :], weights[: rows // 2, :]))
         new_weights = FullPrecisionSpec(layout=module.weights.spec.layout).compress(
-            shuffled_weights.astype(module.activation_precision),
+            shuffled_weights.astype(module.weights.dtype),
         )
         return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, None))
 

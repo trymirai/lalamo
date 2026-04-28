@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import pytest
 from lalamo.modules.common import InferenceConfig
 
-from lalamo.message_processor import UserMessage
+from lalamo.chat_codec import UserMessage
 from lalamo.model_import.model_specs.common import ModelType
 from lalamo.models import LanguageModel
 from lalamo.models.language_model import GenerationConfig, LanguageModelConfig
@@ -22,7 +22,7 @@ def language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) 
 @pytest.mark.parametrize("num_top_logits_to_return", [None, 8, 16])
 def test_eager_generation(language_model: LanguageModel, num_top_logits_to_return: int | None) -> None:
     prompt = [UserMessage("Count from 1 to 10 separated by spaces, using digits.")]
-    token_ids = jnp.array(language_model.message_processor.tokenize_request(prompt))[None, :]
+    token_ids = jnp.array(language_model.token_codec.encode_request(prompt))[None, :]
     result = language_model.generate_tokens(
         token_ids,
         max_output_length=32,
@@ -53,7 +53,7 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
 
 def test_padding(language_model: LanguageModel) -> None:
     prompt = [UserMessage("Talk about elephants")]
-    token_ids = jnp.array(language_model.message_processor.tokenize_request(prompt))[None, :]
+    token_ids = jnp.array(language_model.token_codec.encode_request(prompt))[None, :]
 
     response_token_ids = language_model.generate_tokens(
         token_ids,
@@ -61,7 +61,7 @@ def test_padding(language_model: LanguageModel) -> None:
         max_output_length=32,
         keychain=Keychain.init(1, shape=(1,)),
     ).token_ids.squeeze(0)
-    response_text = language_model.message_processor.tokenizer.decode(response_token_ids)
+    response_text = language_model.token_codec.tokenizer.decode(response_token_ids)
     assert "elephants" not in response_text.lower()
 
     response_token_ids = language_model.generate_tokens(
@@ -70,7 +70,7 @@ def test_padding(language_model: LanguageModel) -> None:
         max_output_length=32,
         keychain=Keychain.init(2, shape=(1,)),
     ).token_ids.squeeze(0)
-    response_text = language_model.message_processor.tokenizer.decode(response_token_ids)
+    response_text = language_model.token_codec.tokenizer.decode(response_token_ids)
     assert "elephants" in response_text.lower()
 
 
@@ -80,7 +80,22 @@ def test_batch_generation(language_model: LanguageModel) -> None:
         UserMessage("Talk about apples"),
         UserMessage("Explain why the sky is blue"),
     ]
-    inputs = [jnp.array(language_model.message_processor.tokenize_request([p])) for p in prompts]
+    inputs = [jnp.array(language_model.token_codec.encode_request([prompt])) for prompt in prompts]
+    pad_token_id = 0
+
+    max_len = max(inp.size for inp in inputs)
+    batched_prompt_lengths = jnp.array([inp.size for inp in inputs])
+    padded_token_ids = jnp.array(
+        [
+            jnp.pad(
+                inp,
+                (0, max_len - inp.size),
+                constant_values=pad_token_id,
+            )
+            for inp in inputs
+        ],
+    )
+
     generation_config = GenerationConfig(temperature=0)
     response_token_ids = language_model.generate_tokens(
         padded_token_ids,
@@ -90,8 +105,7 @@ def test_batch_generation(language_model: LanguageModel) -> None:
         keychain=Keychain.init(3, shape=(len(prompts),)),
     ).token_ids
 
-    pairs = [(0, 1), (1, 2), (0, 2)]
-    outputs: dict[int, list[list[int]]] = {i: [] for i in range(len(prompts))}
+    response_a, response_b = [language_model.token_codec.tokenizer.decode(ids) for ids in response_token_ids]
 
     for i, j in pairs:
         pair_inputs = [inputs[i], inputs[j]]
@@ -117,7 +131,7 @@ def test_batch_generation(language_model: LanguageModel) -> None:
 
 def test_streaming_generation(language_model: LanguageModel) -> None:
     prompt = [UserMessage("What's the capital of UK?")]
-    token_ids = jnp.array(language_model.message_processor.tokenize_request(prompt))
+    token_ids = jnp.array(language_model.token_codec.encode_request(prompt))
 
     token_stream = language_model.stream_tokens(
         token_ids,
@@ -125,12 +139,13 @@ def test_streaming_generation(language_model: LanguageModel) -> None:
         keychain=Keychain.init(4),
     )
     response_token_ids = jnp.array(list(token_stream))
-    assert len(response_token_ids) > 0
+    response_text = language_model.token_codec.tokenizer.decode(response_token_ids)
+    assert "london" in response_text.lower(), response_text
 
 
 def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
     prompt = [UserMessage("What's the largest domestic cat breed?")]
-    token_ids = jnp.array(language_model.message_processor.tokenize_request(prompt))
+    token_ids = jnp.array(language_model.token_codec.encode_request(prompt))
 
     generation_config = GenerationConfig(temperature=0)
 
@@ -170,5 +185,5 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
         ),
     )
     assert idx == 0
-    streaming_response = language_model.message_processor.parse_tokenized_response(streaming_token_ids.tolist())
+    streaming_response = language_model.token_codec.decode_response(streaming_token_ids.tolist())
     assert batch_response == streaming_response

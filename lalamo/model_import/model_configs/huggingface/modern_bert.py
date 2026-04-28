@@ -1,24 +1,20 @@
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from lalamo.modules import (
-    Activation,
-    AttentionConfig,
-    ClassifierConfig,
-    DenseMLPConfig,
-    LinearConfig,
-    NormalizationConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
-    UnscaledRoPEConfig,
-    UpcastMode,
-)
-from lalamo.modules.activations import GELU, SiLU
+from lalamo.modules.activations import GELU, Activation, SiLU
 from lalamo.modules.classifier import (
+    ClassifierConfig,
     PoolingType,
     PredictionHeadConfig,
 )
 from lalamo.modules.embedding import TiedEmbeddingConfig
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .common import (
     AWQQuantizationConfig,

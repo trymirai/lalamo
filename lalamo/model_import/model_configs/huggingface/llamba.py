@@ -2,22 +2,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from lalamo.modules import (
-    DecoderConfig,
-    DenseMLPConfig,
-    EmbeddingQuantConfig,
-    Identity,
-    LinearConfig,
-    Mamba2Config,
-    NormalizationConfig,
-    SeparableCausalConvConfig,
-    SiLU,
-    TiedEmbeddingConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
-    UntiedEmbeddingConfig,
-    UpcastMode,
-)
+from lalamo.modules.activations import Identity, SiLU
+from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
+from lalamo.modules.token_mixers.mamba import Mamba2Config
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .common import HuggingFaceLMConfig
 
@@ -62,18 +56,9 @@ class HFLlambaConfig(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        metadata_dict: Mapping[str, str],
+        metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        if "quantization_kwargs.group_size" in metadata_dict:
-            embedding_config = UntiedEmbeddingConfig(
-                input_scale=None,
-                logit_soft_cap=None,
-                output_quantization=EmbeddingQuantConfig(
-                    group_size=int(metadata_dict["quantization_kwargs.group_size"]),
-                    bits=int(metadata_dict["quantization_kwargs.bits"]),
-                ),
-            )
-        elif self.tie_embeddings:
+        if self.tie_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,

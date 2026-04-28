@@ -5,9 +5,8 @@ from lalamo.model_import.model_configs import (
     HFQwen3NextConfig,
     HFQwen35Config,
 )
-from lalamo.quantization import QuantizationMode
 
-from .common import ConfigMap, FileSpec, ModelSpec, UseCase, WeightsType
+from .common import ConfigMap, FileSpec, ModelSpec, QuantizationMode, UseCase, WeightsType
 
 __all__ = ["QWEN_MODELS"]
 
@@ -177,7 +176,7 @@ QWEN3 = [
         repo="Qwen/Qwen3-1.7B",
         config_type=HFQwen3Config,
         weights_type=WeightsType.SAFETENSORS,
-        use_cases=tuple(),
+        use_cases=(),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -291,21 +290,6 @@ QWEN3_NEXT = [
         repo="Qwen/Qwen3-Next-80B-A3B-Instruct",
         config_type=HFQwen3NextConfig,
     ),
-    # TODO(knyazer): uncomment and test when sharding is in
-    # ModelSpec(
-    #     vendor="Alibaba",
-    #     family="Qwen3-Next",
-    #     name="Qwen3-Next-80B-A3B-Instruct-4bit",
-    #     size="80B",
-    #     quantization=QuantizationMode.UINT4,
-    #     repo="mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
-    #     config_type=HFQwen3NextConfig,
-    #     configs=ConfigMap(
-    #         tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3-Next-80B-A3B-Instruct"),
-    #         tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3-Next-80B-A3B-Instruct"),
-    #         generation_config=FileSpec("generation_config.json", "Qwen/Qwen3-Next-80B-A3B-Instruct"),
-    #     ),
-    # ),
 ]
 
 QWEN35 = [

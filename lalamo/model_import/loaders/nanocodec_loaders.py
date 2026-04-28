@@ -15,7 +15,6 @@ from einops import rearrange
 from jax import numpy as jnp
 from jaxtyping import Array, Float
 
-from lalamo.common import ParameterPath
 from lalamo.modules.audio.common_modules import Snake1d
 from lalamo.modules.audio.fishaudio.fishaudio_modules import CausalConv1d
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec
@@ -27,6 +26,7 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     HiFiGANResLayer,
     ResidualBlock,
 )
+from lalamo.utils.parameter_path import ParameterPath
 
 from .common import load_parameters
 from .torch_utils import fuse_parametrized_weight_norm_conv1d
@@ -84,9 +84,7 @@ def transform_pytorch_transpose_conv_weights(
     # Reshape: -> (out_channels, in_per_group, K)
     kernel = kernel.reshape(out_channels, in_per_group, kernel_size)
     # Flip kernel along spatial dimension - required for transposed convolution
-    kernel = jnp.flip(kernel, axis=-1)
-
-    return kernel
+    return jnp.flip(kernel, axis=-1)
 
 
 # =============================================================================

@@ -13,12 +13,11 @@ import cattrs
 import jax.numpy as jnp
 from jaxtyping import DTypeLike
 
-from lalamo.common import cast_if_float
-from lalamo.model_import.model_configs import ForeignConfig
+from lalamo.model_import.model_configs.common import ForeignConfig
 from lalamo.models.language_model import GenerationConfig
-from lalamo.quantization import QuantizationMode
 from lalamo.safetensors import safe_read
-from lalamo.utils import MapDictValues
+from lalamo.utils.dtype import cast_if_float
+from lalamo.utils.lazy_collections import MapDictValues
 
 __all__ = [
     "ConfigMap",
@@ -26,6 +25,7 @@ __all__ = [
     "JSONFieldSpec",
     "ModelSpec",
     "ModelType",
+    "QuantizationMode",
     "UseCase",
     "WeightsType",
     "awq_model_spec",
@@ -37,6 +37,16 @@ class ModelType(StrEnum):
     LANGUAGE_MODEL = "language_model"
     CLASSIFIER_MODEL = "classifier_model"
     TTS_MODEL = "tts_model"
+
+
+class QuantizationMode(StrEnum):
+    UINT1 = "uint1"
+    UINT4 = "uint4"
+    UINT8 = "uint8"
+
+    @property
+    def bits(self) -> int:
+        return int(self.removeprefix("uint"))
 
 
 class WeightsType(Enum):
@@ -57,9 +67,9 @@ class WeightsType(Enum):
         else:
             # NOTE: this path also includes Nemo models, because we expect the model to be downloaded and
             # extracted. After that toch checkpoint contained in the model will later be processed here.
-            import torch
+            import torch  # noqa: PLC0415
 
-            from lalamo.modules.torch_interop import torch_to_jax
+            from lalamo.utils.torch_interop import torch_to_jax  # noqa: PLC0415
 
             torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
             yield MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights), {}
@@ -171,8 +181,8 @@ class ModelSpec:
     weights_type: WeightsType = WeightsType.SAFETENSORS
     model_type: ModelType = ModelType.LANGUAGE_MODEL
     configs: ConfigMap = field(default=ConfigMap())
-    use_cases: tuple[UseCase, ...] = tuple()
-    grammar_start_tokens: tuple[str, ...] = tuple()
+    use_cases: tuple[UseCase, ...] = ()
+    grammar_start_tokens: tuple[str, ...] = ()
 
     @classmethod
     def from_json(cls, json_data: dict) -> "ModelSpec":

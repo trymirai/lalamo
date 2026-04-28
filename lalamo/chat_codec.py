@@ -11,13 +11,15 @@ from typing import NotRequired, TypedDict
 from jinja2 import Template
 from tokenizers import Tokenizer
 
+from lalamo.token_codec import TokenCodec, TokenCodecConfig
+
 __all__ = [
     "AssistantMessage",
+    "ChatCodec",
+    "ChatCodecConfig",
     "ContentBlock",
     "Image",
     "Message",
-    "MessageProcessor",
-    "MessageProcessorConfig",
     "SystemMessage",
     "ToolSchema",
     "UserMessage",
@@ -73,7 +75,7 @@ class AssistantMessage(Message):
 
 
 @dataclass(frozen=True)
-class MessageProcessorConfig:
+class ChatCodecConfig(TokenCodecConfig):
     prompt_template: str
     output_parser_regex: str | None
     system_role_name: str
@@ -83,27 +85,22 @@ class MessageProcessorConfig:
     bos_token: str | None
     default_system_prompt: str | None = None
 
-    def init(self, tokenizer: Tokenizer) -> "MessageProcessor":
-        return MessageProcessor(
+    def init(self, tokenizer: Tokenizer) -> "ChatCodec":
+        return ChatCodec(
             config=self,
             tokenizer=tokenizer,
         )
 
 
 @dataclass(frozen=True)
-class MessageProcessor:
-    config: MessageProcessorConfig
-    tokenizer: Tokenizer
-
+class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]):
     @cached_property
     def _byte_token_ids(self) -> dict[int, int]:
-        """Map from token id to byte value for byte-fallback tokens like <0xF0>."""
-        result = {}
-        for byte_value in range(256):
-            tid = self.tokenizer.token_to_id(f"<0x{byte_value:02X}>")
-            if tid is not None:
-                result[tid] = byte_value
-        return result
+        return {
+            token_id: byte_value
+            for byte_value in range(256)
+            if (token_id := self.tokenizer.token_to_id(f"<0x{byte_value:02X}>")) is not None
+        }
 
     @cached_property
     def prompt_template(self) -> Template:
@@ -161,6 +158,12 @@ class MessageProcessor:
         request_dict = self.request_to_dict(messages, enable_thinking=True)
         return self.prompt_template.render({**request_dict, "strftime_now": _strftime_now})
 
+    def encode_request(self, request: Iterable[Message]) -> list[int]:
+        return self.encode_text(self.render_request(request))
+
+    def encode_requests(self, requests: Iterable[Iterable[Message]]) -> list[list[int]]:
+        return [self.encode_request(request) for request in requests]
+
     def parse_response(self, response: str) -> AssistantMessage:
         if self.output_parser_regex is None:
             return AssistantMessage(chain_of_thought=None, response=response)
@@ -173,21 +176,14 @@ class MessageProcessor:
                 groups[key] = ""
         return AssistantMessage(**groups)
 
-    def tokenize_text(self, text: str) -> list[int]:
+    def encode_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False).ids
 
-    def tokenize_request(self, messages: Iterable[Message]) -> list[int]:
-        rendered = self.render_request(messages)
-        return self.tokenize_text(rendered)
-
-    def tokenize_requests(self, dataset: Iterable[Iterable[Message]]) -> list[list[int]]:
-        return [self.tokenize_request(messages) for messages in dataset]
-
-    def detokenize(self, tokens: list[int], *, hide_invalid_utf_chars: bool = False) -> str:
+    def decode_tokens(self, tokens: list[int], *, hide_invalid_utf_chars: bool = False) -> str:
         errors = "ignore" if hide_invalid_utf_chars else "replace"
-        return "".join(codecs.iterdecode(self.token_groups(tokens), "utf-8", errors=errors))
+        return "".join(codecs.iterdecode(self._token_groups(tokens), "utf-8", errors=errors))
 
-    def token_groups(self, tokens: list[int]) -> Iterable[bytes]:
+    def _token_groups(self, tokens: list[int]) -> Iterable[bytes]:
         byte_token_ids = self._byte_token_ids
         for is_byte, group in itertools.groupby(tokens, key=lambda tid: tid in byte_token_ids):
             if is_byte:
@@ -195,9 +191,8 @@ class MessageProcessor:
             else:
                 yield self.tokenizer.decode(list(group), skip_special_tokens=False).encode("utf-8")
 
-    def parse_tokenized_response(self, tokens: list[int]) -> AssistantMessage:
-        detokenized = self.detokenize(tokens)
-        return self.parse_response(detokenized)
+    def decode_response(self, response: list[int]) -> AssistantMessage:
+        return self.parse_response(self.decode_tokens(response))
 
     def __post_init__(self) -> None:
         if self.output_parser_regex is not None:

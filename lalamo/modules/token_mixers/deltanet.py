@@ -352,7 +352,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         keychain: Keychain,
     ) -> DeltaNetResult:
         if positional_embeddings is not None:
-            raise ValueError("Positional embeddings are not supported for DeltaNetAttention.")
+            raise ValueError("Positional embeddings are not supported for DeltaNet.")
 
         in_keychain, out_keychain = keychain.split()
         num_tokens, *_ = inputs.shape
@@ -413,28 +413,15 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         length_without_padding = jnp.asarray(length_without_padding, dtype=jnp.int32)
         length_without_padding = jnp.clip(length_without_padding, 0, num_tokens)
 
-        if num_tokens < forward_pass_config.min_chunk_len:
-            core_attn_out, final_state = self._recurrent_scan(
-                query,
-                key,
-                value,
-                decay_factor,
-                beta,
-                state.ssm_state,
-                length_without_padding,
-            )
-        else:
-            core_attn_out, final_state = self._chunked_scan(
-                query,
-                key,
-                value,
-                decay_factor,
-                beta,
-                state.ssm_state,
-                length_without_padding,
-                forward_pass_config,
-            )
-
+        core_attn_out, final_state = self._scan(
+            query,
+            key,
+            value,
+            decay_factor,
+            beta,
+            state.ssm_state,
+            length_without_padding,
+        )
         def norm_gate(x: Float[Array, " channels"], gate: Float[Array, " channels"]) -> Float[Array, " channels"]:
             return self.norm(x) * jax.nn.silu(gate)
 

@@ -2,26 +2,20 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from lalamo.modules import (
-    AttentionConfig,
-    DecoderConfig,
-    DeltaNetAttentionConfig,
-    DenseMLPConfig,
-    EmbeddingQuantConfig,
-    LinearConfig,
-    NormalizationConfig,
-    TiedEmbeddingConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
-    UnscaledRoPEConfig,
-    UntiedEmbeddingConfig,
-    UpcastMode,
-)
 from lalamo.modules.activations import SiLU
-from lalamo.modules.mlp import MixtureOfExpertsConfig, SoftmaxRouting
-from lalamo.modules.token_mixers import SeparableCausalConvConfig
+from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, SoftmaxRouting
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
+from lalamo.modules.token_mixers.deltanet import DeltaNetConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
-from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
+from .common import HuggingFaceLMConfig, QuantizationConfigType
 
 __all__ = ["HFQwen3NextConfig"]
 
@@ -77,43 +71,17 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
         self,
         context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
-        fallback_quantization: QuantizationConfigType | None = None,
     ) -> DecoderConfig:
-        if self.quantization is not None:
-            quantization = self.quantization
-        elif self.quantization_config is not None:
-            quantization = self.quantization_config
-        else:
-            quantization = fallback_quantization
-        if isinstance(quantization, MLXQuantizationConfig):
-            quant_config = EmbeddingQuantConfig(
-                group_size=quantization.group_size,
-                bits=quantization.bits,
+        if self.tie_word_embeddings:
+            embedding_config = TiedEmbeddingConfig(
+                input_scale=None,
+                logit_soft_cap=None,
             )
-            if self.tie_word_embeddings:
-                embedding_config = TiedEmbeddingConfig(
-                    input_scale=None,
-                    logit_soft_cap=None,
-                    quantization=quant_config,
-                )
-            else:
-                embedding_config = UntiedEmbeddingConfig(
-                    input_scale=None,
-                    logit_soft_cap=None,
-                    input_quantization=quant_config,
-                    output_quantization=quant_config,
-                )
-        else:  # noqa: PLR5501
-            if self.tie_word_embeddings:
-                embedding_config = TiedEmbeddingConfig(
-                    input_scale=None,
-                    logit_soft_cap=None,
-                )
-            else:
-                embedding_config = UntiedEmbeddingConfig(
-                    input_scale=None,
-                    logit_soft_cap=None,
-                )
+        else:
+            embedding_config = UntiedEmbeddingConfig(
+                input_scale=None,
+                logit_soft_cap=None,
+            )
 
         if self.rope_scaling is not None:
             raise NotImplementedError("rope_scaling is not supported yet")
@@ -173,7 +141,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
         layer_configs = []
         for layer_idx, layer_type in enumerate(layer_types):
             if layer_type == "linear_attention":
-                mixer_config = DeltaNetAttentionConfig(
+                mixer_config = DeltaNetConfig(
                     in_proj_config=linear_config,
                     conv_config=SeparableCausalConvConfig(
                         has_biases=False,

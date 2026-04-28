@@ -11,4 +11,4 @@ def make_sharding(partition: tuple[ShardingAxis | None, ...] | None) -> NamedSha
     mesh = get_mesh()
     if partition is None:
         return None
-    return NamedSharding(mesh, PartitionSpec(partition))
+    return NamedSharding(mesh, PartitionSpec(*partition))

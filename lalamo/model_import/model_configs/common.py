@@ -8,8 +8,11 @@ from typing import ClassVar, Self
 import cattrs
 from jaxtyping import Array, DTypeLike
 
-from lalamo.module import EmptyInitializer, LalamoModule
-from lalamo.modules import ClassifierConfig, DecoderConfig, TTSConfig
+from lalamo.initializer import EmptyInitializer
+from lalamo.module import LalamoModule
+from lalamo.modules.audio.text_to_speech import TTSConfig
+from lalamo.modules.classifier import ClassifierConfig
+from lalamo.modules.decoder import DecoderConfig
 from lalamo.utils.registry_abc import RegistryABC
 
 __all__ = ["ForeignClassifierConfig", "ForeignLMConfig"]
@@ -55,7 +58,7 @@ class ForeignConfig[ConfigT: SUPPORTED_CONFIG_TYPES](RegistryABC):
         metadata_dict: Mapping[str, str],
     ) -> LalamoModule[ConfigT]:
         config = self.to_lalamo_config(context_length, metadata_dict)
-        model = config.init(EmptyInitializer(precision=precision))
+        model = config.init(EmptyInitializer(dtype=precision))
         return self._load_weights(model, weights_dict)
 
 

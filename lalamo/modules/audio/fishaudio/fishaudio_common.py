@@ -3,7 +3,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
-from lalamo.sampling import CompositePolicy, SamplingPolicy, TemperaturePolicy, TopPPolicy
+from lalamo.sampling import SamplingPolicy
 
 from .fishaudio_consts import (
     DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE,
@@ -13,11 +13,9 @@ from .fishaudio_consts import (
 
 
 def default_fishaudio_sampling_policy() -> SamplingPolicy:
-    return CompositePolicy(
-        (
-            TemperaturePolicy(DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE),
-            TopPPolicy(DEFAULT_FISH_AUDIO_SAMPLING_TOP_P),
-        )
+    return SamplingPolicy.init(
+        temperature=DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE,
+        top_p=DEFAULT_FISH_AUDIO_SAMPLING_TOP_P,
     )
 
 

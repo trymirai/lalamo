@@ -4,23 +4,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Self
 
-from lalamo.modules import (
-    AttentionConfig,
-    DecoderConfig,
-    DeltaNetAttentionConfig,
-    DenseMLPConfig,
-    EmbeddingQuantConfig,
-    LinearConfig,
-    NormalizationConfig,
-    TiedEmbeddingConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
-    UnscaledRoPEConfig,
-    UntiedEmbeddingConfig,
-    UpcastMode,
-)
 from lalamo.modules.activations import SiLU
-from lalamo.modules.token_mixers import SeparableCausalConvConfig
+from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
+from lalamo.modules.token_mixers.deltanet import DeltaNetConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
@@ -82,36 +77,16 @@ class HFQwen35Config(HuggingFaceLMConfig):
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         quantization = self.quantization or self.quantization_config
-
-        if isinstance(quantization, MLXQuantizationConfig):
-            quant_config = EmbeddingQuantConfig(
-                group_size=quantization.group_size,
-                bits=quantization.bits,
+        if self.tie_word_embeddings:
+            embedding_config = TiedEmbeddingConfig(
+                input_scale=None,
+                logit_soft_cap=None,
             )
-            if self.tie_word_embeddings:
-                embedding_config = TiedEmbeddingConfig(
-                    input_scale=None,
-                    logit_soft_cap=None,
-                    quantization=quant_config,
-                )
-            else:
-                embedding_config = UntiedEmbeddingConfig(
-                    input_scale=None,
-                    logit_soft_cap=None,
-                    input_quantization=quant_config,
-                    output_quantization=quant_config,
-                )
-        else:  # noqa: PLR5501
-            if self.tie_word_embeddings:
-                embedding_config = TiedEmbeddingConfig(
-                    input_scale=None,
-                    logit_soft_cap=None,
-                )
-            else:
-                embedding_config = UntiedEmbeddingConfig(
-                    input_scale=None,
-                    logit_soft_cap=None,
-                )
+        else:
+            embedding_config = UntiedEmbeddingConfig(
+                input_scale=None,
+                logit_soft_cap=None,
+            )
         is_mlx = isinstance(quantization, MLXQuantizationConfig)
 
         partial_rotary_factor = self.rope_parameters["partial_rotary_factor"]
@@ -185,7 +160,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
         layer_configs = []
         for layer_type in self.layer_types:
             if layer_type == "linear_attention":
-                mixer_config = DeltaNetAttentionConfig(
+                mixer_config = DeltaNetConfig(
                     in_proj_config=linear_config,
                     conv_config=SeparableCausalConvConfig(
                         has_biases=False,

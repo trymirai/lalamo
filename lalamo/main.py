@@ -36,6 +36,7 @@ from rich.text import Text
 from typer import Argument, Context, Exit, Option, Typer
 
 from lalamo.audio.utils import play_mono_audio
+from lalamo.chat_codec import UserMessage
 from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,
@@ -54,12 +55,7 @@ from lalamo.commands import generate_replies as _generate_replies
 from lalamo.commands import pull as _pull
 from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
-from lalamo.common import (
-    get_default_device_bytes,
-    get_usable_memory_from_bytes,
-)
 from lalamo.data.lalamo_completions import iter_completions
-from lalamo.message_processor import UserMessage
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
@@ -70,6 +66,7 @@ from lalamo.module import Keychain
 from lalamo.modules.common import BatchSizesComputedEvent
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
+from lalamo.utils.memory import get_available_bytes_on_default_device, get_usable_bytes_from_abailable_bytes
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -188,7 +185,7 @@ def chat(
                 model_response_tokens.append(token)
             console.print()
             model_response_text = "".join(model_response_tokens)
-            messages.append(model.message_processor.parse_response(model_response_text))
+            messages.append(model.token_codec.parse_response(model_response_text))
     else:
         inference_keychain, reply_keychain = inference_keychain.split()
         for token in model.stream_reply_text(
@@ -813,7 +810,7 @@ def generate_replies(
     if batch_size is None:
         if vram_gb is not None:
             mem_bytes = vram_gb * 1000 * 1000 * 1000
-        elif (mem_bytes := get_default_device_bytes()) is None:
+        elif (mem_bytes := get_available_bytes_on_default_device()) is None:
             err_console.print("Cannot get the default device's memory stats, use --vram-gb or --batch-size")
             raise Exit(1)
 
@@ -944,11 +941,11 @@ def estimate_batchsize(
     if vram_gb is not None:
         # H100 is 80gib (not gb!) card; it has around 85gb total
         mem_bytes = vram_gb * 1000 * 1000 * 1000
-    elif (mem_bytes := get_default_device_bytes()) is None:
+    elif (mem_bytes := get_available_bytes_on_default_device()) is None:
         err_console.print("Cannot get the default device's memory stats, use --vram-gb")
         raise Exit(1)
 
-    usable_mem = get_usable_memory_from_bytes(mem_bytes)
+    usable_mem = get_usable_bytes_from_abailable_bytes(mem_bytes)
 
     callbacks_type = CliEstimateBatchsizeCallbacks
 
@@ -1117,8 +1114,8 @@ def view_traces(
     table.add_column("Completion")
 
     for completion in islice(traces, num_completions):
-        detokenized_prefix = model.message_processor.detokenize(completion.prefix_token_ids)
-        detokenized_completion = model.message_processor.detokenize(completion.completion_token_ids)
+        detokenized_prefix = model.token_codec.decode_tokens(completion.prefix_token_ids)
+        detokenized_completion = model.token_codec.decode_tokens(completion.completion_token_ids)
         table.add_row(Text(detokenized_prefix), Text(detokenized_completion))
 
     console.print(table)
@@ -1254,7 +1251,7 @@ def test(
 
     for _ in range(num_sequences):
         sequence = test_speculator(speculator)
-        detokenized = model.message_processor.detokenize(sequence)
+        detokenized = model.token_codec.decode_tokens(sequence)
         table.add_row(detokenized)
 
     console.print(table)

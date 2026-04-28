@@ -147,8 +147,7 @@ class ClassifierConfig(LalamoConfig):
     context_length: int
     num_labels: int
     classifier_pooling: PoolingType
-
-    output_labels: tuple[str, ...] | None
+    output_labels: tuple[str, ...] | None = None
 
     def init(self, initializer: Initializer) -> "Classifier":
         embedding = self.embedding_config.init(

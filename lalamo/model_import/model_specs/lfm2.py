@@ -2,9 +2,8 @@ from itertools import chain, product
 
 from lalamo.model_import.model_configs import HFLFM2Config
 from lalamo.models.language_model import GenerationConfig
-from lalamo.quantization import QuantizationMode
 
-from .common import ConfigMap, FileSpec, ModelSpec
+from .common import ConfigMap, FileSpec, ModelSpec, QuantizationMode
 
 __all__ = ["LFM2_MODELS"]
 
@@ -31,7 +30,7 @@ _LFM20_MODELS = [
             generation_config=GenerationConfig(temperature=0.3, min_p=0.15),  # , repetition_penalty=1.05
             chat_template=FileSpec("chat_template.jinja"),
         ),
-        use_cases=tuple(),
+        use_cases=(),
     )
     for size, variant, quantization in chain(
         product(["350M", "700M", "1.2B"], [None], [None, QuantizationMode.UINT4, QuantizationMode.UINT8]),
@@ -53,7 +52,7 @@ _LFM25_MODELS = [
             generation_config=GenerationConfig(temperature=0.1, top_k=50, top_p=0.1),  # , repetition_penalty=1.05
             chat_template=FileSpec("chat_template.jinja"),
         ),
-        use_cases=tuple(),
+        use_cases=(),
     )
     for size, variant, quantization in chain(
         product(["350M"], [None], [None]),

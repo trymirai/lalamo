@@ -6,13 +6,13 @@ from typing import TypedDict
 from jinja2 import Template
 from tokenizers import Tokenizer
 
+from lalamo.token_codec import TokenCodec, TokenCodecConfig
 
-@dataclass(frozen=True)
-class VoicePrompt:
-    """
-    Current class is reserved for future usage of audio prompts
-    to condition style of generated audio
-    """
+__all__ = [
+    "TTSCodec",
+    "TTSCodecConfig",
+    "TTSMessage",
+]
 
 
 @dataclass(frozen=True)
@@ -27,24 +27,19 @@ class TTSRequest(TypedDict):
 
 
 @dataclass(frozen=True)
-class TTSMessageProcessorConfig:
+class TTSCodecConfig(TokenCodecConfig):
     prompt_template: str
-
-    # TODO(peter.glushkov): find a better way to handle opening new-line symbol
     drop_initial_newline: bool = True
 
-    def init(self, tokenizer: Tokenizer) -> "TTSMessageProcessor":
-        return TTSMessageProcessor(
-            self,
+    def init(self, tokenizer: Tokenizer) -> "TTSCodec":
+        return TTSCodec(
+            config=self,
             tokenizer=tokenizer,
         )
 
 
 @dataclass(frozen=True)
-class TTSMessageProcessor:
-    config: TTSMessageProcessorConfig
-    tokenizer: Tokenizer
-
+class TTSCodec(TokenCodec[Iterable[TTSMessage], str, TTSCodecConfig]):
     @cached_property
     def prompt_template(self) -> Template:
         return Template(self.config.prompt_template)
@@ -62,12 +57,11 @@ class TTSMessageProcessor:
             prompt_text = prompt_text[1:]
         return prompt_text
 
-    def tokenize_text(self, text: str) -> list[int]:
+    def encode_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False).ids
 
-    def tokenize_request(self, messages: Iterable[TTSMessage]) -> list[int]:
-        rendered = self.render_request(messages)
-        return self.tokenize_text(rendered)
+    def encode_request(self, request: Iterable[TTSMessage]) -> list[int]:
+        return self.encode_text(self.render_request(request))
 
-    def detokenize(self, tokens: list[int]) -> str:
-        return self.tokenizer.decode(tokens, skip_special_tokens=False)
+    def decode_response(self, response: list[int]) -> str:
+        return self.tokenizer.decode(response, skip_special_tokens=False)

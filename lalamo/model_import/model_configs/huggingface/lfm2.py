@@ -5,23 +5,18 @@ from typing import Literal
 import jax.numpy as jnp
 from jaxtyping import DTypeLike
 
-from lalamo.modules import (
-    AttentionConfig,
-    DecoderConfig,
-    DenseMLPConfig,
-    EmbeddingQuantConfig,
-    LinearConfig,
-    NormalizationConfig,
-    SeparableCausalConvConfig,
-    ShortConvConfig,
-    SiLU,
-    TiedEmbeddingConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
-    UnscaledRoPEConfig,
-    UntiedEmbeddingConfig,
-    UpcastMode,
-)
+from lalamo.modules.activations import SiLU
+from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
+from lalamo.modules.token_mixers.short_conv import ShortConvConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .common import HuggingFaceLMConfig
 
@@ -116,18 +111,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
     ) -> DecoderConfig:
         assert self.num_attention_heads == self.num_heads
 
-        if self.quantization_config is not None:
-            assert self.tie_embedding
-
-            embedding_config = TiedEmbeddingConfig(
-                input_scale=None,
-                logit_soft_cap=None,
-                quantization=EmbeddingQuantConfig(
-                    group_size=self.quantization_config.group_size,
-                    bits=self.quantization_config.bits,
-                ),
-            )
-        elif self.tie_embedding:
+        if self.tie_embedding:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,

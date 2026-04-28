@@ -7,7 +7,7 @@ from fish_speech.models.dac import inference as fish_dac_inference
 from fish_speech.models.dac.modded_dac import DAC
 from jax import numpy as jnp
 
-from lalamo.audio.tts_message_processor import TTSMessage
+from lalamo.audio.tts_codec import TTSMessage
 from lalamo.model_import.loaders.fishaudio_loaders import (
     load_descript_audio_codec,
 )
@@ -15,9 +15,10 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
     instantiate_dac_config_from_fishaudio_config,
     load_fishaudio_text_decoder,
 )
-from lalamo.module import EmptyInitializer, Keychain
+from lalamo.initializer import EmptyInitializer
+from lalamo.module import Keychain
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
-from lalamo.sampling import GreedyPolicy
+from lalamo.sampling import SamplingPolicy
 from lalamo.utils.torch_interop import torch_to_jax
 from tests.common import assert_close, skip_on_gpu
 from tests.tts.fishaudio.fishaudio_sampling import sampling_params_from_policy
@@ -55,11 +56,11 @@ def test_decode_one_token_matches_pytorch(fish_audio_local_model_path: Path) -> 
         lalamo_config.init(EmptyInitializer(precision=jnp.bfloat16)), weights_dict
     )
 
-    sampling_policy = GreedyPolicy()
+    sampling_policy = SamplingPolicy.init(temperature=0.0)
     vmapped_keys = jax.random.key(123)
 
     # Prepare inputs
-    tokenized_text = jnp.array(pytorch_tts_generator.message_processor.tokenize_request([tts_message]))[None, :]
+    tokenized_text = jnp.array(pytorch_tts_generator.token_codec.encode_request([tts_message]))[None, :]
     n_tokens = tokenized_text.shape[-1]
     input_pos = jnp.arange(n_tokens)[None, :]
 

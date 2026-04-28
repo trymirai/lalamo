@@ -116,9 +116,7 @@ def _awq_quantize[ArrayT: Array | ShapeDtypeStruct](
     int_zero_points = round_fn(int_scale_zero_points)
     rounded_zero_points = _awq_int_scale_zero_points_to_master(int_zero_points, scales)
     expanded_rounded_zero_points = expand_last_axis_groups(rounded_zero_points, group_size=group_size)
-    int_scale_weights = (
-        weights + stop_gradient(expanded_rounded_zero_points)
-    ) / stop_gradient(expanded_scales)
+    int_scale_weights = (weights + stop_gradient(expanded_rounded_zero_points)) / stop_gradient(expanded_scales)
     int_weights = round_fn(int_scale_weights)
     expanded_int_zero_points = expand_last_axis_groups(int_zero_points, group_size=group_size)
 

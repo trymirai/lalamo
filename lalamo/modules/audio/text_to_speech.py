@@ -2,13 +2,13 @@ from dataclasses import dataclass
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
-from lalamo.sampling import SamplingPolicy, make_policy
+from lalamo.sampling import SamplingPolicy
 
 from .audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfig
 from .text_decoder import TTSTextDecoder, TTSTextDecoderConfig
 from .vocoders import Vocoder, VocoderConfig
 
-DEFAULT_TTS_SAMPLING_POLICY: SamplingPolicy = CompositePolicy((TemperaturePolicy(0.3), TopPPolicy(0.9)))
+DEFAULT_TTS_SAMPLING_POLICY: SamplingPolicy = SamplingPolicy.init(temperature=0.3, top_p=0.9)
 DEFAULT_TTS_REPETITION_PENALTY: float = 1.1
 
 

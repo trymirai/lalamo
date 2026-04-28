@@ -1,4 +1,3 @@
-from lalamo.initializer import EmptyInitializer, Initializer, RandomInitializer
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
 
 from .activations import GELU, Activation
@@ -37,9 +36,7 @@ __all__ = [
     "DecoderForwardPassConfig",
     "EmbeddingBase",
     "EmbeddingConfig",
-    "EmptyInitializer",
     "ForwardPassMode",
-    "Initializer",
     "Keychain",
     "LalamoConfig",
     "LalamoModule",
@@ -50,7 +47,6 @@ __all__ = [
     "MLPForwardPassConfig",
     "Normalization",
     "NormalizationConfig",
-    "RandomInitializer",
     "RoPEConfig",
     "TiedEmbedding",
     "TiedEmbeddingConfig",

@@ -2,23 +2,18 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from lalamo.modules import (
-    AttentionConfig,
-    DecoderConfig,
-    DenseMLPConfig,
-    EmbeddingQuantConfig,
-    LinearConfig,
-    NormalizationConfig,
-    SiLU,
-    TiedEmbeddingConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
-    UnscaledRoPEConfig,
-    UntiedEmbeddingConfig,
-    UpcastMode,
-)
+from lalamo.modules.activations import SiLU
+from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
-from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
+from .common import HuggingFaceLMConfig, QuantizationConfigType
 
 __all__ = ["HFSmolLM3Config"]
 
@@ -58,36 +53,16 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
         context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        quantization = self.quantization or self.quantization_config
-        if isinstance(quantization, MLXQuantizationConfig):
-            quant_config = EmbeddingQuantConfig(
-                group_size=quantization.group_size,
-                bits=quantization.bits,
+        if self.tie_word_embeddings:
+            embedding_config = TiedEmbeddingConfig(
+                input_scale=None,
+                logit_soft_cap=None,
             )
-            if self.tie_word_embeddings:
-                embedding_config = TiedEmbeddingConfig(
-                    input_scale=None,
-                    logit_soft_cap=None,
-                    quantization=quant_config,
-                )
-            else:
-                embedding_config = UntiedEmbeddingConfig(
-                    input_scale=None,
-                    logit_soft_cap=None,
-                    input_quantization=quant_config,
-                    output_quantization=quant_config,
-                )
-        else:  # noqa: PLR5501
-            if self.tie_word_embeddings:
-                embedding_config = TiedEmbeddingConfig(
-                    input_scale=None,
-                    logit_soft_cap=None,
-                )
-            else:
-                embedding_config = UntiedEmbeddingConfig(
-                    input_scale=None,
-                    logit_soft_cap=None,
-                )
+        else:
+            embedding_config = UntiedEmbeddingConfig(
+                input_scale=None,
+                logit_soft_cap=None,
+            )
 
         rope_config = UnscaledRoPEConfig(
             base=self.rope_theta,

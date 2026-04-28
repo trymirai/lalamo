@@ -16,9 +16,10 @@ from jax import Array  # noqa: TC002
 from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 
-from lalamo.audio.tts_message_processor import TTSMessageProcessor, TTSMessageProcessorConfig
+from lalamo.audio.tts_codec import TTSCodec, TTSCodecConfig
 from lalamo.audio.utils import dummy_char_level_tokenizer_config
-from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
+from lalamo.chat_codec import ChatCodec, ChatCodecConfig
+from lalamo.model_import.loaders.fishaudio_loaders import load_tokenizer_from_fishaudio_tiktoken
 from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
 from lalamo.model_registry import ModelRegistry
 from lalamo.models import (
@@ -30,16 +31,14 @@ from lalamo.models import (
     TTSGenerator,
     TTSGeneratorConfig,
 )
-from lalamo.module import ShardingConfig, use_sharding
-from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
-from lalamo.quantization import QuantizationMode
-from lalamo.utils import process_chat_template
+from lalamo.modules import Classifier, Decoder, LalamoModule
+from lalamo.modules.audio.text_to_speech import TTSModel
+from lalamo.utils.template_hacking import fix_chat_template
 
 from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config, merge_token_ids
 from .huggingface_tokenizer_config import HFTokenizerConfig
-from .model_configs import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
-from .model_specs import FileSpec, ModelSpec, ModelType, UseCase
-from .model_specs.common import JSONFieldSpec, WeightsType
+from .model_configs.common import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
+from .model_specs.common import FileSpec, JSONFieldSpec, ModelSpec, ModelType, QuantizationMode, UseCase, WeightsType
 
 __all__ = [
     "DownloadingFileEvent",
@@ -153,8 +152,7 @@ def token_ids_to_text(tokenizer: Tokenizer, token_ids: int | list[int] | None) -
     if not isinstance(token_ids, list) or any((not isinstance(el, int)) for el in token_ids):
         return None
 
-    decoded = tokenizer.decode(token_ids[:1], skip_special_tokens=False)
-    return decoded
+    return tokenizer.decode(token_ids[:1], skip_special_tokens=False)
 
 
 def _instantiate_tokenizer_from_model_spec(
@@ -172,11 +170,11 @@ def _instantiate_tokenizer_from_model_spec(
     return tokenizer
 
 
-def import_message_processor(
+def import_chat_codec(
     model_spec: ModelSpec,
     output_dir: Path | str | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> MessageProcessor:
+) -> ChatCodec:
     tokenizer_config_file = download_file(
         model_spec.configs.tokenizer_config,
         model_spec.repo,
@@ -204,7 +202,7 @@ def import_message_processor(
             raise ValueError("Conflicting chat template specifications.")
         prompt_template = tokenizer_config.chat_template
 
-    prompt_template = process_chat_template(prompt_template)
+    prompt_template = fix_chat_template(prompt_template)
     tokenizer = _instantiate_tokenizer_from_model_spec(model_spec, output_dir, progress_callback)
 
     added_tokens = tokenizer_config.added_tokens()
@@ -239,7 +237,7 @@ def import_message_processor(
         case None:
             pass
 
-    message_processor_config = MessageProcessorConfig(
+    token_codec_config = ChatCodecConfig(
         prompt_template=prompt_template,
         output_parser_regex=model_spec.output_parser_regex,
         system_role_name=model_spec.system_role_name,
@@ -249,7 +247,7 @@ def import_message_processor(
         eos_token=eos_token,
         default_system_prompt=system_prompt_text,
     )
-    return MessageProcessor(config=message_processor_config, tokenizer=tokenizer)
+    return ChatCodec(config=token_codec_config, tokenizer=tokenizer)
 
 
 @contextmanager
@@ -321,14 +319,12 @@ def _load_main_processing_module(
         if progress_callback is not None:
             progress_callback(InitializingModelEvent())
 
-        processing_module = foreign_config.load(
+        return foreign_config.load(
             context_length,
             precision,
             weights_dict,
             metadata_dict,
         )
-
-    return processing_module
 
 
 def _import_language_model(
@@ -361,7 +357,7 @@ def _import_language_model(
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
 
-    message_processor = import_message_processor(model_spec)
+    token_codec = import_chat_codec(model_spec)
 
     stop_token_ids = merge_token_ids(foreign_decoder_config.eos_token_ids)
 
@@ -378,12 +374,12 @@ def _import_language_model(
         generation_config = GenerationConfig(stop_token_ids)
 
     language_model_config = LanguageModelConfig(
-        model_config=decoder.config,
-        message_processor_config=message_processor.config,
+        decoder_config=decoder.config,
+        token_codec_config=token_codec.config,
         generation_config=generation_config,
     )
 
-    language_model = LanguageModel(language_model_config, decoder, message_processor)
+    language_model = LanguageModel(language_model_config, token_codec, decoder)
     return language_model, language_model_config
 
 
@@ -417,13 +413,14 @@ def _import_classifier(
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
 
-    message_processor = import_message_processor(model_spec)
+    token_codec = import_chat_codec(model_spec)
 
     classifier_model_config = ClassifierModelConfig(
-        model_config=classifier.config,
-        message_processor_config=message_processor.config,
+        classifier_config=classifier.config,
+        token_codec_config=token_codec.config,
+        output_labels=classifier.config.output_labels,
     )
-    classifier_model = ClassifierModel(classifier_model_config, classifier, message_processor)
+    classifier_model = ClassifierModel(classifier_model_config, token_codec, classifier)
     return classifier_model, classifier_model_config
 
 
@@ -442,10 +439,6 @@ def _import_tts_model(
         if precision is None:
             precision = foreign_tts_config.default_precision
         if model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":
-            # NOTE: for FishAudio model we need certain info from Tokenizer even during inference stage
-            # so we load the Tokenizer and update config using data from it
-            from lalamo.model_import.loaders.fishaudio_loaders import load_tokenizer_from_fishaudio_tiktoken
-
             assert isinstance(model_spec.configs.tokenizer, FileSpec)
             tokenizer_path = download_file(model_spec.configs.tokenizer, model_repo=model_spec.repo)
 
@@ -481,19 +474,19 @@ def _import_tts_model(
             progress_callback(FinishedInitializingModelEvent())
 
     assert isinstance(model_spec.configs.chat_template, str)
-    tts_request_factory_config = TTSMessageProcessorConfig(
+    tts_codec_config = TTSCodecConfig(
         prompt_template=model_spec.configs.chat_template,
     )
-    message_processor = TTSMessageProcessor(tts_request_factory_config, tokenizer)
+    token_codec = TTSCodec(tts_codec_config, tokenizer)
 
     tts_generator_config = TTSGeneratorConfig(
         tts_config=foreign_tts_config.to_lalamo_config(
             context_length=context_length,
             metadata_dict={},
         ),
-        message_processor_config=message_processor.config,
+        token_codec_config=token_codec.config,
     )
-    tts_generator = TTSGenerator(tts_generator_config, tts_model, message_processor)
+    tts_generator = TTSGenerator(tts_generator_config, token_codec, tts_model)
 
     return (tts_generator, tts_generator_config)
 
@@ -504,7 +497,6 @@ def import_model(
     context_length: int | None = None,
     precision: DTypeLike | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-    sharding_config: ShardingConfig | None = None,
 ) -> ImportResults:
     if isinstance(model_spec, str):
         try:
@@ -512,29 +504,28 @@ def import_model(
         except KeyError as e:
             raise ValueError(f"Unknown model: {model_spec}") from e
 
-    with use_sharding(sharding_config):
-        match model_spec.model_type:
-            case ModelType.LANGUAGE_MODEL:
-                model, config = _import_language_model(
-                    model_spec,
-                    context_length=context_length,
-                    precision=precision,
-                    progress_callback=progress_callback,
-                )
-            case ModelType.CLASSIFIER_MODEL:
-                model, config = _import_classifier(
-                    model_spec,
-                    context_length=context_length,
-                    precision=precision,
-                    progress_callback=progress_callback,
-                )
-            case ModelType.TTS_MODEL:
-                model, config = _import_tts_model(
-                    model_spec,
-                    context_length=context_length,
-                    precision=precision,
-                    progress_callback=progress_callback,
-                )
+    match model_spec.model_type:
+        case ModelType.LANGUAGE_MODEL:
+            model, config = _import_language_model(
+                model_spec,
+                context_length=context_length,
+                precision=precision,
+                progress_callback=progress_callback,
+            )
+        case ModelType.CLASSIFIER_MODEL:
+            model, config = _import_classifier(
+                model_spec,
+                context_length=context_length,
+                precision=precision,
+                progress_callback=progress_callback,
+            )
+        case ModelType.TTS_MODEL:
+            model, config = _import_tts_model(
+                model_spec,
+                context_length=context_length,
+                precision=precision,
+                progress_callback=progress_callback,
+            )
 
     metadata = ModelMetadata(
         toolchain_version=LALAMO_VERSION,

@@ -9,7 +9,6 @@ import numpy as np
 import torch
 from jax.random import PRNGKey
 
-from lalamo.common import ParameterPath
 from lalamo.model_import.loaders.nanocodec_loaders import (
     load_causal_conv1d,
     load_causal_hifigan_decoder,
@@ -19,7 +18,7 @@ from lalamo.model_import.loaders.nanocodec_loaders import (
     load_hifigan_res_layer,
     load_residual_block,
 )
-from lalamo.module import EmptyInitializer, RandomInitializer
+from lalamo.initializer import EmptyInitializer, RandomInitializer
 from lalamo.modules.audio.common_modules import CausalConv1dConfig
 from lalamo.modules.audio.fishaudio.fishaudio_modules import Snake1dConfig
 from lalamo.modules.audio.nanocodec.nanocodec_consts import DEFAULT_FSQ_EPS
@@ -33,6 +32,7 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     HiFiGANResLayerConfig,
     ResidualBlockConfig,
 )
+from lalamo.utils.parameter_path import ParameterPath
 from tests.common import assert_close
 from tests.tts.nanocodec import nanocodec_torch_stuff as nanocodec_torch
 from tests.tts.utils import prepare_state_dict_for_lalamo_loaders

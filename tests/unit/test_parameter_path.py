@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import jax.tree_util as jtu
 import pytest
 
-from lalamo.common import ParameterPath
+from lalamo.utils.parameter_path import ParameterPath
 
 
 @pytest.mark.fast

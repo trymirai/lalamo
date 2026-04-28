@@ -12,8 +12,8 @@ from jax import numpy as jnp
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
-from lalamo.audio.tts_message_processor import TTSMessageProcessor, TTSMessageProcessorConfig
-from lalamo.models.tts_model import FishAudioTTSGenerator, TTSGenerator, TTSGeneratorConfig
+from lalamo.audio.tts_codec import TTSCodec, TTSCodecConfig
+from lalamo.models.tts_model import TTSGenerator, TTSGeneratorConfig
 from lalamo.modules import (
     AttentionConfig,
     DenseMLPConfig,
@@ -217,11 +217,11 @@ class FishAudioFromTorch:
     {% for message in messages %}<|{{message.style}}|><|{{message.speaker_id}}|>{{message.content}}{% endfor %}
     """
 
-        tts_request_factory_config = TTSMessageProcessorConfig(
+        tts_request_factory_config = TTSCodecConfig(
             prompt_template=prompt_template,
         )
 
-        message_processor = TTSMessageProcessor(tts_request_factory_config, tokenizer)
+        token_codec = TTSCodec(tts_request_factory_config, tokenizer)
 
         tts_config = TTSConfig(
             text_decoder.config,
@@ -235,10 +235,10 @@ class FishAudioFromTorch:
             audio_decoder=audio_decoder,
             vocoder=NoopVocoder(tts_config.vocoder_config),
         )
-        return FishAudioTTSGenerator(
-            config=TTSGeneratorConfig(tts_config=tts_config, message_processor_config=message_processor.config),
+        return TTSGenerator(
+            config=TTSGeneratorConfig(tts_config=tts_config, token_codec_config=token_codec.config),
             tts_model=tts_model,
-            message_processor=message_processor,
+            token_codec=token_codec,
         )
 
 

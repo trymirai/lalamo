@@ -1,7 +1,6 @@
 from lalamo.model_import.model_configs import HFLlambaConfig
-from lalamo.quantization import QuantizationMode
 
-from .common import ConfigMap, FileSpec, ModelSpec
+from .common import ConfigMap, FileSpec, ModelSpec, QuantizationMode
 
 __all__ = ["LLAMBA_MODELS"]
 
@@ -19,7 +18,7 @@ LLAMBA_MODELS = [
             tokenizer_config=FileSpec("tokenizer_config.json", "meta-llama/Llama-3.2-1B-Instruct"),
             generation_config=FileSpec("generation_config.json", "meta-llama/Llama-3.2-1B-Instruct"),
         ),
-        use_cases=tuple(),
+        use_cases=(),
     ),
     ModelSpec(
         vendor="Cartesia",
@@ -35,6 +34,6 @@ LLAMBA_MODELS = [
             tokenizer_config=FileSpec("tokenizer_config.json", "meta-llama/Llama-3.2-1B-Instruct"),
             generation_config=FileSpec("generation_config.json", "meta-llama/Llama-3.2-1B-Instruct"),
         ),
-        use_cases=tuple(),
+        use_cases=(),
     ),
 ]

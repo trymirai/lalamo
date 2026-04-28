@@ -1,7 +1,6 @@
 from lalamo.model_import.model_configs import HFLlamaConfig
-from lalamo.quantization import QuantizationMode
 
-from .common import ConfigMap, FileSpec, ModelSpec
+from .common import ConfigMap, FileSpec, ModelSpec, QuantizationMode
 
 __all__ = ["LLAMA_MODELS"]
 
@@ -14,7 +13,7 @@ LLAMA31 = [
         quantization=None,
         repo="meta-llama/Llama-3.1-8B-Instruct",
         config_type=HFLlamaConfig,
-        use_cases=tuple(),
+        use_cases=(),
     ),
     ModelSpec(
         vendor="Meta",
@@ -24,7 +23,7 @@ LLAMA31 = [
         quantization=QuantizationMode.UINT4,
         repo="mlx-community/Llama-3.1-8B-Instruct-4bit",
         config_type=HFLlamaConfig,
-        use_cases=tuple(),
+        use_cases=(),
         configs=ConfigMap(generation_config=FileSpec("generation_config.json", "meta-llama/Llama-3.1-8B-Instruct")),
     ),
 ]
@@ -39,7 +38,7 @@ LLAMA32 = [
         quantization=None,
         repo="meta-llama/Llama-3.2-1B-Instruct",
         config_type=HFLlamaConfig,
-        use_cases=tuple(),
+        use_cases=(),
     ),
     ModelSpec(
         vendor="Meta",
@@ -50,7 +49,7 @@ LLAMA32 = [
         repo="mlx-community/Llama-3.2-1B-Instruct-4bit",
         config_type=HFLlamaConfig,
         configs=ConfigMap(generation_config=FileSpec("generation_config.json", "meta-llama/Llama-3.2-1B-Instruct")),
-        use_cases=tuple(),
+        use_cases=(),
     ),
     ModelSpec(
         vendor="Meta",
@@ -61,7 +60,7 @@ LLAMA32 = [
         repo="mlx-community/Llama-3.2-1B-Instruct-8bit",
         config_type=HFLlamaConfig,
         configs=ConfigMap(generation_config=FileSpec("generation_config.json", "meta-llama/Llama-3.2-1B-Instruct")),
-        use_cases=tuple(),
+        use_cases=(),
     ),
     ModelSpec(
         vendor="Meta",
@@ -71,7 +70,7 @@ LLAMA32 = [
         quantization=None,
         repo="meta-llama/Llama-3.2-3B-Instruct",
         config_type=HFLlamaConfig,
-        use_cases=tuple(),
+        use_cases=(),
     ),
     ModelSpec(
         vendor="Meta",
@@ -82,7 +81,7 @@ LLAMA32 = [
         repo="mlx-community/Llama-3.2-3B-Instruct-4bit",
         config_type=HFLlamaConfig,
         configs=ConfigMap(generation_config=FileSpec("generation_config.json", "meta-llama/Llama-3.2-3B-Instruct")),
-        use_cases=tuple(),
+        use_cases=(),
     ),
     ModelSpec(
         vendor="Meta",
@@ -93,7 +92,7 @@ LLAMA32 = [
         repo="mlx-community/Llama-3.2-3B-Instruct-8bit",
         config_type=HFLlamaConfig,
         configs=ConfigMap(generation_config=FileSpec("generation_config.json", "meta-llama/Llama-3.2-3B-Instruct")),
-        use_cases=tuple(),
+        use_cases=(),
     ),
 ]
 

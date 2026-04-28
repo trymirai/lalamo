@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import pytest
 
 from lalamo.checkpoint_manager import CheckpointManager
-from lalamo.module import RandomInitializer
+from lalamo.initializer import RandomInitializer
 from lalamo.modules import (
     DenseMLPConfig,
     FullPrecisionLinearConfig,

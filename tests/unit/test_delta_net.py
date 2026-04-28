@@ -1,7 +1,6 @@
 import jax
 import jax.numpy as jnp
 import torch
-from lalamo.common import ParameterPath
 from transformers.models.qwen3_next.configuration_qwen3_next import Qwen3NextConfig
 from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextGatedDeltaNet
 
@@ -9,13 +8,14 @@ from lalamo.initializer import RandomInitializer
 from lalamo.model_import.loaders.huggingface import load_delta_net_attention
 from lalamo.module import Keychain
 from lalamo.modules import (
-    DeltaNetAttention,
-    DeltaNetAttentionConfig,
+    DeltaNet,
+    DeltaNetConfig,
     LinearConfig,
     NormalizationConfig,
     SeparableCausalConvConfig,
     UpcastMode,
 )
+from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.torch_interop import torch_to_jax
 from tests.common import assert_close
 
@@ -42,15 +42,15 @@ def _make_hf_delta_net() -> tuple[Qwen3NextGatedDeltaNet, Qwen3NextConfig]:
     return Qwen3NextGatedDeltaNet(config, layer_idx=0), config
 
 
-def _make_lalamo_delta_net(hf_config: Qwen3NextConfig) -> DeltaNetAttention:
+def _make_lalamo_delta_net(hf_config: Qwen3NextConfig) -> DeltaNet:
     norm_config = NormalizationConfig(
         epsilon=hf_config.rms_norm_eps,
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         subtract_mean=False,
     )
-    linear_config = LinearConfig(precision=precision)
-    config = DeltaNetAttentionConfig(
+    linear_config = LinearConfig()
+    config = DeltaNetConfig(
         in_proj_config=linear_config,
         conv_config=SeparableCausalConvConfig(has_biases=False),
         out_proj_config=linear_config,

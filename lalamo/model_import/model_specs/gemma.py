@@ -4,9 +4,8 @@ from lalamo.model_import.model_configs import (
     HFGemma3TextConfig,
     HFGemma4Config,
 )
-from lalamo.quantization import QuantizationMode
 
-from .common import ConfigMap, FileSpec, ModelSpec, WeightsType
+from .common import ConfigMap, FileSpec, ModelSpec, QuantizationMode, WeightsType
 
 __all__ = ["GEMMA_MODELS"]
 

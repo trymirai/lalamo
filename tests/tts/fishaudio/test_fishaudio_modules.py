@@ -15,7 +15,6 @@ from fish_speech.models.dac.rvq import CausalConvNet, CausalTransConvNet
 from fish_speech.models.dac.rvq import ConvNeXtBlock as PyTorchConvNeXtBlock
 from fish_speech.tokenizer import FishTokenizer
 from jax import numpy as jnp
-from lalamo.common import ParameterPath
 
 from lalamo import FileSpec
 from lalamo.model_import.loaders.fishaudio_loaders import (
@@ -37,7 +36,8 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
     lalamo_transformer_cfg_from_fish_audio_codec_cfg,
 )
 from lalamo.model_import.model_specs.fishaudio import FISHAUDIO_TTS_MODELS
-from lalamo.module import EmptyInitializer, Keychain
+from lalamo.initializer import EmptyInitializer
+from lalamo.module import Keychain
 from lalamo.modules import GELU, ForwardPassMode
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
@@ -65,6 +65,7 @@ from lalamo.modules.linear import LinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.transformer import TransformerForwardPassConfig
 from lalamo.modules.utils import call_vmapped
+from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.torch_interop import torch_to_jax
 from tests.common import assert_close
 from tests.tts.fishaudio.fishaudio_thin_wrapper import (

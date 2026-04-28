@@ -16,13 +16,13 @@ from jaxtyping import Array
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
 from lalamo import ClassifierModel, LanguageModel, import_model
-from lalamo.common import get_default_device_bytes
 from lalamo.model_import.common import ModelType
 from lalamo.modules.classifier import ClassifierActivationTrace, ClassifierResult
 from lalamo.modules.decoder import (
     DecoderActivationTrace,
     DecoderResult,
 )
+from lalamo.utils.memory import get_available_bytes_on_default_device
 from tests.common import assert_close, checkify_forward
 from tests.helpers import si, unsi
 
@@ -419,7 +419,7 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
         if "LALAMO_MEMORY_FOR_TRACE" in os.environ:
             default_device_bytes = unsi(os.environ["LALAMO_MEMORY_FOR_TRACE"])
         else:
-            default_device_bytes = get_default_device_bytes()
+            default_device_bytes = get_available_bytes_on_default_device()
 
         if default_device_bytes is not None and test_spec.minimum_memory_for_trace > default_device_bytes:
             pytest.skip(

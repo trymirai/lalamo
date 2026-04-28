@@ -3,8 +3,8 @@ from typing import Any
 import jax.numpy as jnp
 import pytest
 
-from lalamo.common import unflatten_parameters
-from lalamo.utils import MapDictValues, MapSequence
+from lalamo.utils.lazy_collections import MapDictValues, MapSequence
+from lalamo.utils.parameter_tree import unflatten_parameters
 
 
 def test_unflatten_simple_dict() -> None:

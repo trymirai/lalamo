@@ -2,21 +2,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from lalamo.modules import (
-    AttentionConfig,
-    DecoderConfig,
-    DenseMLPConfig,
-    EmbeddingQuantConfig,
-    LinearConfig,
-    NormalizationConfig,
-    TiedEmbeddingConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
-    UntiedEmbeddingConfig,
-    UpcastMode,
-    YARNRoPEConfig,
-)
 from lalamo.modules.activations import SiLU
+from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import YARNRoPEConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
@@ -64,23 +59,15 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
     ) -> DecoderConfig:
         assert isinstance(self.quantization, MLXQuantizationConfig), "HFBonsaiConfig requires MLX quantization config"
         assert not self.use_sliding_window, "Sliding window attention is not supported for Bonsai"
-        quantization = self.quantization
-        quant_config = EmbeddingQuantConfig(
-            group_size=quantization.group_size,
-            bits=quantization.bits,
-        )
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                quantization=quant_config,
             )
         else:
             embedding_config = UntiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                input_quantization=quant_config,
-                output_quantization=quant_config,
             )
 
         rope_config = YARNRoPEConfig(
