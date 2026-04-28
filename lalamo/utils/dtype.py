@@ -29,6 +29,7 @@ _ALL_DTYPES = (
     jnp.complex64,
     jnp.complex128,
 )
+_ALL_DTYPES = tuple(jnp.dtype(dtype) for dtype in _ALL_DTYPES)
 
 
 def dtype_to_str(dtype: DTypeLike) -> str:

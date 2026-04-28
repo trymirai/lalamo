@@ -91,7 +91,7 @@ def make_registry_abc_converter() -> GenConverter:
                 return None
             return {
                 "type": obj.__class__.__name__,
-                **converter.unstructure(obj),
+                **converter.unstructure_attrs_asdict(obj),
             }
 
         return unstructure_abc
@@ -115,7 +115,7 @@ def make_registry_abc_converter() -> GenConverter:
             new_config = dict(config)
             type_name = new_config.pop("type")
             target_type = {d.__name__: d for d in resolved_registry_abc.__descendants__()}[type_name]
-            return converter.structure(new_config, target_type)
+            return converter.structure_attrs_fromdict(new_config, target_type)
 
         return structure_abc
 
