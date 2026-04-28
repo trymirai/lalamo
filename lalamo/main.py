@@ -804,6 +804,49 @@ def generate_replies(
     )
 
 
+@app.command(help="Start a server for batched inference.")
+def server(
+    host: Annotated[
+        str,
+        Option(help="Host to bind to."),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        Option(help="Port to bind to."),
+    ] = 8293,
+    vram_gb: Annotated[
+        int | None,
+        Option(
+            help="Maximum VRAM in GB. Batch sizes are estimated automatically.",
+            show_default="max on default device",
+        ),
+    ] = None,
+    cache_dir: Annotated[
+        Path | None,
+        Option(
+            help="Directory to persist completed batches to.",
+            show_default="~/.cache/lalamo/batches",
+        ),
+    ] = None,
+) -> None:
+    try:
+        from lalamo.server import start_server
+    except ImportError as error:
+        err_console.print("Server extras not installed. Install with: uv add 'lalamo[server]'")
+        raise Exit(1) from error
+
+    if vram_gb is not None:
+        vram_bytes = vram_gb * 1000 * 1000 * 1000
+    elif (vram_bytes := get_default_device_bytes()) is None:
+        err_console.print("Cannot get the default device's memory stats, use --vram-gb")
+        raise Exit(1)
+
+    if cache_dir is None:
+        cache_dir = Path.home() / ".cache" / "lalamo" / "batches"
+
+    start_server(host=host, port=port, vram_bytes=vram_bytes, cache_dir=cache_dir)
+
+
 speculator_app = Typer()
 app.add_typer(speculator_app, name="speculator", help="Train a speculator for a model.")
 
@@ -867,13 +910,13 @@ def estimate_batchsize(
     vram_gb: Annotated[
         int | None,
         Option(
-            help="Maximum vram size in gb allowed.",
+            help="Maximum vram size in GB allowed.",
             show_default="max on default device",
         ),
     ] = None,
 ) -> None:
     if vram_gb is not None:
-        # note that in practice GPUs use GiB in their docs, e.g. H100 actually has 85GB of memory
+        # H100 is 80gib (not gb!) card; it has around 85gb total
         mem_bytes = vram_gb * 1000 * 1000 * 1000
     elif (mem_bytes := get_default_device_bytes()) is None:
         err_console.print("Cannot get the default device's memory stats, use --vram-gb")
