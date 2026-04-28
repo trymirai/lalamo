@@ -124,6 +124,7 @@ class HFGemma3TextConfigRaw:
                 base=self.rope_theta,
                 max_sequence_length=self.max_position_embeddings,
                 scaling_factor=self.rope_scaling.factor,
+                head_dim=self.head_dim,
             )
         elif isinstance(self.rope_scaling, YarnRopeScalingConfig):
             global_rope_config = YARNRoPEConfig(
@@ -135,12 +136,14 @@ class HFGemma3TextConfigRaw:
                 beta_fast=self.rope_scaling.beta_fast,
                 beta_slow=self.rope_scaling.beta_slow,
                 truncate=self.rope_scaling.truncate,
+                head_dim=self.head_dim,
             )
         elif self.rope_scaling is None:
             global_rope_config = UnscaledRoPEConfig(
                 precision=activation_precision,
                 base=self.rope_theta,
                 max_sequence_length=context_length or self.max_position_embeddings,
+                head_dim=self.head_dim,
             )
         else:
             raise ValueError("Invalid rope scaling configuration")
@@ -149,6 +152,7 @@ class HFGemma3TextConfigRaw:
             precision=activation_precision,
             base=self.rope_local_base_freq,
             max_sequence_length=context_length or self.max_position_embeddings,
+            head_dim=self.head_dim,
         )
 
         if quantization is None:
@@ -188,6 +192,9 @@ class HFGemma3TextConfigRaw:
                 scale=attention_scale,
                 sliding_window_size=sliding_window_size,
             )
+            # Global layers (sliding_window_size=None) use global_rope_config,
+            # local layers use local_rope_config
+            rope_config = global_rope_config if sliding_window_size is None else local_rope_config
             transformer_layer_config = TransformerLayerConfig(
                 pre_mixer_norm_config=rms_norm_config,
                 mixer_config=attention_config,
@@ -195,12 +202,11 @@ class HFGemma3TextConfigRaw:
                 pre_mlp_norm_config=rms_norm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=rms_norm_config,
+                rope_config=rope_config,
             )
             layer_configs.append(transformer_layer_config)
 
         transformer_config = TransformerConfig(
-            global_rope_config=global_rope_config,
-            local_rope_config=local_rope_config,
             layer_configs=tuple(layer_configs),
             output_norm_config=rms_norm_config,
             model_dim=self.hidden_size,

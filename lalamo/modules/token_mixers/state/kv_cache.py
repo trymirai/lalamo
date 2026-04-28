@@ -2,6 +2,7 @@ from abc import abstractmethod
 from typing import Self
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jax.lax import dynamic_update_slice_in_dim
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
@@ -11,6 +12,57 @@ from lalamo.common import ParameterTree
 from .common import StateLayerBase
 
 __all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
+
+
+@eqx.filter_jit
+def tree_ancestor_mask(
+    parent_indices: Int[Array, " nodes"],
+) -> Bool[Array, "nodes nodes"]:
+    """Ancestor matrix from parent_indices.
+
+    Root is at index 0 with ``parent_indices[0] == -1``; other nodes must have
+    ``parent_indices[i] < i`` so a single forward sweep sees the parent's row
+    already closed. For the root the ``parent >= 0`` guard zeroes out the
+    ``maximum(parent, 0)`` self-lookup, preserving eye[0].
+    """
+    (num_nodes,) = parent_indices.shape
+    initial = jnp.eye(num_nodes, dtype=jnp.bool)
+
+    def step(mask: Bool[Array, "nodes nodes"], i: Int[Array, ""]) -> tuple[Bool[Array, "nodes nodes"], None]:
+        parent = parent_indices[i]
+        parent_row = mask[jnp.maximum(parent, 0)]
+        zero_row = jnp.zeros_like(parent_row)
+        inherited = jnp.where(parent >= 0, parent_row, zero_row)
+        return mask.at[i].set(mask[i] | inherited), None
+
+    mask, _ = jax.lax.scan(step, initial, jnp.arange(num_nodes, dtype=jnp.int32))
+    return mask
+
+
+@eqx.filter_jit
+def build_tree_attention_mask(
+    total_capacity: int,
+    prefix_length: Int[Array, ""] | int,
+    parent_indices: Int[Array, " nodes"],
+    has_sinks: bool,
+) -> Bool[Array, "nodes total_capacity"]:
+    """Tree attention mask: each draft node attends to prefix + ancestors + self."""
+    prefix_length = jnp.asarray(prefix_length, dtype=jnp.int32)
+    (num_nodes,) = parent_indices.shape
+
+    col_indices = jnp.arange(total_capacity, dtype=jnp.int32)
+    prefix_mask = col_indices[None, :] < prefix_length
+
+    ancestor_matrix = tree_ancestor_mask(parent_indices)
+    draft_offsets = col_indices - prefix_length
+    in_draft = (draft_offsets >= 0) & (draft_offsets < num_nodes)
+    clamped = jnp.clip(draft_offsets, 0, num_nodes - 1)
+    draft_mask = ancestor_matrix[:, clamped] & in_draft[None, :]
+
+    mask = prefix_mask | draft_mask
+    if has_sinks:
+        mask = mask.at[:, 0].set(True)
+    return mask
 
 
 class KVCacheLayer(StateLayerBase):
@@ -35,6 +87,10 @@ class KVCacheLayer(StateLayerBase):
                 "Attempted to call a method on a batched version of KVCacheLayer. Use vmap instead.",
             )
 
+    @property
+    @abstractmethod
+    def padding_mask(self) -> Bool[Array, " tokens"] | None: ...
+
     @abstractmethod
     def attention_mask(
         self,
@@ -43,6 +99,22 @@ class KVCacheLayer(StateLayerBase):
         suffix_length_without_padding: Int[Array, ""] | int | None = None,
         sliding_window_size: int | None = None,
     ) -> Bool[Array, "suffix_tokens tokens"]: ...
+
+    def tree_attention_mask(
+        self,
+        prefix_length: Int[Array, ""] | int,
+        parent_indices: Int[Array, " nodes"],
+    ) -> Bool[Array, "nodes tokens"]:
+        self._raise_if_batched()
+        total, _, _ = self.keys.shape
+        mask = build_tree_attention_mask(total, prefix_length, parent_indices, self.has_sinks)
+        padding_mask = self.padding_mask
+        if padding_mask is not None:
+            mask = mask & padding_mask[None, :]
+        return mask
+
+    @abstractmethod
+    def current_prefix_length(self) -> Int[Array, ""] | int: ...
 
     @abstractmethod
     def extend(
@@ -61,6 +133,10 @@ class KVCacheLayer(StateLayerBase):
 
 class DynamicKVCacheLayer(KVCacheLayer):
     padding_mask: Bool[Array, " tokens"] | None = None
+
+    def current_prefix_length(self) -> int:
+        self._raise_if_batched()
+        return self.keys.shape[0]
 
     @classmethod
     def init(
@@ -83,7 +159,7 @@ class DynamicKVCacheLayer(KVCacheLayer):
             if padding_mask is not None:
                 true = jnp.ones((1,), dtype=jnp.bool)
                 padding_mask = jnp.concatenate([true, padding_mask], axis=0)
-        return cls(has_sinks, keys, values, padding_mask)
+        return cls(has_sinks=has_sinks, keys=keys, values=values, padding_mask=padding_mask)
 
     def attention_mask(
         self,
@@ -153,6 +229,10 @@ class DynamicKVCacheLayer(KVCacheLayer):
 class StaticKVCacheLayer(KVCacheLayer):
     current_length: Int[Array, "*batch"]
 
+    def current_prefix_length(self) -> Int[Array, ""]:
+        self._raise_if_batched()
+        return self.current_length
+
     def attention_mask(
         self,
         suffix_length: int,
@@ -181,7 +261,7 @@ class StaticKVCacheLayer(KVCacheLayer):
         return result
 
     @property
-    def padding_mask(self) -> Bool[Array, " tokens"] | None:
+    def padding_mask(self) -> Bool[Array, " tokens"]:
         self._raise_if_batched()
         return jnp.arange(self.capacity, dtype=jnp.int32) < self.current_length
 
