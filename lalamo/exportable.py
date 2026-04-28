@@ -1,5 +1,6 @@
 from typing import NamedTuple, Self
 
+import jax
 import jax.tree_util as jtu
 from jaxtyping import Array
 
@@ -62,7 +63,8 @@ class Exportable:
             if subtree is None:
                 return None
 
-            return load_as(subtree, expored_data.arrays[path], allow_dtype_cast=allow_dtype_cast)
+            exported_array = jax.device_put(expored_data.arrays[path], subtree.sharding)
+            return load_as(subtree, exported_array, allow_dtype_cast=allow_dtype_cast)
 
         return jtu.tree_map_with_path(
             restore,
