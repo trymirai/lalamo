@@ -17,7 +17,7 @@ if CMX_AVAILABLE:
 MODEL_LIST = [
     ModelTestSpec(spec.repo, DType.FLOAT32, token_stride=1)
     for spec in filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.CORE)
-    if spec.config_type is HFLlambaConfig and spec.quantization is not None
+    if spec.config_type is HFLlambaConfig
 ]
 
 
