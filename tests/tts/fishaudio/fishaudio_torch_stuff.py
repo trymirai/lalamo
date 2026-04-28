@@ -12,7 +12,7 @@ from jax import numpy as jnp
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
-from lalamo.audio.tts_codec import TTSCodec, TTSCodecConfig
+from lalamo.models.tts_codec import TTSCodec, TTSCodecConfig
 from lalamo.models.tts_model import TTSGenerator, TTSGeneratorConfig
 from lalamo.modules import (
     AttentionConfig,

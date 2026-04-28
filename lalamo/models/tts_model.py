@@ -8,9 +8,9 @@ from jaxtyping import Int  # noqa: TC002
 from tokenizers import Tokenizer
 
 from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
-from lalamo.audio.tts_codec import TTSCodec, TTSCodecConfig, TTSMessage
 from lalamo.initializer import Initializer
 from lalamo.model import Model, ModelConfig
+from lalamo.models.tts_codec import TTSCodec, TTSCodecConfig, TTSMessage
 from lalamo.module import Keychain
 from lalamo.modules.audio.text_to_speech import TTSConfig, TTSModel
 from lalamo.sampling import SamplingPolicy

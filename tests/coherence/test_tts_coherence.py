@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 from transformers import pipeline
 
-from lalamo.audio.tts_codec import TTSMessage
 from lalamo.model_import.model_specs.common import ModelSpec, ModelType
+from lalamo.models.tts_codec import TTSMessage
 from lalamo.models.tts_model import TTSGenerator
 from lalamo.module import Keychain
 from tests.conftest import ConvertModel, filter_specs

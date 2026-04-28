@@ -3,10 +3,10 @@ from pathlib import Path
 
 import jax.numpy as jnp
 
-from lalamo.audio.tts_codec import TTSMessage
+from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.common import import_model
 from lalamo.models import TTSGenerator
-from lalamo.initializer import EmptyInitializer
+from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
