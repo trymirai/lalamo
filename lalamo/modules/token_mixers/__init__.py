@@ -4,10 +4,8 @@ from .attention import (
     Attention,
     AttentionConfig,
     AttentionForwardPassConfig,
-    AttentionImplementation,
+    AttentionMode,
     AttentionResult,
-    DefaultAttention,
-    StableReductionOrderAttention,
 )
 from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerResult
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
@@ -32,9 +30,8 @@ __all__ = [
     "Attention",
     "AttentionConfig",
     "AttentionForwardPassConfig",
-    "AttentionImplementation",
+    "AttentionMode",
     "AttentionResult",
-    "DefaultAttention",
     "DeltaNetAttention",
     "DeltaNetAttentionConfig",
     "DeltaNetAttentionResult",
@@ -51,7 +48,6 @@ __all__ = [
     "ShortConvConfig",
     "ShortConvResult",
     "ShortConvStateLayer",
-    "StableReductionOrderAttention",
     "State",
     "StateLayerBase",
     "StaticKVCacheLayer",
