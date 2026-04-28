@@ -17,7 +17,7 @@ from lalamo.message_processor import Message, MessageProcessor, MessageProcessor
 from lalamo.modules import Classifier, Decoder, LalamoModule, config_converter
 from lalamo.modules.classifier import ClassifierConfig, ClassifierResult
 from lalamo.modules.decoder import DecoderConfig, DecoderResult
-from lalamo.safetensors import assert_current_lalamo_metadata, safe_read
+from lalamo.safetensors import assert_compatible_lalamo_metadata, safe_read
 
 __all__ = [
     "BatchSizeInfo",
@@ -85,7 +85,7 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
         config = config_converter.structure(config_json["model_config"], cls)
         with Path(path / "model.safetensors").open("rb") as fd:
             metadata, weights_dict = safe_read(fd)
-            assert_current_lalamo_metadata(metadata, path)
+            assert_compatible_lalamo_metadata(metadata, path)
             weights = unflatten_parameters(weights_dict)
             model = config.model_config.empty().import_weights(weights)  # type: ignore
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))

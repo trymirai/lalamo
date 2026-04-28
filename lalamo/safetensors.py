@@ -87,14 +87,19 @@ def current_lalamo_metadata() -> dict[str, str]:
     return {LALAMO_VERSION_METADATA_KEY: LALAMO_VERSION}
 
 
-def assert_current_lalamo_metadata(metadata: Mapping[str, str] | None, path: Path | str) -> None:
+def _major_version(version_string: str) -> str:
+    _, major, _ = version_string.split(".")
+    return major
+
+
+def assert_compatible_lalamo_metadata(metadata: Mapping[str, str] | None, path: Path | str) -> None:
     converted_version = None if metadata is None else metadata.get(LALAMO_VERSION_METADATA_KEY)
-    if converted_version == LALAMO_VERSION:
+    if converted_version is not None and _major_version(converted_version) == _major_version(LALAMO_VERSION):
         return
 
     raise RuntimeError(
-        f"STALE CONVERTED MODEL: {path} was converted with lalamo {converted_version}, but the current "
-        f"lalamo version is {LALAMO_VERSION}. Re-run `lalamo convert` before loading this model."
+        f"STALE CONVERTED MODEL: {path} was converted with lalamo {converted_version}, which is not compatible "
+        f"with the current lalamo version {LALAMO_VERSION}. Re-run `lalamo convert` before loading this model."
     )
 
 

@@ -33,7 +33,7 @@ from lalamo.modules.audio.text_to_speech import (
     DEFAULT_TTS_SAMPLING_POLICY,
     TTSConfig,
 )
-from lalamo.safetensors import assert_current_lalamo_metadata, safe_read
+from lalamo.safetensors import assert_compatible_lalamo_metadata, safe_read
 from lalamo.sampling import SamplingPolicy
 
 from .common import ParameterTree, unflatten_parameters
@@ -138,7 +138,7 @@ class TTSGenerator(eqx.Module):
         assert isinstance(config, TTSGeneratorConfig)
         with Path(path / "model.safetensors").open("rb") as fd:
             metadata, weights_dict = safe_read(fd)
-            assert_current_lalamo_metadata(metadata, path)
+            assert_compatible_lalamo_metadata(metadata, path)
             weights = unflatten_parameters(weights_dict)
             model = config.tts_config.empty().import_weights(weights)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
