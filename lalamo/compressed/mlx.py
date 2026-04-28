@@ -11,9 +11,10 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
-from lalamo.utils.dummy_array import dummy_array
+from lalamo.utils.dummy_array import dummy_array, preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
+from lalamo.utils.sharding import reshard_as
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -49,7 +50,7 @@ class MLXAffineParameters(NamedTuple):
     @classmethod
     def from_weights(
         cls,
-        weights: Float[Array | ShapeDtypeStruct, "... rows cols"],
+        weights: Float[Array, "... rows cols"],
         bits: int,
         group_size: int,
     ) -> Self:
@@ -65,29 +66,26 @@ class MLXAffineParameters(NamedTuple):
         return cls(scales=scales, biases=group_min_max.min)
 
 
-def _mlx_master_weights_to_int_scale[ArrayT: Array | ShapeDtypeStruct](
-    weights: Float[ArrayT, "... cols"],
-    scales: Float[ArrayT, "... groups"],
-    biases: Float[ArrayT, "... groups"],
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
+def _mlx_master_weights_to_int_scale(
+    weights: Float[Array, "... cols"],
+    scales: Float[Array, "... groups"],
+    biases: Float[Array, "... groups"],
     group_size: int,
 ) -> Float[Array, "... rows cols"]:
-    if not isinstance(weights, Array):
-        return dummy_array(weights.shape, weights.dtype, weights.sharding)
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     expanded_biases = expand_last_axis_groups(biases, group_size=group_size)
     return (weights - expanded_biases) / expanded_scales
 
 
-def _mlx_quantize[ArrayT: Array | ShapeDtypeStruct](
-    weights: Float[ArrayT, "... cols"],
-    scales: Float[ArrayT, "... groups"],
-    biases: Float[ArrayT, "... groups"],
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
+def _mlx_quantize(
+    weights: Float[Array, "... cols"],
+    scales: Float[Array, "... groups"],
+    biases: Float[Array, "... groups"],
     group_size: int,
     round_fn: Callable[[Float[Array, "... rows cols"]], Float[Array, "... rows cols"]],
 ) -> Float[Array, "... rows cols"]:
-    if not isinstance(weights, Array):
-        return dummy_array(weights.shape, weights.dtype, weights.sharding)
-
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     expanded_biases = expand_last_axis_groups(biases, group_size=group_size)
     int_scale_weights = (weights - stop_gradient(expanded_biases)) / stop_gradient(expanded_scales)
@@ -95,6 +93,7 @@ def _mlx_quantize[ArrayT: Array | ShapeDtypeStruct](
     return round_fn(int_scale_weights) * expanded_scales + expanded_biases
 
 
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
 def _mlx_pack_master_weights(
     weights: Float[Array, "... rows cols"],
     scales: Float[Array, "... rows groups"],
@@ -108,8 +107,8 @@ def _mlx_pack_master_weights(
         biases,
         group_size,
     )
-    int_weights = deterministic_round_to_unsigned_grid(int_scale_weights, bits=bits).astype(jnp.int8)
-    return pack_uint_to_uint8(int_weights, bits)
+    rounded_weights = deterministic_round_to_unsigned_grid(int_scale_weights, bits=bits)
+    return pack_uint_to_uint8(rounded_weights.astype(jnp.uint8), bits)
 
 
 def _mlx_unpack_master_weights(
@@ -133,7 +132,7 @@ class MLXSpec(WeightMatrixSpec):
 
     def compress(
         self,
-        weights: Float[Array | ShapeDtypeStruct, "... out_channels in_channels"],
+        weights: Float[Array, "... out_channels in_channels"],
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> "MLXMatrix":
@@ -284,7 +283,9 @@ class MLXMatrixForTraining(MLXMatrix):
             ),
         )
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            return self.spec.layout.matmul(dequantized_weights, vector)
+            result = self.spec.layout.matmul(dequantized_weights, vector)
+
+        return reshard_as(result, vector)
 
     def load_exported(
         self,
@@ -296,13 +297,13 @@ class MLXMatrixForTraining(MLXMatrix):
         if prefix is None:
             prefix = ParameterPath()
         saved_spec = expored_data.metadata[prefix / "spec"]
-        loaded_spec = self.spec.from_json(saved_spec)
+        loaded_spec = WeightMatrixSpec.from_json(saved_spec)
         if loaded_spec != self.spec:
             raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
 
-        packed_weights = expored_data.arrays[prefix / "weights"]
-        scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast)
-        biases = load_as(self.biases, expored_data.arrays[prefix / "biases"], allow_dtype_cast)
+        packed_weights = reshard_as(expored_data.arrays[prefix / "weights"], self.weights)
+        scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast=allow_dtype_cast)
+        biases = load_as(self.biases, expored_data.arrays[prefix / "biases"], allow_dtype_cast=allow_dtype_cast)
         weights = _mlx_unpack_master_weights(
             packed_weights,
             scales,
@@ -360,7 +361,7 @@ class MLXMatrixForInference(MLXMatrix):
         if prefix is None:
             prefix = ParameterPath()
         saved_spec = expored_data.metadata[prefix / "spec"]
-        loaded_spec = self.spec.from_json(saved_spec)
+        loaded_spec = WeightMatrixSpec.from_json(saved_spec)
         if loaded_spec != self.spec:
             raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
 
@@ -369,8 +370,8 @@ class MLXMatrixForInference(MLXMatrix):
             expored_data.arrays[prefix / "weights"],
             allow_dtype_cast=False,
         )
-        scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast)
-        biases = load_as(self.biases, expored_data.arrays[prefix / "biases"], allow_dtype_cast)
+        scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast=allow_dtype_cast)
+        biases = load_as(self.biases, expored_data.arrays[prefix / "biases"], allow_dtype_cast=allow_dtype_cast)
         return MLXMatrixForInference(
             spec=self.spec,
             packed_weights=packed_weights,
@@ -431,4 +432,6 @@ class MLXMatrixForInference(MLXMatrix):
             self.spec.bits,
         )
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            return self.spec.layout.matmul(weights, vector)
+            result = self.spec.layout.matmul(weights, vector)
+
+        return reshard_as(result, vector)

@@ -9,7 +9,9 @@ from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.initializer import Initializer
-from lalamo.module import Keychain
+from lalamo.module import Keychain, ShardingAxis
+from lalamo.utils.dummy_array import dummy_array
+from lalamo.utils.sharding import make_sharding
 from lalamo.utils.surgery import load_as, map_nodes_of_type, map_nodes_of_type_with_path, select_nodes_of_type
 from lalamo.weight_matrix import MatmulConfig, WeightMatrix, WeightMatrixSpec
 
@@ -138,17 +140,20 @@ def test_load_as_rejects_non_array_leaf_type_mismatch() -> None:
 
 
 def test_load_as_accepts_matching_shape_dtype_struct() -> None:
-    template = ShapeDtypeStruct(shape=(2, 3), dtype=jnp.float32, sharding=None)
-    value = ShapeDtypeStruct(shape=(2, 3), dtype=jnp.float32, sharding=None)
+    template = dummy_array((2, 3), jnp.float32)
+    value = dummy_array((2, 3), jnp.float32)
 
     result = load_as(template, value)
 
-    assert result is value
+    assert isinstance(result, ShapeDtypeStruct)
+    assert result.shape == value.shape
+    assert result.dtype == value.dtype
+    assert result.sharding == template.sharding
 
 
 def test_load_as_casts_shape_dtype_struct_when_allowed() -> None:
-    template = ShapeDtypeStruct(shape=(2, 3), dtype=jnp.float32, sharding=None)
-    value = ShapeDtypeStruct(shape=(2, 3), dtype=jnp.float16, sharding=None)
+    template = dummy_array((2, 3), jnp.float32)
+    value = dummy_array((2, 3), jnp.float16)
 
     result = load_as(template, value, allow_dtype_cast=True)
 
@@ -158,12 +163,17 @@ def test_load_as_casts_shape_dtype_struct_when_allowed() -> None:
     assert result.sharding == value.sharding
 
 
-def test_load_as_rejects_shape_dtype_struct_sharding_mismatch() -> None:
-    template = ShapeDtypeStruct(shape=(2, 3), dtype=jnp.float32, sharding=None)
+def test_load_as_places_array_on_shape_dtype_struct_template_sharding(fake_mesh: object) -> None:
+    assert fake_mesh is not None
+    template_sharding = make_sharding((ShardingAxis.DATA, None))
+    template = dummy_array((2, 3), jnp.float32, template_sharding)
     value = jnp.ones((2, 3), dtype=jnp.float32)
 
-    with pytest.raises(ValueError, match="sharding"):
-        load_as(template, value)
+    result = load_as(template, value)
+
+    assert isinstance(result, jax.Array)
+    assert result.sharding == template_sharding
+    assert jnp.array_equal(result, value)
 
 
 def test_load_as_treats_weight_matrices_as_leaf_nodes() -> None:

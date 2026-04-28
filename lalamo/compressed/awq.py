@@ -7,13 +7,15 @@ from typing import Literal, NamedTuple, Self
 import jax.numpy as jnp
 from jax import ShapeDtypeStruct
 from jax.lax import stop_gradient
+from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
-from lalamo.utils.dummy_array import dummy_array
+from lalamo.utils.dummy_array import dummy_array, preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
+from lalamo.utils.sharding import is_sharded, reshard_as, sharding_of, with_sharding
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -49,7 +51,7 @@ class AWQAffineParameters(NamedTuple):
     @classmethod
     def from_weights(
         cls,
-        weights: Float[Array | ShapeDtypeStruct, "... rows cols"],
+        weights: Float[Array, "... rows cols"],
         bits: int,
         group_size: int,
     ) -> Self:
@@ -71,47 +73,52 @@ class AWQAffineParameters(NamedTuple):
         return cls(scales=scales, zero_points=zero_points)
 
 
-def _awq_master_zero_points_to_int_scale[ArrayT: Array | ShapeDtypeStruct](
-    zero_points: Float[ArrayT, "... groups"],
-    scales: Float[ArrayT, "... groups"],
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
+def _awq_master_zero_points_to_int_scale(
+    zero_points: Float[Array, "... groups"],
+    scales: Float[Array, "... groups"],
 ) -> Float[Array, "... groups"]:
-    if not isinstance(zero_points, Array) or not isinstance(scales, Array):
-        return dummy_array(zero_points.shape, zero_points.dtype, zero_points.sharding)
     return zero_points / scales
 
 
-def _awq_int_scale_zero_points_to_master[ArrayT: Array | ShapeDtypeStruct](
-    int_scale_zero_points: Float[ArrayT, "... groups"],
-    scales: Float[ArrayT, "... groups"],
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
+def _awq_int_scale_zero_points_to_master(
+    int_scale_zero_points: Float[Array, "... groups"],
+    scales: Float[Array, "... groups"],
 ) -> Float[Array, "... groups"]:
-    if not isinstance(int_scale_zero_points, Array) or not isinstance(scales, Array):
-        return dummy_array(int_scale_zero_points.shape, scales.dtype, int_scale_zero_points.sharding)
     return int_scale_zero_points.astype(scales.dtype) * scales
 
 
-def _awq_master_weights_to_int_scale[ArrayT: Array | ShapeDtypeStruct](
-    weights: Float[ArrayT, "... cols"],
-    scales: Float[ArrayT, "... groups"],
-    zero_points: Float[ArrayT, "... groups"],
+def _drop_last_axis_sharding(array: Array) -> Array:
+    source_sharding = sharding_of(array)
+    if not is_sharded(source_sharding):
+        return array
+
+    source_partition = tuple(source_sharding.spec)
+    output_sharding = NamedSharding(source_sharding.mesh, PartitionSpec(*source_partition[:-1], None))
+    return with_sharding(array, output_sharding)
+
+
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
+def _awq_master_weights_to_int_scale(
+    weights: Float[Array, "... cols"],
+    scales: Float[Array, "... groups"],
+    zero_points: Float[Array, "... groups"],
     group_size: int,
 ) -> Float[Array, "... rows cols"]:
-    if not isinstance(weights, Array):
-        return dummy_array(weights.shape, weights.dtype, weights.sharding)
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     expanded_zero_points = expand_last_axis_groups(zero_points, group_size=group_size)
     return (weights + expanded_zero_points) / expanded_scales
 
 
-def _awq_quantize[ArrayT: Array | ShapeDtypeStruct](
-    weights: Float[ArrayT, "... cols"],
-    scales: Float[ArrayT, "... groups"],
-    zero_points: Float[ArrayT, "... groups"],
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
+def _awq_quantize(
+    weights: Float[Array, "... cols"],
+    scales: Float[Array, "... groups"],
+    zero_points: Float[Array, "... groups"],
     group_size: int,
     round_fn: Callable[[Float[Array, "..."]], Float[Array, "..."]],
 ) -> Float[Array, "... rows cols"]:
-    if not isinstance(weights, Array):
-        return dummy_array(weights.shape, weights.dtype, weights.sharding)
-
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     int_scale_zero_points = _awq_master_zero_points_to_int_scale(zero_points, stop_gradient(scales))
     int_zero_points = round_fn(int_scale_zero_points)
@@ -131,6 +138,7 @@ def _awq_pack_master_zero_points(
 ) -> Int[Array, "... rows packed_groups"]:
     int_scale_zero_points = _awq_master_zero_points_to_int_scale(zero_points, scales)
     int_zero_points = deterministic_round_to_unsigned_grid(int_scale_zero_points, bits=bits)
+    int_zero_points = _drop_last_axis_sharding(int_zero_points)
     return pack_uint_to_uint8(int_zero_points, bits)
 
 
@@ -185,7 +193,7 @@ class AWQSpec(WeightMatrixSpec):
 
     def compress(
         self,
-        weights: Float[Array | ShapeDtypeStruct, "... out_channels in_channels"],
+        weights: Float[Array, "... out_channels in_channels"],
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> "AWQMatrix":
@@ -353,7 +361,9 @@ class AWQMatrixForTraining(AWQMatrix):
             ),
         )
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            return self.spec.layout.matmul(dequantized_weights, vector)
+            result = self.spec.layout.matmul(dequantized_weights, vector)
+
+        return reshard_as(result, vector)
 
     def load_exported(
         self,
@@ -365,13 +375,14 @@ class AWQMatrixForTraining(AWQMatrix):
         if prefix is None:
             prefix = ParameterPath()
         saved_spec = expored_data.metadata[prefix / "spec"]
-        loaded_spec = self.spec.from_json(saved_spec)
+        loaded_spec = WeightMatrixSpec.from_json(saved_spec)
         if loaded_spec != self.spec:
             raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
 
-        packed_weights = expored_data.arrays[prefix / "weights"]
-        scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast)
-        packed_zero_points = expored_data.arrays[prefix / "zero_points"]
+        packed_weights = reshard_as(expored_data.arrays[prefix / "weights"], self.weights)
+        scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast=allow_dtype_cast)
+        packed_zero_points_template = _drop_last_axis_sharding(self.zero_points)
+        packed_zero_points = reshard_as(expored_data.arrays[prefix / "zero_points"], packed_zero_points_template)
         weights = _awq_unpack_master_weights(
             packed_weights,
             scales,
@@ -439,7 +450,7 @@ class AWQMatrixForInference(AWQMatrix):
         if prefix is None:
             prefix = ParameterPath()
         saved_spec = expored_data.metadata[prefix / "spec"]
-        loaded_spec = self.spec.from_json(saved_spec)
+        loaded_spec = WeightMatrixSpec.from_json(saved_spec)
         if loaded_spec != self.spec:
             raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
 
@@ -448,7 +459,7 @@ class AWQMatrixForInference(AWQMatrix):
             expored_data.arrays[prefix / "weights"],
             allow_dtype_cast=False,
         )
-        scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast)
+        scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast=allow_dtype_cast)
         packed_zero_points = load_as(
             self.packed_zero_points,
             expored_data.arrays[prefix / "zero_points"],
@@ -531,4 +542,6 @@ class AWQMatrixForInference(AWQMatrix):
             self.spec.bits,
         )
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            return self.spec.layout.matmul(weights, vector)
+            result = self.spec.layout.matmul(weights, vector)
+
+        return reshard_as(result, vector)

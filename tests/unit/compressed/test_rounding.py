@@ -10,6 +10,7 @@ from lalamo.compressed.rounding import (
     stochastic_round_to_unsigned_grid,
 )
 from lalamo.module import Keychain
+from lalamo.utils.dummy_array import dummy_array
 from lalamo.weight_matrix import GradientEstimator
 from tests.common import assert_close
 
@@ -132,7 +133,7 @@ def test_round_to_unsigned_grid_rejects_local_additive_noise() -> None:
 
 
 def test_rounding_shape_dtype_struct_inputs_return_dummy_arrays() -> None:
-    values = ShapeDtypeStruct((2, 3), jnp.float16)
+    values = dummy_array((2, 3), jnp.float16)
 
     deterministic_result = deterministic_round_to_unsigned_grid(values, bits=4)
     stochastic_result = stochastic_round_to_unsigned_grid(values, bits=4, keychain=Keychain.init(17))

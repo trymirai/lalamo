@@ -1,9 +1,8 @@
 import jax.numpy as jnp
 from einops import rearrange
-from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike
 
-from lalamo.utils.dummy_array import dummy_array
+from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
 
 __all__ = [
     "pack_uint_to_uint8",
@@ -33,10 +32,8 @@ def _packed_shape(shape: tuple[int, ...], bits: int) -> tuple[int, ...]:
     return (*leading_dims, packed_last_axis_dim(last_dim, bits))
 
 
-def pack_uint_to_uint8(unpacked: Array | ShapeDtypeStruct, bits: int) -> Array:
-    if isinstance(unpacked, ShapeDtypeStruct):
-        return dummy_array(_packed_shape(unpacked.shape, bits), jnp.uint8, unpacked.sharding)
-
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
+def pack_uint_to_uint8(unpacked: Array, bits: int) -> Array:
     if bits == 8:
         return unpacked.astype(jnp.uint8)
 
@@ -54,20 +51,13 @@ def pack_uint_to_uint8(unpacked: Array | ShapeDtypeStruct, bits: int) -> Array:
     return packed
 
 
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
 def unpack_uint8_to_uint(
-    packed: Array | ShapeDtypeStruct,
+    packed: Array,
     bits: int,
     *,
     dtype: DTypeLike = jnp.uint8,
 ) -> Array:
-    if isinstance(packed, ShapeDtypeStruct):
-        if bits == 8:
-            return dummy_array(packed.shape, dtype, packed.sharding)
-        if bits not in {1, 4}:
-            raise ValueError(f"Unsupported uint unpacking width: {bits}")
-        *leading_dims, groups = packed.shape
-        return dummy_array((*leading_dims, groups * (8 // bits)), dtype, packed.sharding)
-
     if bits == 8:
         return packed.astype(dtype)
 

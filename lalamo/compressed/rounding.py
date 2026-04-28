@@ -2,11 +2,10 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
-from jax import ShapeDtypeStruct
 from jaxtyping import Array, Float
 
 from lalamo.module import Keychain
-from lalamo.utils.dummy_array import dummy_array
+from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.weight_matrix import GradientEstimator
 
 from .utils import unsigned_qmax
@@ -63,13 +62,12 @@ _deterministic_round_to_unsigned_grid.defvjp(
 )
 
 
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
 def deterministic_round_to_unsigned_grid(
-    values: Float[Array | ShapeDtypeStruct, "..."],
+    values: Float[Array, "..."],
     *,
     bits: int,
 ) -> Float[Array, "..."]:
-    if isinstance(values, ShapeDtypeStruct):
-        return dummy_array(values.shape, values.dtype, values.sharding)
     return _deterministic_round_to_unsigned_grid(values, bits)
 
 
@@ -120,19 +118,18 @@ _stochastic_round_to_unsigned_grid.defvjp(
 )
 
 
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
 def stochastic_round_to_unsigned_grid(
-    values: Float[Array | ShapeDtypeStruct, "..."],
+    values: Float[Array, "..."],
     *,
     bits: int,
     keychain: Keychain,
 ) -> Float[Array, "..."]:
-    if isinstance(values, ShapeDtypeStruct):
-        return dummy_array(values.shape, values.dtype, values.sharding)
     return _stochastic_round_to_unsigned_grid(values, bits, keychain)
 
 
 def round_to_unsigned_grid(
-    values: Float[Array | ShapeDtypeStruct, "..."],
+    values: Float[Array, "..."],
     *,
     bits: int,
     keychain: Keychain,

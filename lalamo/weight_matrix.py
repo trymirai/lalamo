@@ -116,7 +116,7 @@ class WeightMatrixSpec(RegistryABC):
 
     def compress(
         self,
-        weights: Float[Array | ShapeDtypeStruct, "*components out_channels in_channels"],
+        weights: Float[Array, "*components out_channels in_channels"],
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> "WeightMatrix": ...
@@ -216,16 +216,17 @@ class Layout(StrEnum):
 
     def convert_weights(
         self,
-        weights: Float[Array | ShapeDtypeStruct, "... out_channels in_channels"],
+        weights: Float[Array, "... out_channels in_channels"],
     ) -> Float[Array, "... rows cols"]:
-        sharding = make_sharding(self.weight_partition(weights.ndim - 2))
         if isinstance(weights, ShapeDtypeStruct):
+            sharding = make_sharding(self.weight_partition(weights.ndim - 2))
             *leading_dims, output_dim, input_dim = weights.shape
             return dummy_array(
                 shape=self.weight_shape(leading_dims, output_dim, input_dim),
                 dtype=weights.dtype,
                 sharding=sharding,
             )
+        sharding = make_sharding(self.weight_partition(weights.ndim - 2))
         if self == Layout.INPUT_OUTPUT:
             weights = weights.swapaxes(-1, -2)
         return device_put(weights, sharding)
@@ -246,7 +247,7 @@ class FullPrecisionSpec(WeightMatrixSpec):
 
     def compress(
         self,
-        weights: Float[Array | ShapeDtypeStruct, "... out_channels in_channels"],
+        weights: Float[Array, "... out_channels in_channels"],
         preconditioner: Preconditioner | None = None,  # noqa: ARG002
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
     ) -> "FullPrecisionMatrix":

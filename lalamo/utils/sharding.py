@@ -1,11 +1,16 @@
-from jax import Array, reshard, typeof
-from jax.sharding import NamedSharding, PartitionSpec, get_mesh
+from typing import TypeGuard
+
+from jax import Array, ShapeDtypeStruct, reshard, typeof
+from jax.sharding import NamedSharding, PartitionSpec, Sharding, get_mesh
 
 from lalamo.module import ShardingAxis
 
 __all__ = [
+    "is_sharded",
     "make_sharding",
     "reshard_as",
+    "sharding_of",
+    "with_sharding",
 ]
 
 
@@ -16,8 +21,26 @@ def make_sharding(partition: tuple[ShardingAxis | None, ...] | None) -> NamedSha
     return NamedSharding(mesh, PartitionSpec(*partition))
 
 
+def is_sharded(sharding: Sharding | None) -> TypeGuard[NamedSharding]:
+    return isinstance(sharding, NamedSharding) and not sharding.mesh.empty
+
+
+def sharding_of(array: Array) -> Sharding | None:
+    try:
+        return array.sharding
+    except AttributeError:
+        return typeof(array).sharding
+
+
+def with_sharding(array: Array, sharding: Sharding | None) -> Array:
+    if isinstance(array, ShapeDtypeStruct):
+        from lalamo.utils.dummy_array import dummy_array  # noqa: PLC0415
+
+        return dummy_array(array.shape, array.dtype, sharding)
+    if is_sharded(sharding):
+        return reshard(array, sharding)
+    return array
+
+
 def reshard_as(array: Array, reference: Array) -> Array:
-    reference_sharding = typeof(reference).sharding
-    if not isinstance(reference_sharding, NamedSharding) or reference_sharding.mesh.empty:
-        return array
-    return reshard(array, reference_sharding)
+    return with_sharding(array, sharding_of(reference))

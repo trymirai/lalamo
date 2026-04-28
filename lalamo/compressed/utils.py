@@ -1,12 +1,10 @@
 from typing import NamedTuple
 
-import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.utils.dummy_array import dummy_array
+from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
 
 __all__ = [
     "MinMax",
@@ -36,6 +34,7 @@ def group_by_last_axis(
     *,
     group_size: int,
 ) -> Float[Array, "... out_channels groups group_channels"]:
+    grouped_last_axis_shape(weights.shape, group_size=group_size)
     return rearrange(
         weights,
         "... out_channels (groups group_size) -> ... out_channels groups group_size",
@@ -43,16 +42,14 @@ def group_by_last_axis(
     )
 
 
-def expand_last_axis_groups[ArrayT: Array | ShapeDtypeStruct](
-    grouped: Float[ArrayT, "... groups"],
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
+def expand_last_axis_groups(
+    grouped: Float[Array, "... groups"],
     *,
     group_size: int,
 ) -> Float[Array, "..."]:
-    if isinstance(grouped, ShapeDtypeStruct):
-        *leading_dims, groups = grouped.shape
-        return dummy_array((*leading_dims, groups * group_size), grouped.dtype, grouped.sharding)
-    assert isinstance(grouped, jax.Array)
-    return jnp.repeat(grouped, group_size, axis=-1)
+    expanded = jnp.broadcast_to(grouped[..., None], (*grouped.shape, group_size))
+    return rearrange(expanded, "... groups group_size -> ... (groups group_size)")
 
 
 def unsigned_qmax(bits: int) -> int:

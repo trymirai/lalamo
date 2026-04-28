@@ -3,11 +3,11 @@ from math import prod
 import jax
 import jax.numpy as jnp
 import pytest
-from jax import ShapeDtypeStruct
 from jax.sharding import Mesh, NamedSharding, Sharding
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, ShardingAxis
+from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, Layout, Preconditioner, WeightMatrixSpec
 from tests.common import assert_close
@@ -31,6 +31,18 @@ def _assert_named_sharding(sharding: Sharding, mesh: Mesh) -> None:
 
 def _assert_close(result: jax.Array, reference: jax.Array) -> None:
     assert_close(result=jnp.asarray(jax.device_get(result)), reference=jnp.asarray(jax.device_get(reference)))
+
+
+def _embedding_sharding() -> NamedSharding:
+    sharding = make_sharding((ShardingAxis.TENSOR,))
+    assert sharding is not None
+    return sharding
+
+
+def _batched_embedding_sharding() -> NamedSharding:
+    sharding = make_sharding((ShardingAxis.EXPERT, ShardingAxis.TENSOR))
+    assert sharding is not None
+    return sharding
 
 
 def test_preconditioner_preserves_symmetric_blocks() -> None:
@@ -90,7 +102,7 @@ def test_full_precision_export_load_roundtrips_weights_spec_and_template_shardin
         spec=spec,
         weights=jax.device_put(_stored_weights(layout, weights), saved_sharding),
     )
-    skeleton = spec.compress(ShapeDtypeStruct(shape=weights.shape, dtype=weights.dtype))
+    skeleton = spec.compress(dummy_array(weights.shape, weights.dtype))
 
     restored = skeleton.load_exported(original.export())
 
@@ -197,6 +209,70 @@ def test_full_precision_dot_works_with_single_device_input_sharding(layout: Layo
     result = matrix.dot(vector, keychain=Keychain.init(4))
 
     _assert_close(result=result, reference=weights @ vector)
+
+
+def test_full_precision_lookup_embedding_matches_selected_row_and_feature_sharding(fake_mesh: Mesh) -> None:
+    matrix = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(_logical_weights())
+    token_index = 2
+
+    result = matrix.lookup_embedding(token_index, keychain=Keychain.init(5))
+
+    _assert_close(result=result, reference=matrix.decompress()[token_index, :])
+    _assert_named_sharding(result.sharding, fake_mesh)
+    assert result.sharding == _embedding_sharding()
+
+
+def test_full_precision_lookup_embedding_accepts_jax_scalar_index(fake_mesh: Mesh) -> None:
+    matrix = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(_logical_weights())
+    token_index = jnp.array(1, dtype=jnp.int32)
+
+    result = matrix.lookup_embedding(token_index, keychain=Keychain.init(6))
+
+    _assert_close(result=result, reference=matrix.decompress()[token_index, :])
+    _assert_named_sharding(result.sharding, fake_mesh)
+
+
+def test_full_precision_lookup_embedding_rejects_output_input_layout(fake_mesh: Mesh) -> None:
+    matrix = FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(_logical_weights())
+
+    _assert_named_sharding(matrix.weights.sharding, fake_mesh)
+    with pytest.raises(ValueError, match="Embedding lookup not supported"):
+        matrix.lookup_embedding(0, keychain=Keychain.init(7))
+
+
+def test_batched_full_precision_lookup_embedding_requires_vmap(fake_mesh: Mesh) -> None:
+    matrix = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(_logical_weights(2))
+
+    _assert_named_sharding(matrix.weights.sharding, fake_mesh)
+    with pytest.raises(ValueError, match="Use vmap"):
+        matrix.lookup_embedding(0, keychain=Keychain.init(8))
+
+
+def test_batched_full_precision_lookup_embedding_vmapped_over_experts_matches_reference_and_preserves_sharding(
+    fake_mesh: Mesh,
+) -> None:
+    matrix = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(_logical_weights(2))
+    token_index = 2
+
+    result = jax.vmap(lambda matrix_row: matrix_row.lookup_embedding(token_index, keychain=Keychain.init(9)))(matrix)
+
+    _assert_close(result=result, reference=matrix.decompress()[:, token_index, :])
+    _assert_named_sharding(result.sharding, fake_mesh)
+    assert result.sharding == _batched_embedding_sharding()
+
+
+def test_full_precision_lookup_embedding_under_jit_matches_reference_and_preserves_sharding(fake_mesh: Mesh) -> None:
+    matrix = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(_logical_weights())
+    token_index = jnp.array(3, dtype=jnp.int32)
+
+    result = jax.jit(lambda matrix, index: matrix.lookup_embedding(index, keychain=Keychain.init(10)))(
+        matrix,
+        token_index,
+    )
+
+    _assert_close(result=result, reference=matrix.decompress()[token_index, :])
+    _assert_named_sharding(result.sharding, fake_mesh)
+    assert result.sharding == _embedding_sharding()
 
 
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
