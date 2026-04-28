@@ -5,7 +5,7 @@ from functools import partial
 from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
-from jax import ShapeDtypeStruct, default_matmul_precision
+from jax import ShapeDtypeStruct
 from jax.lax import stop_gradient
 from jaxtyping import Array, DTypeLike, Float, Int
 
@@ -13,6 +13,7 @@ from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -282,7 +283,7 @@ class MLXMatrixForTraining(MLXMatrix):
                 gradient_estimator=forward_pass_config.gradient_estimator,
             ),
         )
-        with default_matmul_precision(forward_pass_config.precision):
+        with use_dot_algorithm_preset(forward_pass_config.precision):
             return self.spec.layout.matmul(dequantized_weights, vector)
 
     def load_exported(
@@ -429,5 +430,5 @@ class MLXMatrixForInference(MLXMatrix):
             self.spec.group_size,
             self.spec.bits,
         )
-        with default_matmul_precision(forward_pass_config.precision):
+        with use_dot_algorithm_preset(forward_pass_config.precision):
             return self.spec.layout.matmul(weights, vector)

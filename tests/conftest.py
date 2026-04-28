@@ -1,11 +1,16 @@
-# ruff: noqa: ERA001
+# ruff: noqa: E402, ERA001
 import re
 from collections.abc import Generator
 from functools import cache
 from os import environ
 
+from jax._src.test_util import request_cpu_devices
+
+request_cpu_devices(8)
+
 import jax
 import pytest
+from jax.sharding import AxisType, Mesh
 
 # TODO(lalamo): Bring converter-dependent imports back when the conversion code is fixed.
 # import shutil
@@ -18,6 +23,7 @@ import pytest
 # from lalamo.main import app
 # from lalamo.model_import.model_specs.common import ModelSpec, ModelType
 # from lalamo.model_registry import ModelRegistry
+from lalamo.module import ShardingAxis
 from tests.common import tolerance
 
 # TODO(lalamo): Bring model-registry parametrization helpers back when the conversion code is fixed.
@@ -70,6 +76,18 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(FAST_MARKER)
         if item.get_closest_marker("gpu") is not None and not has_jax_gpu_device:
             item.add_marker(SKIP_REQUIRES_JAX_GPU_MARKER)
+
+
+@pytest.fixture
+def fake_mesh() -> Generator[Mesh]:
+    mesh = jax.make_mesh(
+        (2, 2, 2),
+        (ShardingAxis.DATA, ShardingAxis.TENSOR, ShardingAxis.EXPERT),
+        axis_types=(AxisType.Explicit, AxisType.Explicit, AxisType.Explicit),
+        devices=jax.devices("cpu")[:8],
+    )
+    with jax.set_mesh(mesh):
+        yield mesh
 
 
 GPU_ATOL = 1e-3

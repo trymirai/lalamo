@@ -8,7 +8,7 @@ from typing import ClassVar, Generic, Self, TypeVar
 import equinox as eqx
 import jax.numpy as jnp
 from cattrs import GenConverter
-from jax import ShapeDtypeStruct, default_matmul_precision, device_put
+from jax import ShapeDtypeStruct, device_put
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int
 
@@ -18,8 +18,9 @@ from lalamo.module import Keychain, ParameterNorm, ShardingAxis, field
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.registry_abc import RegistryABC, make_registry_abc_converter
-from lalamo.utils.sharding import make_sharding
+from lalamo.utils.sharding import make_sharding, reshard_as
 
 __all__ = [
     "CompressionImplementation",
@@ -44,6 +45,7 @@ def tril_to_sym(tril_vector: Float[Array, " n*(n+1)//2"]) -> Float[Array, "n n"]
     num_rows = int(math.sqrt(8 * numel + 1) - 1) // 2
     result = jnp.empty((num_rows, num_rows), dtype=tril_vector.dtype)
     tril_rows, tril_cols = jnp.tril_indices_from(result)
+    result = result.at[tril_rows, tril_cols].set(tril_vector)
     return result.at[tril_cols, tril_rows].set(tril_vector)
 
 
@@ -179,7 +181,7 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
         if prefix is None:
             prefix = ParameterPath()
         saved_spec = expored_data.metadata[prefix / "spec"]
-        loaded_spec = self.spec.from_json(saved_spec)
+        loaded_spec = WeightMatrixSpec.from_json(saved_spec)
         if loaded_spec != self.spec:
             raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
         return super().load_exported(expored_data, allow_dtype_cast=allow_dtype_cast, prefix=prefix)
@@ -306,5 +308,7 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()
-        with default_matmul_precision(forward_pass_config.precision):
-            return self.spec.layout.matmul(self.weights, vector)
+        with use_dot_algorithm_preset(forward_pass_config.precision):
+            result = self.spec.layout.matmul(self.weights, vector)
+
+        return reshard_as(result, vector)
