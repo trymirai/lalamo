@@ -264,25 +264,17 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     def embed(
         self,
         inp: Int[Array, "batch codebooks tokens"],
-        apply_codebook_embeddings: bool = False,
     ) -> Float[Array, "batch tokens embedding"]:
-        """
-        apply_codebook_embeddings argument should be set to 'True' if audio-prompt is used. In this
-        case we expect codebook lines [1:-1] to be filled with something meaningful
-        """
-
         vq_masks = (inp[:, 0] >= self.semantic_begin_id) & (inp[:, 0] <= self.semantic_end_id)
         embeddings = self.embeddings_slow.embed(inp[:, 0])
 
-        if apply_codebook_embeddings or jnp.any(vq_masks):
-            _, _, seq_length = inp.shape
-            codebook_offsets = (jnp.arange(self.config.num_codebooks) * self.config.codebook_size).reshape(-1, 1)
-            codebook_offsets = jnp.tile(codebook_offsets, (1, seq_length))
-            codebook_embeds = vmap(self.codebook_embeddings.embed)(inp[:, 1:, :] + codebook_offsets)
-
-            vq_embeds_sum = codebook_embeds.sum(axis=1)
-            vq_embeds_sum = vq_embeds_sum.at[~vq_masks].set(0)
-            embeddings = embeddings + vq_embeds_sum
+        _, _, seq_length = inp.shape
+        codebook_offsets = (jnp.arange(self.config.num_codebooks) * self.config.codebook_size).reshape(-1, 1)
+        codebook_offsets = jnp.tile(codebook_offsets, (1, seq_length))
+        codebook_embeds = vmap(self.codebook_embeddings.embed)(inp[:, 1:, :] + codebook_offsets)
+        vq_embeds_sum = codebook_embeds.sum(axis=1)
+        vq_embeds_sum = jnp.where(vq_masks[..., None], vq_embeds_sum, 0)
+        embeddings = embeddings + vq_embeds_sum
 
         if self.config.scale_codebook_embeddings:
             # Expand vq_masks to match x's shape
@@ -322,82 +314,68 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             key = jax.random.PRNGKey(123)
 
         max_new_tokens = max_seq_len - prompt_length
+        im_end_id = self.config.im_end_token_id
 
         # Prepare prompt: text tokens in first row
         # Rest of codebook rows are zeros until we start using audio-embeddings for explicit style
         prompt = jnp.zeros((batch_size, codebook_dim, prompt_length), dtype=text_tokens.dtype)
         prompt = prompt.at[:, 0, :].set(text_tokens)
 
-        # Initialize sequence buffer to store generated tokens
-        seq = jnp.zeros((codebook_dim, max_seq_len), dtype=jnp.int32)
-        seq = seq.at[:, :prompt_length].set(prompt[0])
-
-        # Track previous tokens for repetition penalty (windowed)
-        previous_tokens = jnp.zeros((codebook_dim, max_seq_len), dtype=jnp.int32)
+        initial_slow_state = self.transformer_slow.init_static_state(batch_size, max_seq_len)
 
         input_pos = jnp.arange(prompt_length)[None, :]
         embeddings = self.embed(prompt)
         first_codes, state_slow = decode_next_token(
             model=self,
             x=embeddings,
-            state_slow=None,
+            state_slow=initial_slow_state,
             input_pos=input_pos,
             sampling_policy=sampling_policy,
             key=key,
             previous_tokens=None,
         )
 
-        seq = seq.at[:, prompt_length].set(first_codes[0])
-        previous_tokens = previous_tokens.at[:, 0].set(first_codes[0])
+        if first_codes[0, 0] == im_end_id:
+            return first_codes[0, 1:][:, None]
 
-        if first_codes[0, 0] == self.config.im_end_token_id:
-            codes = seq[1:, prompt_length : prompt_length + 1]
-            return codes
+        max_remaining = max_new_tokens - 1
+        out_buf = jnp.zeros((max_remaining, codebook_dim), dtype=jnp.int32)
 
-        cur_token = first_codes
-        generated_count = 1
-        for i in range(1, max_new_tokens):
+        def cond_fn(carry: tuple[State | None, Array, PRNGKeyArray, Array, Array]) -> Array:
+            _state, cur_token, _key, i, _buf = carry
+            return (i < max_remaining) & (cur_token[0, 0] != im_end_id)
+
+        def body_fn(
+            carry: tuple[State | None, Array, PRNGKeyArray, Array, Array],
+        ) -> tuple[State | None, Array, PRNGKeyArray, Array, Array]:
+            state_slow, cur_token, key, i, buf = carry
+            new_key, subkey = jax.random.split(key)
             cur_token_expanded = cur_token.reshape(batch_size, codebook_dim, 1)
-
-            # Get windowed previous tokens for repetition penalty
-            win_size = self.config.repeat_window_size
-            if i < win_size:
-                window = previous_tokens[:, :win_size]
-            else:
-                window = previous_tokens[:, i - win_size : i]
-
-            embeddings = self.embed(cur_token_expanded)
-
-            input_pos = jnp.array([[prompt_length + i - 1]])
-
-            if key is not None:
-                key, subkey = jax.random.split(key)
-            else:
-                subkey = None
-
-            next_codes, state_slow = decode_next_token(
+            embs = self.embed(cur_token_expanded)
+            ipos = (prompt_length + i)[None, None]
+            next_codes, new_state = decode_next_token(
                 model=self,
-                x=embeddings,
+                x=embs,
                 state_slow=state_slow,
-                input_pos=input_pos,
+                input_pos=ipos,
                 sampling_policy=sampling_policy,
                 key=subkey,
-                previous_tokens=window,
+                previous_tokens=None,
             )
+            new_buf = buf.at[i].set(next_codes[0])
+            return (new_state, next_codes, new_key, i + 1, new_buf)
 
-            seq = seq.at[:, prompt_length + i].set(next_codes[0])
-            previous_tokens = previous_tokens.at[:, i].set(next_codes[0])
-            generated_count += 1
+        initial_carry = (state_slow, first_codes, key, jnp.int32(0), out_buf)
+        _, last_token, _, final_i, final_buf = jax.lax.while_loop(cond_fn, body_fn, initial_carry)
 
-            if next_codes[0, 0] == self.config.im_end_token_id:
-                break
+        # If the loop exited because the freshly-generated token was im_end, that token sits at
+        # final_buf[final_i - 1]; strip it so we only return the audio codebooks.
+        ended_with_im_end = bool(last_token[0, 0] == im_end_id)
+        valid_count = int(final_i) - (1 if ended_with_im_end else 0)
 
-            cur_token = next_codes
-
-        # Extract codebook codes (exclude text token row and prompt, exclude last token which is end token)
-        codes = seq[1:, prompt_length : prompt_length + generated_count - 1]
+        all_tokens = jnp.concatenate([first_codes[0:1], final_buf[:valid_count]], axis=0)
+        codes = all_tokens[:, 1:].T
         assert jnp.all(codes >= 0), "Negative code found"
-
         return codes
 
 
@@ -436,7 +414,7 @@ def decode_next_token(
     codebooks = jnp.zeros((batch_size, n_codes), dtype=jnp.int32)
     codebooks = codebooks.at[0, 0].set(vmap(lambda x: sampling_policy(x, key=key))(logits[:, -1, :])[0])
     first_fast_code = jnp.array([codebooks[0, 0] - model.semantic_begin_id])
-    first_fast_code = first_fast_code.at[first_fast_code < 0].set(0)
+    first_fast_code = jnp.where(first_fast_code < 0, 0, first_fast_code)
     codebooks = codebooks.at[0, 1].set(first_fast_code[0])
 
     state_fast = model.transformer_fast.init_static_state(batch_size, n_codes)
