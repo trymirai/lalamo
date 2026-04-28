@@ -7,9 +7,9 @@ from jax import numpy as jnp
 from jaxtyping import Float
 from tokenizers import Tokenizer
 
-from lalamo.chat_codec import ChatCodec, ChatCodecConfig, Message
 from lalamo.initializer import Initializer
 from lalamo.model import Model, ModelConfig
+from lalamo.models.chat_codec import ChatCodec, ChatCodecConfig, Message
 from lalamo.modules import Classifier, ClassifierConfig, Keychain
 
 __all__ = [

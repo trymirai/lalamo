@@ -16,7 +16,6 @@ import thefuzz.fuzz
 import thefuzz.process
 from jaxtyping import DTypeLike
 
-from lalamo.chat_codec import AssistantMessage, Message
 from lalamo.data import load_hf_parquet, shuffle_dataset
 from lalamo.data.huggingface_message import HFMessage
 from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions, save_completions
@@ -31,6 +30,7 @@ from lalamo.model_import.common import (
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.models import GenerationConfig, GenerationTraceConfig, LanguageModelConfig, TTSGenerator
+from lalamo.models.chat_codec import AssistantMessage, Message
 from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.module import Keychain, LalamoModule, ShardingConfig, use_sharding
 from lalamo.modules import config_converter

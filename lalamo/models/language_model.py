@@ -9,9 +9,9 @@ from jax import Array
 from jaxtyping import Bool, Float, Int, Key
 from tokenizers import Tokenizer
 
-from lalamo.chat_codec import AssistantMessage, ChatCodec, ChatCodecConfig, Message
 from lalamo.initializer import Initializer
 from lalamo.model import Model, ModelConfig
+from lalamo.models.chat_codec import AssistantMessage, ChatCodec, ChatCodecConfig, Message
 from lalamo.modules import Decoder, DecoderConfig, ForwardPassMode, Keychain
 from lalamo.modules.token_mixer import State
 from lalamo.modules.utils import call_vmapped

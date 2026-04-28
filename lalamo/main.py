@@ -36,7 +36,6 @@ from rich.text import Text
 from typer import Argument, Context, Exit, Option, Typer
 
 from lalamo.audio.utils import play_mono_audio
-from lalamo.chat_codec import UserMessage
 from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,
@@ -61,6 +60,7 @@ from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
+from lalamo.models.chat_codec import UserMessage
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
 from lalamo.module import Keychain
 from lalamo.modules.common import BatchSizesComputedEvent

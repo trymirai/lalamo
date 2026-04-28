@@ -1,6 +1,6 @@
 from collections.abc import Iterable
 
-from lalamo.chat_codec import Message, UserMessage
+from lalamo.models.chat_codec import Message, UserMessage
 
 
 def get_prefixes_ending_in_user_message(conversation: Iterable[Message]) -> list[list[Message]]:

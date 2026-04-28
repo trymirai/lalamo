@@ -3,7 +3,11 @@ import os
 # Must run before importing jax / tensorflow, this hides the XLA optimization logs
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
-from lalamo.chat_codec import (
+from lalamo.checkpoint_manager import CheckpointManager
+from lalamo.model_import import ModelSpec, import_model
+from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFieldSpec, ModelType, UseCase, WeightsType
+from lalamo.models import ClassifierModel, LanguageModel
+from lalamo.models.chat_codec import (
     AssistantMessage,
     ChatCodec,
     ChatCodecConfig,
@@ -14,10 +18,6 @@ from lalamo.chat_codec import (
     ToolSchema,
     UserMessage,
 )
-from lalamo.checkpoint_manager import CheckpointManager
-from lalamo.model_import import ModelSpec, import_model
-from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFieldSpec, ModelType, UseCase, WeightsType
-from lalamo.models import ClassifierModel, LanguageModel
 
 __version__ = "0.6.13"
 

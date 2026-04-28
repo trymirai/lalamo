@@ -5,7 +5,7 @@ from typing import ClassVar, Self
 import cattrs
 import polars as pl
 
-from lalamo.chat_codec import AssistantMessage, Message, SystemMessage, UserMessage
+from lalamo.models.chat_codec import AssistantMessage, Message, SystemMessage, UserMessage
 
 
 @dataclass(frozen=True)

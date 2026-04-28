@@ -18,7 +18,6 @@ from tokenizers import Tokenizer
 
 from lalamo.audio.tts_codec import TTSCodec, TTSCodecConfig
 from lalamo.audio.utils import dummy_char_level_tokenizer_config
-from lalamo.chat_codec import ChatCodec, ChatCodecConfig
 from lalamo.model_import.loaders.fishaudio_loaders import load_tokenizer_from_fishaudio_tiktoken
 from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
 from lalamo.model_registry import ModelRegistry
@@ -31,6 +30,7 @@ from lalamo.models import (
     TTSGenerator,
     TTSGeneratorConfig,
 )
+from lalamo.models.chat_codec import ChatCodec, ChatCodecConfig
 from lalamo.modules import Classifier, Decoder, LalamoModule
 from lalamo.modules.audio.text_to_speech import TTSModel
 from lalamo.utils.template_hacking import fix_chat_template
