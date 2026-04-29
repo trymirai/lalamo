@@ -125,6 +125,16 @@ def test_prediction_head_under_jit_matches_reference_and_keeps_data_sharding(fak
     assert result.sharding == make_sharding((ShardingAxis.DATA, None))
 
 
+def test_prediction_head_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
+    module = _prediction_head()
+    inputs = _sharded_vector(jnp.array([-1.0, -0.25, 0.5, 1.25], dtype=jnp.bfloat16))
+
+    result = module.call_unbatched(inputs, keychain=Keychain.init(5))
+
+    assert result.dtype == inputs.dtype
+    _assert_named_sharding(result.sharding, fake_mesh)
+
+
 def test_prediction_head_vmapped_over_inputs_matches_reference_and_keeps_data_sharding(fake_mesh: Mesh) -> None:
     module = _prediction_head()
     inputs = _sharded_vectors(jnp.arange(2 * FEATURE_DIM, dtype=jnp.float32).reshape(2, FEATURE_DIM) / 10)

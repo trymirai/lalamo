@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
 from math import prod
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self, TypeVar, cast
 
 import equinox as eqx
 import jax
@@ -11,12 +11,17 @@ import jax.numpy as jnp
 import jax.tree_util as jtu
 from cattrs import GenConverter
 from jax.sharding import PartitionSpec, reshard
-from jaxtyping import Array, Key
+from jaxtyping import Array, DTypeLike, Key
 
+from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.json import JSON
 from lalamo.utils.registry_abc import make_registry_abc_converter
 
 from .exportable import Exportable
+
+if TYPE_CHECKING:
+    # Import only for static analysis to avoid a runtime cycle: weight_matrix imports this module.
+    from lalamo.weight_matrix import CompressionImplementation, WeightMatrix
 
 __all__ = [
     "ForwardPassMode",
@@ -37,6 +42,16 @@ class ShardingAxis(StrEnum):
     DATA = "data"
     TENSOR = "tensor"
     EXPERT = "expert"
+
+
+@supports_dummy_arrays()
+def _cast_dtype(
+    value: "Array | WeightMatrix | None",
+    dtype: DTypeLike,
+) -> "Array | WeightMatrix | None":
+    if value is None:
+        return None
+    return value.astype(dtype)
 
 
 class Keychain(eqx.Module):
@@ -200,3 +215,27 @@ else:
 
 class LalamoModule(Exportable, eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
     config: ConfigT_co = field(static=True)
+
+    def astype(self, dtype: DTypeLike) -> Self:
+        from lalamo.weight_matrix import WeightMatrix  # noqa: PLC0415
+
+        result = jtu.tree_map(
+            lambda value: _cast_dtype(value, dtype),
+            self,
+            is_leaf=lambda x: isinstance(x, WeightMatrix),
+        )
+        return cast("Self", result)
+
+    def to_full_precision(self) -> Self:
+        from lalamo.utils.surgery import map_nodes_of_type  # noqa: PLC0415
+        from lalamo.weight_matrix import WeightMatrix  # noqa: PLC0415
+
+        result = map_nodes_of_type(WeightMatrix, lambda value: value.to_full_precision(), self)
+        return cast("Self", result)
+
+    def switch_implementation(self, implementation: "CompressionImplementation") -> Self:
+        from lalamo.utils.surgery import map_nodes_of_type  # noqa: PLC0415
+        from lalamo.weight_matrix import WeightMatrix  # noqa: PLC0415
+
+        result = map_nodes_of_type(WeightMatrix, lambda value: value.switch_implementation(implementation), self)
+        return cast("Self", result)

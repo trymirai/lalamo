@@ -63,8 +63,10 @@ class PositionalEmbeddings(Exportable, eqx.Module):
             raise ValueError(
                 f"RoPE head_dim {head_dim} exceeds input head_dim {heads.shape[-1]}",
             )
+        cosines = self.cosines.astype(heads.dtype)
+        sines = self.sines.astype(heads.dtype)
         rotated = heads[..., :head_dim]
-        rotated = rotated * self.cosines + self.rotate_half(rotated) * self.sines
+        rotated = rotated * cosines + self.rotate_half(rotated) * sines
         if heads.shape[-1] == head_dim:
             return rotated
         tail = heads[..., head_dim:]

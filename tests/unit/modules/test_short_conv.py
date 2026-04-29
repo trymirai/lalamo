@@ -58,14 +58,16 @@ def _short_conv() -> ShortConv:
 
 
 def _linear_reference(linear: Linear, inputs: Array) -> tuple[Array, ...]:
-    weights = linear.weights.decompress()
+    weights = linear.weights.decompress().astype(inputs.dtype)
     outputs = jnp.einsum("...i,oi->...o", inputs, weights)
+    if linear.biases is not None:
+        outputs = outputs + linear.biases.astype(outputs.dtype)
     return tuple(jnp.split(outputs, Linear.get_split_points(linear.output_dims), axis=-1))
 
 
 def _conv_reference(module: SeparableCausalConv, inputs: Array, state: Array | None = None) -> Array:
     inputs = jnp.asarray(jax.device_get(inputs))
-    weights = jnp.asarray(jax.device_get(module.weights))
+    weights = jnp.asarray(jax.device_get(module.weights)).astype(inputs.dtype)
     if state is None:
         state = jnp.zeros((module.kernel_size - 1, module.input_dim), dtype=inputs.dtype)
     else:
@@ -75,7 +77,7 @@ def _conv_reference(module: SeparableCausalConv, inputs: Array, state: Array | N
     windows = jnp.stack([history[token : token + module.kernel_size] for token in range(inputs.shape[0])])
     result = jnp.einsum("tkc,ck->tc", windows, weights)
     if module.biases is not None:
-        result = result + jnp.asarray(jax.device_get(module.biases))
+        result = result + jnp.asarray(jax.device_get(module.biases)).astype(result.dtype)
     return result
 
 
@@ -139,6 +141,17 @@ def test_short_conv_updates_state_from_unpadded_suffix(fake_mesh: Mesh) -> None:
     _assert_close(result=result.outputs, reference=_reference(module, inputs, state))
     _assert_named_sharding(result.state.conv_state.sharding, fake_mesh)
     assert result.state.conv_state.sharding == make_sharding((None, None))
+
+
+def test_short_conv_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
+    module = _short_conv()
+    inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.bfloat16).reshape(5, MODEL_DIM) / 10)
+
+    result = module(inputs, positional_embeddings=None, keychain=Keychain.init(7))
+
+    assert result.outputs.dtype == inputs.dtype
+    _assert_close(result=result.outputs, reference=_reference(module, inputs))
+    _assert_named_sharding(result.outputs.sharding, fake_mesh)
 
 
 def test_short_conv_rejects_positional_embeddings(fake_mesh: Mesh) -> None:

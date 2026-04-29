@@ -36,7 +36,7 @@ def _conv(has_biases: bool = True) -> SeparableCausalConv:
 
 def _reference(module: SeparableCausalConv, inputs: Array, state: Array | None = None) -> Array:
     inputs = jnp.asarray(jax.device_get(inputs))
-    weights = jnp.asarray(jax.device_get(module.weights))
+    weights = jnp.asarray(jax.device_get(module.weights)).astype(inputs.dtype)
     if state is None:
         state = jnp.zeros((module.kernel_size - 1, module.input_dim), dtype=inputs.dtype)
     else:
@@ -46,7 +46,7 @@ def _reference(module: SeparableCausalConv, inputs: Array, state: Array | None =
     windows = jnp.stack([history[token : token + module.kernel_size] for token in range(inputs.shape[0])])
     result = jnp.einsum("tkc,ck->tc", windows, weights)
     if module.biases is not None:
-        result = result + jnp.asarray(jax.device_get(module.biases))
+        result = result + jnp.asarray(jax.device_get(module.biases)).astype(result.dtype)
     return result
 
 
@@ -90,6 +90,17 @@ def test_separable_causal_conv_without_biases_matches_reference(fake_mesh: Mesh)
     assert result.outputs.sharding == make_sharding((None, None))
 
 
+def test_separable_causal_conv_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
+    module = _conv()
+    inputs = _sharded_sequence(jnp.arange(5 * CHANNELS, dtype=jnp.bfloat16).reshape(5, CHANNELS) / 10)
+
+    result = module(inputs)
+
+    assert result.outputs.dtype == inputs.dtype
+    _assert_close(result=result.outputs, reference=_reference(module, inputs))
+    _assert_named_sharding(result.outputs.sharding, fake_mesh)
+
+
 def test_separable_causal_conv_updates_state_from_unpadded_suffix(fake_mesh: Mesh) -> None:
     module = _conv()
     state = _sharded_sequence(jnp.array([[10.0, 11.0, 12.0, 13.0], [14.0, 15.0, 16.0, 17.0]], dtype=jnp.float32))
@@ -117,6 +128,16 @@ def test_separable_causal_conv_step_matches_last_full_call_output() -> None:
     _assert_close(result=step_output, reference=full_output.outputs[0])
     assert full_output.state is not None
     _assert_close(result=next_state, reference=full_output.state)
+
+
+def test_separable_causal_conv_step_output_dtype_matches_token_dtype() -> None:
+    module = _conv()
+    state = jnp.array([[10.0, 11.0, 12.0, 13.0], [14.0, 15.0, 16.0, 17.0]], dtype=jnp.bfloat16)
+    token = jnp.array([0.0, 0.25, 0.5, 0.75], dtype=jnp.bfloat16)
+
+    step_output, _ = module.step(token, state)
+
+    assert step_output.dtype == token.dtype
 
 
 def test_separable_causal_conv_under_jit_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:

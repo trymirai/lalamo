@@ -2,7 +2,7 @@ from collections.abc import Callable
 from typing import TypeGuard
 
 from jax import Array, ShapeDtypeStruct, reshard, typeof
-from jax.sharding import NamedSharding, PartitionSpec, Sharding, auto_axes, get_mesh
+from jax.sharding import NamedSharding, PartitionSpec, Sharding, auto_axes, get_abstract_mesh, get_mesh
 
 from lalamo.module import ShardingAxis
 
@@ -17,9 +17,12 @@ __all__ = [
 
 
 def make_sharding(partition: tuple[ShardingAxis | None, ...] | None) -> NamedSharding | None:
-    mesh = get_mesh()
     if partition is None:
         return None
+    try:
+        mesh = get_mesh()
+    except ValueError:
+        mesh = get_abstract_mesh()
     return NamedSharding(mesh, PartitionSpec(*partition))
 
 

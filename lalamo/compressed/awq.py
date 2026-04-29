@@ -5,13 +5,12 @@ from functools import partial
 from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
-from jax import ShapeDtypeStruct
 from jax.lax import stop_gradient
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
-from lalamo.utils.dummy_array import dummy_array, preserve_first_input_sharding, supports_dummy_arrays
+from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import (
@@ -22,6 +21,8 @@ from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import (
     CompressionImplementation,
     EmbeddingMatrix,
+    FullPrecisionMatrix,
+    FullPrecisionSpec,
     Layout,
     MatmulConfig,
     Preconditioner,
@@ -33,7 +34,6 @@ from .rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_gr
 from .utils import (
     expand_last_axis_groups,
     group_by_last_axis,
-    grouped_last_axis_shape,
     min_max_within_groups,
     scale_from_min_max,
 )
@@ -51,19 +51,13 @@ class AWQAffineParameters(NamedTuple):
     zero_points: Float[Array, "... groups"]
 
     @classmethod
+    @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
     def from_weights(
         cls,
         weights: Float[Array, "... rows cols"],
         bits: int,
         group_size: int,
     ) -> Self:
-        if isinstance(weights, ShapeDtypeStruct):
-            grouped_shape = grouped_last_axis_shape(weights.shape, group_size=group_size)
-            return cls(
-                scales=dummy_array(grouped_shape, weights.dtype, weights.sharding),
-                zero_points=dummy_array(grouped_shape, weights.dtype, weights.sharding),
-            )
-
         group_min_max = min_max_within_groups(group_by_last_axis(weights, group_size=group_size))
         scales = scale_from_min_max(group_min_max, bits=bits, dtype=weights.dtype)
         zero_points = jnp.nan_to_num(
@@ -191,7 +185,7 @@ class AWQSpec(WeightMatrixSpec):
         if preconditioner is not None:
             raise ValueError("Preconditioned rounding is not implemented yet.")
 
-        weights = self.layout.convert_weights(weights)
+        weights = self.layout.from_output_input(weights)
         affine_parameters = AWQAffineParameters.from_weights(
             weights,
             bits=self.bits,
@@ -260,6 +254,9 @@ class AWQMatrix(EmbeddingMatrix[AWQSpec]):
     @abstractmethod
     def switch_implementation(self, implementation: CompressionImplementation) -> "AWQMatrix": ...
 
+    def to_full_precision(self) -> FullPrecisionMatrix:
+        return FullPrecisionSpec(layout=self.spec.layout).compress(self.decompress())
+
 
 class AWQMatrixForTraining(AWQMatrix):
     weights: Float[Array, "... rows cols"] = field(norm=ParameterNorm.SPECTRAL)
@@ -299,30 +296,34 @@ class AWQMatrixForTraining(AWQMatrix):
             zero_points=self.zero_points.astype(dtype),
         )
 
-    def decompress(self) -> Float[Array, "..."]:
-        return _awq_quantize(
+    def decompress(self) -> Float[Array, "... out_channels in_channels"]:
+        weights = _awq_quantize(
             self.weights,
             self.scales,
             self.zero_points,
             group_size=self.spec.group_size,
             round_fn=partial(deterministic_round_to_unsigned_grid, bits=self.spec.bits),
         )
+        return self.spec.layout.to_output_input(weights)
 
     @use_out_sharding((None,))
     def lookup_embedding(
         self,
         index: int | Int[Array, ""],
         *,
+        dtype: DTypeLike | None = None,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
-    ) -> Float[Array, "... out_channels"]:
+    ) -> Float[Array, " out_channels"]:
         self._raise_if_batched()
         if self.spec.layout != Layout.INPUT_OUTPUT:
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
-        return _awq_quantize(
-            self.weights[index, :],
-            self.scales[index, :],
-            self.zero_points[index, :],
+        if dtype is None:
+            dtype = self.dtype
+        weights: Float[Array, "in_channels out_channels"] = _awq_quantize(
+            self.weights.astype(dtype),
+            self.scales.astype(dtype),
+            self.zero_points.astype(dtype),
             group_size=self.spec.group_size,
             round_fn=partial(
                 round_to_unsigned_grid,
@@ -331,6 +332,7 @@ class AWQMatrixForTraining(AWQMatrix):
                 gradient_estimator=forward_pass_config.gradient_estimator,
             ),
         )
+        return self.spec.layout.to_output_input(weights)[index, :]
 
     def dot(
         self,
@@ -341,9 +343,9 @@ class AWQMatrixForTraining(AWQMatrix):
     ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()
         dequantized_weights = _awq_quantize(
-            self.weights,
-            self.scales,
-            self.zero_points,
+            self.weights.astype(vector.dtype),
+            self.scales.astype(vector.dtype),
+            self.zero_points.astype(vector.dtype),
             group_size=self.spec.group_size,
             round_fn=partial(
                 round_to_unsigned_grid,
@@ -489,33 +491,38 @@ class AWQMatrixForInference(AWQMatrix):
             zero_points=zero_points,
         )
 
-    def decompress(self) -> Float[Array, "..."]:
-        return _awq_unpack_master_weights(
+    def decompress(self) -> Float[Array, "... out_channels in_channels"]:
+        weights = _awq_unpack_master_weights(
             self.packed_weights,
             self.scales,
             self.packed_zero_points,
             self.spec.group_size,
             self.spec.bits,
         )
+        return self.spec.layout.to_output_input(weights)
 
     @use_out_sharding((None,))
     def lookup_embedding(
         self,
         index: int | Int[Array, ""],
         *,
+        dtype: DTypeLike | None = None,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
-    ) -> Float[Array, "... out_channels"]:
+    ) -> Float[Array, " out_channels"]:
         self._raise_if_batched()
         if self.spec.layout != Layout.INPUT_OUTPUT:
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
-        return _awq_unpack_master_weights(
-            self.packed_weights[index, :],
-            self.scales[index, :],
-            self.packed_zero_points[index, :],
+        if dtype is None:
+            dtype = self.dtype
+        weights: Float[Array, "in_channels out_channels"] = _awq_unpack_master_weights(
+            self.packed_weights,
+            self.scales.astype(dtype),
+            self.packed_zero_points,
             self.spec.group_size,
             self.spec.bits,
         )
+        return self.spec.layout.to_output_input(weights)[index, :]
 
     def dot(
         self,
@@ -527,7 +534,7 @@ class AWQMatrixForInference(AWQMatrix):
         self._raise_if_batched()
         weights = _awq_unpack_master_weights(
             self.packed_weights,
-            self.scales,
+            self.scales.astype(vector.dtype),
             self.packed_zero_points,
             self.spec.group_size,
             self.spec.bits,

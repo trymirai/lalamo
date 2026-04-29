@@ -13,7 +13,7 @@ from lalamo.module import Keychain, ShardingAxis
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
 from lalamo.utils.surgery import load_as, map_nodes_of_type, map_nodes_of_type_with_path, select_nodes_of_type
-from lalamo.weight_matrix import MatmulConfig, WeightMatrix, WeightMatrixSpec
+from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, MatmulConfig, WeightMatrix, WeightMatrixSpec
 
 
 @dataclass(frozen=True)
@@ -41,6 +41,9 @@ class SurgeryWeightMatrix(WeightMatrix[SurgeryWeightMatrixSpec]):
 
     def astype(self, dtype: DTypeLike) -> Self:
         return type(self)(spec=self.spec, weights=self.weights.astype(dtype))
+
+    def to_full_precision(self) -> FullPrecisionMatrix:
+        return FullPrecisionMatrix(spec=FullPrecisionSpec(), weights=self.weights)
 
     def decompress(self) -> Float[Array, "out_channels in_channels"]:
         return self.weights

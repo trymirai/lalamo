@@ -93,6 +93,21 @@ def test_linear_matches_reference_without_biases(fake_mesh: Mesh) -> None:
     _assert_outputs_sharded_like(outputs, make_sharding((None,)), fake_mesh)
 
 
+def test_linear_output_dtype_matches_input_dtype_with_full_precision_parameters(fake_mesh: Mesh) -> None:
+    linear = _linear(_weights(), _biases())
+    inputs = jnp.arange(INPUT_DIM, dtype=jnp.bfloat16)
+
+    outputs = linear(inputs, keychain=Keychain.init(8))
+
+    reference = _split_outputs(_weights().astype(inputs.dtype) @ inputs + _biases().astype(inputs.dtype))
+    assert isinstance(linear.weights, FullPrecisionMatrix)
+    assert isinstance(linear.weights.weights.sharding, NamedSharding)
+    assert linear.weights.weights.sharding.mesh == fake_mesh
+    for output in outputs:
+        assert output.dtype == inputs.dtype
+    _assert_close_outputs(outputs, reference)
+
+
 def test_linear_under_jit_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
     linear = _linear(_weights(), _biases())
     inputs = _sharded_input(jnp.arange(INPUT_DIM, dtype=jnp.float32))

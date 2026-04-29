@@ -5,13 +5,12 @@ from functools import partial
 from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
-from jax import ShapeDtypeStruct
 from jax.lax import stop_gradient
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
-from lalamo.utils.dummy_array import dummy_array, preserve_first_input_sharding, supports_dummy_arrays
+from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import reshard_as, use_out_sharding
@@ -19,6 +18,8 @@ from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import (
     CompressionImplementation,
     EmbeddingMatrix,
+    FullPrecisionMatrix,
+    FullPrecisionSpec,
     Layout,
     MatmulConfig,
     Preconditioner,
@@ -30,7 +31,6 @@ from .rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_gr
 from .utils import (
     expand_last_axis_groups,
     group_by_last_axis,
-    grouped_last_axis_shape,
     min_max_within_groups,
     scale_from_min_max,
 )
@@ -48,19 +48,13 @@ class MLXAffineParameters(NamedTuple):
     biases: Float[Array, "... groups"]
 
     @classmethod
+    @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
     def from_weights(
         cls,
         weights: Float[Array, "... rows cols"],
         bits: int,
         group_size: int,
     ) -> Self:
-        if isinstance(weights, ShapeDtypeStruct):
-            grouped_shape = grouped_last_axis_shape(weights.shape, group_size=group_size)
-            return cls(
-                scales=dummy_array(grouped_shape, weights.dtype, weights.sharding),
-                biases=dummy_array(grouped_shape, weights.dtype, weights.sharding),
-            )
-
         group_min_max = min_max_within_groups(group_by_last_axis(weights, group_size=group_size))
         scales = scale_from_min_max(group_min_max, bits=bits, dtype=weights.dtype)
         return cls(scales=scales, biases=group_min_max.min)
@@ -139,7 +133,7 @@ class MLXSpec(WeightMatrixSpec):
         if preconditioner is not None:
             raise ValueError("Preconditioned rounding is not implemented yet.")
 
-        weights = self.layout.convert_weights(weights)
+        weights = self.layout.from_output_input(weights)
         affine_parameters = MLXAffineParameters.from_weights(
             weights,
             bits=self.bits,
@@ -200,6 +194,9 @@ class MLXMatrix(EmbeddingMatrix[MLXSpec]):
     @abstractmethod
     def switch_implementation(self, implementation: CompressionImplementation) -> "MLXMatrix": ...
 
+    def to_full_precision(self) -> FullPrecisionMatrix:
+        return FullPrecisionSpec(layout=self.spec.layout).compress(self.decompress())
+
 
 class MLXMatrixForTraining(MLXMatrix):
     weights: Float[Array, "... rows cols"] = field(norm=ParameterNorm.SPECTRAL)
@@ -230,30 +227,34 @@ class MLXMatrixForTraining(MLXMatrix):
             biases=self.biases.astype(dtype),
         )
 
-    def decompress(self) -> Float[Array, "..."]:
-        return _mlx_quantize(
+    def decompress(self) -> Float[Array, "... out_channels in_channels"]:
+        weights = _mlx_quantize(
             self.weights,
             self.scales,
             self.biases,
             group_size=self.spec.group_size,
             round_fn=partial(deterministic_round_to_unsigned_grid, bits=self.spec.bits),
         )
+        return self.spec.layout.to_output_input(weights)
 
     @use_out_sharding((None,))
     def lookup_embedding(
         self,
         index: int | Int[Array, ""],
         *,
+        dtype: DTypeLike | None = None,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
-    ) -> Float[Array, "... out_channels"]:
+    ) -> Float[Array, " out_channels"]:
         self._raise_if_batched()
         if self.spec.layout != Layout.INPUT_OUTPUT:
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
-        return _mlx_quantize(
-            self.weights[index, :],
-            self.scales[index, :],
-            self.biases[index, :],
+        if dtype is None:
+            dtype = self.dtype
+        weights: Float[Array, "in_channels out_channels"] = _mlx_quantize(
+            self.weights.astype(dtype),
+            self.scales.astype(dtype),
+            self.biases.astype(dtype),
             group_size=self.spec.group_size,
             round_fn=partial(
                 round_to_unsigned_grid,
@@ -262,6 +263,7 @@ class MLXMatrixForTraining(MLXMatrix):
                 gradient_estimator=forward_pass_config.gradient_estimator,
             ),
         )
+        return self.spec.layout.to_output_input(weights)[index, :]
 
     def dot(
         self,
@@ -272,9 +274,9 @@ class MLXMatrixForTraining(MLXMatrix):
     ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()
         dequantized_weights = _mlx_quantize(
-            self.weights,
-            self.scales,
-            self.biases,
+            self.weights.astype(vector.dtype),
+            self.scales.astype(vector.dtype),
+            self.biases.astype(vector.dtype),
             group_size=self.spec.group_size,
             round_fn=partial(
                 round_to_unsigned_grid,
@@ -392,33 +394,38 @@ class MLXMatrixForInference(MLXMatrix):
         )
         return MLXMatrixForTraining(spec=self.spec, weights=weights, scales=self.scales, biases=self.biases)
 
-    def decompress(self) -> Float[Array, "..."]:
-        return _mlx_unpack_master_weights(
+    def decompress(self) -> Float[Array, "... out_channels in_channels"]:
+        weights = _mlx_unpack_master_weights(
             self.packed_weights,
             self.scales,
             self.biases,
             self.spec.group_size,
             self.spec.bits,
         )
+        return self.spec.layout.to_output_input(weights)
 
     @use_out_sharding((None,))
     def lookup_embedding(
         self,
         index: int | Int[Array, ""],
         *,
+        dtype: DTypeLike | None = None,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
-    ) -> Float[Array, "... out_channels"]:
+    ) -> Float[Array, " out_channels"]:
         self._raise_if_batched()
         if self.spec.layout != Layout.INPUT_OUTPUT:
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
-        return _mlx_unpack_master_weights(
-            self.packed_weights[index, :],
-            self.scales[index, :],
-            self.biases[index, :],
+        if dtype is None:
+            dtype = self.dtype
+        weights: Float[Array, "in_channels out_channels"] = _mlx_unpack_master_weights(
+            self.packed_weights,
+            self.scales.astype(dtype),
+            self.biases.astype(dtype),
             self.spec.group_size,
             self.spec.bits,
         )
+        return self.spec.layout.to_output_input(weights)[index, :]
 
     def dot(
         self,
@@ -430,8 +437,8 @@ class MLXMatrixForInference(MLXMatrix):
         self._raise_if_batched()
         weights = _mlx_unpack_master_weights(
             self.packed_weights,
-            self.scales,
-            self.biases,
+            self.scales.astype(vector.dtype),
+            self.biases.astype(vector.dtype),
             self.spec.group_size,
             self.spec.bits,
         )

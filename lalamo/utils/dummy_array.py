@@ -6,10 +6,8 @@ import equinox as eqx
 import jax.tree_util as jtu
 from jax import Array as JaxArray
 from jax import ShapeDtypeStruct
-from jax.sharding import NamedSharding, Sharding
+from jax.sharding import NamedSharding, Sharding, get_mesh
 from jaxtyping import Array, DTypeLike
-
-from lalamo.utils.sharding import sharding_of, with_sharding
 
 __all__ = [
     "OutShardingRule",
@@ -44,6 +42,8 @@ def contains_dummy_arrays(value: object) -> bool:
 
 
 def _input_named_shardings(value: object) -> tuple[NamedSharding, ...]:
+    from lalamo.utils.sharding import sharding_of  # noqa: PLC0415
+
     shardings = []
     for leaf in jtu.tree_leaves(value):
         if not is_dummy_array(leaf) and not isinstance(leaf, JaxArray):
@@ -56,19 +56,26 @@ def _input_named_shardings(value: object) -> tuple[NamedSharding, ...]:
 
 
 def _apply_dummy_array_sharding(value: object, sharding: NamedSharding | None) -> object:
+    from lalamo.utils.sharding import with_sharding  # noqa: PLC0415
+
     if is_dummy_array(value):
         return with_sharding(value, sharding)
     return value
 
 
 def _concretize_dummy_array_mesh(value: object, input_shardings: tuple[NamedSharding, ...]) -> object:
-    if not input_shardings or not is_dummy_array(value):
+    from lalamo.utils.sharding import sharding_of, with_sharding  # noqa: PLC0415
+
+    if not is_dummy_array(value):
         return value
 
     sharding = sharding_of(value)
     if not isinstance(sharding, NamedSharding):
         return value
-    return with_sharding(value, NamedSharding(input_shardings[0].mesh, sharding.spec))
+    if input_shardings:
+        return with_sharding(value, NamedSharding(input_shardings[0].mesh, sharding.spec))
+
+    return with_sharding(value, NamedSharding(get_mesh(), sharding.spec))
 
 
 def supports_dummy_arrays[**Params, ResultT](

@@ -71,3 +71,12 @@ def test_activation_vmapped_over_inputs_preserves_input_sharding(fake_mesh: Mesh
     _assert_close(result=result, reference=reference)
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == inputs.sharding
+
+
+@pytest.mark.parametrize("activation", [SiLU(alpha=1.25), GELU(), Identity()])
+def test_activation_output_dtype_matches_input_dtype(activation: Activation) -> None:
+    inputs = jnp.array([-2.0, -0.5, 0.5, 2.0], dtype=jnp.bfloat16)
+
+    result = activation(inputs)
+
+    assert result.dtype == inputs.dtype

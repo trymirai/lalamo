@@ -8,14 +8,14 @@ from typing import ClassVar, Generic, Self, TypeVar
 import equinox as eqx
 import jax.numpy as jnp
 from cattrs import GenConverter
-from jax import ShapeDtypeStruct, device_put
+from jax import device_put
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable, ExportResults
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, ParameterNorm, ShardingAxis, field
-from lalamo.utils.dummy_array import dummy_array
+from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
@@ -153,6 +153,9 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
     def astype(self, dtype: DTypeLike) -> Self: ...
 
     @abstractmethod
+    def to_full_precision(self) -> "FullPrecisionMatrix": ...
+
+    @abstractmethod
     def decompress(self) -> Float[Array, "... out_channels in_channels"]: ...
 
     @abstractmethod
@@ -194,6 +197,7 @@ class EmbeddingMatrix(WeightMatrix[WeightMatrixSpecT_co]):
         index: int | Int[Array, ""],
         *,
         keychain: Keychain,
+        dtype: DTypeLike | None = None,
         forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, "... out_channels"]: ...
 
@@ -216,22 +220,28 @@ class Layout(StrEnum):
             return (*leading_dims, input_dim, output_dim)
         return (*leading_dims, output_dim, input_dim)
 
-    def convert_weights(
+    @supports_dummy_arrays()
+    def from_output_input(
         self,
         weights: Float[Array, "... out_channels in_channels"],
     ) -> Float[Array, "... rows cols"]:
-        if isinstance(weights, ShapeDtypeStruct):
-            sharding = make_sharding(self.weight_partition(weights.ndim - 2))
-            *leading_dims, output_dim, input_dim = weights.shape
-            return dummy_array(
-                shape=self.weight_shape(leading_dims, output_dim, input_dim),
-                dtype=weights.dtype,
-                sharding=sharding,
-            )
         sharding = make_sharding(self.weight_partition(weights.ndim - 2))
         if self == Layout.INPUT_OUTPUT:
             weights = weights.swapaxes(-1, -2)
         return device_put(weights, sharding)
+
+    @supports_dummy_arrays()
+    def to_output_input(
+        self,
+        weights: Float[Array, "... rows cols"],
+    ) -> Float[Array, "... out_channels in_channels"]:
+        @use_out_sharding((None, None))
+        def convert(weights: Float[Array, "... rows cols"]) -> Float[Array, "... out_channels in_channels"]:
+            if self == Layout.INPUT_OUTPUT:
+                return weights.swapaxes(-1, -2)
+            return weights
+
+        return convert(weights)
 
     def matmul(
         self,
@@ -255,7 +265,7 @@ class FullPrecisionSpec(WeightMatrixSpec):
     ) -> "FullPrecisionMatrix":
         return FullPrecisionMatrix(
             spec=self,
-            weights=self.layout.convert_weights(weights),
+            weights=self.layout.from_output_input(weights),
         )
 
     def init(
@@ -288,20 +298,27 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
     def astype(self, dtype: DTypeLike) -> "FullPrecisionMatrix":
         return FullPrecisionMatrix(spec=self.spec, weights=self.weights.astype(dtype))
 
+    def to_full_precision(self) -> "FullPrecisionMatrix":
+        return self
+
     def decompress(self) -> Float[Array, "... out_channels in_channels"]:
-        return self.weights
+        return self.spec.layout.to_output_input(self.weights)
 
     @use_out_sharding((None,))
     def lookup_embedding(
         self,
         index: int | Int[Array, ""],
         *,
+        dtype: DTypeLike | None = None,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
     ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()
         if self.spec.layout == Layout.INPUT_OUTPUT:
-            return self.weights[index, :]
+            result = self.weights[index, :]
+            if dtype is not None:
+                return result.astype(dtype)
+            return result
         raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
 
     def dot(
@@ -312,7 +329,8 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, "... out_channels"]:
         self._raise_if_batched()
+        weights = self.weights.astype(vector.dtype)
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            result = self.spec.layout.matmul(self.weights, vector)
+            result = self.spec.layout.matmul(weights, vector)
 
         return reshard_as(result, vector)

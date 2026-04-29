@@ -1,9 +1,10 @@
 from abc import abstractmethod
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
@@ -15,6 +16,7 @@ from .utils import apply_soft_capping
 __all__ = [
     "EmbeddingBase",
     "EmbeddingConfig",
+    "EmbeddingForwardPassConfig",
     "TiedEmbedding",
     "TiedEmbeddingConfig",
     "UntiedEmbedding",
@@ -34,6 +36,14 @@ class EmbeddingConfig(LalamoConfig, RegistryABC):
         vocab_size: int,
         model_dim: int,
     ) -> "EmbeddingBase": ...
+
+
+@dataclass(frozen=True)
+class EmbeddingForwardPassConfig:
+    activation_dtype: DTypeLike = jnp.bfloat16
+    embedding: MatmulConfig = dataclass_field(default_factory=MatmulConfig)
+    logit_dtype: DTypeLike = jnp.float32
+    readout: MatmulConfig = dataclass_field(default_factory=MatmulConfig)
 
 
 class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
@@ -59,12 +69,13 @@ class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
         x: int | Int[Array, ""],
         *,
         keychain: Keychain,
-        forward_pass_config: MatmulConfig = MatmulConfig(),
+        forward_pass_config: EmbeddingForwardPassConfig = EmbeddingForwardPassConfig(),
     ) -> Float[Array, " channels"]:
         result = self.embedding_matrix.lookup_embedding(
             x,
+            dtype=forward_pass_config.activation_dtype,
             keychain=keychain,
-            forward_pass_config=forward_pass_config,
+            forward_pass_config=forward_pass_config.embedding,
         )
         if self.config.input_scale is not None:
             result = result * jnp.array(self.config.input_scale, dtype=result.dtype)
@@ -76,9 +87,14 @@ class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
         x: Float[Array, " channels"],
         *,
         keychain: Keychain,
-        forward_pass_config: MatmulConfig = MatmulConfig(),
+        forward_pass_config: EmbeddingForwardPassConfig = EmbeddingForwardPassConfig(),
     ) -> Float[Array, " vocabulary"]:
-        logits = self.readout_matrix.dot(x, keychain=keychain, forward_pass_config=forward_pass_config)
+        logits = self.readout_matrix.dot(
+            x,
+            keychain=keychain,
+            forward_pass_config=forward_pass_config.readout,
+        )
+        logits = logits.astype(forward_pass_config.logit_dtype)
         if self.config.logit_soft_cap is not None:
             logits = apply_soft_capping(logits, self.config.logit_soft_cap)
         return logits

@@ -6,6 +6,7 @@ from .decoder import Decoder, DecoderConfig, DecoderForwardPassConfig
 from .embedding import (
     EmbeddingBase,
     EmbeddingConfig,
+    EmbeddingForwardPassConfig,
     TiedEmbedding,
     TiedEmbeddingConfig,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "DecoderForwardPassConfig",
     "EmbeddingBase",
     "EmbeddingConfig",
+    "EmbeddingForwardPassConfig",
     "ForwardPassMode",
     "Keychain",
     "LalamoConfig",

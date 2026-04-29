@@ -8,9 +8,7 @@ from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
 
-from .embedding import EmbeddingBase, EmbeddingConfig
-from .linear import LinearBase, LinearConfig
-from .normalization import Normalization, NormalizationConfig
+from .embedding import EmbeddingBase, EmbeddingConfig, EmbeddingForwardPassConfig
 from .rope import PositionalEmbeddings
 from .token_mixer import State
 from .transformer import (
@@ -34,6 +32,7 @@ __all__ = [
 
 @dataclass(frozen=True)
 class DecoderForwardPassConfig:
+    embedding: EmbeddingForwardPassConfig = dataclass_field(default_factory=EmbeddingForwardPassConfig)
     transformer: TransformerForwardPassConfig = dataclass_field(default_factory=TransformerForwardPassConfig)
 
 
@@ -116,6 +115,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         inner_features = call_vmapped_twice(
             self.embedding.embed,
             token_ids,
+            forward_pass_config=forward_pass_config.embedding,
             keychain=embedding_keychain,
             added_sharding_axes=(ShardingAxis.DATA, None),
         )
@@ -141,6 +141,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         logits = call_vmapped_twice(
             self.embedding.readout,
             transformer_result.outputs,
+            forward_pass_config=forward_pass_config.embedding,
             keychain=readout_keychain,
         )
 

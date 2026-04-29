@@ -125,6 +125,7 @@ def test_awq_compress_and_decompress_match_manual_min_max_quantization(layout: L
         bits=bits,
         group_size=2,
     )
+    expected_decompressed = layout.to_output_input(expected_decompressed)
 
     training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
     inference = spec.compress(weights, implementation=CompressionImplementation.INFERENCE)

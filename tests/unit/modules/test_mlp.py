@@ -318,6 +318,16 @@ def test_dense_mlp_call_unbatched_without_bias_or_clipping_matches_reference(fak
     assert result.sharding == make_sharding((None,))
 
 
+def test_dense_mlp_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
+    module = _dense_mlp()
+    inputs = _sharded_vector(jnp.arange(MODEL_DIM, dtype=jnp.bfloat16))
+
+    result = module.call_unbatched(inputs, keychain=Keychain.init(15))
+
+    assert result.dtype == inputs.dtype
+    _assert_named_sharding(result.sharding, fake_mesh)
+
+
 def test_dense_mlp_under_jit_matches_reference_and_keeps_data_sharding(fake_mesh: Mesh) -> None:
     module = _dense_mlp()
     inputs = _sharded_sequences(jnp.arange(2 * 3 * MODEL_DIM, dtype=jnp.float32).reshape(2, 3, MODEL_DIM) / 10)
@@ -455,6 +465,20 @@ def test_routed_moe_decode_matches_direct_reference(fake_mesh: Mesh) -> None:
     )
 
     _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
+
+
+def test_routed_moe_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
+    assert fake_mesh is not None
+    module = _routed_only_moe(num_active_routed_experts=2)
+    inputs = jnp.arange(2 * MODEL_DIM, dtype=jnp.bfloat16).reshape(2, 1, MODEL_DIM) / 10
+
+    result = module(
+        inputs,
+        forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
+        keychain=Keychain.init(16),
+    )
+
+    assert result.dtype == inputs.dtype
 
 
 def test_moe_prefill_with_shared_experts_and_padding_matches_direct_reference(fake_mesh: Mesh) -> None:

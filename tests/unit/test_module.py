@@ -6,8 +6,11 @@ import jax.numpy as jnp
 import pytest
 from jax.sharding import Mesh, NamedSharding
 
+from lalamo.compressed.awq import AWQMatrixForInference, AWQMatrixForTraining, AWQSpec
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, ParameterNorm, ShardingAxis, field
+from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
+from lalamo.weight_matrix import CompressionImplementation, FullPrecisionMatrix, WeightMatrix
 
 
 def _key_data(key: jax.Array) -> tuple[int, ...]:
@@ -162,3 +165,76 @@ def test_lalamo_module_config_is_static_and_weights_are_leaves() -> None:
     assert first_leaves == [first.weights]
     assert second_leaves == [second.weights]
     assert first_tree != second_tree
+
+
+class MatrixModule(LalamoModule[ExampleConfig]):
+    matrix: WeightMatrix
+    biases: jax.Array
+
+
+class NestedModule(LalamoModule[ExampleConfig]):
+    inner: MatrixModule
+
+
+def _matrix_module() -> MatrixModule:
+    weights = jnp.arange(16, dtype=jnp.float32).reshape(4, 4) / 8
+    matrix = AWQSpec(bits=4, group_size=2).compress(weights, implementation=CompressionImplementation.TRAINING)
+    return MatrixModule(
+        config=ExampleConfig(width=4, dtype=jnp.dtype(jnp.float32)),
+        matrix=matrix,
+        biases=jnp.ones((4,), dtype=jnp.float32),
+    )
+
+
+def test_lalamo_module_astype_casts_weight_matrices_and_array_parameters(fake_mesh: Mesh) -> None:
+    module = _matrix_module()
+
+    result = module.astype(jnp.bfloat16)
+
+    assert isinstance(module.matrix, AWQMatrixForTraining)
+    assert isinstance(module.matrix.scales.sharding, NamedSharding)
+    assert module.matrix.scales.sharding.mesh == fake_mesh
+    assert result.matrix.dtype == jnp.bfloat16
+    assert result.biases.dtype == jnp.bfloat16
+    assert module.matrix.dtype == jnp.float32
+    assert module.biases.dtype == jnp.float32
+
+
+def test_lalamo_module_astype_casts_dummy_array_parameters(fake_mesh: Mesh) -> None:
+    module = ExampleModule(
+        config=ExampleConfig(width=4, dtype=jnp.dtype(jnp.float32)),
+        weights=dummy_array((4,), jnp.float32, make_sharding((ShardingAxis.DATA,))),
+    )
+
+    result = module.astype(jnp.bfloat16)
+
+    assert result.weights.dtype == jnp.bfloat16
+    assert isinstance(result.weights.sharding, NamedSharding)
+    assert result.weights.sharding.mesh == fake_mesh
+    assert result.weights.sharding == make_sharding((ShardingAxis.DATA,))
+
+
+def test_lalamo_module_switch_implementation_recurses_into_nested_weight_matrices(fake_mesh: Mesh) -> None:
+    module = NestedModule(
+        config=ExampleConfig(width=4, dtype=jnp.dtype(jnp.float32)),
+        inner=_matrix_module(),
+    )
+
+    result = module.switch_implementation(CompressionImplementation.INFERENCE)
+
+    assert isinstance(module.inner.matrix, AWQMatrixForTraining)
+    assert isinstance(result.inner.matrix, AWQMatrixForInference)
+    assert isinstance(result.inner.matrix.scales.sharding, NamedSharding)
+    assert result.inner.matrix.scales.sharding.mesh == fake_mesh
+
+
+def test_lalamo_module_to_full_precision_converts_weight_matrices_without_casting(fake_mesh: Mesh) -> None:
+    module = _matrix_module().astype(jnp.bfloat16)
+
+    result = module.to_full_precision()
+
+    assert isinstance(result.matrix, FullPrecisionMatrix)
+    assert isinstance(result.matrix.weights.sharding, NamedSharding)
+    assert result.matrix.weights.sharding.mesh == fake_mesh
+    assert result.matrix.dtype == jnp.bfloat16
+    assert result.biases.dtype == jnp.bfloat16

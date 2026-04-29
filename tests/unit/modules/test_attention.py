@@ -130,6 +130,16 @@ def test_attention_returns_dynamic_state_without_tensor_sharding(fake_mesh: Mesh
     assert result.state.values.sharding == make_sharding((None, None, None))
 
 
+def test_attention_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
+    module = _attention()
+    inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.bfloat16).reshape(5, MODEL_DIM) / 10)
+
+    result = module(inputs, positional_embeddings=None, keychain=Keychain.init(6))
+
+    assert result.outputs.dtype == inputs.dtype
+    _assert_named_sharding(result.outputs.sharding, fake_mesh)
+
+
 def test_attention_under_jit_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
     module = _attention()
     inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10)

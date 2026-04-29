@@ -49,14 +49,14 @@ def _reference(module: Normalization, inputs: Array) -> Array:
     if config.upcast_mode == UpcastMode.FULL_LAYER:
         adjusted_scales = module.scales.astype(jnp.float32)
     else:
-        adjusted_scales = module.scales
+        adjusted_scales = module.scales.astype(inputs.dtype)
 
     if config.scale_offset is not None:
         adjusted_scales = adjusted_scales + config.scale_offset
 
     result = normalized * adjusted_scales
     if module.biases is not None:
-        result = result + module.biases
+        result = result + module.biases.astype(result.dtype)
     return result.astype(inputs.dtype)
 
 
@@ -102,6 +102,18 @@ def test_normalization_without_mean_offset_or_biases_matches_reference(fake_mesh
 def test_normalization_full_layer_upcast_matches_reference_and_returns_input_dtype(fake_mesh: Mesh) -> None:
     module = _normalization(_config(upcast_mode=UpcastMode.FULL_LAYER))
     inputs = _sharded_input(jnp.array([1.0, -2.0, 3.0, -4.0], dtype=jnp.float16))
+
+    result = module(inputs)
+
+    assert result.dtype == inputs.dtype
+    _assert_close(result=result, reference=_reference(module, inputs))
+    _assert_named_sharding(result.sharding, fake_mesh)
+    assert result.sharding == make_sharding((None,))
+
+
+def test_normalization_only_normalization_upcast_returns_input_dtype(fake_mesh: Mesh) -> None:
+    module = _normalization()
+    inputs = _sharded_input(jnp.array([1.0, -2.0, 3.0, -4.0], dtype=jnp.bfloat16))
 
     result = module(inputs)
 

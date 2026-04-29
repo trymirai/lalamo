@@ -195,7 +195,7 @@ class FullPrecisionLinear(LinearBase["FullPrecisionLinearConfig"]):
     ) -> tuple[Float[Array, " out_channels"], ...]:
         result = self.weights.dot(inputs, keychain=keychain, forward_pass_config=forward_pass_config)
         if self.biases is not None:
-            result = result + self.biases
+            result = result + self.biases.astype(result.dtype)
         return tuple(jnp.split(result, self.get_split_points(self.output_dims)))
 
 

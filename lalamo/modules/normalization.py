@@ -71,7 +71,7 @@ class Normalization(LalamoModule[NormalizationConfig]):
         if self.config.upcast_mode == UpcastMode.FULL_LAYER:
             adjusted_scales = self.scales.astype(accumulation_precision)
         else:
-            adjusted_scales = self.scales
+            adjusted_scales = self.scales.astype(inputs.dtype)
 
         if self.config.scale_offset is not None:
             adjusted_scales = adjusted_scales + self.config.scale_offset
@@ -79,7 +79,7 @@ class Normalization(LalamoModule[NormalizationConfig]):
         result = normalized_x * adjusted_scales
 
         if self.biases is not None:
-            result += self.biases
+            result += self.biases.astype(result.dtype)
         return result.astype(inputs.dtype)
 
     def export_weights(self) -> ParameterTree:

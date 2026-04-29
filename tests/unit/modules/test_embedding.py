@@ -8,7 +8,13 @@ from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
 from lalamo.module import Keychain, ShardingAxis
-from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig, UntiedEmbedding, UntiedEmbeddingConfig
+from lalamo.modules.embedding import (
+    EmbeddingForwardPassConfig,
+    TiedEmbedding,
+    TiedEmbeddingConfig,
+    UntiedEmbedding,
+    UntiedEmbeddingConfig,
+)
 from lalamo.modules.utils import apply_soft_capping, call_vmapped
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
@@ -53,15 +59,33 @@ def _embedding(tied: bool) -> TiedEmbedding | UntiedEmbedding:
     return _untied_embedding()
 
 
-def _embed_reference(module: TiedEmbedding | UntiedEmbedding, token_id: Array | int) -> Array:
-    result = module.embedding_matrix.lookup_embedding(token_id, keychain=Keychain.init(10))
+def _embed_reference(
+    module: TiedEmbedding | UntiedEmbedding,
+    token_id: Array | int,
+    forward_pass_config: EmbeddingForwardPassConfig = EmbeddingForwardPassConfig(),
+) -> Array:
+    result = module.embedding_matrix.lookup_embedding(
+        token_id,
+        dtype=forward_pass_config.activation_dtype,
+        keychain=Keychain.init(10),
+        forward_pass_config=forward_pass_config.embedding,
+    )
     if module.config.input_scale is not None:
         result = result * jnp.array(module.config.input_scale, dtype=result.dtype)
     return result
 
 
-def _readout_reference(module: TiedEmbedding | UntiedEmbedding, inputs: Array) -> Array:
-    logits = module.readout_matrix.dot(inputs, keychain=Keychain.init(11))
+def _readout_reference(
+    module: TiedEmbedding | UntiedEmbedding,
+    inputs: Array,
+    forward_pass_config: EmbeddingForwardPassConfig = EmbeddingForwardPassConfig(),
+) -> Array:
+    logits = module.readout_matrix.dot(
+        inputs,
+        keychain=Keychain.init(11),
+        forward_pass_config=forward_pass_config.readout,
+    )
+    logits = logits.astype(forward_pass_config.logit_dtype)
     if module.config.logit_soft_cap is not None:
         logits = apply_soft_capping(logits, module.config.logit_soft_cap)
     return logits
@@ -95,6 +119,7 @@ def test_embedding_embed_matches_reference_under_jit(fake_mesh: Mesh, tied: bool
     )
 
     _assert_close(result=result, reference=_embed_reference(module, token_id))
+    assert result.dtype == jnp.bfloat16
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == make_sharding((None,))
 
@@ -149,6 +174,31 @@ def test_embedding_readout_matches_reference_under_jit_and_preserves_input_shard
     _assert_close(result=result, reference=_readout_reference(module, inputs))
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == inputs.sharding
+
+
+@pytest.mark.parametrize("tied", [True, False], ids=["tied", "untied"])
+def test_embedding_embed_dtype_can_be_overridden(fake_mesh: Mesh, tied: bool) -> None:
+    module = _embedding(tied)
+    token_id = jnp.array(2, dtype=jnp.int32)
+    forward_pass_config = EmbeddingForwardPassConfig(activation_dtype=jnp.float32)
+
+    result = module.embed(token_id, keychain=Keychain.init(12), forward_pass_config=forward_pass_config)
+
+    assert result.dtype == jnp.float32
+    _assert_named_sharding(result.sharding, fake_mesh)
+    _assert_close(result=result, reference=_embed_reference(module, token_id, forward_pass_config))
+
+
+@pytest.mark.parametrize("tied", [True, False], ids=["tied", "untied"])
+def test_embedding_readout_defaults_to_float32_with_bfloat16_inputs(fake_mesh: Mesh, tied: bool) -> None:
+    module = _embedding(tied)
+    inputs = jnp.array([-1.0, -0.25, 0.5, 1.25], dtype=jnp.bfloat16)
+
+    result = module.readout(inputs, keychain=Keychain.init(13))
+
+    assert result.dtype == jnp.float32
+    _assert_named_sharding(result.sharding, fake_mesh)
+    _assert_close(result=result, reference=_readout_reference(module, inputs))
 
 
 @pytest.mark.parametrize("tied", [True, False], ids=["tied", "untied"])

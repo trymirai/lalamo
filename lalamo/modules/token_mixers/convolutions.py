@@ -92,12 +92,12 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         inputs_with_history = _causal_conv_context(state, inputs)
         conv_outputs = _separable_causal_conv(
             inputs_with_history[None, -required_context:, :],
-            self.weights,
+            self.weights.astype(inputs.dtype),
         )
 
         results = conv_outputs.squeeze(0)
         if self.biases is not None:
-            results = _add_conv_biases(results, self.biases)
+            results = _add_conv_biases(results, self.biases.astype(results.dtype))
 
         if return_updated_state:
             if length_without_padding is None:
@@ -120,9 +120,9 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
     ) -> tuple[Float[Array, " channels"], Float[Array, "kernel_minus_1 channels"]]:
         """Single-token conv update without full convolution overhead."""
         full_input = jnp.concatenate([state, token[None, :]], axis=0)
-        output = einsum(full_input, self.weights, "kernel channels, channels kernel -> channels")
+        output = einsum(full_input, self.weights.astype(token.dtype), "kernel channels, channels kernel -> channels")
         if self.biases is not None:
-            output = output + self.biases
+            output = output + self.biases.astype(output.dtype)
         new_state = jnp.concatenate([state[1:], token[None, :]], axis=0)
         return output, new_state
 
