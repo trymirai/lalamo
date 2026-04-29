@@ -14,7 +14,7 @@ from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.utils.dummy_array import dummy_array, preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.utils.sharding import reshard_as
+from lalamo.utils.sharding import reshard_as, use_out_sharding
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -239,6 +239,7 @@ class MLXMatrixForTraining(MLXMatrix):
             round_fn=partial(deterministic_round_to_unsigned_grid, bits=self.spec.bits),
         )
 
+    @use_out_sharding((None,))
     def lookup_embedding(
         self,
         index: int | Int[Array, ""],
@@ -400,6 +401,7 @@ class MLXMatrixForInference(MLXMatrix):
             self.spec.bits,
         )
 
+    @use_out_sharding((None,))
     def lookup_embedding(
         self,
         index: int | Int[Array, ""],
@@ -410,11 +412,13 @@ class MLXMatrixForInference(MLXMatrix):
         self._raise_if_batched()
         if self.spec.layout != Layout.INPUT_OUTPUT:
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
-        packed_row = self.packed_weights[index, :]
-        weights = unpack_uint8_to_uint(packed_row, self.spec.bits, dtype=self.scales.dtype)
-        expanded_scales = expand_last_axis_groups(self.scales[index, :], group_size=self.spec.group_size)
-        expanded_biases = expand_last_axis_groups(self.biases[index, :], group_size=self.spec.group_size)
-        return weights * expanded_scales + expanded_biases
+        return _mlx_unpack_master_weights(
+            self.packed_weights[index, :],
+            self.scales[index, :],
+            self.biases[index, :],
+            self.spec.group_size,
+            self.spec.bits,
+        )
 
     def dot(
         self,

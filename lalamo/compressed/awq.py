@@ -7,7 +7,6 @@ from typing import Literal, NamedTuple, Self
 import jax.numpy as jnp
 from jax import ShapeDtypeStruct
 from jax.lax import stop_gradient
-from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import ExportResults
@@ -15,7 +14,10 @@ from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.utils.dummy_array import dummy_array, preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.utils.sharding import is_sharded, reshard_as, sharding_of, with_sharding
+from lalamo.utils.sharding import (
+    reshard_as,
+    use_out_sharding,
+)
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -89,16 +91,6 @@ def _awq_int_scale_zero_points_to_master(
     return int_scale_zero_points.astype(scales.dtype) * scales
 
 
-def _drop_last_axis_sharding(array: Array) -> Array:
-    source_sharding = sharding_of(array)
-    if not is_sharded(source_sharding):
-        return array
-
-    source_partition = tuple(source_sharding.spec)
-    output_sharding = NamedSharding(source_sharding.mesh, PartitionSpec(*source_partition[:-1], None))
-    return with_sharding(array, output_sharding)
-
-
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
 def _awq_master_weights_to_int_scale(
     weights: Float[Array, "... cols"],
@@ -138,7 +130,6 @@ def _awq_pack_master_zero_points(
 ) -> Int[Array, "... rows packed_groups"]:
     int_scale_zero_points = _awq_master_zero_points_to_int_scale(zero_points, scales)
     int_zero_points = deterministic_round_to_unsigned_grid(int_scale_zero_points, bits=bits)
-    int_zero_points = _drop_last_axis_sharding(int_zero_points)
     return pack_uint_to_uint8(int_zero_points, bits)
 
 
@@ -317,6 +308,7 @@ class AWQMatrixForTraining(AWQMatrix):
             round_fn=partial(deterministic_round_to_unsigned_grid, bits=self.spec.bits),
         )
 
+    @use_out_sharding((None,))
     def lookup_embedding(
         self,
         index: int | Int[Array, ""],
@@ -381,8 +373,11 @@ class AWQMatrixForTraining(AWQMatrix):
 
         packed_weights = reshard_as(expored_data.arrays[prefix / "weights"], self.weights)
         scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast=allow_dtype_cast)
-        packed_zero_points_template = _drop_last_axis_sharding(self.zero_points)
-        packed_zero_points = reshard_as(expored_data.arrays[prefix / "zero_points"], packed_zero_points_template)
+        packed_zero_points = load_as(
+            self._packed_quantized_zero_points,
+            expored_data.arrays[prefix / "zero_points"],
+            allow_dtype_cast=allow_dtype_cast,
+        )
         weights = _awq_unpack_master_weights(
             packed_weights,
             scales,
@@ -503,6 +498,7 @@ class AWQMatrixForInference(AWQMatrix):
             self.spec.bits,
         )
 
+    @use_out_sharding((None,))
     def lookup_embedding(
         self,
         index: int | Int[Array, ""],
@@ -513,18 +509,13 @@ class AWQMatrixForInference(AWQMatrix):
         self._raise_if_batched()
         if self.spec.layout != Layout.INPUT_OUTPUT:
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
-        packed_weights = self.packed_weights[index, :]
-        packed_zero_points = self.packed_zero_points[index, :]
-        scales = self.scales[index, :]
-        int_weights = unpack_uint8_to_uint(packed_weights, self.spec.bits, dtype=scales.dtype)
-        int_zero_points = unpack_uint8_to_uint(
-            packed_zero_points,
+        return _awq_unpack_master_weights(
+            self.packed_weights[index, :],
+            self.scales[index, :],
+            self.packed_zero_points[index, :],
+            self.spec.group_size,
             self.spec.bits,
-            dtype=scales.dtype,
         )
-        expanded_scales = expand_last_axis_groups(scales, group_size=self.spec.group_size)
-        expanded_int_zero_points = expand_last_axis_groups(int_zero_points, group_size=self.spec.group_size)
-        return (int_weights - expanded_int_zero_points) * expanded_scales
 
     def dot(
         self,

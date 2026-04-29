@@ -4,8 +4,10 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
+from jax.sharding import Mesh, NamedSharding
 
-from lalamo.module import Keychain, LalamoConfig, LalamoModule, ParameterNorm, field
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, ParameterNorm, ShardingAxis, field
+from lalamo.utils.sharding import make_sharding
 
 
 def _key_data(key: jax.Array) -> tuple[int, ...]:
@@ -48,10 +50,12 @@ def test_keychain_broadcast_adds_distinct_leading_keys() -> None:
     )
 
 
-def test_keychain_broadcast_to_current_shape_returns_same_keychain() -> None:
+def test_keychain_broadcast_to_current_shape_preserves_keys() -> None:
     keychain = Keychain.init(0, shape=(2,))
+    broadcast = keychain.broadcast((2,))
 
-    assert keychain.broadcast((2,)) is keychain
+    assert jnp.array_equal(jax.random.key_data(broadcast.vmapped_keys), jax.random.key_data(keychain.vmapped_keys))
+    assert jnp.array_equal(jax.random.key_data(broadcast.batch_key), jax.random.key_data(keychain.batch_key))
 
 
 def test_keychain_broadcast_rejects_incompatible_shape() -> None:
@@ -59,6 +63,17 @@ def test_keychain_broadcast_rejects_incompatible_shape() -> None:
 
     with pytest.raises(ValueError, match=r"Cannot broadcast|Expected target shape|Incompatible shapes"):
         keychain.broadcast((3,))
+
+
+def test_keychain_broadcast_can_shard_vmapped_keys_without_changing_shape(fake_mesh: Mesh) -> None:
+    keychain = Keychain.init(0, shape=(2,))
+
+    sharded = keychain.broadcast((2,), sharding_axes=(ShardingAxis.DATA,))
+
+    assert isinstance(sharded.vmapped_keys.sharding, NamedSharding)
+    assert sharded.vmapped_keys.sharding.mesh == fake_mesh
+    assert sharded.vmapped_keys.sharding == make_sharding((ShardingAxis.DATA,))
+    assert jnp.array_equal(jax.random.key_data(sharded.batch_key), jax.random.key_data(keychain.batch_key))
 
 
 def test_keychain_split_splits_vmapped_and_batch_keys() -> None:

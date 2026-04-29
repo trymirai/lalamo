@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 from cattrs import GenConverter
+from jax.sharding import PartitionSpec, reshard
 from jaxtyping import Array, Key
 
 from lalamo.utils.json import JSON
@@ -49,14 +50,22 @@ class Keychain(eqx.Module):
             vmapped_keys = jnp.reshape(jax.random.split(vmapped_keys, prod(shape)), shape)
         return cls(vmapped_keys=vmapped_keys, batch_key=batch_key)
 
-    def broadcast(self, shape: tuple[int, ...]) -> Self:
+    def broadcast(
+        self,
+        shape: tuple[int, ...],
+        *,
+        sharding_axes: tuple[ShardingAxis | None, ...] | None = None,
+    ) -> Self:
         leading_shape = _leading_broadcast_shape(self.vmapped_keys.shape, shape)
-        if not leading_shape:
-            return self
+        if leading_shape:
+            flat_keys = jnp.reshape(self.vmapped_keys, (-1,))
+            split_keys = jax.vmap(partial(jax.random.split, num=prod(leading_shape)))(flat_keys)
+            vmapped_keys = jnp.reshape(jnp.swapaxes(split_keys, 0, 1), shape)
+        else:
+            vmapped_keys = self.vmapped_keys
 
-        flat_keys = jnp.reshape(self.vmapped_keys, (-1,))
-        split_keys = jax.vmap(partial(jax.random.split, num=prod(leading_shape)))(flat_keys)
-        vmapped_keys = jnp.reshape(jnp.swapaxes(split_keys, 0, 1), shape)
+        if sharding_axes is not None and not all(axis is None for axis in sharding_axes):
+            vmapped_keys = reshard(vmapped_keys, PartitionSpec(*sharding_axes))
 
         return type(self)(vmapped_keys=vmapped_keys, batch_key=self.batch_key)
 

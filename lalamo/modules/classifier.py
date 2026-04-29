@@ -7,7 +7,7 @@ from jaxtyping import Array, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
 
 from .activations import Activation
 from .embedding import EmbeddingBase, EmbeddingConfig
@@ -56,26 +56,31 @@ class PredictionHeadConfig(LalamoConfig):
         return PredictionHead(
             config=self,
             dense=dense_layer,
-            activation=self.activation,
             norm=norm,
             readout=readout,
         )
 
 
 class PredictionHead(LalamoModule[PredictionHeadConfig]):
-    dense: LinearBase
-    activation: Activation
+    dense: Linear
     norm: Normalization
     readout: Linear
 
+    @eqx.filter_jit
     def __call__(
         self,
         inner_features: Float[Array, "batch channels"],
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch logits"]:
-        return call_vmapped(self.call_unbatched, inner_features, keychain=keychain)
+        return call_vmapped(
+            self.call_unbatched,
+            inner_features,
+            keychain=keychain,
+            added_sharding_axis=ShardingAxis.DATA,
+        )
 
+    @eqx.filter_jit
     def call_unbatched(
         self,
         inner_features: Float[Array, " in_channels"],
@@ -87,7 +92,7 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
             inner_features,
             keychain=dense_keychain,
         )
-        dense_outs = self.activation(dense_outs)
+        dense_outs = self.config.activation(dense_outs)
         norm_outs = self.norm(dense_outs)
         (result,) = self.readout(
             norm_outs,
@@ -194,6 +199,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
             self.embedding.embed,
             token_ids,
             keychain=embedding_keychain,
+            added_sharding_axes=(ShardingAxis.DATA, None),
         )
         normalized_embeddings = call_vmapped_twice(self.embedding_norm, inner_features)
 

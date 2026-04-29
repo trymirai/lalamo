@@ -4,7 +4,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
 from lalamo.modules.activations import Activation
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
@@ -307,9 +307,11 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
         keychain: Keychain,
     ) -> Float[Array, "tokens code_size"]:
         embed_keychain, out_keychain = keychain.split()
-        z_p = self.codebook.embed(
+        z_p = call_vmapped(
+            self.codebook.embed,
             embed_id,
             keychain=embed_keychain,
+            added_sharding_axis=ShardingAxis.DATA,
         )
         (z_q,) = call_vmapped(
             self.out_proj,

@@ -12,7 +12,7 @@ from einops import rearrange
 from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.weight_matrix import MatmulConfig
 
@@ -151,7 +151,12 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
             self.call_unbatched,
             forward_pass_config=forward_pass_config,
         )
-        return call_vmapped_twice(call_unbatched, inputs, keychain=keychain)
+        return call_vmapped_twice(
+            call_unbatched,
+            inputs,
+            keychain=keychain,
+            added_sharding_axes=(ShardingAxis.DATA, None),
+        )
 
     @eqx.filter_jit
     def call_unbatched(
@@ -290,6 +295,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     def hidden_dim(self) -> int:
         return self.experts.hidden_dim
 
+    @eqx.filter_jit
     def __call__(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],

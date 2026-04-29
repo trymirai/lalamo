@@ -8,6 +8,7 @@ from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.utils.sharding import use_out_sharding
 
 __all__ = [
     "Normalization",
@@ -48,6 +49,7 @@ class Normalization(LalamoModule[NormalizationConfig]):
         return result
 
     @eqx.filter_jit
+    @use_out_sharding((None,))
     def __call__(
         self,
         inputs: Float[Array, " channels"],

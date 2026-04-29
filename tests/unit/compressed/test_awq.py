@@ -4,7 +4,7 @@ from typing import Literal
 import jax
 import jax.numpy as jnp
 import pytest
-from jax.sharding import Mesh, NamedSharding, PartitionSpec, Sharding
+from jax.sharding import Mesh, Sharding
 
 from lalamo.compressed.awq import AWQMatrix, AWQMatrixForInference, AWQMatrixForTraining, AWQSpec
 from lalamo.utils.dummy_array import dummy_array
@@ -62,11 +62,6 @@ def _manual_awq_dequantize(
     expanded_int_zero_points = jnp.repeat(int_zero_points, group_size, axis=-1)
     int_weights = _round_unsigned((stored_weights + expanded_rounded_zero_points) / expanded_scales, bits=bits)
     return (int_weights - expanded_int_zero_points) * expanded_scales
-
-
-def _drop_last_axis_sharding(sharding: NamedSharding) -> NamedSharding:
-    source_partition = tuple(sharding.spec)
-    return NamedSharding(sharding.mesh, PartitionSpec(*source_partition[:-1], None))
 
 
 def _compress_pair(layout: Layout) -> tuple[AWQMatrixForTraining, AWQMatrixForInference]:
@@ -174,8 +169,11 @@ def test_awq_shape_dtype_struct_compress_uses_layout_shape_and_partition(
         implementation=implementation,
     )
     expected_stored_shape = layout.weight_shape((), output_dim=4, input_dim=4)
-    expected_sharding = make_sharding(layout.weight_partition(num_leading_dims=0))
+    expected_partition = layout.weight_partition(num_leading_dims=0)
+    expected_sharding = make_sharding(expected_partition)
+    expected_packed_zero_points_sharding = make_sharding((*expected_partition[:-1], None))
     assert expected_sharding is not None
+    assert expected_packed_zero_points_sharding is not None
 
     assert matrix.shape == expected_stored_shape
     assert matrix.dtype == jnp.float32
@@ -198,7 +196,7 @@ def test_awq_shape_dtype_struct_compress_uses_layout_shape_and_partition(
             spec.bits,
         )
         assert matrix.packed_weights.sharding == expected_sharding
-        assert matrix.packed_zero_points.sharding == _drop_last_axis_sharding(expected_sharding)
+        assert matrix.packed_zero_points.sharding == expected_packed_zero_points_sharding
         compressed_common.assert_named_sharding(matrix.packed_zero_points.sharding, fake_mesh)
 
 

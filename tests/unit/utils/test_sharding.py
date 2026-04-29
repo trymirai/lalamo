@@ -6,7 +6,7 @@ from jax.sharding import Mesh, NamedSharding
 
 from lalamo.module import ShardingAxis
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.utils.sharding import is_sharded, make_sharding, reshard_as, sharding_of, with_sharding
+from lalamo.utils.sharding import is_sharded, make_sharding, reshard_as, sharding_of, use_out_sharding, with_sharding
 
 
 def test_is_sharded_accepts_non_empty_named_sharding(fake_mesh: Mesh) -> None:
@@ -100,3 +100,22 @@ def test_reshard_as_clears_shape_dtype_struct_sharding_when_reference_has_none(f
 
     assert isinstance(result, ShapeDtypeStruct)
     assert result.sharding is None
+
+
+def test_use_out_sharding_resolves_vmapped_scalar_gather(fake_mesh: Mesh) -> None:
+    table = jax.device_put(
+        jnp.arange(16, dtype=jnp.float32).reshape(4, 4),
+        make_sharding((None, ShardingAxis.TENSOR)),
+    )
+    indices = jax.device_put(jnp.array([0, 2], dtype=jnp.int32), make_sharding((ShardingAxis.DATA,)))
+
+    @use_out_sharding((None,))
+    def lookup_row(table: jax.Array, index: jax.Array) -> jax.Array:
+        return table[index, :]
+
+    result = jax.vmap(lambda index: lookup_row(table, index))(indices)
+
+    assert isinstance(result.sharding, NamedSharding)
+    assert result.sharding == make_sharding((ShardingAxis.DATA, None))
+    assert result.sharding.mesh == fake_mesh
+    np.testing.assert_array_equal(jax.device_get(result), np.asarray([[0, 1, 2, 3], [8, 9, 10, 11]], dtype=np.float32))

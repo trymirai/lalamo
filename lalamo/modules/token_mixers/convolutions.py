@@ -2,6 +2,7 @@ import math
 from dataclasses import dataclass
 from typing import NamedTuple
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import einsum
@@ -9,6 +10,7 @@ from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.utils.sharding import use_out_sharding
 
 __all__ = [
     "CausalConvResult",
@@ -72,6 +74,7 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
     def has_biases(self) -> bool:
         return self.biases is not None
 
+    @eqx.filter_jit
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
@@ -82,35 +85,26 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         num_suffix_tokens, input_dim = inputs.shape
 
         if state is None:
-            state = jnp.zeros((self.kernel_size - 1, input_dim), dtype=inputs.dtype)
+            state = jnp.zeros_like(jnp.broadcast_to(inputs[:1], (self.kernel_size - 1, input_dim)))
 
         required_context = num_suffix_tokens + self.kernel_size - 1
 
-        inputs_with_history = jnp.concatenate([state, inputs], axis=0)
-        conv_outputs = jax.lax.conv_general_dilated(
+        inputs_with_history = _causal_conv_context(state, inputs)
+        conv_outputs = _separable_causal_conv(
             inputs_with_history[None, -required_context:, :],
-            self.weights[:, :, None],
-            window_strides=(1,),
-            feature_group_count=input_dim,
-            padding="VALID",
-            dimension_numbers=("NTC", "OTI", "NTC"),
+            self.weights,
         )
 
         results = conv_outputs.squeeze(0)
         if self.biases is not None:
-            results = results + self.biases
+            results = _add_conv_biases(results, self.biases)
 
         if return_updated_state:
             if length_without_padding is None:
                 length_without_padding = num_suffix_tokens
             length_without_padding = jnp.asarray(length_without_padding, dtype=jnp.int32)
             length_without_padding = jnp.clip(length_without_padding, 0, num_suffix_tokens)
-            updated_state = jax.lax.dynamic_slice_in_dim(
-                inputs_with_history,
-                start_index=length_without_padding,
-                slice_size=self.kernel_size - 1,
-                axis=0,
-            )
+            updated_state = _updated_causal_conv_state(inputs_with_history, inputs, length_without_padding)
         else:
             updated_state = None
 
@@ -131,3 +125,49 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
             output = output + self.biases
         new_state = jnp.concatenate([state[1:], token[None, :]], axis=0)
         return output, new_state
+
+
+@use_out_sharding((None, None, None))
+def _separable_causal_conv(
+    inputs: Float[Array, "batch suffix_tokens channels"],
+    weights: Float[Array, "channels kernel"],
+) -> Float[Array, "batch suffix_tokens channels"]:
+    input_dim, _ = weights.shape
+    return jax.lax.conv_general_dilated(
+        inputs,
+        weights[:, :, None],
+        window_strides=(1,),
+        feature_group_count=input_dim,
+        padding="VALID",
+        dimension_numbers=("NTC", "OTI", "NTC"),
+    )
+
+
+@use_out_sharding((None, None))
+def _causal_conv_context(
+    state: Float[Array, "state_tokens channels"],
+    inputs: Float[Array, "suffix_tokens channels"],
+) -> Float[Array, "context_tokens channels"]:
+    return jnp.concatenate([state, inputs], axis=0)
+
+
+@use_out_sharding((None, None))
+def _add_conv_biases(
+    outputs: Float[Array, "suffix_tokens channels"],
+    biases: Float[Array, " channels"],
+) -> Float[Array, "suffix_tokens channels"]:
+    return outputs + biases
+
+
+@use_out_sharding((None, None))
+def _updated_causal_conv_state(
+    inputs_with_history: Float[Array, "context_tokens channels"],
+    inputs: Float[Array, "suffix_tokens channels"],
+    length_without_padding: Int[Array, ""] | int,
+) -> Float[Array, "state_tokens channels"]:
+    return jax.lax.dynamic_slice_in_dim(
+        inputs_with_history,
+        start_index=length_without_padding,
+        slice_size=inputs_with_history.shape[0] - inputs.shape[0],
+        axis=0,
+    )

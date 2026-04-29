@@ -6,7 +6,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain
+from lalamo.module import ForwardPassMode, Keychain, ShardingAxis
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
 )
@@ -175,18 +175,34 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             inp[:, 0] <= self.config.semantic_token_end_id
         )
         slow_embed_keychain, codebook_embed_keychain = keychain.split()
-        embeddings = self.embeddings_slow.embed(
+        embeddings = call_vmapped_twice(
+            self.embeddings_slow.embed,
             inp[:, 0],
             keychain=slow_embed_keychain,
+            added_sharding_axes=(ShardingAxis.DATA, None),
         )
 
         if apply_codebook_embeddings or jnp.any(vq_masks):
             _, _, seq_length = inp.shape
             codebook_offsets = (jnp.arange(self.config.num_codebooks) * self.config.codebook_size).reshape(-1, 1)
             codebook_offsets = jnp.tile(codebook_offsets, (1, seq_length))
-            codebook_embeds = self.codebook_embeddings.embed(
+
+            def embed_codebook_batch(
+                codebook_ids: Int[Array, "codebooks tokens"],
+                *,
+                keychain: Keychain,
+            ) -> Float[Array, "codebooks tokens embedding"]:
+                return call_vmapped_twice(
+                    self.codebook_embeddings.embed,
+                    codebook_ids,
+                    keychain=keychain,
+                )
+
+            codebook_embeds = call_vmapped(
+                embed_codebook_batch,
                 inp[:, 1:, :] + codebook_offsets,
                 keychain=codebook_embed_keychain,
+                added_sharding_axis=ShardingAxis.DATA,
             )
 
             vq_embeds_sum = codebook_embeds.sum(axis=1)
@@ -384,9 +400,11 @@ def decode_next_token(
     )
     state_fast = fast_first_result.updated_state
 
-    embedded_logits = model.embeddings_fast.embed(
+    embedded_logits = call_vmapped(
+        model.embeddings_fast.embed,
         first_fast_code,
         keychain=fast_embed_keychain,
+        added_sharding_axis=ShardingAxis.DATA,
     )
     loop_sampling_keys = jax.random.split(loop_sampling_keychain.vmapped_keys, max(n_codes - 2, 0))
 
@@ -425,9 +443,11 @@ def decode_next_token(
             keychain=Keychain(vmapped_keys=sample_vmapped_keys, batch_key=keychain.batch_key),
         )
 
-        new_logits = model.embeddings_fast.embed(
+        new_logits = call_vmapped(
+            model.embeddings_fast.embed,
             code,
             keychain=fast_embed_keychain,
+            added_sharding_axis=ShardingAxis.DATA,
         )
         codebooks = codebooks.at[0, index].set(code[0])
         return (new_state, new_logits, codebooks), None

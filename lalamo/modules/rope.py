@@ -24,8 +24,9 @@ from jaxtyping import Array, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import LalamoConfig, LalamoModule, field
+from lalamo.module import LalamoConfig, LalamoModule, ShardingAxis, field
 from lalamo.utils.registry_abc import RegistryABC
+from lalamo.utils.sharding import use_out_sharding
 
 __all__ = [
     "LinearScalingRoPEConfig",
@@ -48,13 +49,15 @@ class PositionalEmbeddings(Exportable, eqx.Module):
 
     def rotate_half(
         self,
-        heads: Float[Array, "*batch tokens head_channels"],
-    ) -> Float[Array, "*batch tokens head_channels"]:
-        x1 = heads[..., : self.head_dim // 2]
-        x2 = heads[..., self.head_dim // 2 :]
+        heads: Float[Array, "tokens head_channels"],
+    ) -> Float[Array, "tokens head_channels"]:
+        half_dim = self.head_dim // 2
+        x1 = heads[..., :half_dim]
+        x2 = heads[..., half_dim : self.head_dim]
         return jnp.concatenate((-x2, x1), axis=-1)
 
-    def apply(self, heads: Float[Array, "*batch tokens head_channels"]) -> Float[Array, "*batch tokens head_channels"]:
+    @use_out_sharding((ShardingAxis.DATA, None))
+    def apply(self, heads: Float[Array, "tokens head_channels"]) -> Float[Array, "tokens head_channels"]:
         head_dim = self.head_dim
         if heads.shape[-1] < head_dim:
             raise ValueError(
@@ -64,7 +67,8 @@ class PositionalEmbeddings(Exportable, eqx.Module):
         rotated = rotated * self.cosines + self.rotate_half(rotated) * self.sines
         if heads.shape[-1] == head_dim:
             return rotated
-        return jnp.concatenate([rotated, heads[..., head_dim:]], axis=-1)
+        tail = heads[..., head_dim:]
+        return jnp.concatenate([rotated, tail], axis=-1)
 
 
 @dataclass(frozen=True)
@@ -127,6 +131,7 @@ class RoPE(LalamoModule[RoPEConfig]):
         return result
 
     @eqx.filter_jit
+    @use_out_sharding((ShardingAxis.DATA, None))
     def __call__(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
         return PositionalEmbeddings(
             cosines=self.cosines[timesteps],

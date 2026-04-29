@@ -11,6 +11,7 @@ from jax.sharding import Mesh, NamedSharding, Sharding
 from lalamo.compressed.awq import AWQSpec
 from lalamo.compressed.mlx import MLXSpec
 from lalamo.module import Keychain, ShardingAxis
+from lalamo.modules.utils import call_vmapped
 from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import CompressionImplementation, EmbeddingMatrix, Layout, WeightMatrixSpec
 from tests.common import assert_close
@@ -69,13 +70,13 @@ def logical_dot_reference(layout: Layout, dequantized_weights: jax.Array, vector
 
 
 def embedding_sharding() -> NamedSharding:
-    sharding = make_sharding((ShardingAxis.TENSOR,))
+    sharding = make_sharding((None,))
     assert sharding is not None
     return sharding
 
 
 def batched_embedding_sharding() -> NamedSharding:
-    sharding = make_sharding((ShardingAxis.EXPERT, ShardingAxis.TENSOR))
+    sharding = make_sharding((ShardingAxis.EXPERT, None))
     assert sharding is not None
     return sharding
 
@@ -189,6 +190,59 @@ def test_compressed_matrix_lookup_embedding_accepts_jax_scalar_index(
     result = matrix.lookup_embedding(token_index, keychain=Keychain.init(5))
 
     assert_close_arrays(result=result, reference=matrix.decompress()[token_index, :])
+
+
+@pytest.mark.parametrize("case", COMPRESSED_MATRIX_CASES)
+@pytest.mark.parametrize("implementation", list(CompressionImplementation))
+def test_compressed_matrix_lookup_embedding_vmapped_over_tokens_preserves_token_and_feature_sharding(
+    fake_mesh: Mesh,
+    case: CompressedMatrixCase,
+    implementation: CompressionImplementation,
+) -> None:
+    matrix = _compress(
+        case,
+        logical_weights(case),
+        layout=Layout.INPUT_OUTPUT,
+        implementation=implementation,
+    )
+    token_indices = jax.device_put(jnp.array([0, 2], dtype=jnp.int32), make_sharding((ShardingAxis.DATA,)))
+
+    result = jax.vmap(lambda token_index: matrix.lookup_embedding(token_index, keychain=Keychain.init(5)))(
+        token_indices,
+    )
+
+    reference_indices = jnp.asarray(jax.device_get(token_indices))
+    assert_close_arrays(result=result, reference=matrix.decompress()[reference_indices, :])
+    assert_named_sharding(result.sharding, fake_mesh)
+    assert result.sharding == make_sharding((ShardingAxis.DATA, None))
+
+
+@pytest.mark.parametrize("case", COMPRESSED_MATRIX_CASES)
+@pytest.mark.parametrize("implementation", list(CompressionImplementation))
+def test_compressed_matrix_lookup_embedding_call_vmapped_over_tokens_matches_selected_rows_and_preserve_sharding(
+    fake_mesh: Mesh,
+    case: CompressedMatrixCase,
+    implementation: CompressionImplementation,
+) -> None:
+    matrix = _compress(
+        case,
+        logical_weights(case),
+        layout=Layout.INPUT_OUTPUT,
+        implementation=implementation,
+    )
+    token_indices = jax.device_put(jnp.array([1, 3], dtype=jnp.int32), make_sharding((ShardingAxis.DATA,)))
+
+    result = call_vmapped(
+        matrix.lookup_embedding,
+        token_indices,
+        keychain=Keychain.init(5),
+        added_sharding_axis=ShardingAxis.DATA,
+    )
+
+    reference_indices = jnp.asarray(jax.device_get(token_indices))
+    assert_close_arrays(result=result, reference=matrix.decompress()[reference_indices, :])
+    assert_named_sharding(result.sharding, fake_mesh)
+    assert result.sharding == make_sharding((ShardingAxis.DATA, None))
 
 
 @pytest.mark.parametrize("case", COMPRESSED_MATRIX_CASES)

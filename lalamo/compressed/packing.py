@@ -32,7 +32,7 @@ def _packed_shape(shape: tuple[int, ...], bits: int) -> tuple[int, ...]:
     return (*leading_dims, packed_last_axis_dim(last_dim, bits))
 
 
-@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
+@supports_dummy_arrays()
 def pack_uint_to_uint8(unpacked: Array, bits: int) -> Array:
     if bits == 8:
         return unpacked.astype(jnp.uint8)
@@ -45,10 +45,8 @@ def pack_uint_to_uint8(unpacked: Array, bits: int) -> Array:
         "... (groups packed_values) -> ... groups packed_values",
         packed_values=values_per_byte,
     )
-    packed = jnp.zeros(grouped.shape[:-1], dtype=jnp.uint8)
-    for shift in range(values_per_byte):
-        packed = packed | (grouped[..., shift] << jnp.uint8(shift * bits))
-    return packed
+    shifts = jnp.arange(values_per_byte, dtype=jnp.uint8) * jnp.uint8(bits)
+    return jnp.sum(grouped << shifts, axis=-1, dtype=jnp.uint8)
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)

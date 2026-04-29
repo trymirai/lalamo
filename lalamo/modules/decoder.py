@@ -6,7 +6,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
 
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .linear import LinearBase, LinearConfig
@@ -117,6 +117,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             self.embedding.embed,
             token_ids,
             keychain=embedding_keychain,
+            added_sharding_axes=(ShardingAxis.DATA, None),
         )
 
         if self.per_layer_embedding is not None:

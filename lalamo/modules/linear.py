@@ -7,6 +7,7 @@ from jaxtyping import Array, Float
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, field
+from lalamo.utils.sharding import use_out_sharding
 from lalamo.weight_matrix import FullPrecisionSpec, MatmulConfig, WeightMatrix
 
 __all__ = [
@@ -180,6 +181,7 @@ class FullPrecisionLinear(LinearBase["FullPrecisionLinearConfig"]):
         return self.biases is not None
 
     @eqx.filter_jit
+    @use_out_sharding((None,))
     def __call__(
         self,
         inputs: Float[Array, " in_channels"],

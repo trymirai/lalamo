@@ -7,6 +7,7 @@ from jax.sharding import Mesh, NamedSharding, Sharding
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, ShardingAxis
+from lalamo.modules.utils import call_vmapped
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, Layout, Preconditioner, WeightMatrixSpec
@@ -34,13 +35,13 @@ def _assert_close(result: jax.Array, reference: jax.Array) -> None:
 
 
 def _embedding_sharding() -> NamedSharding:
-    sharding = make_sharding((ShardingAxis.TENSOR,))
+    sharding = make_sharding((None,))
     assert sharding is not None
     return sharding
 
 
 def _batched_embedding_sharding() -> NamedSharding:
-    sharding = make_sharding((ShardingAxis.EXPERT, ShardingAxis.TENSOR))
+    sharding = make_sharding((ShardingAxis.EXPERT, None))
     assert sharding is not None
     return sharding
 
@@ -230,6 +231,41 @@ def test_full_precision_lookup_embedding_accepts_jax_scalar_index(fake_mesh: Mes
 
     _assert_close(result=result, reference=matrix.decompress()[token_index, :])
     _assert_named_sharding(result.sharding, fake_mesh)
+
+
+def test_full_precision_lookup_embedding_vmapped_over_tokens_preserves_token_and_feature_sharding(
+    fake_mesh: Mesh,
+) -> None:
+    matrix = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(_logical_weights())
+    token_indices = jax.device_put(jnp.array([0, 2], dtype=jnp.int32), make_sharding((ShardingAxis.DATA,)))
+
+    result = jax.vmap(lambda token_index: matrix.lookup_embedding(token_index, keychain=Keychain.init(6)))(
+        token_indices,
+    )
+
+    reference_indices = jnp.asarray(jax.device_get(token_indices))
+    _assert_close(result=result, reference=matrix.decompress()[reference_indices, :])
+    _assert_named_sharding(result.sharding, fake_mesh)
+    assert result.sharding == make_sharding((ShardingAxis.DATA, None))
+
+
+def test_full_precision_lookup_embedding_call_vmapped_over_tokens_matches_selected_rows_and_preserves_sharding(
+    fake_mesh: Mesh,
+) -> None:
+    matrix = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(_logical_weights())
+    token_indices = jax.device_put(jnp.array([1, 3], dtype=jnp.int32), make_sharding((ShardingAxis.DATA,)))
+
+    result = call_vmapped(
+        matrix.lookup_embedding,
+        token_indices,
+        keychain=Keychain.init(6),
+        added_sharding_axis=ShardingAxis.DATA,
+    )
+
+    reference_indices = jnp.asarray(jax.device_get(token_indices))
+    _assert_close(result=result, reference=matrix.decompress()[reference_indices, :])
+    _assert_named_sharding(result.sharding, fake_mesh)
+    assert result.sharding == make_sharding((ShardingAxis.DATA, None))
 
 
 def test_full_precision_lookup_embedding_rejects_output_input_layout(fake_mesh: Mesh) -> None:

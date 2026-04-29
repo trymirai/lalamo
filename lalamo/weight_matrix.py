@@ -20,7 +20,7 @@ from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.registry_abc import RegistryABC, make_registry_abc_converter
-from lalamo.utils.sharding import make_sharding, reshard_as
+from lalamo.utils.sharding import make_sharding, reshard_as, use_out_sharding
 
 __all__ = [
     "CompressionImplementation",
@@ -289,6 +289,7 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
     def decompress(self) -> Float[Array, "... out_channels in_channels"]:
         return self.weights
 
+    @use_out_sharding((None,))
     def lookup_embedding(
         self,
         index: int | Int[Array, ""],

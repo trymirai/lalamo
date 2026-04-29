@@ -61,6 +61,16 @@ def _apply_dummy_array_sharding(value: object, sharding: NamedSharding | None) -
     return value
 
 
+def _concretize_dummy_array_mesh(value: object, input_shardings: tuple[NamedSharding, ...]) -> object:
+    if not input_shardings or not is_dummy_array(value):
+        return value
+
+    sharding = sharding_of(value)
+    if not isinstance(sharding, NamedSharding):
+        return value
+    return with_sharding(value, NamedSharding(input_shardings[0].mesh, sharding.spec))
+
+
 def supports_dummy_arrays[**Params, ResultT](
     *,
     out_sharding_rule: OutShardingRule | None = None,
@@ -73,10 +83,14 @@ def supports_dummy_arrays[**Params, ResultT](
                 return function(*args, **kwargs)
 
             result = eqx.filter_eval_shape(function, *args, **kwargs)
+            input_shardings = _input_named_shardings(inputs)
             if out_sharding_rule is None:
-                return cast("ResultT", result)
+                return cast(
+                    "ResultT",
+                    jtu.tree_map(lambda leaf: _concretize_dummy_array_mesh(leaf, input_shardings), result),
+                )
 
-            sharding = out_sharding_rule(_input_named_shardings(inputs))
+            sharding = out_sharding_rule(input_shardings)
             return cast("ResultT", jtu.tree_map(lambda leaf: _apply_dummy_array_sharding(leaf, sharding), result))
 
         return wrapped
