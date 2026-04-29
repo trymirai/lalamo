@@ -1,7 +1,8 @@
 import importlib.metadata
 import json
 from collections import ChainMap
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from typing import NamedTuple, cast
 
@@ -185,11 +186,17 @@ def _combine_weight_shards(
     )
 
 
+@contextmanager
 def _load_checkpoint(
     model_spec: ModelSpec,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> Checkpoint:
-    return _combine_weight_shards(model_spec.origin.get_weights(progress_callback=progress_callback))
+) -> Iterator[Checkpoint]:
+    with ExitStack() as stack:
+        weight_shards = tuple(
+            stack.enter_context(weight_shard)
+            for weight_shard in model_spec.origin.get_weights(progress_callback=progress_callback)
+        )
+        yield _combine_weight_shards(weight_shards)
 
 
 def _load_foreign_config[ForeignConfigT: ForeignConfig](
@@ -240,8 +247,6 @@ def _import_language_model(
         dtype = foreign_decoder_config.default_dtype
 
     tokenizer, token_codec_config = _import_chat_codec(model_spec, progress_callback=progress_callback)
-    checkpoint = _load_checkpoint(model_spec, progress_callback)
-
     stop_token_ids = merge_token_ids(foreign_decoder_config.eos_token_ids)
 
     if isinstance(model_spec.configs.generation_config, GenerationConfig):
@@ -258,22 +263,23 @@ def _import_language_model(
     else:
         generation_config = GenerationConfig(stop_token_ids)
 
-    model_config = foreign_decoder_config.to_lalamo_config(
-        context_length=context_length,
-        metadata_dict=checkpoint.metadata,
-        token_codec_config=token_codec_config,
-        generation_config=generation_config,
-    )
-    return _load_model(
-        LanguageModel,
-        foreign_config=foreign_decoder_config,
-        model_config=model_config,
-        tokenizer=tokenizer,
-        dtype=dtype,
-        weights_dict=checkpoint.weights,
-        progress_callback=progress_callback,
-        implementation=implementation,
-    )
+    with _load_checkpoint(model_spec, progress_callback) as checkpoint:
+        model_config = foreign_decoder_config.to_lalamo_config(
+            context_length=context_length,
+            metadata_dict=checkpoint.metadata,
+            token_codec_config=token_codec_config,
+            generation_config=generation_config,
+        )
+        return _load_model(
+            LanguageModel,
+            foreign_config=foreign_decoder_config,
+            model_config=model_config,
+            tokenizer=tokenizer,
+            dtype=dtype,
+            weights_dict=checkpoint.weights,
+            progress_callback=progress_callback,
+            implementation=implementation,
+        )
 
 
 def _import_classifier(
@@ -289,23 +295,23 @@ def _import_classifier(
         dtype = foreign_classifier_config.default_dtype
 
     tokenizer, token_codec_config = _import_chat_codec(model_spec, progress_callback=progress_callback)
-    checkpoint = _load_checkpoint(model_spec, progress_callback)
     classifier_config = foreign_classifier_config.to_classifier_config(context_length)
     model_config = ClassifierModelConfig(
         token_codec_config=token_codec_config,
         classifier_config=classifier_config,
         output_labels=classifier_config.output_labels,
     )
-    return _load_model(
-        ClassifierModel,
-        foreign_config=foreign_classifier_config,
-        model_config=model_config,
-        tokenizer=tokenizer,
-        dtype=dtype,
-        weights_dict=checkpoint.weights,
-        progress_callback=progress_callback,
-        implementation=implementation,
-    )
+    with _load_checkpoint(model_spec, progress_callback) as checkpoint:
+        return _load_model(
+            ClassifierModel,
+            foreign_config=foreign_classifier_config,
+            model_config=model_config,
+            tokenizer=tokenizer,
+            dtype=dtype,
+            weights_dict=checkpoint.weights,
+            progress_callback=progress_callback,
+            implementation=implementation,
+        )
 
 
 def _import_tts_model(
@@ -344,8 +350,6 @@ def _import_tts_model(
             progress_callback=progress_callback,
         )
 
-    checkpoint = _load_checkpoint(model_spec, progress_callback)
-
     assert isinstance(model_spec.configs.chat_template, str)
     token_codec_config = TTSCodecConfig(
         prompt_template=model_spec.configs.chat_template,
@@ -354,16 +358,17 @@ def _import_tts_model(
         token_codec_config=token_codec_config,
         tts_config=foreign_tts_config.to_tts_config(context_length),
     )
-    return _load_model(
-        TTSGenerator,
-        foreign_config=foreign_tts_config,
-        model_config=model_config,
-        tokenizer=tokenizer,
-        dtype=dtype,
-        weights_dict=checkpoint.weights,
-        progress_callback=progress_callback,
-        implementation=implementation,
-    )
+    with _load_checkpoint(model_spec, progress_callback) as checkpoint:
+        return _load_model(
+            TTSGenerator,
+            foreign_config=foreign_tts_config,
+            model_config=model_config,
+            tokenizer=tokenizer,
+            dtype=dtype,
+            weights_dict=checkpoint.weights,
+            progress_callback=progress_callback,
+            implementation=implementation,
+        )
 
 
 def import_model(

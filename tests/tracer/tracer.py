@@ -12,11 +12,13 @@ import jax
 import jax.numpy as jnp
 import pytest
 import torch
+from jax.sharding import PartitionSpec, reshard
 from jaxtyping import Array
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
-from lalamo import ClassifierModel, LanguageModel, import_model
-from lalamo.model_import.common import ModelType
+from lalamo import ClassifierModel, LanguageModel
+from lalamo.model_import.common import import_model
+from lalamo.module import Keychain, ShardingAxis
 from lalamo.modules.classifier import ClassifierActivationTrace, ClassifierResult
 from lalamo.modules.decoder import (
     DecoderActivationTrace,
@@ -44,7 +46,7 @@ class DType(Enum):
 
     @property
     def mlx_dtype(self) -> "mx.Dtype":
-        return getattr(mx, self.value)  # type: ignore
+        return getattr(mx, self.value)
 
     @property
     def jax_dtype(self) -> jnp.dtype:
@@ -348,7 +350,6 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         )
 
     def match_activations(self, result: InferenceResult) -> None:
-        # assert isinstance(result, DecoderResult)
         assert result.activation_trace is not None
         for i, (label, rope_fn) in enumerate(self.rope_fns()):
             self.match_rope(result.activation_trace, i, rope_fn, label)
@@ -436,6 +437,7 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
         test_spec.token_stride,
         dtype=jnp.int32,
     )[None, :]
+    token_ids = reshard(token_ids, PartitionSpec(ShardingAxis.DATA, None))
 
     tracer = model_tracer.load(
         test_spec.model_repo,
@@ -445,31 +447,36 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
     model = None
     inference_results = None
     try:
-        model, model_metadata = import_model(
+        import_dtype = None
+        if test_spec.dtype is not None:
+            import_dtype = test_spec.dtype.jax_dtype
+        imported_model = import_model(
             test_spec.model_repo,
             context_length=test_spec.num_tokens * test_spec.token_stride,
-            precision=test_spec.dtype.jax_dtype if test_spec.dtype is not None else None,
+            dtype=import_dtype,
         )
+        model = imported_model.model
+        keychain = Keychain.init(0)
         with jax.disable_jit():
-            match model_metadata.model_type:
-                case ModelType.LANGUAGE_MODEL:
-                    assert isinstance(model, LanguageModel)
-                    err, inference_results = checkify_forward(model.model)(
-                        token_ids=token_ids,
-                        token_positions=token_positions,
-                        return_updated_state=True,
-                        return_activation_trace=True,
-                    )
-                    err.throw()
-
-                case ModelType.CLASSIFIER_MODEL:
-                    assert isinstance(model, ClassifierModel)
-                    err, inference_results = checkify_forward(model.model)(
-                        token_ids=token_ids,
-                        token_positions=token_positions,
-                        return_activation_trace=True,
-                    )
-                    err.throw()
+            if isinstance(model, LanguageModel):
+                err, inference_results = checkify_forward(model.decoder)(
+                    token_ids=token_ids,
+                    token_positions=token_positions,
+                    return_updated_state=True,
+                    return_activation_trace=True,
+                    keychain=keychain,
+                )
+                err.throw()
+            elif isinstance(model, ClassifierModel):
+                err, inference_results = checkify_forward(model.classifier)(
+                    token_ids=token_ids,
+                    token_positions=token_positions,
+                    return_activation_trace=True,
+                    keychain=keychain,
+                )
+                err.throw()
+            else:
+                raise TypeError(f"Unsupported model type for tracing: {type(model).__name__}")
 
         tracer.match_activations(inference_results)
     finally:

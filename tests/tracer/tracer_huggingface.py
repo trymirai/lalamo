@@ -2,7 +2,7 @@ import os
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from inspect import signature
-from typing import Any, Protocol, Self
+from typing import Any, Protocol, Self, Unpack, cast
 
 import jax
 import torch
@@ -26,7 +26,6 @@ from transformers.models.modernbert.modeling_modernbert import ModernBertEncoder
 from transformers.models.modernbert.modular_modernbert import ModernBertAttention, ModernBertMLP
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5GatedDeltaNet
 from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextDecoderLayer, Qwen3NextGatedDeltaNet
-from transformers.processing_utils import Unpack
 
 from lalamo.modules.classifier import ClassifierResult
 from lalamo.modules.decoder import DecoderResult
@@ -37,23 +36,29 @@ from tests.tracer.tracer import ActivationTrace, DType, InferenceResult, ModelTr
 FRACTION_OF_ALLOWED_VIOLATIONS = 0.03
 
 
-class HFRotaryEmbedding(Protocol):
+class TorchModuleWithDevice(Protocol):
+    def parameters(self) -> Iterable[nn.Parameter]: ...
+
+    def buffers(self) -> Iterable[Tensor]: ...
+
+
+class HFRotaryEmbedding(TorchModuleWithDevice, Protocol):
     def forward(self, x: Tensor, position_ids: Tensor) -> tuple[Tensor, Tensor]: ...
 
 
-class HFWordEmbedding(Protocol):
+class HFWordEmbedding(TorchModuleWithDevice, Protocol):
     def forward(self, input_ids: Tensor) -> Tensor: ...
 
 
-class HFMLP(Protocol):
+class HFMLP(TorchModuleWithDevice, Protocol):
     def forward(self, x: Tensor) -> Tensor: ...
 
 
-class HFRMSNorm(Protocol):
+class HFRMSNorm(TorchModuleWithDevice, Protocol):
     def forward(self, x: Tensor) -> Tensor: ...
 
 
-class HFAttention(Protocol):
+class HFAttention(TorchModuleWithDevice, Protocol):
     def forward(
         self,
         hidden_states: Tensor,
@@ -65,7 +70,7 @@ class HFAttention(Protocol):
     ) -> Tensor: ...
 
 
-class HFDeltaNetAttention(Protocol):
+class HFDeltaNetAttention(TorchModuleWithDevice, Protocol):
     def forward(
         self,
         hidden_states: Tensor,
@@ -75,7 +80,7 @@ class HFDeltaNetAttention(Protocol):
     ) -> Tensor: ...
 
 
-class HFPredictionHead(Protocol):
+class HFPredictionHead(TorchModuleWithDevice, Protocol):
     def forward(
         self,
         hidden_states: Tensor,
@@ -186,7 +191,7 @@ def _load_hf_model(
         device = torch.device("cpu")
 
     device_map: str | torch.device = device
-    max_memory: dict[str, str] | None = None
+    max_memory: dict[int | str, str] | None = None
     device_map_env = os.getenv("LALAMO_HF_DEVICE_MAP")
     is_qwen3_next = "qwen3_next" in model_repo.lower().replace("-", "_")
 
@@ -265,7 +270,7 @@ def _build_hf_attention_mask(
     )
 
 
-def _module_device(module: nn.Module, fallback_device: torch.device) -> torch.device:
+def _module_device(module: TorchModuleWithDevice, fallback_device: torch.device) -> torch.device:
     for param in module.parameters():
         if param.device.type == "meta":
             continue
@@ -396,7 +401,7 @@ class HFDecoderTracer(
                 position_embeddings[0].to(layer_device),
                 position_embeddings[1].to(layer_device),
             )
-        torch_outputs, *_ = layer.forward(
+        torch_outputs, *_ = cast("Any", layer).forward(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
         )
@@ -425,8 +430,8 @@ class HFDecoderTracer(
         layer: HFTransformerLayer | Gemma3DecoderLayer | Qwen3NextDecoderLayer,
     ) -> HFAttention | Gemma3Attention | HFDeltaNetAttention:
         if getattr(layer, "layer_type", None) == "linear_attention" and hasattr(layer, "linear_attn"):
-            return layer.linear_attn
-        return layer.self_attn
+            return cast("HFDeltaNetAttention", layer.linear_attn)
+        return cast("HFAttention | Gemma3Attention", layer.self_attn)
 
     def layer_mlp(self, layer: HFTransformerLayer | Gemma3DecoderLayer) -> HFMLP:
         return layer.mlp
@@ -520,8 +525,8 @@ class ModernBertTracer(
         return self.hf_model.classifier(x)
 
     def normalized_output(self, result: InferenceResult) -> Tensor:
-        assert result.activation_trace is not None
         assert isinstance(result, ClassifierResult)
+        assert result.activation_trace is not None
         return self.from_jax(result.activation_trace.output_pooling[None, ...])
 
     def _update_attention_mask(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor | None, torch.Tensor | None]:
@@ -617,7 +622,7 @@ class ModernBertTracer(
         ref_inputs = jax_to_torch(activation_trace.inputs).to(self.device)
         assert ref_inputs.ndim == 3
 
-        forward_outputs = ref_layer.forward(
+        forward_outputs = cast("Any", ref_layer).forward(
             hidden_states=ref_inputs,
             attention_mask=layer_attention_mask.to(ref_inputs.device) if layer_attention_mask is not None else None,
             position_embeddings=(ref_cosines.to(ref_inputs.device), ref_sines.to(ref_inputs.device)),

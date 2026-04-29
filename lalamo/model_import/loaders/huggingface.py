@@ -1094,6 +1094,18 @@ def _load_weight_matrix(
     return load_full_precision(matrix, weights_dict[path / "weight"])
 
 
+def _load_input_embedding_matrix(
+    matrix: WeightMatrix,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> WeightMatrix:
+    if _is_awq(weights_dict, path, None) or _is_mlx(weights_dict, path, None):
+        raise ValueError(f"Quantized input embeddings are not supported for {implementation} implementation.")
+    return load_full_precision(matrix, jnp.matrix_transpose(weights_dict[path / "weight"]))
+
+
 def load_tied_embedding(
     module: TiedEmbedding,
     weights_dict: Mapping[str, Array],
@@ -1101,7 +1113,7 @@ def load_tied_embedding(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> TiedEmbedding:
-    embedding = _load_weight_matrix(
+    embedding = _load_input_embedding_matrix(
         module.embedding,
         weights_dict,
         embedding_path,
@@ -1118,7 +1130,7 @@ def load_untied_embedding(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> UntiedEmbedding:
-    input_emb = _load_weight_matrix(
+    input_emb = _load_input_embedding_matrix(
         module.input_embedding,
         weights_dict,
         embedding_path,

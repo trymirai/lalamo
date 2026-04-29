@@ -3,7 +3,8 @@ import json
 import tarfile
 import tempfile
 from abc import abstractmethod
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -18,6 +19,7 @@ from lalamo.utils.lazy_collections import MapDictValues
 from lalamo.utils.registry_abc import RegistryABC
 
 type WeightShard = tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]
+type WeightShardContext = AbstractContextManager[WeightShard]
 
 
 class WeightFormat(StrEnum):
@@ -52,19 +54,21 @@ type StatusEvent = (
 )
 
 
-def load_torch_weights(path: Path, *, weights_only: bool = True) -> WeightShard:
+@contextmanager
+def load_torch_weights(path: Path, *, weights_only: bool = True) -> Iterator[WeightShard]:
     import torch  # noqa: PLC0415
 
     from lalamo.utils.torch_interop import torch_to_jax  # noqa: PLC0415
 
     torch_weights = torch.load(path, map_location="cpu", weights_only=weights_only)
-    return MapDictValues(torch_to_jax, torch_weights), {}
+    yield MapDictValues(torch_to_jax, torch_weights), {}
 
 
-def load_safetensors_weights(path: Path) -> WeightShard:
+@contextmanager
+def load_safetensors_weights(path: Path) -> Iterator[WeightShard]:
     with path.open("rb") as fd:
         metadata, weights = safe_read(fd)
-    return weights, metadata or {}
+        yield weights, metadata or {}
 
 
 class Origin(RegistryABC):
@@ -79,7 +83,7 @@ class Origin(RegistryABC):
     def get_weights(
         self,
         progress_callback: Callable[[StatusEvent], None] | None = None,
-    ) -> Sequence[WeightShard]: ...
+    ) -> Sequence[WeightShardContext]: ...
 
     @property
     @abstractmethod
@@ -130,7 +134,7 @@ class HuggingFaceOrigin(Origin):
     def get_weights(
         self,
         progress_callback: Callable[[StatusEvent], None] | None = None,
-    ) -> Sequence[WeightShard]:
+    ) -> Sequence[WeightShardContext]:
         paths = hf_resolve_weights(self.repo, self.weight_format.value, progress_callback)
         match self.weight_format:
             case WeightFormat.SAFETENSORS:
@@ -161,7 +165,7 @@ class NemoOrigin(Origin):
     def get_weights(
         self,
         progress_callback: Callable[[StatusEvent], None] | None = None,
-    ) -> Sequence[WeightShard]:
+    ) -> Sequence[WeightShardContext]:
         (nemo_path,) = hf_resolve_weights(self.repo, ".nemo", progress_callback)
         weight_paths, _ = self.extract_nemo_archive(nemo_path)
         return tuple(load_torch_weights(path) for path in weight_paths)
@@ -211,7 +215,7 @@ class LocalOrigin(Origin):
     def get_weights(
         self,
         progress_callback: Callable[[StatusEvent], None] | None = None,  # noqa: ARG002
-    ) -> Sequence[WeightShard]:
+    ) -> Sequence[WeightShardContext]:
         paths = tuple(Path(self.root) / weight_file for weight_file in self.weight_files)
         match self.weight_format:
             case WeightFormat.SAFETENSORS:

@@ -6,7 +6,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
 from lalamo.modules.token_mixers import AttentionConfig
 
 from .normalization import Normalization, NormalizationConfig
@@ -130,11 +130,19 @@ class Transformer(LalamoModule[TransformerConfig]):
         maybe_state = state or ([None] * len(self.layers))
 
         if self.global_rope is not None:
-            global_positional_embeddings = call_vmapped(self.global_rope, token_positions)
+            global_positional_embeddings = call_vmapped(
+                self.global_rope,
+                token_positions,
+                added_sharding_axis=ShardingAxis.DATA,
+            )
         else:
             global_positional_embeddings = None
         if self.local_rope is not None:
-            local_positional_embeddings = call_vmapped(self.local_rope, token_positions)
+            local_positional_embeddings = call_vmapped(
+                self.local_rope,
+                token_positions,
+                added_sharding_axis=ShardingAxis.DATA,
+            )
         else:
             local_positional_embeddings = global_positional_embeddings
 

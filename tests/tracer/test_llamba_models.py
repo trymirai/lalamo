@@ -1,4 +1,3 @@
-import importlib.util
 import unittest
 
 import pytest
@@ -9,10 +8,12 @@ from tests.conftest import filter_specs
 from tests.model_test_tiers import ModelTier
 from tests.tracer.tracer import DType, ModelTestSpec, _test_model
 
-CMX_AVAILABLE = importlib.util.find_spec("cartesia_mlx")
-
-if CMX_AVAILABLE:
+try:
     from tests.tracer.tracer_llamba import LlambaDecoderTracer
+except ImportError:
+    LlambaDecoderTracer = None
+
+pytestmark = pytest.mark.usefixtures("tracer_mesh")
 
 MODEL_LIST = [
     ModelTestSpec(spec.repo, DType.FLOAT32, token_stride=1)
@@ -21,7 +22,8 @@ MODEL_LIST = [
 ]
 
 
-@unittest.skipUnless(CMX_AVAILABLE, "requires mlx")
+@unittest.skipUnless(LlambaDecoderTracer is not None, "requires cartesia_mlx")
 @pytest.mark.parametrize("test_spec", MODEL_LIST, ids=[m.model_repo for m in MODEL_LIST])
 def test_llamba_models(test_spec: ModelTestSpec) -> None:
-    _test_model(test_spec, LlambaDecoderTracer)  # type: ignore
+    assert LlambaDecoderTracer is not None
+    _test_model(test_spec, LlambaDecoderTracer)

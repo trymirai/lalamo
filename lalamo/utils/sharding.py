@@ -23,6 +23,8 @@ def make_sharding(partition: tuple[ShardingAxis | None, ...] | None) -> NamedSha
         mesh = get_mesh()
     except ValueError:
         mesh = get_abstract_mesh()
+    if mesh.empty:
+        return None
     return NamedSharding(mesh, PartitionSpec(*partition))
 
 

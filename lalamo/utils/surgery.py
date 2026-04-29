@@ -164,7 +164,7 @@ def load_as_at[TreeT: PyTree](
         for old_value, new_value in zip(old_values, new_values, strict=True)
     )
 
-    return eqx.tree_at(selector, tree, loaded_new_values)
+    return eqx.tree_at(selector, tree, loaded_new_values, is_leaf=lambda value: value is None)
 
 
 def map_nodes_of_type[

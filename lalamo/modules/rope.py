@@ -24,7 +24,7 @@ from jaxtyping import Array, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import LalamoConfig, LalamoModule, ShardingAxis, field
+from lalamo.module import LalamoConfig, LalamoModule, field
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.utils.sharding import use_out_sharding
 
@@ -56,7 +56,6 @@ class PositionalEmbeddings(Exportable, eqx.Module):
         x2 = heads[..., half_dim : self.head_dim]
         return jnp.concatenate((-x2, x1), axis=-1)
 
-    @use_out_sharding((ShardingAxis.DATA, None))
     def apply(self, heads: Float[Array, "tokens head_channels"]) -> Float[Array, "tokens head_channels"]:
         head_dim = self.head_dim
         if heads.shape[-1] < head_dim:
@@ -133,7 +132,7 @@ class RoPE(LalamoModule[RoPEConfig]):
         return result
 
     @eqx.filter_jit
-    @use_out_sharding((ShardingAxis.DATA, None))
+    @use_out_sharding((None, None))
     def __call__(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
         return PositionalEmbeddings(
             cosines=self.cosines[timesteps],

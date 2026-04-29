@@ -3,7 +3,7 @@ from abc import abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar, Generic, Self, TypeVar
+from typing import ClassVar, Generic, Literal, Self, TypeVar, overload
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -158,14 +158,35 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
     @abstractmethod
     def decompress(self) -> Float[Array, "... out_channels in_channels"]: ...
 
-    @abstractmethod
+    @overload
     def dot(
         self,
         vector: Float[Array, " in_channels"],
         *,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: Literal[False] = False,
     ) -> Float[Array, "... out_channels"]: ...
+
+    @overload
+    def dot(
+        self,
+        vector: Float[Array, " out_channels"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: Literal[True],
+    ) -> Float[Array, "... in_channels"]: ...
+
+    @abstractmethod
+    def dot(
+        self,
+        vector: Float[Array, " channels"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: bool = False,
+    ) -> Float[Array, "... channels"]: ...
 
     def export(self) -> ExportResults:
         arrays, metadata = super().export()
@@ -252,6 +273,11 @@ class Layout(StrEnum):
             return vector @ weights
         return weights @ vector
 
+    def transpose(self) -> "Layout":
+        if self == Layout.INPUT_OUTPUT:
+            return Layout.OUTPUT_INPUT
+        return Layout.INPUT_OUTPUT
+
 
 @dataclass(frozen=True)
 class FullPrecisionSpec(WeightMatrixSpec):
@@ -321,16 +347,40 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
             return result
         raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
 
+    @overload
     def dot(
         self,
         vector: Float[Array, " in_channels"],
         *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: Literal[False] = False,
+    ) -> Float[Array, "... out_channels"]: ...
+
+    @overload
+    def dot(
+        self,
+        vector: Float[Array, " out_channels"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: Literal[True],
+    ) -> Float[Array, "... in_channels"]: ...
+
+    def dot(
+        self,
+        vector: Float[Array, " channels"],
+        *,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
-    ) -> Float[Array, "... out_channels"]:
+        transposed: bool = False,
+    ) -> Float[Array, "... channels"]:
         self._raise_if_batched()
         weights = self.weights.astype(vector.dtype)
+        layout = self.spec.layout
+        if transposed:
+            layout = layout.transpose()
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            result = self.spec.layout.matmul(weights, vector)
+            result = layout.matmul(weights, vector)
 
         return reshard_as(result, vector)

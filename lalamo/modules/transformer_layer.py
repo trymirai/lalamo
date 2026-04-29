@@ -8,7 +8,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
 
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
@@ -163,6 +163,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         mixer_outputs, updated_state = call_vmapped(
             call_mixer,
             (normalized_mixer_inputs, positional_embeddings, state, lengths_without_padding),
+            added_sharding_axis=ShardingAxis.DATA,
         )
         if self.post_mixer_norm is not None:
             normalized_mixer_outputs = call_vmapped_twice(self.post_mixer_norm, mixer_outputs)

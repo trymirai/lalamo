@@ -4,6 +4,7 @@ from enum import IntEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
+from lalamo.model_import.model_spec import ModelSpec
 from tests.helpers import unsi
 
 if TYPE_CHECKING:

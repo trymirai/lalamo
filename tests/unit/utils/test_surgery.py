@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Self
+from typing import Literal, Self, overload
 
 import equinox as eqx
 import jax
@@ -48,14 +48,38 @@ class SurgeryWeightMatrix(WeightMatrix[SurgeryWeightMatrixSpec]):
     def decompress(self) -> Float[Array, "out_channels in_channels"]:
         return self.weights
 
+    @overload
     def dot(
         self,
         vector: Float[Array, " in_channels"],
         *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: Literal[False] = False,
+    ) -> Float[Array, " out_channels"]: ...
+
+    @overload
+    def dot(
+        self,
+        vector: Float[Array, " out_channels"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: Literal[True],
+    ) -> Float[Array, " in_channels"]: ...
+
+    def dot(
+        self,
+        vector: Float[Array, " channels"],
+        *,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
-    ) -> Float[Array, " out_channels"]:
-        return self.weights @ vector
+        transposed: bool = False,
+    ) -> Float[Array, " channels"]:
+        weights = self.weights
+        if transposed:
+            weights = weights.T
+        return weights @ vector
 
 
 class TemplateWeightMatrix(SurgeryWeightMatrix):

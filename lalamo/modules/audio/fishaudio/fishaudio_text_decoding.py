@@ -58,18 +58,18 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfig):
     def init(self, initializer: Initializer) -> "FishAudioTextDecoder":
         embeddings_slow = self.slow_embeddings_config.init(
             initializer,
-            vocab_size=self.vocab_size,
             model_dim=self.slow_model_dim,
+            vocab_size=self.vocab_size,
         )
         embeddings_fast = self.fast_embeddings_config.init(
             initializer,
-            vocab_size=self.codebook_size,
             model_dim=self.fast_model_dim,
+            vocab_size=self.codebook_size,
         )
         codebook_embeddings = self.codebook_embeddings_config.init(
             initializer,
-            vocab_size=self.codebook_size * self.num_codebooks,
             model_dim=self.slow_model_dim,
+            vocab_size=self.codebook_size * self.num_codebooks,
         )
         if self.fast_model_projection_config is not None:
             fast_model_projection = self.fast_model_projection_config.init(

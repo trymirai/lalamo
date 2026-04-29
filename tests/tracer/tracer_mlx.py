@@ -9,8 +9,8 @@ from mlx_lm.tokenizer_utils import TokenizerWrapper
 from mlx_lm.utils import load
 
 from lalamo.modules.decoder import DecoderResult
-from lalamo.modules.mlx_interop import jax_to_mlx, mlx_to_jax
-from tests.tracer.tracer import DType, InferenceResult, ModelTracer
+from lalamo.utils.mlx_interop import jax_to_mlx, mlx_to_jax
+from tests.tracer.tracer import ActivationTrace, DType, InferenceResult, ModelTracer
 
 
 def _build_mlx_attention_mask(hidden_states: mx.array) -> mx.array:
@@ -53,8 +53,7 @@ class MLXDecoderTracer(ModelTracer[mx.array, nn.Module, nn.RMSNorm, nn.Module, n
 
         attention_mask = _build_mlx_attention_mask(hidden_states)
 
-        attention_output = attention(hidden_states, attention_mask)
-        return attention_output
+        return attention(hidden_states, attention_mask)
 
     def mlp(self, mlp: nn.Module, x: mx.array) -> mx.array:
         return mlp(x)

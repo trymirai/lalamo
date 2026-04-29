@@ -2,14 +2,14 @@ import unittest
 
 import pytest
 
-from lalamo.model_import.model_configs import HFLFM2Config, HFLlambaConfig
-from lalamo.model_import.model_specs.common import ModelType
-from tests.conftest import filter_specs
-from tests.model_test_tiers import ModelTier
-from tests.tracer.tracer import MLX_AVAILABLE, DType, ModelTestSpec, _test_model
+from tests.tracer.tracer import DType, ModelTestSpec, _test_model
 
-if MLX_AVAILABLE:
+try:
     from tests.tracer.tracer_mlx import MLXDecoderTracer
+except ImportError:
+    MLXDecoderTracer = None
+
+pytestmark = pytest.mark.usefixtures("tracer_mesh")
 
 # token_stride=1 is required because mlx doesn't accept token positions
 MODEL_LIST = [
@@ -19,7 +19,8 @@ MODEL_LIST = [
 ]
 
 
-@unittest.skipUnless(MLX_AVAILABLE, "requires mlx")
+@unittest.skipUnless(MLXDecoderTracer is not None, "requires mlx")
 @pytest.mark.parametrize("test_spec", MODEL_LIST, ids=[m.model_repo for m in MODEL_LIST])
 def test_mlx_model(test_spec: ModelTestSpec) -> None:
-    _test_model(test_spec, MLXDecoderTracer)  # type: ignore
+    assert MLXDecoderTracer is not None
+    _test_model(test_spec, MLXDecoderTracer)

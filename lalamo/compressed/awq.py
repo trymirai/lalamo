@@ -2,7 +2,7 @@ from abc import abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Literal, NamedTuple, Self
+from typing import Literal, NamedTuple, Self, overload
 
 import jax.numpy as jnp
 from jax.lax import stop_gradient
@@ -365,10 +365,10 @@ class AWQMatrixForTraining(AWQMatrix):
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
-        weights: Float[Array, "in_channels out_channels"] = _awq_quantize(
-            self.weights.astype(dtype),
-            self.scales.astype(dtype),
-            self.zero_points.astype(dtype),
+        return _awq_quantize(
+            self.weights[index, :].astype(dtype),
+            self.scales[index, :].astype(dtype),
+            self.zero_points[index, :].astype(dtype),
             group_size=self.spec.group_size,
             round_fn=partial(
                 round_to_unsigned_grid,
@@ -377,15 +377,35 @@ class AWQMatrixForTraining(AWQMatrix):
                 gradient_estimator=forward_pass_config.gradient_estimator,
             ),
         )
-        return self.spec.layout.to_output_input(weights)[index, :]
 
+    @overload
     def dot(
         self,
         vector: Float[Array, " in_channels"],
         *,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
-    ) -> Float[Array, "... out_channels"]:
+        transposed: Literal[False] = False,
+    ) -> Float[Array, "... out_channels"]: ...
+
+    @overload
+    def dot(
+        self,
+        vector: Float[Array, " out_channels"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: Literal[True],
+    ) -> Float[Array, "... in_channels"]: ...
+
+    def dot(
+        self,
+        vector: Float[Array, " channels"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: bool = False,
+    ) -> Float[Array, "... channels"]:
         self._raise_if_batched()
         dequantized_weights = _awq_quantize(
             self.weights.astype(vector.dtype),
@@ -399,8 +419,11 @@ class AWQMatrixForTraining(AWQMatrix):
                 gradient_estimator=forward_pass_config.gradient_estimator,
             ),
         )
+        layout = self.spec.layout
+        if transposed:
+            layout = layout.transpose()
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            result = self.spec.layout.matmul(dequantized_weights, vector)
+            result = layout.matmul(dequantized_weights, vector)
 
         return reshard_as(result, vector)
 
@@ -543,22 +566,42 @@ class AWQMatrixForInference(AWQMatrix):
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
-        weights: Float[Array, "in_channels out_channels"] = _awq_unpack_master_weights(
-            self.packed_weights,
-            self.scales.astype(dtype),
-            self.packed_zero_points,
+        return _awq_unpack_master_weights(
+            self.packed_weights[index, :],
+            self.scales[index, :].astype(dtype),
+            self.packed_zero_points[index, :],
             self.spec.group_size,
             self.spec.bits,
         )
-        return self.spec.layout.to_output_input(weights)[index, :]
 
+    @overload
     def dot(
         self,
         vector: Float[Array, " in_channels"],
         *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: Literal[False] = False,
+    ) -> Float[Array, "... out_channels"]: ...
+
+    @overload
+    def dot(
+        self,
+        vector: Float[Array, " out_channels"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: Literal[True],
+    ) -> Float[Array, "... in_channels"]: ...
+
+    def dot(
+        self,
+        vector: Float[Array, " channels"],
+        *,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
-    ) -> Float[Array, "... out_channels"]:
+        transposed: bool = False,
+    ) -> Float[Array, "... channels"]:
         self._raise_if_batched()
         weights = _awq_unpack_master_weights(
             self.packed_weights,
@@ -567,7 +610,10 @@ class AWQMatrixForInference(AWQMatrix):
             self.spec.group_size,
             self.spec.bits,
         )
+        layout = self.spec.layout
+        if transposed:
+            layout = layout.transpose()
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            result = self.spec.layout.matmul(weights, vector)
+            result = layout.matmul(weights, vector)
 
         return reshard_as(result, vector)

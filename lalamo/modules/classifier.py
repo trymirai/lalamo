@@ -157,8 +157,8 @@ class ClassifierConfig(LalamoConfig):
     def init(self, initializer: Initializer) -> "Classifier":
         embedding = self.embedding_config.init(
             initializer,
-            vocab_size=self.vocab_size,
             model_dim=self.model_dim,
+            vocab_size=self.vocab_size,
         )
         embedding_norm = self.embedding_norm_config.init(initializer, self.model_dim)
         transformer = self.transformer_config.init(initializer)

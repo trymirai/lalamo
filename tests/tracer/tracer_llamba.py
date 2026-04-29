@@ -9,8 +9,8 @@ from jaxtyping import Array
 from mlx import nn
 
 from lalamo.modules.decoder import DecoderResult
-from lalamo.modules.mlx_interop import jax_to_mlx, mlx_to_jax
-from tests.tracer.tracer import DType, InferenceResult, ModelTracer
+from lalamo.utils.mlx_interop import jax_to_mlx, mlx_to_jax
+from tests.tracer.tracer import ActivationTrace, DType, InferenceResult, ModelTracer
 
 
 @dataclass(frozen=True)
@@ -57,9 +57,7 @@ class LlambaDecoderTracer(ModelTracer[mx.array, tuple[nn.Module, nn.Module], nn.
         assert position_embeddings is None
 
         ssd_output, _ssd_state = layer[0](hidden_states)
-        mlp_output = layer[1](ssd_output)
-
-        return mlp_output
+        return layer[1](ssd_output)
 
     def layer_pre_attention_norm(self, layer: tuple[nn.Module, nn.Module]) -> nn.RMSNorm:
         assert layer[0].norm is not None

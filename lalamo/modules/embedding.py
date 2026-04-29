@@ -33,8 +33,8 @@ class EmbeddingConfig(LalamoConfig, RegistryABC):
     def init(
         self,
         initializer: Initializer,
-        vocab_size: int,
         model_dim: int,
+        vocab_size: int,
     ) -> "EmbeddingBase": ...
 
 
@@ -63,6 +63,19 @@ class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
     @abstractmethod
     def model_dim(self) -> int: ...
 
+    def _readout_logits(
+        self,
+        x: Float[Array, " channels"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig,
+    ) -> Float[Array, " vocabulary"]:
+        return self.readout_matrix.dot(
+            x,
+            keychain=keychain,
+            forward_pass_config=forward_pass_config,
+        )
+
     @eqx.filter_jit
     def embed(
         self,
@@ -89,7 +102,7 @@ class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
         keychain: Keychain,
         forward_pass_config: EmbeddingForwardPassConfig = EmbeddingForwardPassConfig(),
     ) -> Float[Array, " vocabulary"]:
-        logits = self.readout_matrix.dot(
+        logits = self._readout_logits(
             x,
             keychain=keychain,
             forward_pass_config=forward_pass_config.readout,
@@ -105,10 +118,10 @@ class TiedEmbeddingConfig(EmbeddingConfig):
     def init(
         self,
         initializer: Initializer,
-        vocab_size: int,
         model_dim: int,
+        vocab_size: int,
     ) -> "TiedEmbedding":
-        embedding = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).init(initializer, (), vocab_size, model_dim)
+        embedding = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).init(initializer, (), model_dim, vocab_size)
         return TiedEmbedding(config=self, embedding=embedding)
 
 
@@ -125,13 +138,27 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
 
     @property
     def model_dim(self) -> int:
-        model_dim, _ = self.embedding.shape
+        _, model_dim = self.embedding.shape
         return model_dim
 
     @property
     def vocab_size(self) -> int:
-        _, vocab_size = self.embedding.shape
+        vocab_size, _ = self.embedding.shape
         return vocab_size
+
+    def _readout_logits(
+        self,
+        x: Float[Array, " channels"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig,
+    ) -> Float[Array, " vocabulary"]:
+        return self.embedding.dot(
+            x,
+            keychain=keychain,
+            forward_pass_config=forward_pass_config,
+            transposed=True,
+        )
 
 
 @dataclass(frozen=True)
@@ -139,10 +166,10 @@ class UntiedEmbeddingConfig(EmbeddingConfig):
     def init(
         self,
         initializer: Initializer,
-        vocab_size: int,
         model_dim: int,
+        vocab_size: int,
     ) -> "UntiedEmbedding":
-        input_embedding = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).init(initializer, (), vocab_size, model_dim)
+        input_embedding = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).init(initializer, (), model_dim, vocab_size)
         output_embedding = FullPrecisionSpec().init(initializer, (), vocab_size, model_dim)
         return UntiedEmbedding(
             config=self,
@@ -165,10 +192,10 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
 
     @property
     def model_dim(self) -> int:
-        model_dim, _ = self.input_embedding.shape
+        _, model_dim = self.input_embedding.shape
         return model_dim
 
     @property
     def vocab_size(self) -> int:
-        _, vocab_size = self.input_embedding.shape
+        vocab_size, _ = self.input_embedding.shape
         return vocab_size

@@ -7,11 +7,26 @@ from tests.model_test_tiers import ModelTier
 from tests.tracer.tracer import DType, ModelTestSpec, _test_model
 from tests.tracer.tracer_huggingface import HFDecoderTracer, ModernBertTracer
 
+pytestmark = pytest.mark.usefixtures("tracer_mesh")
+
 MODEL_LIST = [
-    ModelTestSpec(spec.repo, DType.FLOAT32)
-    for spec in filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.CORE)
-    if spec.config_type not in (HFLFM2Config, HFLlambaConfig) and spec.quantization is None
+    ModelTestSpec("Qwen/Qwen2.5-0.5B-Instruct", DType.FLOAT32),
+    ModelTestSpec("google/gemma-3-1b-it", DType.FLOAT32),
+    ModelTestSpec("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", DType.FLOAT32),
+    ModelTestSpec("meta-llama/Llama-3.2-1B-Instruct", DType.FLOAT32),
+    ModelTestSpec("HuggingFaceTB/SmolLM3-3B", DType.FLOAT32, minimum_memory_for_trace=unsi("32 G")),
+    ModelTestSpec("Qwen/Qwen3-0.6B", DType.FLOAT32),
+    ModelTestSpec("Qwen/Qwen3.5-0.8B", DType.FLOAT32),
+    ModelTestSpec("Qwen/Qwen3-Next-80B-A3B-Instruct", DType.FLOAT32, minimum_memory_for_trace=unsi("512 G")),
 ]
+
+MODEL_LIST += (
+    [
+        ModelTestSpec("openai/gpt-oss-20b", DType.FLOAT16, minimum_memory_for_trace=unsi("64 G")),
+    ]
+    if torch.cuda.is_available()
+    else []
+)
 
 CLASSIFIER_MODEL_LIST = [
     ModelTestSpec(spec.repo, DType.FLOAT32)

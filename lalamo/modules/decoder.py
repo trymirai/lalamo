@@ -7,6 +7,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
+from lalamo.utils.sharding import reshard_as
 
 from .embedding import EmbeddingBase, EmbeddingConfig, EmbeddingForwardPassConfig
 from .rope import PositionalEmbeddings
@@ -66,8 +67,8 @@ class DecoderConfig(LalamoConfig):
     def init(self, initializer: Initializer) -> "Decoder":
         embedding = self.embedding_config.init(
             initializer,
-            vocab_size=self.vocab_size,
             model_dim=self.transformer_config.model_dim,
+            vocab_size=self.vocab_size,
         )
         transformer = self.transformer_config.init(initializer)
 
@@ -111,6 +112,7 @@ class Decoder(LalamoModule[DecoderConfig]):
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
             )
+        token_positions = reshard_as(token_positions, token_ids)
         embedding_keychain, transformer_keychain, readout_keychain = keychain.split(3)
         inner_features = call_vmapped_twice(
             self.embedding.embed,
@@ -143,6 +145,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             transformer_result.outputs,
             forward_pass_config=forward_pass_config.embedding,
             keychain=readout_keychain,
+            added_sharding_axes=(ShardingAxis.DATA, None),
         )
 
         if return_activation_trace:

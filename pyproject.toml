@@ -64,6 +64,7 @@ dev = [
     "transformers>=5.2.0",
     "twine>=6.1.0",
     "types-pyyaml>=6.0.12.20260408",
+    "types-requests>=2.33.0.20260408",
 ]
 
 [project.scripts]

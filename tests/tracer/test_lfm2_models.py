@@ -7,10 +7,12 @@ from tests.model_test_tiers import ModelTier
 from tests.tracer.tracer import DType, ModelTestSpec, _test_model
 from tests.tracer.tracer_lfm2 import LFM2DecoderTracer
 
+pytestmark = pytest.mark.usefixtures("tracer_mesh")
+
 MODEL_LIST = [
-    ModelTestSpec(spec.repo, DType.FLOAT32)
-    for spec in filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.CORE)
-    if spec.config_type is HFLFM2Config and spec.quantization is None
+    ModelTestSpec(model.origin.description, DType.FLOAT32)
+    for model in LFM2_MODELS
+    if model.origin.description.startswith("LiquidAI/")
 ]
 
 

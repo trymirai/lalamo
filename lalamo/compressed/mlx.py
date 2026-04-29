@@ -2,7 +2,7 @@ from abc import abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Literal, NamedTuple, Self
+from typing import Literal, NamedTuple, Self, overload
 
 import jax.numpy as jnp
 from jax.lax import stop_gradient
@@ -286,10 +286,10 @@ class MLXMatrixForTraining(MLXMatrix):
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
-        weights: Float[Array, "in_channels out_channels"] = _mlx_quantize(
-            self.weights.astype(dtype),
-            self.scales.astype(dtype),
-            self.biases.astype(dtype),
+        return _mlx_quantize(
+            self.weights[index, :].astype(dtype),
+            self.scales[index, :].astype(dtype),
+            self.biases[index, :].astype(dtype),
             group_size=self.spec.group_size,
             round_fn=partial(
                 round_to_unsigned_grid,
@@ -298,15 +298,35 @@ class MLXMatrixForTraining(MLXMatrix):
                 gradient_estimator=forward_pass_config.gradient_estimator,
             ),
         )
-        return self.spec.layout.to_output_input(weights)[index, :]
 
+    @overload
     def dot(
         self,
         vector: Float[Array, " in_channels"],
         *,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
-    ) -> Float[Array, "... out_channels"]:
+        transposed: Literal[False] = False,
+    ) -> Float[Array, "... out_channels"]: ...
+
+    @overload
+    def dot(
+        self,
+        vector: Float[Array, " out_channels"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: Literal[True],
+    ) -> Float[Array, "... in_channels"]: ...
+
+    def dot(
+        self,
+        vector: Float[Array, " channels"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: bool = False,
+    ) -> Float[Array, "... channels"]:
         self._raise_if_batched()
         dequantized_weights = _mlx_quantize(
             self.weights.astype(vector.dtype),
@@ -320,8 +340,11 @@ class MLXMatrixForTraining(MLXMatrix):
                 gradient_estimator=forward_pass_config.gradient_estimator,
             ),
         )
+        layout = self.spec.layout
+        if transposed:
+            layout = layout.transpose()
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            result = self.spec.layout.matmul(dequantized_weights, vector)
+            result = layout.matmul(dequantized_weights, vector)
 
         return reshard_as(result, vector)
 
@@ -452,22 +475,42 @@ class MLXMatrixForInference(MLXMatrix):
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
-        weights: Float[Array, "in_channels out_channels"] = _mlx_unpack_master_weights(
-            self.packed_weights,
-            self.scales.astype(dtype),
-            self.biases.astype(dtype),
+        return _mlx_unpack_master_weights(
+            self.packed_weights[index, :],
+            self.scales[index, :].astype(dtype),
+            self.biases[index, :].astype(dtype),
             self.spec.group_size,
             self.spec.bits,
         )
-        return self.spec.layout.to_output_input(weights)[index, :]
 
+    @overload
     def dot(
         self,
         vector: Float[Array, " in_channels"],
         *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: Literal[False] = False,
+    ) -> Float[Array, "... out_channels"]: ...
+
+    @overload
+    def dot(
+        self,
+        vector: Float[Array, " out_channels"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: Literal[True],
+    ) -> Float[Array, "... in_channels"]: ...
+
+    def dot(
+        self,
+        vector: Float[Array, " channels"],
+        *,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
-    ) -> Float[Array, "... out_channels"]:
+        transposed: bool = False,
+    ) -> Float[Array, "... channels"]:
         self._raise_if_batched()
         weights = _mlx_unpack_master_weights(
             self.packed_weights,
@@ -476,7 +519,10 @@ class MLXMatrixForInference(MLXMatrix):
             self.spec.group_size,
             self.spec.bits,
         )
+        layout = self.spec.layout
+        if transposed:
+            layout = layout.transpose()
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            result = self.spec.layout.matmul(weights, vector)
+            result = layout.matmul(weights, vector)
 
         return reshard_as(result, vector)
