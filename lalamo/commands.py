@@ -39,7 +39,7 @@ from lalamo.models.batch_scheduler import (
 )
 from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
 from lalamo.models.lm_helpers import estimate_batchsize_for_memory_budget
-from lalamo.modules import config_converter
+from lalamo.modules import MLPForwardPassConfig, config_converter
 from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.safetensors import safe_write
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
@@ -366,7 +366,9 @@ def estimate_batchsize(
 
         results = scheduler.generate_tokens_many(
             [probe_sequence] * batchsize,
+            generation_config=GenerationConfig(),
             inference_config=dataclasses.replace(inference_config, batch_size=batchsize),
+            forward_pass_config=MLPForwardPassConfig(),
             fast_peak_memory=True,
         )
         first_result = next(results, None)

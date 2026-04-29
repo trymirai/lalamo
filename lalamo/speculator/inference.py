@@ -7,9 +7,10 @@ import numpy as np
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.data.utils import get_prefixes_ending_in_user_message
 from lalamo.message_processor import Message
-from lalamo.models import GenerationTraceConfig, LanguageModel
+from lalamo.models import GenerationConfig, GenerationTraceConfig, LanguageModel
 from lalamo.models.batch_scheduler import FixedBatchScheduler
 from lalamo.models.common import InferenceConfig
+from lalamo.modules import MLPForwardPassConfig
 
 
 class CollectTracesEvent(NamedTuple):
@@ -49,7 +50,9 @@ def inference_collect_traces(
 
     for idx, generated in scheduler.generate_tokens_many(
         filtered_prefixes,
+        generation_config=GenerationConfig(),
         inference_config=config,
+        forward_pass_config=MLPForwardPassConfig(),
         generation_trace_config=trace_config,
     ):
         token_ids = generated.token_ids.tolist()

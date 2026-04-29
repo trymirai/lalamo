@@ -227,6 +227,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             is_last_token_inside=is_last_token_inside,
         )
 
+    @eqx.filter_jit
     def _prefill(
         self,
         token_ids: Int[Array, "batch tokens"],
@@ -315,7 +316,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         if max_output_length < 1:
             raise ValueError("max_output_length must be at least 1.")
 
-        prefill_results = eqx.filter_jit(self._prefill)(
+        prefill_results = self._prefill(
             prompt_token_ids,
             sequence_length + max_output_length,
             prompt_lengths_without_padding,
@@ -637,7 +638,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         padded_token_ids = jnp.zeros((padded_input_length,), dtype=jnp.int32)
         padded_token_ids = padded_token_ids.at[:input_length].set(prompt_token_ids)
 
-        prefill_results = eqx.filter_jit(self._prefill)(
+        prefill_results = self._prefill(
             padded_token_ids[None, :],
             padded_input_length + max_output_length,
             lengths_without_padding=jnp.array([input_length], dtype=jnp.int32),

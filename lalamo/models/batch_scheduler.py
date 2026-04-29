@@ -15,13 +15,11 @@ from lalamo.common import get_usable_memory_from_bytes
 from lalamo.message_processor import AssistantMessage, Message
 from lalamo.modules import (
     ForwardPassMode,
+    MLPForwardPassConfig,
     ShardingConfig,
     State,
     get_current_sharding_config,
-    DecoderForwardPassConfig,
-    MLPForwardPassConfig,
 )
-from lalamo.modules.common import use_sharding
 from lalamo.sampling import SamplingPolicy
 
 from .common import (
@@ -125,11 +123,12 @@ class PrefillSource:
         mask = np.zeros(self.prefill_batch_size, dtype=bool)
         mask[:num_designated] = True
 
-        prefilled_state_with_info: PrefillResults = model._prefill(  # noqa: PLF001
+        prefilled_state_with_info: PrefillResults = model._prefill(  # noqa: SLF001
             token_ids=jnp.array(padded_sequences),
             lengths_without_padding=jnp.array(lengths_without_padding),
             state_capacity=self.state_capacity,
             forward_pass_config=self.forward_pass_config,
+            chunk_size=128,
         )
 
         batch = PrefillBatch(
@@ -229,7 +228,18 @@ class BlockContinuousState(eqx.Module):
         stopped_idx_np = np.flatnonzero(np.logical_not(active_mask))
         pad = stopped_idx_np[: candidate_num_lines - active_count]
         gather_idx = jnp.asarray(np.concatenate([active_idx_np, pad]).astype(np.int32))
-        return jax.tree.map(lambda x: x[gather_idx], self)
+        # Donate the old (larger) state so its GPU buffers can be freed in-place
+        # by XLA as the gather writes into the new (smaller) buffers, instead of
+        # both states briefly coexisting on device.
+        return _halve_state(self, gather_idx)
+
+
+@eqx.filter_jit(donate="all")
+def _halve_state(
+    state: BlockContinuousState,
+    gather_idx: Int[Array, " new_num_lines"],
+) -> BlockContinuousState:
+    return jax.tree.map(lambda x: x[gather_idx], state)
 
 
 class BlockContinuousDecoder(eqx.Module):
