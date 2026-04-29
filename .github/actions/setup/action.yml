@@ -25,7 +25,9 @@ runs:
 
     - uses: astral-sh/setup-uv@v7
       with:
-        enable-cache: ${{ inputs.install-dependencies == 'true' }}
+        enable-cache: true
+        cache-suffix: ${{ inputs.dev == 'true' && 'dev' || 'runtime' }}-${{ inputs.cuda == 'true' && 'cuda' || 'cpu' }}
+        prune-cache: false
 
     - run: uv sync --frozen ${{ inputs.dev == 'true' && '--dev' || '--no-dev' }} ${{ inputs.cuda == 'true' && '--extra cuda' || '' }}
       if: ${{ inputs.install-dependencies == 'true' }}
