@@ -18,26 +18,11 @@ from lalamo.audio.tts_message_processor import (
     TTSMessageProcessorConfig,
 )
 from lalamo.modules import TTSModel, config_converter
-from lalamo.modules.audio.fishaudio.fishaudio_consts import (
-    DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
-    DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE,
-    DEFAULT_FISH_AUDIO_SAMPLING_TOP_P,
-    REPEAT_WINDOW_SIZE,
-)
-from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
-    FishAudioTextDecoder,
-)
 from lalamo.modules.audio.text_to_speech import (
     TTSConfig,
 )
 from lalamo.safetensors import safe_read
-from lalamo.sampling import (
-    CompositePolicy,
-    SamplingPolicy,
-    TemperaturePolicy,
-    TopPPolicy,
-    WindowedRepetitionPenalty,
-)
+from lalamo.sampling import SamplingPolicy
 
 from .common import ParameterTree, unflatten_parameters
 
@@ -80,7 +65,7 @@ class TTSGenerator(eqx.Module):
     def decode_text(
         self,
         text_tokens: Array,
-        sampling_policy: SamplingPolicy,
+        sampling_policy: SamplingPolicy | None = None,
         random_key: PRNGKeyArray | None = None,
     ) -> Array:
         random_key = jax.random.PRNGKey(123) if random_key is None else random_key
@@ -89,17 +74,6 @@ class TTSGenerator(eqx.Module):
             sampling_policy=sampling_policy,
             key=random_key,
         )
-
-    def default_sampling_policy(self) -> SamplingPolicy:
-        if isinstance(self.tts_model.text_decoder, FishAudioTextDecoder):
-            return CompositePolicy(
-                (
-                    WindowedRepetitionPenalty.zero(DEFAULT_FISH_AUDIO_REPETITION_PENALTY, REPEAT_WINDOW_SIZE),
-                    TemperaturePolicy(DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE),
-                    TopPPolicy(DEFAULT_FISH_AUDIO_SAMPLING_TOP_P),
-                )
-            )
-        return CompositePolicy((TemperaturePolicy(0.3), TopPPolicy(0.9)))
 
     def decode_audio(self, semantic_tokens: Array) -> Array:
         return self.tts_model.audio_decoder.audio_from_codes(semantic_tokens)
@@ -123,7 +97,6 @@ class TTSGenerator(eqx.Module):
         random_key: PRNGKeyArray | None = None,
     ) -> TTSGenerationResult:
         text_tokens = self.tokenize_text(messages)
-        sampling_policy = sampling_policy if sampling_policy is not None else self.default_sampling_policy()
 
         semantic_tokens = self.decode_text(
             text_tokens,

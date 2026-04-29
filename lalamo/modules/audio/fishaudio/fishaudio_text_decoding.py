@@ -16,7 +16,7 @@ from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from lalamo.modules.token_mixers.state.common import State
 from lalamo.modules.transformer import Transformer, TransformerConfig
 from lalamo.modules.utils import vmap_twice
-from lalamo.sampling import SamplingPolicy
+from lalamo.sampling import CompositePolicy, SamplingPolicy, TemperaturePolicy, TopPPolicy, WindowedRepetitionPenalty
 
 
 @dataclass
@@ -247,6 +247,15 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     def num_codebooks(self) -> int:
         return self.config.num_codebooks
 
+    def default_sampling_policy(self) -> SamplingPolicy:
+        return CompositePolicy(
+            (
+                WindowedRepetitionPenalty.zero(1.1016, 16),
+                TemperaturePolicy(0.8008),
+                TopPPolicy(0.8008),
+            )
+        )
+
     def __call__(
         self,
         text_tokens: Int[Array, "batch tokens"],
@@ -316,7 +325,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     def decode_utterance(
         self,
         text_tokens: Int[Array, "batch tokens"],
-        sampling_policy: SamplingPolicy,
+        sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray | None = None,
     ) -> Int[Array, "num_codebooks tokens"]:
         """
@@ -338,6 +347,8 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
 
         if key is None:
             key = jax.random.PRNGKey(123)
+
+        sampling_policy = sampling_policy if sampling_policy is not None else self.default_sampling_policy()
 
         max_new_tokens = max_seq_len - prompt_length
         im_end_id = self.config.im_end_token_id
