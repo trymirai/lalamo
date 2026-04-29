@@ -14,8 +14,10 @@ from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dum
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import (
+    make_sharding,
     reshard_as,
     use_out_sharding,
+    with_sharding,
 )
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import (
@@ -211,14 +213,57 @@ class AWQSpec(WeightMatrixSpec):
                 affine_parameters.scales,
                 self.bits,
             )
-            result = AWQMatrixForInference(
-                spec=self,
+            result = self.from_packed_parameters(
                 packed_weights=packed_weights,
                 scales=affine_parameters.scales,
                 packed_zero_points=packed_zero_points,
+                implementation=CompressionImplementation.INFERENCE,
             )
 
         return result
+
+    def from_packed_parameters(
+        self,
+        *,
+        packed_weights: Int[Array, "... rows packed_cols"],
+        scales: Float[Array, "... rows groups"],
+        packed_zero_points: Int[Array, "... rows packed_groups"],
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    ) -> "AWQMatrix":
+        weight_partition = self.layout.weight_partition(scales.ndim - 2)
+        weight_sharding = make_sharding(weight_partition)
+        packed_zero_points_sharding = make_sharding((*weight_partition[:-1], None))
+
+        packed_weights = with_sharding(packed_weights, weight_sharding)
+        scales = with_sharding(scales, weight_sharding)
+        packed_zero_points = with_sharding(packed_zero_points, packed_zero_points_sharding)
+
+        if implementation == CompressionImplementation.INFERENCE:
+            return AWQMatrixForInference(
+                spec=self,
+                packed_weights=packed_weights,
+                scales=scales,
+                packed_zero_points=packed_zero_points,
+            )
+
+        weights = _awq_unpack_master_weights(
+            packed_weights,
+            scales,
+            packed_zero_points,
+            self.group_size,
+            self.bits,
+        )
+        zero_points = _awq_unpack_master_zero_points(
+            packed_zero_points,
+            scales,
+            self.bits,
+        )
+        return AWQMatrixForTraining(
+            spec=self,
+            weights=with_sharding(weights, weight_sharding),
+            scales=scales,
+            zero_points=with_sharding(zero_points, weight_sharding),
+        )
 
 
 class AWQMatrix(EmbeddingMatrix[AWQSpec]):
@@ -365,7 +410,7 @@ class AWQMatrixForTraining(AWQMatrix):
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
-    ) -> Self:
+    ) -> AWQMatrix:
         if prefix is None:
             prefix = ParameterPath()
         saved_spec = expored_data.metadata[prefix / "spec"]
@@ -373,37 +418,32 @@ class AWQMatrixForTraining(AWQMatrix):
         if loaded_spec != self.spec:
             raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
 
-        packed_weights = reshard_as(expored_data.arrays[prefix / "weights"], self.weights)
+        packed_weights = load_as(
+            self._packed_quantized_weights,
+            expored_data.arrays[prefix / "weights"],
+            allow_dtype_cast=False,
+        )
         scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast=allow_dtype_cast)
         packed_zero_points = load_as(
             self._packed_quantized_zero_points,
             expored_data.arrays[prefix / "zero_points"],
-            allow_dtype_cast=allow_dtype_cast,
+            allow_dtype_cast=False,
         )
-        weights = _awq_unpack_master_weights(
-            packed_weights,
-            scales,
-            packed_zero_points,
-            self.spec.group_size,
-            self.spec.bits,
+        return self.spec.from_packed_parameters(
+            packed_weights=packed_weights,
+            scales=scales,
+            packed_zero_points=packed_zero_points,
+            implementation=CompressionImplementation.TRAINING,
         )
-        zero_points = _awq_unpack_master_zero_points(
-            packed_zero_points,
-            scales,
-            self.spec.bits,
-        )
-        weights = load_as(self.weights, weights, allow_dtype_cast=allow_dtype_cast)
-        zero_points = load_as(self.zero_points, zero_points, allow_dtype_cast=allow_dtype_cast)
-        return type(self)(spec=self.spec, weights=weights, scales=scales, zero_points=zero_points)
 
     def switch_implementation(self, implementation: CompressionImplementation) -> AWQMatrix:
         if implementation == CompressionImplementation.TRAINING:
             return self
-        return AWQMatrixForInference(
-            spec=self.spec,
+        return self.spec.from_packed_parameters(
             packed_weights=self._packed_quantized_weights,
             scales=self.scales,
             packed_zero_points=self._packed_quantized_zero_points,
+            implementation=CompressionImplementation.INFERENCE,
         )
 
 
@@ -462,33 +502,21 @@ class AWQMatrixForInference(AWQMatrix):
             expored_data.arrays[prefix / "zero_points"],
             allow_dtype_cast=False,
         )
-        return AWQMatrixForInference(
-            spec=self.spec,
+        return self.spec.from_packed_parameters(
             packed_weights=packed_weights,
             scales=scales,
             packed_zero_points=packed_zero_points,
+            implementation=CompressionImplementation.INFERENCE,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> AWQMatrix:
         if implementation == CompressionImplementation.INFERENCE:
             return self
-        weights = _awq_unpack_master_weights(
-            self.packed_weights,
-            self.scales,
-            self.packed_zero_points,
-            self.spec.group_size,
-            self.spec.bits,
-        )
-        zero_points = _awq_unpack_master_zero_points(
-            self.packed_zero_points,
-            self.scales,
-            self.spec.bits,
-        )
-        return AWQMatrixForTraining(
-            spec=self.spec,
-            weights=weights,
+        return self.spec.from_packed_parameters(
+            packed_weights=self.packed_weights,
             scales=self.scales,
-            zero_points=zero_points,
+            packed_zero_points=self.packed_zero_points,
+            implementation=CompressionImplementation.TRAINING,
         )
 
     def decompress(self) -> Float[Array, "... out_channels in_channels"]:

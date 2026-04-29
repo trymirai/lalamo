@@ -6,7 +6,8 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array
 
-from lalamo.compressed import AWQMatrix, AWQMatrixForTraining, AWQSpec, MLXMatrix, MLXMatrixForTraining, MLXSpec
+from lalamo.compressed import AWQMatrix, AWQSpec, MLXMatrix, MLXSpec
+from lalamo.compressed.packing import pack_uint_to_uint8
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.decoder import Decoder
 from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding
@@ -20,7 +21,7 @@ from lalamo.modules.token_mixers.mamba import Mamba2, Mamba2Config
 from lalamo.modules.token_mixers.short_conv import ShortConv, ShortConvConfig
 from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
-from lalamo.weight_matrix import FullPrecisionSpec, Layout, WeightMatrix
+from lalamo.weight_matrix import CompressionImplementation, FullPrecisionSpec, Layout, WeightMatrix
 
 from .common import load_parameters
 from .utils import decode_mxfp4, deinterleave_pairwise_columns
@@ -183,11 +184,12 @@ def _load_awq_array(
         scale_values = scale_values.T
         zero_point_values = zero_point_values.T
 
-    return AWQMatrixForTraining(
-        spec=AWQSpec(bits=_supported_quantization_bits(bits), group_size=group_size, layout=layout),
-        weights=weight_values,
+    spec = AWQSpec(bits=_supported_quantization_bits(bits), group_size=group_size, layout=layout)
+    return spec.from_packed_parameters(
+        packed_weights=pack_uint_to_uint8(weight_values, bits),
         scales=scale_values,
-        zero_points=zero_point_values,
+        packed_zero_points=pack_uint_to_uint8(zero_point_values, bits),
+        implementation=CompressionImplementation.TRAINING,
     )
 
 
@@ -220,11 +222,12 @@ def _load_mlx_matrix(
         scale_values = scale_values.T
         bias_values = bias_values.T
 
-    return MLXMatrixForTraining(
-        spec=MLXSpec(bits=_supported_quantization_bits(bits), group_size=group_size, layout=layout),
-        weights=weight_values,
+    spec = MLXSpec(bits=_supported_quantization_bits(bits), group_size=group_size, layout=layout)
+    return spec.from_packed_parameters(
+        packed_weights=pack_uint_to_uint8(weight_values, bits),
         scales=scale_values,
         biases=bias_values,
+        implementation=CompressionImplementation.TRAINING,
     )
 
 
@@ -866,15 +869,16 @@ def load_delta_net_attention(
                 new_weight_values = new_weight_values.T
                 new_scale_values = new_scale_values.T
                 new_bias_values = new_bias_values.T
-            new_weights = MLXMatrixForTraining(
-                spec=MLXSpec(
-                    bits=_supported_quantization_bits(bits),
-                    group_size=group_size,
-                    layout=module.in_proj.weights.spec.layout,
-                ),
-                weights=new_weight_values,
+            new_spec = MLXSpec(
+                bits=_supported_quantization_bits(bits),
+                group_size=group_size,
+                layout=module.in_proj.weights.spec.layout,
+            )
+            new_weights = new_spec.from_packed_parameters(
+                packed_weights=pack_uint_to_uint8(new_weight_values, bits),
                 scales=new_scale_values,
                 biases=new_bias_values,
+                implementation=CompressionImplementation.TRAINING,
             )
         in_proj = eqx.tree_at(lambda m: (m.weights, m.biases), module.in_proj, (new_weights, None))
     conv = _load_conv(module.conv, weights_dict, path, permute_conv)

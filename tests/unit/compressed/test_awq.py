@@ -257,6 +257,40 @@ def test_awq_export_load_roundtrips_and_preserves_template_sharding(
         assert restored.packed_zero_points.sharding == template.packed_zero_points.sharding
 
 
+@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
+@pytest.mark.parametrize("implementation", list(CompressionImplementation))
+def test_awq_from_packed_parameters_overrides_input_sharding(
+    layout: Layout,
+    implementation: CompressionImplementation,
+) -> None:
+    spec = AWQSpec(bits=4, group_size=2, layout=layout)
+    original = spec.compress(_logical_weights(), implementation=CompressionImplementation.INFERENCE)
+    template = spec.compress(
+        dummy_array(_logical_weights().shape, _logical_weights().dtype),
+        implementation=implementation,
+    )
+    saved_sharding = make_sharding((None, None))
+    assert saved_sharding is not None
+    assert isinstance(original, AWQMatrixForInference)
+
+    restored = spec.from_packed_parameters(
+        packed_weights=jax.device_put(original.packed_weights, saved_sharding),
+        scales=jax.device_put(original.scales, saved_sharding),
+        packed_zero_points=jax.device_put(original.packed_zero_points, saved_sharding),
+        implementation=implementation,
+    )
+
+    compressed_common.assert_close_arrays(result=restored.decompress(), reference=original.decompress())
+    assert isinstance(restored, type(template))
+    assert restored.scales.sharding == template.scales.sharding
+    if isinstance(restored, AWQMatrixForTraining) and isinstance(template, AWQMatrixForTraining):
+        assert restored.weights.sharding == template.weights.sharding
+        assert restored.zero_points.sharding == template.zero_points.sharding
+    elif isinstance(restored, AWQMatrixForInference) and isinstance(template, AWQMatrixForInference):
+        assert restored.packed_weights.sharding == template.packed_weights.sharding
+        assert restored.packed_zero_points.sharding == template.packed_zero_points.sharding
+
+
 def test_awq_load_rejects_spec_mismatch() -> None:
     original = AWQSpec(bits=4, group_size=2, layout=Layout.INPUT_OUTPUT).compress(_logical_weights())
     template = AWQSpec(bits=8, group_size=2, layout=Layout.INPUT_OUTPUT).compress(

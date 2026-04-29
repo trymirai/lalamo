@@ -13,7 +13,7 @@ from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.utils.sharding import reshard_as, use_out_sharding
+from lalamo.utils.sharding import make_sharding, reshard_as, use_out_sharding, with_sharding
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -154,14 +154,49 @@ class MLXSpec(WeightMatrixSpec):
                 self.group_size,
                 self.bits,
             )
-            result = MLXMatrixForInference(
-                spec=self,
+            result = self.from_packed_parameters(
                 packed_weights=packed_int_weights,
                 scales=affine_parameters.scales,
                 biases=affine_parameters.biases,
+                implementation=CompressionImplementation.INFERENCE,
             )
 
         return result
+
+    def from_packed_parameters(
+        self,
+        *,
+        packed_weights: Int[Array, "... rows packed_cols"],
+        scales: Float[Array, "... rows groups"],
+        biases: Float[Array, "... rows groups"],
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    ) -> "MLXMatrix":
+        weight_sharding = make_sharding(self.layout.weight_partition(scales.ndim - 2))
+        packed_weights = with_sharding(packed_weights, weight_sharding)
+        scales = with_sharding(scales, weight_sharding)
+        biases = with_sharding(biases, weight_sharding)
+
+        if implementation == CompressionImplementation.INFERENCE:
+            return MLXMatrixForInference(
+                spec=self,
+                packed_weights=packed_weights,
+                scales=scales,
+                biases=biases,
+            )
+
+        weights = _mlx_unpack_master_weights(
+            packed_weights,
+            scales,
+            biases,
+            self.group_size,
+            self.bits,
+        )
+        return MLXMatrixForTraining(
+            spec=self,
+            weights=with_sharding(weights, weight_sharding),
+            scales=scales,
+            biases=biases,
+        )
 
 
 class MLXMatrix(EmbeddingMatrix[MLXSpec]):
@@ -296,7 +331,7 @@ class MLXMatrixForTraining(MLXMatrix):
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
-    ) -> Self:
+    ) -> MLXMatrix:
         if prefix is None:
             prefix = ParameterPath()
         saved_spec = expored_data.metadata[prefix / "spec"]
@@ -304,27 +339,28 @@ class MLXMatrixForTraining(MLXMatrix):
         if loaded_spec != self.spec:
             raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
 
-        packed_weights = reshard_as(expored_data.arrays[prefix / "weights"], self.weights)
+        packed_weights = load_as(
+            self._packed_quantized_weights,
+            expored_data.arrays[prefix / "weights"],
+            allow_dtype_cast=False,
+        )
         scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast=allow_dtype_cast)
         biases = load_as(self.biases, expored_data.arrays[prefix / "biases"], allow_dtype_cast=allow_dtype_cast)
-        weights = _mlx_unpack_master_weights(
-            packed_weights,
-            scales,
-            biases,
-            self.spec.group_size,
-            self.spec.bits,
+        return self.spec.from_packed_parameters(
+            packed_weights=packed_weights,
+            scales=scales,
+            biases=biases,
+            implementation=CompressionImplementation.TRAINING,
         )
-        weights = load_as(self.weights, weights, allow_dtype_cast=allow_dtype_cast)
-        return type(self)(spec=self.spec, weights=weights, scales=scales, biases=biases)
 
     def switch_implementation(self, implementation: CompressionImplementation) -> MLXMatrix:
         if implementation == CompressionImplementation.TRAINING:
             return self
-        return MLXMatrixForInference(
-            spec=self.spec,
+        return self.spec.from_packed_parameters(
             packed_weights=self._packed_quantized_weights,
             scales=self.scales,
             biases=self.biases,
+            implementation=CompressionImplementation.INFERENCE,
         )
 
 
@@ -375,24 +411,22 @@ class MLXMatrixForInference(MLXMatrix):
         )
         scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast=allow_dtype_cast)
         biases = load_as(self.biases, expored_data.arrays[prefix / "biases"], allow_dtype_cast=allow_dtype_cast)
-        return MLXMatrixForInference(
-            spec=self.spec,
+        return self.spec.from_packed_parameters(
             packed_weights=packed_weights,
             scales=scales,
             biases=biases,
+            implementation=CompressionImplementation.INFERENCE,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> MLXMatrix:
         if implementation == CompressionImplementation.INFERENCE:
             return self
-        weights = _mlx_unpack_master_weights(
-            self.packed_weights,
-            self.scales,
-            self.biases,
-            self.spec.group_size,
-            self.spec.bits,
+        return self.spec.from_packed_parameters(
+            packed_weights=self.packed_weights,
+            scales=self.scales,
+            biases=self.biases,
+            implementation=CompressionImplementation.TRAINING,
         )
-        return MLXMatrixForTraining(spec=self.spec, weights=weights, scales=self.scales, biases=self.biases)
 
     def decompress(self) -> Float[Array, "... out_channels in_channels"]:
         weights = _mlx_unpack_master_weights(

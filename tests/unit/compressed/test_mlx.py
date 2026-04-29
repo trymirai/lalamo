@@ -240,6 +240,39 @@ def test_mlx_export_load_roundtrips_and_preserves_template_sharding(
         assert restored.packed_weights.sharding == template.packed_weights.sharding
 
 
+@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
+@pytest.mark.parametrize("implementation", list(CompressionImplementation))
+def test_mlx_from_packed_parameters_overrides_input_sharding(
+    layout: Layout,
+    implementation: CompressionImplementation,
+) -> None:
+    spec = MLXSpec(bits=4, group_size=2, layout=layout)
+    original = spec.compress(_logical_weights(), implementation=CompressionImplementation.INFERENCE)
+    template = spec.compress(
+        dummy_array(_logical_weights().shape, _logical_weights().dtype),
+        implementation=implementation,
+    )
+    saved_sharding = make_sharding((None, None))
+    assert saved_sharding is not None
+    assert isinstance(original, MLXMatrixForInference)
+
+    restored = spec.from_packed_parameters(
+        packed_weights=jax.device_put(original.packed_weights, saved_sharding),
+        scales=jax.device_put(original.scales, saved_sharding),
+        biases=jax.device_put(original.biases, saved_sharding),
+        implementation=implementation,
+    )
+
+    _assert_close(result=restored.decompress(), reference=original.decompress())
+    assert isinstance(restored, type(template))
+    assert restored.scales.sharding == template.scales.sharding
+    assert restored.biases.sharding == template.biases.sharding
+    if isinstance(restored, MLXMatrixForTraining) and isinstance(template, MLXMatrixForTraining):
+        assert restored.weights.sharding == template.weights.sharding
+    elif isinstance(restored, MLXMatrixForInference) and isinstance(template, MLXMatrixForInference):
+        assert restored.packed_weights.sharding == template.packed_weights.sharding
+
+
 def test_mlx_load_rejects_spec_mismatch() -> None:
     original = MLXSpec(bits=4, group_size=2, layout=Layout.INPUT_OUTPUT).compress(_logical_weights())
     template = MLXSpec(bits=8, group_size=2, layout=Layout.INPUT_OUTPUT).compress(
