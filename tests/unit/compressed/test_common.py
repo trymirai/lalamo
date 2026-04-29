@@ -63,10 +63,28 @@ def assert_close_arrays(result: jax.Array, reference: jax.Array) -> None:
     assert_close(result=jnp.asarray(jax.device_get(result)), reference=jnp.asarray(jax.device_get(reference)))
 
 
+def host_array(array: jax.Array) -> jax.Array:
+    return jnp.asarray(jax.device_get(array))
+
+
+def host_decompressed(matrix: EmbeddingMatrix[WeightMatrixSpec]) -> jax.Array:
+    return host_array(matrix.decompress())
+
+
 def logical_dot_reference(layout: Layout, dequantized_weights: jax.Array, vector: jax.Array) -> jax.Array:
+    dequantized_weights = host_array(dequantized_weights)
+    vector = host_array(vector)
     if layout == Layout.INPUT_OUTPUT:
         return vector @ dequantized_weights
     return dequantized_weights @ vector
+
+
+def logical_batched_dot_reference(layout: Layout, dequantized_weights: jax.Array, vectors: jax.Array) -> jax.Array:
+    dequantized_weights = host_array(dequantized_weights)
+    vectors = host_array(vectors)
+    if layout == Layout.INPUT_OUTPUT:
+        return jnp.einsum("ei,eio->eo", vectors, dequantized_weights)
+    return jnp.einsum("eoi,ei->eo", dequantized_weights, vectors)
 
 
 def embedding_sharding() -> NamedSharding:
@@ -146,8 +164,8 @@ def test_compressed_matrix_training_and_inference_lookup_embedding_match_selecte
     training_result = training.lookup_embedding(token_index, keychain=Keychain.init(2))
     inference_result = inference.lookup_embedding(token_index, keychain=Keychain.init(3))
 
-    assert_close_arrays(result=training_result, reference=training.decompress()[token_index, :])
-    assert_close_arrays(result=inference_result, reference=inference.decompress()[token_index, :])
+    assert_close_arrays(result=training_result, reference=host_decompressed(training)[token_index, :])
+    assert_close_arrays(result=inference_result, reference=host_decompressed(inference)[token_index, :])
     assert_close_arrays(result=training_result, reference=inference_result)
 
 
@@ -168,7 +186,7 @@ def test_compressed_matrix_lookup_embedding_matches_selected_row_and_feature_sha
 
     result = matrix.lookup_embedding(token_index, keychain=Keychain.init(4))
 
-    assert_close_arrays(result=result, reference=matrix.decompress()[token_index, :])
+    assert_close_arrays(result=result, reference=host_decompressed(matrix)[token_index, :])
     assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == embedding_sharding()
 
@@ -189,7 +207,7 @@ def test_compressed_matrix_lookup_embedding_accepts_jax_scalar_index(
 
     result = matrix.lookup_embedding(token_index, keychain=Keychain.init(5))
 
-    assert_close_arrays(result=result, reference=matrix.decompress()[token_index, :])
+    assert_close_arrays(result=result, reference=host_decompressed(matrix)[token_index, :])
 
 
 @pytest.mark.parametrize("case", COMPRESSED_MATRIX_CASES)
@@ -212,7 +230,7 @@ def test_compressed_matrix_lookup_embedding_vmapped_over_tokens_preserves_token_
     )
 
     reference_indices = jnp.asarray(jax.device_get(token_indices))
-    assert_close_arrays(result=result, reference=matrix.decompress()[reference_indices, :])
+    assert_close_arrays(result=result, reference=host_decompressed(matrix)[reference_indices, :])
     assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == make_sharding((ShardingAxis.DATA, None))
 
@@ -240,7 +258,7 @@ def test_compressed_matrix_lookup_embedding_call_vmapped_over_tokens_matches_sel
     )
 
     reference_indices = jnp.asarray(jax.device_get(token_indices))
-    assert_close_arrays(result=result, reference=matrix.decompress()[reference_indices, :])
+    assert_close_arrays(result=result, reference=host_decompressed(matrix)[reference_indices, :])
     assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == make_sharding((ShardingAxis.DATA, None))
 
@@ -296,7 +314,7 @@ def test_batched_compressed_matrix_lookup_embedding_vmapped_over_experts_matches
 
     result = jax.vmap(lambda matrix_row: matrix_row.lookup_embedding(token_index, keychain=Keychain.init(8)))(matrix)
 
-    assert_close_arrays(result=result, reference=matrix.decompress()[:, token_index, :])
+    assert_close_arrays(result=result, reference=host_decompressed(matrix)[:, token_index, :])
     assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == batched_embedding_sharding()
 
@@ -321,7 +339,7 @@ def test_compressed_matrix_lookup_embedding_under_jit_matches_reference_and_pres
         token_index,
     )
 
-    assert_close_arrays(result=result, reference=matrix.decompress()[token_index, :])
+    assert_close_arrays(result=result, reference=host_decompressed(matrix)[token_index, :])
     assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == embedding_sharding()
 
@@ -381,10 +399,7 @@ def test_batched_compressed_matrix_dot_requires_vmap_and_matches_expert_referenc
         )
 
     result = jax.vmap(lambda matrix_row, vector: matrix_row.dot(vector, keychain=Keychain.init(12)))(matrix, vectors)
-    reference = jax.vmap(lambda matrix_row, vector: logical_dot_reference(layout, matrix_row.decompress(), vector))(
-        matrix,
-        vectors,
-    )
+    reference = logical_batched_dot_reference(layout, matrix.decompress(), vectors)
 
     assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == vectors.sharding

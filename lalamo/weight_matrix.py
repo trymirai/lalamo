@@ -203,6 +203,8 @@ class Layout(StrEnum):
     INPUT_OUTPUT = "input_output"
 
     def weight_partition(self, num_leading_dims: int) -> tuple[ShardingAxis | None, ...]:
+        if num_leading_dims > 0:
+            return (ShardingAxis.EXPERT,) * num_leading_dims + (None, None)
         if self == Layout.INPUT_OUTPUT:
             result = (None, ShardingAxis.TENSOR)
         else:

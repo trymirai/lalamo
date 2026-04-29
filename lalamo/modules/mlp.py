@@ -9,11 +9,13 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, Bool, Float, Int
+from jax.sharding import NamedSharding, PartitionSpec, reshard
+from jaxtyping import Array, Bool, Float, Int, Key
 
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
 from lalamo.utils.registry_abc import RegistryABC
+from lalamo.utils.sharding import is_sharded, sharding_of, use_out_sharding
 from lalamo.weight_matrix import MatmulConfig
 
 from .activations import Activation
@@ -34,6 +36,38 @@ __all__ = [
 
 
 _SENTINEL = 2**31 - 1
+
+
+@use_out_sharding((None, None))
+def _take_moe_chunk_inputs(
+    flattened_inputs: Float[Array, "tokens channels"],
+    indices: Int[Array, " tokens_per_chunk"],
+) -> Float[Array, "tokens_per_chunk channels"]:
+    return flattened_inputs.at[indices].get(mode="fill", fill_value=0.0)
+
+
+@use_out_sharding((ShardingAxis.DATA, None))
+def _add_moe_expert_outputs(
+    accumulator: Float[Array, "tokens channels"],
+    token_indices: Int[Array, "experts tokens_per_chunk"],
+    expert_outputs: Float[Array, "experts tokens_per_chunk channels"],
+) -> Float[Array, "tokens channels"]:
+    return accumulator.at[token_indices].add(
+        expert_outputs,
+        mode="drop",
+    )
+
+
+def _take_moe_expert_leaf(leaf: object, index: Int[Array, ""]) -> object:
+    if not isinstance(leaf, jax.Array):
+        return leaf
+
+    leaf_sharding = sharding_of(leaf)
+    if not is_sharded(leaf_sharding):
+        return leaf.at[jnp.expand_dims(index, 0)].get()[0]
+
+    output_sharding = NamedSharding(leaf_sharding.mesh, PartitionSpec(None, *tuple(leaf_sharding.spec)[1:]))
+    return leaf.at[jnp.expand_dims(index, 0)].get(out_sharding=output_sharding)[0]
 
 
 @dataclass(frozen=True)
@@ -342,6 +376,8 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]:
+        inputs = reshard(inputs, PartitionSpec(ShardingAxis.DATA, None, None))
+
         def per_token(
             token_input: Float[Array, " channels"],
             *,
@@ -375,35 +411,42 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             num_active = self.config.num_active_routed_experts + self.config.num_shared_experts
             active_indices = jnp.flatnonzero(expert_mask, size=num_active)
             active_weights = expert_weights[active_indices]
-            expert_keychains = expert_keychain.split(num_active)
+            expert_vmapped_keys = expert_keychain.broadcast((num_active,)).vmapped_keys
+            expert_batch_keys = jax.random.split(expert_keychain.batch_key, num_active)
 
             def apply_one(
                 idx: Int[Array, ""],
                 weight: Float[Array, ""],
-                expert_keychain: Keychain,
+                expert_vmapped_key: Key[Array, ""],
+                expert_batch_key: Key[Array, ""],
             ) -> Float[Array, " channels"]:
+                selected_expert_keychain = Keychain(
+                    vmapped_keys=expert_vmapped_key,
+                    batch_key=expert_batch_key,
+                )
                 selected_expert = jax.tree_util.tree_map(
-                    lambda leaf: jax.lax.dynamic_index_in_dim(leaf, idx, axis=0, keepdims=False),
+                    lambda leaf: _take_moe_expert_leaf(leaf, idx),
                     self.experts,
                 )
                 return (
                     selected_expert.call_unbatched(
                         token_input,
                         forward_pass_config,
-                        keychain=expert_keychain,
+                        keychain=selected_expert_keychain,
                     )
                     * weight
                 )
 
             return call_vmapped(
                 lambda expert_inputs: apply_one(*expert_inputs),
-                (active_indices, active_weights, expert_keychains),
+                (active_indices, active_weights, expert_vmapped_keys, expert_batch_keys),
             ).sum(axis=0)
 
         return call_vmapped_twice(
             per_token,
             inputs,
             keychain=keychain,
+            added_sharding_axes=(ShardingAxis.DATA, None),
         )
 
     @eqx.filter_jit
@@ -415,6 +458,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]:
+        inputs = reshard(inputs, PartitionSpec(ShardingAxis.DATA, None, None))
         batch_size, sequence_length, _ = inputs.shape
         num_tokens = batch_size * sequence_length
         if lengths_without_padding is None:
@@ -430,6 +474,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             flattened_inputs,
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=router_keychain,
+            added_sharding_axis=ShardingAxis.DATA,
         )
         routing_map = self.config.routing_function(router_logits, self.config.num_active_routed_experts)
 
@@ -437,11 +482,13 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             routing_map.expert_mask & flattened_padding_mask[:, None],
             "tokens experts -> experts tokens",
         )
+        token_mask = reshard(token_mask, PartitionSpec(ShardingAxis.EXPERT, None))
         expert_weights: Float[Array, "experts tokens"] = rearrange(
             routing_map.expert_weights,
             "tokens experts -> experts tokens",
         )
         expert_weights = jnp.where(token_mask, expert_weights, 0.0)
+        expert_weights = reshard(expert_weights, PartitionSpec(ShardingAxis.EXPERT, None))
         routed_experts = self.experts.slice_mixture(0, self.config.num_routed_experts)
 
         chunk_size = math.ceil(num_tokens * forward_pass_config.moe_chunk_size_ratio)
@@ -449,6 +496,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         token_indices = call_vmapped(
             lambda mask: jnp.flatnonzero(mask, size=num_padded_tokens, fill_value=_SENTINEL),
             token_mask,
+            added_sharding_axis=ShardingAxis.EXPERT,
         )
         chunked_token_indices = rearrange(
             token_indices,
@@ -456,13 +504,16 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             chunk_tokens=chunk_size,
         )
 
-        chunk_keychains = chunk_keychain.split(chunked_token_indices.shape[0])
+        num_chunks = chunked_token_indices.shape[0]
+        chunk_vmapped_keys = chunk_keychain.broadcast((num_chunks,)).vmapped_keys
+        chunk_batch_keys = jax.random.split(chunk_keychain.batch_key, num_chunks)
 
         def loop_iteration(
             expert_accumulator: Float[Array, "tokens channels"],
-            chunk_inputs: tuple[Int[Array, "experts chunk_tokens"], Keychain],
+            chunk_inputs: tuple[Int[Array, "experts chunk_tokens"], Key[Array, ""], Key[Array, ""]],
         ) -> tuple[Float[Array, "tokens channels"], None]:
-            token_indices_for_chunk, current_chunk_keychain = chunk_inputs
+            token_indices_for_chunk, chunk_vmapped_key, chunk_batch_key = chunk_inputs
+            current_chunk_keychain = Keychain(vmapped_keys=chunk_vmapped_key, batch_key=chunk_batch_key)
 
             def run_experts(
                 accumulator: Float[Array, "tokens channels"],
@@ -475,15 +526,28 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                     fill_value=0.0,
                 )
 
-                expert_keychains = current_chunk_keychain.split(self.config.num_routed_experts)
+                expert_vmapped_keys = current_chunk_keychain.broadcast(
+                    (self.config.num_routed_experts,),
+                    sharding_axes=(ShardingAxis.EXPERT,),
+                ).vmapped_keys
+                expert_batch_keys = jax.random.split(
+                    current_chunk_keychain.batch_key,
+                    self.config.num_routed_experts,
+                )
+                expert_batch_keys = reshard(expert_batch_keys, PartitionSpec(ShardingAxis.EXPERT))
 
                 def run_expert(
                     expert: DenseMLP,
                     indices: Int[Array, " tokens_per_chunk"],
                     weights: Float[Array, " tokens_per_chunk"],
-                    expert_keychain: Keychain,
+                    expert_vmapped_key: Key[Array, ""],
+                    expert_batch_key: Key[Array, ""],
                 ) -> Float[Array, "tokens_per_chunk channels"]:
-                    chunk_inputs = flattened_inputs.at[indices].get(mode="fill", fill_value=0.0)
+                    expert_keychain = Keychain(
+                        vmapped_keys=expert_vmapped_key,
+                        batch_key=expert_batch_key,
+                    )
+                    chunk_inputs = _take_moe_chunk_inputs(flattened_inputs, indices)
                     call_unbatched = partial(
                         expert.call_unbatched,
                         forward_pass_config=forward_pass_config,
@@ -497,26 +561,28 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
 
                 expert_outputs = call_vmapped(
                     lambda expert_inputs: run_expert(*expert_inputs),
-                    (routed_experts, token_indices_for_chunk, weights_for_chunk, expert_keychains),
+                    (
+                        routed_experts,
+                        token_indices_for_chunk,
+                        weights_for_chunk,
+                        expert_vmapped_keys,
+                        expert_batch_keys,
+                    ),
+                    added_sharding_axis=ShardingAxis.EXPERT,
                 )
-                return accumulator.at[token_indices_for_chunk].add(
-                    expert_outputs,
-                    mode="drop",
-                )
+                return _add_moe_expert_outputs(accumulator, token_indices_for_chunk, expert_outputs)
 
-            updated_accumulator = jax.lax.cond(
-                jnp.any(token_indices_for_chunk != _SENTINEL),
-                run_experts,
-                lambda accumulator: accumulator,
-                expert_accumulator,
-            )
+            return run_experts(expert_accumulator), None
 
-            return updated_accumulator, None
-
+        routed_accumulator = jnp.zeros(
+            flattened_inputs.shape,
+            dtype=flattened_inputs.dtype,
+            out_sharding=PartitionSpec(ShardingAxis.DATA, None),
+        )
         routed_expert_result, _ = jax.lax.scan(
             loop_iteration,
-            jnp.zeros_like(flattened_inputs),
-            (chunked_token_indices, chunk_keychains),
+            routed_accumulator,
+            (chunked_token_indices, chunk_vmapped_keys, chunk_batch_keys),
         )
 
         expert_result = routed_expert_result
@@ -530,21 +596,43 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 shared_expert_weight,
                 flattened_inputs,
                 keychain=shared_weight_keychain,
+                added_sharding_axis=ShardingAxis.DATA,
             )
             shared_weights = jnp.where(flattened_padding_mask[:, None], shared_weights, 0.0)
 
-            shared_expert_keychains = shared_expert_keychain.split(self.config.num_shared_experts)
-            shared_outputs = call_vmapped(
-                lambda expert, expert_keychain: call_vmapped(
+            shared_expert_vmapped_keys = shared_expert_keychain.broadcast(
+                (self.config.num_shared_experts,),
+                sharding_axes=(ShardingAxis.EXPERT,),
+            ).vmapped_keys
+            shared_expert_batch_keys = jax.random.split(
+                shared_expert_keychain.batch_key,
+                self.config.num_shared_experts,
+            )
+            shared_expert_batch_keys = reshard(shared_expert_batch_keys, PartitionSpec(ShardingAxis.EXPERT))
+
+            def run_shared_expert(
+                expert: DenseMLP,
+                expert_vmapped_key: Key[Array, ""],
+                expert_batch_key: Key[Array, ""],
+            ) -> Float[Array, "tokens channels"]:
+                expert_keychain = Keychain(
+                    vmapped_keys=expert_vmapped_key,
+                    batch_key=expert_batch_key,
+                )
+                return call_vmapped(
                     partial(
                         expert.call_unbatched,
                         forward_pass_config=forward_pass_config,
                     ),
                     flattened_inputs,
                     keychain=expert_keychain,
-                ),
-                shared_experts,
-                shared_expert_keychains,
+                    added_sharding_axis=ShardingAxis.DATA,
+                )
+
+            shared_outputs = call_vmapped(
+                lambda expert_inputs: run_shared_expert(*expert_inputs),
+                (shared_experts, shared_expert_vmapped_keys, shared_expert_batch_keys),
+                added_sharding_axis=ShardingAxis.EXPERT,
             )
             expert_result = routed_expert_result + shared_weights * shared_outputs.sum(axis=0)
 

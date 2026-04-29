@@ -120,7 +120,7 @@ def test_linear_vmapped_over_inputs_matches_reference_and_keeps_data_sharding(fa
 
 
 def test_linear_mixture_vmapped_over_experts_matches_reference_and_keeps_expert_sharding(fake_mesh: Mesh) -> None:
-    biases = jax.device_put(_biases(2), make_sharding((ShardingAxis.EXPERT, ShardingAxis.DATA)))
+    biases = jax.device_put(_biases(2), make_sharding((ShardingAxis.EXPERT, None)))
     linear = _linear(_weights(2), biases)
     inputs = _sharded_expert_inputs(jnp.arange(8, dtype=jnp.float32).reshape(2, INPUT_DIM))
 

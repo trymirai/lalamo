@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from lalamo.initializer import Initializer
-from lalamo.module import Keychain, LalamoConfig, LalamoModule, field
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, ShardingAxis, field
 from lalamo.utils.sharding import use_out_sharding
 from lalamo.weight_matrix import FullPrecisionSpec, MatmulConfig, WeightMatrix
 
@@ -44,10 +44,14 @@ class LinearConfig(LalamoConfig):
     ) -> "Linear":
         weight_spec = FullPrecisionSpec()
         total_output_dim = sum(output_dims)
+        if has_biases:
+            biases = initializer.zeros((mixture_size, total_output_dim), (ShardingAxis.EXPERT, None))
+        else:
+            biases = None
         return Linear(
             config=self,
             weights=weight_spec.init(initializer, (mixture_size,), total_output_dim, input_dim),
-            biases=initializer.zeros((mixture_size, total_output_dim)) if has_biases else None,
+            biases=biases,
             output_dims=output_dims,
         )
 
