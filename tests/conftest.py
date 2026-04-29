@@ -29,13 +29,11 @@ from tests.model_test_tiers import TIER_BY_REPO, ModelSize, ModelTier, model_siz
 # Be careful when raising this precision for correctness baselines.
 jax.config.update("jax_default_matmul_precision", "default")
 
-FAST_MARKER = pytest.mark.fast
-
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         if "/unit/" in str(item.fspath):
-            item.add_marker(FAST_MARKER)
+            item.add_marker(pytest.mark.fast)
 
 
 GPU_ATOL = 1e-3

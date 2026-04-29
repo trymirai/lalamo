@@ -74,8 +74,8 @@ jobs:
         run: |
           pytest tests/coherence/test_tts_coherence.py
 
-  latest-deps:
-    name: "Latest Deps: ${{ matrix.suite }} (${{ matrix.device }}) / ${{ matrix.python }}"
+  user-install:
+    name: "User Install (${{ matrix.device }})"
     runs-on: ${{ fromJSON(matrix.runner) }}
     needs: [config]
     if: ${{ needs.config.outputs.run-tests == 'true' && needs.config.outputs.is-prerelease == 'true' }}
@@ -83,23 +83,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ${{ fromJSON(needs.config.outputs.latest-deps-python-versions) }}
         device: [cpu, gpu]
         include:
           - device: cpu
             runner: '["github-n2hmem16"]' # ubuntu-latest does not have enough RAM (?) to run these
           - device: gpu
             runner: '["self-hosted", "linux", "gpu"]'
-          - python: py313
-            python-version: '3.13'
-          - python: py314
-            python-version: '3.14'
 
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.14" # tox requires python of the correct version to be installed
       - uses: ./.github/actions/setup
         with:
           install-dependencies: 'false'
@@ -108,4 +103,4 @@ jobs:
 
       - name: Run tox
         run: |
-          uvx tox -e latest-deps-${{ matrix.device }}-${{ matrix.python }}
+          uvx tox -e user-install-${{ matrix.device }}

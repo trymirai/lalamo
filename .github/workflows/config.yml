@@ -25,7 +25,6 @@ jobs:
     outputs:
       run-tests: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
       is-prerelease: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease') }}
-      latest-deps-python-versions: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'prerelease')) && '["py313", "py314"]' || '["py314"]' }}
       core-lm-repos: ${{ steps.model-test-matrix.outputs.core-lm-repos }}
     steps:
       - uses: actions/checkout@v6

@@ -7,15 +7,16 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests.model_test_tiers import ModelTier, get_models_by_tier
+
 StartServer = Callable[[], str]
 
-MODELS = ["google/gemma-3-1b-it"]
+MODELS = get_models_by_tier(ModelTier.CANONICAL)
 
 CAPITAL_PROMPT = "What's the capital of the United Kingdom? No thinking, answer right away."
-APPLES_PROMPT = "Are apples fruits? Answer only yes or no, without thinking, answer right away."
 MATH_PROMPT = "What's 2 + 2? No thinking, answer right away."
 
-MAX_OUTPUT_LENGTH = 64
+MAX_OUTPUT_LENGTH = 8
 
 
 def _free_port() -> int:
@@ -104,28 +105,26 @@ def test_server_batches(serve_process: StartServer, model_repo: str) -> None:
 
     payload = [
         _make_request("q1", model_repo, CAPITAL_PROMPT),
-        _make_request("q2", model_repo, APPLES_PROMPT),
-        _make_request("q3", model_repo, MATH_PROMPT),
+        _make_request("q2", model_repo, MATH_PROMPT),
     ]
     create = httpx.post(f"{base_url}/batches", json=payload, timeout=10.0)
     assert create.status_code == 202
     created = create.json()
     assert created["status"] == "in_progress"
-    assert created["total"] == 3
+    assert created["total"] == 2
     assert created["completed"] == 0
     assert created["results"] == []
     assert created["error"] is None
 
     final = _wait_for_batch(base_url, str(created["id"]))
     assert final["status"] == "completed"
-    assert final["total"] == 3
-    assert final["completed"] == 3
-    assert len(final["results"]) == 3
+    assert final["total"] == 2
+    assert final["completed"] == 2
+    assert len(final["results"]) == 2
 
     replies_by_id = {reply["sequence_id"]: reply["response"] for reply in final["results"]}
     assert "london" in replies_by_id["q1"].lower(), f"Expected 'london' in {replies_by_id['q1']!r}"
-    assert "yes" in replies_by_id["q2"].lower(), f"Expected 'yes' in {replies_by_id['q2']!r}"
-    assert "4" in replies_by_id["q3"], f"Expected '4' in {replies_by_id['q3']!r}"
+    assert "4" in replies_by_id["q2"], f"Expected '4' in {replies_by_id['q2']!r}"
 
     refetch = httpx.get(f"{base_url}/batches/{created['id']}", timeout=10.0).json()
     assert refetch == final

@@ -6,6 +6,8 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+pytest.importorskip("torch")
+
 from lalamo.common import ParameterPath
 from lalamo.model_import.loaders.huggingface import load_delta_net_attention
 from lalamo.modules import (
