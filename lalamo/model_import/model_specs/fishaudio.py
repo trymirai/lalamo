@@ -1,7 +1,6 @@
 from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
+from lalamo.model_import.model_spec import ConfigMap, FileSpec, TTSModelSpec
 from lalamo.model_import.origins import HuggingFaceOrigin, WeightFormat
-
-from .common import ConfigMap, FileSpec, TTSModelSpec
 
 __all__ = ["FISHAUDIO_TTS_MODELS"]
 

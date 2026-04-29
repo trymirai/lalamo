@@ -1,7 +1,6 @@
 from lalamo.model_import.model_configs import HFLlamaConfig
+from lalamo.model_import.model_spec import LanguageModelSpec
 from lalamo.model_import.origins import HuggingFaceOrigin
-
-from .common import LanguageModelSpec
 
 __all__ = ["NANBEIGE_MODELS"]
 

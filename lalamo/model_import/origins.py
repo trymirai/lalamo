@@ -5,7 +5,7 @@ import tempfile
 from abc import abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import NamedTuple
 
@@ -22,7 +22,7 @@ from lalamo.utils.registry_abc import RegistryABC
 type WeightShard = tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]
 
 
-class WeightFormat(Enum):
+class WeightFormat(StrEnum):
     SAFETENSORS = ".safetensors"
     TORCH = ".pth"
 

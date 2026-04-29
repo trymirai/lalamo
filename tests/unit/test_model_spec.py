@@ -4,7 +4,7 @@ from typing import cast
 import pytest
 
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
-from lalamo.model_import.model_specs.common import LanguageModelSpec, ModelSpec
+from lalamo.model_import.model_spec import LanguageModelSpec, ModelSpec
 from lalamo.model_import.origins import FileSpec, HuggingFaceOrigin, LocalOrigin
 from lalamo.utils.json import JSON
 

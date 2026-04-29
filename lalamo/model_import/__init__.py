@@ -1,4 +1,4 @@
-from .model_specs.common import ModelSpec
+from .model_spec import ModelSpec
 
 __all__ = [
     "ModelSpec",

@@ -1,12 +1,11 @@
 from lalamo.model_import.model_configs import HFMistralConfig
-from lalamo.model_import.origins import HuggingFaceOrigin
-
-from .common import (
+from lalamo.model_import.model_spec import (
     ConfigMap,
     FileSpec,
     JSONFieldSpec,
     LanguageModelSpec,
 )
+from lalamo.model_import.origins import HuggingFaceOrigin
 
 __all__ = ["MISTRAL_MODELS"]
 

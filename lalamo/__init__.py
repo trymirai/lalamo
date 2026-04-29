@@ -5,7 +5,7 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
 from lalamo.checkpoint_manager import CheckpointManager
 from lalamo.model_import import ModelSpec
-from lalamo.model_import.model_specs.common import (
+from lalamo.model_import.model_spec import (
     ClassifierModelSpec,
     ConfigMap,
     FileSpec,

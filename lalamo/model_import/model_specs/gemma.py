@@ -4,9 +4,8 @@ from lalamo.model_import.model_configs import (
     HFGemma3TextConfig,
     HFGemma4Config,
 )
+from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.origins import HuggingFaceOrigin
-
-from .common import ConfigMap, FileSpec, LanguageModelSpec
 
 __all__ = ["GEMMA_MODELS"]
 

@@ -1,9 +1,8 @@
 from lalamo.model_import.model_configs import HFQwen2Config
-from lalamo.model_import.origins import HuggingFaceOrigin
-
-from .common import (
+from lalamo.model_import.model_spec import (
     LanguageModelSpec,
 )
+from lalamo.model_import.origins import HuggingFaceOrigin
 
 __all__ = ["DEEPSEEK_MODELS"]
 

@@ -1,7 +1,6 @@
 from lalamo.model_import.model_configs.huggingface import ModernBERTConfig
+from lalamo.model_import.model_spec import ClassifierModelSpec, ConfigMap, FileSpec
 from lalamo.model_import.origins import HuggingFaceOrigin
-
-from .common import ClassifierModelSpec, ConfigMap, FileSpec
 
 __all__ = ["MIRAI_CLASSIFIER_MODELS"]
 

@@ -5,9 +5,8 @@ from lalamo.model_import.model_configs import (
     HFQwen3NextConfig,
     HFQwen35Config,
 )
+from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.origins import HuggingFaceOrigin
-
-from .common import ConfigMap, FileSpec, LanguageModelSpec
 
 __all__ = ["QWEN_MODELS"]
 

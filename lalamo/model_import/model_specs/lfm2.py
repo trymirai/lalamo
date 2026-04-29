@@ -1,10 +1,9 @@
 from itertools import chain, product
 
 from lalamo.model_import.model_configs import HFLFM2Config
+from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.origins import HuggingFaceOrigin
 from lalamo.models.language_model import GenerationConfig
-
-from .common import ConfigMap, FileSpec, LanguageModelSpec
 
 __all__ = ["LFM2_MODELS"]
 

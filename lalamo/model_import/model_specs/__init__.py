@@ -1,4 +1,13 @@
-from .common import ClassifierModelSpec, FileSpec, LanguageModelSpec, ModelSpec, TTSModelSpec
+from lalamo.model_import.model_spec import (
+    ClassifierModelSpec,
+    ConfigMap,
+    FileSpec,
+    JSONFieldSpec,
+    LanguageModelSpec,
+    ModelSpec,
+    TTSModelSpec,
+)
+
 from .deepseek import DEEPSEEK_MODELS
 from .essential_ai import RNJ_MODELS
 from .fishaudio import FISHAUDIO_TTS_MODELS
@@ -19,7 +28,9 @@ from .reka import REKA_MODELS
 __all__ = [
     "ALL_MODEL_LISTS",
     "ClassifierModelSpec",
+    "ConfigMap",
     "FileSpec",
+    "JSONFieldSpec",
     "LanguageModelSpec",
     "ModelSpec",
     "TTSModelSpec",

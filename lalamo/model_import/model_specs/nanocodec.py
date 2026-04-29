@@ -1,7 +1,6 @@
 from lalamo.model_import.model_configs.nanocodec import NanoCodecForeignConfig
+from lalamo.model_import.model_spec import ConfigMap, FileSpec, TTSModelSpec
 from lalamo.model_import.origins import NemoOrigin
-
-from .common import ConfigMap, FileSpec, TTSModelSpec
 
 __all__ = ["NANOCODEC_TTS_MODELS"]
 
