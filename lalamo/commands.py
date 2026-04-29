@@ -605,7 +605,7 @@ def generate_replies(
     max_vram: int | None,
     max_output_length: int = 8192,
     batch_size: int | None = None,
-    scheduler_kind: SchedulerKind = SchedulerKind.CONTINUOUS,
+    scheduler_kind: SchedulerKind = SchedulerKind.FIXED,
     generation_config_override: GenerationConfig | None = None,
     callbacks_type: Callable[
         [

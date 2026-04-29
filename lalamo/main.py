@@ -779,7 +779,7 @@ def generate_replies(
     scheduler: Annotated[
         SchedulerKind,
         Option(help="Batch scheduling strategy."),
-    ] = SchedulerKind.CONTINUOUS,
+    ] = SchedulerKind.FIXED,
 ) -> None:
     if batch_size is not None and vram_gb is not None:
         err_console.print("Cannot use both --batch-size and --vram-gb")
