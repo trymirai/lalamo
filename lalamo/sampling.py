@@ -22,6 +22,7 @@ __all__ = [
     "TemperaturePolicy",
     "TopKPolicy",
     "TopPPolicy",
+    "WindowedRepetitionPenalty",
     "make_policy",
 ]
 
@@ -124,6 +125,52 @@ class CountingPenalty(SamplingPolicy):
 class RepetitionPenalty(CountingPenalty):
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         seen = self.token_counts > 0
+        return jnp.where(
+            jnp.logical_and(seen, logits > 0),
+            logits / self.penalty,
+            jnp.where(seen, logits * self.penalty, logits),
+        )
+
+
+class WindowedRepetitionPenalty(SamplingPolicy):
+    token_history: Int[Array, " window"]
+    history_length: Int[Array, ""]
+    penalty: float = eqx.field(static=True)
+
+    @classmethod
+    def zero(cls, penalty: float, window_size: int) -> Self:
+        return cls(
+            penalty=penalty,
+            token_history=jnp.zeros(window_size, dtype=jnp.int32),
+            history_length=jnp.asarray(0, dtype=jnp.int32),
+        )
+
+    def init(self, prompt_token_ids: Int[Array, " tokens"], prompt_length: Int[Array, ""]) -> Self:
+        window_size = self.token_history.shape[0]
+        indices = prompt_length - window_size + jnp.arange(window_size)
+        valid_indices = (indices >= 0) & (indices < prompt_length)
+        token_history = jnp.where(valid_indices, prompt_token_ids[jnp.maximum(indices, 0)], 0)
+        return replace(
+            self,
+            token_history=token_history,
+            history_length=jnp.minimum(prompt_length, window_size),
+        )
+
+    def update(self, next_token: Int[Array, ""]) -> Self:
+        token_history = jnp.roll(self.token_history, -1).at[-1].set(next_token)
+        return replace(
+            self,
+            token_history=token_history,
+            history_length=jnp.minimum(self.history_length + 1, self.token_history.shape[0]),
+        )
+
+    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+        window_size = self.token_history.shape[0]
+        token_positions = jnp.arange(window_size)
+        active_mask = (token_positions >= window_size - self.history_length) & (self.token_history < logits.shape[0])
+        active_tokens = jnp.where(active_mask, self.token_history, -1)
+        vocabulary_ids = jnp.arange(logits.shape[0])
+        seen = jnp.any(active_tokens[:, None] == vocabulary_ids[None, :], axis=0)
         return jnp.where(
             jnp.logical_and(seen, logits > 0),
             logits / self.penalty,

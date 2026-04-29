@@ -3,18 +3,23 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
-from lalamo.sampling import CompositePolicy, SamplingPolicy, TemperaturePolicy, TopPPolicy
+from lalamo.sampling import CompositePolicy, SamplingPolicy, TemperaturePolicy, TopPPolicy, WindowedRepetitionPenalty
 
 from .fishaudio_consts import (
+    DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
     DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE,
     DEFAULT_FISH_AUDIO_SAMPLING_TOP_P,
+    REPEAT_WINDOW_SIZE,
     _default_audio_codec_config,
 )
 
 
-def default_fishaudio_sampling_policy() -> SamplingPolicy:
+def default_fishaudio_sampling_policy(
+    repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
+) -> SamplingPolicy:
     return CompositePolicy(
         (
+            WindowedRepetitionPenalty.zero(repetition_penalty, REPEAT_WINDOW_SIZE),
             TemperaturePolicy(DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE),
             TopPPolicy(DEFAULT_FISH_AUDIO_SAMPLING_TOP_P),
         )

@@ -1,10 +1,10 @@
 from dataclasses import dataclass, replace
-from typing import Any, Self
+from typing import NamedTuple, Self
 
 import jax
 from jax import numpy as jnp
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.activations import Identity
@@ -27,6 +27,33 @@ class FishAudioTextDecoderResult:
     token_codes: Float[Array, "batch codes"]
     hidden_states: Array | None
     state: State | None
+
+
+class DecodeNextTokenResult(NamedTuple):
+    codes: Int[Array, "batch codebooks"]
+    slow_state: State
+    sampling_policies: SamplingPolicy
+
+
+class DecodeUtteranceLoopState(NamedTuple):
+    slow_state: State
+    current_codes: Int[Array, " codebooks"]
+    sampling_policies: SamplingPolicy
+    key: Key[Array, ""]
+    generated_count: Int[Array, ""]
+    generated_codes: Int[Array, "tokens codebooks"]
+
+
+def _init_fishaudio_sampling_policies(
+    sampling_policy: SamplingPolicy,
+    text_tokens: Int[Array, "batch tokens"],
+    codebook_dim: int,
+) -> SamplingPolicy:
+    _, prompt_length = text_tokens.shape
+    prompt_tokens_by_codebook = jnp.zeros((codebook_dim, prompt_length), dtype=text_tokens.dtype)
+    prompt_tokens_by_codebook = prompt_tokens_by_codebook.at[0].set(text_tokens[0])
+    prompt_lengths_by_codebook = jnp.zeros(codebook_dim, dtype=jnp.int32).at[0].set(prompt_length)
+    return vmap(sampling_policy.init)(prompt_tokens_by_codebook, prompt_lengths_by_codebook)
 
 
 @dataclass(frozen=True)
@@ -248,18 +275,26 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         text_and_codebooks = text_and_codebooks.at[:, 0, :].set(text_tokens)
 
         embeddings = self.embed(text_and_codebooks)
+        sampling_policies = _init_fishaudio_sampling_policies(
+            sampling_policy,
+            text_tokens,
+            self.config.num_codebooks + 1,
+        )
 
-        codes, updated_state = decode_next_token(
+        decoding_result = decode_next_token(
             model=self,
             x=embeddings,
             state_slow=state,
             input_pos=input_pos,
-            sampling_policy=sampling_policy,
-            previous_tokens=None,
+            sampling_policies=sampling_policies,
             key=key,
         )
 
-        return FishAudioTextDecoderResult(token_codes=codes, hidden_states=None, state=updated_state)
+        return FishAudioTextDecoderResult(
+            token_codes=decoding_result.codes,
+            hidden_states=None,
+            state=decoding_result.slow_state,
+        )
 
     def embed(
         self,
@@ -325,55 +360,69 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
 
         input_pos = jnp.arange(prompt_length)[None, :]
         embeddings = self.embed(prompt)
-        first_codes, state_slow = decode_next_token(
+        sampling_policies = _init_fishaudio_sampling_policies(sampling_policy, text_tokens, codebook_dim)
+
+        first_token_result = decode_next_token(
             model=self,
             x=embeddings,
             state_slow=initial_slow_state,
             input_pos=input_pos,
-            sampling_policy=sampling_policy,
+            sampling_policies=sampling_policies,
             key=key,
-            previous_tokens=None,
         )
+        first_codes = first_token_result.codes
 
         if first_codes[0, 0] == im_end_id:
             return first_codes[0, 1:][:, None]
 
         max_remaining = max_new_tokens - 1
         out_buf = jnp.zeros((max_remaining, codebook_dim), dtype=jnp.int32)
+        first_codes_unbatched = first_codes[0]
 
-        def cond_fn(carry: tuple[State | None, Array, PRNGKeyArray, Array, Array]) -> Array:
-            _state, cur_token, _key, i, _buf = carry
-            return (i < max_remaining) & (cur_token[0, 0] != im_end_id)
+        def cond_fn(loop_state: DecodeUtteranceLoopState) -> Bool[Array, ""]:
+            return (loop_state.generated_count < max_remaining) & (loop_state.current_codes[0] != im_end_id)
 
-        def body_fn(
-            carry: tuple[State | None, Array, PRNGKeyArray, Array, Array],
-        ) -> tuple[State | None, Array, PRNGKeyArray, Array, Array]:
-            state_slow, cur_token, key, i, buf = carry
-            new_key, subkey = jax.random.split(key)
-            cur_token_expanded = cur_token.reshape(batch_size, codebook_dim, 1)
-            embs = self.embed(cur_token_expanded)
-            ipos = (prompt_length + i)[None, None]
-            next_codes, new_state = decode_next_token(
+        def body_fn(loop_state: DecodeUtteranceLoopState) -> DecodeUtteranceLoopState:
+            new_key, subkey = jax.random.split(loop_state.key)
+            embeddings = self.embed(loop_state.current_codes[None, :, None])
+            input_pos = (prompt_length + loop_state.generated_count)[None, None]
+            next_token_result = decode_next_token(
                 model=self,
-                x=embs,
-                state_slow=state_slow,
-                input_pos=ipos,
-                sampling_policy=sampling_policy,
+                x=embeddings,
+                state_slow=loop_state.slow_state,
+                input_pos=input_pos,
+                sampling_policies=loop_state.sampling_policies,
                 key=subkey,
-                previous_tokens=None,
             )
-            new_buf = buf.at[i].set(next_codes[0])
-            return (new_state, next_codes, new_key, i + 1, new_buf)
+            next_codes = next_token_result.codes[0]
+            return DecodeUtteranceLoopState(
+                slow_state=next_token_result.slow_state,
+                current_codes=next_codes,
+                sampling_policies=next_token_result.sampling_policies,
+                key=new_key,
+                generated_count=loop_state.generated_count + 1,
+                generated_codes=loop_state.generated_codes.at[loop_state.generated_count].set(next_codes),
+            )
 
-        initial_carry = (state_slow, first_codes, key, jnp.int32(0), out_buf)
-        _, last_token, _, final_i, final_buf = jax.lax.while_loop(cond_fn, body_fn, initial_carry)
+        initial_loop_state = DecodeUtteranceLoopState(
+            slow_state=first_token_result.slow_state,
+            current_codes=first_codes_unbatched,
+            sampling_policies=first_token_result.sampling_policies,
+            key=key,
+            generated_count=jnp.int32(0),
+            generated_codes=out_buf,
+        )
+        final_loop_state = jax.lax.while_loop(cond_fn, body_fn, initial_loop_state)
 
         # If the loop exited because the freshly-generated token was im_end, that token sits at
         # final_buf[final_i - 1]; strip it so we only return the audio codebooks.
-        ended_with_im_end = bool(last_token[0, 0] == im_end_id)
-        valid_count = int(final_i) - (1 if ended_with_im_end else 0)
+        ended_with_im_end = bool(final_loop_state.current_codes[0] == im_end_id)
+        valid_count = int(final_loop_state.generated_count) - (1 if ended_with_im_end else 0)
 
-        all_tokens = jnp.concatenate([first_codes[0:1], final_buf[:valid_count]], axis=0)
+        all_tokens = jnp.concatenate(
+            [first_codes_unbatched[None, :], final_loop_state.generated_codes[:valid_count]],
+            axis=0,
+        )
         codes = all_tokens[:, 1:].T
         assert jnp.all(codes >= 0), "Negative code found"
         return codes
@@ -384,10 +433,9 @@ def decode_next_token(
     x: Array,
     state_slow: State | None,
     input_pos: Array,
-    sampling_policy: SamplingPolicy,
-    key: PRNGKeyArray,
-    previous_tokens: Array | None = None,  # noqa: ARG001, reserved for future when repetition penalty is done
-) -> tuple[Int[Array, "batch codes"], State | None]:
+    sampling_policies: SamplingPolicy,
+    key: Key[Array, ""],
+) -> DecodeNextTokenResult:
     batch_size = x.shape[0]
     assert batch_size == 1, "Batching not supported yet"
 
@@ -412,7 +460,9 @@ def decode_next_token(
     n_codes = model.num_codebooks + 1
 
     codebooks = jnp.zeros((batch_size, n_codes), dtype=jnp.int32)
-    codebooks = codebooks.at[0, 0].set(vmap(lambda x: sampling_policy(x, key=key))(logits[:, -1, :])[0])
+    slow_sampling_policy = jax.tree.map(lambda leaf: leaf[0], sampling_policies)
+    semantic_token = slow_sampling_policy(logits[0, -1, :], key=key)
+    codebooks = codebooks.at[0, 0].set(semantic_token)
     first_fast_code = jnp.array([codebooks[0, 0] - model.semantic_begin_id])
     first_fast_code = jnp.where(first_fast_code < 0, 0, first_fast_code)
     codebooks = codebooks.at[0, 1].set(first_fast_code[0])
@@ -432,18 +482,19 @@ def decode_next_token(
         forward_pass_config=None,
     )
     state_fast = fast_first_result.updated_state
+    assert state_fast is not None
 
     embedded_logits = model.embeddings_fast.embed(first_fast_code)
 
     def loop_iteration(
-        iteration_state: tuple[State | None, Array, Any],
-        index: jnp.int32,
-    ) -> tuple[tuple[State | None, Array, Any], None]:
-        transformer_state, logits, codebooks = iteration_state
-        logits = logits.reshape(logits.shape[0], 1, -1)
+        iteration_state: tuple[State, Array, Int[Array, "batch codebooks"]],
+        index: Int[Array, ""],
+    ) -> tuple[tuple[State, Array, Int[Array, "batch codebooks"]], None]:
+        transformer_state, fast_embedding, codebooks = iteration_state
+        fast_embedding = fast_embedding.reshape(fast_embedding.shape[0], 1, -1)
         input_pos_fast = jnp.array([index - 1])[None, :]
         fast_result = model.transformer_fast(
-            inner_features=logits,
+            inner_features=fast_embedding,
             token_positions=input_pos_fast,
             state=transformer_state,
             return_updated_state=True,
@@ -455,13 +506,15 @@ def decode_next_token(
         )
         (fast_logits,) = vmap_twice(model.readout_fast)(fast_result.outputs)
         new_state = fast_result.updated_state
+        assert new_state is not None
 
         short_logits = fast_logits[:, :, : model.config.short_logits_size]
-        code = vmap(lambda x: sampling_policy(x, key=key))(short_logits[:, -1, :])
+        fast_sampling_policy = jax.tree.map(lambda leaf: leaf[index], sampling_policies)
+        code = fast_sampling_policy(short_logits[0, -1, :], key=key)
 
-        new_logits = model.embeddings_fast.embed(code)
-        codebooks = codebooks.at[0, index].set(code[0])
-        return (new_state, new_logits, codebooks), None
+        new_embedding = model.embeddings_fast.embed(code[None])
+        codebooks = codebooks.at[0, index].set(code)
+        return (new_state, new_embedding, codebooks), None
 
     scan_result, _ = jax.lax.scan(
         loop_iteration,
@@ -469,5 +522,11 @@ def decode_next_token(
         jnp.arange(2, n_codes, dtype=jnp.int32),
     )
     _, _, codebooks = scan_result
+    updated_sampling_policies = vmap(lambda policy, code: policy.update(code))(sampling_policies, codebooks[0])
 
-    return codebooks, slow_model_result.updated_state
+    assert slow_model_result.updated_state is not None
+    return DecodeNextTokenResult(
+        codes=codebooks,
+        slow_state=slow_model_result.updated_state,
+        sampling_policies=updated_sampling_policies,
+    )

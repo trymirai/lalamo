@@ -154,12 +154,16 @@ class FishAudioTTSGenerator(TTSGenerator):
         self,
         text_tokens: Int[Array, "batch sequence"],
         sampling_policy: SamplingPolicy | None = None,
-        repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002, reserved for near future
+        repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
         random_key: PRNGKeyArray | None = None,
     ) -> Int[Array, "num_codebooks sequence"]:
         assert isinstance(self.tts_model.text_decoder, FishAudioTextDecoder)
 
-        sampling_policy = sampling_policy if sampling_policy is not None else default_fishaudio_sampling_policy()
+        sampling_policy = (
+            sampling_policy
+            if sampling_policy is not None
+            else default_fishaudio_sampling_policy(repetition_penalty=repetition_penalty)
+        )
 
         random_key = jax.random.PRNGKey(DEFAULT_FISHAUDIO_RANDOM_SEED) if random_key is None else random_key
         return self.tts_model.text_decoder.decode_utterance(
