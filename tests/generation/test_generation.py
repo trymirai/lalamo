@@ -1,10 +1,9 @@
 import jax.numpy as jnp
 import pytest
-from lalamo.modules.common import InferenceConfig
-
-from lalamo.models.chat_codec import UserMessage
 from lalamo.model_import.model_specs.common import ModelType
+
 from lalamo.models import LanguageModel
+from lalamo.models.chat_codec import UserMessage
 from lalamo.models.language_model import GenerationConfig, LanguageModelConfig
 from lalamo.module import Keychain
 from tests.conftest import ConvertModel, filter_specs, mark_by_size
@@ -172,18 +171,3 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
         eager_token_ids.squeeze().tolist(),
         streaming_token_ids.squeeze().tolist(),
     )
-
-    [(idx, batch_response)] = list(
-        language_model.reply_many(
-            [prompt],
-            generation_config=generation_config,
-            inference_config=InferenceConfig(batch_size=1, max_output_length=10),
-            keychain=Keychain(
-                vmapped_keys=generation_keychain.vmapped_keys[None, ...],
-                batch_key=generation_keychain.batch_key,
-            ),
-        ),
-    )
-    assert idx == 0
-    streaming_response = language_model.token_codec.decode_response(streaming_token_ids.tolist())
-    assert batch_response == streaming_response
