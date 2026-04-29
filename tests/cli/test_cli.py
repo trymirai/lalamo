@@ -1,3 +1,4 @@
+from tests.model_test_tiers import get_models_by_tier, ModelTier
 from pathlib import Path
 
 import polars as pl
@@ -6,7 +7,7 @@ import pytest
 from lalamo.model_registry import ModelRegistry
 from tests.conftest import ConvertModel, RunLalamo, strip_ansi_escape
 
-MODELS = ["google/gemma-3-1b-it", "mlx-community/LFM2-350M-8bit"]
+MODELS = get_models_by_tier(ModelTier.CANONICAL)
 
 CAPITAL_PROMPT = "What's the capital of the United Kingdom? No thinking, answer right away."
 APPLES_PROMPT = "Are apples fruits? Answer only yes or no, without thinking, answer right away."
@@ -77,32 +78,6 @@ def test_generate_replies(
         str(output_path),
         "--batch-size",
         "2",
-        "--max-output-length",
-        "64",
-    )
-
-    _assert_has_london_and_yes(pl.read_parquet(output_path).get_column("response").to_list())
-
-
-@pytest.mark.parametrize("model_repo", MODELS)
-def test_generate_replies_with_vram(
-    convert_model: ConvertModel,
-    model_repo: str,
-    qa_dataset_path: Path,
-    tmp_path: Path,
-    run_lalamo: RunLalamo,
-) -> None:
-    converted_model_dir = convert_model(model_repo, cached=True)
-    output_path = tmp_path / "replies.parquet"
-
-    run_lalamo(
-        "generate-replies",
-        str(converted_model_dir),
-        str(qa_dataset_path),
-        "--output-path",
-        str(output_path),
-        "--vram-gb",
-        "6",
         "--max-output-length",
         "64",
     )

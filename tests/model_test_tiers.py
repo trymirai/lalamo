@@ -67,14 +67,13 @@ def model_size(spec: ModelSpec) -> ModelSize:
     return ModelSize.LARGE
 
 
-def _tier_repos(tier: ModelTier) -> tuple[str, ...]:
+def get_models_by_tier(tier: ModelTier) -> tuple[str, ...]:
     return tuple(MODEL_TEST_TIERS_CONFIG["tiers"][tier.name.lower()])
 
 
 MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = tuple(
-    (repo, tier) for tier in ModelTier for repo in _tier_repos(tier)
+    (repo, tier) for tier in ModelTier for repo in get_models_by_tier(tier)
 )
 
 TIER_BY_REPO: dict[str, ModelTier] = dict(MODEL_TIERS)
-CI_CORE_LM_REPOS: tuple[str, ...] = _tier_repos(ModelTier.CANONICAL) + _tier_repos(ModelTier.CORE)
 COHERENCE_TTS_REPOS: tuple[str, ...] = tuple(MODEL_TEST_TIERS_CONFIG["coherence"]["tts_repos"])
