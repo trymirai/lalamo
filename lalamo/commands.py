@@ -1,24 +1,16 @@
-import dataclasses
 import json
 import shutil
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from itertools import chain
 from pathlib import Path
-from typing import cast
 
-import equinox as eqx
-import polars as pl
+import jax.numpy as jnp
 import requests
 import thefuzz.fuzz
 import thefuzz.process
-from jaxtyping import DTypeLike
 
-from lalamo.data import load_hf_parquet, shuffle_dataset
-from lalamo.data.huggingface_message import HFMessage
-from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions, save_completions
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import (
     DownloadingFileEvent,
@@ -26,22 +18,11 @@ from lalamo.model_import.common import (
     FinishedDownloadingFileEvent,
     FinishedInitializingModelEvent,
     InitializingModelEvent,
-    ModelMetadata,
     StatusEvent,
     import_model,
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
-from lalamo.models import GenerationConfig, GenerationTraceConfig, LanguageModelConfig, TTSGenerator
-from lalamo.models.chat_codec import AssistantMessage, Message
-from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
-from lalamo.module import Keychain, LalamoModule, ShardingConfig, use_sharding
-from lalamo.modules import config_converter
-from lalamo.modules.common import BatchSizesComputedEvent, InferenceConfig
 from lalamo.safetensors import safe_write
-from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
-from lalamo.speculator.ngram import NGramSpeculator
-from lalamo.speculator.utils import SpeculatorTrainingEvent, train_speculator
-from lalamo.utils.memory import get_available_bytes_on_default_device
 
 
 @dataclass
@@ -196,11 +177,6 @@ def convert(
         context_length,
     )
 
-    if dtype is not None:
-        import_dtype = config_converter.structure(dtype.value, DTypeLike)  # type: ignore[arg-type]
-    else:
-        import_dtype = None
-
     if output_dir.exists():
         callbacks.output_dir_exists()
 
@@ -217,7 +193,11 @@ def convert(
             case FinishedInitializingModelEvent():
                 callbacks.finished_initializing_model()
 
-    model, metadata = import_model(
+    import_dtype = None
+    if dtype is not None:
+        import_dtype = jnp.dtype(dtype.value)
+
+    imported_model = import_model(
         model_spec,
         dtype=import_dtype,
         context_length=context_length,
@@ -225,499 +205,19 @@ def convert(
     )
     callbacks.saving_model()
     output_dir.mkdir(parents=True, exist_ok=True)
+    exported_model = imported_model.model.export()
+    exported_metadata = None
+    if exported_model.metadata:
+        exported_metadata = {key: json.dumps(value) for key, value in exported_model.metadata.items()}
 
-    model.token_codec.tokenizer.save(str(output_dir / "tokenizer.json"))
-    serializable_model = model.tts_model if isinstance(model, TTSGenerator) else model
-    uzu = cast("LalamoModule", serializable_model).to_uzu()
-    del model
-    tensors = {k: v for k, v in uzu.items() if eqx.is_array(v)}
-    uzu_metadata = {k: str(v) for k, v in uzu.items() if not eqx.is_array(v)}
-
-    with Path(output_dir / "model.safetensors").open("wb") as fd:
-        safe_write(fd, tensors, metadata=uzu_metadata or None)
-
-    config_json = config_converter.unstructure(metadata, ModelMetadata)
-    with open(output_dir / "config.json", "w") as file:
-        json.dump(config_json, file, indent=4)
+    with (output_dir / "model.safetensors").open("wb") as file:
+        safe_write(
+            file,
+            exported_model.arrays,
+            metadata=exported_metadata,
+        )
+    with (output_dir / "config.json").open("w") as file:
+        json.dump(imported_model.model.config.to_json(), file, indent=4)
+    imported_model.model.token_codec.tokenizer.save(str(output_dir / "tokenizer.json"))
 
     callbacks.finished_saving_model()
-
-
-@dataclass
-class TraceCallbacks:
-    model_path: Path
-    output_path: Path
-    messages: Iterable[Message] | None
-
-    def output_exists(self) -> None:
-        raise RuntimeError(f"{self.output_path=} already exists, refusing to overwrite!")
-
-    def started(self) -> None:
-        pass
-
-    def loading_model(self) -> None:
-        pass
-
-    def finished_loading_model(self) -> None:
-        pass
-
-    def tracing_model(self) -> None:
-        pass
-
-    def finished_tracing_model(self) -> None:
-        pass
-
-    def saving_trace(self) -> None:
-        pass
-
-    def finished_saving_trace(self) -> None:
-        pass
-
-
-def trace(
-    model_path: Path,
-    output_path: Path,
-    messages: Iterable[Message] | None = None,
-    callbacks_type: Callable[
-        [
-            Path,
-            Path,
-            Iterable[Message] | None,
-        ],
-        TraceCallbacks,
-    ] = TraceCallbacks,
-) -> None:
-    callbacks = callbacks_type(model_path, output_path, messages)
-
-    if output_path.exists():
-        callbacks.output_exists()
-
-    callbacks.started()
-
-    callbacks.loading_model()
-    model = LanguageModelConfig.load_model(model_path)
-    callbacks.finished_loading_model()
-
-    callbacks.tracing_model()
-    result = model.record_trace(messages)
-    callbacks.finished_tracing_model()
-
-    callbacks.saving_trace()
-    traces = result.export().arrays
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with Path(output_path).open("wb") as fd:
-        safe_write(fd, traces)
-    callbacks.finished_saving_trace()
-
-
-@dataclass
-class EstimateBatchsizeCallbacks:
-    model_path: Path
-    max_input_length: int
-    max_output_length: int
-    num_logits_per_token: int
-    mem: int
-
-    def loading_model(self) -> None:
-        pass
-
-    def finished_loading_model(self) -> None:
-        pass
-
-    def estimating_batchsize(self, lo: int, hi: int | None) -> None:
-        pass
-
-    def finished_estimating_batchsize(self, batchsize: int) -> None:
-        pass
-
-
-def estimate_batchsize(
-    model_path: Path,
-    mem: int,
-    max_input_length: int = 1024,
-    max_output_length: int = 1024,
-    num_logits_per_token: int = 1024,
-    callbacks_type: Callable[
-        [
-            Path,
-            int,
-            int,
-            int,
-            int,
-        ],
-        EstimateBatchsizeCallbacks,
-    ] = EstimateBatchsizeCallbacks,
-) -> int:
-    callbacks = callbacks_type(model_path, max_input_length, max_output_length, num_logits_per_token, mem)
-
-    callbacks.loading_model()
-    model = LanguageModelConfig.load_model(model_path)
-    callbacks.finished_loading_model()
-
-    def memory_per_batchsize(batch_size: int) -> int:
-        inference_config = InferenceConfig(
-            max_output_length=max_output_length,
-            padded_length=max_input_length,
-            batch_size=batch_size,
-        )
-        return model.estimate_memory_consumption(
-            inference_config=inference_config,
-            generation_trace_config=GenerationTraceConfig(
-                num_logits_per_token=num_logits_per_token,
-            ),
-        )
-
-    bs = estimate_batchsize_from_bytes(
-        memory_per_batchsize,
-        mem,
-        lambda event: callbacks.estimating_batchsize(event.lo, event.hi),
-    )
-
-    callbacks.finished_estimating_batchsize(bs)
-    return bs
-
-
-@dataclass
-class CollectTracesCallbacks:
-    model_path: Path
-    dataset_path: Path
-    output_path: Path
-    num_logits_per_token: int
-    trace_layers: tuple[int, ...]
-    max_input_length: int
-    max_output_length: int
-    batch_size: int
-    shard_size: int
-    num_tokens_to_generate: int | None
-
-    def loading_model(self) -> None:
-        pass
-
-    def finished_loading_model(self) -> None:
-        pass
-
-    def loading_dataset(self) -> None:
-        pass
-
-    def finished_loading_dataset(self) -> None:
-        pass
-
-    def inference_progress(self, tokens_generated: int) -> None:
-        pass
-
-    def finished_inference(self) -> None:
-        pass
-
-
-def collect_traces(
-    model_path: Path,
-    dataset_path: Path,
-    output_path: Path,
-    num_logits_per_token: int = 1024,
-    trace_layers: tuple[int, ...] = (),
-    max_input_length: int = 1024,
-    max_output_length: int = 1024,
-    batch_size: int = 1,
-    shard_size: int = 64,
-    num_tokens_to_generate: int | None = None,
-    callbacks_type: Callable[..., CollectTracesCallbacks] = CollectTracesCallbacks,
-) -> None:
-    callbacks = callbacks_type(
-        model_path,
-        dataset_path,
-        output_path,
-        num_logits_per_token,
-        trace_layers,
-        max_input_length,
-        max_output_length,
-        batch_size,
-        shard_size,
-        num_tokens_to_generate,
-    )
-
-    callbacks.loading_model()
-    model = LanguageModelConfig.load_model(model_path)
-    callbacks.finished_loading_model()
-
-    callbacks.loading_dataset()
-    dataframe = shuffle_dataset(load_hf_parquet(dataset_path))
-    conversations = dataframe.get_column("conversation")
-    dataset = iter(
-        [HFMessage.from_dict(message).as_message() for message in conversation] for conversation in conversations
-    )
-    dataset = chain([next(dataset)], dataset)  # iterator is lazy, force it to actually open the file
-    callbacks.finished_loading_dataset()
-
-    def progress_callback(event: CollectTracesEvent) -> None:
-        callbacks.inference_progress(event.tokens_generated)
-
-    traces = inference_collect_traces(
-        model,
-        dataset,
-        num_logits_per_token,
-        trace_layers,
-        batch_size,
-        max_input_length,
-        max_output_length,
-        num_tokens_to_generate,
-        progress_callback,
-    )
-
-    if output_path.exists() and (not output_path.is_dir() or any(output_path.iterdir())):
-        raise RuntimeError(f"{output_path} must be an empty directory or not exist.")
-    output_path.mkdir(parents=True, exist_ok=True)
-    shard: list[LalamoCompletion] = []
-    shard_idx = 0
-    for trace in traces:
-        shard.append(trace)
-        if len(shard) >= shard_size:
-            save_completions(output_path / f"part-{shard_idx:05d}.safetensors", shard)
-            shard.clear()
-            shard_idx += 1
-    if shard:
-        save_completions(output_path / f"part-{shard_idx:05d}.safetensors", shard)
-
-    callbacks.finished_inference()
-
-
-@dataclass
-class TrainCallbacks:
-    trace_path: Path
-    output_path: Path
-    hashtable_size: int
-    num_logits_per_token: int
-    max_order: int
-    discount: float
-    subsample_size: int | None
-
-    def started(self) -> None:
-        pass
-
-    def training_progress(self, trained_tokens: int) -> None:
-        pass
-
-    def finished_training(self) -> None:
-        pass
-
-    def saving_speculator(self) -> None:
-        pass
-
-    def finished_saving_speculator(self) -> None:
-        pass
-
-
-def train(
-    trace_path: Path,
-    output_path: Path,
-    hashtable_size: int = 65536,
-    num_logits_per_token: int = 8,
-    max_order: int = 4,
-    discount: float = 0.002,
-    subsample_size: int | None = None,
-    callbacks_type: Callable[
-        [
-            Path,
-            Path,
-            int,
-            int,
-            int,
-            float,
-            int | None,
-        ],
-        TrainCallbacks,
-    ] = TrainCallbacks,
-) -> None:
-    callbacks = callbacks_type(
-        trace_path,
-        output_path,
-        hashtable_size,
-        num_logits_per_token,
-        max_order,
-        discount,
-        subsample_size,
-    )
-
-    callbacks.started()
-
-    traces = iter_completions(trace_path)
-    speculator = NGramSpeculator.init(hashtable_size, num_logits_per_token, max_order, discount)
-
-    def progress_callback(event: SpeculatorTrainingEvent) -> None:
-        callbacks.training_progress(event.trained_tokens)
-
-    train_speculator(speculator, traces, subsample_size, progress_callback)
-
-    speculator.compress()
-    callbacks.finished_training()
-
-    callbacks.saving_speculator()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb") as fd:
-        fd.write(speculator.serialize())
-    callbacks.finished_saving_speculator()
-
-
-@dataclass
-class GenerateRepliesCallbacks:
-    model_path: Path
-    dataset_path: Path
-    output_path: Path
-    max_vram: int | None
-    batch_size: int | None
-    total_rows: int
-
-    def loading_model(self) -> None:
-        pass
-
-    def finished_loading_model(self) -> None:
-        pass
-
-    def loading_dataset(self) -> None:
-        pass
-
-    def finished_loading_dataset(self) -> None:
-        pass
-
-    def estimating_batchsize(self, sequence_length: int, lo: int, hi: int | None) -> None:
-        pass
-
-    def batch_sizes_estimated(self) -> None:
-        pass
-
-    def batch_sizes_computed(self, event: BatchSizesComputedEvent) -> None:
-        pass
-
-    def generation_progress(self, rows_processed: int) -> None:
-        pass
-
-    def finished_generation(self) -> None:
-        pass
-
-
-def generate_replies(
-    model_path: Path,
-    dataset_path: Path,
-    output_path: Path,
-    max_vram: int | None,
-    max_output_length: int = 8192,
-    batch_size: int | None = None,
-    generation_config_override: GenerationConfig | None = None,
-    callbacks_type: Callable[
-        [
-            Path,
-            Path,
-            Path,
-            int | None,
-            int | None,
-            int,
-        ],
-        GenerateRepliesCallbacks,
-    ] = GenerateRepliesCallbacks,
-) -> None:
-    """Generate replies for every conversation in a dataset.
-
-    Loads a locally-converted model from ``model_path``, reads a Parquet dataset from ``dataset_path`` (expected to
-    have a ``conversation`` column of HuggingFace-style message lists), and writes a Parquet file to ``output_path``
-    with ``response`` and ``chain_of_thought`` columns.
-
-    Exactly one of ``max_vram`` or ``batch_size`` should be provided.  When ``max_vram`` is given (in bytes), batch
-    sizes are estimated automatically per sequence length.  If neither is set, an estimate for the device memory is
-    used.  Prefer setting ``max_output_length`` to a value no larger than you actually need, since it directly affects
-    memory consumption and therefore the batch sizes that fit in VRAM.
-
-    If ``generation_config_override`` is provided it replaces the model's default generation config entirely
-    (temperature, top-k, etc.).  Do not set ``stop_token_ids`` on it: the model's own stop tokens are always
-    injected automatically, and providing them will throw a ValueError.
-
-    ``callbacks_type`` is used internally (cli) for progress visualisation.
-    """
-    sharding_config = ShardingConfig.build()
-
-    # figure out max_vram if neither batch_size nor max_vram is set
-    if max_vram is None and batch_size is None:
-        max_vram = get_available_bytes_on_default_device()
-        if max_vram is None:
-            raise ValueError(
-                "Unable to determine default device memory capacity; please specify either --vram-gb or --batch-size",
-            )
-
-    # Count rows without loading full dataset
-    total_rows: int = pl.scan_parquet(dataset_path).select(pl.len()).collect().item()
-
-    callbacks = callbacks_type(
-        model_path,
-        dataset_path,
-        output_path,
-        max_vram,
-        batch_size,
-        total_rows,
-    )
-
-    callbacks.loading_model()
-    with use_sharding(sharding_config):
-        model = LanguageModelConfig.load_model(model_path)
-    callbacks.finished_loading_model()
-
-    callbacks.loading_dataset()
-    dataframe: pl.DataFrame = load_hf_parquet(dataset_path).collect()
-    conversations = dataframe.get_column("conversation")
-    dataset = iter(
-        [HFMessage.from_dict(message).as_message() for message in conversation] for conversation in conversations
-    )
-    try:
-        first_row = next(dataset)
-    except StopIteration:
-        callbacks.finished_loading_dataset()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        pl.DataFrame({"response": [], "chain_of_thought": []}).write_parquet(output_path)
-        return
-    dataset = chain([first_row], dataset)  # iterator is lazy, force it to actually open the file
-    callbacks.finished_loading_dataset()
-
-    inference_config = InferenceConfig(max_output_length=max_output_length, batch_size=batch_size)
-
-    callbacks.batch_sizes_estimated()
-
-    generation_config = None
-    if generation_config_override is not None:
-        if generation_config_override.stop_token_ids:
-            raise ValueError(
-                "Do not set generation_config.stop_token_ids for this command; "
-                "the model's configured stop tokens are always used instead.",
-            )
-
-        generation_config = dataclasses.replace(
-            generation_config_override,
-            stop_token_ids=model.config.generation_config.stop_token_ids,
-        )
-
-    with use_sharding(sharding_config):
-        dataset = list(dataset)
-        replies: list[tuple[int, AssistantMessage]] = []
-        for rows_processed, (idx, reply) in enumerate(
-            model.reply_many(
-                dataset,
-                generation_config=generation_config,
-                inference_config=inference_config,
-                keychain=Keychain.init(0, shape=(len(dataset),)),
-                vram_bytes=max_vram,
-                batch_sizes_callback=callbacks.batch_sizes_computed,
-            ),
-        ):
-            replies.append((idx, reply))
-            callbacks.generation_progress(rows_processed)
-
-    # Sort by original index to restore input order
-    replies.sort(key=lambda x: x[0])
-
-    df = pl.DataFrame(
-        {
-            "response": [reply.response for _, reply in replies],
-            "chain_of_thought": [reply.chain_of_thought for _, reply in replies],
-        },
-    )
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.write_parquet(output_path)
-
-    callbacks.finished_generation()
