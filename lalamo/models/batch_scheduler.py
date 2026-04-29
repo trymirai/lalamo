@@ -1,3 +1,4 @@
+import gc
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
@@ -47,6 +48,7 @@ from .lm_helpers import (
 
 class PrefillBatch(eqx.Module):
     prefill_results: PrefillResults
+    sampling_policy: SamplingPolicy
     mask: Bool[Array, " prefill_bs"]
     keys: Key[Array, " prefill_bs"]
     sequence_ids: Int[Array, " prefill_bs"]
@@ -73,6 +75,7 @@ class PrefillSource:
     padded_length: int
     state_capacity: int
     forward_pass_config: ForwardPassConfig
+    sampling_policy_template: SamplingPolicy
     cursor: int = 0
 
     @property
@@ -130,9 +133,14 @@ class PrefillSource:
             forward_pass_config=self.forward_pass_config,
             chunk_size=128,
         )
+        sampling_policy = jax.vmap(self.sampling_policy_template.init)(
+            jnp.asarray(padded_sequences),
+            jnp.asarray(lengths_without_padding),
+        )
 
         batch = PrefillBatch(
             prefill_results=prefilled_state_with_info,
+            sampling_policy=sampling_policy,
             mask=jnp.asarray(mask),
             keys=self.keys[jnp.asarray(selected_indices)],
             sequence_ids=jnp.asarray(selected_indices),
@@ -156,6 +164,7 @@ class BlockContinuousState(eqx.Module):
     last_token_logits: Float[Array, "num_lines vocab"]
     last_token_indices: Int[Array, " num_lines"]
     kv_state: State
+    sampling_policy: SamplingPolicy
     stop_flags: Bool[Array, " num_lines"]  # True = empty / just-finished; False = active
     token_buffer: Int[Array, "num_lines max_output"]
     num_generated: Int[Array, " num_lines"]
@@ -176,12 +185,21 @@ class BlockContinuousState(eqx.Module):
 
     @staticmethod
     def init(
-        num_lines: int, max_output_length: int, state_capacity: int, model: LanguageModel
+        num_lines: int,
+        max_output_length: int,
+        state_capacity: int,
+        model: LanguageModel,
+        sampling_policy_template: SamplingPolicy,
     ) -> "BlockContinuousState":
+        sampling_policy = jax.vmap(sampling_policy_template.init)(
+            jnp.zeros((num_lines, 1), dtype=jnp.int32),
+            jnp.zeros(num_lines, dtype=jnp.int32),
+        )
         return BlockContinuousState(
             last_token_logits=jnp.zeros((num_lines, model.model.vocab_size), dtype=jnp.float32),
             last_token_indices=jnp.zeros(num_lines, dtype=jnp.int32),
             kv_state=model.model.init_static_state(num_lines, state_capacity),
+            sampling_policy=sampling_policy,
             stop_flags=jnp.ones(num_lines, dtype=bool),
             token_buffer=jnp.zeros((num_lines, max_output_length), dtype=jnp.int32),
             num_generated=jnp.zeros(num_lines, dtype=jnp.int32),
@@ -212,42 +230,13 @@ class BlockContinuousState(eqx.Module):
     def is_empty(self) -> bool:
         return bool(jnp.all(self.stop_flags))
 
-    def attempt_halving(self, min_allowed_lines: int) -> "BlockContinuousState":
-        active_mask = np.logical_not(np.asarray(self.stop_flags))
-        active_count = int(active_mask.sum())
-        candidate_num_lines = self.num_lines // 2
-
-        if not (
-            active_count > min_allowed_lines // 2
-            and candidate_num_lines >= min_allowed_lines
-            and candidate_num_lines >= active_count
-        ):
-            return self
-
-        active_idx_np = np.flatnonzero(active_mask)
-        stopped_idx_np = np.flatnonzero(np.logical_not(active_mask))
-        pad = stopped_idx_np[: candidate_num_lines - active_count]
-        gather_idx = jnp.asarray(np.concatenate([active_idx_np, pad]).astype(np.int32))
-        # Donate the old (larger) state so its GPU buffers can be freed in-place
-        # by XLA as the gather writes into the new (smaller) buffers, instead of
-        # both states briefly coexisting on device.
-        return _halve_state(self, gather_idx)
-
-
-@eqx.filter_jit(donate="all")
-def _halve_state(
-    state: BlockContinuousState,
-    gather_idx: Int[Array, " new_num_lines"],
-) -> BlockContinuousState:
-    return jax.tree.map(lambda x: x[gather_idx], state)
-
 
 class BlockContinuousDecoder(eqx.Module):
     block_size: int
     max_output_length: int
 
     language_model: LanguageModel
-    sampling_policy: SamplingPolicy
+    sampling_policy_template: SamplingPolicy
     forward_pass_config: ForwardPassConfig | None
 
     @classmethod
@@ -263,7 +252,7 @@ class BlockContinuousDecoder(eqx.Module):
             block_size=block_size,
             max_output_length=max_output_length,
             language_model=model,
-            sampling_policy=sampling_policy,
+            sampling_policy_template=sampling_policy,
             forward_pass_config=forward_pass_config,
         )
 
@@ -279,9 +268,16 @@ class BlockContinuousDecoder(eqx.Module):
         sample_keys = keys[:, 1]
 
         logits = decode_state.last_token_logits.astype(jnp.float32)
-        processed = jax.vmap(self.sampling_policy.process_logits)(logits)
+        processed = jax.vmap(lambda policy, line_logits: policy.process_logits(line_logits))(
+            decode_state.sampling_policy,
+            logits,
+        )
         next_tokens = jax.vmap(jax.random.categorical)(sample_keys, processed)
         next_tokens = jnp.where(decode_state.stop_flags, 0, next_tokens)
+        next_sampling_policy = jax.vmap(lambda policy, token: policy.update(token))(
+            decode_state.sampling_policy,
+            next_tokens,
+        )
 
         next_indices = decode_state.last_token_indices + 1
         stop_flags = jnp.logical_or(
@@ -303,6 +299,7 @@ class BlockContinuousDecoder(eqx.Module):
             next_indices,
             outputs.updated_state,
             stop_flags,
+            next_sampling_policy,
         )
         return (new_decode_state, next_keys), next_tokens
 
@@ -313,12 +310,14 @@ class BlockContinuousDecoder(eqx.Module):
             batch.prefill_results.last_token_indices,
             batch.prefill_results.state,
             jnp.zeros(prefill_bs, dtype=bool),
+            batch.sampling_policy,
         )
         current_decode_state = DecodingState(
             state.last_token_logits,
             state.last_token_indices,
             state.kv_state,
             state.stop_flags,
+            state.sampling_policy,
         )
 
         empty_lines = state.stop_flags
@@ -339,6 +338,7 @@ class BlockContinuousDecoder(eqx.Module):
             last_token_logits=new_decode_state.last_token_logits,
             last_token_indices=new_decode_state.last_token_indices,
             kv_state=new_decode_state.state,
+            sampling_policy=new_decode_state.sampling_policy,
             stop_flags=new_decode_state.stop_flags,
             token_buffer=state.token_buffer,
             num_generated=apply_updates(jnp.zeros_like(state.num_generated), state.num_generated),
@@ -356,6 +356,7 @@ class BlockContinuousDecoder(eqx.Module):
             state.last_token_indices,
             state.kv_state,
             state.stop_flags,
+            state.sampling_policy,
         )
         (new_decode_state, new_keys), block_tokens = jax.lax.scan(
             lambda carry, _: self._step(carry, eos_token_ids),
@@ -372,6 +373,7 @@ class BlockContinuousDecoder(eqx.Module):
             last_token_logits=new_decode_state.last_token_logits,
             last_token_indices=new_decode_state.last_token_indices,
             kv_state=new_decode_state.state,
+            sampling_policy=new_decode_state.sampling_policy,
             stop_flags=combined_stop,
             token_buffer=new_buffer,
             num_generated=new_num_generated,
@@ -573,7 +575,6 @@ class ContinuousBatchScheduler(BatchScheduler):
 
     continuous_batching_block_size: int = 256
     prefill_batch_fraction: float = 0.2
-    min_allowed_batch_fraction: float = 0.2
 
     def generate_tokens_many(
         self,
@@ -611,7 +612,7 @@ class ContinuousBatchScheduler(BatchScheduler):
         assert inference_config.batch_size is not None
 
         sampling_policy = (
-            generation_config.default_policy()
+            generation_config.default_policy(vocab_size=self.model.model.vocab_size)
             if generation_config is not None
             else self.model.default_sampling_policy()
         )
@@ -623,8 +624,6 @@ class ContinuousBatchScheduler(BatchScheduler):
         block_size = min(self.continuous_batching_block_size, max_output_length)
         state_capacity = padded_length + max_output_length
         prefill_batch_size = max(1, min(int(batch_size * self.prefill_batch_fraction + 1), batch_size))
-        min_allowed_lines = max(1, int(batch_size * self.min_allowed_batch_fraction))
-
         prefills = PrefillSource(
             tokenized_messages=tokenized,
             keys=keys,
@@ -632,6 +631,7 @@ class ContinuousBatchScheduler(BatchScheduler):
             padded_length=padded_length,
             state_capacity=state_capacity,
             forward_pass_config=forward_pass_config,
+            sampling_policy_template=sampling_policy,
         )
         decoder = BlockContinuousDecoder.init(
             max_output_length,
@@ -640,24 +640,35 @@ class ContinuousBatchScheduler(BatchScheduler):
             sampling_policy,
             forward_pass_config,
         )
-        state = BlockContinuousState.init(batch_size, max_output_length, state_capacity, self.model)
+        state = BlockContinuousState.init(
+            batch_size,
+            max_output_length,
+            state_capacity,
+            self.model,
+            sampling_policy,
+        )
 
         jitted_decode = eqx.filter_jit(decoder.decode_block, donate="all")
         jitted_fill_lines = eqx.filter_jit(decoder.fill_lines, donate="all")
 
         while True:
             # Loop prefills in small chunks to make sure that the state decode gets is complete
-            prefills, state = prefills.fill(decoder, state, jitted_fill_lines)
+            if prefills is not None:
+                prefills, state = prefills.fill(decoder, state, jitted_fill_lines)
 
             state, completed_mask = jitted_decode(state)
 
             yield from state.extract_completed_sequences(completed_mask)
 
-            if state.is_empty() and prefills.exhausted:
-                break
+            if prefills is not None and prefills.exhausted:
+                # Drop the exhausted source explicitly; keeping prefills around just to
+                # check prefills.exhausted delays freeing its JAX buffers until a later GC pass.
+                del prefills
+                prefills = None
+                gc.collect()
 
-            if prefills.exhausted:
-                state = state.attempt_halving(min_allowed_lines)
+            if state.is_empty() and prefills is None:
+                break
 
             if fast_peak_memory:
                 break

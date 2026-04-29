@@ -6,6 +6,7 @@ from lalamo.message_processor import UserMessage
 from lalamo.models import ContinuousBatchScheduler, FixedBatchScheduler, LanguageModel
 from lalamo.models.common import InferenceConfig
 from lalamo.models.language_model import GenerationConfig, LanguageModelConfig
+from lalamo.modules import MLPForwardPassConfig
 from tests.conftest import ConvertModel
 
 _FUZZ_MODEL_REPOS = (
@@ -67,6 +68,7 @@ def test_continuous_vs_fixed_fuzz(
 
     generation_config = GenerationConfig(
         temperature=0,
+        frequency_penalty=0.5,
         stop_token_ids=fuzz_language_model.config.generation_config.stop_token_ids,
     )
     inference_config = InferenceConfig(
@@ -74,12 +76,14 @@ def test_continuous_vs_fixed_fuzz(
         max_output_length=max_output_length,
         padded_length=padded_length,
     )
+    forward_pass_config = MLPForwardPassConfig()
 
     fixed_results = dict(
         FixedBatchScheduler(model=fuzz_language_model).generate_tokens_many(
             tokenized,
             generation_config=generation_config,
             inference_config=inference_config,
+            forward_pass_config=forward_pass_config,
         ),
     )
     continuous_results = dict(
@@ -90,6 +94,7 @@ def test_continuous_vs_fixed_fuzz(
             tokenized,
             generation_config=generation_config,
             inference_config=inference_config,
+            forward_pass_config=forward_pass_config,
         ),
     )
 

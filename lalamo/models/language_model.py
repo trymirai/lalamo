@@ -62,6 +62,7 @@ class DecodingState(NamedTuple):
     last_token_indices: Int[Array, " batch"]
     state: State
     stop_flags: Bool[Array, " batch"]
+    sampling_policy: SamplingPolicy
 
 
 class StepTrace(NamedTuple):
@@ -131,9 +132,22 @@ class GenerationConfig:
     top_p: float | None = None
     min_p: float | None = None
     banned_tokens: tuple[int, ...] | None = None
+    repetition_penalty: float | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
 
-    def default_policy(self) -> SamplingPolicy:
-        return make_policy(self.temperature, self.top_k, self.top_p, self.min_p, self.banned_tokens)
+    def default_policy(self, vocab_size: int) -> SamplingPolicy:
+        return make_policy(
+            vocab_size=vocab_size,
+            temperature=self.temperature,
+            top_k=self.top_k,
+            top_p=self.top_p,
+            min_p=self.min_p,
+            banned_tokens=self.banned_tokens,
+            repetition_penalty=self.repetition_penalty,
+            presence_penalty=self.presence_penalty,
+            frequency_penalty=self.frequency_penalty,
+        )
 
 
 @dataclass(frozen=True)
@@ -168,7 +182,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         return self.config.generation_config.stop_token_ids
 
     def default_sampling_policy(self) -> SamplingPolicy:
-        return self.config.generation_config.default_policy()
+        return self.config.generation_config.default_policy(self.model.vocab_size)
 
     @eqx.filter_jit
     def _make_chunks(
@@ -290,9 +304,12 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     ) -> GenerationResults:
         batch_size, sequence_length = prompt_token_ids.shape
 
+        if prompt_lengths_without_padding is None:
+            prompt_lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
+
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
-            sampling_policy = generation_config.default_policy()
+            sampling_policy = generation_config.default_policy(self.model.vocab_size)
 
         if eos_token_ids is None:
             eos_token_ids = jnp.array(self.stop_token_ids, dtype=jnp.int32)
@@ -323,11 +340,14 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             forward_pass_config=forward_pass_config,
         )
 
+        initial_sampling_policy = vmap(sampling_policy.init)(prompt_token_ids, prompt_lengths_without_padding)
+
         initial_state = DecodingState(
             prefill_results.last_token_logits,
             prefill_results.last_token_indices,
             prefill_results.state,
             jnp.zeros(batch_size, dtype=jnp.bool),
+            initial_sampling_policy,
         )
 
         def loop_iteration(
@@ -336,7 +356,10 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         ) -> tuple[DecodingState, GenerationStepResults]:
             def sample_and_update() -> tuple[DecodingState, GenerationStepResults]:
                 upcasted_logits = state.last_token_logits.astype(jnp.float32)
-                processed_logits = vmap(sampling_policy.process_logits)(upcasted_logits)
+                processed_logits = vmap(lambda policy, logits: policy.process_logits(logits))(
+                    state.sampling_policy,
+                    upcasted_logits,
+                )
                 next_token_ids = jax.vmap(lambda k, logits: jax.random.categorical(k, logits))(keys, processed_logits)
                 next_token_ids = jnp.where(state.stop_flags, jnp.zeros(batch_size, dtype=jnp.int32), next_token_ids)
                 if num_top_logits_to_return is not None:
@@ -371,6 +394,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     next_token_indices,
                     decoder_outputs.updated_state,
                     stop_flags,
+                    vmap(lambda policy, token: policy.update(token))(state.sampling_policy, next_token_ids),
                 )
                 trace = None
                 if trace_config is not None:
@@ -627,7 +651,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     ) -> Iterable[Int[Array, ""]]:
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
-            sampling_policy = generation_config.default_policy()
+            sampling_policy = generation_config.default_policy(self.model.vocab_size)
 
         if eos_token_ids is None:
             eos_token_ids = jnp.array(self.stop_token_ids, dtype=jnp.int32)
@@ -649,16 +673,22 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             key = jax.random.split(jax.random.key(0), num=1)[0]  # matching generate_replies with bs=1
         keys = split_into_rolling_keys(key, num=max_output_length)
 
+        sampling_policy = sampling_policy.init(
+            padded_token_ids,
+            jnp.asarray(input_length, dtype=jnp.int32),
+        )
+
         state = DecodingState(
             prefill_results.last_token_logits,
             prefill_results.last_token_indices,
             prefill_results.state,
             jnp.array([0], dtype=jnp.bool),
+            sampling_policy,
         )
 
         for iter_key in keys:
             upcasted_logits = state.last_token_logits.astype(jnp.float32)
-            processed_logits = sampling_policy.process_logits(upcasted_logits.squeeze(0))
+            processed_logits = state.sampling_policy.process_logits(upcasted_logits.squeeze(0))
             next_token_id = jax.random.categorical(iter_key, processed_logits)
 
             yield next_token_id
@@ -666,6 +696,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             if jnp.any(next_token_id == eos_token_ids):
                 return
 
+            updated_sampling_policy = state.sampling_policy.update(next_token_id)
             next_token_indices = state.last_token_indices + 1
             decoder_outputs = self.model(
                 next_token_id.reshape(1, 1),
@@ -681,4 +712,5 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 next_token_indices,
                 decoder_outputs.updated_state,
                 state.stop_flags,
+                updated_sampling_policy,
             )
