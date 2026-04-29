@@ -39,9 +39,9 @@ from lalamo.audio.utils import play_mono_audio
 from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,
+    DType,
     EstimateBatchsizeCallbacks,
     GenerateRepliesCallbacks,
-    Precision,
     PullCallbacks,
     TraceCallbacks,
     TrainCallbacks,
@@ -245,9 +245,9 @@ class CliConversionCallbacks(ConversionCallbacks):
         conversion_strs = [
             f"🚀 Converting [cyan]{self.model_spec.name}[/cyan] by [cyan]{self.model_spec.vendor}[/cyan]",
         ]
-        if self.precision is not None:
+        if self.dtype is not None:
             conversion_strs.append(
-                f" and converting floating-point weights into [cyan]{self.precision.name.lower()}[/cyan] precision",
+                f" and loading floating-point weights as [cyan]{self.dtype.name.lower()}[/cyan]",
             )
         conversion_strs.append(".")
         console.print("".join(conversion_strs))
@@ -432,11 +432,11 @@ def convert(
             autocompletion=lambda: list(ModelRegistry.build().repo_to_model),
         ),
     ],
-    precision: Annotated[
-        Precision | None,
+    dtype: Annotated[
+        DType | None,
         Option(
-            help="Precision to use for activations and non-quantized weights.",
-            show_default="Native precision of the model",
+            help="Dtype to use for activations and non-quantized weights.",
+            show_default="Native dtype of the model",
         ),
     ] = None,
     output_dir: Annotated[
@@ -466,7 +466,7 @@ def convert(
     _convert(
         model_repo,
         output_dir,
-        precision,
+        dtype,
         context_length,
         partial(CliConversionCallbacks, overwrite=overwrite),
     )
@@ -657,7 +657,7 @@ def list_models(
 
     if plain:
         for spec in sorted_specs:
-            console.print(spec.repo)
+            console.print(spec.origin.description)
         return
 
     table = Table(
@@ -669,15 +669,13 @@ def list_models(
     table.add_column("Vendor", justify="left", style="magenta")
     table.add_column("Family", justify="left", style="magenta", no_wrap=True)
     table.add_column("Size", justify="right", style="magenta")
-    table.add_column("Quant", justify="left", style="magenta")
-    table.add_column("Repo", justify="left", style="cyan", no_wrap=True)
+    table.add_column("Origin", justify="left", style="cyan", no_wrap=True)
     for spec in sorted_specs:
         table.add_row(
             spec.vendor,
             spec.family,
             spec.size,
-            str(spec.quantization),
-            spec.repo,
+            spec.origin.description,
         )
     console.print(table)
 

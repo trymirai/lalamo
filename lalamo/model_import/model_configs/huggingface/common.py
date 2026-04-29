@@ -3,18 +3,19 @@ from dataclasses import dataclass
 from typing import ClassVar, Literal
 
 import cattrs
+import equinox as eqx
 import jax.numpy as jnp
 from cattrs.strategies import configure_tagged_union
 from jaxtyping import Array, DTypeLike
 
+from lalamo.model import Model
 from lalamo.model_import.loaders import (
     load_huggingface_classifier,
     load_huggingface_decoder,
 )
 from lalamo.model_import.model_configs import ForeignClassifierConfig, ForeignLMConfig
-from lalamo.module import LalamoModule
-from lalamo.modules import Decoder
-from lalamo.modules.classifier import Classifier
+from lalamo.models import ClassifierModel, LanguageModel
+from lalamo.weight_matrix import CompressionImplementation
 
 __all__ = [
     "AWQQuantizationConfig",
@@ -106,28 +107,42 @@ class HuggingFaceLMConfig(ForeignLMConfig):
         return result
 
     @property
-    def default_precision(self) -> DTypeLike:
+    def default_dtype(self) -> DTypeLike:
         return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
 
     def _load_weights(
         self,
-        model: LalamoModule,
+        model: Model,
         weights_dict: Mapping[str, Array],
-    ) -> LalamoModule:
-        assert isinstance(model, Decoder)
-        return load_huggingface_decoder(model, weights_dict)
+        *,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    ) -> Model:
+        assert isinstance(model, LanguageModel)
+        decoder = load_huggingface_decoder(
+            module=model.decoder,
+            weights_dict=weights_dict,
+            implementation=implementation,
+        )
+        return eqx.tree_at(lambda m: (m.decoder,), model, (decoder,))
 
 
 @dataclass(frozen=True)
 class HuggingFaceClassifierConfig(ForeignClassifierConfig):
     @property
-    def default_precision(self) -> DTypeLike:
+    def default_dtype(self) -> DTypeLike:
         return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
 
     def _load_weights(
         self,
-        model: LalamoModule,
+        model: Model,
         weights_dict: Mapping[str, Array],
-    ) -> LalamoModule:
-        assert isinstance(model, Classifier)
-        return load_huggingface_classifier(model, weights_dict)
+        *,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    ) -> Model:
+        assert isinstance(model, ClassifierModel)
+        classifier = load_huggingface_classifier(
+            module=model.classifier,
+            weights_dict=weights_dict,
+            implementation=implementation,
+        )
+        return eqx.tree_at(lambda m: (m.classifier,), model, (classifier,))

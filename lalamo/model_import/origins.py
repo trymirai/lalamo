@@ -12,10 +12,8 @@ from typing import NamedTuple
 import huggingface_hub
 import jax.numpy as jnp
 import yaml
-from jaxtyping import DTypeLike
 
 from lalamo.safetensors import safe_read
-from lalamo.utils.dtype import cast_if_float
 from lalamo.utils.lazy_collections import MapDictValues
 from lalamo.utils.registry_abc import RegistryABC
 
@@ -54,19 +52,19 @@ type StatusEvent = (
 )
 
 
-def load_torch_weights(path: Path, float_dtype: DTypeLike, *, weights_only: bool = True) -> WeightShard:
+def load_torch_weights(path: Path, *, weights_only: bool = True) -> WeightShard:
     import torch  # noqa: PLC0415
 
     from lalamo.utils.torch_interop import torch_to_jax  # noqa: PLC0415
 
     torch_weights = torch.load(path, map_location="cpu", weights_only=weights_only)
-    return MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights), {}
+    return MapDictValues(torch_to_jax, torch_weights), {}
 
 
-def load_safetensors_weights(path: Path, float_dtype: DTypeLike) -> WeightShard:
+def load_safetensors_weights(path: Path) -> WeightShard:
     with path.open("rb") as fd:
         metadata, weights = safe_read(fd)
-    return MapDictValues(lambda v: cast_if_float(v, float_dtype), weights), metadata or {}
+    return weights, metadata or {}
 
 
 class Origin(RegistryABC):
@@ -80,22 +78,12 @@ class Origin(RegistryABC):
     @abstractmethod
     def get_weights(
         self,
-        precision: DTypeLike,
         progress_callback: Callable[[StatusEvent], None] | None = None,
     ) -> Sequence[WeightShard]: ...
 
     @property
     @abstractmethod
     def description(self) -> str: ...
-
-    @classmethod
-    def from_cli(cls, origin_type: str, kwargs: dict[str, str]) -> "Origin":
-        name_to_type = {t.__name__: t for t in cls.__descendants__()}
-        concrete_type = name_to_type.get(origin_type)
-        if concrete_type is None:
-            available = ", ".join(sorted(name_to_type))
-            raise ValueError(f"Unknown origin type: {origin_type!r}. Available: {available}")
-        return concrete_type(**kwargs)
 
 
 def hf_resolve_file(
@@ -141,15 +129,14 @@ class HuggingFaceOrigin(Origin):
 
     def get_weights(
         self,
-        precision: DTypeLike,
         progress_callback: Callable[[StatusEvent], None] | None = None,
     ) -> Sequence[WeightShard]:
         paths = hf_resolve_weights(self.repo, self.weight_format.value, progress_callback)
         match self.weight_format:
             case WeightFormat.SAFETENSORS:
-                return tuple(load_safetensors_weights(path, precision) for path in paths)
+                return tuple(load_safetensors_weights(path) for path in paths)
             case WeightFormat.TORCH:
-                return tuple(load_torch_weights(path, precision) for path in paths)
+                return tuple(load_torch_weights(path) for path in paths)
 
     @property
     def description(self) -> str:
@@ -173,12 +160,11 @@ class NemoOrigin(Origin):
 
     def get_weights(
         self,
-        precision: DTypeLike,
         progress_callback: Callable[[StatusEvent], None] | None = None,
     ) -> Sequence[WeightShard]:
         (nemo_path,) = hf_resolve_weights(self.repo, ".nemo", progress_callback)
         weight_paths, _ = self.extract_nemo_archive(nemo_path)
-        return tuple(load_torch_weights(path, precision) for path in weight_paths)
+        return tuple(load_torch_weights(path) for path in weight_paths)
 
     @property
     def description(self) -> str:
@@ -224,15 +210,14 @@ class LocalOrigin(Origin):
 
     def get_weights(
         self,
-        precision: DTypeLike,
         progress_callback: Callable[[StatusEvent], None] | None = None,  # noqa: ARG002
     ) -> Sequence[WeightShard]:
         paths = tuple(Path(self.root) / weight_file for weight_file in self.weight_files)
         match self.weight_format:
             case WeightFormat.SAFETENSORS:
-                return tuple(load_safetensors_weights(path, precision) for path in paths)
+                return tuple(load_safetensors_weights(path) for path in paths)
             case WeightFormat.TORCH:
-                return tuple(load_torch_weights(path, precision) for path in paths)
+                return tuple(load_torch_weights(path) for path in paths)
 
     @property
     def description(self) -> str:

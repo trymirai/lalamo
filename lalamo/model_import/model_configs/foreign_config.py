@@ -7,13 +7,22 @@ from typing import ClassVar, Self
 
 import cattrs
 from jaxtyping import Array, DTypeLike
+from tokenizers import Tokenizer
 
-from lalamo.model import ModelConfig
-from lalamo.module import LalamoModule
+from lalamo.initializer import EmptyInitializer
+from lalamo.model import Model, ModelConfig
+from lalamo.models import (
+    ClassifierModelConfig,
+    GenerationConfig,
+    LanguageModelConfig,
+    TTSGeneratorConfig,
+)
+from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.modules.audio.text_to_speech import TTSConfig
 from lalamo.modules.classifier import ClassifierConfig
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.utils.registry_abc import RegistryABC
+from lalamo.weight_matrix import CompressionImplementation
 
 __all__ = ["ForeignClassifierConfig", "ForeignConfig", "ForeignLMConfig", "ForeignTTSConfig"]
 
@@ -25,7 +34,7 @@ class ForeignConfig[ConfigT: ModelConfig](RegistryABC):
 
     @property
     @abstractmethod
-    def default_precision(self) -> DTypeLike: ...
+    def default_dtype(self) -> DTypeLike: ...
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
@@ -37,20 +46,27 @@ class ForeignConfig[ConfigT: ModelConfig](RegistryABC):
     @abstractmethod
     def _load_weights(
         self,
-        model: LalamoModule,
+        model: Model,
         weights_dict: Mapping[str, Array],
-    ) -> LalamoModule: ...
+        *,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    ) -> Model: ...
 
-    @abstractmethod
-    def to_lalamo_config(
+    def load(
         self,
-        context_length: int | None,
-        metadata_dict: Mapping[str, str],
-    ) -> ConfigT: ...
+        config: ConfigT,
+        tokenizer: Tokenizer,
+        dtype: DTypeLike,
+        weights_dict: Mapping[str, Array],
+        *,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    ) -> Model:
+        model = config.init(tokenizer=tokenizer, initializer=EmptyInitializer(dtype=dtype))
+        return self._load_weights(model=model, weights_dict=weights_dict, implementation=implementation)
 
 
 @dataclass(frozen=True)
-class ForeignLMConfig(ForeignConfig, RegistryABC):
+class ForeignLMConfig(ForeignConfig[LanguageModelConfig], RegistryABC):
     @abstractmethod
     def to_decoder_config(
         self,
@@ -66,37 +82,29 @@ class ForeignLMConfig(ForeignConfig, RegistryABC):
         self,
         context_length: int | None,
         metadata_dict: Mapping[str, str],
-    ) -> DecoderConfig:
-        return self.to_decoder_config(context_length, metadata_dict)
+        token_codec_config: ChatCodecConfig,
+        generation_config: GenerationConfig,
+    ) -> LanguageModelConfig:
+        return LanguageModelConfig(
+            token_codec_config=token_codec_config,
+            decoder_config=self.to_decoder_config(context_length, metadata_dict),
+            generation_config=generation_config,
+        )
 
 
 @dataclass(frozen=True)
-class ForeignClassifierConfig(ForeignConfig, RegistryABC):
+class ForeignClassifierConfig(ForeignConfig[ClassifierModelConfig], RegistryABC):
     @abstractmethod
     def to_classifier_config(
         self,
         context_length: int | None,
     ) -> ClassifierConfig: ...
 
-    def to_lalamo_config(
-        self,
-        context_length: int | None,
-        metadata_dict: Mapping[str, str],  # noqa: ARG002
-    ) -> ClassifierConfig:
-        return self.to_classifier_config(context_length)
-
 
 @dataclass(frozen=True)
-class ForeignTTSConfig(ForeignConfig, RegistryABC):
+class ForeignTTSConfig(ForeignConfig[TTSGeneratorConfig], RegistryABC):
     @abstractmethod
     def to_tts_config(
         self,
         context_length: int | None,
     ) -> TTSConfig: ...
-
-    def to_lalamo_config(
-        self,
-        context_length: int | None,
-        metadata_dict: Mapping[str, str],  # noqa: ARG002
-    ) -> TTSConfig:
-        return self.to_tts_config(context_length)

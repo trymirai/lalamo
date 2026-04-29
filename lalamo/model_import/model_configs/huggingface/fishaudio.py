@@ -4,16 +4,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
 
+import equinox as eqx
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
+from lalamo.model import Model
 from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.fishaudio_loaders import (
     load_fishaudio_audio_decoder,
     load_fishaudio_text_decoder,
 )
 from lalamo.model_import.model_configs import ForeignTTSConfig
-from lalamo.module import LalamoModule
+from lalamo.models import TTSGenerator
 from lalamo.modules.activations import GELU, SiLU
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
@@ -38,7 +40,7 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     UpsamplingBlockConfig,
     VectorQuantizeConfig,
 )
-from lalamo.modules.audio.text_to_speech import TTSConfig, TTSModel
+from lalamo.modules.audio.text_to_speech import TTSConfig
 from lalamo.modules.audio.vocoders import NoopVocoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
@@ -49,6 +51,7 @@ from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer import TransformerConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
 from lalamo.utils.parameter_path import ParameterPath
+from lalamo.weight_matrix import CompressionImplementation
 
 __all__ = ["FishAudioConfig"]
 
@@ -410,25 +413,30 @@ class FishAudioConfig(ForeignTTSConfig):
 
     def _load_weights(
         self,
-        model: LalamoModule,
+        model: Model,
         weights_dict: Mapping[str, Array],
-    ) -> LalamoModule:
-        assert isinstance(model, TTSModel)
+        *,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
+    ) -> Model:
+        assert isinstance(model, TTSGenerator)
 
-        assert isinstance(model.text_decoder, FishAudioTextDecoder)
-        loaded_text_decoder = load_fishaudio_text_decoder(model.text_decoder, weights_dict, ParameterPath())
+        assert isinstance(model.tts_model.text_decoder, FishAudioTextDecoder)
+        loaded_text_decoder = load_fishaudio_text_decoder(model.tts_model.text_decoder, weights_dict, ParameterPath())
 
-        assert isinstance(model.audio_decoder, DescriptAudioCodec)
-        loaded_audio_decoder = load_fishaudio_audio_decoder(model.audio_decoder, weights_dict, ParameterPath())
+        assert isinstance(model.tts_model.audio_decoder, DescriptAudioCodec)
+        loaded_audio_decoder = load_fishaudio_audio_decoder(
+            model.tts_model.audio_decoder, weights_dict, ParameterPath()
+        )
 
-        return load_parameters(
+        tts_model = load_parameters(
             lambda m: (
                 m.text_decoder,
                 m.audio_decoder,
             ),
-            model,
+            model.tts_model,
             (loaded_text_decoder, loaded_audio_decoder),
         )
+        return eqx.tree_at(lambda m: (m.tts_model,), model, (tts_model,))
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
@@ -438,7 +446,7 @@ class FishAudioConfig(ForeignTTSConfig):
         return cls(**config)
 
     @property
-    def default_precision(self) -> DTypeLike:
+    def default_dtype(self) -> DTypeLike:
         # NOTE: in reality FishAudio text-decoder is bf16 while audio-decoder if fp32.
         # Currently lalamo weight manipulation pipeline does not support such
         # mixed-model-mixed-weight configuration so we upcast everything to fp32

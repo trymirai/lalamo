@@ -39,7 +39,6 @@ class ConfigMap:
     generation_config: FileSpec | GenerationConfig | None = field(default=FileSpec("generation_config.json"))
     chat_template: FileSpec | JSONFieldSpec | str | None = None
     system_prompt: FileSpec | str | None = None
-    extra_configs: tuple[FileSpec, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -73,7 +72,6 @@ class LanguageModelSpec(ModelSpec[ForeignLMConfig]):
     system_role_name: str = "system"
     user_role_name: str = "user"
     assistant_role_name: str = "assistant"
-    tool_role_name: str = "tool"
     grammar_start_tokens: tuple[str, ...] = ()
 
 
@@ -84,7 +82,6 @@ class ClassifierModelSpec(ModelSpec[ForeignClassifierConfig]):
     system_role_name: str = "system"
     user_role_name: str = "user"
     assistant_role_name: str = "assistant"
-    tool_role_name: str = "tool"
 
 
 @dataclass(frozen=True)

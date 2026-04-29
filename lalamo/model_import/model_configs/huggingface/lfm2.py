@@ -97,7 +97,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
         return flat
 
     @property
-    def default_precision(self) -> DTypeLike:
+    def default_dtype(self) -> DTypeLike:
         assert self.dtype is not None or self.torch_dtype is not None, (
             "at least one of dtype or torch_dtype must be specified"
         )

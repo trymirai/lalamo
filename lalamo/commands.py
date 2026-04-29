@@ -19,14 +19,16 @@ from jaxtyping import DTypeLike
 from lalamo.data import load_hf_parquet, shuffle_dataset
 from lalamo.data.huggingface_message import HFMessage
 from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions, save_completions
-from lalamo.model_import import ModelMetadata, ModelSpec, import_model
+from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import (
     DownloadingFileEvent,
     FileSpec,
     FinishedDownloadingFileEvent,
     FinishedInitializingModelEvent,
     InitializingModelEvent,
+    ModelMetadata,
     StatusEvent,
+    import_model,
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.models import GenerationConfig, GenerationTraceConfig, LanguageModelConfig, TTSGenerator
@@ -134,7 +136,7 @@ def pull(
     callbacks.finished()
 
 
-class Precision(Enum):
+class DType(Enum):
     FLOAT32 = "float32"
     FLOAT16 = "float16"
     BFLOAT16 = "bfloat16"
@@ -144,7 +146,7 @@ class Precision(Enum):
 class ConversionCallbacks:
     model_spec: ModelSpec
     output_dir: Path
-    precision: Precision | None
+    dtype: DType | None
     context_length: int | None
 
     def started(self) -> None:
@@ -175,13 +177,13 @@ class ConversionCallbacks:
 def convert(
     model_spec: ModelSpec,
     output_dir: Path,
-    precision: Precision | None = None,
+    dtype: DType | None = None,
     context_length: int | None = None,
     callbacks_type: Callable[
         [
             ModelSpec,
             Path,
-            Precision | None,
+            DType | None,
             int | None,
         ],
         ConversionCallbacks,
@@ -190,14 +192,14 @@ def convert(
     callbacks = callbacks_type(
         model_spec,
         output_dir,
-        precision,
+        dtype,
         context_length,
     )
 
-    if precision is not None:
-        precision_dtype = config_converter.structure(precision.value, DTypeLike)  # type: ignore[arg-type]
+    if dtype is not None:
+        import_dtype = config_converter.structure(dtype.value, DTypeLike)  # type: ignore[arg-type]
     else:
-        precision_dtype = None
+        import_dtype = None
 
     if output_dir.exists():
         callbacks.output_dir_exists()
@@ -217,7 +219,7 @@ def convert(
 
     model, metadata = import_model(
         model_spec,
-        precision=precision_dtype,
+        dtype=import_dtype,
         context_length=context_length,
         progress_callback=progress_callback,
     )
