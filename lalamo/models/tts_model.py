@@ -8,7 +8,7 @@ import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
-from jaxtyping import DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import DTypeLike, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 
 from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
@@ -18,23 +18,26 @@ from lalamo.audio.tts_message_processor import (
     TTSMessageProcessorConfig,
 )
 from lalamo.modules import TTSModel, config_converter
-from lalamo.modules.audio.fishaudio.fishaudio_common import (
-    default_fishaudio_sampling_policy,
-)
 from lalamo.modules.audio.fishaudio.fishaudio_consts import (
     DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
-    DEFAULT_FISHAUDIO_RANDOM_SEED,
+    DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE,
+    DEFAULT_FISH_AUDIO_SAMPLING_TOP_P,
+    REPEAT_WINDOW_SIZE,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
     FishAudioTextDecoder,
 )
 from lalamo.modules.audio.text_to_speech import (
-    DEFAULT_TTS_REPETITION_PENALTY,
-    DEFAULT_TTS_SAMPLING_POLICY,
     TTSConfig,
 )
 from lalamo.safetensors import safe_read
-from lalamo.sampling import SamplingPolicy
+from lalamo.sampling import (
+    CompositePolicy,
+    SamplingPolicy,
+    TemperaturePolicy,
+    TopPPolicy,
+    WindowedRepetitionPenalty,
+)
 
 from .common import ParameterTree, unflatten_parameters
 
@@ -78,7 +81,6 @@ class TTSGenerator(eqx.Module):
         self,
         text_tokens: Array,
         sampling_policy: SamplingPolicy,
-        repetition_penalty: float,  # noqa: ARG002, reserved for near future
         random_key: PRNGKeyArray | None = None,
     ) -> Array:
         random_key = jax.random.PRNGKey(123) if random_key is None else random_key
@@ -87,6 +89,17 @@ class TTSGenerator(eqx.Module):
             sampling_policy=sampling_policy,
             key=random_key,
         )
+
+    def default_sampling_policy(self) -> SamplingPolicy:
+        if isinstance(self.tts_model.text_decoder, FishAudioTextDecoder):
+            return CompositePolicy(
+                (
+                    WindowedRepetitionPenalty.zero(DEFAULT_FISH_AUDIO_REPETITION_PENALTY, REPEAT_WINDOW_SIZE),
+                    TemperaturePolicy(DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE),
+                    TopPPolicy(DEFAULT_FISH_AUDIO_SAMPLING_TOP_P),
+                )
+            )
+        return CompositePolicy((TemperaturePolicy(0.3), TopPPolicy(0.9)))
 
     def decode_audio(self, semantic_tokens: Array) -> Array:
         return self.tts_model.audio_decoder.audio_from_codes(semantic_tokens)
@@ -106,16 +119,15 @@ class TTSGenerator(eqx.Module):
     def generate_speech(
         self,
         messages: Iterable[TTSMessage],
-        sampling_policy: SamplingPolicy = DEFAULT_TTS_SAMPLING_POLICY,
-        repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,
+        sampling_policy: SamplingPolicy | None = None,
         random_key: PRNGKeyArray | None = None,
     ) -> TTSGenerationResult:
         text_tokens = self.tokenize_text(messages)
+        sampling_policy = sampling_policy if sampling_policy is not None else self.default_sampling_policy()
 
         semantic_tokens = self.decode_text(
             text_tokens,
             sampling_policy=sampling_policy,
-            repetition_penalty=repetition_penalty,
             random_key=random_key,
         )
 
@@ -146,45 +158,4 @@ class TTSGenerator(eqx.Module):
             config=config,
             tts_model=model,
             message_processor=message_processor,
-        )
-
-
-class FishAudioTTSGenerator(TTSGenerator):
-    def decode_text(
-        self,
-        text_tokens: Int[Array, "batch sequence"],
-        sampling_policy: SamplingPolicy | None = None,
-        repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
-        random_key: PRNGKeyArray | None = None,
-    ) -> Int[Array, "num_codebooks sequence"]:
-        assert isinstance(self.tts_model.text_decoder, FishAudioTextDecoder)
-
-        sampling_policy = (
-            sampling_policy
-            if sampling_policy is not None
-            else default_fishaudio_sampling_policy(repetition_penalty=repetition_penalty)
-        )
-
-        random_key = jax.random.PRNGKey(DEFAULT_FISHAUDIO_RANDOM_SEED) if random_key is None else random_key
-        return self.tts_model.text_decoder.decode_utterance(
-            text_tokens,
-            sampling_policy=sampling_policy,
-            key=random_key,
-        )
-
-    def decode_audio(
-        self,
-        semantic_tokens: Int[Array, "batch n_codebooks sequence"],
-    ) -> Float[Array, "batch audio_samples 1"]:
-        return super().decode_audio(semantic_tokens)
-
-    def generate_waveform(self, audio_features: Array) -> Array:
-        return super().generate_waveform(audio_features)
-
-    def get_generated_audio_params(self) -> AudioRenderingSettings:
-        return AudioRenderingSettings(
-            samplerate=self.tts_model.audio_decoder.samplerate,
-            output_channels=1,
-            bitwidth=16,
-            encoding=AudioEncoding.PCM,
         )

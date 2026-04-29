@@ -8,9 +8,6 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.activations import Identity
-from lalamo.modules.audio.fishaudio.fishaudio_common import (
-    default_fishaudio_sampling_policy,
-)
 from lalamo.modules.audio.fishaudio.fishaudio_consts import SHORT_LOGITS_SIZE
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
 from lalamo.modules.common import ForwardPassMode
@@ -319,7 +316,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     def decode_utterance(
         self,
         text_tokens: Int[Array, "batch tokens"],
-        sampling_policy: SamplingPolicy | None = None,
+        sampling_policy: SamplingPolicy,
         key: PRNGKeyArray | None = None,
     ) -> Int[Array, "num_codebooks tokens"]:
         """
@@ -339,8 +336,6 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         if prompt_length >= max_seq_len:
             raise ValueError(f"Input sequence length {prompt_length} exceeds max_seq_len {max_seq_len}")
 
-        if sampling_policy is None:
-            sampling_policy = default_fishaudio_sampling_policy()
         if key is None:
             key = jax.random.PRNGKey(123)
 

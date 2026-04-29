@@ -3,7 +3,6 @@ Consts and configuration elements that were stored in Fishaudio
 codebase as either global variables or magic consts
 """
 
-DEFAULT_FISHAUDIO_RANDOM_SEED: int = 123
 DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE = 0.8008
 DEFAULT_FISH_AUDIO_SAMPLING_TOP_P = 0.8008
 DEFAULT_FISH_AUDIO_REPETITION_PENALTY: float = 1.1016
