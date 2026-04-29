@@ -1128,6 +1128,10 @@ def distill_advanced(
         bool,
         Option(help="Persist latest and best checkpoints."),
     ] = _DISTILL_DEFAULTS["save_checkpoints"],
+    mlp_zero_channels_path: Annotated[
+        Path | None,
+        Option(help="JSON spec of dense MLP channels to hard-zero before distillation."),
+    ] = _DISTILL_DEFAULTS["mlp_zero_channels_path"],
 ) -> None:
     config = DistillConfig(
         teacher_path=teacher_path,
@@ -1156,6 +1160,7 @@ def distill_advanced(
         seed=seed,
         stochastic_rounding=stochastic_rounding,
         save_checkpoints=save_checkpoints,
+        mlp_zero_channels_path=mlp_zero_channels_path,
     )
     _distill(config, callbacks=CliDistillCallbacks(config))
 

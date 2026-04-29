@@ -42,6 +42,7 @@ from lalamo.distillation import (
     materialize_trainable_module,
     summarize_distill_parameters,
 )
+from lalamo.mlp_zero_channels import MlpZeroChannelSpec, load_mlp_zero_channel_spec, zero_decoder_mlp_channels
 from lalamo.model_import import ModelMetadata
 from lalamo.models import LanguageModel, LanguageModelConfig
 from lalamo.modules import config_converter
@@ -134,6 +135,7 @@ class DistillConfig:
     seed: int = 0
     stochastic_rounding: bool = True
     save_checkpoints: bool = True
+    mlp_zero_channels_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -374,6 +376,18 @@ def _build_lora_student_model(
     )
 
 
+def _materialize_student(
+    module: Decoder,
+    master_weights: object,
+    config: DistillTrainConfig,
+    zero_channel_spec: MlpZeroChannelSpec | None,
+) -> Decoder:
+    materialized = materialize_trainable_module(module, master_weights, config)
+    if zero_channel_spec is None:
+        return materialized
+    return zero_decoder_mlp_channels(materialized, zero_channel_spec)
+
+
 def _save_materialized_student(
     student_path: Path,
     output_path: Path,
@@ -561,9 +575,16 @@ def distill(
         raise ValueError("gradient_clip_norm must be positive when provided")
     if config.lora_scale <= 0:
         raise ValueError("lora_scale must be positive")
+    if config.mlp_zero_channels_path is not None and config.lora_rank is not None:
+        raise ValueError("MLP zero-channel induction requires lora_rank to be omitted")
+    if config.mlp_zero_channels_path is not None and config.resume_from is not None:
+        raise ValueError("MLP zero-channel induction does not support resume_from")
 
     sharding_config = ShardingConfig.build() if jax.device_count() > 1 else None
     device_batch_size = config.batch_size * jax.device_count()
+    zero_channel_spec = (
+        None if config.mlp_zero_channels_path is None else load_mlp_zero_channel_spec(config.mlp_zero_channels_path)
+    )
 
     if callbacks is not None:
         callbacks.started()
@@ -573,6 +594,8 @@ def distill(
         callbacks.loading_models()
     teacher_model = LanguageModelConfig.load_model(config.teacher_path)
     student_model = LanguageModelConfig.load_model(config.student_path)
+    if zero_channel_spec is not None:
+        student_model = replace(student_model, model=zero_decoder_mlp_channels(student_model.model, zero_channel_spec))
     if callbacks is not None:
         callbacks.finished_loading_models()
 
@@ -691,10 +714,11 @@ def distill(
 
     # Initial evaluation
     run_start = time.perf_counter()
-    initial_student = materialize_trainable_module(
+    initial_student = _materialize_student(
         student_model.model,
         optimizer_state.training_state.master_weights,
         distill_config,
+        zero_channel_spec,
     )
     initial_eval = _evaluate_with(
         config.training_mode,
@@ -775,10 +799,11 @@ def distill(
             eval_metrics: EvaluationMetrics | None = None
             if config.eval_every_steps > 0 and step % config.eval_every_steps == 0:
                 performed_periodic_evaluation = True
-                materialized_student = materialize_trainable_module(
+                materialized_student = _materialize_student(
                     student_model.model,
                     optimizer_state.training_state.master_weights,
                     distill_config,
+                    zero_channel_spec,
                 )
                 eval_metrics = _evaluate_with(
                     config.training_mode,
@@ -851,10 +876,11 @@ def distill(
             )
 
     # Final evaluation and export
-    final_student = materialize_trainable_module(
+    final_student = _materialize_student(
         student_model.model,
         optimizer_state.training_state.master_weights,
         distill_config,
+        zero_channel_spec,
     )
     final_eval = _evaluate_with(
         config.training_mode,
@@ -874,10 +900,11 @@ def distill(
         master_dtype=distill_config.master_dtype,
         compute_dtype=student_model.model.activation_precision,
     )
-    export_student = materialize_trainable_module(
+    export_student = _materialize_student(
         student_model.model,
         optimizer_state.training_state.master_weights,
         export_config,
+        zero_channel_spec,
     )
     if callbacks is not None:
         callbacks.saving_model()

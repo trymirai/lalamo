@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -20,15 +22,26 @@ from lalamo.distillation import (
     make_trace_distill_batch,
     materialize_trainable_module,
 )
+from lalamo.mlp_zero_channels import (
+    MlpZeroChannelLayer,
+    MlpZeroChannelSpec,
+    load_mlp_zero_channel_spec,
+    zero_decoder_mlp_channels,
+    zero_mlp_channels,
+)
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
+from lalamo.modules.activations import SiLU
 from lalamo.modules.common import config_converter, field, iter_parameter_leaves
 from lalamo.modules.decoder import Decoder
 from lalamo.modules.linear import (
+    FullPrecisionLinear,
+    FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
     LinearConfig,
     MLXQuantizedLinearConfig,
     QLoRALinearConfig,
 )
+from lalamo.modules.mlp import DenseMLP, DenseMLPConfig
 from lalamo.quantization import QuantizationMode
 
 requires_muon_dimension_numbers = pytest.mark.skipif(
@@ -189,6 +202,104 @@ def _make_tiny_llama_decoder(*, key: jax.Array) -> Decoder:
         metadata_dict={},
     )
     return decoder_config.random_init(key=key)
+
+
+def test_load_mlp_zero_channel_spec(tmp_path: Path) -> None:
+    spec_path = tmp_path / "mlp-zero.json"
+    spec_path.write_text('{"layers": [{"layer_index": 0, "channels": [5, 2]}]}')
+
+    spec = load_mlp_zero_channel_spec(spec_path)
+
+    assert spec == MlpZeroChannelSpec(layers=(MlpZeroChannelLayer(layer_index=0, channels=(5, 2)),))
+
+
+def test_zero_decoder_mlp_channels_zeroes_swiglu_channel_weights() -> None:
+    decoder = _make_tiny_llama_decoder(key=jax.random.key(47))
+    zeroed = zero_decoder_mlp_channels(
+        decoder,
+        MlpZeroChannelSpec(layers=(MlpZeroChannelLayer(layer_index=0, channels=(2, 5)),)),
+    )
+
+    mlp = zeroed.transformer.layers[0].mlp
+    assert isinstance(mlp, DenseMLP)
+    assert isinstance(mlp.up_projection, FullPrecisionLinear)
+    assert isinstance(mlp.down_projection, FullPrecisionLinear)
+
+    up_rows = jnp.asarray((2, 5, mlp.hidden_dim + 2, mlp.hidden_dim + 5), dtype=jnp.int32)
+    down_columns = jnp.asarray((2, 5), dtype=jnp.int32)
+
+    assert jnp.array_equal(
+        mlp.up_projection.weights[up_rows, :],
+        jnp.zeros_like(mlp.up_projection.weights[up_rows, :]),
+    )
+    assert jnp.array_equal(
+        mlp.down_projection.weights[:, down_columns],
+        jnp.zeros_like(mlp.down_projection.weights[:, down_columns]),
+    )
+
+
+def test_zero_mlp_channels_zeroes_up_and_gate_biases() -> None:
+    mlp = DenseMLPConfig(
+        linear_config=FullPrecisionLinearConfig(precision=jnp.float32),
+        activation=SiLU(),
+        has_up_biases=True,
+        has_down_biases=True,
+        gate_clipping=None,
+        up_clipping=None,
+    ).random_init(model_dim=4, hidden_dim=6, key=jax.random.key(51))
+
+    zeroed = zero_mlp_channels(mlp, (1,))
+
+    assert isinstance(zeroed.up_projection, FullPrecisionLinear)
+    assert zeroed.up_projection.biases is not None
+    assert zeroed.down_projection.biases is not None
+    assert jnp.array_equal(
+        zeroed.up_projection.biases[jnp.asarray((1, 7))],
+        jnp.zeros((2,), dtype=jnp.float32),
+    )
+    assert jnp.array_equal(zeroed.down_projection.biases, mlp.down_projection.biases)
+
+
+def test_zero_decoder_mlp_channels_are_absorbing_under_distillation() -> None:
+    teacher = _make_tiny_llama_decoder(key=jax.random.key(53))
+    student = zero_decoder_mlp_channels(
+        teacher,
+        MlpZeroChannelSpec(layers=(MlpZeroChannelLayer(layer_index=0, channels=(2,)),)),
+    )
+    batch = DistillBatch(
+        token_ids=jnp.array([[1, 2, 3, 4, 5, 6]], dtype=jnp.int32),
+        lengths_without_padding=jnp.array([6], dtype=jnp.int32),
+    )
+    config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.float32)
+    training_state = initialize_distill_training_state(student, config)
+    optimizer_state = _make_optimizer_state(training_state, optax.sgd(0.1))
+
+    grads, _ = compute_distill_step_gradients(
+        optimizer_state.training_state,
+        student,
+        teacher,
+        batch,
+        config,
+        QuantizationMode.UINT4,
+        stochastic_rounding=True,
+        quantization_key=jax.random.key(54),
+    )
+    optimizer_state = apply_distill_gradients(optimizer_state, optax.sgd(0.1), grads)
+    trained = materialize_trainable_module(student, optimizer_state.training_state.master_weights, config)
+    mlp = trained.transformer.layers[0].mlp
+    assert isinstance(mlp, DenseMLP)
+    assert isinstance(mlp.up_projection, FullPrecisionLinear)
+    assert isinstance(mlp.down_projection, FullPrecisionLinear)
+
+    up_rows = jnp.asarray((2, mlp.hidden_dim + 2), dtype=jnp.int32)
+    assert jnp.array_equal(
+        mlp.up_projection.weights[up_rows, :],
+        jnp.zeros_like(mlp.up_projection.weights[up_rows, :]),
+    )
+    assert jnp.array_equal(
+        mlp.down_projection.weights[:, 2],
+        jnp.zeros_like(mlp.down_projection.weights[:, 2]),
+    )
 
 
 def test_compute_distill_batch_metrics_matches_teacher_logits() -> None:
