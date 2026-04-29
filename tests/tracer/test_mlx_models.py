@@ -2,6 +2,10 @@ import unittest
 
 import pytest
 
+from lalamo.model_import.model_configs import HFLFM2Config, HFLlambaConfig
+from lalamo.model_import.model_specs.common import ModelType
+from tests.conftest import filter_specs
+from tests.model_test_tiers import ModelTier
 from tests.tracer.tracer import MLX_AVAILABLE, DType, ModelTestSpec, _test_model
 
 if MLX_AVAILABLE:
@@ -9,8 +13,9 @@ if MLX_AVAILABLE:
 
 # token_stride=1 is required because mlx doesn't accept token positions
 MODEL_LIST = [
-    ModelTestSpec("Qwen/Qwen3-0.6B-MLX-4bit", DType.FLOAT32, token_stride=1),
-    ModelTestSpec("Qwen/Qwen3-4B-MLX-4bit", DType.FLOAT32, token_stride=1),
+    ModelTestSpec(spec.repo, DType.FLOAT32, token_stride=1)
+    for spec in filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.CORE)
+    if spec.quantization is not None and spec.config_type not in (HFLFM2Config, HFLlambaConfig)
 ]
 
 

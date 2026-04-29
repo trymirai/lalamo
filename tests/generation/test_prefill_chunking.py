@@ -2,9 +2,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from lalamo.model_import import import_model
-from lalamo.model_registry import ModelRegistry
+from lalamo.model_import.model_specs.common import ModelType
 from lalamo.models import LanguageModel
+from lalamo.models.language_model import LanguageModelConfig
+from tests.conftest import ConvertModel, filter_specs
+from tests.model_test_tiers import ModelTier
 
 from ..common import assert_close
 
@@ -12,10 +14,13 @@ PREFILL_ATOL = 0.2
 PREFILL_RTOL = 0.1
 NO_CHUNK_SIZE = 100_000
 
+canonical_lm_specs = filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.CANONICAL)
 
-@pytest.fixture
-def language_model(model_registry: ModelRegistry) -> LanguageModel:
-    model = import_model(model_registry.repo_to_model["Qwen/Qwen2.5-0.5B-Instruct"]).model
+
+@pytest.fixture(params=canonical_lm_specs, ids=[spec.repo for spec in canonical_lm_specs])
+def language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) -> LanguageModel:
+    model_dir = convert_model(request.param.repo, cached=True)
+    model = LanguageModelConfig.load_model(model_dir)
     assert isinstance(model, LanguageModel)
     return model
 
