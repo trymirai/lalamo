@@ -1,6 +1,7 @@
 from lalamo.model_import.model_configs.nanocodec import NanoCodecForeignConfig
+from lalamo.model_import.origins import NemoOrigin
 
-from .common import ConfigMap, FileSpec, ModelSpec, ModelType, WeightsType
+from .common import ConfigMap, FileSpec, TTSModelSpec
 
 __all__ = ["NANOCODEC_TTS_MODELS"]
 
@@ -12,21 +13,18 @@ NANOCODEC_CHAT_TEMPLATE = """
 """
 
 NANOCODEC_TTS_MODELS = [
-    ModelSpec(
+    TTSModelSpec(
         vendor="NVIDIA",
         family="nanocodec",
         name=NEMO_NANOCODEC_MODEL_ID,
         size="0.1B",
-        quantization=None,
-        repo=f"nvidia/{NEMO_NANOCODEC_MODEL_ID}",
+        origin=NemoOrigin(repo=f"nvidia/{NEMO_NANOCODEC_MODEL_ID}"),
         config_type=NanoCodecForeignConfig,
-        weights_type=WeightsType.NEMO,
         configs=ConfigMap(
             model_config=FileSpec(f"{NEMO_NANOCODEC_MODEL_ID}.nemo"),
             chat_template=NANOCODEC_CHAT_TEMPLATE,
             generation_config=None,
             tokenizer=None,
         ),
-        model_type=ModelType.TTS_MODEL,
     ),
 ]

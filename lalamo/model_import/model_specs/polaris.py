@@ -1,17 +1,17 @@
 from lalamo.model_import.model_configs import HFQwen3Config
+from lalamo.model_import.origins import HuggingFaceOrigin
 
-from .common import ConfigMap, FileSpec, ModelSpec
+from .common import ConfigMap, FileSpec, LanguageModelSpec
 
 __all__ = ["POLARIS_MODELS"]
 
 POLARIS_MODELS = [
-    ModelSpec(
+    LanguageModelSpec(
         vendor="POLARIS-Project",
         family="Polaris-Preview",
         name="Polaris-4B-Preview",
         size="4B",
-        quantization=None,
-        repo="POLARIS-Project/Polaris-4B-Preview",
+        origin=HuggingFaceOrigin(repo="POLARIS-Project/Polaris-4B-Preview"),
         config_type=HFQwen3Config,
         configs=ConfigMap(
             chat_template=FileSpec("chat_template.jinja"),

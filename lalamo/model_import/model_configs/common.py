@@ -8,20 +8,18 @@ from typing import ClassVar, Self
 import cattrs
 from jaxtyping import Array, DTypeLike
 
-from lalamo.initializer import EmptyInitializer
+from lalamo.model import ModelConfig
 from lalamo.module import LalamoModule
 from lalamo.modules.audio.text_to_speech import TTSConfig
 from lalamo.modules.classifier import ClassifierConfig
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.utils.registry_abc import RegistryABC
 
-__all__ = ["ForeignClassifierConfig", "ForeignLMConfig"]
-
-SUPPORTED_CONFIG_TYPES = DecoderConfig | ClassifierConfig | TTSConfig
+__all__ = ["ForeignClassifierConfig", "ForeignConfig", "ForeignLMConfig", "ForeignTTSConfig"]
 
 
 @dataclass(frozen=True)
-class ForeignConfig[ConfigT: SUPPORTED_CONFIG_TYPES](RegistryABC):
+class ForeignConfig[ConfigT: ModelConfig](RegistryABC):
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
 
@@ -49,17 +47,6 @@ class ForeignConfig[ConfigT: SUPPORTED_CONFIG_TYPES](RegistryABC):
         context_length: int | None,
         metadata_dict: Mapping[str, str],
     ) -> ConfigT: ...
-
-    def load(
-        self,
-        context_length: int | None,
-        precision: DTypeLike,
-        weights_dict: Mapping[str, Array],
-        metadata_dict: Mapping[str, str],
-    ) -> LalamoModule[ConfigT]:
-        config = self.to_lalamo_config(context_length, metadata_dict)
-        model = config.init(EmptyInitializer(dtype=precision))
-        return self._load_weights(model, weights_dict)
 
 
 @dataclass(frozen=True)

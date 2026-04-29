@@ -4,8 +4,15 @@ import os
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
 from lalamo.checkpoint_manager import CheckpointManager
-from lalamo.model_import import ModelSpec, import_model
-from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFieldSpec, ModelType, UseCase, WeightsType
+from lalamo.model_import import ModelSpec
+from lalamo.model_import.model_specs.common import (
+    ClassifierModelSpec,
+    ConfigMap,
+    FileSpec,
+    JSONFieldSpec,
+    LanguageModelSpec,
+    TTSModelSpec,
+)
 from lalamo.models import ClassifierModel, LanguageModel
 from lalamo.models.chat_codec import (
     AssistantMessage,
@@ -27,19 +34,18 @@ __all__ = [
     "ChatCodecConfig",
     "CheckpointManager",
     "ClassifierModel",
+    "ClassifierModelSpec",
     "ConfigMap",
     "ContentBlock",
     "FileSpec",
     "Image",
     "JSONFieldSpec",
     "LanguageModel",
+    "LanguageModelSpec",
     "Message",
     "ModelSpec",
-    "ModelType",
     "SystemMessage",
+    "TTSModelSpec",
     "ToolSchema",
-    "UseCase",
     "UserMessage",
-    "WeightsType",
-    "import_model",
 ]

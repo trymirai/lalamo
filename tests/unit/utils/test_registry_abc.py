@@ -129,3 +129,32 @@ def test_registry_converter_handles_none_for_optional_registry_values() -> None:
 
     assert converter.unstructure(None, unstructure_as=OptimizerConfig | None) is None
     assert converter.structure(None, OptimizerConfig | None) is None
+
+
+def test_registry_converter_roundtrips_registry_type_fields() -> None:
+    class OptimizerConfig(RegistryABC):
+        pass
+
+    @dataclass(frozen=True)
+    class AdamConfig(OptimizerConfig):
+        learning_rate: float
+
+    @dataclass(frozen=True)
+    class TrainingConfig:
+        optimizer_config_type: type[OptimizerConfig]
+        fallback_optimizer_config_type: type[OptimizerConfig] | None = None
+
+    converter = make_registry_abc_converter()
+    config = TrainingConfig(
+        optimizer_config_type=AdamConfig,
+        fallback_optimizer_config_type=AdamConfig,
+    )
+
+    raw_config = converter.unstructure(config)
+    restored_config = converter.structure(raw_config, TrainingConfig)
+
+    assert raw_config == {
+        "optimizer_config_type": "AdamConfig",
+        "fallback_optimizer_config_type": "AdamConfig",
+    }
+    assert restored_config == config

@@ -1,32 +1,30 @@
 from lalamo.model_import.model_configs import HFLlambaConfig
+from lalamo.model_import.origins import HuggingFaceOrigin
 
-from .common import ConfigMap, FileSpec, ModelSpec, QuantizationMode
+from .common import ConfigMap, FileSpec, LanguageModelSpec
 
 __all__ = ["LLAMBA_MODELS"]
 
 LLAMBA_MODELS = [
-    ModelSpec(
+    LanguageModelSpec(
         vendor="Cartesia",
         family="Llamba",
         name="Llamba-1B",
         size="1B",
-        quantization=None,
-        repo="cartesia-ai/Llamba-1B",
+        origin=HuggingFaceOrigin(repo="cartesia-ai/Llamba-1B"),
         config_type=HFLlambaConfig,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "meta-llama/Llama-3.2-1B-Instruct"),
             tokenizer_config=FileSpec("tokenizer_config.json", "meta-llama/Llama-3.2-1B-Instruct"),
             generation_config=FileSpec("generation_config.json", "meta-llama/Llama-3.2-1B-Instruct"),
         ),
-        use_cases=(),
     ),
-    ModelSpec(
+    LanguageModelSpec(
         vendor="Cartesia",
         family="Llamba",
         name="Llamba-1B-4bit-mlx",
         size="1B",
-        quantization=QuantizationMode.UINT4,
-        repo="cartesia-ai/Llamba-1B-4bit-mlx",
+        origin=HuggingFaceOrigin(repo="cartesia-ai/Llamba-1B-4bit-mlx"),
         config_type=HFLlambaConfig,
         configs=ConfigMap(
             model_config=FileSpec("config.json", "cartesia-ai/Llamba-1B"),
@@ -34,6 +32,5 @@ LLAMBA_MODELS = [
             tokenizer_config=FileSpec("tokenizer_config.json", "meta-llama/Llama-3.2-1B-Instruct"),
             generation_config=FileSpec("generation_config.json", "meta-llama/Llama-3.2-1B-Instruct"),
         ),
-        use_cases=(),
     ),
 ]

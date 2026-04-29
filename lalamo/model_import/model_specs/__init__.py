@@ -1,4 +1,4 @@
-from .common import FileSpec, ModelSpec, ModelType, UseCase
+from .common import ClassifierModelSpec, FileSpec, LanguageModelSpec, ModelSpec, TTSModelSpec
 from .deepseek import DEEPSEEK_MODELS
 from .essential_ai import RNJ_MODELS
 from .fishaudio import FISHAUDIO_TTS_MODELS
@@ -18,10 +18,11 @@ from .reka import REKA_MODELS
 
 __all__ = [
     "ALL_MODEL_LISTS",
+    "ClassifierModelSpec",
     "FileSpec",
+    "LanguageModelSpec",
     "ModelSpec",
-    "ModelType",
-    "UseCase",
+    "TTSModelSpec",
 ]
 
 TTS_MODELS = FISHAUDIO_TTS_MODELS + NANOCODEC_TTS_MODELS
