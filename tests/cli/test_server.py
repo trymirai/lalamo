@@ -15,7 +15,7 @@ CAPITAL_PROMPT = "What's the capital of the United Kingdom? No thinking, answer 
 APPLES_PROMPT = "Are apples fruits? Answer only yes or no, without thinking, answer right away."
 MATH_PROMPT = "What's 2 + 2? No thinking, answer right away."
 
-MAX_OUTPUT_LENGTH = 64
+MAX_OUTPUT_LENGTH = 8
 
 
 def _free_port() -> int:
