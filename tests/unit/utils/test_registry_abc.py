@@ -158,3 +158,38 @@ def test_registry_converter_roundtrips_registry_type_fields() -> None:
         "fallback_optimizer_config_type": "AdamConfig",
     }
     assert restored_config == config
+
+
+def test_registry_converter_roundtrips_registry_typevar_fields() -> None:
+    class OptimizerConfig(RegistryABC):
+        pass
+
+    @dataclass(frozen=True)
+    class AdamConfig(OptimizerConfig):
+        learning_rate: float
+
+    @dataclass(frozen=True)
+    class TrainingConfig[OptimizerConfigT: OptimizerConfig]:
+        optimizer_config: OptimizerConfigT
+
+    @dataclass(frozen=True)
+    class AdamTrainingConfig(TrainingConfig[AdamConfig]):
+        num_steps: int
+
+    converter = make_registry_abc_converter()
+    config = AdamTrainingConfig(
+        optimizer_config=AdamConfig(learning_rate=0.001),
+        num_steps=100,
+    )
+
+    raw_config = converter.unstructure(config)
+    restored_config = converter.structure(raw_config, AdamTrainingConfig)
+
+    assert raw_config == {
+        "optimizer_config": {
+            "type": "AdamConfig",
+            "learning_rate": 0.001,
+        },
+        "num_steps": 100,
+    }
+    assert restored_config == config

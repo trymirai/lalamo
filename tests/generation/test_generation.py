@@ -1,21 +1,23 @@
 import jax.numpy as jnp
 import pytest
-from lalamo.model_import.model_specs.common import ModelType
 
+from lalamo.model_import.model_spec import LanguageModelSpec
 from lalamo.models import LanguageModel
 from lalamo.models.chat_codec import UserMessage
-from lalamo.models.language_model import GenerationConfig, LanguageModelConfig
+from lalamo.models.language_model import GenerationConfig
 from lalamo.module import Keychain
-from tests.conftest import ConvertModel, filter_specs, mark_by_size
+from tests.conftest import ConvertModel, filter_specs, load_converted_model, mark_by_size
 from tests.model_test_tiers import ModelTier
 
-core_llm_specs = filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.CORE)
+core_llm_specs = filter_specs(model_type=LanguageModelSpec, max_tier=ModelTier.CORE)
 
 
-@pytest.fixture(params=mark_by_size(core_llm_specs), ids=[spec.repo for spec in core_llm_specs])
+@pytest.fixture(params=mark_by_size(core_llm_specs), ids=[spec.origin.description for spec in core_llm_specs])
 def language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) -> LanguageModel:
-    model_dir = convert_model(request.param.repo, cached=True)
-    return LanguageModelConfig.load_model(model_dir)
+    model_dir = convert_model(request.param.origin.description)
+    model = load_converted_model(model_dir)
+    assert isinstance(model, LanguageModel)
+    return model
 
 
 @pytest.mark.parametrize("num_top_logits_to_return", [None, 8, 16])
@@ -26,7 +28,7 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
         token_ids,
         max_output_length=32,
         num_top_logits_to_return=num_top_logits_to_return,
-        keychain=Keychain.init(0, shape=(1,)),
+        keychain=Keychain.init(0),
     )
     token_ids = result.token_ids.squeeze(0)
     eos_ids = language_model.config.generation_config.stop_token_ids
@@ -58,7 +60,7 @@ def test_padding(language_model: LanguageModel) -> None:
         token_ids,
         prompt_lengths_without_padding=jnp.array([0], dtype=jnp.int32),
         max_output_length=32,
-        keychain=Keychain.init(1, shape=(1,)),
+        keychain=Keychain.init(1),
     ).token_ids.squeeze(0)
     response_text = language_model.token_codec.tokenizer.decode(response_token_ids)
     assert "elephants" not in response_text.lower()
@@ -67,7 +69,7 @@ def test_padding(language_model: LanguageModel) -> None:
         token_ids,
         prompt_lengths_without_padding=jnp.array([token_ids.size]),
         max_output_length=32,
-        keychain=Keychain.init(2, shape=(1,)),
+        keychain=Keychain.init(2),
     ).token_ids.squeeze(0)
     response_text = language_model.token_codec.tokenizer.decode(response_token_ids)
     assert "elephants" in response_text.lower()
@@ -101,7 +103,7 @@ def test_batch_generation(language_model: LanguageModel) -> None:
         generation_config=generation_config,
         prompt_lengths_without_padding=batched_prompt_lengths,
         max_output_length=32,
-        keychain=Keychain.init(3, shape=(len(prompts),)),
+        keychain=Keychain.init(3),
     ).token_ids
 
     response_a, response_b = [language_model.token_codec.tokenizer.decode(ids) for ids in response_token_ids]
@@ -153,10 +155,7 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
         token_ids[None, :],
         generation_config=generation_config,
         max_output_length=10,
-        keychain=Keychain(
-            vmapped_keys=generation_keychain.vmapped_keys[None, ...],
-            batch_key=generation_keychain.batch_key,
-        ),
+        keychain=generation_keychain,
     ).token_ids.squeeze(0)
 
     streaming_token_generator = language_model.stream_tokens(

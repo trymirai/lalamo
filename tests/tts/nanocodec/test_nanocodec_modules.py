@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from jax.random import PRNGKey
 
+from lalamo.initializer import EmptyInitializer, RandomInitializer
 from lalamo.model_import.loaders.nanocodec_loaders import (
     load_causal_conv1d,
     load_causal_hifigan_decoder,
@@ -18,7 +19,6 @@ from lalamo.model_import.loaders.nanocodec_loaders import (
     load_hifigan_res_layer,
     load_residual_block,
 )
-from lalamo.initializer import EmptyInitializer, RandomInitializer
 from lalamo.modules.audio.common_modules import CausalConv1dConfig
 from lalamo.modules.audio.fishaudio.fishaudio_modules import Snake1dConfig
 from lalamo.modules.audio.nanocodec.nanocodec_consts import DEFAULT_FSQ_EPS
@@ -57,7 +57,7 @@ def test_fsq_encode_matches_torch() -> None:
         num_levels=tuple(num_levels),
         eps=DEFAULT_FSQ_EPS,
     )
-    lalamo_quantizer = lalamo_config.init(EmptyInitializer(precision=jnp.float32))
+    lalamo_quantizer = lalamo_config.init(EmptyInitializer(dtype=jnp.float32))
     torch_quantizer = nanocodec_torch.FiniteScalarQuantizer(num_levels=num_levels, eps=1e-3)
 
     batch_size, seq_len = 2, 10
@@ -71,7 +71,6 @@ def test_fsq_encode_matches_torch() -> None:
     _, indices_torch = torch_quantizer(torch.from_numpy(inputs_np), input_len)
 
     np.testing.assert_allclose(np.array(codes_lalamo), indices_torch[0].numpy(), rtol=1e-5, atol=1e-5)
-    # np.testing.assert_array_equal(np.array(indices_lalamo), indices_torch.numpy())
 
 
 def test_fsq_decode_matches_torch() -> None:
@@ -82,7 +81,7 @@ def test_fsq_decode_matches_torch() -> None:
         num_levels=tuple(num_levels),
         eps=DEFAULT_FSQ_EPS,
     )
-    lalamo_quantizer = lalamo_config.init(EmptyInitializer(precision=jnp.float32))
+    lalamo_quantizer = lalamo_config.init(EmptyInitializer(dtype=jnp.float32))
     torch_quantizer = nanocodec_torch.FiniteScalarQuantizer(num_levels=num_levels, eps=1e-3)
 
     # Test all codebook entries
@@ -113,7 +112,7 @@ def test_group_fsq_encode_matches_torch() -> None:
         eps=DEFAULT_FSQ_EPS,
     )
     lalamo_config = GroupFiniteScalarQuantizerConfig(num_groups=num_groups, quantizer_config=fsq_config)
-    lalamo_quantizer = lalamo_config.init(EmptyInitializer(precision=jnp.float32))
+    lalamo_quantizer = lalamo_config.init(EmptyInitializer(dtype=jnp.float32))
     torch_quantizer = nanocodec_torch.GroupFiniteScalarQuantizer(
         num_groups=num_groups,
         num_levels_per_group=num_levels_per_group,
@@ -132,7 +131,6 @@ def test_group_fsq_encode_matches_torch() -> None:
     _, indices_torch = torch_quantizer(torch.from_numpy(inputs_np), input_len)
 
     np.testing.assert_allclose(np.array(codes_lalamo), indices_torch.numpy(), rtol=1e-5, atol=1e-5)
-    # np.testing.assert_array_equal(np.array(indices_lalamo), indices_torch.numpy())
 
 
 def test_group_fsq_decode_matches_torch() -> None:
@@ -145,7 +143,7 @@ def test_group_fsq_decode_matches_torch() -> None:
         eps=DEFAULT_FSQ_EPS,
     )
     lalamo_config = GroupFiniteScalarQuantizerConfig(num_groups=num_groups, quantizer_config=fsq_config)
-    lalamo_quantizer = lalamo_config.init(EmptyInitializer(precision=jnp.float32))
+    lalamo_quantizer = lalamo_config.init(EmptyInitializer(dtype=jnp.float32))
     torch_quantizer = nanocodec_torch.GroupFiniteScalarQuantizer(
         num_groups=num_groups,
         num_levels_per_group=num_levels_per_group,
@@ -186,7 +184,7 @@ def test_half_snake_forward_matches_torch() -> None:
     # Create Lalamo HalfSnake
     snake_config = Snake1dConfig()
     lalamo_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    lalamo_half_snake = lalamo_config.init(RandomInitializer(precision=jnp.float32, key=PRNGKey(123)), channels)
+    lalamo_half_snake = lalamo_config.init(RandomInitializer(dtype=jnp.float32, key=PRNGKey(123)), channels)
 
     # Create PyTorch HalfSnake
     torch_half_snake = nanocodec_torch.HalfSnake(channels)
@@ -248,7 +246,7 @@ def test_causal_conv1d_forward_matches_torch() -> None:
     # Create Lalamo conv
     lalamo_config = CausalConv1dConfig(has_biases=True)
     lalamo_conv = lalamo_config.init(
-        EmptyInitializer(precision=jnp.float32),
+        EmptyInitializer(dtype=jnp.float32),
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -302,7 +300,7 @@ def test_causal_conv1d_with_dilation_matches_torch() -> None:
 
     lalamo_config = CausalConv1dConfig(has_biases=True)
     lalamo_conv = lalamo_config.init(
-        EmptyInitializer(precision=jnp.float32),
+        EmptyInitializer(dtype=jnp.float32),
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -352,7 +350,7 @@ def test_causal_transpose_conv1d_forward_matches_torch() -> None:
     # Create Lalamo transposed conv
     lalamo_config = CausalTransposeConv1dConfig(has_biases=True)
     lalamo_conv = lalamo_config.init(
-        EmptyInitializer(precision=jnp.float32),
+        EmptyInitializer(dtype=jnp.float32),
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -421,7 +419,7 @@ def test_residual_block_forward_matches_torch() -> None:
         conv_config=conv_config,
     )
     lalamo_block = lalamo_block_config.init(
-        EmptyInitializer(precision=jnp.float32),
+        EmptyInitializer(dtype=jnp.float32),
         channels=channels,
         kernel_size=kernel_size,
         dilation=dilation,
@@ -480,7 +478,7 @@ def test_hifigan_res_block_forward_matches_torch() -> None:
 
     lalamo_block_config = HiFiGANResBlockConfig(residual_block_config=residual_block_config)
     lalamo_block = lalamo_block_config.init(
-        EmptyInitializer(precision=jnp.float32),
+        EmptyInitializer(dtype=jnp.float32),
         channels=channels,
         kernel_size=kernel_size,
         dilations=dilations,
@@ -540,7 +538,7 @@ def test_hifigan_res_layer_forward_matches_torch() -> None:
 
     lalamo_layer_config = HiFiGANResLayerConfig(hifigan_res_block_config=hifigan_res_block_config)
     lalamo_layer = lalamo_layer_config.init(
-        EmptyInitializer(precision=jnp.float32),
+        EmptyInitializer(dtype=jnp.float32),
         channels=channels,
         kernel_sizes=kernel_sizes,
         dilations=dilations,
@@ -618,7 +616,7 @@ def test_causal_hifigan_decoder_forward_matches_torch() -> None:
         post_conv_config=conv_config,
     )
     lalamo_decoder = lalamo_decoder_config.init(
-        EmptyInitializer(precision=jnp.float32),
+        EmptyInitializer(dtype=jnp.float32),
         input_dim=input_dim,
         base_channels=base_channels,
         up_sample_rates=up_sample_rates,

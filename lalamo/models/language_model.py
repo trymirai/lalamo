@@ -161,7 +161,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             prompt_token_ids,
             prompt_length + max_output_length + 1,
             prompt_lengths_without_padding,
-            keychain=prefill_keychain.broadcast((batch_size,)),
+            keychain=prefill_keychain,
         )
         initial_state = DecodingState(
             last_token_logits=prefill_results.last_token_logits,
@@ -178,9 +178,9 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
 
         def loop_iteration(
             state: DecodingState,
-            step_keys: tuple[Key[Array, " batch"], Key[Array, " batch"]],
+            step_keys: tuple[Key[Array, " batch"], Key[Array, ""]],
         ) -> tuple[DecodingState, GenerationStepResults]:
-            sampling_keys, decoding_keys = step_keys
+            sampling_keys, decoding_key = step_keys
             processed_logits = call_vmapped(
                 sampling_policy.process_logits,
                 state.last_token_logits.astype(jnp.float32),
@@ -205,7 +205,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 state=state.state,
                 return_updated_state=True,
                 forward_pass_mode=forward_pass_mode,
-                keychain=Keychain(vmapped_keys=decoding_keys, batch_key=decoding_keychain.batch_key),
+                keychain=Keychain(vmapped_keys=decoding_key, batch_key=decoding_keychain.batch_key),
             )
             assert decoder_result.updated_state is not None
 
@@ -224,7 +224,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             )
 
         sampling_keys = sampling_keychain.rolling_broadcast((max_output_length, batch_size)).vmapped_keys
-        decoding_keys = decoding_keychain.rolling_broadcast((max_output_length, batch_size)).vmapped_keys
+        decoding_keys = decoding_keychain.rolling_broadcast((max_output_length,)).vmapped_keys
         _, generated = jax.lax.scan(loop_iteration, initial_state, (sampling_keys, decoding_keys))
 
         token_ids = rearrange(generated.token_ids, "step batch -> batch step")
@@ -252,7 +252,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         response_ids = self.generate_tokens(
             token_ids,
             generation_config,
-            keychain=keychain.broadcast((1,)),
+            keychain=keychain,
         ).token_ids[0]
         return self.token_codec.decode_response(self._trim_at_eos(response_ids.tolist()))
 
@@ -270,7 +270,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             generation_config,
             max_output_length=max_output_length,
             eos_token_ids=eos_token_ids,
-            keychain=keychain.broadcast((1,)),
+            keychain=keychain,
         )
         stop_token_ids = set(self.config.generation_config.stop_token_ids)
         if eos_token_ids is not None:

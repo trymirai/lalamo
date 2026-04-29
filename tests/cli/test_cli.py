@@ -1,11 +1,12 @@
-from pathlib import Path
-
-import polars as pl
+import jax.numpy as jnp
 import pytest
 
 from lalamo.model_registry import ModelRegistry
-from tests.conftest import ConvertModel, RunLalamo, strip_ansi_escape
-from tests.model_test_tiers import ModelTier, get_models_by_tier
+from lalamo.models import LanguageModel
+from lalamo.models.chat_codec import UserMessage
+from lalamo.models.language_model import GenerationConfig
+from lalamo.module import Keychain
+from tests.conftest import ConvertModel, RunLalamo, load_converted_model, strip_ansi_escape
 
 MODELS = get_models_by_tier(ModelTier.CANONICAL)
 
@@ -19,18 +20,39 @@ def _assert_has_london_and_four(texts: list[str]) -> None:
     assert "4" in joined, f"Expected '4' in {texts!r}"
 
 
-@pytest.fixture
-def qa_dataset_path(tmp_path: Path) -> Path:
-    dataset_path = tmp_path / "dataset.parquet"
-    pl.DataFrame(
-        {
-            "conversation": [
-                [{"role": "user", "content": CAPITAL_PROMPT}],
-                [{"role": "user", "content": MATH_PROMPT}],
-            ],
-        },
-    ).write_parquet(dataset_path)
-    return dataset_path
+def _load_language_model(convert_model: ConvertModel, model_repo: str) -> LanguageModel:
+    converted_model_dir = convert_model(model_repo, cached=True)
+    model = load_converted_model(converted_model_dir)
+    assert isinstance(model, LanguageModel)
+    return model
+
+
+def _generate_texts(model: LanguageModel, prompts: list[str]) -> list[str]:
+    def trim_at_stop_token(token_ids: list[int]) -> list[int]:
+        stop_token_ids = set(model.config.generation_config.stop_token_ids)
+        response_length = next(
+            (idx + 1 for idx, token_id in enumerate(token_ids) if token_id in stop_token_ids),
+            len(token_ids),
+        )
+        return token_ids[:response_length]
+
+    encoded_prompts = [jnp.asarray(model.token_codec.encode_request([UserMessage(prompt)])) for prompt in prompts]
+    max_prompt_length = max(prompt.size for prompt in encoded_prompts)
+    prompt_lengths = jnp.asarray([prompt.size for prompt in encoded_prompts], dtype=jnp.int32)
+    token_ids = jnp.asarray(
+        [jnp.pad(prompt, (0, max_prompt_length - prompt.size), constant_values=0) for prompt in encoded_prompts],
+    )
+    generated = model.generate_tokens(
+        token_ids,
+        generation_config=GenerationConfig(temperature=0),
+        prompt_lengths_without_padding=prompt_lengths,
+        max_output_length=64,
+        keychain=Keychain.init(0),
+    )
+    return [
+        model.token_codec.decode_response(trim_at_stop_token(response_ids.tolist())).response
+        for response_ids in generated.token_ids
+    ]
 
 
 @pytest.mark.fast
@@ -60,78 +82,56 @@ def test_list_models_plain_and_no_plain(run_lalamo: RunLalamo, model_registry: M
 
 @pytest.mark.fast
 @pytest.mark.parametrize("model_repo", MODELS)
-def test_generate_replies(
+def test_converted_model_generates_batch(
     convert_model: ConvertModel,
     model_repo: str,
-    qa_dataset_path: Path,
-    tmp_path: Path,
-    run_lalamo: RunLalamo,
 ) -> None:
-    converted_model_dir = convert_model(model_repo, cached=True)
-    output_path = tmp_path / "replies.parquet"
-
-    run_lalamo(
-        "generate-replies",
-        str(converted_model_dir),
-        str(qa_dataset_path),
-        "--output-path",
-        str(output_path),
-        "--batch-size",
-        "2",
-        "--max-output-length",
-        "64",
-    )
-
-    _assert_has_london_and_yes(pl.read_parquet(output_path).get_column("response").to_list())
+    model = _load_language_model(convert_model, model_repo)
+    _assert_has_london_and_yes(_generate_texts(model, [CAPITAL_PROMPT, APPLES_PROMPT]))
 
 
 @pytest.mark.parametrize("model_repo", MODELS)
-def test_chat(
+def test_converted_model_streams_reply(
     convert_model: ConvertModel,
     model_repo: str,
-    run_lalamo: RunLalamo,
 ) -> None:
-    converted_model_dir = convert_model(model_repo, cached=True)
-    capital_output = run_lalamo("chat", str(converted_model_dir), "--message", CAPITAL_PROMPT, "--max-tokens", "4")
-    assert "london" in capital_output.lower(), f"Expected 'london' in {capital_output!r}"
-
-    math_output = run_lalamo("chat", str(converted_model_dir), "--message", MATH_PROMPT, "--max-tokens", "4")
-    assert "4" in math_output, f"Expected '4' in {math_output!r}"
-
-
-@pytest.mark.parametrize("model_repo", MODELS)
-def test_collect_traces_answers(
-    convert_model: ConvertModel,
-    model_repo: str,
-    qa_dataset_path: Path,
-    tmp_path: Path,
-    run_lalamo: RunLalamo,
-) -> None:
-    converted_model_dir = convert_model(model_repo, cached=True)
-    trace_path = tmp_path / "traces"
-
-    run_lalamo(
-        "speculator",
-        "collect-traces",
-        str(converted_model_dir),
-        str(qa_dataset_path),
-        "--output-path",
-        str(trace_path),
-        "--batch-size",
-        "2",
-        "--num-tokens-to-generate",
-        "32",
-        "--max-output-length",
-        "64",
-    )
-
-    # view-traces detokenizes the completions; collect-traces shuffles so check unordered
-    view_output = strip_ansi_escape(
-        run_lalamo(
-            "speculator",
-            "view-traces",
-            str(trace_path),
-            str(converted_model_dir),
+    model = _load_language_model(convert_model, model_repo)
+    capital_output = "".join(
+        model.stream_reply_text(
+            [UserMessage(CAPITAL_PROMPT)],
+            generation_config=GenerationConfig(temperature=0),
+            max_output_length=64,
+            keychain=Keychain.init(1),
         ),
     )
-    _assert_has_london_and_four([view_output])
+    assert "london" in capital_output.lower(), f"Expected 'london' in {capital_output!r}"
+
+    apples_output = "".join(
+        model.stream_reply_text(
+            [UserMessage(APPLES_PROMPT)],
+            generation_config=GenerationConfig(temperature=0),
+            max_output_length=64,
+            keychain=Keychain.init(2),
+        ),
+    )
+    assert "yes" in apples_output.lower(), f"Expected 'yes' in {apples_output!r}"
+
+
+@pytest.mark.parametrize("model_repo", MODELS)
+def test_converted_model_returns_top_logits(
+    convert_model: ConvertModel,
+    model_repo: str,
+) -> None:
+    model = _load_language_model(convert_model, model_repo)
+    token_ids = jnp.asarray(model.token_codec.encode_request([UserMessage(CAPITAL_PROMPT)]), dtype=jnp.int32)[None, :]
+    result = model.generate_tokens(
+        token_ids,
+        generation_config=GenerationConfig(temperature=0),
+        max_output_length=8,
+        num_top_logits_to_return=4,
+        keychain=Keychain.init(3),
+    )
+    assert result.top_k_token_ids is not None
+    assert result.top_k_token_logits is not None
+    assert result.top_k_token_ids.shape == (1, 8, 4)
+    assert result.top_k_token_logits.shape == (1, 8, 4)

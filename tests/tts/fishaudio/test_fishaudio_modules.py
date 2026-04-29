@@ -1,5 +1,7 @@
 import logging
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import jax
 import torch
@@ -13,10 +15,14 @@ from fish_speech.models.dac.modded_dac import DecoderBlock as PyTorchDecoderBloc
 from fish_speech.models.dac.modded_dac import ResidualUnit as PyTorchResidualUnit
 from fish_speech.models.dac.rvq import CausalConvNet, CausalTransConvNet
 from fish_speech.models.dac.rvq import ConvNeXtBlock as PyTorchConvNeXtBlock
+from fish_speech.models.text2semantic.llama import DualARModelArgs
 from fish_speech.tokenizer import FishTokenizer
 from jax import numpy as jnp
+from jaxtyping import Array
 
 from lalamo import FileSpec
+from lalamo.exportable import Exportable, ExportResults
+from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.loaders.fishaudio_loaders import (
     _permute_for_rope_rotate_half,
     load_audio_decoder,
@@ -36,7 +42,6 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
     lalamo_transformer_cfg_from_fish_audio_codec_cfg,
 )
 from lalamo.model_import.model_specs.fishaudio import FISHAUDIO_TTS_MODELS
-from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain
 from lalamo.modules import GELU, ForwardPassMode
 from lalamo.modules.audio.common_modules import (
@@ -78,8 +83,17 @@ from .fishaudio_torch_stuff import ConfigMapping, prepare_state_dict_for_lalamo_
 _testlog = logging.getLogger("tts_test_logger")
 
 
+def load_exported_arrays[ModuleT: Exportable](module: ModuleT, arrays: Mapping[str, Array]) -> ModuleT:
+    return module.load_exported(ExportResults(arrays=arrays, metadata={}), allow_dtype_cast=True)
+
+
+def detached_parameter(parameter: torch.Tensor | None) -> torch.Tensor:
+    assert parameter is not None
+    return parameter.detach()
+
+
 def test_fishaudio_text_tokenization(fish_audio_local_model_path: Path) -> None:
-    model_spec = next(filter(lambda model: model.repo == "fishaudio/s1-mini", FISHAUDIO_TTS_MODELS))
+    model_spec = next(model for model in FISHAUDIO_TTS_MODELS if model.origin.description == "fishaudio/s1-mini")
     assert isinstance(model_spec.configs.tokenizer, FileSpec)
     tokenizer_path = fish_audio_local_model_path / model_spec.configs.tokenizer.filename
     tokenizer_special_tokens_path = fish_audio_local_model_path / "special_tokens.json"
@@ -158,7 +172,7 @@ def test_vector_quantize_decode_code() -> None:
         out_proj_config=LinearConfig(precision=jnp.float32),
     )
     lalamo_vq = lalamo_vq_config.init(
-        EmptyInitializer(precision=jnp.float32),
+        EmptyInitializer(dtype=jnp.float32),
         input_dim=input_dim,
         codebook_size=codebook_size,
         codebook_dim=codebook_dim,
@@ -222,7 +236,7 @@ def test_residual_vector_quantize_from_codes() -> None:
         vq_config=vq_config,
     )
     lalamo_rvq = lalamo_rvq_config.init(
-        EmptyInitializer(precision=jnp.float32),
+        EmptyInitializer(dtype=jnp.float32),
         input_dim=input_dim,
         codebook_size=codebook_size,
         codebook_dim=[codebook_dim] * n_codebooks,
@@ -237,6 +251,7 @@ def test_residual_vector_quantize_from_codes() -> None:
 
     # DAC from_codes returns (z_q, z_p, codes) where z_q is (B, input_dim, T)
     dac_output, _, _ = dac_rvq.from_codes(test_codes_torch)
+    dac_output = cast("torch.Tensor", dac_output)
     dac_output = dac_output.permute(0, 2, 1)  # (B, T, input_dim) for comparison
 
     # Lalamo __call__ handles batching internally via vmap
@@ -285,7 +300,7 @@ def test_causal_conv1d_matches_pytorch() -> None:
     # Create Lalamo module with same config
     lalamo_config = CausalConv1dConfig(has_biases=True)
     lalamo_conv = lalamo_config.init(
-        EmptyInitializer(precision=jnp.float32),
+        EmptyInitializer(dtype=jnp.float32),
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -296,13 +311,13 @@ def test_causal_conv1d_matches_pytorch() -> None:
 
     # Extract weights from PyTorch and load into Lalamo
     torch_weights = torch_conv.conv.weight.detach()  # (out_channels, in_channels/groups, kernel_size)
-    torch_biases = torch_conv.conv.bias.detach()  # (out_channels,)
+    torch_biases = detached_parameter(torch_conv.conv.bias)  # (out_channels,)
 
     lalamo_weights = {
         "weights": torch_to_jax(torch_weights),
         "biases": torch_to_jax(torch_biases),
     }
-    lalamo_conv = lalamo_conv.from_uzu(lalamo_weights)
+    lalamo_conv = load_exported_arrays(lalamo_conv, lalamo_weights)
 
     # Create test input: PyTorch uses (batch, channels, sequence)
     torch.manual_seed(42)
@@ -353,7 +368,7 @@ def test_causal_conv1d_with_dilation() -> None:
 
     lalamo_config = CausalConv1dConfig(has_biases=True)
     lalamo_conv = lalamo_config.init(
-        EmptyInitializer(precision=jnp.float32),
+        EmptyInitializer(dtype=jnp.float32),
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -363,13 +378,13 @@ def test_causal_conv1d_with_dilation() -> None:
     )
 
     torch_weights = torch_conv.conv.weight.detach()
-    torch_biases = torch_conv.conv.bias.detach()
+    torch_biases = detached_parameter(torch_conv.conv.bias)
 
     lalamo_weights = {
         "weights": torch_to_jax(torch_weights),
         "biases": torch_to_jax(torch_biases),
     }
-    lalamo_conv = lalamo_conv.from_uzu(lalamo_weights)
+    lalamo_conv = load_exported_arrays(lalamo_conv, lalamo_weights)
 
     torch.manual_seed(123)
     test_input_torch = torch.randn(batch_size, in_channels, seq_length)
@@ -409,7 +424,7 @@ def test_causal_conv1d_grouped() -> None:
 
     lalamo_config = CausalConv1dConfig(has_biases=True)
     lalamo_conv = lalamo_config.init(
-        EmptyInitializer(precision=jnp.float32),
+        EmptyInitializer(dtype=jnp.float32),
         in_channels=channels,
         out_channels=channels,
         kernel_size=kernel_size,
@@ -419,13 +434,13 @@ def test_causal_conv1d_grouped() -> None:
     )
 
     torch_weights = torch_conv.conv.weight.detach()
-    torch_biases = torch_conv.conv.bias.detach()
+    torch_biases = detached_parameter(torch_conv.conv.bias)
 
     lalamo_weights = {
         "weights": torch_to_jax(torch_weights),
         "biases": torch_to_jax(torch_biases),
     }
-    lalamo_conv = lalamo_conv.from_uzu(lalamo_weights)
+    lalamo_conv = load_exported_arrays(lalamo_conv, lalamo_weights)
 
     torch.manual_seed(456)
     test_input_torch = torch.randn(batch_size, channels, seq_length)
@@ -467,7 +482,7 @@ def test_causal_transpose_conv1d_matches_pytorch() -> None:
     # Create Lalamo module with same config
     lalamo_config = CausalTransposeConv1dConfig(has_biases=True)
     lalamo_conv = lalamo_config.init(
-        EmptyInitializer(precision=jnp.float32),
+        EmptyInitializer(dtype=jnp.float32),
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -478,7 +493,7 @@ def test_causal_transpose_conv1d_matches_pytorch() -> None:
     # PyTorch ConvTranspose1d weight shape: (in_channels, out_channels, kernel_size)
     # Must transform to JAX format: (out_channels, in_channels, kernel_size) with kernel flip
     torch_weights = torch_conv.conv.weight.detach()
-    torch_biases = torch_conv.conv.bias.detach()
+    torch_biases = detached_parameter(torch_conv.conv.bias)
     jax_weights = transform_pytorch_transpose_conv_weights(
         torch_to_jax(torch_weights),
         in_channels=in_channels,
@@ -490,7 +505,7 @@ def test_causal_transpose_conv1d_matches_pytorch() -> None:
         "weights": jax_weights,
         "biases": torch_to_jax(torch_biases),
     }
-    lalamo_conv = lalamo_conv.from_uzu(lalamo_weights)
+    lalamo_conv = load_exported_arrays(lalamo_conv, lalamo_weights)
 
     # Create test input: PyTorch uses (batch, channels, sequence)
     torch.manual_seed(42)
@@ -539,14 +554,14 @@ def test_causal_transpose_conv1d_various_strides() -> None:
 
         lalamo_config = CausalTransposeConv1dConfig(has_biases=True)
         lalamo_conv = lalamo_config.init(
-            EmptyInitializer(precision=jnp.float32),
+            EmptyInitializer(dtype=jnp.float32),
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
             stride=stride,
         )
         torch_weights = torch_conv.conv.weight.detach()
-        torch_biases = torch_conv.conv.bias.detach()
+        torch_biases = detached_parameter(torch_conv.conv.bias)
         jax_weights = transform_pytorch_transpose_conv_weights(
             torch_to_jax(torch_weights),
             in_channels=in_channels,
@@ -558,7 +573,7 @@ def test_causal_transpose_conv1d_various_strides() -> None:
             "weights": jax_weights,
             "biases": torch_to_jax(torch_biases),
         }
-        lalamo_conv = lalamo_conv.from_uzu(lalamo_weights)
+        lalamo_conv = load_exported_arrays(lalamo_conv, lalamo_weights)
 
         torch.manual_seed(42)
         test_input_torch = torch.randn(batch_size, in_channels, seq_length)
@@ -602,18 +617,17 @@ def test_causal_conv_transpose_roundtrip() -> None:
     conv_config = CausalConv1dConfig(has_biases=True)
     trans_config = CausalTransposeConv1dConfig(has_biases=True)
 
-    lalamo_conv = conv_config.init(
-        EmptyInitializer(precision=jnp.float32), channels, channels, kernel_size, stride=stride
-    )
+    lalamo_conv = conv_config.init(EmptyInitializer(dtype=jnp.float32), channels, channels, kernel_size, stride=stride)
     lalamo_trans = trans_config.init(
-        EmptyInitializer(precision=jnp.float32), channels, channels, kernel_size, stride=stride
+        EmptyInitializer(dtype=jnp.float32), channels, channels, kernel_size, stride=stride
     )
 
     # Load weights
-    lalamo_conv = lalamo_conv.from_uzu(
+    lalamo_conv = load_exported_arrays(
+        lalamo_conv,
         {
             "weights": torch_to_jax(torch_conv.conv.weight.detach()),
-            "biases": torch_to_jax(torch_conv.conv.bias.detach()),
+            "biases": torch_to_jax(detached_parameter(torch_conv.conv.bias)),
         },
     )
     jax_trans_weights = transform_pytorch_transpose_conv_weights(
@@ -622,10 +636,11 @@ def test_causal_conv_transpose_roundtrip() -> None:
         out_channels=channels,
         groups=1,
     )
-    lalamo_trans = lalamo_trans.from_uzu(
+    lalamo_trans = load_exported_arrays(
+        lalamo_trans,
         {
             "weights": jax_trans_weights,
-            "biases": torch_to_jax(torch_trans.conv.bias.detach()),
+            "biases": torch_to_jax(detached_parameter(torch_trans.conv.bias)),
         },
     )
 
@@ -690,7 +705,7 @@ def test_convnext_block_matches_pytorch() -> None:
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=True,
-            use_bias=True,
+            has_biases=True,
         ),
         pwconv_config=LinearConfig(precision=jnp.float32),
     )
@@ -700,7 +715,7 @@ def test_convnext_block_matches_pytorch() -> None:
         dilation=dilation,
         layer_scale_init_value=layer_scale_init_value,
     )
-    lalamo_block = lalamo_config.init(EmptyInitializer(precision=jnp.float32), dim=dim, spatial_params=spatial_params)
+    lalamo_block = lalamo_config.init(EmptyInitializer(dtype=jnp.float32), dim=dim, spatial_params=spatial_params)
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_block.state_dict(), prefix="block")
     lalamo_block = load_convnext_block(lalamo_block, weights_dict, ParameterPath("block"))
@@ -751,7 +766,8 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path: Path) -> 
 
     # Extract the first upsampling block from the quantizer.
     # Upsample blocks are in reversed order of downsample factors.
-    fish_upsampler_block = model.quantizer.upsample[0]
+    fish_upsampler = cast("torch.nn.Sequential", model.quantizer.upsample)
+    fish_upsampler_block = fish_upsampler[0]
 
     # Determine dimensions for the first upsample block
     reversed_indices = list(reversed(list(enumerate(downsample_factor))))
@@ -770,7 +786,7 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path: Path) -> 
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=True,
-            use_bias=True,
+            has_biases=True,
         ),
         pwconv_config=LinearConfig(precision=jnp.float32),
     )
@@ -791,7 +807,7 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path: Path) -> 
         layer_scale_init_value=1e-6,
     )
     lalamo_block = lalamo_config.init(
-        EmptyInitializer(precision=jnp.float32),
+        EmptyInitializer(dtype=jnp.float32),
         trans_conv_params=trans_conv_params,
         convnext_spatial_params=convnext_spatial_params,
     )
@@ -854,7 +870,7 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path: Path) -> None:
     all_dims = (input_dim, *tuple(downsample_dims))
 
     # Get the full upsampler from DAC
-    fish_upsampler = model.quantizer.upsample
+    fish_upsampler = cast("torch.nn.Sequential", model.quantizer.upsample)
     num_blocks = len(fish_upsampler)
 
     _testlog.info(f"Upsampler has {num_blocks} blocks")
@@ -889,7 +905,7 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path: Path) -> None:
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=True,
-            use_bias=True,
+            has_biases=True,
         ),
         pwconv_config=LinearConfig(precision=jnp.float32),
     )
@@ -906,7 +922,7 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path: Path) -> None:
     )
     upsampler_config = UpsamplerConfig(block_configs=block_configs)
     lalamo_upsampler = upsampler_config.init(
-        EmptyInitializer(precision=jnp.float32),
+        EmptyInitializer(dtype=jnp.float32),
         trans_conv_params_per_block=tuple(block_params),
         convnext_spatial_params=convnext_spatial_params,
     )
@@ -962,7 +978,7 @@ def test_snake1d_matches_pytorch() -> None:
 
     # Create Lalamo module
     lalamo_config = Snake1dConfig()
-    lalamo_snake = lalamo_config.init(EmptyInitializer(precision=jnp.float32), channels)
+    lalamo_snake = lalamo_config.init(EmptyInitializer(dtype=jnp.float32), channels)
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_snake.state_dict(), prefix="snake")
     lalamo_snake = load_snake1d(lalamo_snake, weights_dict, ParameterPath("snake"))
@@ -1011,9 +1027,7 @@ def test_residual_unit_matches_pytorch() -> None:
         causal=True,
     )
     spatial_params = ResidualUnitSpatialParams(dilation=dilation, kernel_size=7)
-    lalamo_res_unit = lalamo_config.init(
-        EmptyInitializer(precision=jnp.float32), dim=dim, spatial_params=spatial_params
-    )
+    lalamo_res_unit = lalamo_config.init(EmptyInitializer(dtype=jnp.float32), dim=dim, spatial_params=spatial_params)
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_res_unit.state_dict(), prefix="res")
     lalamo_res_unit = load_residual_unit(lalamo_res_unit, weights_dict, ParameterPath("res"))
@@ -1078,7 +1092,7 @@ def test_decoder_block_matches_pytorch() -> None:
         output_dim=output_dim,
         stride=stride,
     )
-    lalamo_decoder_block = lalamo_config.init(EmptyInitializer(precision=jnp.float32), spatial_params=spatial_params)
+    lalamo_decoder_block = lalamo_config.init(EmptyInitializer(dtype=jnp.float32), spatial_params=spatial_params)
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_decoder_block.state_dict(), prefix="dec_block")
 
@@ -1153,7 +1167,7 @@ def test_audio_decoder_matches_pytorch() -> None:
         rates=upsampling_rates,
         d_out=d_out,
     )
-    lalamo_decoder = lalamo_config.init(EmptyInitializer(precision=jnp.float32), spatial_params=spatial_params)
+    lalamo_decoder = lalamo_config.init(EmptyInitializer(dtype=jnp.float32), spatial_params=spatial_params)
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_decoder.state_dict(), prefix="decoder")
 
@@ -1197,10 +1211,11 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     assert isinstance(pytorch_tts_generator.tts_model.text_decoder, FishAudioTextDecoder_Foreign)
     fish_model = pytorch_tts_generator.tts_model.text_decoder.fish_model
     config = fish_model.config
+    assert isinstance(config, DualARModelArgs)
 
     # Create Lalamo transformer using config mapping
     transformer_cfg, _ = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(config)
-    lalamo_transformer = transformer_cfg.init(EmptyInitializer(precision=jnp.bfloat16))
+    lalamo_transformer = transformer_cfg.init(EmptyInitializer(dtype=jnp.bfloat16))
 
     # Load weights
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_model.state_dict())
@@ -1220,8 +1235,10 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     input_pos_lalamo = torch_to_jax(input_pos)[None, :]
 
     # Get mask and RoPE embeddings from fish model
-    mask = fish_model.causal_mask[None, None, input_pos, :max_seq_len]
-    freqs_cis = fish_model.freqs_cis[input_pos]
+    causal_mask = cast("torch.Tensor", fish_model.causal_mask)
+    freqs_cis_table = cast("torch.Tensor", fish_model.freqs_cis)
+    mask = causal_mask[None, None, input_pos, :max_seq_len]
+    freqs_cis = freqs_cis_table[input_pos]
 
     # Run first layer from each model
     fish_layer = fish_model.layers[0]
@@ -1302,7 +1319,7 @@ def test_audio_transformer_inference() -> None:
     )
 
     # Instantiate an empty Lalamo transformer
-    lalamo_transformer = transformer_cfg.init(EmptyInitializer(precision=jnp.float32))
+    lalamo_transformer = transformer_cfg.init(EmptyInitializer(dtype=jnp.float32))
 
     # === Load weights from FishAudio into Lalamo ===
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_transformer.state_dict())

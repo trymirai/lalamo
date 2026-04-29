@@ -1,10 +1,12 @@
 import logging
 from pathlib import Path
+from typing import Protocol, cast
 
 import jax
 import torch
 from fish_speech.models.dac import inference as fish_dac_inference
 from fish_speech.models.dac.modded_dac import DAC
+from fish_speech.models.text2semantic.llama import DualARModelArgs
 from jax import numpy as jnp
 
 from lalamo.initializer import EmptyInitializer
@@ -32,6 +34,10 @@ from .fishaudio_torch_stuff import from_fish_audio_config, prepare_state_dict_fo
 _testlog = logging.getLogger("tts_test_logger")
 
 
+class _TorchCodeQuantizer(Protocol):
+    def decode(self, codes: torch.Tensor) -> torch.Tensor: ...
+
+
 @torch.no_grad
 def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
     test_text = "this is a test message with speaker 0"
@@ -46,12 +52,13 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
     fish_model = pytorch_tts_generator.tts_model.text_decoder.fish_model
 
     # Create Lalamo text decoder config from PyTorch model config
+    assert isinstance(fish_model.config, DualARModelArgs)
     lalamo_config = from_fish_audio_config(fish_model.config, fish_model.tokenizer)
 
     # Convert PyTorch weights to JAX and load into Lalamo text decoder
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_model.state_dict())
     lalamo_text_decoder = load_fishaudio_text_decoder(
-        lalamo_config.init(EmptyInitializer(precision=jnp.bfloat16)), weights_dict
+        lalamo_config.init(EmptyInitializer(dtype=jnp.bfloat16)), weights_dict
     )
 
     sampling_policy = SamplingPolicy.init(temperature=0.0)
@@ -105,7 +112,7 @@ def test_dac_matches_pytorch(fish_audio_local_model_path: Path) -> None:
     audio_decoder_cfg = instantiate_dac_config_from_fishaudio_config(
         get_default_fishaudio_dac_config(),
     )
-    lalamo_dac = audio_decoder_cfg.init(EmptyInitializer(precision=jnp.float32))
+    lalamo_dac = audio_decoder_cfg.init(EmptyInitializer(dtype=jnp.float32))
     lalamo_dac = load_descript_audio_codec(lalamo_dac, weights_dict)
 
     fish_dac_omega_config = get_default_fishaudio_dac_config()
@@ -121,7 +128,8 @@ def test_dac_matches_pytorch(fish_audio_local_model_path: Path) -> None:
     test_codes_jax = torch_to_jax(test_codes_torch).astype(jnp.int32)
 
     # Run FishAudio DAC inference (quantizer.decode + decoder)
-    z_fish = fish_dac.quantizer.decode(test_codes_torch)  # (batch, latent_dim, tokens_upsampled)
+    fish_quantizer = cast("_TorchCodeQuantizer", fish_dac.quantizer)
+    z_fish = fish_quantizer.decode(test_codes_torch)  # (batch, latent_dim, tokens_upsampled)
     audio_fish = fish_dac.decoder(z_fish)  # (batch, 1, audio_samples)
     # Run Lalamo DAC inference
     audio_lalamo = lalamo_dac(test_codes_jax, keychain=Keychain.init(0))  # (batch, audio_samples, 1) - NTC format

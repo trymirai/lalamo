@@ -1,6 +1,7 @@
 import shutil
 import tempfile
 from pathlib import Path
+from typing import cast
 
 import torch
 from fish_speech.models.text2semantic.llama import (
@@ -14,22 +15,21 @@ from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.models.tts_codec import TTSCodec, TTSCodecConfig
 from lalamo.models.tts_model import TTSGenerator, TTSGeneratorConfig
-from lalamo.modules import (
-    AttentionConfig,
-    DenseMLPConfig,
-    NormalizationConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
-    UnscaledRoPEConfig,
-    UpcastMode,
-)
 from lalamo.modules.activations import SiLU
+from lalamo.modules.audio.audio_decoder import TTSAudioDecoderConfig
 from lalamo.modules.audio.fishaudio.fishaudio_consts import IM_END_TOKEN
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig
+from lalamo.modules.audio.text_decoder import TTSTextDecoderConfig
 from lalamo.modules.audio.text_to_speech import TTSConfig, TTSModel
 from lalamo.modules.audio.vocoders import NoopVocoder, NoopVocoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 from lalamo.utils.torch_interop import torch_to_jax
 
 from .fishaudio_thin_wrapper import (
@@ -86,23 +86,40 @@ def from_fish_audio_config(
 class ConfigMapping:
     @staticmethod
     def extract_fast_transformer_params(fish_transformer_config: DualARModelArgs) -> BaseModelArgs:
+        fast_n_head = fish_transformer_config.fast_n_head
+        fast_dim = fish_transformer_config.fast_dim
+        fast_intermediate_size = fish_transformer_config.fast_intermediate_size
+        fast_n_local_heads = fish_transformer_config.fast_n_local_heads
+        fast_head_dim = fish_transformer_config.fast_head_dim
+        fast_attention_qkv_bias = fish_transformer_config.fast_attention_qkv_bias
+        fast_attention_o_bias = fish_transformer_config.fast_attention_o_bias
+        fast_attention_qk_norm = fish_transformer_config.fast_attention_qk_norm
+        assert fast_n_head is not None
+        assert fast_dim is not None
+        assert fast_intermediate_size is not None
+        assert fast_n_local_heads is not None
+        assert fast_head_dim is not None
+        assert fast_attention_qkv_bias is not None
+        assert fast_attention_o_bias is not None
+        assert fast_attention_qk_norm is not None
+
         return BaseModelArgs(
             model_type=fish_transformer_config.model_type,
             vocab_size=fish_transformer_config.vocab_size,
             n_layer=fish_transformer_config.n_fast_layer,
-            n_head=fish_transformer_config.fast_n_head,
-            dim=fish_transformer_config.fast_dim,
-            intermediate_size=fish_transformer_config.fast_intermediate_size,
-            n_local_heads=fish_transformer_config.fast_n_local_heads,
-            head_dim=fish_transformer_config.fast_head_dim,
+            n_head=fast_n_head,
+            dim=fast_dim,
+            intermediate_size=fast_intermediate_size,
+            n_local_heads=fast_n_local_heads,
+            head_dim=fast_head_dim,
             rope_base=fish_transformer_config.rope_base,
             norm_eps=fish_transformer_config.norm_eps,
             max_seq_len=fish_transformer_config.max_seq_len,
             dropout=fish_transformer_config.dropout,
             tie_word_embeddings=fish_transformer_config.tie_word_embeddings,
-            attention_qkv_bias=fish_transformer_config.fast_attention_qkv_bias,
-            attention_o_bias=fish_transformer_config.fast_attention_o_bias,
-            attention_qk_norm=fish_transformer_config.fast_attention_qk_norm,
+            attention_qkv_bias=fast_attention_qkv_bias,
+            attention_o_bias=fast_attention_o_bias,
+            attention_qk_norm=fast_attention_qk_norm,
             codebook_size=fish_transformer_config.codebook_size,
             num_codebooks=fish_transformer_config.num_codebooks,
         )
@@ -224,8 +241,8 @@ class FishAudioFromTorch:
         token_codec = TTSCodec(tts_request_factory_config, tokenizer)
 
         tts_config = TTSConfig(
-            text_decoder.config,
-            audio_decoder.config,
+            cast("TTSTextDecoderConfig", text_decoder.config),
+            cast("TTSAudioDecoderConfig", audio_decoder.config),
             NoopVocoderConfig(),
         )
 

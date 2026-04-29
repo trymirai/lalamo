@@ -1,7 +1,7 @@
 from abc import ABC
 from collections.abc import Callable
 from types import UnionType
-from typing import Any, Self, Union, cast, get_args, get_origin
+from typing import Any, Self, TypeVar, Union, cast, get_args, get_origin
 from weakref import WeakSet
 
 import jax.numpy as jnp
@@ -60,8 +60,14 @@ def _strip_none_from_optional(annotation: object) -> object | None:
     return non_none_args[0]
 
 
+def _typevar_bound(annotation: object) -> object:
+    if isinstance(annotation, TypeVar):
+        return annotation.__bound__
+    return annotation
+
+
 def _maybe_registry_abc_from_option(annotation: object) -> type[RegistryABC] | None:
-    maybe_registry_abc = _strip_none_from_optional(annotation)
+    maybe_registry_abc = _typevar_bound(_strip_none_from_optional(annotation))
 
     if not isinstance(maybe_registry_abc, type) or not issubclass(maybe_registry_abc, RegistryABC):
         return None
@@ -86,6 +92,9 @@ def _maybe_registry_abc_from_type_option(annotation: object) -> type[RegistryABC
 
 
 def _descendant_by_name(registry_abc: type[RegistryABC], type_name: str) -> type[RegistryABC]:
+    if registry_abc.__name__ == type_name:
+        return registry_abc
+
     name_to_descendant = {descendant.__name__: descendant for descendant in registry_abc.__descendants__()}
     try:
         return name_to_descendant[type_name]

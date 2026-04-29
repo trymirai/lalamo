@@ -1,27 +1,39 @@
 # ruff: noqa: E402
+import json
 import re
 import shutil
 import tempfile
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from functools import cache
 from os import environ
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from jax._src.test_util import request_cpu_devices
 
 request_cpu_devices(8)
 
 import jax
+import jax.numpy as jnp
+import jax.tree_util as jtu
 import pytest
 from jax.sharding import AxisType, Mesh
+from jaxtyping import DTypeLike
+from tokenizers import Tokenizer
 from typer.testing import CliRunner
 
 from lalamo.commands import convert
+from lalamo.exportable import ExportResults
+from lalamo.initializer import EmptyInitializer
 from lalamo.main import app
+from lalamo.model import Model, ModelConfig
 from lalamo.model_import.model_spec import ModelSpec
 from lalamo.model_registry import ModelRegistry
 from lalamo.module import ShardingAxis
+from lalamo.safetensors import safe_read
+from lalamo.utils.json import JSON
+from lalamo.utils.parameter_path import ParameterPath
+from lalamo.weight_matrix import WeightMatrix, WeightMatrixSpec
 from tests.common import tolerance
 from tests.model_test_tiers import TIER_BY_REPO, ModelSize, ModelTier, model_size
 
@@ -128,6 +140,59 @@ SIZE_MARKS: dict[ModelSize, pytest.MarkDecorator] = {
 
 def mark_by_size(specs: tuple[ModelSpec, ...]) -> list[Any]:
     return [pytest.param(spec, marks=SIZE_MARKS[model_size(spec)]) for spec in specs]
+
+
+def _decode_safetensors_metadata(metadata: dict[str, str] | None) -> dict[str, JSON]:
+    if metadata is None:
+        return {}
+    return {key: json.loads(value) for key, value in metadata.items()}
+
+
+def _infer_model_dtype(arrays: Mapping[str, jax.Array]) -> DTypeLike:
+    for key in sorted(arrays):
+        array_dtype = arrays[key].dtype
+        if jnp.issubdtype(array_dtype, jnp.inexact):
+            return array_dtype
+    raise ValueError("Converted model does not contain any floating-point arrays.")
+
+
+def _with_exported_weight_matrix_specs(model: Model, metadata: Mapping[str, JSON]) -> Model:
+    def is_weight_matrix(value: object) -> bool:
+        return isinstance(value, WeightMatrix)
+
+    def align_weight_matrix(path: tuple[object, ...], value: object) -> object:
+        if not isinstance(value, WeightMatrix):
+            return value
+
+        spec_json = metadata.get(ParameterPath() / path / "spec")
+        if spec_json is None:
+            return value
+
+        exported_spec = WeightMatrixSpec.from_json(spec_json)
+        if exported_spec == value.spec:
+            return value
+        return exported_spec.compress(value.decompress())
+
+    return cast("Model", jtu.tree_map_with_path(align_weight_matrix, model, is_leaf=is_weight_matrix))
+
+
+def load_converted_model(model_dir: Path) -> Model:
+    with (model_dir / "config.json").open() as config_file:
+        config = ModelConfig.from_json(json.load(config_file))
+    tokenizer = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
+
+    with (model_dir / "model.safetensors").open("rb") as weights_file:
+        metadata, arrays = safe_read(weights_file)
+        decoded_metadata = _decode_safetensors_metadata(metadata)
+        model = config.init(tokenizer, EmptyInitializer(_infer_model_dtype(arrays)))
+        model = _with_exported_weight_matrix_specs(model, decoded_metadata)
+        return model.load_exported(
+            ExportResults(
+                arrays=arrays,
+                metadata=decoded_metadata,
+            ),
+            allow_dtype_cast=True,
+        )
 
 
 @pytest.fixture(autouse=True)

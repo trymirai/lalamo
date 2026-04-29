@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 from cattrs import GenConverter
-from jax.sharding import PartitionSpec, reshard
+from jax.sharding import reshard
 from jaxtyping import Array, DTypeLike, Key
 
 from lalamo.utils.dummy_array import supports_dummy_arrays
@@ -80,7 +80,12 @@ class Keychain(eqx.Module):
             vmapped_keys = self.vmapped_keys
 
         if sharding_axes is not None and not all(axis is None for axis in sharding_axes):
-            vmapped_keys = reshard(vmapped_keys, PartitionSpec(*sharding_axes))
+            # Local import avoids a module <-> sharding cycle: sharding helpers are parameterized by ShardingAxis.
+            from lalamo.utils.sharding import make_sharding  # noqa: PLC0415
+
+            sharding = make_sharding(sharding_axes)
+            if sharding is not None:
+                vmapped_keys = reshard(vmapped_keys, sharding)
 
         return type(self)(vmapped_keys=vmapped_keys, batch_key=self.batch_key)
 

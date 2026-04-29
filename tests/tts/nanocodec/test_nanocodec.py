@@ -386,7 +386,7 @@ def test_lalamo_nanocodec_matches_torch(cached_nemo_model: tuple[Mapping, Mappin
 
     # Create Lalamo config and model
     lalamo_config = _create_lalamo_nanocodec_config(config)
-    lalamo_model = lalamo_config.init(EmptyInitializer(precision=jnp.float32))
+    lalamo_model = lalamo_config.init(EmptyInitializer(dtype=jnp.float32))
 
     # Load weights into Lalamo model
     weights_dict = prepare_state_dict_for_lalamo_loaders(dict(state_dict))
@@ -435,7 +435,7 @@ def test_nanocodec_model_spec_loading() -> None:
 
     message_to_generate = TTSMessage(content="Some noise will be generated here", speaker_id="0", style="unsupported")
 
-    generator, _ = import_model(model_spec="nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps", precision=jnp.float32)
+    generator, _ = import_model(model_spec="nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps", dtype=jnp.float32)
 
     assert isinstance(generator, TTSGenerator)
     assert isinstance(generator.tts_model, TTSModel)

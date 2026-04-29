@@ -1,3 +1,4 @@
+# pyrefly: ignore-errors
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path

@@ -1,12 +1,14 @@
+from typing import cast
+
 import numpy as np
 import pytest
 from transformers import pipeline
 
-from lalamo.model_import.model_specs.common import ModelSpec, ModelType
+from lalamo.model_import.model_spec import ModelSpec, TTSModelSpec
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.models.tts_model import TTSGenerator
 from lalamo.module import Keychain
-from tests.conftest import ConvertModel, filter_specs
+from tests.conftest import ConvertModel, filter_specs, load_converted_model
 from tests.model_test_tiers import COHERENCE_TTS_REPOS
 
 PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -14,13 +16,14 @@ PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Water is made of hydrogen and oxygen", ("water", "hydrogen")),
 )
 
-coherence_tts_specs = filter_specs(model_type=ModelType.TTS_MODEL, repos=frozenset(COHERENCE_TTS_REPOS))
+coherence_tts_specs = filter_specs(model_type=TTSModelSpec, repos=frozenset(COHERENCE_TTS_REPOS))
 
 
-@pytest.mark.parametrize("spec", coherence_tts_specs, ids=[s.repo for s in coherence_tts_specs])
+@pytest.mark.parametrize("spec", coherence_tts_specs, ids=[s.origin.description for s in coherence_tts_specs])
 def test_tts_coherence(spec: ModelSpec, convert_model: ConvertModel) -> None:
-    converted_path = convert_model(spec.repo)
-    model = TTSGenerator.load_model(converted_path)
+    converted_path = convert_model(spec.origin.description)
+    model = load_converted_model(converted_path)
+    assert isinstance(model, TTSGenerator)
 
     asr = pipeline("automatic-speech-recognition", model="openai/whisper-tiny.en")
 
@@ -35,7 +38,10 @@ def test_tts_coherence(spec: ModelSpec, convert_model: ConvertModel) -> None:
         )
 
         audio = np.squeeze(result.audio).astype(np.float32)
-        transcription: str = asr({"sampling_rate": result.audio_params.samplerate, "raw": audio})["text"]
+        transcription_result = asr({"sampling_rate": result.audio_params.samplerate, "raw": audio})
+        if isinstance(transcription_result, list):
+            transcription_result = transcription_result[0]
+        transcription = cast("str", transcription_result["text"])
 
         missing = [kw for kw in expected_keywords if kw not in transcription.lower()]
         if missing:

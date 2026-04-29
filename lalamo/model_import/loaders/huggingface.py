@@ -161,6 +161,7 @@ def _load_awq_array(
     sublayers_to_fuse: list[str] | None,
     *,
     template: WeightMatrix,
+    layout: Layout,
     implementation: CompressionImplementation,
 ) -> AWQMatrix:
     packed_qweights, packed_qzeros, scales = _fuse_awq_weights(weights_dict, path, sublayers_to_fuse)
@@ -181,7 +182,7 @@ def _load_awq_array(
     scale_values = scales.T.astype(template.dtype)
     zero_point_values = unpacked_zeros.T.astype(template.dtype)
 
-    spec = AWQSpec(bits=_supported_quantization_bits(bits), group_size=group_size, layout=Layout.OUTPUT_INPUT)
+    spec = AWQSpec(bits=_supported_quantization_bits(bits), group_size=group_size, layout=layout)
     return spec.from_packed_parameters(
         packed_weights=pack_uint_to_uint8(weight_values, bits),
         scales=scale_values,
@@ -194,29 +195,30 @@ def _load_mlx_matrix(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
-    expected_in_channels: int,
+    expected_grouped_channels: int,
     *,
     template: WeightMatrix,
+    layout: Layout,
     implementation: CompressionImplementation,
 ) -> MLXMatrix:
     packed_weights, deq_biases, scales = _fuse_mlx_weights(weights_dict, path, sublayers_to_fuse)
-    # MLX HF layout: weight [out_channels, packed_in], scales [out_channels, num_groups]
+    # MLX HF layout: weight [rows, packed_cols], scales [rows, num_groups].
     packed_in = packed_weights.shape[-1]
     num_groups = scales.shape[-1]
     for bits in (4, 8):
-        if packed_in * (32 // bits) == expected_in_channels:
+        if packed_in * (32 // bits) == expected_grouped_channels:
             break
     else:
-        raise ValueError(f"Cannot infer MLX bits: packed_in={packed_in}, expected_in={expected_in_channels}")
+        raise ValueError(f"Cannot infer MLX bits: packed_in={packed_in}, expected_cols={expected_grouped_channels}")
 
-    group_size = expected_in_channels // num_groups
+    group_size = expected_grouped_channels // num_groups
     unpacked_weights = unpack_int32(packed_weights, bits)
 
     weight_values = unpacked_weights.astype(template.dtype)
     scale_values = scales.astype(template.dtype)
     bias_values = deq_biases.astype(template.dtype)
 
-    spec = MLXSpec(bits=_supported_quantization_bits(bits), group_size=group_size, layout=Layout.OUTPUT_INPUT)
+    spec = MLXSpec(bits=_supported_quantization_bits(bits), group_size=group_size, layout=layout)
     return spec.from_packed_parameters(
         packed_weights=pack_uint_to_uint8(weight_values, bits),
         scales=scale_values,
@@ -241,6 +243,7 @@ def load_linear(
             path,
             sublayers_to_fuse,
             template=module.weights,
+            layout=Layout.OUTPUT_INPUT,
             implementation=implementation,
         )
     elif _is_mlx(weights_dict, path, sublayers_to_fuse):
@@ -250,6 +253,7 @@ def load_linear(
             sublayers_to_fuse,
             module.input_dim,
             template=module.weights,
+            layout=Layout.OUTPUT_INPUT,
             implementation=implementation,
         )
     else:
@@ -1080,6 +1084,7 @@ def _load_weight_matrix(
             path,
             None,
             template=matrix,
+            layout=Layout.OUTPUT_INPUT,
             implementation=implementation,
         )
     if _is_mlx(weights_dict, path, None):
@@ -1089,6 +1094,7 @@ def _load_weight_matrix(
             None,
             _input_dim(matrix),
             template=matrix,
+            layout=Layout.OUTPUT_INPUT,
             implementation=implementation,
         )
     return load_full_precision(matrix, weights_dict[path / "weight"])
@@ -1101,8 +1107,25 @@ def _load_input_embedding_matrix(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> WeightMatrix:
-    if _is_awq(weights_dict, path, None) or _is_mlx(weights_dict, path, None):
-        raise ValueError(f"Quantized input embeddings are not supported for {implementation} implementation.")
+    if _is_awq(weights_dict, path, None):
+        return _load_awq_array(
+            weights_dict,
+            path,
+            None,
+            template=matrix,
+            layout=Layout.INPUT_OUTPUT,
+            implementation=implementation,
+        )
+    if _is_mlx(weights_dict, path, None):
+        return _load_mlx_matrix(
+            weights_dict,
+            path,
+            None,
+            matrix.shape[-1],
+            template=matrix,
+            layout=Layout.INPUT_OUTPUT,
+            implementation=implementation,
+        )
     return load_full_precision(matrix, jnp.matrix_transpose(weights_dict[path / "weight"]))
 
 

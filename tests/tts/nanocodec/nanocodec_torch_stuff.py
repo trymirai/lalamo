@@ -1,3 +1,4 @@
+# pyrefly: ignore-errors
 import io
 import logging
 import math
