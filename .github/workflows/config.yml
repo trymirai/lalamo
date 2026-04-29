@@ -1,6 +1,7 @@
 name: "Setup conditionals"
 
-permissions: {}
+permissions:
+  contents: read
 
 on:
   workflow_call:
