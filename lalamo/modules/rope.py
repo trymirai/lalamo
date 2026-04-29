@@ -76,7 +76,7 @@ class PositionalEmbeddings(Exportable, eqx.Module):
 class RoPEConfig(LalamoConfig, RegistryABC):
     base: float
     max_sequence_length: int
-    head_dim: int
+    head_dim: int | None = field(default=None, kw_only=True)
     partial_rotary_dim: int | None = field(default=None, kw_only=True)
 
     @property
@@ -93,7 +93,7 @@ class RoPEConfig(LalamoConfig, RegistryABC):
 
     def _mask_inverse_frequencies(
         self,
-        initializer: Initializer,
+        inverse_frequencies: Float[Array, " tokens"],
         head_dim: int,
     ) -> Float[Array, " tokens"]:
         if self.partial_rotary_dim is None or self.partial_rotary_dim >= head_dim:
@@ -102,14 +102,25 @@ class RoPEConfig(LalamoConfig, RegistryABC):
         mask = jnp.arange(head_dim // 2) < rope_angles
         return inverse_frequencies * mask
 
-    def init(self) -> "RoPE":
-        head_dim = self.head_dim
-        num_timesteps = self.max_sequence_length
-        timesteps = jnp.arange(num_timesteps, dtype=jnp.float32)
-        channel_indices = jnp.arange(0, head_dim, 2, dtype=jnp.int32)
-        inverse_frequencies = 1.0 / (self.base ** (channel_indices.astype(jnp.float32) / head_dim))
-        inverse_frequencies = self._scale_inverse_frequencies(inverse_frequencies, head_dim, self.max_sequence_length)
-        inverse_frequencies = self._mask_inverse_frequencies(inverse_frequencies, head_dim)
+    def init(
+        self,
+        initializer: Initializer,
+        head_dim: int | None = None,
+        num_timesteps: int | None = None,
+    ) -> "RoPE":
+        resolved_head_dim = head_dim or self.head_dim
+        if resolved_head_dim is None:
+            raise ValueError("RoPE head_dim must be specified either in the config or at init time.")
+        resolved_num_timesteps = num_timesteps or self.max_sequence_length
+        timesteps = jnp.arange(resolved_num_timesteps, dtype=jnp.float32)
+        channel_indices = jnp.arange(0, resolved_head_dim, 2, dtype=jnp.int32)
+        inverse_frequencies = 1.0 / (self.base ** (channel_indices.astype(jnp.float32) / resolved_head_dim))
+        inverse_frequencies = self._scale_inverse_frequencies(
+            inverse_frequencies,
+            resolved_head_dim,
+            self.max_sequence_length,
+        )
+        inverse_frequencies = self._mask_inverse_frequencies(inverse_frequencies, resolved_head_dim)
         outer_inverse_frequencies = jnp.outer(timesteps, inverse_frequencies)
         embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
         cosines = (jnp.cos(embeddings) * self._attention_scaling_factor).astype(initializer.dtype)
@@ -144,7 +155,7 @@ class UnscaledRoPEConfig(RoPEConfig):
     pass
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class LlamaRoPEConfig(RoPEConfig):
     scaling_factor: float
     original_context_length: int
@@ -179,7 +190,7 @@ class LlamaRoPEConfig(RoPEConfig):
         return result + scaled_frequencies * low_frequency_mask.astype(jnp.float32)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class YARNRoPEConfig(RoPEConfig):
     scaling_factor: float
     original_context_length: int
@@ -243,7 +254,7 @@ class YARNRoPEConfig(RoPEConfig):
         return 0.1 * math.log(self.scaling_factor) + 1.0
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class LinearScalingRoPEConfig(RoPEConfig):
     scaling_factor: float
 

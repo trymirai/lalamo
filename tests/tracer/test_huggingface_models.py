@@ -1,9 +1,7 @@
 import pytest
+import torch
 
-from lalamo.model_import.model_configs import HFLFM2Config, HFLlambaConfig
-from lalamo.model_import.model_specs.common import ModelType
-from tests.conftest import filter_specs
-from tests.model_test_tiers import ModelTier
+from tests.helpers import unsi
 from tests.tracer.tracer import DType, ModelTestSpec, _test_model
 from tests.tracer.tracer_huggingface import HFDecoderTracer, ModernBertTracer
 
@@ -29,8 +27,7 @@ MODEL_LIST += (
 )
 
 CLASSIFIER_MODEL_LIST = [
-    ModelTestSpec(spec.repo, DType.FLOAT32)
-    for spec in filter_specs(model_type=ModelType.CLASSIFIER_MODEL, max_tier=ModelTier.CORE)
+    ModelTestSpec("trymirai/chat-moderation-router", DType.FLOAT32),
 ]
 
 

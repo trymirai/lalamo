@@ -1,5 +1,5 @@
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from inspect import signature
 from typing import Any, Protocol, Self, Unpack, cast
@@ -48,6 +48,10 @@ class HFRotaryEmbedding(TorchModuleWithDevice, Protocol):
 
 class HFWordEmbedding(TorchModuleWithDevice, Protocol):
     def forward(self, input_ids: Tensor) -> Tensor: ...
+
+
+class HFWordEmbeddingWithScale(HFWordEmbedding, Protocol):
+    embed_scale: Tensor
 
 
 class HFMLP(TorchModuleWithDevice, Protocol):
@@ -310,9 +314,9 @@ class HFDecoderTracer(
     device: torch.device
 
     @property
-    def text_model(self) -> Any:
+    def text_model(self) -> HFTextModel:
         model = self.hf_model.model
-        return getattr(model, "language_model", model)
+        return cast("HFTextModel", getattr(model, "language_model", model))
 
     def from_jax(self, array: Array) -> torch.Tensor:
         return jax_to_torch(array)
@@ -324,7 +328,7 @@ class HFDecoderTracer(
         embed_device = _module_device(self.text_model.embed_tokens, self.device)
         return self.text_model.embed_tokens.forward(token_ids.to(embed_device))
 
-    def rope_fns(self) -> list[tuple[str, Any]]:
+    def rope_fns(self) -> list[tuple[str, Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]]]:
         rope = self.text_model.rotary_emb
         fns = {
             "full_attention": ("Global", lambda x, pos: _rope_forward(rope, x, pos, "full_attention", self.device)),
@@ -335,7 +339,7 @@ class HFDecoderTracer(
         }
         # Return rope functions in layer-encounter order, matching _init_ropes() deduplication
         seen: set[str] = set()
-        result: list[tuple[str, Any]] = []
+        result: list[tuple[str, Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]]] = []
         for layer in self.text_model.layers:
             attn = self.layer_attention(layer)
             layer_type = "sliding_attention" if getattr(attn, "is_sliding", False) else "full_attention"
@@ -487,11 +491,11 @@ class HFDecoderTracer(
 
         # Correct the bug in the HF Gemma implementation
         # See https://github.com/huggingface/transformers/issues/38702
-        text_model = getattr(hf_model.model, "language_model", hf_model.model)
-        if hasattr(text_model.embed_tokens, "embed_scale"):
-            wrong_scale = text_model.embed_tokens.embed_scale
-            correct_scale = wrong_scale.to(torch.bfloat16).to(wrong_scale.dtype)
-            text_model.embed_tokens.embed_scale = correct_scale
+        text_model = cast("HFTextModel", getattr(hf_model.model, "language_model", hf_model.model))
+        embed_scale = getattr(text_model.embed_tokens, "embed_scale", None)
+        if isinstance(embed_scale, torch.Tensor):
+            embed_tokens = cast("HFWordEmbeddingWithScale", text_model.embed_tokens)
+            embed_tokens.embed_scale = embed_scale.to(torch.bfloat16).to(embed_scale.dtype)
 
         return cls(hf_model, device)
 
@@ -673,7 +677,7 @@ class ModernBertTracer(
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def rope_fns(self) -> list[tuple[str, Any]]:
+    def rope_fns(self) -> list[tuple[str, Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]]]:
         return []
 
     def iterate_layers(self) -> Iterable[ModernBertEncoderLayer]:

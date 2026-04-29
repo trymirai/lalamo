@@ -28,6 +28,16 @@ def test_init_uses_default_sampling_parameters() -> None:
     assert policy.banned_tokens.shape == (16,)
     assert policy.banned_tokens.dtype == jnp.int32
     assert jnp.array_equal(policy.banned_tokens, jnp.full((16,), -1, dtype=jnp.int32))
+    assert policy.repetition_penalty.shape == ()
+    assert policy.repetition_penalty.dtype == jnp.float32
+    assert policy.repetition_penalty.item() == 1.0
+    assert policy.presence_penalty.shape == ()
+    assert policy.presence_penalty.dtype == jnp.float32
+    assert policy.presence_penalty.item() == 0.0
+    assert policy.frequency_penalty.shape == ()
+    assert policy.frequency_penalty.dtype == jnp.float32
+    assert policy.frequency_penalty.item() == 0.0
+    assert policy.token_counts is None
 
 
 def test_init_pads_banned_tokens() -> None:
@@ -49,6 +59,11 @@ def test_init_rejects_negative_banned_tokens() -> None:
         SamplingPolicy.init(banned_tokens=(-1,))
 
 
+def test_init_rejects_non_positive_repetition_penalty() -> None:
+    with pytest.raises(ValueError, match="repetition_penalty must be positive"):
+        SamplingPolicy.init(repetition_penalty=0.0)
+
+
 def test_init_batch_stacks_sampling_parameters() -> None:
     policy = SamplingPolicy.init_batch(
         temperature=(0.0, 0.5),
@@ -56,15 +71,22 @@ def test_init_batch_stacks_sampling_parameters() -> None:
         top_p=(0.75, 0.9),
         min_p=(0.0, 0.1),
         banned_tokens=((1,), (2, 3)),
+        repetition_penalty=(1.0, 1.2),
+        presence_penalty=(0.0, 0.3),
+        frequency_penalty=(0.0, 0.4),
     )
 
     assert jnp.array_equal(policy.temperature, jnp.array([0.0, 0.5], dtype=jnp.float32))
     assert jnp.array_equal(policy.top_k, jnp.array([1, 2], dtype=jnp.int32))
     assert jnp.array_equal(policy.top_p, jnp.array([0.75, 0.9], dtype=jnp.float32))
     assert jnp.array_equal(policy.min_p, jnp.array([0.0, 0.1], dtype=jnp.float32))
+    assert jnp.array_equal(policy.repetition_penalty, jnp.array([1.0, 1.2], dtype=jnp.float32))
+    assert jnp.array_equal(policy.presence_penalty, jnp.array([0.0, 0.3], dtype=jnp.float32))
+    assert jnp.array_equal(policy.frequency_penalty, jnp.array([0.0, 0.4], dtype=jnp.float32))
     assert policy.banned_tokens.shape == (2, 16)
     assert jnp.array_equal(policy.banned_tokens[0, :3], jnp.array([1, -1, -1], dtype=jnp.int32))
     assert jnp.array_equal(policy.banned_tokens[1, :4], jnp.array([2, 3, -1, -1], dtype=jnp.int32))
+    assert policy.token_counts is None
 
 
 def test_init_batch_rejects_mismatched_lengths() -> None:
@@ -161,6 +183,58 @@ def test_min_p_keeps_logits_above_relative_probability_floor() -> None:
     result = policy.process_logits(logits)
 
     assert _is_neginf(result) == (False, False, True)
+
+
+def test_repetition_penalty_applies_to_seen_tokens() -> None:
+    logits = jnp.array([4.0, -3.0, 8.0, 1.0], dtype=jnp.float32)
+    policy = SamplingPolicy.init(repetition_penalty=2.0).with_prompt_token_counts(
+        jnp.array([0, 1], dtype=jnp.int32),
+        jnp.array(2, dtype=jnp.int32),
+        vocabulary_size=4,
+    )
+
+    result = policy.process_logits(logits)
+
+    assert jnp.array_equal(result, jnp.array([2.0, -6.0, 8.0, 1.0], dtype=jnp.float32))
+
+
+def test_presence_penalty_applies_once_to_seen_tokens() -> None:
+    logits = jnp.array([4.0, 3.0, 2.0], dtype=jnp.float32)
+    policy = SamplingPolicy.init(presence_penalty=0.5).with_prompt_token_counts(
+        jnp.array([0, 0, 2], dtype=jnp.int32),
+        jnp.array(3, dtype=jnp.int32),
+        vocabulary_size=3,
+    )
+
+    result = policy.process_logits(logits)
+
+    assert jnp.array_equal(result, jnp.array([3.5, 3.0, 1.5], dtype=jnp.float32))
+
+
+def test_frequency_penalty_scales_with_seen_token_count() -> None:
+    logits = jnp.array([4.0, 3.0, 2.0], dtype=jnp.float32)
+    policy = SamplingPolicy.init(frequency_penalty=0.5).with_prompt_token_counts(
+        jnp.array([0, 0, 2], dtype=jnp.int32),
+        jnp.array(3, dtype=jnp.int32),
+        vocabulary_size=3,
+    )
+
+    result = policy.process_logits(logits)
+
+    assert jnp.array_equal(result, jnp.array([3.0, 3.0, 1.5], dtype=jnp.float32))
+
+
+def test_token_counts_are_updated_with_generated_tokens() -> None:
+    policy = SamplingPolicy.init(frequency_penalty=1.0).with_prompt_token_counts(
+        jnp.array([1], dtype=jnp.int32),
+        jnp.array(1, dtype=jnp.int32),
+        vocabulary_size=3,
+    )
+
+    updated_policy = policy.with_next_token_count(jnp.array(1, dtype=jnp.int32))
+
+    assert updated_policy.token_counts is not None
+    assert jnp.array_equal(updated_policy.token_counts, jnp.array([0, 2, 0], dtype=jnp.int32))
 
 
 def test_filters_are_applied_in_policy_order() -> None:

@@ -90,13 +90,17 @@ class ShortConvConfig(TokenMixerConfig):
 
 
 class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
-    in_projection: LinearBase
+    in_projection: Linear
     conv: SeparableCausalConv
     out_projection: Linear
 
     @property
     def model_dim(self) -> int:
         return self.in_projection.input_dim
+
+    @property
+    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
+        return PositionalEmbeddingSelector.NONE
 
     @eqx.filter_jit
     def __call__(
@@ -107,11 +111,14 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
+        attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
     ) -> TokenMixerResult[ShortConvStateLayer]:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for ShortConv.")
+        if attention_parent_indices is not None:
+            raise ValueError("Attention parent indices are not supported for ShortConv.")
 
         in_keychain, out_keychain = keychain.split()
         pre_conv_gate, post_conv_gate, x = call_vmapped(

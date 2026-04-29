@@ -128,7 +128,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=True,
         )
-        linear_config = FullPrecisionLinearConfig()
+        linear_config = LinearConfig()
         activation = activation_from_str(self.hidden_activation)
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
@@ -180,7 +180,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             context_length=context_length or self.max_position_embeddings,
         )
 
-        prediction_head_dense_config = FullPrecisionLinearConfig()
+        prediction_head_dense_config = LinearConfig()
         prediction_head_norm_config = NormalizationConfig(
             epsilon=self.norm_eps,
             scale_offset=0.0,
@@ -188,7 +188,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             subtract_mean=True,
         )
         prediction_head_activation = activation_from_str(self.classifier_activation)
-        prediction_head_readout_config = FullPrecisionLinearConfig()
+        prediction_head_readout_config = LinearConfig()
         prediction_head_config = PredictionHeadConfig(
             dense_config=prediction_head_dense_config,
             activation=prediction_head_activation,

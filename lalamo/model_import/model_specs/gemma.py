@@ -116,98 +116,41 @@ GEMMA3 = [
 
 
 GEMMA4 = [
-    ModelSpec(
+    LanguageModelSpec(
         vendor="Google",
         family="Gemma-4",
         name="Gemma-4-E2B",
         size="5B",
-        quantization=None,
-        repo="google/gemma-4-E2B",
+        origin=HuggingFaceOrigin(repo="google/gemma-4-E2B"),
         config_type=HFGemma4Config,
-        weights_type=WeightsType.SAFETENSORS,
         configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
     ),
-    ModelSpec(
+    LanguageModelSpec(
         vendor="Google",
         family="Gemma-4",
         name="Gemma-4-E2B-Instruct",
         size="5B",
-        quantization=None,
-        repo="google/gemma-4-E2B-it",
+        origin=HuggingFaceOrigin(repo="google/gemma-4-E2B-it"),
         config_type=HFGemma4Config,
-        weights_type=WeightsType.SAFETENSORS,
         configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
     ),
-    ModelSpec(
+    LanguageModelSpec(
         vendor="Google",
         family="Gemma-4",
         name="Gemma-4-E4B",
         size="8B",
-        quantization=None,
-        repo="google/gemma-4-E4B",
+        origin=HuggingFaceOrigin(repo="google/gemma-4-E4B"),
         config_type=HFGemma4Config,
-        weights_type=WeightsType.SAFETENSORS,
         configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
     ),
-    ModelSpec(
+    LanguageModelSpec(
         vendor="Google",
         family="Gemma-4",
         name="Gemma-4-E4B-Instruct",
         size="8B",
-        quantization=None,
-        repo="google/gemma-4-E4B-it",
+        origin=HuggingFaceOrigin(repo="google/gemma-4-E4B-it"),
         config_type=HFGemma4Config,
-        weights_type=WeightsType.SAFETENSORS,
         configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
     ),
 ]
-"""
-TODO(interview problem):
-
-ModelSpec(
-    vendor="Google",
-    family="Gemma-4",
-    name="Gemma-4-31B",
-    size="33B",
-    quantization=None,
-    repo="google/gemma-4-31B",
-    config_type=HFGemma4Config,
-    weights_type=WeightsType.SAFETENSORS,
-    configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
-),
-ModelSpec(
-    vendor="Google",
-    family="Gemma-4",
-    name="Gemma-4-31B-Instruct",
-    size="33B",
-    quantization=None,
-    repo="google/gemma-4-31B-it",
-    config_type=HFGemma4Config,
-    weights_type=WeightsType.SAFETENSORS,
-    configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
-),
-ModelSpec(
-    vendor="Google",
-    family="Gemma-4",
-    name="Gemma-4-26B-A4B",
-    size="27B",
-    quantization=None,
-    repo="google/gemma-4-26B-A4B",
-    config_type=HFGemma4Config,
-    weights_type=WeightsType.SAFETENSORS,
-    configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
-),
-ModelSpec(
-    vendor="Google",
-    family="Gemma-4",
-    name="Gemma-4-26B-A4B-Instruct",
-    size="27B",
-    quantization=None,
-    repo="google/gemma-4-26B-A4B-it",
-    config_type=HFGemma4Config,
-    weights_type=WeightsType.SAFETENSORS,
-    configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
-),
-"""
-
 GEMMA_MODELS = GEMMA2 + GEMMA3 + GEMMA4

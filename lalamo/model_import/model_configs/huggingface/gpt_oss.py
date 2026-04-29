@@ -114,7 +114,7 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
         )
 
         # Linear layers
-        linear_config = FullPrecisionLinearConfig()
+        linear_config = LinearConfig()
 
         # Experts (MoE) scaffold
         # Router: linear with bias; Experts: DenseMLP with SiLU(alpha=1.702) and value/gate clipping

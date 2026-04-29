@@ -8,16 +8,16 @@ from lalamo.models.language_model import GenerationConfig
 from lalamo.module import Keychain
 from tests.conftest import ConvertModel, RunLalamo, load_converted_model, strip_ansi_escape
 
-MODELS = get_models_by_tier(ModelTier.CANONICAL)
+MODELS = ["google/gemma-3-1b-it", "mlx-community/LFM2-350M-8bit"]
 
 CAPITAL_PROMPT = "What's the capital of the United Kingdom? No thinking, answer right away."
-MATH_PROMPT = "What's 2 + 2? No thinking, answer right away."
+APPLES_PROMPT = "Are apples fruits? Answer only yes or no, without thinking, answer right away."
 
 
-def _assert_has_london_and_four(texts: list[str]) -> None:
+def _assert_has_london_and_yes(texts: list[str]) -> None:
     joined = " ".join(texts).lower()
     assert "london" in joined, f"Expected 'london' in {texts!r}"
-    assert "4" in joined, f"Expected '4' in {texts!r}"
+    assert "yes" in joined, f"Expected 'yes' in {texts!r}"
 
 
 def _load_language_model(convert_model: ConvertModel, model_repo: str) -> LanguageModel:

@@ -36,6 +36,15 @@ def _repeat_kv(
     return jnp.repeat(keys_or_values, group_size, axis=1)
 
 
+def _rms_normalize(
+    inputs: Float[Array, "... channels"],
+    eps: float,
+) -> Float[Array, "... channels"]:
+    upcasted_inputs = inputs.astype(jnp.float32)
+    variance = jnp.mean(jnp.square(upcasted_inputs), axis=-1, keepdims=True)
+    return (upcasted_inputs * jax.lax.rsqrt(variance + eps)).astype(inputs.dtype)
+
+
 def _soft_capped_attention_kernel(
     queries: Float[Array, "dst_tokens heads head_channels"],
     keys: Float[Array, "src_tokens groups head_channels"],
@@ -100,8 +109,16 @@ class AttentionConfig(TokenMixerConfig):
     has_qkv_biases: bool
     has_out_biases: bool
     gate_projection_config: LinearConfig | None = None
+    use_rope: bool = True
+    partial_rope_dim: int | None = None
     # Scale-free RMS normalization on values
     normalize_values: bool = False
+
+    @property
+    def rope_dim(self) -> int | None:
+        if not self.use_rope:
+            return None
+        return self.partial_rope_dim if self.partial_rope_dim is not None else self.head_dim
 
     def init(
         self,
@@ -170,9 +187,9 @@ class AttentionConfig(TokenMixerConfig):
 
 
 class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
-    qkv_projection: LinearBase
-    gate_projection: LinearBase | None
-    out_projection: LinearBase
+    qkv_projection: Linear
+    gate_projection: Linear | None
+    out_projection: Linear
 
     query_norm: Normalization | None
     key_norm: Normalization | None
@@ -212,6 +229,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
+        attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
     ) -> AttentionResult:
@@ -255,6 +273,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             queries = call_vmapped_twice(self.query_norm, queries)
         if self.key_norm is not None:
             keys = call_vmapped_twice(self.key_norm, keys)
+        if self.config.normalize_values:
+            values = _rms_normalize(values, eps=1e-6)
 
         if positional_embeddings is not None:
             queries = call_vmapped(positional_embeddings.apply, queries, in_axes=1, out_axes=1)
@@ -267,12 +287,15 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             updated_state = state.extend(keys, values, added_length=length_without_padding)
 
         num_suffix_tokens, _, _ = queries.shape
-        mask = updated_state.attention_mask(
-            num_suffix_tokens,
-            self.config.is_causal,
-            length_without_padding,
-            self.config.sliding_window_size,
-        )
+        if attention_parent_indices is not None:
+            mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices)
+        else:
+            mask = updated_state.attention_mask(
+                num_suffix_tokens,
+                self.config.is_causal,
+                length_without_padding,
+                self.config.sliding_window_size,
+            )
         if self.sinks is not None:
             sink_bias = jnp.zeros((self.config.num_heads, *mask.shape), dtype=queries.dtype)
             sink_bias = sink_bias.at[:, :, 0].set(self.sinks[:, None])

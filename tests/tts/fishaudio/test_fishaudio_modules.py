@@ -169,7 +169,7 @@ def test_vector_quantize_decode_code() -> None:
             input_scale=None,
             logit_soft_cap=None,
         ),
-        out_proj_config=LinearConfig(precision=jnp.float32),
+        out_proj_config=LinearConfig(),
     )
     lalamo_vq = lalamo_vq_config.init(
         EmptyInitializer(dtype=jnp.float32),
@@ -230,7 +230,7 @@ def test_residual_vector_quantize_from_codes() -> None:
             input_scale=None,
             logit_soft_cap=None,
         ),
-        out_proj_config=LinearConfig(precision=jnp.float32),
+        out_proj_config=LinearConfig(),
     )
     lalamo_rvq_config = ResidualVectorQuantizeConfig(
         vq_config=vq_config,
@@ -707,7 +707,7 @@ def test_convnext_block_matches_pytorch() -> None:
             subtract_mean=True,
             has_biases=True,
         ),
-        pwconv_config=LinearConfig(precision=jnp.float32),
+        pwconv_config=LinearConfig(),
     )
     spatial_params = ConvNeXtSpatialParams(
         mlp_ratio=mlp_ratio,
@@ -788,7 +788,7 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path: Path) -> 
             subtract_mean=True,
             has_biases=True,
         ),
-        pwconv_config=LinearConfig(precision=jnp.float32),
+        pwconv_config=LinearConfig(),
     )
     lalamo_config = UpsamplingBlockConfig(
         trans_conv_config=CausalTransposeConv1dConfig(has_biases=True),
@@ -907,7 +907,7 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path: Path) -> None:
             subtract_mean=True,
             has_biases=True,
         ),
-        pwconv_config=LinearConfig(precision=jnp.float32),
+        pwconv_config=LinearConfig(),
     )
     upsampling_block_config = UpsamplingBlockConfig(
         trans_conv_config=CausalTransposeConv1dConfig(has_biases=True),
@@ -1244,8 +1244,8 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     fish_layer = fish_model.layers[0]
     fish_layer_result = fish_layer(embedded_input_torch, freqs_cis, mask, input_pos=input_pos)
 
-    assert lalamo_transformer.global_rope is not None
-    pos_emb_lalamo = call_vmapped(lalamo_transformer.global_rope, input_pos_lalamo)
+    (global_rope,) = lalamo_transformer.ropes
+    pos_emb_lalamo = call_vmapped(global_rope, input_pos_lalamo)
     lalamo_layer = lalamo_transformer.layers[0]
     lalamo_layer_result = lalamo_layer(
         embedded_input_lalamo,

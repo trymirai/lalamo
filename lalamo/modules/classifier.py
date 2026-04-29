@@ -100,23 +100,6 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
         )
         return result
 
-    def export_weights(self) -> ParameterTree:
-        result = dict(
-            dense=self.dense.export_weights(),
-            norm=self.norm.export_weights(),
-            readout=self.readout.export_weights(),
-        )
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        return replace(
-            self,
-            dense=self.dense.import_weights(require_tree(weights["dense"])),
-            norm=self.norm.import_weights(require_tree(weights["norm"])),
-            readout=self.readout.import_weights(require_tree(weights["readout"])),
-        )
-
 
 class ClassifierActivationTrace(Exportable, eqx.Module):
     token_ids: Int[Array, "batch tokens"]

@@ -4,15 +4,17 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Self
 
+import equinox as eqx
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.common import ParameterPath
+from lalamo.model import Model
 from lalamo.model_import.loaders.huggingface import (
     load_huggingface_decoder,
     load_linear,
     load_rmsnorm,
 )
+from lalamo.models import LanguageModel
 from lalamo.modules import (
     DecoderConfig,
     PLELayerConfig,
@@ -21,14 +23,15 @@ from lalamo.modules import (
     TransformerConfig,
 )
 from lalamo.modules.activations import GELU
-from lalamo.modules.common import LalamoModule
 from lalamo.modules.decoder import Decoder
-from lalamo.modules.linear import FullPrecisionLinearConfig
+from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.utils.parameter_path import ParameterPath
+from lalamo.weight_matrix import CompressionImplementation
 
 from .common import HuggingFaceLMConfig
 
@@ -77,27 +80,22 @@ class HFGemma4TextConfig:
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         assert self.tie_word_embeddings, "Gemma-4 import only supports tied word embeddings"
         embedding_config = TiedEmbeddingConfig(
             input_scale=self.hidden_size**0.5,
             logit_soft_cap=self.final_logit_softcapping,
-            precision=activation_precision,
         )
 
         rms_norm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=False,
         )
 
-        linear_config = FullPrecisionLinearConfig(precision=activation_precision)
+        linear_config = LinearConfig()
 
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
@@ -113,14 +111,12 @@ class HFGemma4TextConfig:
         sliding_attention_params = self.rope_parameters.sliding_attention
         full_partial_rotary_factor = full_attention_params.partial_rotary_factor or 1.0
         global_rope_config = UnscaledRoPEConfig(
-            precision=activation_precision,
             base=full_attention_params.rope_theta,
             max_sequence_length=max_seq_len,
             head_dim=self.global_head_dim,
             partial_rotary_dim=int(full_partial_rotary_factor * self.global_head_dim),
         )
         local_rope_config = UnscaledRoPEConfig(
-            precision=activation_precision,
             base=sliding_attention_params.rope_theta,
             max_sequence_length=max_seq_len,
             head_dim=self.head_dim,
@@ -236,7 +232,7 @@ class HFGemma4Config(HuggingFaceLMConfig):
     eos_token_id: list[int]
 
     @property
-    def default_precision(self) -> DTypeLike:
+    def default_dtype(self) -> DTypeLike:
         return jnp.dtype(self.dtype)
 
     @classmethod
@@ -249,30 +245,35 @@ class HFGemma4Config(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
         return self.text_config.to_decoder_config(
             context_length=context_length,
-            activation_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             metadata_dict=metadata_dict,
         )
 
     def _load_weights(
         self,
-        model: LalamoModule,
+        model: Model,
         weights_dict: Mapping[str, Array],
-    ) -> LalamoModule:
-        assert isinstance(model, Decoder)
-        model = load_huggingface_decoder(model, weights_dict)
-        return self._load_ple_weights(model, weights_dict)
+        *,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    ) -> Model:
+        assert isinstance(model, LanguageModel)
+        decoder = load_huggingface_decoder(
+            module=model.decoder,
+            weights_dict=weights_dict,
+            implementation=implementation,
+        )
+        decoder = self._load_ple_weights(decoder, weights_dict, implementation=implementation)
+        return eqx.tree_at(lambda m: (m.decoder,), model, (decoder,))
 
     def _load_ple_weights(
         self,
         model: Decoder,
         weights_dict: Mapping[str, Array],
+        *,
+        implementation: CompressionImplementation,
     ) -> Decoder:
         if model.per_layer_embedding is None:
             return model
@@ -291,6 +292,7 @@ class HFGemma4Config(HuggingFaceLMConfig):
                 model.per_layer_embedding.model_projection,
                 weights_dict,
                 base / "per_layer_model_projection",
+                implementation=implementation,
             ),
             projection_norm=load_rmsnorm(
                 model.per_layer_embedding.projection_norm,
@@ -308,8 +310,18 @@ class HFGemma4Config(HuggingFaceLMConfig):
             layer_path = layers_base / i
             new_ple = replace(
                 layer.ple,
-                gate=load_linear(layer.ple.gate, weights_dict, layer_path / "per_layer_input_gate"),
-                projection=load_linear(layer.ple.projection, weights_dict, layer_path / "per_layer_projection"),
+                gate=load_linear(
+                    layer.ple.gate,
+                    weights_dict,
+                    layer_path / "per_layer_input_gate",
+                    implementation=implementation,
+                ),
+                projection=load_linear(
+                    layer.ple.projection,
+                    weights_dict,
+                    layer_path / "per_layer_projection",
+                    implementation=implementation,
+                ),
                 norm=load_rmsnorm(layer.ple.norm, weights_dict, layer_path / "post_per_layer_input_norm"),
             )
             layer_updates: dict[str, Any] = {"ple": new_ple}

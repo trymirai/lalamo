@@ -81,21 +81,3 @@ class Normalization(LalamoModule[NormalizationConfig]):
         if self.biases is not None:
             result += self.biases.astype(result.dtype)
         return result.astype(inputs.dtype)
-
-    def export_weights(self) -> ParameterTree:
-        result: dict[str, Array] = {"scales": self.scales}
-        if self.biases is not None:
-            result["biases"] = self.biases
-        return result
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        weights = require_mapping(weights)
-        if self.biases is not None:
-            assert isinstance(weights["biases"], Array)
-            biases = weights["biases"]
-        else:
-            biases = None
-        return replace(self, scales=weights["scales"], biases=biases)

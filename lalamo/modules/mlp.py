@@ -156,8 +156,8 @@ class DenseMLPConfig(MLPConfig):
 
 
 class DenseMLP(MLPBase[DenseMLPConfig]):
-    up_projection: LinearBase
-    down_projection: LinearBase
+    up_projection: Linear
+    down_projection: Linear
 
     @property
     def model_dim(self) -> int:
@@ -317,9 +317,9 @@ class MixtureOfExpertsConfig(MLPConfig):
 
 
 class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
-    router: LinearBase
+    router: Linear
     experts: DenseMLP
-    gate: LinearBase | None
+    gate: Linear | None
 
     @property
     def model_dim(self) -> int:

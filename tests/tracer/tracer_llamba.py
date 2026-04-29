@@ -1,7 +1,7 @@
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from itertools import batched
-from typing import Any, Self
+from typing import Self
 
 import cartesia_mlx as cmx
 import mlx.core as mx
@@ -10,7 +10,7 @@ from mlx import nn
 
 from lalamo.modules.decoder import DecoderResult
 from lalamo.utils.mlx_interop import jax_to_mlx, mlx_to_jax
-from tests.tracer.tracer import ActivationTrace, DType, InferenceResult, ModelTracer
+from tests.tracer.tracer import DType, InferenceResult, ModelTracer
 
 
 @dataclass(frozen=True)
@@ -28,7 +28,7 @@ class LlambaDecoderTracer(ModelTracer[mx.array, tuple[nn.Module, nn.Module], nn.
 
         return self.model.embedding(token_ids)
 
-    def rope_fns(self) -> list[tuple[str, Any]]:
+    def rope_fns(self) -> list[tuple[str, Callable[[mx.array, mx.array], tuple[mx.array, mx.array]]]]:
         return []
 
     def rmsnorm(self, rmsnorm: nn.Module, x: mx.array) -> mx.array:

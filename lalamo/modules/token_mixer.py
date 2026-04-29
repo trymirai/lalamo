@@ -55,6 +55,8 @@ class AttentionImplementation(Enum):
 class MixerForwardPassConfig:
     implementation: AttentionImplementation = AttentionImplementation.STABLE_REDUCTION
     upcast_dtype: DTypeLike | None = jnp.float32
+    chunk_size: int = 32
+    min_chunk_len: int = 16
     arrays: MatmulConfig = field(default_factory=MatmulConfig)
 
 
@@ -88,6 +90,10 @@ class TokenMixerBase[ConfigT: TokenMixerConfig, StateLayerT: StateLayerBase](Lal
     @abstractmethod
     def model_dim(self) -> int: ...
 
+    @property
+    @abstractmethod
+    def positional_embedding_selector(self) -> PositionalEmbeddingSelector: ...
+
     @abstractmethod
     def __call__(
         self,
@@ -97,6 +103,7 @@ class TokenMixerBase[ConfigT: TokenMixerConfig, StateLayerT: StateLayerBase](Lal
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
+        attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
     ) -> TokenMixerResult[StateLayerT]: ...

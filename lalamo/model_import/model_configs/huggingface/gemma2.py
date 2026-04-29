@@ -71,7 +71,7 @@ class HFGemma2Config(HuggingFaceLMConfig):
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=False,
         )
-        linear_config = FullPrecisionLinearConfig()
+        linear_config = LinearConfig()
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=GELU(),

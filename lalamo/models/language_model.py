@@ -64,7 +64,16 @@ class GenerationConfig:
     frequency_penalty: float | None = None
 
     def default_policy(self) -> SamplingPolicy:
-        return SamplingPolicy.init(self.temperature, self.top_k, self.top_p, self.min_p, self.banned_tokens)
+        return SamplingPolicy.init(
+            self.temperature,
+            self.top_k,
+            self.top_p,
+            self.min_p,
+            self.banned_tokens,
+            self.repetition_penalty,
+            self.presence_penalty,
+            self.frequency_penalty,
+        )
 
 
 @dataclass(frozen=True)
@@ -83,7 +92,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
     decoder: Decoder
 
     def default_sampling_policy(self) -> SamplingPolicy:
-        return self.config.generation_config.default_policy(self.model.vocab_size)
+        return self.config.generation_config.default_policy()
 
     def _trim_at_eos(self, token_ids: list[int]) -> list[int]:
         if not self.config.generation_config.stop_token_ids:
@@ -153,6 +162,21 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
             sampling_policy = generation_config.default_policy()
+        use_count_penalties = sampling_policy.has_count_penalties()
+        sampling_policy = sampling_policy.broadcast(batch_size)
+        if prompt_lengths_without_padding is None:
+            prompt_lengths_without_padding = jnp.full((batch_size,), prompt_length, dtype=jnp.int32)
+        if use_count_penalties:
+            sampling_policy = call_vmapped(
+                lambda policy, prompt_token_ids, prompt_length: policy.with_prompt_token_counts(
+                    prompt_token_ids,
+                    prompt_length,
+                    self.decoder.vocab_size,
+                ),
+                sampling_policy,
+                prompt_token_ids,
+                prompt_lengths_without_padding,
+            )
         if eos_token_ids is None:
             eos_token_ids = jnp.asarray(self.config.generation_config.stop_token_ids, dtype=jnp.int32)
 
@@ -168,6 +192,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             last_token_indices=prefill_results.last_token_indices,
             state=prefill_results.state,
             stop_flags=jnp.zeros(batch_size, dtype=jnp.bool_),
+            sampling_policy=sampling_policy,
         )
 
         def sample_token(
@@ -182,11 +207,18 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         ) -> tuple[DecodingState, GenerationStepResults]:
             sampling_keys, decoding_key = step_keys
             processed_logits = call_vmapped(
-                sampling_policy.process_logits,
+                lambda policy, logits: policy.process_logits(logits),
+                state.sampling_policy,
                 state.last_token_logits.astype(jnp.float32),
             )
             next_token_ids = call_vmapped(sample_token, processed_logits, sampling_keys)
             next_token_ids = jnp.where(state.stop_flags, jnp.zeros(batch_size, dtype=jnp.int32), next_token_ids)
+            next_sampling_policy = call_vmapped(
+                lambda policy, token_id, should_count: policy.with_next_token_count(token_id, should_count),
+                state.sampling_policy,
+                next_token_ids,
+                jnp.logical_not(state.stop_flags),
+            )
 
             if num_top_logits_to_return is None:
                 top_k_token_ids = None
@@ -215,6 +247,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                     last_token_indices=next_token_indices,
                     state=decoder_result.updated_state,
                     stop_flags=next_stop_flags,
+                    sampling_policy=next_sampling_policy,
                 ),
                 GenerationStepResults(
                     token_ids=next_token_ids,

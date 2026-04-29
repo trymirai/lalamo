@@ -73,7 +73,7 @@ class HFMistralConfig(HuggingFaceLMConfig):
             subtract_mean=False,
         )
 
-        linear_config = FullPrecisionLinearConfig()
+        linear_config = LinearConfig()
 
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,

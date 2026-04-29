@@ -13,9 +13,8 @@ pytestmark = pytest.mark.usefixtures("tracer_mesh")
 
 # token_stride=1 is required because mlx doesn't accept token positions
 MODEL_LIST = [
-    ModelTestSpec(spec.repo, DType.FLOAT32, token_stride=1)
-    for spec in filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.CORE)
-    if spec.quantization is not None and spec.config_type not in (HFLFM2Config, HFLlambaConfig)
+    ModelTestSpec("Qwen/Qwen3-0.6B-MLX-4bit", DType.FLOAT32, token_stride=1),
+    ModelTestSpec("Qwen/Qwen3-4B-MLX-4bit", DType.FLOAT32, token_stride=1),
 ]
 
 

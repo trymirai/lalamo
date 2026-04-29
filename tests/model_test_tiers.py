@@ -2,13 +2,10 @@ import re
 import tomllib
 from enum import IntEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TypedDict, cast
 
 from lalamo.model_import.model_spec import ModelSpec
 from tests.helpers import unsi
-
-if TYPE_CHECKING:
-    from lalamo.model_import.model_specs.common import ModelSpec
 
 PARAM_UNITS = ("", "K", "M", "B")
 
@@ -114,10 +111,6 @@ MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = (
     ("google/gemma-4-E4B-it", ModelTier.STANDARD),
     ("google/gemma-4-E2B", ModelTier.EXTRA),
     ("google/gemma-4-E4B", ModelTier.EXTRA),
-    # ("google/gemma-4-31B-it", ModelTier.EXTRA),
-    # ("google/gemma-4-31B", ModelTier.EXTRA),
-    # ("google/gemma-4-26B-A4B-it", ModelTier.STANDARD),
-    # ("google/gemma-4-26B-A4B", ModelTier.EXTRA),
     # SmolLM
     ("HuggingFaceTB/SmolLM2-1.7B-Instruct", ModelTier.STANDARD),
     ("HuggingFaceTB/SmolLM3-3B", ModelTier.STANDARD),

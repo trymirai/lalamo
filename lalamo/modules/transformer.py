@@ -6,14 +6,13 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis, field
 from lalamo.modules.token_mixers import AttentionConfig
 
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
-from .token_mixer import State
+from .token_mixer import State, StateLayerBase
 from .transformer_layer import (
-    PositionalEmbeddingSelector,
     TransformerLayer,
     TransformerLayerConfig,
     TransformerLayerForwardPassConfig,
@@ -43,62 +42,77 @@ class TransformerResult(Exportable, eqx.Module):
 
 @dataclass(frozen=True)
 class TransformerConfig(LalamoConfig):
-    global_rope_config: RoPEConfig | None
-    local_rope_config: RoPEConfig | None
     layer_configs: tuple[TransformerLayerConfig, ...]
     output_norm_config: NormalizationConfig
     model_dim: int
     hidden_dim: int
     context_length: int
+    global_rope_config: RoPEConfig | None = None
+    local_rope_config: RoPEConfig | None = None
+
+    def _layer_rope_config(self, layer_config: TransformerLayerConfig) -> RoPEConfig | None:
+        if layer_config.rope_config is not None:
+            return layer_config.rope_config
+        if layer_config.rope_dim is None:
+            return None
+        if (
+            isinstance(layer_config.mixer_config, AttentionConfig)
+            and layer_config.mixer_config.sliding_window_size is not None
+            and self.local_rope_config is not None
+        ):
+            return self.local_rope_config
+        return self.global_rope_config
+
+    def _init_ropes(self, initializer: Initializer) -> tuple[tuple[RoPE, ...], tuple[int, ...]]:
+        rope_cache: dict[tuple[RoPEConfig, int | None], int] = {}
+        ropes: list[RoPE] = []
+        rope_indices: list[int] = []
+        for layer_config in self.layer_configs:
+            rope_config = self._layer_rope_config(layer_config)
+            if rope_config is None:
+                rope_indices.append(-1)
+                continue
+
+            head_dim = rope_config.head_dim or layer_config.rope_dim
+            if head_dim is None:
+                raise ValueError("Cannot initialize RoPE for a layer without a head dimension.")
+            cache_key = (rope_config, head_dim)
+            if cache_key not in rope_cache:
+                rope_cache[cache_key] = len(ropes)
+                ropes.append(rope_config.init(initializer, head_dim=head_dim))
+            rope_indices.append(rope_cache[cache_key])
+        return tuple(ropes), tuple(rope_indices)
+
+    def _source_layer_indices(self) -> tuple[int, ...]:
+        return tuple(i for i, layer_config in enumerate(self.layer_configs) if layer_config.kv_source_layer is None)
 
     def init(self, initializer: Initializer) -> "Transformer":
-        rope_dims = (layer.rope_dim for layer in self.layer_configs if layer.rope_dim is not None)
-        rope_dim = next(rope_dims, None)
-        assert all(d == rope_dim for d in rope_dims)
-
-        if self.global_rope_config:
-            assert rope_dim is not None
-            global_rope = self.global_rope_config.init(
-                initializer,
-                head_dim=rope_dim,
-                num_timesteps=self.context_length,
-            )
-        else:
-            global_rope = None
-
-        if self.local_rope_config:
-            assert rope_dim is not None
-            max_sliding_window_size = max(
-                layer_config.mixer_config.sliding_window_size or 0
-                for layer_config in self.layer_configs
-                if isinstance(layer_config.mixer_config, AttentionConfig)
-            )
-            local_rope = self.local_rope_config.init(
-                initializer,
-                head_dim=rope_dim,
-                num_timesteps=max(max_sliding_window_size, self.context_length),
-            )
-        else:
-            local_rope = None
+        ropes, rope_indices = self._init_ropes(initializer)
 
         layers = tuple(
-            layer_config.init(initializer, model_dim=self.model_dim, hidden_dim=self.hidden_dim)
+            layer_config.init(
+                initializer,
+                model_dim=self.model_dim,
+                hidden_dim=layer_config.hidden_dim or self.hidden_dim,
+            )
             for layer_config in self.layer_configs
         )
         output_norm = self.output_norm_config.init(initializer, self.model_dim)
 
         return Transformer(
             config=self,
-            global_rope=global_rope,
-            local_rope=local_rope,
+            ropes=ropes,
+            rope_indices=rope_indices,
+            source_layer_indices=self._source_layer_indices(),
             layers=layers,
             output_norm=output_norm,
         )
 
 
 class Transformer(LalamoModule[TransformerConfig]):
-    global_rope: RoPE | None
-    local_rope: RoPE | None
+    ropes: tuple[RoPE, ...]
+    rope_indices: tuple[int, ...] = field(static=True)
+    source_layer_indices: tuple[int, ...] = field(static=True)
     layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
 
@@ -114,6 +128,8 @@ class Transformer(LalamoModule[TransformerConfig]):
         lengths_without_padding: Int[Array, " batch"] | None,
         forward_pass_mode: ForwardPassMode,
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
+        per_layer_inputs: tuple[Float[Array, "batch suffix_tokens ple_dim"], ...] | None = None,
+        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
     ) -> TransformerResult:
@@ -127,42 +143,37 @@ class Transformer(LalamoModule[TransformerConfig]):
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
             )
-        maybe_state = state or ([None] * len(self.layers))
-
-        if self.global_rope is not None:
-            global_positional_embeddings = call_vmapped(
-                self.global_rope,
+        state_by_layer = (
+            {layer_index: state[state_index] for state_index, layer_index in enumerate(self.source_layer_indices)}
+            if state is not None
+            else {}
+        )
+        rope_embeddings = tuple(
+            call_vmapped(
+                rope,
                 token_positions,
                 added_sharding_axis=ShardingAxis.DATA,
             )
-        else:
-            global_positional_embeddings = None
-        if self.local_rope is not None:
-            local_positional_embeddings = call_vmapped(
-                self.local_rope,
-                token_positions,
-                added_sharding_axis=ShardingAxis.DATA,
-            )
-        else:
-            local_positional_embeddings = global_positional_embeddings
+            for rope in self.ropes
+        )
+        has_kv_sharing = len(self.source_layer_indices) < len(self.layers)
+        must_return_state = return_updated_state or has_kv_sharing
 
         layer_keychains = keychain.split(len(self.layers))
-        updated_state_layers = []
+        updated_states: dict[int, StateLayerBase | None] = {}
         layer_results = []
 
-        for layer, state_layer, layer_keychain in zip(
-            self.layers,
-            maybe_state,
-            layer_keychains,
-            strict=True,
-        ):
-            match layer.positional_embedding_selector:
-                case PositionalEmbeddingSelector.LOCAL:
-                    positional_embeddings_to_use = local_positional_embeddings
-                case PositionalEmbeddingSelector.GLOBAL:
-                    positional_embeddings_to_use = global_positional_embeddings
-                case PositionalEmbeddingSelector.NONE | _:
-                    positional_embeddings_to_use = None
+        for layer_index, (layer, layer_keychain) in enumerate(zip(self.layers, layer_keychains, strict=True)):
+            rope_index = self.rope_indices[layer_index]
+            positional_embeddings = rope_embeddings[rope_index] if rope_index >= 0 else None
+
+            per_layer_input = per_layer_inputs[layer_index] if per_layer_inputs is not None else None
+
+            kv_source = layer.config.kv_source_layer
+            if kv_source is None:
+                effective_state = state_by_layer.get(layer_index)
+            else:
+                effective_state = updated_states.get(kv_source, state_by_layer.get(kv_source))
 
             layer_result = layer(
                 inner_features,
@@ -173,6 +184,8 @@ class Transformer(LalamoModule[TransformerConfig]):
                 lengths_without_padding=lengths_without_padding,
                 forward_pass_mode=forward_pass_mode,
                 forward_pass_config=forward_pass_config.layer,
+                per_layer_input=per_layer_input,
+                attention_parent_indices=attention_parent_indices,
                 keychain=layer_keychain,
             )
 
@@ -180,12 +193,18 @@ class Transformer(LalamoModule[TransformerConfig]):
             layer_results.append(layer_result)
 
             if kv_source is None:
-                updated_states[i] = layer_result.updated_state
+                updated_states[layer_index] = layer_result.updated_state
 
         normalized_outputs = call_vmapped_twice(self.output_norm, inner_features)
 
         if return_updated_state:
-            compact_state = State(updated_states[i] for i in self.source_layer_indices)
+            compact_state_layers = []
+            for layer_index in self.source_layer_indices:
+                layer_state = updated_states[layer_index]
+                if layer_state is None:
+                    raise ValueError(f"Layer {layer_index} did not return an updated state.")
+                compact_state_layers.append(layer_state)
+            compact_state = State(tuple(compact_state_layers))
         else:
             compact_state = None
         return TransformerResult(
@@ -196,4 +215,7 @@ class Transformer(LalamoModule[TransformerConfig]):
         )
 
     def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> State:
-        return State(layer.init_static_state(batch_size, capacity, dtype) for layer in self.layers)
+        return State(
+            self.layers[layer_index].init_static_state(batch_size, capacity, dtype)
+            for layer_index in self.source_layer_indices
+        )

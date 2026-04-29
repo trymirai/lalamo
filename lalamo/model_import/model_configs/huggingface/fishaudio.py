@@ -77,8 +77,8 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         subtract_mean=False,
     )
 
-    qkv_projection_config = FullPrecisionLinearConfig()
-    out_projection_config = FullPrecisionLinearConfig()
+    qkv_projection_config = LinearConfig()
+    out_projection_config = LinearConfig()
     mixer_config = AttentionConfig(
         qkv_projection_config=qkv_projection_config,
         out_projection_config=out_projection_config,
@@ -96,7 +96,7 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         has_out_biases=False,
     )
 
-    mlp_linear_config = FullPrecisionLinearConfig()
+    mlp_linear_config = LinearConfig()
     mlp_use_up_biases = False
     mlp_use_down_biases = False
     mlp_config = DenseMLPConfig(
@@ -127,7 +127,6 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
 
     return TransformerConfig(
         global_rope_config=global_rope_config,
-        local_rope_config=local_rope_config,
         layer_configs=tuple([layer_config] * config["n_layer"]),
         output_norm_config=norm_config_pre,
         model_dim=input_dim,
@@ -167,7 +166,7 @@ def instantiate_dac_config_from_fishaudio_config(
             subtract_mean=True,
             has_biases=True,
         ),
-        pwconv_config=FullPrecisionLinearConfig(),
+        pwconv_config=LinearConfig(),
     )
     upsampling_block_config = UpsamplingBlockConfig(
         trans_conv_config=CausalTransposeConv1dConfig(has_biases=True),
@@ -189,7 +188,7 @@ def instantiate_dac_config_from_fishaudio_config(
             input_scale=None,
             logit_soft_cap=None,
         ),
-        out_proj_config=FullPrecisionLinearConfig(),
+        out_proj_config=LinearConfig(),
     )
     lalamo_rvq_config = ResidualVectorQuantizeConfig(
         vq_config=vq_config,
@@ -300,8 +299,8 @@ class FishAudioConfig(ForeignTTSConfig):
             subtract_mean=False,
         )
 
-        qkv_projection_config = FullPrecisionLinearConfig()
-        out_projection_config = FullPrecisionLinearConfig()
+        qkv_projection_config = LinearConfig()
+        out_projection_config = LinearConfig()
         mixer_config = AttentionConfig(
             qkv_projection_config=qkv_projection_config,
             out_projection_config=out_projection_config,
@@ -319,7 +318,7 @@ class FishAudioConfig(ForeignTTSConfig):
             has_out_biases=False,
         )
 
-        mlp_linear_config = FullPrecisionLinearConfig()
+        mlp_linear_config = LinearConfig()
         mlp_use_up_biases = False
         mlp_use_down_biases = False
         mlp_config = DenseMLPConfig(
@@ -356,7 +355,7 @@ class FishAudioConfig(ForeignTTSConfig):
             hidden_dim=hidden_dim,
             context_length=context_length,
         )
-        linear_out_cfg = FullPrecisionLinearConfig()
+        linear_out_cfg = LinearConfig()
 
         return (transformer_cfg, linear_out_cfg)
 
@@ -384,7 +383,7 @@ class FishAudioConfig(ForeignTTSConfig):
         if self.dim == self.fast_dim:
             fast_model_projection_config = None
         else:
-            fast_model_projection_config = FullPrecisionLinearConfig()
+            fast_model_projection_config = LinearConfig()
         text_decoder_config = FishAudioTextDecoderConfig(
             slow_embeddings_config=slow_embedding_cfg,
             slow_model_config=slow_transformer_cfg,

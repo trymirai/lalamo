@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import einops
 import equinox as eqx
@@ -106,6 +107,31 @@ class DeltaNetConfig(TokenMixerConfig):
         )
 
 
+class DeltaNetScanResult(NamedTuple):
+    outputs: Float[Array, "tokens heads value_channels"]
+    final_state: Float[Array, "heads value_channels key_channels"]
+
+
+class DeltaNetScanInputs(NamedTuple):
+    queries: Float[Array, "tokens heads key_channels"]
+    keys: Float[Array, "tokens heads key_channels"]
+    values: Float[Array, "tokens heads value_channels"]
+    decay_factor: Float[Array, "tokens heads"]
+    beta: Float[Array, "tokens heads"]
+
+
+class DeltaNetTokenStepOutput(NamedTuple):
+    local_output: Float[Array, "heads value_channels"]
+    correction_vec: Float[Array, "heads key_channels"]
+
+
+class DeltaNetChunkScanResult(NamedTuple):
+    chunk_outputs: Float[Array, "chunk_size heads value_channels"]
+    correction_vecs: Float[Array, "chunk_size heads key_channels"]
+    end_state: Float[Array, "heads value_channels key_channels"]
+    end_prop: Float[Array, "heads key_channels key_channels"]
+
+
 class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
     in_proj: Linear
     conv: SeparableCausalConv
@@ -119,12 +145,32 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         return self.in_proj.input_dim
 
     @property
+    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
+        return PositionalEmbeddingSelector.NONE
+
+    @property
+    def num_heads(self) -> int:
+        return self.config.num_heads
+
+    @property
+    def num_groups(self) -> int:
+        return self.config.num_groups
+
+    @property
+    def head_dim(self) -> int:
+        return self.config.head_dim
+
+    @property
+    def value_head_dim(self) -> int:
+        return self.config.value_head_dim
+
+    @property
     def key_dim(self) -> int:
-        return self.config.num_groups * self.config.head_dim
+        return self.num_groups * self.head_dim
 
     @property
     def value_dim(self) -> int:
-        return self.config.num_heads * self.config.value_head_dim
+        return self.num_heads * self.value_head_dim
 
     @property
     def conv_dim(self) -> int:
@@ -162,7 +208,9 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             value_delta = value_delta * beta_t[:, None]
             updated_state = decayed_state + value_delta[:, :, None] * key_t[:, None, :]
             output_t = einops.einsum(
-                query_t, updated_state, "heads key_channels, heads value_channels key_channels -> heads value_channels"
+                query_t,
+                updated_state,
+                "heads key_channels, heads value_channels key_channels -> heads value_channels",
             )
 
             propagated_state = jax.lax.cond(index < num_steps, lambda: updated_state, lambda: carry_state)
@@ -196,12 +244,12 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         has_short_tail = 0 < remainder < min_chunk_len
         num_chunked_tokens = num_tokens - remainder if has_short_tail else num_tokens
 
+        tail_queries = queries[num_chunked_tokens:]
+        tail_keys = keys[num_chunked_tokens:]
+        tail_values = values[num_chunked_tokens:]
+        tail_decay = decay_factor[num_chunked_tokens:]
+        tail_beta = beta[num_chunked_tokens:]
         if has_short_tail:
-            tail_queries = queries[num_chunked_tokens:]
-            tail_keys = keys[num_chunked_tokens:]
-            tail_values = values[num_chunked_tokens:]
-            tail_decay = decay_factor[num_chunked_tokens:]
-            tail_beta = beta[num_chunked_tokens:]
             queries = queries[:num_chunked_tokens]
             keys = keys[:num_chunked_tokens]
             values = values[:num_chunked_tokens]
@@ -230,14 +278,17 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         decay_c = decay_factor.reshape(num_chunks, chunk_size, self.num_heads)
         beta_c = beta.reshape(num_chunks, chunk_size, self.num_heads)
 
-        # Phase 1: intra-chunk scan (parallel across chunks via vmap)
         def _intra_chunk_token_step(
             carry: tuple[
-                Float[Array, "heads value_channels key_channels"], Float[Array, "heads key_channels key_channels"]
+                Float[Array, "heads value_channels key_channels"],
+                Float[Array, "heads key_channels key_channels"],
             ],
             token_inputs: DeltaNetScanInputs,
         ) -> tuple[
-            tuple[Float[Array, "heads value_channels key_channels"], Float[Array, "heads key_channels key_channels"]],
+            tuple[
+                Float[Array, "heads value_channels key_channels"],
+                Float[Array, "heads key_channels key_channels"],
+            ],
             DeltaNetTokenStepOutput,
         ]:
             state, prop = carry
@@ -287,14 +338,15 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             DeltaNetScanInputs(queries_c, keys_c, values_c, decay_c, beta_c),
         )
 
-        # Phase 2: inter-chunk state propagation (sequential over num_chunks)
         def _inter_chunk_step(
             actual_state: Float[Array, "heads value_channels key_channels"],
             chunk_data: tuple[
-                Float[Array, "heads value_channels key_channels"], Float[Array, "heads key_channels key_channels"]
+                Float[Array, "heads value_channels key_channels"],
+                Float[Array, "heads key_channels key_channels"],
             ],
         ) -> tuple[
-            Float[Array, "heads value_channels key_channels"], Float[Array, "heads value_channels key_channels"]
+            Float[Array, "heads value_channels key_channels"],
+            Float[Array, "heads value_channels key_channels"],
         ]:
             local_end, prop_matrix = chunk_data
             next_state = local_end + einops.einsum(
@@ -312,7 +364,6 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             (chunk_results.end_state, chunk_results.end_prop),
         )
 
-        # Phase 3: apply corrections (parallel batched matmul)
         corrections = einops.einsum(
             chunk_initials,
             chunk_results.correction_vecs,
@@ -348,11 +399,14 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
+        attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
     ) -> DeltaNetResult:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for DeltaNet.")
+        if attention_parent_indices is not None:
+            raise ValueError("Attention parent indices are not supported for DeltaNet.")
 
         in_keychain, out_keychain = keychain.split()
         num_tokens, *_ = inputs.shape
@@ -413,18 +467,32 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         length_without_padding = jnp.asarray(length_without_padding, dtype=jnp.int32)
         length_without_padding = jnp.clip(length_without_padding, 0, num_tokens)
 
-        core_attn_out, final_state = self._scan(
-            query,
-            key,
-            value,
-            decay_factor,
-            beta,
-            state.ssm_state,
-            length_without_padding,
-        )
+        if num_tokens < forward_pass_config.min_chunk_len:
+            core_result = self._recurrent_scan(
+                query,
+                key,
+                value,
+                decay_factor,
+                beta,
+                state.ssm_state,
+                length_without_padding,
+            )
+        else:
+            core_result = self._chunked_scan(
+                query,
+                key,
+                value,
+                decay_factor,
+                beta,
+                state.ssm_state,
+                length_without_padding,
+                forward_pass_config,
+            )
+        core_attn_out = core_result.outputs
+        final_state = core_result.final_state
 
         def norm_gate(x: Float[Array, " channels"], gate: Float[Array, " channels"]) -> Float[Array, " channels"]:
-            return self.norm(x) * jax.nn.silu(gate)
+            return self.norm(x) * jax.nn.silu(gate.astype(jnp.float32)).astype(x.dtype)
 
         num_tokens, *_ = gate.shape
         gate = gate.reshape(num_tokens, self.config.num_heads, self.config.value_head_dim)

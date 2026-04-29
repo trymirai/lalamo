@@ -106,9 +106,12 @@ def test_batch_generation(language_model: LanguageModel) -> None:
         keychain=Keychain.init(3),
     ).token_ids
 
-    response_a, response_b = [language_model.token_codec.tokenizer.decode(ids) for ids in response_token_ids]
+    pairs = [(0, 1), (1, 2), (0, 2)]
+    outputs: dict[int, list[list[int]]] = {
+        prompt_index: [response_token_ids[prompt_index].tolist()] for prompt_index in range(len(prompts))
+    }
 
-    for i, j in pairs:
+    for pair_index, (i, j) in enumerate(pairs):
         pair_inputs = [inputs[i], inputs[j]]
         max_len = max(inp.size for inp in pair_inputs)
         lengths = jnp.array([inp.size for inp in pair_inputs])
@@ -121,6 +124,7 @@ def test_batch_generation(language_model: LanguageModel) -> None:
             generation_config=generation_config,
             prompt_lengths_without_padding=lengths,
             max_output_length=32,
+            keychain=Keychain.init(10 + pair_index),
         ).token_ids
 
         outputs[i].append(result[0].tolist())

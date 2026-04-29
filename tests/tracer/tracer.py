@@ -3,10 +3,10 @@ import gc
 import importlib.util
 import os
 from abc import abstractmethod
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Self
+from typing import Self
 
 import jax
 import jax.numpy as jnp
@@ -82,7 +82,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     def embedding(self, token_ids: ArrayT) -> ArrayT: ...
 
     @abstractmethod
-    def rope_fns(self) -> list[tuple[str, Any]]:
+    def rope_fns(self) -> list[tuple[str, Callable[[ArrayT, ArrayT], tuple[ArrayT, ArrayT]]]]:
         """Returns list of (label, rope_fn) pairs for each unique rope to test."""
         ...
 
@@ -157,7 +157,13 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_rope(self, activation_trace: ActivationTrace, rope_index: int, ref_rope: Any, label: str) -> None:
+    def match_rope(
+        self,
+        activation_trace: ActivationTrace,
+        rope_index: int,
+        ref_rope: Callable[[ArrayT, ArrayT], tuple[ArrayT, ArrayT]],
+        label: str,
+    ) -> None:
         assert activation_trace.rope_embeddings is not None
         llm_results = activation_trace.rope_embeddings[rope_index]
 

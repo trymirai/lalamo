@@ -2,14 +2,18 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from lalamo.initializer import RandomInitializer
 from lalamo.modules import (
     Decoder,
     DecoderConfig,
+    DecoderForwardPassConfig,
     DenseMLPConfig,
     DynamicKVCacheLayer,
+    EmbeddingForwardPassConfig,
     ForwardPassMode,
-    FullPrecisionLinearConfig,
     Identity,
+    Keychain,
+    LinearConfig,
     NormalizationConfig,
     StaticKVCacheLayer,
     TiedEmbeddingConfig,
@@ -19,7 +23,7 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.modules.token_mixers.state.kv_cache import build_tree_attention_mask, tree_ancestor_mask
+from lalamo.modules.token_mixers.kv_cache import build_tree_attention_mask, tree_ancestor_mask
 from tests.common import assert_close
 
 
@@ -32,16 +36,14 @@ def decoder() -> Decoder:
     context_length = 16
 
     norm_config = NormalizationConfig(
-        scale_precision=precision,
-        accumulation_precision=precision,
         epsilon=1e-5,
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         subtract_mean=False,
     )
     attention_config = AttentionConfig(
-        qkv_projection_config=FullPrecisionLinearConfig(precision=precision),
-        out_projection_config=FullPrecisionLinearConfig(precision=precision),
+        qkv_projection_config=LinearConfig(),
+        out_projection_config=LinearConfig(),
         query_norm_config=None,
         key_norm_config=None,
         num_heads=2,
@@ -56,7 +58,7 @@ def decoder() -> Decoder:
         has_out_biases=False,
     )
     mlp_config = DenseMLPConfig(
-        linear_config=FullPrecisionLinearConfig(precision=precision),
+        linear_config=LinearConfig(),
         activation=Identity(),
         has_up_biases=False,
         has_down_biases=False,
@@ -64,7 +66,6 @@ def decoder() -> Decoder:
         up_clipping=None,
     )
     rope_config = UnscaledRoPEConfig(
-        precision=precision,
         base=10_000.0,
         max_sequence_length=context_length,
         head_dim=4,
@@ -89,12 +90,11 @@ def decoder() -> Decoder:
         embedding_config=TiedEmbeddingConfig(
             input_scale=None,
             logit_soft_cap=None,
-            precision=precision,
         ),
         transformer_config=transformer_config,
         vocab_size=vocab_size,
     )
-    return decoder_config.random_init(key=jax.random.key(4))
+    return decoder_config.init(RandomInitializer(dtype=precision, key=jax.random.key(4)))
 
 
 def test_tree_ancestor_mask_chain() -> None:
@@ -140,7 +140,6 @@ def test_build_tree_attention_mask_prefix_plus_draft() -> None:
         has_sinks=False,
     )
 
-    # Columns: [prefix0, prefix1, draft0, draft1, draft2]
     expected = jnp.array(
         [
             [True, True, True, False, False],
@@ -157,12 +156,17 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
     prefix_token_ids = jnp.array([[1, 2, 3]], dtype=jnp.int32)
     prefix_positions = jnp.array([[0, 1, 2]], dtype=jnp.int32)
     chain_token_ids = jnp.array([4, 5, 6], dtype=jnp.int32)
+    forward_pass_config = DecoderForwardPassConfig(
+        embedding=EmbeddingForwardPassConfig(activation_dtype=jnp.float32),
+    )
 
     prefix_result = decoder(
         prefix_token_ids,
         prefix_positions,
         state=None,
         return_updated_state=True,
+        forward_pass_config=forward_pass_config,
+        keychain=Keychain.init(10),
     )
     assert prefix_result.updated_state is not None
 
@@ -175,6 +179,8 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
             state=state,
             return_updated_state=True,
             forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
+            forward_pass_config=forward_pass_config,
+            keychain=Keychain.init(20 + i),
         )
         assert step_result.updated_state is not None
         state = step_result.updated_state
@@ -187,6 +193,8 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
         state=prefix_result.updated_state,
         forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
         attention_parent_indices=jnp.array([[-1, 0, 1]], dtype=jnp.int32),
+        forward_pass_config=forward_pass_config,
+        keychain=Keychain.init(30),
     )
 
     assert_close(
@@ -206,6 +214,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         prefix_positions,
         state=None,
         return_updated_state=True,
+        keychain=Keychain.init(40),
     )
     assert prefix_result.updated_state is not None
 
@@ -216,6 +225,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         jnp.array([[2]], dtype=jnp.int32),
         state=state_a,
         forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
+        keychain=Keychain.init(50),
     )
     logits_a = result_a.logits[0, 0]
 
@@ -226,6 +236,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         jnp.array([[2]], dtype=jnp.int32),
         state=state_b,
         forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
+        keychain=Keychain.init(60),
     )
     logits_b = result_b.logits[0, 0]
 
@@ -236,6 +247,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         state=prefix_result.updated_state,
         forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
         attention_parent_indices=jnp.array([[-1, -1]], dtype=jnp.int32),
+        keychain=Keychain.init(70),
     )
 
     assert_close(

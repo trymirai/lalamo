@@ -1,6 +1,6 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Self
+from typing import Self
 
 import torch
 from jaxtyping import Array

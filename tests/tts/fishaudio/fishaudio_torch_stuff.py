@@ -141,8 +141,8 @@ class ConfigMapping:
             subtract_mean=False,
         )
 
-        qkv_projection_config = LinearConfig(precision=precision)
-        out_projection_config = LinearConfig(precision=precision)
+        qkv_projection_config = LinearConfig()
+        out_projection_config = LinearConfig()
         mixer_config = AttentionConfig(
             qkv_projection_config=qkv_projection_config,
             out_projection_config=out_projection_config,
@@ -160,7 +160,7 @@ class ConfigMapping:
             has_out_biases=False,
         )
 
-        mlp_linear_config = LinearConfig(precision=precision)
+        mlp_linear_config = LinearConfig()
         mlp_use_up_biases = False
         mlp_use_down_biases = False
         mlp_config = DenseMLPConfig(
@@ -184,7 +184,7 @@ class ConfigMapping:
             pre_mlp_norm_config=pre_mlp_norm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=post_mlp_norm_config,
-            rope_config=rope_config,
+            rope_config=global_rope_config,
         )
         model_dim = config.dim
         hidden_dim = config.intermediate_size
@@ -197,7 +197,7 @@ class ConfigMapping:
             hidden_dim=hidden_dim,
             context_length=context_length,
         )
-        linear_out_cfg = LinearConfig(precision=precision)
+        linear_out_cfg = LinearConfig()
 
         return (transformer_cfg, linear_out_cfg)
 
