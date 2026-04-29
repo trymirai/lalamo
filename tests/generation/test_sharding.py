@@ -35,6 +35,7 @@ def test_sharded_model_satisfies_sharding_invariants(model: str) -> None:
             import jax.sharding as shd
 
             from lalamo import ShardingConfig, import_model
+            from lalamo.model_import.loaders.common import FieldShardingInfo, find_field_sharding
             from lalamo.modules import pad_and_apply_data_sharding
 
             SHARDING_CONFIGS = [
@@ -53,17 +54,34 @@ def test_sharded_model_satisfies_sharding_invariants(model: str) -> None:
             token_ids = jnp.ones((BATCH_SIZE, SEQ_LEN), dtype=jnp.int32)
             token_positions = jnp.broadcast_to(jnp.arange(SEQ_LEN), (BATCH_SIZE, SEQ_LEN))
 
-            def spec_mentions_axis(spec: tuple[object, ...], axis_name: str) -> bool:
-                return any(part == axis_name or (isinstance(part, tuple) and axis_name in part) for part in spec)
-
             def require_named_sharding(array: jax.Array) -> tuple[object, ...]:
                 assert isinstance(array.sharding, shd.NamedSharding), array.sharding
                 return tuple(array.sharding.spec)
 
-            def named_sharding_spec(array: jax.Array) -> tuple[object, ...] | None:
-                if not isinstance(array.sharding, shd.NamedSharding):
-                    return None
-                return tuple(array.sharding.spec)
+            def expected_parameter_spec(
+                array: jax.Array,
+                info: FieldShardingInfo,
+                sharding_config: ShardingConfig,
+            ) -> tuple[object, ...]:
+                parts: list[object] = [None] * array.ndim
+                tp_dim = None
+                for dim in info.tensor_sharding.dims_to_try(info.sharding_order):
+                    if dim < array.ndim and array.shape[dim] % sharding_config.tensor_axis_size == 0:
+                        parts[dim] = sharding_config.tensor_axis_name
+                        tp_dim = dim
+                        break
+
+                if sharding_config.fsdp:
+                    for dim in info.tensor_sharding.axes:
+                        if (
+                            dim != tp_dim
+                            and dim < array.ndim
+                            and array.shape[dim] % sharding_config.data_axis_size == 0
+                        ):
+                            parts[dim] = sharding_config.data_axis_name
+                            break
+
+                return tuple(parts)
 
             for sharding_config in SHARDING_CONFIGS:
                 print(f"testing {{sharding_config}}...")
@@ -76,23 +94,20 @@ def test_sharded_model_satisfies_sharding_invariants(model: str) -> None:
                 assert require_named_sharding(sharded_token_ids) == expected_input_spec
                 assert require_named_sharding(sharded_token_positions) == expected_input_spec
 
-                parameter_specs = [
-                    spec
-                    for leaf in jax.tree.leaves(decoder)
-                    if eqx.is_array(leaf)
-                    for spec in [named_sharding_spec(leaf)]
-                    if spec is not None
-                ]
-                if sharding_config.tensor_axis_size > 1:
-                    assert any(
-                        spec_mentions_axis(spec, sharding_config.tensor_axis_name)
-                        for spec in parameter_specs
+                checked_parameters = 0
+                for leaf in jax.tree.leaves(decoder):
+                    if not eqx.is_array(leaf):
+                        continue
+                    sharding_info = find_field_sharding(decoder, leaf)
+                    if sharding_info is None or leaf.size < sharding_info.min_size_to_shard:
+                        continue
+                    assert require_named_sharding(leaf) == expected_parameter_spec(
+                        leaf,
+                        sharding_info,
+                        sharding_config,
                     )
-                if sharding_config.fsdp:
-                    assert any(
-                        spec_mentions_axis(spec, sharding_config.data_axis_name)
-                        for spec in parameter_specs
-                    )
+                    checked_parameters += 1
+                assert checked_parameters > 0
                 print(f"  OK")
 
             print("all sharding configs passed")
