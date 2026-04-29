@@ -422,6 +422,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             state.ssm_state,
             length_without_padding,
         )
+
         def norm_gate(x: Float[Array, " channels"], gate: Float[Array, " channels"]) -> Float[Array, " channels"]:
             return self.norm(x) * jax.nn.silu(gate)
 

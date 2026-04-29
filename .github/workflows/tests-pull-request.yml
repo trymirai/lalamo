@@ -54,15 +54,15 @@ jobs:
         with:
           dev: 'true'
 
-      - name: Run ty
+      - name: Run pyrefly
         if: ${{ always() && steps.setup.outcome == 'success' }}
         run: |
-          ty check lalamo
+          pyrefly check
 
       - name: Run ruff
         if: ${{ always() && steps.setup.outcome == 'success' }}
         run: |
-          ruff check lalamo
+          ruff check .
 
       - name: Run ruff format
         if: ${{ always() && steps.setup.outcome == 'success' }}

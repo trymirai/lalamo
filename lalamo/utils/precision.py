@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 
 from jax import default_matmul_precision
@@ -14,6 +14,6 @@ def _dot_algorithm_preset_name(precision: DotAlgorithmPreset) -> str:
 
 
 @contextmanager
-def use_dot_algorithm_preset(precision: DotAlgorithmPreset) -> Iterator[None]:
+def use_dot_algorithm_preset(precision: DotAlgorithmPreset) -> Generator[None]:
     with default_matmul_precision(_dot_algorithm_preset_name(precision)):
         yield

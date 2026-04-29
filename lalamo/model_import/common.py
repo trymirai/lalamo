@@ -1,7 +1,7 @@
 import importlib.metadata
 import json
 from collections import ChainMap
-from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Generator, Mapping, MutableMapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from typing import NamedTuple, cast
@@ -190,7 +190,7 @@ def _combine_weight_shards(
 def _load_checkpoint(
     model_spec: ModelSpec,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> Iterator[Checkpoint]:
+) -> Generator[Checkpoint]:
     with ExitStack() as stack:
         weight_shards = tuple(
             stack.enter_context(weight_shard)

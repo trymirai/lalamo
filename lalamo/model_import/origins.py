@@ -3,7 +3,7 @@ import json
 import tarfile
 import tempfile
 from abc import abstractmethod
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -55,7 +55,7 @@ type StatusEvent = (
 
 
 @contextmanager
-def load_torch_weights(path: Path, *, weights_only: bool = True) -> Iterator[WeightShard]:
+def load_torch_weights(path: Path, *, weights_only: bool = True) -> Generator[WeightShard]:
     import torch  # noqa: PLC0415
 
     from lalamo.utils.torch_interop import torch_to_jax  # noqa: PLC0415
@@ -65,7 +65,7 @@ def load_torch_weights(path: Path, *, weights_only: bool = True) -> Iterator[Wei
 
 
 @contextmanager
-def load_safetensors_weights(path: Path) -> Iterator[WeightShard]:
+def load_safetensors_weights(path: Path) -> Generator[WeightShard]:
     with path.open("rb") as fd:
         metadata, weights = safe_read(fd)
         yield weights, metadata or {}
