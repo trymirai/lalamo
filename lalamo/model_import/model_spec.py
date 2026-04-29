@@ -3,7 +3,7 @@ from typing import ClassVar, Self
 
 from cattrs import GenConverter
 
-from lalamo.model_import.model_configs.common import (
+from lalamo.model_import.model_configs.foreign_config import (
     ForeignClassifierConfig,
     ForeignConfig,
     ForeignLMConfig,

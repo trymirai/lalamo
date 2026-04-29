@@ -37,7 +37,7 @@ from lalamo.utils.template_hacking import fix_chat_template
 
 from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config, merge_token_ids
 from .huggingface_tokenizer_config import HFTokenizerConfig
-from .model_configs.common import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
+from .model_configs.foreign_config import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
 from .model_specs.common import FileSpec, JSONFieldSpec, ModelSpec, ModelType, QuantizationMode, UseCase, WeightsType
 
 __all__ = [

@@ -4,6 +4,7 @@ from typing import ClassVar, Literal
 
 import cattrs
 import jax.numpy as jnp
+from cattrs.strategies import configure_tagged_union
 from jaxtyping import Array, DTypeLike
 
 from lalamo.model_import.loaders import (
@@ -69,32 +70,29 @@ class MLXQuantizationConfig:
     bits: int
 
 
-QuantizationConfigType = AWQQuantizationConfig | GPTQQuantizationConfig | MLXQuantizationConfig | None
+type QuantizationConfig = AWQQuantizationConfig | GPTQQuantizationConfig | MLXQuantizationConfig
+type QuantizationConfigType = QuantizationConfig | None
 
 
-def _structure_quantization_config(v: object, _: object) -> QuantizationConfigType:
-    match v:
-        case None:
-            return None
-
-        case {"quant_method": "awq", **_other}:
-            return cattrs.structure(v, AWQQuantizationConfig)
-
-        case {"quant_method": "gptq", **_other}:
-            return cattrs.structure(v, GPTQQuantizationConfig)
-
-        case {**_other}:
-            return cattrs.structure(v, MLXQuantizationConfig)
-
-        case _:
-            raise RuntimeError(f"Cannot structure {v}field")
+def _quantization_tag(config_type: type) -> str:
+    return {
+        AWQQuantizationConfig: "awq",
+        GPTQQuantizationConfig: "gptq",
+        MLXQuantizationConfig: "mlx",
+    }[config_type]
 
 
 @dataclass(frozen=True)
 class HuggingFaceLMConfig(ForeignLMConfig):
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
-    _converter.register_structure_hook(QuantizationConfigType, _structure_quantization_config)
+    configure_tagged_union(
+        QuantizationConfig,
+        _converter,
+        tag_name="quant_method",
+        tag_generator=_quantization_tag,
+        default=MLXQuantizationConfig,
+    )
 
     @property
     def eos_token_ids(self) -> list[int]:
