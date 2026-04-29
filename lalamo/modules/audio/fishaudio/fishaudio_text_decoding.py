@@ -11,7 +11,7 @@ from lalamo.modules.activations import Identity
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
 )
-from lalamo.modules.audio.fishaudio.fishaudio_consts import REPEAT_WINDOW_SIZE, SHORT_LOGITS_SIZE
+from lalamo.modules.audio.fishaudio.fishaudio_consts import SHORT_LOGITS_SIZE
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
@@ -40,7 +40,7 @@ class DecodeUtteranceLoopState(NamedTuple):
     current_codes: Int[Array, " codebooks"]
     sampling_policies: SamplingPolicy
     key: Key[Array, ""]
-    generated_count: Int[Array, ""]
+    num_generated_tokens: Int[Array, ""]
     generated_codes: Int[Array, "tokens codebooks"]
 
 
@@ -84,7 +84,6 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
     precision: DTypeLike
 
     short_logits_size: int = SHORT_LOGITS_SIZE
-    repeat_window_size: int = REPEAT_WINDOW_SIZE
 
     def empty(self) -> "FishAudioTextDecoder":
         embeddings_slow = self.slow_embeddings_config.empty(self.vocab_size, self.slow_model_dim)
@@ -251,9 +250,6 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     def num_codebooks(self) -> int:
         return self.config.num_codebooks
 
-    def embed_slow_model(self) -> Array:
-        return jnp.zeros((1, 2, 3))
-
     def __call__(
         self,
         text_tokens: Int[Array, "batch tokens"],
@@ -380,12 +376,12 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         first_codes_unbatched = first_codes[0]
 
         def cond_fn(loop_state: DecodeUtteranceLoopState) -> Bool[Array, ""]:
-            return (loop_state.generated_count < max_remaining) & (loop_state.current_codes[0] != im_end_id)
+            return (loop_state.num_generated_tokens < max_remaining) & (loop_state.current_codes[0] != im_end_id)
 
         def body_fn(loop_state: DecodeUtteranceLoopState) -> DecodeUtteranceLoopState:
             new_key, subkey = jax.random.split(loop_state.key)
             embeddings = self.embed(loop_state.current_codes[None, :, None])
-            input_pos = (prompt_length + loop_state.generated_count)[None, None]
+            input_pos = (prompt_length + loop_state.num_generated_tokens)[None, None]
             next_token_result = decode_next_token(
                 model=self,
                 x=embeddings,
@@ -400,8 +396,8 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
                 current_codes=next_codes,
                 sampling_policies=next_token_result.sampling_policies,
                 key=new_key,
-                generated_count=loop_state.generated_count + 1,
-                generated_codes=loop_state.generated_codes.at[loop_state.generated_count].set(next_codes),
+                num_generated_tokens=loop_state.num_generated_tokens + 1,
+                generated_codes=loop_state.generated_codes.at[loop_state.num_generated_tokens].set(next_codes),
             )
 
         initial_loop_state = DecodeUtteranceLoopState(
@@ -409,7 +405,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             current_codes=first_codes_unbatched,
             sampling_policies=first_token_result.sampling_policies,
             key=key,
-            generated_count=jnp.int32(0),
+            num_generated_tokens=jnp.int32(0),
             generated_codes=out_buf,
         )
         final_loop_state = jax.lax.while_loop(cond_fn, body_fn, initial_loop_state)
@@ -417,7 +413,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         # If the loop exited because the freshly-generated token was im_end, that token sits at
         # final_buf[final_i - 1]; strip it so we only return the audio codebooks.
         ended_with_im_end = bool(final_loop_state.current_codes[0] == im_end_id)
-        valid_count = int(final_loop_state.generated_count) - (1 if ended_with_im_end else 0)
+        valid_count = int(final_loop_state.num_generated_tokens) - (1 if ended_with_im_end else 0)
 
         all_tokens = jnp.concatenate(
             [first_codes_unbatched[None, :], final_loop_state.generated_codes[:valid_count]],
