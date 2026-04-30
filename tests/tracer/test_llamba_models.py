@@ -3,6 +3,10 @@ import unittest
 
 import pytest
 
+from lalamo.model_import.model_configs import HFLlambaConfig
+from lalamo.model_import.model_specs.common import ModelType
+from tests.conftest import filter_specs
+from tests.model_test_tiers import ModelTier
 from tests.tracer.tracer import DType, ModelTestSpec, _test_model
 
 CMX_AVAILABLE = importlib.util.find_spec("cartesia_mlx")
@@ -11,7 +15,9 @@ if CMX_AVAILABLE:
     from tests.tracer.tracer_llamba import LlambaDecoderTracer
 
 MODEL_LIST = [
-    ModelTestSpec("cartesia-ai/Llamba-1B-4bit-mlx", DType.FLOAT32, token_stride=1),
+    ModelTestSpec(spec.repo, DType.FLOAT32, token_stride=1)
+    for spec in filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.CORE)
+    if spec.config_type is HFLlambaConfig
 ]
 
 

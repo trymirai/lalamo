@@ -113,12 +113,12 @@ class ConfigMapping:
         config: BaseModelArgs,
         precision: DTypeLike,
     ) -> tuple[TransformerConfig, FullPrecisionLinearConfig]:
-        global_rope_config = UnscaledRoPEConfig(
+        rope_config = UnscaledRoPEConfig(
             precision=precision,
             base=config.rope_base,
             max_sequence_length=config.max_seq_len,
+            head_dim=config.head_dim,
         )
-        local_rope_config = None
 
         norm_config = NormalizationConfig(
             scale_precision=precision,
@@ -172,14 +172,13 @@ class ConfigMapping:
             pre_mlp_norm_config=pre_mlp_norm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=post_mlp_norm_config,
+            rope_config=rope_config,
         )
         model_dim = config.dim
         hidden_dim = config.intermediate_size
         context_length = config.max_seq_len
 
         transformer_cfg = TransformerConfig(
-            global_rope_config=global_rope_config,
-            local_rope_config=local_rope_config,
             layer_configs=tuple([layer_config] * config.n_layer),
             output_norm_config=norm_config,
             model_dim=model_dim,

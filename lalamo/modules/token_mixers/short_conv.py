@@ -6,11 +6,10 @@ from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
-from lalamo.modules.common import PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
 
-from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
+from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .state import ShortConvStateLayer
 
@@ -31,10 +30,6 @@ class ShortConvConfig(TokenMixerConfigBase):
     out_projection_config: LinearConfig
 
     kernel_size: int
-
-    @property
-    def rope_dim(self) -> None:
-        return None
 
     def random_init(
         self,
@@ -104,10 +99,6 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
     def model_dim(self) -> int:
         return self.in_projection.input_dim
 
-    @property
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        return PositionalEmbeddingSelector.NONE
-
     @eqx.filter_jit
     def __call__(
         self,
@@ -116,6 +107,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         state: ShortConvStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: ARG002, B008
     ) -> TokenMixerResult[ShortConvStateLayer]:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for ShortConv.")

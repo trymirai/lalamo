@@ -30,20 +30,23 @@ from .fishaudio_torch_stuff import from_fish_audio_config, prepare_state_dict_fo
 _testlog = logging.getLogger("tts_test_logger")
 
 
-@torch.no_grad
-def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
+@torch.no_grad()
+def test_decode_one_token_matches_pytorch(fish_audio_local_model_path: Path) -> None:
     skip_on_gpu("Flaky on GPU due to torch/jax inconsistencies")
 
     test_text = "this is a test message with speaker 0"
     tts_message = TTSMessage(content=test_text, speaker_id="speaker:0", style="interleave")
 
     # Load PyTorch-wrapped model for reference output
-    pytorch_tts_generator = FishAudioFromTorch.build_foreign_fish_audio_tts_generator(fish_audio_local_model_path)
+    pytorch_tts_generator = FishAudioFromTorch.build_foreign_fish_audio_tts_generator(
+        fish_audio_local_model_path,
+        precision=torch.float32,
+    )
     assert isinstance(pytorch_tts_generator.tts_model.text_decoder, FishAudioTextDecoder_Foreign)
     fish_model = pytorch_tts_generator.tts_model.text_decoder.fish_model
 
     # Create Lalamo text decoder config from PyTorch model config
-    precision = jnp.bfloat16
+    precision = jnp.float32
     lalamo_config = from_fish_audio_config(fish_model.config, fish_model.tokenizer, precision)
 
     # Convert PyTorch weights to JAX and load into Lalamo text decoder
@@ -79,7 +82,7 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
     assert output_pytorch[:, 0].tolist() == output_lalamo[0].tolist()
 
 
-@torch.no_grad
+@torch.no_grad()
 def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
     """Test that Lalamo DAC matches PyTorch DAC from FishAudio.
 

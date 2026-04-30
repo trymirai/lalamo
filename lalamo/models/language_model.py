@@ -46,6 +46,7 @@ from .lm_helpers import (
 __all__ = [
     "ForwardPassConfig",
     "GenerationConfig",
+    "GenerationTraceConfig",
     "LanguageModel",
     "LanguageModelConfig",
 ]
@@ -68,18 +69,66 @@ class DecodingState(NamedTuple):
     last_token_indices: Int[Array, " batch"]
     state: State
     stop_flags: Bool[Array, " batch"]
+    sampling_policy: SamplingPolicy
+
+
+class StepTrace(NamedTuple):
+    top_k_ids: Int[Array, "batch k"]
+    top_k_logits: Float[Array, "batch k"]
+    logsumexp: Float[Array, " batch"]
+    activation_output: Float[Array, "batch hidden"]
+    layer_output: Float[Array, "batch n_layers hidden"]
+    layer_indices: Int[Array, " n_layers"]
+
+    def _collapse_scan_layer_indices(self) -> Int[Array, " n_layers"]:
+        first_step_layer_indices = self.layer_indices[0]
+        return eqx.error_if(
+            first_step_layer_indices,
+            jnp.logical_not(jnp.all(self.layer_indices == first_step_layer_indices[None, :])),
+            "layer_indices must stay constant across generation steps.",
+        )
+
+    def rearrange_from_scan(self) -> "StepTrace":
+        return StepTrace(
+            top_k_ids=rearrange(self.top_k_ids, "generation_step batch top_k -> batch generation_step top_k"),
+            top_k_logits=rearrange(self.top_k_logits, "generation_step batch top_k -> batch generation_step top_k"),
+            logsumexp=rearrange(self.logsumexp, "generation_step batch -> batch generation_step"),
+            activation_output=rearrange(
+                self.activation_output,
+                "generation_step batch hidden -> batch generation_step hidden",
+            ),
+            layer_output=rearrange(
+                self.layer_output,
+                "generation_step batch traced_layer hidden -> batch traced_layer generation_step hidden",
+            ),
+            layer_indices=self._collapse_scan_layer_indices(),
+        )
 
 
 class GenerationStepResults(NamedTuple):
     token_ids: Int[Array, " batch"]
     top_k_token_ids: Int[Array, " batch k"] | None
     top_k_token_logits: Float[Array, " batch k"] | None
+    trace: StepTrace | None = None
 
 
 class GenerationResults(NamedTuple):
     token_ids: Int[Array, "batch response_tokens"]
     top_k_token_ids: Int[Array, "batch response_tokens k"] | None
     top_k_token_logits: Float[Array, "batch response_tokens k"] | None
+    trace: StepTrace | None = None
+
+
+@dataclass(frozen=True)
+class GenerationTraceConfig:
+    num_logits_per_token: int = 1024
+    trace_layers: tuple[int, ...] = tuple()
+
+    def resolve_layers(self, num_layers: int) -> tuple[int, ...]:
+        resolved = tuple(i if i >= 0 else num_layers + i for i in self.trace_layers)
+        if any(i < 0 or i >= num_layers for i in resolved):
+            raise ValueError("trace_layers index out of range.")
+        return tuple(sorted(set(resolved)))
 
 
 @dataclass(frozen=True)
@@ -90,9 +139,22 @@ class GenerationConfig:
     top_p: float | None = None
     min_p: float | None = None
     banned_tokens: tuple[int, ...] | None = None
+    repetition_penalty: float | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
 
-    def default_policy(self) -> SamplingPolicy:
-        return make_policy(self.temperature, self.top_k, self.top_p, self.min_p, self.banned_tokens)
+    def default_policy(self, vocab_size: int) -> SamplingPolicy:
+        return make_policy(
+            vocab_size=vocab_size,
+            temperature=self.temperature,
+            top_k=self.top_k,
+            top_p=self.top_p,
+            min_p=self.min_p,
+            banned_tokens=self.banned_tokens,
+            repetition_penalty=self.repetition_penalty,
+            presence_penalty=self.presence_penalty,
+            frequency_penalty=self.frequency_penalty,
+        )
 
 
 @dataclass(frozen=True)
@@ -127,7 +189,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         return self.config.generation_config.stop_token_ids
 
     def default_sampling_policy(self) -> SamplingPolicy:
-        return self.config.generation_config.default_policy()
+        return self.config.generation_config.default_policy(self.model.vocab_size)
 
     @eqx.filter_jit
     def _make_chunks(
@@ -243,24 +305,40 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
         num_top_logits_to_return: int | None = None,
+        generation_trace_config: GenerationTraceConfig | None = None,
         *,
         keys: Key[Array, " batch"] | None = None,
     ) -> GenerationResults:
         batch_size, sequence_length = prompt_token_ids.shape
 
+        if prompt_lengths_without_padding is None:
+            prompt_lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
+
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
-            sampling_policy = generation_config.default_policy()
+            sampling_policy = generation_config.default_policy(self.model.vocab_size)
 
         if eos_token_ids is None:
             eos_token_ids = jnp.array(self.stop_token_ids, dtype=jnp.int32)
         if keys is None:
             keys = jax.random.split(jax.random.key(0), num=batch_size)
 
+        trace_config = generation_trace_config
+        hidden_dim = self.model.transformer.config.model_dim
+        traced_layers: tuple[int, ...] = ()
+        traced_layers_array = jnp.zeros(0, dtype=jnp.int32)
+        trace_top_k = 0
+        if trace_config is not None:
+            traced_layers = trace_config.resolve_layers(len(self.model.transformer.layers))
+            traced_layers_array = jnp.asarray(traced_layers, dtype=jnp.int32)
+            trace_top_k = min(trace_config.num_logits_per_token, self.model.vocab_size)
+
         if len(keys) != batch_size:
             raise ValueError(
                 f"Length of 'keys' should be equal to the batch size, or keys should be None; got {len(keys)}",
             )
+        if max_output_length < 1:
+            raise ValueError("max_output_length must be at least 1.")
 
         prefill_results = self._prefill(
             prompt_token_ids,
@@ -269,11 +347,14 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             forward_pass_config=forward_pass_config,
         )
 
+        initial_sampling_policy = vmap(sampling_policy.init)(prompt_token_ids, prompt_lengths_without_padding)
+
         initial_state = DecodingState(
             prefill_results.last_token_logits,
             prefill_results.last_token_indices,
             prefill_results.state,
             jnp.zeros(batch_size, dtype=jnp.bool),
+            initial_sampling_policy,
         )
 
         def loop_iteration(
@@ -282,7 +363,10 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         ) -> tuple[DecodingState, GenerationStepResults]:
             def sample_and_update() -> tuple[DecodingState, GenerationStepResults]:
                 upcasted_logits = state.last_token_logits.astype(jnp.float32)
-                processed_logits = vmap(sampling_policy.process_logits)(upcasted_logits)
+                processed_logits = vmap(lambda policy, logits: policy.process_logits(logits))(
+                    state.sampling_policy,
+                    upcasted_logits,
+                )
                 next_token_ids = jax.vmap(lambda k, logits: jax.random.categorical(k, logits))(keys, processed_logits)
                 next_token_ids = jnp.where(state.stop_flags, jnp.zeros(batch_size, dtype=jnp.int32), next_token_ids)
                 if num_top_logits_to_return is not None:
@@ -307,6 +391,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     next_token_indices[:, None],
                     state.state,
                     return_updated_state=True,
+                    return_activation_trace=trace_config is not None,
                     forward_pass_mode=forward_pass_mode,
                     forward_pass_config=forward_pass_config,
                 )
@@ -316,8 +401,36 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     next_token_indices,
                     decoder_outputs.updated_state,
                     stop_flags,
+                    vmap(lambda policy, token: policy.update(token))(state.sampling_policy, next_token_ids),
                 )
-                return new_state, GenerationStepResults(next_token_ids, next_top_k_token_ids, next_top_k_token_logits)
+                trace = None
+                if trace_config is not None:
+                    assert decoder_outputs.activation_trace is not None
+                    output_logits = new_state.last_token_logits
+                    trace_logits, trace_ids = jax.lax.top_k(output_logits, trace_top_k)
+                    trace_logsumexp = jax.nn.logsumexp(output_logits, axis=-1)
+                    layer_results = decoder_outputs.activation_trace.layer_results
+                    trace = StepTrace(
+                        top_k_ids=trace_ids,
+                        top_k_logits=trace_logits.astype(jnp.bfloat16),
+                        logsumexp=trace_logsumexp,
+                        activation_output=decoder_outputs.activation_trace.output_norm.squeeze(1).astype(jnp.bfloat16),
+                        layer_output=(
+                            jnp.stack(
+                                [layer_results[i].outputs.squeeze(1).astype(jnp.bfloat16) for i in traced_layers],
+                                axis=1,
+                            )
+                            if traced_layers
+                            else jnp.zeros((batch_size, 0, hidden_dim), dtype=jnp.bfloat16)
+                        ),
+                        layer_indices=traced_layers_array,
+                    )
+                return new_state, GenerationStepResults(
+                    next_token_ids,
+                    next_top_k_token_ids,
+                    next_top_k_token_logits,
+                    trace,
+                )
 
             def pad_and_repeat_state() -> tuple[DecodingState, GenerationStepResults]:
                 (batch_size,) = state.stop_flags.shape
@@ -328,7 +441,17 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 else:
                     top_k_token_ids = None
                     top_k_token_logits = None
-                return state, GenerationStepResults(pad_token, top_k_token_ids, top_k_token_logits)
+                trace = None
+                if trace_config is not None:
+                    trace = StepTrace(
+                        top_k_ids=jnp.zeros((batch_size, trace_top_k), dtype=jnp.int32),
+                        top_k_logits=jnp.zeros((batch_size, trace_top_k), dtype=jnp.bfloat16),
+                        logsumexp=jnp.zeros(batch_size, dtype=jnp.float32),
+                        activation_output=jnp.zeros((batch_size, hidden_dim), dtype=jnp.bfloat16),
+                        layer_output=jnp.zeros((batch_size, len(traced_layers), hidden_dim), dtype=jnp.bfloat16),
+                        layer_indices=traced_layers_array,
+                    )
+                return state, GenerationStepResults(pad_token, top_k_token_ids, top_k_token_logits, trace)
 
             return jax.lax.cond(jnp.all(state.stop_flags), pad_and_repeat_state, sample_and_update)
 
@@ -347,7 +470,8 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             top_k_token_ids = None
             top_k_token_logits = None
 
-        return GenerationResults(token_ids, top_k_token_ids, top_k_token_logits)
+        trace = generated.trace.rearrange_from_scan() if trace_config is not None else None
+        return GenerationResults(token_ids, top_k_token_ids, top_k_token_logits, trace)
 
     def _generate_tokens_batch(
         self,
@@ -357,6 +481,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None,
         inference_config: InferenceConfig,
         forward_pass_config: ForwardPassConfig | None,
+        generation_trace_config: GenerationTraceConfig | None,
         sharding_config: ShardingConfig | None,
     ) -> Iterator[GenerationResults]:
         if sharding_config is None:
@@ -384,6 +509,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             generation_config,
             sharded_inference_config,
             forward_pass_config=forward_pass_config,
+            generation_trace_config=generation_trace_config,
             prompt_token_ids=padded_token_ids,
             prompt_lengths_without_padding=padded_lengths,
             keys=padded_keys,
@@ -395,10 +521,21 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             keys=padded_keys,
         )
         for i in range(len(batch)):
+            trace_i = None
+            if results.trace is not None:
+                trace_i = StepTrace(
+                    top_k_ids=results.trace.top_k_ids[i],
+                    top_k_logits=results.trace.top_k_logits[i],
+                    logsumexp=results.trace.logsumexp[i],
+                    activation_output=results.trace.activation_output[i],
+                    layer_output=results.trace.layer_output[i],
+                    layer_indices=results.trace.layer_indices,
+                )
             yield GenerationResults(
                 token_ids=results.token_ids[i],
                 top_k_token_ids=results.top_k_token_ids[i] if results.top_k_token_ids is not None else None,
                 top_k_token_logits=results.top_k_token_logits[i] if results.top_k_token_logits is not None else None,
+                trace=trace_i,
             )
 
     def generate_tokens_many(
@@ -408,6 +545,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
         forward_pass_config: ForwardPassConfig | None = None,
+        generation_trace_config: GenerationTraceConfig | None = None,
         sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
     ) -> Iterator[GenerationResults]:
@@ -432,6 +570,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     generation_config=generation_config,
                     inference_config=new_inference_config,
                     forward_pass_config=forward_pass_config,
+                    generation_trace_config=generation_trace_config,
                     sharding_config=sharding_config,
                 )
 
@@ -447,6 +586,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
         forward_pass_config: ForwardPassConfig | None = None,
+        generation_trace_config: GenerationTraceConfig | None = None,
         sharding_config: ShardingConfig | None = None,
     ) -> int:
         if sharding_config is None:
@@ -470,6 +610,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             generation_config=generation_config,
             inference_config=replace(inference_config, batch_size=dummy_token_ids.shape[0]),
             forward_pass_config=forward_pass_config,
+            generation_trace_config=generation_trace_config,
             prompt_token_ids=dummy_token_ids,
             prompt_lengths_without_padding=dummy_lengths,
             keys=dummy_keys,
@@ -649,7 +790,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     ) -> Iterable[Int[Array, ""]]:
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
-            sampling_policy = generation_config.default_policy()
+            sampling_policy = generation_config.default_policy(self.model.vocab_size)
 
         if eos_token_ids is None:
             eos_token_ids = jnp.array(self.stop_token_ids, dtype=jnp.int32)
@@ -671,16 +812,22 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             key = jax.random.split(jax.random.key(0), num=1)[0]  # matching generate_replies with bs=1
         keys = split_into_rolling_keys(key, num=max_output_length)
 
+        sampling_policy = sampling_policy.init(
+            padded_token_ids,
+            jnp.asarray(input_length, dtype=jnp.int32),
+        )
+
         state = DecodingState(
             prefill_results.last_token_logits,
             prefill_results.last_token_indices,
             prefill_results.state,
             jnp.array([0], dtype=jnp.bool),
+            sampling_policy,
         )
 
         for iter_key in keys:
             upcasted_logits = state.last_token_logits.astype(jnp.float32)
-            processed_logits = sampling_policy.process_logits(upcasted_logits.squeeze(0))
+            processed_logits = state.sampling_policy.process_logits(upcasted_logits.squeeze(0))
             next_token_id = jax.random.categorical(iter_key, processed_logits)
 
             yield next_token_id
@@ -688,6 +835,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             if jnp.any(next_token_id == eos_token_ids):
                 return
 
+            updated_sampling_policy = state.sampling_policy.update(next_token_id)
             next_token_indices = state.last_token_indices + 1
             decoder_outputs = self.model(
                 next_token_id.reshape(1, 1),
@@ -703,4 +851,5 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 next_token_indices,
                 decoder_outputs.updated_state,
                 state.stop_flags,
+                updated_sampling_policy,
             )

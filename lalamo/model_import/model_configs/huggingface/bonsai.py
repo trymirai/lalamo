@@ -53,10 +53,11 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
     rope_scaling: BonsaiYarnRopeScalingConfig
     tie_word_embeddings: bool
     use_sliding_window: bool
-    torch_dtype: Literal["bfloat16", "float16", "float32"]
     vocab_size: int
     head_dim: int
 
+    # Bonsai's config.json doesn't include torch_dtype
+    torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
     quantization: QuantizationConfigType = None
 
     def to_decoder_config(
@@ -98,6 +99,7 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
             original_context_length=self.rope_scaling.original_max_position_embeddings,
             beta_fast=self.rope_scaling.beta_fast,
             beta_slow=self.rope_scaling.beta_slow,
+            head_dim=self.head_dim,
             truncate=True,
         )
 
@@ -149,11 +151,10 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
                 pre_mlp_norm_config=rmsnorm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
+                rope_config=rope_config,
             )
             layer_configs.append(transformer_layer_config)
         transformer_config = TransformerConfig(
-            global_rope_config=rope_config,
-            local_rope_config=None,
             layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,

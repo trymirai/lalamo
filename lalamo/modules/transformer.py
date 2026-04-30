@@ -8,10 +8,9 @@ from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
-from lalamo.modules.token_mixers import AttentionConfig
 from lalamo.modules.utils import vmap_twice
 
-from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
+from .common import ForwardPassMode, LalamoModule
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 from .token_mixers import State
@@ -36,8 +35,7 @@ class TransformerResult(eqx.Module):
     outputs: Float[Array, "batch suffix_tokens channels"]
     updated_state: State | None = None
     layer_results: tuple[TransformerLayerResult, ...] | None = None
-    global_positional_embeddings: PositionalEmbeddings | None = None
-    local_positional_embeddings: PositionalEmbeddings | None = None
+    rope_embeddings: tuple[PositionalEmbeddings, ...] | None = None
 
     def export(self) -> ParameterTree:
         result: dict[str, ParameterTree | Array] = dict(
@@ -47,59 +45,46 @@ class TransformerResult(eqx.Module):
             result["updated_state"] = [state_layer.export() for state_layer in self.updated_state]
         if self.layer_results is not None:
             result["layer_results"] = [layer_result.export() for layer_result in self.layer_results]
-        if self.global_positional_embeddings is not None:
-            result["global_positional_embeddings"] = self.global_positional_embeddings.export()
-        if self.local_positional_embeddings is not None:
-            result["local_positional_embeddings"] = self.local_positional_embeddings.export()
+        if self.rope_embeddings is not None:
+            result["rope_embeddings"] = [emb.export() for emb in self.rope_embeddings]
         return result
 
 
 @dataclass(frozen=True)
 class TransformerConfig:
-    global_rope_config: RoPEConfig | None
-    local_rope_config: RoPEConfig | None
     layer_configs: tuple[TransformerLayerConfig, ...]
     output_norm_config: NormalizationConfig
     model_dim: int
     hidden_dim: int
     context_length: int
 
+    def _init_ropes(self) -> tuple[tuple[RoPE, ...], tuple[int, ...]]:
+        rope_cache: dict[RoPEConfig, int] = {}
+        ropes: list[RoPE] = []
+        rope_indices: list[int] = []
+        for layer_config in self.layer_configs:
+            rc = layer_config.rope_config
+            if rc is None:
+                rope_indices.append(-1)
+            elif rc in rope_cache:
+                rope_indices.append(rope_cache[rc])
+            else:
+                rope_cache[rc] = len(ropes)
+                rope_indices.append(len(ropes))
+                ropes.append(rc.init())
+        return tuple(ropes), tuple(rope_indices)
+
+    def _source_layer_indices(self) -> tuple[int, ...]:
+        return tuple(i for i, lc in enumerate(self.layer_configs) if lc.kv_source_layer is None)
+
     def random_init(self, *, key: PRNGKeyArray) -> "Transformer":
-        rope_dims = (layer.rope_dim for layer in self.layer_configs if layer.rope_dim is not None)
-        rope_dim = next(rope_dims, None)
-        assert all(d == rope_dim for d in rope_dims)
-
-        if self.global_rope_config:
-            assert rope_dim is not None
-
-            global_rope = self.global_rope_config.init(
-                head_dim=rope_dim,
-                num_timesteps=self.context_length,
-            )
-        else:
-            global_rope = None
-
-        if self.local_rope_config:
-            assert rope_dim is not None
-
-            max_sliding_window_size = max(
-                layer_config.mixer_config.sliding_window_size or 0
-                for layer_config in self.layer_configs
-                if isinstance(layer_config.mixer_config, AttentionConfig)
-            )
-
-            local_rope = self.local_rope_config.init(
-                head_dim=rope_dim,
-                num_timesteps=max(max_sliding_window_size, self.context_length),
-            )
-        else:
-            local_rope = None
+        ropes, rope_indices = self._init_ropes()
 
         layers_keys = jax.random.split(key, num=len(self.layer_configs))
         layers = tuple(
             layer_config.random_init(
                 model_dim=self.model_dim,
-                hidden_dim=self.hidden_dim,
+                hidden_dim=layer_config.hidden_dim or self.hidden_dim,
                 key=layer_key,
             )
             for layer_key, layer_config in zip(layers_keys, self.layer_configs, strict=True)
@@ -108,41 +93,20 @@ class TransformerConfig:
 
         return Transformer(
             config=self,
-            global_rope=global_rope,
-            local_rope=local_rope,
+            ropes=ropes,
+            rope_indices=rope_indices,
+            source_layer_indices=self._source_layer_indices(),
             layers=layers,
             output_norm=output_norm,
         )
 
     def empty(self) -> "Transformer":
-        rope_dims = (layer.rope_dim for layer in self.layer_configs if layer.rope_dim is not None)
-        rope_dim = next(rope_dims, None)
-        assert all(d == rope_dim for d in rope_dims)
-
-        if self.global_rope_config:
-            assert rope_dim is not None
-
-            global_rope = self.global_rope_config.init(
-                head_dim=rope_dim,
-                num_timesteps=self.context_length,
-            )
-        else:
-            global_rope = None
-
-        if self.local_rope_config:
-            assert rope_dim is not None
-
-            local_rope = self.local_rope_config.init(
-                head_dim=rope_dim,
-                num_timesteps=self.context_length,
-            )
-        else:
-            local_rope = None
+        ropes, rope_indices = self._init_ropes()
 
         layers = tuple(
             layer_config.empty(
                 model_dim=self.model_dim,
-                hidden_dim=self.hidden_dim,
+                hidden_dim=layer_config.hidden_dim or self.hidden_dim,
             )
             for layer_config in self.layer_configs
         )
@@ -150,16 +114,18 @@ class TransformerConfig:
 
         return Transformer(
             config=self,
-            global_rope=global_rope,
-            local_rope=local_rope,
+            ropes=ropes,
+            rope_indices=rope_indices,
+            source_layer_indices=self._source_layer_indices(),
             layers=layers,
             output_norm=output_norm,
         )
 
 
 class Transformer(LalamoModule[TransformerConfig]):
-    global_rope: RoPE | None
-    local_rope: RoPE | None
+    ropes: tuple[RoPE, ...]
+    rope_indices: tuple[int, ...] = eqx.field(static=True)
+    source_layer_indices: tuple[int, ...] = eqx.field(static=True)
     layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
 
@@ -179,6 +145,8 @@ class Transformer(LalamoModule[TransformerConfig]):
         lengths_without_padding: Int[Array, " batch"] | None,
         forward_pass_mode: ForwardPassMode,
         forward_pass_config: TransformerForwardPassConfig | None,
+        per_layer_inputs: tuple[Float[Array, "batch suffix_tokens ple_dim"], ...] | None = None,
+        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
     ) -> TransformerResult:
         if inner_features.ndim != 3:
             raise ValueError(
@@ -191,85 +159,83 @@ class Transformer(LalamoModule[TransformerConfig]):
                 f" got {token_positions.shape}",
             )
 
-        maybe_state = state or ([None] * len(self.layers))
-
-        if self.global_rope is not None:
-            global_positional_embeddings = vmap(self.global_rope)(token_positions)
+        # Unpack compact state (only source layers) into a dict keyed by layer index
+        if state is not None:
+            state_by_layer = {idx: state[j] for j, idx in enumerate(self.source_layer_indices)}
         else:
-            global_positional_embeddings = None
-        if self.local_rope is not None:
-            local_positional_embeddings = vmap(self.local_rope)(token_positions)
-        else:
-            local_positional_embeddings = global_positional_embeddings
+            state_by_layer: dict[int, None] = {}
 
-        updated_state_layers = []
+        rope_embeddings = tuple(vmap(rope)(token_positions) for rope in self.ropes)
+
+        # When KV sharing is active, source layers must always return updated state
+        # so shared layers can use the source's extended KV cache
+        has_kv_sharing = len(self.source_layer_indices) < len(self.layers)
+        must_return_state = return_updated_state or has_kv_sharing
+
+        updated_states = {}
         layer_results = []
 
-        for layer, state_layer in zip(self.layers, maybe_state, strict=True):
-            match layer.positional_embedding_selector:
-                case PositionalEmbeddingSelector.LOCAL:
-                    positional_embeddings_to_use = local_positional_embeddings
-                case PositionalEmbeddingSelector.GLOBAL:
-                    positional_embeddings_to_use = global_positional_embeddings
-                case PositionalEmbeddingSelector.NONE:
-                    positional_embeddings_to_use = None
+        for i, layer in enumerate(self.layers):
+            rope_idx = self.rope_indices[i]
+            positional_embeddings = rope_embeddings[rope_idx] if rope_idx >= 0 else None
+
+            per_layer_input = per_layer_inputs[i] if per_layer_inputs is not None else None
+
+            kv_source = layer.config.kv_source_layer
+            if kv_source is not None:
+                effective_state = updated_states.get(kv_source, state_by_layer.get(kv_source))
+            else:
+                effective_state = state_by_layer.get(i)
 
             layer_result = layer(
                 inner_features,
-                positional_embeddings_to_use,
-                state=state_layer,
-                return_updated_state=return_updated_state,
+                positional_embeddings,
+                state=effective_state,
+                return_updated_state=must_return_state,
                 return_activation_trace=return_layer_results,
                 lengths_without_padding=lengths_without_padding,
                 forward_pass_mode=forward_pass_mode,
+                attention_parent_indices=attention_parent_indices,
                 forward_pass_config=forward_pass_config,
+                per_layer_input=per_layer_input,
             )
+
             inner_features = layer_result.outputs
             layer_results.append(layer_result)
-            updated_state_layers.append(layer_result.updated_state)
+
+            if kv_source is None:
+                updated_states[i] = layer_result.updated_state
 
         normalized_outputs = vmap_twice(self.output_norm)(inner_features)
 
+        if return_updated_state:
+            compact_state = State(updated_states[i] for i in self.source_layer_indices)
+        else:
+            compact_state = None
         return TransformerResult(
             outputs=normalized_outputs,
-            updated_state=(State(updated_state_layers) if return_updated_state else None),
+            updated_state=compact_state,
             layer_results=tuple(layer_results) if return_layer_results else None,
-            global_positional_embeddings=(global_positional_embeddings if return_positional_embeddings else None),
-            local_positional_embeddings=(local_positional_embeddings if return_positional_embeddings else None),
+            rope_embeddings=rope_embeddings if return_positional_embeddings else None,
         )
 
     def init_static_state(self, batch_size: int, capacity: int) -> State:
-        return State(layer.init_static_state(batch_size, capacity) for layer in self.layers)
+        return State(self.layers[i].init_static_state(batch_size, capacity) for i in self.source_layer_indices)
 
     def export_weights(self) -> ParameterTree:
-        result = dict(
+        return dict(
             layers=[layer.export_weights() for layer in self.layers],
             output_norm=self.output_norm.export_weights(),
         )
-        if self.global_rope:
-            result["global_rope"] = self.global_rope.export_weights()
-        if self.local_rope:
-            result["local_rope"] = self.local_rope.export_weights()
-        return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = require_mapping(weights)
         assert isinstance(weights["layers"], Sequence)
-        if self.global_rope:
-            global_rope = self.global_rope.import_weights(require_tree(weights["global_rope"]))
-        else:
-            global_rope = None
-        if self.local_rope:
-            local_rope = self.local_rope.import_weights(require_tree(weights["local_rope"]))
-        else:
-            local_rope = None
         layers = [
             layer.import_weights(require_tree(lw)) for layer, lw in zip(self.layers, weights["layers"], strict=True)
         ]
         return replace(
             self,
-            global_rope=global_rope,
             layers=tuple(layers),
             output_norm=self.output_norm.import_weights(require_tree(weights["output_norm"])),
-            local_rope=local_rope,
         )

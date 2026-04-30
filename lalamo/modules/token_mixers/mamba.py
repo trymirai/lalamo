@@ -15,7 +15,7 @@ from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
 
-from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
+from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 
 __all__ = [
@@ -111,10 +111,6 @@ class Mamba2Config(TokenMixerConfigBase):
     @property
     def conv_dim(self) -> int:
         return self.inner_dim + 2 * self.num_groups * self.state_dim
-
-    @property
-    def rope_dim(self) -> None:
-        return None
 
     def random_init(
         self,
@@ -228,10 +224,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
     @property
     def inner_dim(self) -> int:
         return self.num_heads * self.head_dim
-
-    @property
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        return PositionalEmbeddingSelector.NONE
 
     def __post_init__(self) -> None:
         if self.skip_connection_weight.shape != (self.num_heads,):
@@ -509,6 +501,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         state: SSMStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: ARG002, B008
     ) -> Mamba2Result:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for Mamba2.")

@@ -2,6 +2,7 @@ from .bonsai import HFBonsaiConfig
 from .common import HuggingFaceLMConfig
 from .gemma2 import HFGemma2Config
 from .gemma3 import HFGemma3Config, HFGemma3TextConfig
+from .gemma4 import HFGemma4Config
 from .gpt_oss import HFGPTOssConfig
 from .lfm2 import HFLFM2Config
 from .llama import HFLlamaConfig
@@ -20,6 +21,7 @@ __all__ = [
     "HFGemma2Config",
     "HFGemma3Config",
     "HFGemma3TextConfig",
+    "HFGemma4Config",
     "HFLFM2Config",
     "HFLlamaConfig",
     "HFLlambaConfig",

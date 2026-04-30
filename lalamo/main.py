@@ -70,6 +70,7 @@ from lalamo.distill_runner import (
 from lalamo.distill_runner import (
     distill as _distill,
 )
+from lalamo.data.lalamo_completions import iter_completions
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
@@ -1052,6 +1053,47 @@ def distill_config(
 @app.command(help="Print a minimal JSON config for distill-config.")
 def distill_config_example() -> None:
     console.print_json(data=_example_distill_config())
+@app.command(help="Start a server for batched inference.")
+def server(
+    host: Annotated[
+        str,
+        Option(help="Host to bind to."),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        Option(help="Port to bind to."),
+    ] = 8293,
+    vram_gb: Annotated[
+        int | None,
+        Option(
+            help="Maximum VRAM in GB. Batch sizes are estimated automatically.",
+            show_default="max on default device",
+        ),
+    ] = None,
+    cache_dir: Annotated[
+        Path | None,
+        Option(
+            help="Directory to persist completed batches to.",
+            show_default="~/.cache/lalamo/batches",
+        ),
+    ] = None,
+) -> None:
+    try:
+        from lalamo.server import start_server
+    except ImportError as error:
+        err_console.print("Server extras not installed. Install with: uv add 'lalamo[server]'")
+        raise Exit(1) from error
+
+    if vram_gb is not None:
+        vram_bytes = vram_gb * 1000 * 1000 * 1000
+    elif (vram_bytes := get_default_device_bytes()) is None:
+        err_console.print("Cannot get the default device's memory stats, use --vram-gb")
+        raise Exit(1)
+
+    if cache_dir is None:
+        cache_dir = Path.home() / ".cache" / "lalamo" / "batches"
+
+    start_server(host=host, port=port, vram_bytes=vram_bytes, cache_dir=cache_dir)
 
 
 speculator_app = Typer()
@@ -1113,17 +1155,17 @@ def estimate_batchsize(
     num_logits_per_token: Annotated[
         int,
         Option(help="Number of top logits that will be recorded."),
-    ] = 8,
+    ] = 1024,
     vram_gb: Annotated[
         int | None,
         Option(
-            help="Maximum vram size in gb allowed.",
+            help="Maximum vram size in GB allowed.",
             show_default="max on default device",
         ),
     ] = None,
 ) -> None:
     if vram_gb is not None:
-        # note that in practice GPUs use GiB in their docs, e.g. H100 actually has 85GB of memory
+        # H100 is 80gib (not gb!) card; it has around 85gb total
         mem_bytes = vram_gb * 1000 * 1000 * 1000
     elif (mem_bytes := get_default_device_bytes()) is None:
         err_console.print("Cannot get the default device's memory stats, use --vram-gb")
@@ -1213,14 +1255,18 @@ def collect_traces(
     output_path: Annotated[
         Path,
         Option(
-            help="File to save the trace to",
+            help="Directory to save sharded trace files to",
             metavar="OUTPUT_PATH",
         ),
     ],
     num_logits_per_token: Annotated[
         int,
         Option(help="Record logits for this number of most probable tokens"),
-    ] = 8,
+    ] = 1024,
+    trace_layers: Annotated[
+        list[int] | None,
+        Option(help="0-based transformer layer indices to save hidden states for"),
+    ] = None,
     max_input_length: Annotated[
         int,
         Option(help="Filter prompts that have more than this number of tokens in context"),
@@ -1233,6 +1279,10 @@ def collect_traces(
         int,
         Option(help="Number of sequences in one batch"),
     ] = 1,
+    shard_size: Annotated[
+        int,
+        Option(help="Number of completions to store in each output shard"),
+    ] = 64,
     num_tokens_to_generate: Annotated[
         int | None,
         Option(
@@ -1246,9 +1296,11 @@ def collect_traces(
         dataset_path,
         output_path,
         num_logits_per_token,
+        tuple(trace_layers or []),
         max_input_length,
         max_output_length,
         batch_size,
+        shard_size,
         num_tokens_to_generate,
         CliCollectTracesCallbacks,
     )
@@ -1259,7 +1311,7 @@ def view_traces(
     trace_path: Annotated[
         Path,
         Argument(
-            help="File of inference traces to view.",
+            help="Trace directory to view.",
             metavar="TRACE_PATH",
         ),
     ],
@@ -1278,25 +1330,23 @@ def view_traces(
     ] = None,
 ) -> None:
     model = LanguageModelConfig.load_model(model_path)
+    traces = iter_completions(trace_path)
 
-    with open(trace_path, "rb") as trace_fd:
-        traces = LalamoCompletion.deserialize_many(trace_fd)
+    table = Table(
+        show_lines=True,
+        box=box.ROUNDED,
+    )
+    table.add_column("Prefix")
+    table.add_column("Completion")
 
-        table = Table(
-            show_lines=True,
-            box=box.ROUNDED,
-        )
-        table.add_column("Prefix")
-        table.add_column("Completion")
+    from rich.text import Text
 
-        from rich.text import Text
+    for completion in islice(traces, num_completions):
+        detokenized_prefix = model.message_processor.detokenize(completion.prefix_token_ids)
+        detokenized_completion = model.message_processor.detokenize(completion.completion_token_ids)
+        table.add_row(Text(detokenized_prefix), Text(detokenized_completion))
 
-        for completion in islice(traces, num_completions):
-            detokenized_prefix = model.message_processor.detokenize(completion.prefix_token_ids)
-            detokenized_completion = model.message_processor.detokenize(completion.completion_token_ids)
-            table.add_row(Text(detokenized_prefix), Text(detokenized_completion))
-
-        console.print(table)
+    console.print(table)
 
 
 @dataclass
@@ -1341,7 +1391,7 @@ def train(
     trace_path: Annotated[
         Path,
         Argument(
-            help="File of llm inference traces to train the speculator on",
+            help="Trace directory to train the speculator on",
             metavar="TRACE_PATH",
         ),
     ],

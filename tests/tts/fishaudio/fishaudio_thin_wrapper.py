@@ -444,11 +444,10 @@ class FishAudioTextDecoderConfig_Foreign:
     ) -> "DualARTransformer":
         tokenizer = FishTokenizer.from_pretrained(str(path_to_model))
         fish_model = DualARTransformer(fish_config, tokenizer)
-        fish_model = fish_model.to(device=device, dtype=precision)
 
         FishAudioTextDecoderConfig_Foreign._load_weights_to_fish_model(fish_model, path_to_model)
 
-        return fish_model
+        return fish_model.to(device=device, dtype=precision)
 
     def load_model(
         self,

@@ -16,7 +16,7 @@
 # limitations under the License.
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import equinox as eqx
 from jax import numpy as jnp
@@ -77,6 +77,8 @@ class RoPEConfigBase:
     precision: DTypeLike
     base: float
     max_sequence_length: int
+    head_dim: int
+    partial_rotary_dim: int | None = field(default=None, kw_only=True)
 
     @property
     def _attention_scaling_factor(self) -> float:
@@ -90,15 +92,25 @@ class RoPEConfigBase:
     ) -> Float[Array, " tokens"]:
         return inverse_frequencies
 
-    def init(
+    def _mask_inverse_frequencies(
         self,
+        inverse_frequencies: Float[Array, " tokens"],
         head_dim: int,
-        num_timesteps: int,
-    ) -> "RoPE":
+    ) -> Float[Array, " tokens"]:
+        if self.partial_rotary_dim is None or self.partial_rotary_dim >= head_dim:
+            return inverse_frequencies
+        rope_angles = self.partial_rotary_dim // 2
+        mask = jnp.arange(head_dim // 2) < rope_angles
+        return inverse_frequencies * mask
+
+    def init(self) -> "RoPE":
+        head_dim = self.head_dim
+        num_timesteps = self.max_sequence_length
         timesteps = jnp.arange(num_timesteps, dtype=jnp.float32)
         channel_indices = jnp.arange(0, head_dim, 2, dtype=jnp.int32)
         inverse_frequencies = 1.0 / (self.base ** (channel_indices.astype(jnp.float32) / head_dim))
         inverse_frequencies = self._scale_inverse_frequencies(inverse_frequencies, head_dim, self.max_sequence_length)
+        inverse_frequencies = self._mask_inverse_frequencies(inverse_frequencies, head_dim)
         outer_inverse_frequencies = jnp.outer(timesteps, inverse_frequencies)
         embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
         cosines = (jnp.cos(embeddings) * self._attention_scaling_factor).astype(self.precision)

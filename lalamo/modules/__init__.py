@@ -7,7 +7,6 @@ from .classifier import Classifier, ClassifierConfig
 from .common import (
     ForwardPassMode,
     LalamoModule,
-    PositionalEmbeddingSelector,
     ShardingConfig,
     ShardingOrder,
     TensorSharding,
@@ -22,6 +21,8 @@ from .decoder import (
     DecoderConfig,
     DecoderForwardPassConfig,
     DecoderResult,
+    PerLayerEmbedding,
+    PLEModelConfig,
 )
 from .embedding import (
     EmbeddingBase,
@@ -89,6 +90,8 @@ from .token_mixers import (
 )
 from .transformer import Transformer, TransformerConfig
 from .transformer_layer import (
+    PLELayer,
+    PLELayerConfig,
     TransformerLayer,
     TransformerLayerActivationTrace,
     TransformerLayerConfig,
@@ -145,7 +148,10 @@ __all__ = [
     "NoopVocoder",
     "Normalization",
     "NormalizationConfig",
-    "PositionalEmbeddingSelector",
+    "PLELayer",
+    "PLELayerConfig",
+    "PLEModelConfig",
+    "PerLayerEmbedding",
     "PositionalEmbeddings",
     "QLoRALinear",
     "QLoRALinearConfig",

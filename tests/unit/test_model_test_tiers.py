@@ -1,5 +1,7 @@
 from tests.conftest import ALL_MODEL_SPECS
-from tests.model_test_tiers import TIER_BY_REPO
+from tests.model_test_tiers import TIER_BY_REPO, ModelTier, get_models_by_tier
+
+CI_CORE_LM_REPOS: tuple[str, ...] = get_models_by_tier(ModelTier.CANONICAL) + get_models_by_tier(ModelTier.CORE)
 
 
 def test_tier_by_repo_matches_registry() -> None:

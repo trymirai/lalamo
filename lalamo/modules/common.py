@@ -28,7 +28,6 @@ __all__ = [
     "LalamoModule",
     "ParameterLeafInfo",
     "ParameterTree",
-    "PositionalEmbeddingSelector",
     "ShardingConfig",
     "ShardingOrder",
     "TensorSharding",
@@ -42,12 +41,6 @@ __all__ = [
     "require_array",
     "require_tree",
 ]
-
-
-class PositionalEmbeddingSelector(Enum):
-    GLOBAL = "global"
-    LOCAL = "sliding_window"
-    NONE = "none"
 
 
 class ForwardPassMode(Enum):

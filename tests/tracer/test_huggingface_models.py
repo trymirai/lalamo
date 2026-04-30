@@ -1,33 +1,21 @@
 import pytest
-import torch
 
-from tests.helpers import unsi
+from lalamo.model_import.model_configs import HFLFM2Config, HFLlambaConfig
+from lalamo.model_import.model_specs.common import ModelType
+from tests.conftest import filter_specs
+from tests.model_test_tiers import ModelTier
 from tests.tracer.tracer import DType, ModelTestSpec, _test_model
 from tests.tracer.tracer_huggingface import HFDecoderTracer, ModernBertTracer
 
 MODEL_LIST = [
-    ModelTestSpec("Qwen/Qwen2.5-0.5B-Instruct", DType.FLOAT32),
-    ModelTestSpec("google/gemma-3-1b-it", DType.FLOAT32),
-    ModelTestSpec("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", DType.FLOAT32),
-    ModelTestSpec("meta-llama/Llama-3.2-1B-Instruct", DType.FLOAT32),
-    ModelTestSpec("HuggingFaceTB/SmolLM3-3B", DType.FLOAT32, minimum_memory_for_trace=unsi("32 G")),
-    # ModelTestSpec("PleIAs/Pleias-RAG-1B", DType.FLOAT32),
-    ModelTestSpec("Qwen/Qwen3-0.6B", DType.FLOAT32),
-    ModelTestSpec("Qwen/Qwen3.5-0.8B", DType.FLOAT32),
-    ModelTestSpec("Qwen/Qwen3-Next-80B-A3B-Instruct", DType.FLOAT32, minimum_memory_for_trace=unsi("512 G")),
+    ModelTestSpec(spec.repo, DType.FLOAT32)
+    for spec in filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.CORE)
+    if spec.config_type not in (HFLFM2Config, HFLlambaConfig) and spec.quantization is None
 ]
 
-MODEL_LIST += (
-    [
-        # ModelTestSpec("Qwen/Qwen3-4B-AWQ", DType.FLOAT16), # tracer broken with the newest torch version
-        ModelTestSpec("openai/gpt-oss-20b", DType.FLOAT16, minimum_memory_for_trace=unsi("64 G")),
-    ]
-    if torch.cuda.is_available()
-    else []
-)
-
 CLASSIFIER_MODEL_LIST = [
-    ModelTestSpec("trymirai/chat-moderation-router", DType.FLOAT32),
+    ModelTestSpec(spec.repo, DType.FLOAT32)
+    for spec in filter_specs(model_type=ModelType.CLASSIFIER_MODEL, max_tier=ModelTier.CORE)
 ]
 
 

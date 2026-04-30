@@ -13,12 +13,18 @@ if TYPE_CHECKING:
     from jax.sharding import Sharding
     from jaxtyping import Array, Int, Key
 
-    from .language_model import ForwardPassConfig, GenerationConfig, LanguageModel
+    from .language_model import ForwardPassConfig, GenerationConfig, GenerationTraceConfig, LanguageModel
 
 _compile_cache: dict[
     int,
     dict[
-        tuple[GenerationConfig | None, InferenceConfig | None, ForwardPassConfig | None, Sharding | None],
+        tuple[
+            GenerationConfig | None,
+            InferenceConfig | None,
+            ForwardPassConfig | None,
+            GenerationTraceConfig | None,
+            Sharding | None,
+        ],
         Compiled,
     ],
 ] = {}
@@ -34,6 +40,7 @@ def compile_generate_tokens(
     inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
     *,
     forward_pass_config: ForwardPassConfig | None = None,
+    generation_trace_config: GenerationTraceConfig | None = None,
     prompt_token_ids: Int[Array, "batch length"],
     prompt_lengths_without_padding: Int[Array, " batch"],
     keys: Key[Array, " batch"],
@@ -41,7 +48,13 @@ def compile_generate_tokens(
     from .language_model import LanguageModel
 
     model_id = id(model)
-    key = (generation_config, inference_config, forward_pass_config, prompt_token_ids.sharding)
+    key = (
+        generation_config,
+        inference_config,
+        forward_pass_config,
+        generation_trace_config,
+        prompt_token_ids.sharding,
+    )
     if model_id not in _compile_cache:
         _compile_cache[model_id] = {}
         weakref.finalize(model, _make_weak_finalizer, model_id)
@@ -52,6 +65,7 @@ def compile_generate_tokens(
             max_output_length=inference_config.max_output_length,
             num_top_logits_to_return=inference_config.num_top_logits_to_return,
             forward_pass_config=forward_pass_config,
+            generation_trace_config=generation_trace_config,
         )
         _compile_cache[model_id][key] = (
             jax.jit(generate_tokens_fn)
