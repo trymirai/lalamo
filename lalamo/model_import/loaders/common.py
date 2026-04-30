@@ -6,11 +6,11 @@ import jax
 import jax.sharding as shd
 import jax.tree_util as jtu
 
+from lalamo.common import _is_leaf_array
 from lalamo.modules.common import (
     FieldMetadataInfo,
     ShardingConfig,
     _field_info_at_path,
-    _is_leaf_array,
     get_current_sharding_config,
 )
 
@@ -88,7 +88,7 @@ def load_parameters[M: eqx.Module](
         raise ValueError("load_parameters replacement must preserve the selected parameter structure")
 
     if sharding_config is None:
-        return eqx.tree_at(selector, module, new_values)
+        return eqx.tree_at(selector, module, new_values, is_leaf=lambda leaf: leaf is None)
 
     def metadata_at(path: tuple[object, ...], leaf: object) -> FieldMetadataInfo | None:
         if not _is_leaf_array(leaf):
@@ -111,4 +111,4 @@ def load_parameters[M: eqx.Module](
         metadata,
         is_leaf=lambda leaf: leaf is None or _is_leaf_array(leaf) or isinstance(leaf, FieldMetadataInfo),
     )
-    return eqx.tree_at(selector, module, loaded_values)
+    return eqx.tree_at(selector, module, loaded_values, is_leaf=lambda leaf: leaf is None)

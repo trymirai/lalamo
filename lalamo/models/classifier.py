@@ -30,7 +30,7 @@ class ClassifierModelConfig(TextModelConfig[ClassifierConfig]):
         return ClassifierModel(self, model, message_processor)
 
     @classmethod
-    def load_model(cls, path: Path | str) -> LalamoModule[Self]:
+    def load_model(cls, path: Path | str) -> "ClassifierModel":
         result = super().load_model(path)
         assert isinstance(result, ClassifierModel)
         return result

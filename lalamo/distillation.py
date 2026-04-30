@@ -1,7 +1,6 @@
 import math
-from collections import defaultdict
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import fields, is_dataclass, replace
 from enum import StrEnum
 from typing import Any, cast
 
@@ -16,7 +15,7 @@ from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.modules.common import (
     ParameterLeafInfo,
     ParameterNorm,
-    combine_parameter_leaves,
+    iter_parameter_leaves,
     partition_parameter_leaves,
 )
 from lalamo.modules.decoder import Decoder
@@ -33,7 +32,6 @@ __all__ = [
     "DistillBatch",
     "DistillBatchMetrics",
     "DistillOptimizerState",
-    "DistillParameterSummary",
     "DistillTrainConfig",
     "DistillTrainingState",
     "OptimizerGroup",
@@ -52,21 +50,12 @@ __all__ = [
     "make_trace_distill_batch",
     "materialize_trainable_module",
     "stochastically_quantize_module",
-    "summarize_distill_parameters",
 ]
 
 
 class DistillTrainConfig(eqx.Module):
     master_dtype: DTypeLike = jnp.float32
     compute_dtype: DTypeLike = jnp.bfloat16
-
-
-@dataclass(frozen=True)
-class DistillParameterSummary:
-    total_parameters: int
-    trainable_parameters: int
-    total_master_bytes: int
-    by_group: dict["OptimizerGroup", int]
 
 
 class OptimizerGroup(StrEnum):
@@ -118,8 +107,13 @@ def lora_trainable_filter(info: ParameterLeafInfo) -> bool:
         issubclass(info.owner_type, QLoRALinear)
         and not info.quantized
         and info.norm == ParameterNorm.SPECTRAL
-        and len(info.shape) == 2
+        and len(info.shape) >= 2
     ) or issubclass(info.owner_type, Normalization)
+
+
+def _assert_lora_config(lora_rank: int, lora_scale: float) -> None:
+    assert lora_rank >= 1, "lora_rank must be positive"
+    assert lora_scale > 0, "lora_scale must be positive"
 
 
 def _inject_qlora_linear(
@@ -163,6 +157,21 @@ def _inject_qlora_linear(
     )
 
 
+def _qlora_config_from_group_config(
+    config: GroupQuantizedLinearConfig,
+    lora_rank: int,
+    lora_scale: float,
+) -> QLoRALinearConfig:
+    return QLoRALinearConfig(
+        group_size=config.group_size,
+        weight_quantization_mode=config.weight_quantization_mode,
+        activation_quantization_mode=config.activation_quantization_mode,
+        activation_precision=config.activation_precision,
+        lora_rank=lora_rank,
+        lora_scale=lora_scale,
+    )
+
+
 def _is_replaceable_quantized_linear(leaf: Any) -> bool:  # noqa: ANN401
     return isinstance(leaf, GroupQuantizedLinear) and not isinstance(leaf, QLoRALinear)
 
@@ -173,21 +182,21 @@ def inject_lora_adapters[M: eqx.Module](
     lora_scale: float,
     key: Key[Array, ""],
 ) -> M:
-    leaves, treedef = jtu.tree_flatten(module, is_leaf=_is_replaceable_quantized_linear)
-    replaceable_count = sum(_is_replaceable_quantized_linear(leaf) for leaf in leaves)
-    if replaceable_count == 0:
-        return module
+    _assert_lora_config(lora_rank, lora_scale)
+    replaceable_count = 0
 
-    lora_keys = jax.random.split(key, replaceable_count)
-    key_index = 0
-    new_leaves: list[Any] = []
-    for leaf in leaves:
-        if _is_replaceable_quantized_linear(leaf):
-            new_leaves.append(_inject_qlora_linear(leaf, lora_rank, lora_scale, lora_keys[key_index]))
-            key_index += 1
-        else:
-            new_leaves.append(leaf)
-    return cast("M", treedef.unflatten(new_leaves))
+    def replace(leaf: Any) -> Any:  # noqa: ANN401
+        nonlocal replaceable_count
+        if not _is_replaceable_quantized_linear(leaf):
+            return leaf
+        lora_key = jax.random.fold_in(key, replaceable_count)
+        replaceable_count += 1
+        return _inject_qlora_linear(leaf, lora_rank, lora_scale, lora_key)
+
+    result = jtu.tree_map(replace, module, is_leaf=_is_replaceable_quantized_linear)
+    if replaceable_count == 0:
+        raise ValueError("LoRA distillation requires at least one quantized linear layer")
+    return cast("M", result)
 
 
 def inject_lora_adapter_configs[C](
@@ -195,56 +204,32 @@ def inject_lora_adapter_configs[C](
     lora_rank: int,
     lora_scale: float,
 ) -> C:
-    return cast(
-        "C",
-        jtu.tree_map(
-            lambda leaf: leaf
-            if not (isinstance(leaf, GroupQuantizedLinearConfig) and not isinstance(leaf, QLoRALinearConfig))
-            else QLoRALinearConfig(
-                group_size=leaf.group_size,
-                weight_quantization_mode=leaf.weight_quantization_mode,
-                activation_quantization_mode=leaf.activation_quantization_mode,
-                activation_precision=leaf.activation_precision,
-                lora_rank=lora_rank,
-                lora_scale=lora_scale,
-            ),
-            config,
-            is_leaf=lambda leaf: (
-                isinstance(leaf, GroupQuantizedLinearConfig) and not isinstance(leaf, QLoRALinearConfig)
-            ),
-        ),
-    )
+    _assert_lora_config(lora_rank, lora_scale)
+    converted_count = 0
 
+    def convert(value: Any) -> Any:  # noqa: ANN401
+        nonlocal converted_count
+        if isinstance(value, QLoRALinearConfig):
+            return value
+        if isinstance(value, GroupQuantizedLinearConfig):
+            converted_count += 1
+            return _qlora_config_from_group_config(value, lora_rank, lora_scale)
+        if isinstance(value, tuple):
+            return tuple(convert(item) for item in value)
+        if not is_dataclass(value):
+            return value
 
-def summarize_distill_parameters(
-    leaves: Sequence[ParameterLeafInfo],
-    config: DistillTrainConfig,
-    *,
-    trainable_filter: Callable[[ParameterLeafInfo], bool] | None = None,
-) -> DistillParameterSummary:
-    by_group: dict[OptimizerGroup, int] = defaultdict(int)
-    master_dtype = jnp.dtype(config.master_dtype)
+        updates = {
+            field.name: converted
+            for field in fields(value)
+            if (converted := convert(getattr(value, field.name))) is not getattr(value, field.name)
+        }
+        return replace(value, **updates) if updates else value
 
-    total_parameters = 0
-    trainable_parameters = 0
-    total_master_bytes = 0
-
-    for info in leaves:
-        parameter_count = math.prod(info.shape)
-        total_parameters += parameter_count
-        if info.trainable and (trainable_filter is None or trainable_filter(info)):
-            by_group[get_optimizer_group(info)] += parameter_count
-            trainable_parameters += parameter_count
-            total_master_bytes += parameter_count * master_dtype.itemsize
-            continue
-        by_group[OptimizerGroup.FROZEN] += parameter_count
-
-    return DistillParameterSummary(
-        total_parameters=total_parameters,
-        trainable_parameters=trainable_parameters,
-        total_master_bytes=total_master_bytes,
-        by_group=dict(by_group),
-    )
+    result = convert(config)
+    if converted_count == 0:
+        raise ValueError("LoRA distillation requires at least one quantized linear config")
+    return cast("C", result)
 
 
 def initialize_distill_training_state(
@@ -260,6 +245,8 @@ def initialize_distill_training_state(
         if trainable_filter is None
         else (lambda info: info.trainable and trainable_filter(info))
     )
+    if not any(is_trainable(info) for info in iter_parameter_leaves(module)):
+        raise ValueError("Distillation requires at least one trainable parameter")
 
     return DistillTrainingState(
         master_weights=partition_parameter_leaves(
@@ -286,7 +273,7 @@ def materialize_trainable_module[M: eqx.Module](
         master_weights,
         is_leaf=lambda leaf: leaf is None,
     )
-    return combine_parameter_leaves(module, compute_weights)
+    return eqx.combine(compute_weights, module)
 
 
 def stochastically_quantize_module[M: eqx.Module](
@@ -299,26 +286,21 @@ def stochastically_quantize_module[M: eqx.Module](
         lambda info: info.quantized,
         lambda leaf, _info: leaf,
     )
-    leaves, treedef = jtu.tree_flatten(quantized_weights, is_leaf=lambda leaf: leaf is None)
-    quantized_count = sum(leaf is not None for leaf in leaves)
-    if quantized_count == 0:
-        return module
+    quantized_count = 0
 
-    quantization_keys = jax.random.split(key, quantized_count)
-    key_index = 0
-    new_leaves: list[Any] = []
-    for leaf in leaves:
+    def quantize(leaf: Any) -> Any:  # noqa: ANN401
+        nonlocal quantized_count
         if leaf is None:
-            new_leaves.append(None)
-            continue
-        new_leaves.append(
-            leaf
-            + jax.lax.stop_gradient(
-                stochastic_quantize_weights(leaf, quantization_mode, quantization_keys[key_index]) - leaf,
-            )
-        )
-        key_index += 1
-    return combine_parameter_leaves(module, treedef.unflatten(new_leaves))
+            return None
+        quantization_key = jax.random.fold_in(key, quantized_count)
+        quantized_count += 1
+        quantized_leaf = stochastic_quantize_weights(leaf, quantization_mode, quantization_key)
+        return leaf + jax.lax.stop_gradient(quantized_leaf - leaf)
+
+    quantized_weights = jax.tree.map(quantize, quantized_weights, is_leaf=lambda leaf: leaf is None)
+    if quantized_count == 0:
+        raise ValueError("Stochastic quantization requires at least one quantized parameter leaf")
+    return eqx.combine(quantized_weights, module)
 
 
 def _cast_array_like(value: Array | jax.ShapeDtypeStruct, dtype: DTypeLike) -> Array | jax.ShapeDtypeStruct:
@@ -341,6 +323,9 @@ def make_trace_distill_batch(
     for batch_index, trace in enumerate(traces):
         assert trace.prefix_token_ids, f"Trace {batch_index} has empty prefix_token_ids"
         assert trace.completion_token_ids, f"Trace {batch_index} has empty completion_token_ids"
+        assert len(trace.completion_token_logits) == len(trace.completion_token_ids), (
+            f"Trace {batch_index} must have one support-logit dict per completion token"
+        )
         for completion_index, token_logits in enumerate(trace.completion_token_logits):
             assert token_logits, f"Trace {batch_index} completion {completion_index} has empty support logits"
 
@@ -348,11 +333,8 @@ def make_trace_distill_batch(
     completion_lengths = jnp.array([len(trace.completion_token_ids) for trace in traces], dtype=jnp.int32)
 
     max_sequence_tokens = max(len(trace.prefix_token_ids) + len(trace.completion_token_ids) for trace in traces)
-    max_completion_tokens = max((len(trace.completion_token_ids) for trace in traces), default=0)
-    max_support_tokens = max(
-        (len(token_logits) for trace in traces for token_logits in trace.completion_token_logits),
-        default=0,
-    )
+    max_completion_tokens = max(len(trace.completion_token_ids) for trace in traces)
+    max_support_tokens = max(len(token_logits) for trace in traces for token_logits in trace.completion_token_logits)
 
     token_ids = jnp.full((len(traces), max_sequence_tokens), pad_token_id, dtype=jnp.int32)
     support_token_ids = jnp.zeros((len(traces), max_completion_tokens, max_support_tokens), dtype=jnp.int32)

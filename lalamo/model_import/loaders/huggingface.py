@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import jax.numpy as jnp
 from einops import rearrange
@@ -92,18 +92,17 @@ def _process_quantized_tensor(
     return unpacked.astype(activation_precision)
 
 
-def _detect_mlx_quantization(
+def _assert_mlx_quantization_matches(
     expected_in_dim: int,
     packed_dim: int,
-    default: QuantizationMode,
-) -> QuantizationMode:
-    if packed_dim * 8 == expected_in_dim:
-        return QuantizationMode.UINT4
-    if packed_dim * 4 == expected_in_dim:
-        return QuantizationMode.UINT8
-    if packed_dim * 32 == expected_in_dim:
-        return QuantizationMode.UINT1
-    return default
+    quantization_mode: QuantizationMode,
+) -> None:
+    unpacked_dim = packed_dim * (32 // quantization_mode.bits)
+    if unpacked_dim != expected_in_dim:
+        raise ValueError(
+            f"Packed MLX weight shape implies {unpacked_dim} input channels with {quantization_mode},"
+            f" expected {expected_in_dim}.",
+        )
 
 
 def _maybe_reorder(array: Array, reorder: tuple[Array, int] | None) -> Array:
@@ -259,19 +258,15 @@ def load_linear(
         weight_quantization = module.config.weight_quantization_mode
         activation_precision = module.activation_precision
 
-        actual_quantization = _detect_mlx_quantization(
+        _assert_mlx_quantization_matches(
             module.weights.shape[1],
             qweights.shape[1],
             weight_quantization,
         )
-        module = replace(
-            module,
-            config=replace(module.config, weight_quantization_mode=actual_quantization),
-        )
 
         weights = _process_quantized_tensor(
             qweights,
-            actual_quantization,
+            weight_quantization,
             activation_precision,
             None,
         )
@@ -1021,19 +1016,15 @@ def load_mlx_quantized_tied_embedding(
     qscales = weights_dict[embedding_path / "scales"]
     qbiases = weights_dict[embedding_path / "biases"]
 
-    actual_quantization = _detect_mlx_quantization(
+    _assert_mlx_quantization_matches(
         module.weights.shape[1],
         qweights.shape[1],
         module.config.embedding_quantization_mode,
     )
-    module = replace(
-        module,
-        config=replace(module.config, embedding_quantization_mode=actual_quantization),
-    )
 
     weights = _process_quantized_tensor(
         qweights,
-        actual_quantization,
+        module.config.embedding_quantization_mode,
         module.activation_precision,
         None,
     )
@@ -1056,25 +1047,20 @@ def load_mlx_quantized_untied_embedding(
     output_qscales = weights_dict[lm_head_path / "scales"]
     output_qbiases = weights_dict[lm_head_path / "biases"]
 
-    input_quantization = _detect_mlx_quantization(
+    _assert_mlx_quantization_matches(
         module.input_weights.shape[1],
         input_qweights.shape[1],
         module.config.embedding_quantization_mode,
     )
-    output_quantization = _detect_mlx_quantization(
+    _assert_mlx_quantization_matches(
         module.output_weights.shape[1],
         output_qweights.shape[1],
         module.config.embedding_quantization_mode,
     )
-    assert input_quantization == output_quantization
-    module = replace(
-        module,
-        config=replace(module.config, embedding_quantization_mode=input_quantization),
-    )
 
     input_weights = _process_quantized_tensor(
         input_qweights,
-        input_quantization,
+        module.config.embedding_quantization_mode,
         module.activation_precision,
         None,
     )
@@ -1083,7 +1069,7 @@ def load_mlx_quantized_untied_embedding(
 
     output_weights = _process_quantized_tensor(
         output_qweights,
-        output_quantization,
+        module.config.embedding_quantization_mode,
         module.activation_precision,
         None,
     )
@@ -1115,19 +1101,15 @@ def load_mlx_semi_quantized_untied_embedding(
     output_qweights = weights_dict[lm_head_path / "weight"]
     output_qscales = weights_dict[lm_head_path / "scales"]
     output_qbiases = weights_dict[lm_head_path / "biases"]
-    output_quantization = _detect_mlx_quantization(
+    _assert_mlx_quantization_matches(
         module.output_weights.shape[1],
         output_qweights.shape[1],
         module.config.embedding_quantization_mode,
     )
-    module = replace(
-        module,
-        config=replace(module.config, embedding_quantization_mode=output_quantization),
-    )
 
     output_weights = _process_quantized_tensor(
         output_qweights,
-        output_quantization,
+        module.config.embedding_quantization_mode,
         module.activation_precision,
         None,
     )

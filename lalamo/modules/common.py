@@ -18,7 +18,7 @@ from jax import numpy as jnp
 from jax.tree_util import keystr
 from jaxtyping import Array, DTypeLike
 
-from lalamo.common import ParameterTree, require_array, require_tree
+from lalamo.common import ParameterTree, _is_leaf_array, require_array, require_tree
 from lalamo.quantization import QuantizationMode
 
 __all__ = [
@@ -32,7 +32,6 @@ __all__ = [
     "ShardingConfig",
     "ShardingOrder",
     "TensorSharding",
-    "combine_parameter_leaves",
     "config_converter",
     "field",
     "get_current_sharding_config",
@@ -286,21 +285,12 @@ class ParameterNorm(Enum):
 
 @dataclass(frozen=True)
 class ParameterLeafInfo:
-    path: str
     owner_type: type[eqx.Module]
-    field_name: str
     shape: tuple[int, ...]
-    dtype: jnp.dtype
     trainable: bool
     norm: ParameterNorm
     quantized: bool
     quantization_mode: QuantizationMode | None
-    tensor_sharding: TensorSharding | None
-    min_size_to_shard: int
-
-
-def _is_leaf_array(leaf: Any) -> bool:  # noqa: ANN401
-    return eqx.is_array(leaf) or isinstance(leaf, jax.ShapeDtypeStruct)
 
 
 def _field_info_at_path(module: eqx.Module, path: tuple[Any, ...]) -> FieldMetadataInfo:
@@ -328,46 +318,30 @@ def _field_info_at_path(module: eqx.Module, path: tuple[Any, ...]) -> FieldMetad
     return FieldMetadataInfo(owner=owner, field=owner_field)
 
 
-def _parameter_arrays_with_metadata(
+def _parameter_leaf_info(
     module: eqx.Module,
-) -> list[tuple[str, Array | jax.ShapeDtypeStruct, FieldMetadataInfo]]:
-    results: list[tuple[str, Array | jax.ShapeDtypeStruct, FieldMetadataInfo]] = []
-    seen_leaf_paths: dict[int, str] = {}
-
-    for path, leaf in jtu.tree_flatten_with_path(module, is_leaf=lambda leaf: leaf is None)[0]:
-        if not _is_leaf_array(leaf):
-            continue
-        path_str = keystr(path).lstrip(".")
-        previous_path = seen_leaf_paths.setdefault(id(leaf), path_str)
-        assert previous_path == path_str, (
-            f"Shared parameter leaf {path_str} is not supported; "
-            f"make shared parameters explicit (already seen at {previous_path})"
-        )
-        results.append((path_str, leaf, _field_info_at_path(module, path)))
-
-    return results
+    path: tuple[Any, ...],
+    leaf: Array | jax.ShapeDtypeStruct,
+) -> ParameterLeafInfo:
+    field_info = _field_info_at_path(module, path)
+    metadata = field_info.field.metadata
+    quantized = metadata["quantized"]
+    return ParameterLeafInfo(
+        owner_type=type(field_info.owner),
+        shape=tuple(leaf.shape),
+        trainable=metadata["trainable"],
+        norm=metadata["norm"],
+        quantized=quantized,
+        quantization_mode=field_info.owner.config.quantization if quantized else None,
+    )
 
 
 def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
     results: list[ParameterLeafInfo] = []
-    for path, leaf, field_info in _parameter_arrays_with_metadata(module):
-        metadata = field_info.field.metadata
-        quantized = metadata["quantized"]
-        results.append(
-            ParameterLeafInfo(
-                path=path,
-                owner_type=type(field_info.owner),
-                field_name=field_info.field.name,
-                shape=tuple(leaf.shape),
-                dtype=jnp.dtype(leaf.dtype),
-                trainable=metadata["trainable"],
-                norm=metadata["norm"],
-                quantized=quantized,
-                quantization_mode=field_info.owner.config.quantization if quantized else None,
-                tensor_sharding=metadata["tensor_sharding"],
-                min_size_to_shard=metadata["min_size_to_shard"],
-            )
-        )
+    for path, leaf in jtu.tree_flatten_with_path(module, is_leaf=lambda leaf: leaf is None)[0]:
+        if not _is_leaf_array(leaf):
+            continue
+        results.append(_parameter_leaf_info(module, path, leaf))
     return results
 
 
@@ -376,12 +350,10 @@ def partition_parameter_leaves[M: eqx.Module, LeafT](
     predicate: Callable[[ParameterLeafInfo], bool],
     mapper: Callable[[Array | jax.ShapeDtypeStruct, ParameterLeafInfo], LeafT],
 ) -> M:
-    info_by_path = {info.path: info for info in iter_parameter_leaves(module)}
-
     def select(path: tuple[Any, ...], leaf: Any) -> LeafT | None:  # noqa: ANN401
         if not _is_leaf_array(leaf):
             return None
-        info = info_by_path[keystr(path).lstrip(".")]
+        info = _parameter_leaf_info(module, path, leaf)
         if not predicate(info):
             return None
         return mapper(leaf, info)
@@ -391,13 +363,6 @@ def partition_parameter_leaves[M: eqx.Module, LeafT](
         module,
         is_leaf=lambda leaf: leaf is None,
     )
-
-
-def combine_parameter_leaves[M: eqx.Module](
-    module: M,
-    replacements: M,
-) -> M:
-    return eqx.combine(replacements, module)
 
 
 def field(

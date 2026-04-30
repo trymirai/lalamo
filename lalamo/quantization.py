@@ -5,7 +5,15 @@ import jax
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Key
 
-__all__ = ["QuantizationMode", "quantize_weights", "stochastic_quantize_weights"]
+from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
+
+__all__ = [
+    "QuantizationMode",
+    "pack_quantized_values",
+    "quantize_weights",
+    "stochastic_quantize_weights",
+    "unpack_quantized_values",
+]
 
 
 class QuantizationMode(Enum):
@@ -55,13 +63,6 @@ class QuantizationMode(Enum):
         return self.value
 
 
-MODE_TO_RANGE = {
-    QuantizationMode.UINT1: (0, 1),
-    QuantizationMode.UINT4: (0, 15),
-    QuantizationMode.UINT8: (0, 255),
-}
-
-
 def _quantize_weights_primal(x: Float[Array, "..."], mode: QuantizationMode) -> Float[Array, "..."]:
     range_min, range_max = mode.range
     return jnp.clip(jnp.round(x), range_min, range_max)
@@ -105,6 +106,21 @@ def stochastic_quantize_weights(
     upper_probability = clipped - lower
     samples = jax.random.uniform(key, clipped.shape, dtype=jnp.float32)
     return jnp.where(samples < upper_probability, upper, lower)
+
+
+def pack_quantized_values(x: Float[Array, "..."], mode: QuantizationMode) -> Array:
+    quantized = quantize_weights(x, mode).astype(mode.dtype)
+    if mode == QuantizationMode.UINT4:
+        return jax_uint4_to_packed_uint8(quantized)
+    return quantized
+
+
+def unpack_quantized_values(x: Array, mode: QuantizationMode) -> Array:
+    if mode == QuantizationMode.UINT4:
+        return jax_uint8_to_unpacked_uint4(x)
+    if x.dtype != mode.dtype:
+        raise ValueError(f"Expected packed weights to have dtype {mode.dtype}, got {x.dtype}")
+    return x
 
 
 def dynamically_quantize_activations(

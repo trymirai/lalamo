@@ -9,8 +9,13 @@ from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
-from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
-from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
+from lalamo.quantization import (
+    QuantizationMode,
+    dynamically_quantize_activations,
+    pack_quantized_values,
+    quantize_weights,
+    unpack_quantized_values,
+)
 
 from .common import (
     LalamoModule,
@@ -33,7 +38,6 @@ __all__ = [
     "TiedEmbeddingConfig",
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
-    "quantize_tied_embedding_to_mlx",
 ]
 
 
@@ -73,16 +77,6 @@ class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
     @property
     @abstractmethod
     def model_dim(self) -> int: ...
-
-
-def _pack_embedding_weights(
-    weights: Float[Array, "vocabulary channels"],
-    quantization_mode: QuantizationMode,
-) -> Int[Array, "vocabulary channels"]:
-    quantized = quantize_weights(weights, quantization_mode).astype(quantization_mode.dtype)
-    if quantization_mode == QuantizationMode.UINT4:
-        return jax_uint4_to_packed_uint8(quantized)
-    return quantized
 
 
 def _dequantize_mlx_embedding_weights(
@@ -191,92 +185,6 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     ) -> Self:
         weights = require_mapping(weights)
         return replace(self, weights=weights["weights"])
-
-
-def quantize_tied_embedding_to_mlx(
-    embedding: TiedEmbedding,
-    *,
-    group_size: int,
-    embedding_quantization_mode: QuantizationMode,
-    activation_quantization_mode: QuantizationMode | None = None,
-    activation_precision: DTypeLike | None = None,
-    num_iterations: int = 1,
-    epsilon: float = 1e-5,
-) -> "MLXQuantizedTiedEmbedding":
-    if num_iterations <= 0:
-        raise ValueError(f"Expected num_iterations to be positive, got {num_iterations}.")
-    if epsilon <= 0:
-        raise ValueError(f"Expected epsilon to be positive, got {epsilon}.")
-    if embedding.model_dim % group_size != 0:
-        raise ValueError(
-            f"Embedding dimension {embedding.model_dim} is not divisible by group_size {group_size}.",
-        )
-
-    target_activation_precision = jnp.dtype(
-        embedding.activation_precision if activation_precision is None else activation_precision,
-    )
-    quantization_min, quantization_max = [float(value) for value in embedding_quantization_mode.range]
-    grouped_weights = rearrange(
-        embedding.weights.astype(jnp.float32),
-        "vocabulary (groups group_channels) -> vocabulary groups group_channels",
-        group_channels=group_size,
-    )
-
-    group_min = grouped_weights.min(axis=-1)
-    group_max = grouped_weights.max(axis=-1)
-    group_span = group_max - group_min
-
-    scales = group_span / (quantization_max - quantization_min)
-    biases = group_min - quantization_min * scales
-
-    is_constant_group = group_span < 1e-20
-    group_mean = grouped_weights.mean(axis=-1)
-    scales = jnp.where(is_constant_group, 1.0, scales)
-    biases = jnp.where(is_constant_group, group_mean, biases)
-
-    scales = jnp.maximum(scales, epsilon)
-
-    def quantize(w: Array, s: Array, b: Array) -> Array:
-        return jnp.clip(jnp.round((w - b[..., None]) / s[..., None]), quantization_min, quantization_max)
-
-    for _ in range(num_iterations):
-        quantized_grouped_weights = quantize(grouped_weights, scales, biases)
-
-        quantized_mean = jnp.mean(quantized_grouped_weights, axis=-1)
-        weights_mean = jnp.mean(grouped_weights, axis=-1)
-        centered_quantized_weights = quantized_grouped_weights - quantized_mean[..., None]
-        centered_weights = grouped_weights - weights_mean[..., None]
-        denominator = jnp.sum(centered_quantized_weights * centered_quantized_weights, axis=-1)
-        numerator = jnp.sum(centered_weights * centered_quantized_weights, axis=-1)
-
-        refined_scales = jnp.where(denominator > 0.0, numerator / denominator, scales)
-        refined_scales = jnp.maximum(refined_scales, epsilon)
-        refined_biases = weights_mean - refined_scales * quantized_mean
-
-        scales = jnp.where(is_constant_group, scales, refined_scales)
-        biases = jnp.where(is_constant_group, biases, refined_biases)
-
-    quantized_grouped_weights = quantize(grouped_weights, scales, biases)
-
-    quantized_weights = rearrange(
-        quantized_grouped_weights,
-        "vocabulary groups group_channels -> vocabulary (groups group_channels)",
-    )
-    quantized_config = MLXQuantizedTiedEmbeddingConfig(
-        input_scale=embedding.config.input_scale,
-        logit_soft_cap=embedding.config.logit_soft_cap,
-        group_size=group_size,
-        embedding_quantization_mode=embedding_quantization_mode,
-        activation_quantization_mode=activation_quantization_mode,
-        activation_precision=target_activation_precision,
-    )
-
-    return MLXQuantizedTiedEmbedding(
-        config=quantized_config,
-        weights=quantized_weights.astype(target_activation_precision),
-        scales=scales.astype(target_activation_precision),
-        biases=biases.astype(target_activation_precision),
-    )
 
 
 @dataclass(frozen=True)
@@ -474,21 +382,17 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
 
     def export_weights(self) -> ParameterTree:
         return {
-            "weights": _pack_embedding_weights(self.weights, self.config.embedding_quantization_mode),
+            "weights": pack_quantized_values(self.weights, self.config.embedding_quantization_mode),
             "scales": self.scales,
             "biases": self.biases,
         }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = require_mapping(weights)
-        unpacked_weights = require_array(weights["weights"])
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
-        elif unpacked_weights.dtype != self.config.embedding_quantization_mode.dtype:
-            raise ValueError(
-                f"Expected packed embedding weights to have dtype {self.config.embedding_quantization_mode.dtype},"
-                f" got {unpacked_weights.dtype}",
-            )
+        unpacked_weights = unpack_quantized_values(
+            require_array(weights["weights"]),
+            self.config.embedding_quantization_mode,
+        )
         return replace(
             self,
             weights=unpacked_weights.astype(self.weights.dtype),
@@ -612,33 +516,24 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
 
     def export_weights(self) -> ParameterTree:
         return {
-            "input_weights": _pack_embedding_weights(self.input_weights, self.config.embedding_quantization_mode),
+            "input_weights": pack_quantized_values(self.input_weights, self.config.embedding_quantization_mode),
             "input_scales": self.input_scales,
             "input_biases": self.input_biases,
-            "output_weights": _pack_embedding_weights(self.output_weights, self.config.embedding_quantization_mode),
+            "output_weights": pack_quantized_values(self.output_weights, self.config.embedding_quantization_mode),
             "output_scales": self.output_scales,
             "output_biases": self.output_biases,
         }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = require_mapping(weights)
-        unpacked_input_weights = require_array(weights["input_weights"])
-        unpacked_output_weights = require_array(weights["output_weights"])
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            unpacked_input_weights = jax_uint8_to_unpacked_uint4(unpacked_input_weights)
-            unpacked_output_weights = jax_uint8_to_unpacked_uint4(unpacked_output_weights)
-        else:
-            expected_weight_dtype = self.config.embedding_quantization_mode.dtype
-            if unpacked_input_weights.dtype != expected_weight_dtype:
-                raise ValueError(
-                    f"Expected packed input embedding weights to have dtype {expected_weight_dtype},"
-                    f" got {unpacked_input_weights.dtype}",
-                )
-            if unpacked_output_weights.dtype != expected_weight_dtype:
-                raise ValueError(
-                    f"Expected packed output embedding weights to have dtype {expected_weight_dtype},"
-                    f" got {unpacked_output_weights.dtype}",
-                )
+        unpacked_input_weights = unpack_quantized_values(
+            require_array(weights["input_weights"]),
+            self.config.embedding_quantization_mode,
+        )
+        unpacked_output_weights = unpack_quantized_values(
+            require_array(weights["output_weights"]),
+            self.config.embedding_quantization_mode,
+        )
         return replace(
             self,
             input_weights=unpacked_input_weights.astype(self.input_weights.dtype),
@@ -754,7 +649,7 @@ class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbedd
     def export_weights(self) -> ParameterTree:
         return {
             "input_weights": self.input_weights,
-            "output_weights": _pack_embedding_weights(self.output_weights, self.config.embedding_quantization_mode),
+            "output_weights": pack_quantized_values(self.output_weights, self.config.embedding_quantization_mode),
             "output_scales": self.output_scales,
             "output_biases": self.output_biases,
         }
@@ -762,15 +657,10 @@ class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbedd
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = require_mapping(weights)
         input_weights = require_array(weights["input_weights"])
-        unpacked_output_weights = require_array(weights["output_weights"])
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            unpacked_output_weights = jax_uint8_to_unpacked_uint4(unpacked_output_weights)
-        elif unpacked_output_weights.dtype != self.config.embedding_quantization_mode.dtype:
-            raise ValueError(
-                "Expected packed output embedding weights to have dtype"
-                f" {self.config.embedding_quantization_mode.dtype},"
-                f" got {unpacked_output_weights.dtype}",
-            )
+        unpacked_output_weights = unpack_quantized_values(
+            require_array(weights["output_weights"]),
+            self.config.embedding_quantization_mode,
+        )
         return replace(
             self,
             input_weights=input_weights,

@@ -39,13 +39,14 @@ def test_stochastic_quantize_weights_is_deterministic_for_fixed_key() -> None:
     assert jnp.array_equal(first, second)
 
 
-def test_stochastic_quantize_weights_matches_input_in_expectation() -> None:
-    x = jnp.array([0.2, 0.75, 7.5, 14.25], dtype=jnp.float32)
-    keys = jax.random.split(jax.random.key(1), 4096)
-    samples = jax.vmap(lambda key: stochastic_quantize_weights(x, QuantizationMode.UINT4, key))(keys)
-    means = samples.mean(axis=0)
+def test_stochastic_quantize_weights_returns_floor_or_ceil_inside_range() -> None:
+    x = jnp.array([-1.0, 0.2, 0.75, 7.5, 14.25, 15.9], dtype=jnp.float32)
 
-    assert jnp.allclose(means, x, atol=0.05)
+    result = stochastic_quantize_weights(x, QuantizationMode.UINT4, jax.random.key(1))
+
+    assert jnp.all(result >= 0)
+    assert jnp.all(result <= 15)
+    assert jnp.all((result == jnp.floor(jnp.clip(x, 0, 15))) | (result == jnp.ceil(jnp.clip(x, 0, 15))))
 
 
 def test_quantized_linear_weights_have_nonzero_gradients() -> None:

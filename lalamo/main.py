@@ -4,8 +4,9 @@ import re
 import shutil
 import sys
 from contextlib import ExitStack
-from dataclasses import MISSING, dataclass, field, fields as dc_fields, replace
-from enum import StrEnum
+from dataclasses import MISSING, dataclass, field, replace
+from dataclasses import fields as dc_fields
+from enum import Enum, StrEnum
 from functools import partial
 from importlib.util import find_spec
 from itertools import islice
@@ -64,7 +65,6 @@ from lalamo.distill_runner import (
     DistillConfig,
     DistillResult,
     OptimizerName,
-    TrainingMode,
     _single_quantization_mode,
 )
 from lalamo.distill_runner import (
@@ -819,85 +819,7 @@ def generate_replies(
     )
 
 
-@dataclass
-class CliDistillCallbacks:
-    config: DistillConfig
-    stack: ExitStack = field(default_factory=ExitStack)
-    progress: Progress | None = None
-    task: TaskID | None = None
-
-    def started(self) -> None:
-        self.progress = self.stack.enter_context(
-            Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                MofNCompleteColumn(),
-                TimeElapsedColumn(),
-                TimeRemainingColumn(),
-            ),
-        )
-
-    def loading_models(self) -> None:
-        assert self.progress is not None
-        self.task = self.progress.add_task("[cyan]Loading teacher and student...[/cyan]", total=None)
-
-    def finished_loading_models(self) -> None:
-        assert self.progress is not None
-        assert self.task is not None
-        self.progress.remove_task(self.task)
-        self.task = None
-
-    def loading_dataset(self) -> None:
-        assert self.progress is not None
-        self.task = self.progress.add_task("[cyan]Loading dataset...[/cyan]", total=None)
-
-    def finished_loading_dataset(self) -> None:
-        assert self.progress is not None
-        assert self.task is not None
-        self.progress.remove_task(self.task)
-        self.task = self.progress.add_task(
-            "[cyan]Distilling...[/cyan]",
-            total=self.config.num_steps,
-        )
-
-    def distillation_progress(self, step: int, num_steps: int) -> None:
-        assert self.progress is not None
-        assert self.task is not None
-        self.progress.update(self.task, completed=step, total=num_steps)
-
-    def saving_model(self) -> None:
-        assert self.progress is not None
-        assert self.task is not None
-        self.progress.update(self.task, description="[cyan]Saving model...[/cyan]")
-
-    def finished_saving_model(self, output_model_path: Path) -> None:
-        assert self.progress is not None
-        assert self.task is not None
-        self.progress.update(self.task, description="Completed")
-        console.print(f"Distilled model saved to [cyan]{output_model_path}[/cyan]")
-
-    def finished(self, result: DistillResult) -> None:
-        table = Table(box=box.ROUNDED)
-        table.add_column("Metric")
-        table.add_column("Initial", justify="right")
-        table.add_column("Final", justify="right")
-        table.add_row(
-            "KL divergence",
-            f"{result.initial_eval.kl_divergence:.4f}",
-            f"{result.final_eval.kl_divergence:.4f}",
-        )
-        table.add_row(
-            "Top-1 agreement",
-            f"{result.initial_eval.top1_agreement:.4f}",
-            f"{result.final_eval.top1_agreement:.4f}",
-        )
-        table.add_row("Best step", str(result.best_step), "—")
-        console.print(table)
-        self.stack.close()
-
-
 class DistillRecipe(StrEnum):
-    SMOKE = "smoke"
     FULL_MUON = "full-muon"
     QLORA = "qlora"
 
@@ -909,10 +831,7 @@ def _infer_student_quantization_mode(student_path: Path) -> QuantizationMode:
     try:
         quantization_mode = _single_quantization_mode(model_config.model_config.empty())
     except ValueError as error:
-        raise BadParameter(
-            str(error) + "; use `distill-advanced` for mixed-bit models",
-            param_hint="student_path",
-        ) from error
+        raise BadParameter(str(error), param_hint="student_path") from error
     if quantization_mode is None:
         raise BadParameter("Student model does not appear to be quantized", param_hint="student_path")
     return quantization_mode
@@ -920,6 +839,41 @@ def _infer_student_quantization_mode(student_path: Path) -> QuantizationMode:
 
 def _default_distill_output_dir(student_path: Path, recipe: DistillRecipe) -> Path:
     return DEFAULT_OUTPUT_DIR / "distilled" / f"{student_path.name}-{recipe.value}"
+
+
+def _print_distill_result(result: DistillResult) -> None:
+    table = Table(box=box.ROUNDED)
+    table.add_column("Metric")
+    table.add_column("Initial", justify="right")
+    table.add_column("Final", justify="right")
+    table.add_row(
+        "KL divergence",
+        f"{result.initial_eval.kl_divergence:.4f}",
+        f"{result.final_eval.kl_divergence:.4f}",
+    )
+    table.add_row(
+        "Top-1 agreement",
+        f"{result.initial_eval.top1_agreement:.4f}",
+        f"{result.final_eval.top1_agreement:.4f}",
+    )
+    console.print(table)
+    console.print(f"Distilled model saved to [cyan]{result.output_model_path}[/cyan]")
+
+
+def _run_distill_with_progress(config: DistillConfig) -> DistillResult:
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+    ) as progress:
+        task = progress.add_task("[cyan]Distilling...[/cyan]", total=config.num_steps)
+
+        def update_progress(step: int, num_steps: int) -> None:
+            progress.update(task, completed=step, total=num_steps)
+
+        return _distill(config, progress_callback=update_progress)
 
 
 @app.command(help="Distill a quantized model using a recipe-driven setup.")
@@ -955,7 +909,7 @@ def distill(
     ] = None,
     output_dir: Annotated[
         Path | None,
-        Option(help="Directory for checkpoints, metrics, and the distilled model."),
+        Option(help="Directory for metrics and the distilled model."),
     ] = None,
     seed: Annotated[
         int,
@@ -969,195 +923,135 @@ def distill(
         student_path=student_path,
         dataset_path=dataset_path,
         output_dir=resolved_output_dir,
-        training_mode=TrainingMode.ONLINE_EXACT,
         quantization_mode=quantization_mode,
         seed=seed,
     )
-    match recipe:
-        case DistillRecipe.SMOKE:
-            config = replace(
-                config,
-                train_examples=8,
-                eval_examples=4,
-                max_sequence_length=64,
-                batch_size=1,
-                num_steps=5 if steps is None else steps,
-                learning_rate=3e-5,
-                optimizer_name=OptimizerName.ADAMW,
-                lora_rank=32,
-                eval_every_steps=1,
-                save_checkpoints=False,
-            )
-        case DistillRecipe.FULL_MUON:
-            config = replace(
-                config,
-                num_steps=25 if steps is None else steps,
-                optimizer_name=OptimizerName.MUON,
-            )
-        case DistillRecipe.QLORA:
-            config = replace(
-                config,
-                num_steps=25 if steps is None else steps,
-                learning_rate=3e-5,
-                optimizer_name=OptimizerName.ADAMW,
-                lora_rank=32,
-            )
-    _distill(config, callbacks=CliDistillCallbacks(config))
+    if steps is not None:
+        config = replace(config, num_steps=steps)
+    if recipe == DistillRecipe.QLORA:
+        config = replace(
+            config,
+            learning_rate=3e-5,
+            optimizer_name=OptimizerName.ADAMW,
+            lora_rank=32,
+        )
+
+    result = _run_distill_with_progress(config)
+    _print_distill_result(result)
 
 
-_DISTILL_DEFAULTS = {f.name: f.default for f in dc_fields(DistillConfig) if f.default is not MISSING}
+def _load_distill_config(config_path: Path) -> DistillConfig:
+    config_json = json.loads(config_path.read_text())
+    if not isinstance(config_json, dict):
+        raise BadParameter("Distill config must be a JSON object", param_hint="config_path")
+
+    fields = {field.name: field for field in dc_fields(DistillConfig)}
+    extra_fields = sorted(set(config_json) - set(fields))
+    if extra_fields:
+        raise BadParameter(f"Unknown distill config fields: {', '.join(extra_fields)}", param_hint="config_path")
+
+    missing_fields = sorted(
+        name
+        for name, field in fields.items()
+        if field.default is MISSING and field.default_factory is MISSING and name not in config_json
+    )
+    if missing_fields:
+        raise BadParameter(f"Missing distill config fields: {', '.join(missing_fields)}", param_hint="config_path")
+
+    enum_fields = {
+        "optimizer_name": OptimizerName,
+        "quantization_mode": QuantizationMode,
+        "compute_dtype_name": ComputeDTypeName,
+    }
+    path_fields = {"teacher_path", "student_path", "dataset_path", "output_dir"}
+    int_fields = {
+        "train_examples",
+        "eval_examples",
+        "max_sequence_length",
+        "batch_size",
+        "num_steps",
+        "warmup_steps",
+        "gradient_accumulation_steps",
+        "seed",
+    }
+    float_fields = {"learning_rate", "lora_scale"}
+    optional_float_fields = {"gradient_clip_norm"}
+    optional_int_fields = {"lora_rank"}
+    bool_fields = {"stochastic_rounding"}
+
+    def bad_type(name: str, expected: str) -> None:
+        raise BadParameter(f"{name} must be {expected}", param_hint="config_path")
+
+    def parse_enum(name: str, enum_type: type[Enum], value: object) -> Enum:
+        if not isinstance(value, str):
+            bad_type(name, "a string")
+        try:
+            return enum_type(value)
+        except ValueError as error:
+            choices = ", ".join(item.value for item in enum_type)
+            raise BadParameter(f"{name} must be one of: {choices}", param_hint="config_path") from error
+
+    config = {}
+    for name, value in config_json.items():
+        if name in path_fields:
+            if not isinstance(value, str):
+                bad_type(name, "a string")
+            config[name] = Path(value)
+        elif name in enum_fields:
+            config[name] = parse_enum(name, enum_fields[name], value)
+        elif name in int_fields:
+            if type(value) is not int:
+                bad_type(name, "an integer")
+            config[name] = value
+        elif name in float_fields:
+            if type(value) not in (int, float):
+                bad_type(name, "a number")
+            config[name] = float(value)
+        elif name in optional_float_fields:
+            if value is not None and type(value) not in (int, float):
+                bad_type(name, "a number or null")
+            config[name] = None if value is None else float(value)
+        elif name in optional_int_fields:
+            if value is not None and type(value) is not int:
+                bad_type(name, "an integer or null")
+            config[name] = value
+        elif name in bool_fields:
+            if type(value) is not bool:
+                bad_type(name, "a boolean")
+            config[name] = value
+        else:
+            raise AssertionError(f"Unhandled distill config field {name}")
+    return DistillConfig(**config)
 
 
-@app.command(
-    name="distill-advanced",
-    help="Distill a quantized model using an unquantized teacher with full control over all tuning knobs.",
-)
-def distill_advanced(
-    teacher_path: Annotated[
+def _example_distill_config() -> dict[str, str]:
+    return {
+        "teacher_path": "models/teacher",
+        "student_path": "models/student-quantized",
+        "dataset_path": "data/train.parquet",
+        "output_dir": "runs/distill/student",
+        "optimizer_name": OptimizerName.MUON.value,
+        "quantization_mode": QuantizationMode.UINT4.value,
+    }
+
+
+@app.command(help="Run distillation from a JSON config file.")
+def distill_config(
+    config_path: Annotated[
         Path,
         Argument(
-            help="Path to the teacher model directory.",
-            metavar="TEACHER_PATH",
+            help="Path to a JSON DistillConfig file.",
+            metavar="CONFIG_PATH",
         ),
     ],
-    student_path: Annotated[
-        Path,
-        Argument(
-            help="Path to the student model directory.",
-            metavar="STUDENT_PATH",
-        ),
-    ],
-    dataset_path: Annotated[
-        Path,
-        Argument(
-            help="Path to the training dataset or trace file.",
-            metavar="DATASET_PATH",
-        ),
-    ],
-    output_dir: Annotated[
-        Path,
-        Option(
-            help="Directory for checkpoints, metrics, and the distilled model.",
-        ),
-    ],
-    training_mode: Annotated[
-        TrainingMode,
-        Option(help="Distillation mode to run."),
-    ] = _DISTILL_DEFAULTS["training_mode"],
-    train_examples: Annotated[
-        int,
-        Option(help="Number of examples to use for training."),
-    ] = _DISTILL_DEFAULTS["train_examples"],
-    eval_examples: Annotated[
-        int,
-        Option(help="Number of examples to use for evaluation."),
-    ] = _DISTILL_DEFAULTS["eval_examples"],
-    max_sequence_length: Annotated[
-        int,
-        Option(help="Maximum sequence length for tokenized training examples."),
-    ] = _DISTILL_DEFAULTS["max_sequence_length"],
-    batch_size: Annotated[
-        int,
-        Option(help="Batch size."),
-    ] = _DISTILL_DEFAULTS["batch_size"],
-    num_steps: Annotated[
-        int,
-        Option(help="Number of optimization steps."),
-    ] = _DISTILL_DEFAULTS["num_steps"],
-    learning_rate: Annotated[
-        float,
-        Option(help="Learning rate."),
-    ] = _DISTILL_DEFAULTS["learning_rate"],
-    warmup_steps: Annotated[
-        int,
-        Option(help="Linearly warm up the learning rate over this many optimizer steps."),
-    ] = _DISTILL_DEFAULTS["warmup_steps"],
-    gradient_clip_norm: Annotated[
-        float | None,
-        Option(help="Clip gradients by global norm before the optimizer update."),
-    ] = _DISTILL_DEFAULTS["gradient_clip_norm"],
-    gradient_accumulation_steps: Annotated[
-        int,
-        Option(help="Accumulate gradients over this many microbatches per optimizer step."),
-    ] = _DISTILL_DEFAULTS["gradient_accumulation_steps"],
-    optimizer: Annotated[
-        OptimizerName,
-        Option(help="Optimizer to use."),
-    ] = _DISTILL_DEFAULTS["optimizer_name"],
-    quantization_mode: Annotated[
-        QuantizationMode,
-        Option(help="Quantization mode for stochastic rounding."),
-    ] = _DISTILL_DEFAULTS["quantization_mode"],
-    lora_rank: Annotated[
-        int | None,
-        Option(help="LoRA rank. Omit for full-parameter distillation."),
-    ] = _DISTILL_DEFAULTS["lora_rank"],
-    lora_scale: Annotated[
-        float,
-        Option(help="LoRA scale."),
-    ] = _DISTILL_DEFAULTS["lora_scale"],
-    compute_dtype_name: Annotated[
-        ComputeDTypeName,
-        Option(help="Compute dtype for distillation."),
-    ] = _DISTILL_DEFAULTS["compute_dtype_name"],
-    eval_every_steps: Annotated[
-        int,
-        Option(help="Evaluate every N steps. Set to 0 to disable periodic eval."),
-    ] = _DISTILL_DEFAULTS["eval_every_steps"],
-    checkpoint_every_steps: Annotated[
-        int,
-        Option(help="Save the latest checkpoint every N steps. Set to 0 to disable periodic checkpoints."),
-    ] = _DISTILL_DEFAULTS["checkpoint_every_steps"],
-    early_stop_patience: Annotated[
-        int,
-        Option(help="Stop after this many evaluations without improvement. Set to 0 to disable."),
-    ] = _DISTILL_DEFAULTS["early_stop_patience"],
-    resume_from: Annotated[
-        Path | None,
-        Option(help="Resume from a checkpoint directory."),
-    ] = _DISTILL_DEFAULTS["resume_from"],
-    seed: Annotated[
-        int,
-        Option(help="Random seed."),
-    ] = _DISTILL_DEFAULTS["seed"],
-    stochastic_rounding: Annotated[
-        bool,
-        Option(help="Enable stochastic rounding for quantized training leaves."),
-    ] = _DISTILL_DEFAULTS["stochastic_rounding"],
-    save_checkpoints: Annotated[
-        bool,
-        Option(help="Persist latest and best checkpoints."),
-    ] = _DISTILL_DEFAULTS["save_checkpoints"],
 ) -> None:
-    config = DistillConfig(
-        teacher_path=teacher_path,
-        student_path=student_path,
-        dataset_path=dataset_path,
-        output_dir=output_dir,
-        training_mode=training_mode,
-        train_examples=train_examples,
-        eval_examples=eval_examples,
-        max_sequence_length=max_sequence_length,
-        batch_size=batch_size,
-        num_steps=num_steps,
-        learning_rate=learning_rate,
-        warmup_steps=warmup_steps,
-        gradient_clip_norm=gradient_clip_norm,
-        gradient_accumulation_steps=gradient_accumulation_steps,
-        optimizer_name=optimizer,
-        quantization_mode=quantization_mode,
-        lora_rank=lora_rank,
-        lora_scale=lora_scale,
-        compute_dtype_name=compute_dtype_name,
-        eval_every_steps=eval_every_steps,
-        checkpoint_every_steps=checkpoint_every_steps,
-        early_stop_patience=early_stop_patience,
-        resume_from=resume_from,
-        seed=seed,
-        stochastic_rounding=stochastic_rounding,
-        save_checkpoints=save_checkpoints,
-    )
-    _distill(config, callbacks=CliDistillCallbacks(config))
+    result = _run_distill_with_progress(_load_distill_config(config_path))
+    _print_distill_result(result)
+
+
+@app.command(help="Print a minimal JSON config for distill-config.")
+def distill_config_example() -> None:
+    console.print_json(data=_example_distill_config())
 
 
 speculator_app = Typer()

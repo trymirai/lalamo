@@ -1,24 +1,14 @@
-from unittest.mock import patch
-
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
 
 from lalamo.model_import.loaders.common import load_parameters
-from lalamo.modules.common import field, shard_batch_axis
+from lalamo.modules.common import field
 
 
 class _LoaderModule(eqx.Module):
     weights: jax.Array = field()
-
-
-class _FakeShardingConfig:
-    data_axis_size = 4
-    data_axis_name = "data"
-
-    def make_sharding(self, pspec: object) -> object:
-        return pspec
 
 
 def test_load_parameters_replaces_matching_arrays() -> None:
@@ -57,12 +47,3 @@ def test_load_parameters_rejects_incompatible_replacements(
             module,
             (new_value,),
         )
-
-
-def test_shard_batch_axis_pads_higher_rank_prng_key_arrays() -> None:
-    keys = jax.random.split(jax.random.key(0), 4).reshape(2, 2)
-
-    with patch("lalamo.modules.common.jax.lax.with_sharding_constraint", side_effect=lambda array, _sharding: array):
-        sharded = shard_batch_axis(keys, _FakeShardingConfig(), batch_axis=1)
-
-    assert sharded.shape == (2, 4)

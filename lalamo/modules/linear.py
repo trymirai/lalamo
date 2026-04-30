@@ -1,8 +1,8 @@
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Self, cast
+from typing import Self
 
 import equinox as eqx
 import jax
@@ -10,16 +10,20 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
-from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
-from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
+from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
+from lalamo.quantization import (
+    QuantizationMode,
+    dynamically_quantize_activations,
+    pack_quantized_values,
+    quantize_weights,
+    unpack_quantized_values,
+)
 
 from .common import (
     LalamoModule,
     ParameterNorm,
     ShardingOrder,
     TensorSharding,
-    config_converter,
     field,
     register_config_union,
 )
@@ -283,7 +287,7 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
         self,
         weights: ParameterTree[Array],
     ) -> Self:
-        params = _linear_params(weights)
+        params = require_mapping(weights)
         return replace(
             self,
             weights=require_array(params["weights"]),
@@ -438,7 +442,10 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         ),
     )
     scales: Float[Array, "*components total_out_channels groups"] = field(norm=ParameterNorm.L_INF)
-    zero_points: Float[Array, "*components total_out_channels groups"] = field(norm=ParameterNorm.L_INF)
+    zero_points: Float[Array, "*components total_out_channels groups"] = field(
+        quantized=True,
+        norm=ParameterNorm.L_INF,
+    )
     biases: Float[Array, "*components total_out_channels"] | None = field()
 
     @property
@@ -463,26 +470,10 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         return self.biases is not None
 
     def _quantized_weights_for_export(self) -> Int[Array, "*components in_channels out_channels"]:
-        quantized = quantize_weights(self.weights, self.config.weight_quantization_mode)
-        casted = quantized.astype(self.config.weight_quantization_mode.dtype)
-
-        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
-            packed = jax_uint4_to_packed_uint8(casted)
-        else:
-            packed = casted
-
-        return packed
+        return pack_quantized_values(self.weights, self.config.weight_quantization_mode)
 
     def _quantized_zero_points_for_export(self) -> Int[Array, "*components groups out_channels"]:
-        quantized = quantize_weights(self.zero_points, self.config.weight_quantization_mode)
-        casted = quantized.astype(self.config.weight_quantization_mode.dtype)
-
-        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
-            packed = jax_uint4_to_packed_uint8(casted)
-        else:
-            packed = casted
-
-        return packed
+        return pack_quantized_values(self.zero_points, self.config.weight_quantization_mode)
 
     def __post_init__(self) -> None:
         group_count = self.config.group_count(self.input_dim)
@@ -572,12 +563,15 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        params = _linear_params(weights)
-        unpacked_weights = require_array(params["weights"])
-        unpacked_zero_points = require_array(params["zero_points"])
-        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
-            unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
-            unpacked_zero_points = jax_uint8_to_unpacked_uint4(unpacked_zero_points)
+        params = require_mapping(weights)
+        unpacked_weights = unpack_quantized_values(
+            require_array(params["weights"]),
+            self.config.weight_quantization_mode,
+        )
+        unpacked_zero_points = unpack_quantized_values(
+            require_array(params["zero_points"]),
+            self.config.weight_quantization_mode,
+        )
         return replace(
             self,
             weights=unpacked_weights.astype(self.weights.dtype),
@@ -723,15 +717,7 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
         return self.biases is not None
 
     def _quantized_weights_for_export(self) -> Int[Array, "*components in_channels out_channels"]:
-        quantized = quantize_weights(self.weights, self.config.weight_quantization_mode)
-        casted = quantized.astype(self.config.weight_quantization_mode.dtype)
-
-        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
-            packed = jax_uint4_to_packed_uint8(casted)
-        else:
-            packed = casted
-
-        return packed
+        return pack_quantized_values(self.weights, self.config.weight_quantization_mode)
 
     def __post_init__(self) -> None:
         group_count = self.config.group_count(self.input_dim)
@@ -813,22 +799,23 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
         result = {
             "weights": self._quantized_weights_for_export(),
             "scales": self.scales,
-            "deq_biases": self.offsets,
+            "offsets": self.offsets,
         }
         if self.biases is not None:
             result["biases"] = self.biases
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        params = _linear_params(weights)
-        unpacked_weights = require_array(params["weights"])
-        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
-            unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
+        params = require_mapping(weights)
+        unpacked_weights = unpack_quantized_values(
+            require_array(params["weights"]),
+            self.config.weight_quantization_mode,
+        )
         return replace(
             self,
             weights=unpacked_weights.astype(self.weights.dtype),
             scales=require_array(params["scales"]),
-            offsets=require_array(params["deq_biases"]),
+            offsets=require_array(params["offsets"]),
             biases=require_array(params["biases"]) if self.has_biases else None,
         )
 
@@ -1038,30 +1025,22 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
         return tuple(jnp.split(joint_out, self.get_split_points(self.output_dims)))
 
     def export_weights(self) -> ParameterTree:
-        # Keep one explicit on-disk shape contract for QLoRA weights:
-        # down_weights = (lora_rank, input_dim), up_weights = (output_dim, lora_rank).
-        return dict(
-            down_weights=self.lora_down_weights,
-            up_weights=self.lora_up_weights,
-            **cast("dict[str, ParameterTree]", super().export_weights()),
-        )
+        return {
+            **require_mapping(super().export_weights()),
+            "down_weights": self.lora_down_weights,
+            "up_weights": self.lora_up_weights,
+        }
 
     def import_weights(
         self,
         weights: ParameterTree[Array],
     ) -> "QLoRALinear":
         base = super().import_weights(weights)
-        params = _linear_params(weights)
-        up_weights = params["up_weights"]
-        if isinstance(up_weights, Sequence):
-            up_weights = jnp.concatenate(
-                tuple(jnp.swapaxes(require_array(weight), -1, -2) for weight in up_weights),
-                axis=-2,
-            )
+        params = require_mapping(weights)
         return replace(
             base,
             lora_down_weights=require_array(params["down_weights"]),
-            lora_up_weights=require_array(up_weights),
+            lora_up_weights=require_array(params["up_weights"]),
         )
 
 
@@ -1069,32 +1048,3 @@ LinearConfig = FullPrecisionLinearConfig | GroupQuantizedLinearConfig | MLXQuant
 
 
 register_config_union(LinearConfig)
-
-
-def _linear_params(weights: ParameterTree[Array]) -> Mapping[str, Any]:
-    params = require_mapping(weights)
-    if "inner_linear" not in params:
-        return params
-    return require_mapping(require_tree(params["inner_linear"]))
-
-
-def _structure_linear_config(
-    config: dict | None,
-    _: type[LinearConfig | None],
-) -> LinearConfig | None:
-    if config is None:
-        return None
-    if config["type"] == "RHTLinearWrapperConfig":
-        config = config["inner_config"]
-    type_name = config["type"]
-    target_type = {
-        "FullPrecisionLinearConfig": FullPrecisionLinearConfig,
-        "GroupQuantizedLinearConfig": GroupQuantizedLinearConfig,
-        "MLXQuantizedLinearConfig": MLXQuantizedLinearConfig,
-        "QLoRALinearConfig": QLoRALinearConfig,
-    }[type_name]
-    return config_converter.structure({k: v for k, v in config.items() if k != "type"}, target_type)
-
-
-config_converter.register_structure_hook(LinearConfig, _structure_linear_config)
-config_converter.register_structure_hook(LinearConfig | None, _structure_linear_config)

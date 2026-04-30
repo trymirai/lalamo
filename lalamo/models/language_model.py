@@ -108,7 +108,7 @@ class LanguageModelConfig(TextModelConfig[DecoderConfig]):
         return LanguageModel(self, model, message_processor)
 
     @classmethod
-    def load_model(cls, path: Path | str) -> LalamoModule[Self]:
+    def load_model(cls, path: Path | str) -> "LanguageModel":
         result = super().load_model(path)
         assert isinstance(result, LanguageModel)
         return result

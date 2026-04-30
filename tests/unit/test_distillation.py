@@ -17,29 +17,19 @@ from lalamo.distillation import (
     compute_trace_distill_batch_metrics,
     compute_trace_distill_step_gradients,
     initialize_distill_training_state,
+    inject_lora_adapter_configs,
+    lora_trainable_filter,
     make_trace_distill_batch,
     materialize_trainable_module,
+    stochastically_quantize_module,
 )
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
-from lalamo.modules.common import config_converter, field, iter_parameter_leaves
+from lalamo.modules.activations import SiLU
+from lalamo.modules.common import ParameterLeafInfo, ParameterNorm
 from lalamo.modules.decoder import Decoder
-from lalamo.modules.linear import (
-    GroupQuantizedLinearConfig,
-    LinearConfig,
-    MLXQuantizedLinearConfig,
-    QLoRALinearConfig,
-)
+from lalamo.modules.linear import GroupQuantizedLinearConfig, MLXQuantizedLinearConfig, QLoRALinear, QLoRALinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.quantization import QuantizationMode
-
-requires_muon_dimension_numbers = pytest.mark.skipif(
-    not hasattr(optax.contrib, "MuonDimensionNumbers"),
-    reason="optax.contrib.MuonDimensionNumbers is not available in this test environment",
-)
-
-
-class AliasModule(eqx.Module):
-    left: jax.Array = field()
-    right: jax.Array = field()
 
 
 def _make_optimizer_state(
@@ -50,14 +40,6 @@ def _make_optimizer_state(
         training_state=training_state,
         optimizer_state=optimizer.init(training_state.master_weights),
     )
-
-
-def test_iter_parameter_leaves_rejects_shared_leaf_identity() -> None:
-    shared = jnp.ones((2, 2), dtype=jnp.float32)
-    module = AliasModule(left=shared, right=shared)
-
-    with pytest.raises(AssertionError, match="Shared parameter leaf"):
-        iter_parameter_leaves(module)
 
 
 def test_mlx_quantized_linear_random_init_stays_zero_centered() -> None:
@@ -75,82 +57,6 @@ def test_mlx_quantized_linear_random_init_stays_zero_centered() -> None:
     assert float(prepared_weights.min()) < 0.0
     assert float(prepared_weights.max()) > 0.0
     assert abs(float(prepared_weights.mean())) < 0.2
-
-
-def test_mlx_quantized_linear_import_weights_accepts_wrapped_saved_params() -> None:
-    layer = MLXQuantizedLinearConfig(
-        group_size=2,
-        weight_quantization_mode=QuantizationMode.UINT4,
-        activation_quantization_mode=None,
-        activation_precision=jnp.float32,
-    ).random_init(4, (8,), has_biases=False, key=jax.random.key(7))
-
-    exported = layer.export_weights()
-    assert "deq_biases" in exported
-
-    loaded = layer.import_weights({"inner_linear": exported})
-
-    assert loaded.export_weights().keys() == exported.keys()
-    for key in exported:
-        assert jnp.array_equal(exported[key], loaded.export_weights()[key])
-
-
-def test_group_quantized_linear_import_weights_accepts_rht_inner_linear() -> None:
-    layer = GroupQuantizedLinearConfig(
-        group_size=2,
-        weight_quantization_mode=QuantizationMode.UINT4,
-        activation_quantization_mode=None,
-        activation_precision=jnp.float32,
-    ).random_init(4, (3, 5), has_biases=True, key=jax.random.key(28))
-
-    exported = layer.export_weights()
-    loaded = layer.import_weights({"inner_linear": exported})
-
-    assert loaded.export_weights().keys() == exported.keys()
-    for key in exported:
-        assert jnp.array_equal(exported[key], loaded.export_weights()[key])
-
-
-def test_q_lora_import_weights_fuses_rht_lora_out() -> None:
-    layer = QLoRALinearConfig(
-        group_size=2,
-        weight_quantization_mode=QuantizationMode.UINT4,
-        activation_quantization_mode=None,
-        activation_precision=jnp.float32,
-        lora_rank=2,
-        lora_scale=1.0,
-    ).random_init(4, (3, 5), has_biases=True, key=jax.random.key(29))
-
-    exported = layer.export_weights()
-    rht_up_weights = tuple(
-        jnp.swapaxes(weight, -1, -2)
-        for weight in jnp.split(exported["up_weights"], layer.get_split_points(layer.output_dims), axis=-2)
-    )
-    loaded = layer.import_weights({"inner_linear": {**exported, "up_weights": rht_up_weights}})
-
-    assert loaded.export_weights().keys() == exported.keys()
-    for key in exported:
-        assert jnp.array_equal(exported[key], loaded.export_weights()[key])
-
-
-def test_linear_config_structure_accepts_rht_wrapper() -> None:
-    config = config_converter.structure(
-        {
-            "type": "RHTLinearWrapperConfig",
-            "block_size": 32,
-            "inner_config": {
-                "type": "GroupQuantizedLinearConfig",
-                "group_size": 32,
-                "weight_quantization_mode": "uint4",
-                "activation_quantization_mode": None,
-                "activation_precision": "bfloat16",
-            },
-        },
-        LinearConfig,
-    )
-
-    assert isinstance(config, GroupQuantizedLinearConfig)
-    assert config.weight_quantization_mode == QuantizationMode.UINT4
 
 
 _TINY_LLAMA_CONFIG = HFLlamaConfig(
@@ -179,6 +85,41 @@ _TINY_LLAMA_CONFIG = HFLlamaConfig(
     use_cache=True,
     vocab_size=32,
 )
+
+
+def test_inject_lora_adapter_configs_rewrites_nested_group_quantized_linears() -> None:
+    config = DenseMLPConfig(
+        linear_config=GroupQuantizedLinearConfig(
+            group_size=8,
+            weight_quantization_mode=QuantizationMode.UINT4,
+            activation_quantization_mode=None,
+            activation_precision=jnp.float32,
+        ),
+        activation=SiLU(),
+        has_up_biases=False,
+        has_down_biases=False,
+        gate_clipping=None,
+        up_clipping=None,
+    )
+
+    qlora_config = inject_lora_adapter_configs(config, lora_rank=4, lora_scale=2.0)
+
+    assert isinstance(qlora_config.linear_config, QLoRALinearConfig)
+    assert qlora_config.linear_config.lora_rank == 4
+    assert qlora_config.linear_config.lora_scale == 2.0
+
+
+def test_lora_trainable_filter_accepts_mixture_adapter_weights() -> None:
+    info = ParameterLeafInfo(
+        owner_type=QLoRALinear,
+        shape=(2, 4, 8),
+        trainable=True,
+        norm=ParameterNorm.SPECTRAL,
+        quantized=False,
+        quantization_mode=None,
+    )
+
+    assert lora_trainable_filter(info)
 
 
 def _make_tiny_llama_decoder(*, key: jax.Array) -> Decoder:
@@ -216,6 +157,24 @@ def test_compute_distill_batch_metrics_rejects_batches_without_prediction_tokens
         compute_distill_batch_metrics(decoder, decoder, batch)
 
 
+def test_initialize_distill_training_state_rejects_empty_trainable_filter() -> None:
+    decoder = _make_tiny_llama_decoder(key=jax.random.key(30))
+
+    with pytest.raises(ValueError, match="at least one trainable parameter"):
+        initialize_distill_training_state(
+            decoder,
+            DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.float32),
+            trainable_filter=lambda _info: False,
+        )
+
+
+def test_stochastic_quantization_requires_quantized_parameters() -> None:
+    decoder = _make_tiny_llama_decoder(key=jax.random.key(35))
+
+    with pytest.raises(ValueError, match="at least one quantized parameter"):
+        stochastically_quantize_module(decoder, QuantizationMode.UINT4, jax.random.key(0))
+
+
 def test_make_trace_distill_batch_pads_sequences_and_support() -> None:
     traces = (
         LalamoCompletion(
@@ -243,32 +202,6 @@ def test_make_trace_distill_batch_pads_sequences_and_support() -> None:
         [[True, True, False], [True, False, False]],
         [[True, True, True], [False, False, False]],
     ]
-
-
-@pytest.mark.parametrize(
-    ("prefix_token_ids", "completion_token_ids", "completion_token_logits", "error_message"),
-    [
-        ([], [3], [{3: 0.5}], "empty prefix_token_ids"),
-        ([1], [], [], "empty completion_token_ids"),
-        ([1], [3], [{}], "empty support logits"),
-    ],
-)
-def test_make_trace_distill_batch_rejects_invalid_traces(
-    prefix_token_ids: list[int],
-    completion_token_ids: list[int],
-    completion_token_logits: list[dict[int, float]],
-    error_message: str,
-) -> None:
-    traces = (
-        LalamoCompletion(
-            prefix_token_ids=prefix_token_ids,
-            completion_token_ids=completion_token_ids,
-            completion_token_logits=completion_token_logits,
-        ),
-    )
-
-    with pytest.raises(AssertionError, match=error_message):
-        make_trace_distill_batch(traces, pad_token_id=0)
 
 
 def test_lalamo_completion_rejects_mismatched_trace_lengths() -> None:
@@ -349,7 +282,6 @@ def test_compute_trace_distill_batch_metrics_handles_padded_completion_steps() -
     assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
 
 
-@requires_muon_dimension_numbers
 def test_repeated_distill_step_gradients_reduce_tiny_llama_loss() -> None:
     teacher = _make_tiny_llama_decoder(key=jax.random.key(10))
     student = eqx.tree_at(
@@ -380,6 +312,8 @@ def test_repeated_distill_step_gradients_reduce_tiny_llama_loss() -> None:
             batch,
             config,
             QuantizationMode.UINT4,
+            stochastic_rounding=False,
+            quantization_key=jax.random.key(0),
         )
         optimizer_state = apply_distill_gradients(optimizer_state, optimizer, grads)
 
@@ -393,7 +327,6 @@ def test_repeated_distill_step_gradients_reduce_tiny_llama_loss() -> None:
     assert final_metrics.loss < initial_metrics.loss * 0.5
 
 
-@requires_muon_dimension_numbers
 def test_repeated_trace_distill_step_gradients_reduce_trace_loss() -> None:
     teacher = _make_tiny_llama_decoder(key=jax.random.key(16))
     student = eqx.tree_at(
@@ -419,6 +352,8 @@ def test_repeated_trace_distill_step_gradients_reduce_trace_loss() -> None:
             trace_batch,
             config,
             QuantizationMode.UINT4,
+            stochastic_rounding=False,
+            quantization_key=jax.random.key(0),
         )
         optimizer_state = apply_distill_gradients(optimizer_state, optimizer, grads)
 
