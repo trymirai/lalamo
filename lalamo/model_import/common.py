@@ -163,8 +163,8 @@ def _instantiate_tokenizer_from_model_spec(
     output_dir: Path | str | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> Tokenizer:
-    if model_spec.vendor == "NVIDIA" and model_spec.family == "nanocodec":
-        # NOTE: once text decoder for Nanocodec is implemented - proper Tokenizer will hopefully become available
+    if model_spec.configs.tokenizer is None:
+        # NOTE: tokenizer-less TTS specs currently use a dummy tokenizer for stub text decoding.
         tokenizer = Tokenizer.from_str(dummy_char_level_tokenizer_config())
     else:
         assert isinstance(model_spec.configs.tokenizer, FileSpec)
@@ -448,7 +448,7 @@ def _import_tts_model(
         foreign_tts_config = model_spec.config_type.from_json(config_path)
         if precision is None:
             precision = foreign_tts_config.default_precision
-        if model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":
+        if isinstance(foreign_tts_config, FishAudioConfig):
             # NOTE: for FishAudio model we need certain info from Tokenizer even during inference stage
             # so we load the Tokenizer and update config using data from it
             from lalamo.model_import.loaders.fishaudio_loaders import load_tokenizer_from_fishaudio_tiktoken
