@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from typing import Self
 
 import equinox as eqx
 import jax
@@ -9,6 +10,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
+from lalamo.weight_matrix import GradientEstimator
 
 from .activations import Activation
 from .linear import Linear, LinearConfig
@@ -28,18 +30,41 @@ __all__ = [
     "PLELayer",
     "PLELayerConfig",
     "PositionalEmbeddingSelector",
+    "TransformerForwardPassConfig",
     "TransformerLayer",
     "TransformerLayerActivationTrace",
     "TransformerLayerConfig",
-    "TransformerLayerForwardPassConfig",
     "TransformerLayerResult",
 ]
 
 
 @dataclass(frozen=True)
-class TransformerLayerForwardPassConfig:
-    mixer: MixerForwardPassConfig = dataclass_field(default_factory=MixerForwardPassConfig)
-    mlp: MLPForwardPassConfig = dataclass_field(default_factory=MLPForwardPassConfig)
+class TransformerForwardPassConfig:
+    mixer_forward_pass_config: MixerForwardPassConfig = dataclass_field(default_factory=MixerForwardPassConfig)
+    mlp_forward_pass_config: MLPForwardPassConfig = dataclass_field(default_factory=MLPForwardPassConfig)
+
+    @classmethod
+    def for_tracer_tests(cls) -> Self:
+        return cls(
+            mixer_forward_pass_config=MixerForwardPassConfig.for_tracer_tests(),
+            mlp_forward_pass_config=MLPForwardPassConfig.for_tracer_tests(),
+        )
+
+    @classmethod
+    def for_inference(cls, mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN) -> Self:
+        return cls(
+            mlp_forward_pass_config=MLPForwardPassConfig.for_inference(mode),
+        )
+
+    @classmethod
+    def for_training(
+        cls,
+        gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
+    ) -> Self:
+        return cls(
+            mixer_forward_pass_config=MixerForwardPassConfig.for_training(gradient_estimator),
+            mlp_forward_pass_config=MLPForwardPassConfig.for_training(gradient_estimator),
+        )
 
 
 class TransformerLayerActivationTrace(Exportable, eqx.Module):
@@ -127,7 +152,7 @@ class TransformerLayerConfig(LalamoConfig):
     hidden_dim: int | None = None
     ple_config: PLELayerConfig | None = None
     has_post_layer_scalar: bool = False
-    kv_source_layer: int | None = None
+    kv_source_layer_index: int | None = None
     rope_config: RoPEConfig | None = None
 
     @property
@@ -188,8 +213,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: TransformerLayerForwardPassConfig = TransformerLayerForwardPassConfig(),
+        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
         per_layer_input: Float[Array, "batch suffix_tokens ple_dim"] | None = None,
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
         *,
@@ -223,7 +247,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 mixer_state,
                 return_updated_state=return_updated_state or return_activation_trace,
                 length_without_padding=length_without_padding,
-                forward_pass_config=forward_pass_config.mixer,
+                forward_pass_config=forward_pass_config.mixer_forward_pass_config,
                 attention_parent_indices=parent_indices,
                 keychain=mixer_keychain,
             )
@@ -252,8 +276,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         mlp_outputs = self.mlp(
             normalized_mlp_inputs,
             lengths_without_padding=lengths_without_padding,
-            forward_pass_mode=forward_pass_mode,
-            forward_pass_config=forward_pass_config.mlp,
+            forward_pass_config=forward_pass_config.mlp_forward_pass_config,
             keychain=mlp_keychain,
         )
         if self.post_mlp_norm is not None:

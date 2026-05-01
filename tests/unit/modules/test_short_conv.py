@@ -21,7 +21,6 @@ from tests.common import assert_close
 MODEL_DIM = 4
 KERNEL_SIZE = 3
 
-
 def _weights(shape: tuple[int, ...], *, offset: int = 0) -> jax.Array:
     return (jnp.arange(offset, offset + prod(shape), dtype=jnp.float32).reshape(shape) / 10) - 1
 

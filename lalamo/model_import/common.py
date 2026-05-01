@@ -19,8 +19,8 @@ from lalamo.models import (
     ClassifierModelConfig,
     GenerationConfig,
     LanguageModel,
-    TTSGenerator,
-    TTSGeneratorConfig,
+    TTSModel,
+    TTSModelConfig,
 )
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.models.tts_codec import TTSCodecConfig
@@ -321,7 +321,7 @@ def _import_tts_model(
     dtype: DTypeLike | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-) -> TTSGenerator:
+) -> TTSModel:
     foreign_tts_config = _load_foreign_config(model_spec, progress_callback=progress_callback)
     if dtype is None:
         dtype = foreign_tts_config.default_dtype
@@ -354,13 +354,13 @@ def _import_tts_model(
     token_codec_config = TTSCodecConfig(
         prompt_template=model_spec.configs.chat_template,
     )
-    model_config = TTSGeneratorConfig(
+    model_config = TTSModelConfig(
         token_codec_config=token_codec_config,
         tts_config=foreign_tts_config.to_tts_config(context_length),
     )
     with _load_checkpoint(model_spec, progress_callback) as checkpoint:
         return _load_model(
-            TTSGenerator,
+            TTSModel,
             foreign_config=foreign_tts_config,
             model_config=model_config,
             tokenizer=tokenizer,

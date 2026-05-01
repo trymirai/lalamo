@@ -21,9 +21,9 @@ from torch._tensor import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from lalamo.module import Keychain
+from lalamo.modules.audio.audio_decoder import TTSAudioDecoder
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
-from lalamo.modules.audio.text_to_speech import TTSAudioDecoder
 from lalamo.sampling import SamplingPolicy
 from lalamo.utils.torch_interop import jax_to_torch, torch_to_jax
 from tests.tts.fishaudio.fishaudio_sampling import (

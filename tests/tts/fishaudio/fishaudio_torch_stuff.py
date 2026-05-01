@@ -14,13 +14,12 @@ from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.models.tts_codec import TTSCodec, TTSCodecConfig
-from lalamo.models.tts_model import TTSGenerator, TTSGeneratorConfig
+from lalamo.models.tts_model import TTSConfig, TTSModel, TTSModelConfig
 from lalamo.modules.activations import SiLU
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoderConfig
 from lalamo.modules.audio.fishaudio.fishaudio_consts import IM_END_TOKEN
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig
 from lalamo.modules.audio.text_decoder import TTSTextDecoderConfig
-from lalamo.modules.audio.text_to_speech import TTSConfig, TTSModel
 from lalamo.modules.audio.vocoders import NoopVocoder, NoopVocoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
@@ -219,7 +218,7 @@ class FishAudioFromTorch:
         path_to_checkpoints: Path,
         device: str = "cpu",
         precision: torch.dtype = torch.bfloat16,
-    ) -> "TTSGenerator":
+    ) -> "TTSModel":
         text_decoder_config = FishAudioTextDecoderConfig_Foreign.from_config_file(path_to_checkpoints / "config.json")
         text_decoder: FishAudioTextDecoder_Foreign = text_decoder_config.load_model(
             path_to_checkpoints,
@@ -246,16 +245,12 @@ class FishAudioFromTorch:
             NoopVocoderConfig(),
         )
 
-        tts_model = TTSModel(
-            config=tts_config,
+        return TTSModel(
+            config=TTSModelConfig(tts_config=tts_config, token_codec_config=token_codec.config),
+            token_codec=token_codec,
             text_decoder=text_decoder,
             audio_decoder=audio_decoder,
             vocoder=NoopVocoder(tts_config.vocoder_config),
-        )
-        return TTSGenerator(
-            config=TTSGeneratorConfig(tts_config=tts_config, token_codec_config=token_codec.config),
-            tts_model=tts_model,
-            token_codec=token_codec,
         )
 
 

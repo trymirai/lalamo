@@ -5,6 +5,7 @@ from jaxtyping import Array
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
+from lalamo.modules.decoder import DecoderForwardPassConfig
 from lalamo.sampling import SamplingPolicy
 from lalamo.utils.registry_abc import RegistryABC
 
@@ -23,4 +24,5 @@ class TTSTextDecoder[ConfigT: TTSTextDecoderConfig](LalamoModule[ConfigT]):
         sampling_policy: SamplingPolicy | None = None,
         *,
         keychain: Keychain,
+        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
     ) -> Array: ...

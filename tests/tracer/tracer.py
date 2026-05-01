@@ -12,16 +12,20 @@ import jax
 import jax.numpy as jnp
 import pytest
 import torch
-from jax.sharding import PartitionSpec, reshard
 from jaxtyping import Array
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
 from lalamo import ClassifierModel, LanguageModel
 from lalamo.model_import.common import import_model
-from lalamo.module import Keychain, ShardingAxis
-from lalamo.modules.classifier import ClassifierActivationTrace, ClassifierResult
+from lalamo.module import Keychain
+from lalamo.modules.classifier import (
+    ClassifierActivationTrace,
+    ClassifierForwardPassConfig,
+    ClassifierResult,
+)
 from lalamo.modules.decoder import (
     DecoderActivationTrace,
+    DecoderForwardPassConfig,
     DecoderResult,
 )
 from lalamo.utils.memory import get_available_bytes_on_default_device
@@ -443,7 +447,6 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
         test_spec.token_stride,
         dtype=jnp.int32,
     )[None, :]
-    token_ids = reshard(token_ids, PartitionSpec(ShardingAxis.DATA, None))
 
     tracer = model_tracer.load(
         test_spec.model_repo,
@@ -465,19 +468,23 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
         keychain = Keychain.init(0)
         with jax.disable_jit():
             if isinstance(model, LanguageModel):
+                forward_pass_config = DecoderForwardPassConfig.for_tracer_tests()
                 err, inference_results = checkify_forward(model.decoder)(
                     token_ids=token_ids,
                     token_positions=token_positions,
                     return_updated_state=True,
                     return_activation_trace=True,
+                    forward_pass_config=forward_pass_config,
                     keychain=keychain,
                 )
                 err.throw()
             elif isinstance(model, ClassifierModel):
+                forward_pass_config = ClassifierForwardPassConfig.for_tracer_tests()
                 err, inference_results = checkify_forward(model.classifier)(
                     token_ids=token_ids,
                     token_positions=token_positions,
                     return_activation_trace=True,
+                    forward_pass_config=forward_pass_config,
                     keychain=keychain,
                 )
                 err.throw()

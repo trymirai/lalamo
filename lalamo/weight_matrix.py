@@ -102,6 +102,25 @@ class MatmulConfig:
     gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING
     precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT
 
+    @classmethod
+    def for_tracer_tests(cls) -> Self:
+        return cls(
+            precision=DotAlgorithmPreset.F32_F32_F32,
+        )
+
+    @classmethod
+    def for_inference(cls) -> Self:
+        return cls()
+
+    @classmethod
+    def for_training(
+        cls,
+        gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
+    ) -> Self:
+        return cls(
+            gradient_estimator=gradient_estimator,
+        )
+
 
 @dataclass(frozen=True)
 class WeightMatrixSpec(RegistryABC):

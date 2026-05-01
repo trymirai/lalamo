@@ -1,7 +1,13 @@
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
 
 from .activations import GELU, Activation, Identity, SiLU
-from .classifier import Classifier, ClassifierActivationTrace, ClassifierConfig, ClassifierResult
+from .classifier import (
+    Classifier,
+    ClassifierActivationTrace,
+    ClassifierConfig,
+    ClassifierForwardPassConfig,
+    ClassifierResult,
+)
 from .decoder import (
     Decoder,
     DecoderActivationTrace,
@@ -78,7 +84,6 @@ from .transformer_layer import (
     TransformerLayer,
     TransformerLayerActivationTrace,
     TransformerLayerConfig,
-    TransformerLayerForwardPassConfig,
     TransformerLayerResult,
 )
 
@@ -91,6 +96,7 @@ __all__ = [
     "Classifier",
     "ClassifierActivationTrace",
     "ClassifierConfig",
+    "ClassifierForwardPassConfig",
     "ClassifierResult",
     "Decoder",
     "DecoderActivationTrace",
@@ -154,7 +160,6 @@ __all__ = [
     "TransformerLayer",
     "TransformerLayerActivationTrace",
     "TransformerLayerConfig",
-    "TransformerLayerForwardPassConfig",
     "TransformerLayerResult",
     "TransformerResult",
     "UnscaledRoPEConfig",

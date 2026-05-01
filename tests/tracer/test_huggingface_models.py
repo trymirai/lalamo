@@ -5,8 +5,6 @@ from tests.helpers import unsi
 from tests.tracer.tracer import DType, ModelTestSpec, _test_model
 from tests.tracer.tracer_huggingface import HFDecoderTracer, ModernBertTracer
 
-pytestmark = pytest.mark.usefixtures("tracer_mesh")
-
 MODEL_LIST = [
     ModelTestSpec("Qwen/Qwen2.5-0.5B-Instruct", DType.FLOAT32),
     ModelTestSpec("google/gemma-3-1b-it", DType.FLOAT32),

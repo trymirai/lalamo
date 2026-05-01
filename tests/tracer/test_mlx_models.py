@@ -9,8 +9,6 @@ try:
 except ImportError:
     MLXDecoderTracer = None
 
-pytestmark = pytest.mark.usefixtures("tracer_mesh")
-
 # token_stride=1 is required because mlx doesn't accept token positions
 MODEL_LIST = [
     ModelTestSpec("Qwen/Qwen3-0.6B-MLX-4bit", DType.FLOAT32, token_stride=1),

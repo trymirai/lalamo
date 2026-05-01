@@ -234,14 +234,14 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         num_steps: Int[Array, ""] | int,
         forward_pass_config: MixerForwardPassConfig,
     ) -> DeltaNetScanResult:
-        chunk_size = forward_pass_config.chunk_size
-        min_chunk_len = forward_pass_config.min_chunk_len
+        chunk_size = forward_pass_config.ssm_chunk_size
+        min_tail_size_to_chunk = forward_pass_config.ssm_min_tail_size_to_chunk
         num_tokens, _, _ = queries.shape
         num_steps_arr = jnp.asarray(num_steps, dtype=jnp.int32)
         dtype = queries.dtype
 
         remainder = num_tokens % chunk_size
-        has_short_tail = 0 < remainder < min_chunk_len
+        has_short_tail = 0 < remainder < min_tail_size_to_chunk
         num_chunked_tokens = num_tokens - remainder if has_short_tail else num_tokens
 
         tail_queries = queries[num_chunked_tokens:]
@@ -249,6 +249,17 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         tail_values = values[num_chunked_tokens:]
         tail_decay = decay_factor[num_chunked_tokens:]
         tail_beta = beta[num_chunked_tokens:]
+        if num_chunked_tokens == 0:
+            return self._recurrent_scan(
+                tail_queries,
+                tail_keys,
+                tail_values,
+                tail_decay,
+                tail_beta,
+                initial_state,
+                num_steps_arr,
+            )
+
         if has_short_tail:
             queries = queries[:num_chunked_tokens]
             keys = keys[:num_chunked_tokens]
@@ -413,7 +424,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         proj_query, proj_key, proj_value, gate, beta_logits, decay_input = call_vmapped(
             self.in_proj,
             inputs,
-            forward_pass_config=forward_pass_config.arrays,
+            forward_pass_config=forward_pass_config.matmul_config,
             keychain=in_keychain,
         )
         assert proj_query.shape[0] == num_tokens
@@ -467,27 +478,16 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         length_without_padding = jnp.asarray(length_without_padding, dtype=jnp.int32)
         length_without_padding = jnp.clip(length_without_padding, 0, num_tokens)
 
-        if num_tokens < forward_pass_config.min_chunk_len:
-            core_result = self._recurrent_scan(
-                query,
-                key,
-                value,
-                decay_factor,
-                beta,
-                state.ssm_state,
-                length_without_padding,
-            )
-        else:
-            core_result = self._chunked_scan(
-                query,
-                key,
-                value,
-                decay_factor,
-                beta,
-                state.ssm_state,
-                length_without_padding,
-                forward_pass_config,
-            )
+        core_result = self._chunked_scan(
+            query,
+            key,
+            value,
+            decay_factor,
+            beta,
+            state.ssm_state,
+            length_without_padding,
+            forward_pass_config,
+        )
         core_attn_out = core_result.outputs
         final_state = core_result.final_state
 
@@ -502,7 +502,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         (outputs,) = call_vmapped(
             self.out_proj,
             core_attn_out,
-            forward_pass_config=forward_pass_config.arrays,
+            forward_pass_config=forward_pass_config.matmul_config,
             keychain=out_keychain,
         )
 

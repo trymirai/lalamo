@@ -18,6 +18,7 @@ from lalamo.modules import (
     StaticKVCacheLayer,
     TiedEmbeddingConfig,
     TransformerConfig,
+    TransformerForwardPassConfig,
     TransformerLayerConfig,
     UnscaledRoPEConfig,
     UpcastMode,
@@ -157,7 +158,11 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
     prefix_positions = jnp.array([[0, 1, 2]], dtype=jnp.int32)
     chain_token_ids = jnp.array([4, 5, 6], dtype=jnp.int32)
     forward_pass_config = DecoderForwardPassConfig(
-        embedding=EmbeddingForwardPassConfig(activation_dtype=jnp.float32),
+        embedding_forward_pass_config=EmbeddingForwardPassConfig(activation_dtype=jnp.float32),
+    )
+    single_token_forward_pass_config = DecoderForwardPassConfig(
+        embedding_forward_pass_config=EmbeddingForwardPassConfig(activation_dtype=jnp.float32),
+        transformer_forward_pass_config=TransformerForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
     )
 
     prefix_result = decoder(
@@ -178,8 +183,7 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
             jnp.array([[3 + i]], dtype=jnp.int32),
             state=state,
             return_updated_state=True,
-            forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
-            forward_pass_config=forward_pass_config,
+            forward_pass_config=single_token_forward_pass_config,
             keychain=Keychain.init(20 + i),
         )
         assert step_result.updated_state is not None
@@ -191,9 +195,8 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
         chain_token_ids[None, :],
         jnp.array([[3, 4, 5]], dtype=jnp.int32),
         state=prefix_result.updated_state,
-        forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
         attention_parent_indices=jnp.array([[-1, 0, 1]], dtype=jnp.int32),
-        forward_pass_config=forward_pass_config,
+        forward_pass_config=single_token_forward_pass_config,
         keychain=Keychain.init(30),
     )
 
@@ -224,7 +227,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         jnp.array([[10]], dtype=jnp.int32),
         jnp.array([[2]], dtype=jnp.int32),
         state=state_a,
-        forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
+        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(50),
     )
     logits_a = result_a.logits[0, 0]
@@ -235,7 +238,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         jnp.array([[20]], dtype=jnp.int32),
         jnp.array([[2]], dtype=jnp.int32),
         state=state_b,
-        forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
+        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(60),
     )
     logits_b = result_b.logits[0, 0]
@@ -245,8 +248,8 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         jnp.array([[10, 20]], dtype=jnp.int32),
         jnp.array([[2, 2]], dtype=jnp.int32),
         state=prefix_result.updated_state,
-        forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
         attention_parent_indices=jnp.array([[-1, -1]], dtype=jnp.int32),
+        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(70),
     )
 

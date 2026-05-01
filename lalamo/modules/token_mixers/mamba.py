@@ -108,8 +108,6 @@ class Mamba2Config(TokenMixerConfig):
     has_in_biases: bool
     has_out_biases: bool
 
-    chunk_size: int = 256
-
     @property
     def inner_dim(self) -> int:
         return self.num_heads * self.head_dim
@@ -194,21 +192,13 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         state: Float[Array, "heads head_dim state_dim"],
     ) -> tuple[Float[Array, "heads head_dim"], Float[Array, "heads head_dim state_dim"]]:
         """Single-token SSM state update without scan overhead."""
-        heads_per_group = self.config.num_heads // self.config.num_groups
-
-        dt = jax.nn.softplus(dt_log)
-        decay = jnp.exp(-dt)[:, None, None]
-        mix = dt[:, None, None]
-
-        keys_expanded = jnp.repeat(keys, heads_per_group, axis=0)
-        queries_expanded = jnp.repeat(queries, heads_per_group, axis=0)
-        values_norm = values / (dt[:, None] + 1e-8)
-
-        input_contribution = mix * values_norm[:, :, None] * keys_expanded[:, None, :]
-        new_state = decay * state + input_contribution
-        output = einsum(new_state, queries_expanded, "heads head_dim state_dim, heads state_dim -> heads head_dim")
-
-        return output, new_state
+        return self._scan_step_from_dt(
+            values,
+            keys,
+            queries,
+            jax.nn.softplus(dt_log),
+            state,
+        )
 
     def _decode_step(
         self,
@@ -224,7 +214,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         conv_in, gate, dt_log = self.in_projection(
             token,
             keychain=keychain,
-            forward_pass_config=forward_pass_config.arrays,
+            forward_pass_config=forward_pass_config.matmul_config,
         )
         conv_out, new_conv_state = self.conv.step(conv_in, state.conv_state)
         conv_activated = self.config.activation(conv_out)
@@ -245,7 +235,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         (output,) = self.out_projection(
             gated,
             keychain=keychain,
-            forward_pass_config=forward_pass_config.arrays,
+            forward_pass_config=forward_pass_config.matmul_config,
         )
 
         return Mamba2Result(
@@ -253,7 +243,70 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             state=SSMStateLayer(new_conv_state, new_ssm_state),
         )
 
-    def _chunked_scan(
+    def _scan_step_from_dt(
+        self,
+        values: Float[Array, "heads head_dim"],
+        keys: Float[Array, "groups state_dim"],
+        queries: Float[Array, "groups state_dim"],
+        dt: Float[Array, " heads"],
+        state: Float[Array, "heads head_dim state_dim"],
+    ) -> tuple[Float[Array, "heads head_dim"], Float[Array, "heads head_dim state_dim"]]:
+        heads_per_group = self.config.num_heads // self.config.num_groups
+        keys_expanded = jnp.repeat(keys, heads_per_group, axis=0)
+        queries_expanded = jnp.repeat(queries, heads_per_group, axis=0)
+        new_state = jnp.exp(-dt)[:, None, None] * state + values[:, :, None] * keys_expanded[:, None, :]
+        output = einsum(new_state, queries_expanded, "heads head_dim state_dim, heads state_dim -> heads head_dim")
+        return output, new_state
+
+    def _recurrent_scan(
+        self,
+        values: Float[Array, "suffix_tokens heads head_dim"],
+        keys: Float[Array, "suffix_tokens groups state_dim"],
+        queries: Float[Array, "suffix_tokens groups state_dim"],
+        dt: Float[Array, "suffix_tokens heads"],
+        initial_state: Float[Array, "heads head_dim state_dim"],
+        num_steps: Int[Array, ""] | int,
+        d: Float[Array, " heads"] | None = None,
+        z: Float[Array, "suffix_tokens heads head_dim"] | None = None,
+        z_bias: Float[Array, "heads head_dim"] | None = None,
+    ) -> tuple[Float[Array, "suffix_tokens heads head_dim"], Float[Array, "heads head_dim state_dim"]]:
+        num_steps_arr = jnp.asarray(num_steps, dtype=jnp.int32)
+
+        def scan_fn(
+            index_and_state: tuple[Int[Array, ""], Float[Array, "heads head_dim state_dim"]],
+            step_inputs: tuple[
+                Float[Array, "heads head_dim"],
+                Float[Array, "groups state_dim"],
+                Float[Array, "groups state_dim"],
+                Float[Array, " heads"],
+                Float[Array, "heads head_dim"],
+            ],
+        ) -> tuple[
+            tuple[Int[Array, ""], Float[Array, "heads head_dim state_dim"]],
+            Float[Array, "heads head_dim"],
+        ]:
+            index, carry_state = index_and_state
+            values_t, keys_t, queries_t, dt_t, z_t = step_inputs
+
+            output, updated_state = self._scan_step_from_dt(values_t, keys_t, queries_t, dt_t, carry_state)
+            if d is not None:
+                output = output + d[:, None] * values_t
+            if z is not None:
+                gate = z_t + z_bias if z_bias is not None else z_t
+                output = output * jax.nn.silu(gate)
+
+            propagated_state = jax.lax.cond(index < num_steps_arr, lambda: updated_state, lambda: carry_state)
+            return (index + 1, propagated_state), output
+
+        z_scan = jnp.zeros_like(values) if z is None else z
+        (_, final_state), outputs = jax.lax.scan(
+            scan_fn,
+            (jnp.zeros((), dtype=jnp.int32), initial_state),
+            (values, keys, queries, dt, z_scan),
+        )
+        return outputs, final_state
+
+    def _chunked_scan_core(
         self,
         values: Float[Array, "suffix_tokens heads head_dim"],
         keys: Float[Array, "suffix_tokens groups state_dim"],
@@ -394,6 +447,77 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
 
         return y, final_state
 
+    def _chunked_scan(
+        self,
+        values: Float[Array, "suffix_tokens heads head_dim"],
+        keys: Float[Array, "suffix_tokens groups state_dim"],
+        queries: Float[Array, "suffix_tokens groups state_dim"],
+        dt: Float[Array, "suffix_tokens heads"],
+        initial_state: Float[Array, "heads head_dim state_dim"],
+        forward_pass_config: MixerForwardPassConfig,
+        num_steps: Int[Array, ""] | int,
+        d: Float[Array, " heads"] | None = None,
+        z: Float[Array, "suffix_tokens heads head_dim"] | None = None,
+        z_bias: Float[Array, "heads head_dim"] | None = None,
+    ) -> tuple[Float[Array, "suffix_tokens heads head_dim"], Float[Array, "heads head_dim state_dim"]]:
+        chunk_size = forward_pass_config.ssm_chunk_size
+        min_tail_size_to_chunk = forward_pass_config.ssm_min_tail_size_to_chunk
+        seq_len = values.shape[0]
+        num_steps_arr = jnp.asarray(num_steps, dtype=jnp.int32)
+
+        remainder = seq_len % chunk_size
+        has_short_tail = 0 < remainder < min_tail_size_to_chunk
+        num_chunked_tokens = seq_len - remainder if has_short_tail else seq_len
+
+        tail_values = values[num_chunked_tokens:]
+        tail_keys = keys[num_chunked_tokens:]
+        tail_queries = queries[num_chunked_tokens:]
+        tail_dt = dt[num_chunked_tokens:]
+        tail_z = None if z is None else z[num_chunked_tokens:]
+
+        if num_chunked_tokens == 0:
+            return self._recurrent_scan(
+                tail_values,
+                tail_keys,
+                tail_queries,
+                tail_dt,
+                initial_state,
+                num_steps_arr,
+                d=d,
+                z=tail_z,
+                z_bias=z_bias,
+            )
+
+        outputs, final_state = self._chunked_scan_core(
+            values[:num_chunked_tokens],
+            keys[:num_chunked_tokens],
+            queries[:num_chunked_tokens],
+            dt[:num_chunked_tokens],
+            initial_state,
+            chunk_size,
+            jnp.clip(num_steps_arr, 0, num_chunked_tokens),
+            d=d,
+            z=None if z is None else z[:num_chunked_tokens],
+            z_bias=z_bias,
+        )
+
+        if has_short_tail:
+            tail_num_steps = jnp.clip(num_steps_arr - num_chunked_tokens, 0, remainder)
+            tail_outputs, final_state = self._recurrent_scan(
+                tail_values,
+                tail_keys,
+                tail_queries,
+                tail_dt,
+                final_state,
+                tail_num_steps,
+                d=d,
+                z=tail_z,
+                z_bias=z_bias,
+            )
+            outputs = jnp.concatenate([outputs, tail_outputs], axis=0)
+
+        return outputs, final_state
+
     def _compute_final_state(
         self,
         values: Float[Array, "suffix_tokens heads head_dim"],
@@ -488,7 +612,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         conv_inputs, gate_values, time_delta_log = call_vmapped(
             self.in_projection,
             inputs,
-            forward_pass_config=forward_pass_config.arrays,
+            forward_pass_config=forward_pass_config.matmul_config,
             keychain=in_keychain,
         )
 
@@ -527,6 +651,8 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
 
         if length_without_padding is None:
             length_without_padding, _ = inputs.shape
+        length_without_padding = jnp.asarray(length_without_padding, dtype=jnp.int32)
+        length_without_padding = jnp.clip(length_without_padding, 0, seq_len)
 
         gate_values_reshaped = rearrange(
             gate_values,
@@ -546,7 +672,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             queries,
             dt,
             state.ssm_state,
-            self.config.chunk_size,
+            forward_pass_config,
             length_without_padding,
             d=self.skip_connection_weight,
             z=gate_values_reshaped,
@@ -560,7 +686,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         (outputs,) = call_vmapped(
             self.out_projection,
             ssm_outputs_flat,
-            forward_pass_config=forward_pass_config.arrays,
+            forward_pass_config=forward_pass_config.matmul_config,
             keychain=out_keychain,
         )
 

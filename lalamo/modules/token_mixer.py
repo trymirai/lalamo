@@ -12,7 +12,7 @@ from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
 from lalamo.utils.registry_abc import RegistryABC
-from lalamo.weight_matrix import MatmulConfig
+from lalamo.weight_matrix import GradientEstimator, MatmulConfig
 
 from .rope import PositionalEmbeddings
 
@@ -53,11 +53,31 @@ class AttentionImplementation(Enum):
 
 @dataclass(frozen=True)
 class MixerForwardPassConfig:
-    implementation: AttentionImplementation = AttentionImplementation.STABLE_REDUCTION
-    upcast_dtype: DTypeLike | None = jnp.float32
-    chunk_size: int = 32
-    min_chunk_len: int = 16
-    arrays: MatmulConfig = field(default_factory=MatmulConfig)
+    attention_implementation: AttentionImplementation = AttentionImplementation.STABLE_REDUCTION
+    attention_accumulation_dtype: DTypeLike | None = jnp.float32
+    ssm_chunk_size: int = 32
+    ssm_min_tail_size_to_chunk: int = 16
+    matmul_config: MatmulConfig = field(default_factory=MatmulConfig)
+
+    @classmethod
+    def for_tracer_tests(cls) -> Self:
+        return cls(
+            matmul_config=MatmulConfig.for_tracer_tests(),
+        )
+
+    @classmethod
+    def for_inference(cls) -> Self:
+        return cls()
+
+    @classmethod
+    def for_training(
+        cls,
+        gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
+    ) -> Self:
+        return cls(
+            ssm_min_tail_size_to_chunk=0,
+            matmul_config=MatmulConfig.for_training(gradient_estimator),
+        )
 
 
 class TokenMixerResult[StateLayerT](NamedTuple):

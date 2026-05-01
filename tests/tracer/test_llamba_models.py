@@ -9,8 +9,6 @@ try:
 except ImportError:
     LlambaDecoderTracer = None
 
-pytestmark = pytest.mark.usefixtures("tracer_mesh")
-
 MODEL_LIST = [
     ModelTestSpec("cartesia-ai/Llamba-1B-4bit-mlx", DType.FLOAT32, token_stride=1),
 ]

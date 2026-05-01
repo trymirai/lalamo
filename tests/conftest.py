@@ -98,18 +98,6 @@ def fake_mesh() -> Generator[Mesh]:
         yield mesh
 
 
-@pytest.fixture
-def tracer_mesh() -> Generator[Mesh]:
-    mesh = jax.make_mesh(
-        (1, 2, 4),
-        (ShardingAxis.DATA, ShardingAxis.TENSOR, ShardingAxis.EXPERT),
-        axis_types=(AxisType.Explicit, AxisType.Explicit, AxisType.Explicit),
-        devices=jax.devices("cpu")[:8],
-    )
-    with jax.set_mesh(mesh):
-        yield mesh
-
-
 GPU_ATOL = 1e-3
 GPU_RTOL = 0.03
 

@@ -1,21 +1,20 @@
 from dataclasses import dataclass
-from dataclasses import field as dataclass_field
 
 import equinox as eqx
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis, field
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, ShardingAxis, field
 from lalamo.modules.token_mixers import AttentionConfig
 
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 from .token_mixer import State, StateLayerBase
 from .transformer_layer import (
+    TransformerForwardPassConfig,
     TransformerLayer,
     TransformerLayerConfig,
-    TransformerLayerForwardPassConfig,
     TransformerLayerResult,
 )
 from .utils import call_vmapped, call_vmapped_twice
@@ -26,11 +25,6 @@ __all__ = [
     "TransformerForwardPassConfig",
     "TransformerResult",
 ]
-
-
-@dataclass(frozen=True)
-class TransformerForwardPassConfig:
-    layer: TransformerLayerForwardPassConfig = dataclass_field(default_factory=TransformerLayerForwardPassConfig)
 
 
 class TransformerResult(Exportable, eqx.Module):
@@ -83,8 +77,12 @@ class TransformerConfig(LalamoConfig):
             rope_indices.append(rope_cache[cache_key])
         return tuple(ropes), tuple(rope_indices)
 
-    def _source_layer_indices(self) -> tuple[int, ...]:
-        return tuple(i for i, layer_config in enumerate(self.layer_configs) if layer_config.kv_source_layer is None)
+    def _kv_source_layer_indices(self) -> tuple[int, ...]:
+        result = []
+        for i, layer_config in enumerate(self.layer_configs):
+            if layer_config.kv_source_layer_index is None:
+                result.append(i)
+        return tuple(result)
 
     def init(self, initializer: Initializer) -> "Transformer":
         ropes, rope_indices = self._init_ropes(initializer)
@@ -103,7 +101,7 @@ class TransformerConfig(LalamoConfig):
             config=self,
             ropes=ropes,
             rope_indices=rope_indices,
-            source_layer_indices=self._source_layer_indices(),
+            kv_source_layer_indices=self._kv_source_layer_indices(),
             layers=layers,
             output_norm=output_norm,
         )
@@ -112,7 +110,7 @@ class TransformerConfig(LalamoConfig):
 class Transformer(LalamoModule[TransformerConfig]):
     ropes: tuple[RoPE, ...]
     rope_indices: tuple[int, ...] = field(static=True)
-    source_layer_indices: tuple[int, ...] = field(static=True)
+    kv_source_layer_indices: tuple[int, ...] = field(static=True)
     layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
 
@@ -126,7 +124,6 @@ class Transformer(LalamoModule[TransformerConfig]):
         return_layer_results: bool,
         return_positional_embeddings: bool,
         lengths_without_padding: Int[Array, " batch"] | None,
-        forward_pass_mode: ForwardPassMode,
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
         per_layer_inputs: tuple[Float[Array, "batch suffix_tokens ple_dim"], ...] | None = None,
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
@@ -144,7 +141,7 @@ class Transformer(LalamoModule[TransformerConfig]):
                 f" got {token_positions.shape}",
             )
         state_by_layer = (
-            {layer_index: state[state_index] for state_index, layer_index in enumerate(self.source_layer_indices)}
+            {layer_index: state[state_index] for state_index, layer_index in enumerate(self.kv_source_layer_indices)}
             if state is not None
             else {}
         )
@@ -156,7 +153,7 @@ class Transformer(LalamoModule[TransformerConfig]):
             )
             for rope in self.ropes
         )
-        has_kv_sharing = len(self.source_layer_indices) < len(self.layers)
+        has_kv_sharing = len(self.kv_source_layer_indices) < len(self.layers)
         must_return_state = return_updated_state or has_kv_sharing
 
         layer_keychains = keychain.split(len(self.layers))
@@ -169,11 +166,14 @@ class Transformer(LalamoModule[TransformerConfig]):
 
             per_layer_input = per_layer_inputs[layer_index] if per_layer_inputs is not None else None
 
-            kv_source = layer.config.kv_source_layer
-            if kv_source is None:
+            kv_source_layer_index = layer.config.kv_source_layer_index
+            if kv_source_layer_index is None:
                 effective_state = state_by_layer.get(layer_index)
             else:
-                effective_state = updated_states.get(kv_source, state_by_layer.get(kv_source))
+                effective_state = updated_states.get(
+                    kv_source_layer_index,
+                    state_by_layer.get(kv_source_layer_index),
+                )
 
             layer_result = layer(
                 inner_features,
@@ -182,8 +182,7 @@ class Transformer(LalamoModule[TransformerConfig]):
                 return_updated_state=must_return_state,
                 return_activation_trace=return_layer_results,
                 lengths_without_padding=lengths_without_padding,
-                forward_pass_mode=forward_pass_mode,
-                forward_pass_config=forward_pass_config.layer,
+                forward_pass_config=forward_pass_config,
                 per_layer_input=per_layer_input,
                 attention_parent_indices=attention_parent_indices,
                 keychain=layer_keychain,
@@ -192,14 +191,14 @@ class Transformer(LalamoModule[TransformerConfig]):
             inner_features = layer_result.outputs
             layer_results.append(layer_result)
 
-            if kv_source is None:
+            if kv_source_layer_index is None:
                 updated_states[layer_index] = layer_result.updated_state
 
         normalized_outputs = call_vmapped_twice(self.output_norm, inner_features)
 
         if return_updated_state:
             compact_state_layers = []
-            for layer_index in self.source_layer_indices:
+            for layer_index in self.kv_source_layer_indices:
                 layer_state = updated_states[layer_index]
                 if layer_state is None:
                     raise ValueError(f"Layer {layer_index} did not return an updated state.")
@@ -217,5 +216,5 @@ class Transformer(LalamoModule[TransformerConfig]):
     def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> State:
         return State(
             self.layers[layer_index].init_static_state(batch_size, capacity, dtype)
-            for layer_index in self.source_layer_indices
+            for layer_index in self.kv_source_layer_indices
         )

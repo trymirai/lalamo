@@ -15,10 +15,10 @@ from lalamo.models import (
     ClassifierModelConfig,
     GenerationConfig,
     LanguageModelConfig,
-    TTSGeneratorConfig,
+    TTSConfig,
+    TTSModelConfig,
 )
 from lalamo.models.chat_codec import ChatCodecConfig
-from lalamo.modules.audio.text_to_speech import TTSConfig
 from lalamo.modules.classifier import ClassifierConfig
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.utils.registry_abc import RegistryABC
@@ -102,7 +102,7 @@ class ForeignClassifierConfig(ForeignConfig[ClassifierModelConfig], RegistryABC)
 
 
 @dataclass(frozen=True)
-class ForeignTTSConfig(ForeignConfig[TTSGeneratorConfig], RegistryABC):
+class ForeignTTSConfig(ForeignConfig[TTSModelConfig], RegistryABC):
     @abstractmethod
     def to_tts_config(
         self,

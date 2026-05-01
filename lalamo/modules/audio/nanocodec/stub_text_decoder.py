@@ -13,6 +13,7 @@ from jaxtyping import Array, Int
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, field
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfig
+from lalamo.modules.decoder import DecoderForwardPassConfig
 from lalamo.sampling import SamplingPolicy
 
 __all__ = ["StubTextDecoder", "StubTextDecoderConfig"]
@@ -39,6 +40,7 @@ class StubTextDecoder(TTSTextDecoder[StubTextDecoderConfig]):
         sampling_policy: SamplingPolicy | None = None,  # noqa: ARG002
         *,
         keychain: Keychain,
+        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),  # noqa: ARG002
     ) -> Int[Array, "batch num_codebooks tokens"]:
         """Generate random codebook indices with length derived from input tokens."""
         folded_key = jax.random.fold_in(keychain.vmapped_keys, self.seed)

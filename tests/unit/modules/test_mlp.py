@@ -3,6 +3,7 @@ from math import prod
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import pytest
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
@@ -26,6 +27,11 @@ from tests.common import assert_close
 MODEL_DIM = 4
 HIDDEN_DIM = 4
 NUM_ROUTED_EXPERTS = 2
+
+MOE_MODES = [
+    pytest.param(ForwardPassMode.MULTI_TOKEN, id="multi-token"),
+    pytest.param(ForwardPassMode.SINGLE_TOKEN, id="single-token"),
+]
 
 
 def _array(shape: tuple[int, ...], *, offset: int = 0) -> jax.Array:
@@ -287,6 +293,12 @@ def _sharded_sequences(values: Array) -> Array:
     return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, ShardingAxis.TENSOR)))
 
 
+def _moe_sequence_length(mode: ForwardPassMode) -> int:
+    if mode == ForwardPassMode.SINGLE_TOKEN:
+        return 1
+    return 3
+
+
 def test_dense_mlp_call_unbatched_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
     module = _dense_mlp()
     inputs = _sharded_vector(jnp.arange(MODEL_DIM, dtype=jnp.float32))
@@ -361,7 +373,6 @@ def test_dense_mlp_full_call_matches_reference_and_keeps_data_sharding(fake_mesh
 
     result = module(
         inputs,
-        forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
         keychain=Keychain.init(4),
     )
 
@@ -438,43 +449,40 @@ def test_softmax_routing_vmapped_call_matches_unbatched() -> None:
     assert_close(result=result.expert_weights, reference=reference.expert_weights)
 
 
-def test_routed_moe_prefill_matches_direct_reference(fake_mesh: Mesh) -> None:
+@pytest.mark.parametrize("mode", MOE_MODES)
+def test_routed_moe_matches_direct_reference(fake_mesh: Mesh, mode: ForwardPassMode) -> None:
     assert fake_mesh is not None
-    module = _routed_only_moe(num_active_routed_experts=1)
-    inputs = jnp.arange(2 * 3 * MODEL_DIM, dtype=jnp.float32).reshape(2, 3, MODEL_DIM) / 10
+    module = _routed_only_moe(num_active_routed_experts=2)
+    sequence_length = _moe_sequence_length(mode)
+    inputs = jnp.arange(2 * sequence_length * MODEL_DIM, dtype=jnp.float32).reshape(
+        2,
+        sequence_length,
+        MODEL_DIM,
+    ) / 10
 
     result = module(
         inputs,
-        forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
+        forward_pass_config=MLPForwardPassConfig(mode=mode, moe_chunk_size_ratio=0.5),
         keychain=Keychain.init(7),
     )
 
     _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
 
 
-def test_routed_moe_decode_matches_direct_reference(fake_mesh: Mesh) -> None:
+@pytest.mark.parametrize("mode", MOE_MODES)
+def test_routed_moe_output_dtype_matches_input_dtype(fake_mesh: Mesh, mode: ForwardPassMode) -> None:
     assert fake_mesh is not None
     module = _routed_only_moe(num_active_routed_experts=2)
-    inputs = jnp.arange(2 * MODEL_DIM, dtype=jnp.float32).reshape(2, 1, MODEL_DIM) / 10
+    sequence_length = _moe_sequence_length(mode)
+    inputs = jnp.arange(2 * sequence_length * MODEL_DIM, dtype=jnp.bfloat16).reshape(
+        2,
+        sequence_length,
+        MODEL_DIM,
+    ) / 10
 
     result = module(
         inputs,
-        forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
-        keychain=Keychain.init(8),
-    )
-
-    _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
-
-
-def test_routed_moe_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
-    assert fake_mesh is not None
-    module = _routed_only_moe(num_active_routed_experts=2)
-    inputs = jnp.arange(2 * MODEL_DIM, dtype=jnp.bfloat16).reshape(2, 1, MODEL_DIM) / 10
-
-    result = module(
-        inputs,
-        forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
+        forward_pass_config=MLPForwardPassConfig(mode=mode),
         keychain=Keychain.init(16),
     )
 
@@ -490,7 +498,6 @@ def test_moe_prefill_with_shared_experts_and_padding_matches_direct_reference(fa
     result = module(
         inputs,
         lengths_without_padding=lengths_without_padding,
-        forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
         forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
         keychain=Keychain.init(9),
     )
@@ -510,7 +517,6 @@ def test_moe_prefill_with_gated_shared_experts_matches_direct_reference(fake_mes
     result = module(
         inputs,
         lengths_without_padding=lengths_without_padding,
-        forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
         forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
         keychain=Keychain.init(10),
     )
@@ -521,15 +527,21 @@ def test_moe_prefill_with_gated_shared_experts_matches_direct_reference(fake_mes
     )
 
 
-def test_routed_moe_prefill_under_jit_matches_reference_and_keeps_data_sharding(fake_mesh: Mesh) -> None:
+@pytest.mark.parametrize("mode", MOE_MODES)
+def test_routed_moe_under_jit_matches_reference_and_keeps_data_sharding(
+    fake_mesh: Mesh,
+    mode: ForwardPassMode,
+) -> None:
     module = _routed_only_moe(num_active_routed_experts=2)
-    inputs = _sharded_sequences(jnp.arange(2 * 3 * MODEL_DIM, dtype=jnp.float32).reshape(2, 3, MODEL_DIM) / 10)
+    sequence_length = _moe_sequence_length(mode)
+    inputs = _sharded_sequences(
+        jnp.arange(2 * sequence_length * MODEL_DIM, dtype=jnp.float32).reshape(2, sequence_length, MODEL_DIM) / 10,
+    )
 
     result = eqx.filter_jit(
         lambda module, inputs: module(
             inputs,
-            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-            forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
+            forward_pass_config=MLPForwardPassConfig(mode=mode, moe_chunk_size_ratio=0.5),
             keychain=Keychain.init(11),
         )
     )(module, inputs)
@@ -537,24 +549,6 @@ def test_routed_moe_prefill_under_jit_matches_reference_and_keeps_data_sharding(
     _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == make_sharding((ShardingAxis.DATA, None, None))
-
-
-def test_routed_moe_decode_under_jit_matches_reference_and_keeps_data_sharding(fake_mesh: Mesh) -> None:
-    module = _routed_only_moe(num_active_routed_experts=2)
-    inputs = _sharded_sequences(jnp.arange(2 * MODEL_DIM, dtype=jnp.float32).reshape(2, 1, MODEL_DIM) / 10)
-
-    result = eqx.filter_jit(
-        lambda module, inputs: module(
-            inputs,
-            forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
-            keychain=Keychain.init(12),
-        )
-    )(module, inputs)
-
-    _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
-    _assert_named_sharding(result.sharding, fake_mesh)
-    assert result.sharding == make_sharding((ShardingAxis.DATA, None, None))
-
 
 def test_moe_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _moe(num_active_routed_experts=2, num_shared_experts=2)
@@ -564,7 +558,6 @@ def test_moe_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: M
     restored = template.load_exported(original.export())
     result = restored(
         inputs,
-        forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
         forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
         keychain=Keychain.init(13),
     )
@@ -600,7 +593,6 @@ def test_moe_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: M
         result=result,
         reference=original(
             inputs,
-            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
             forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
             keychain=Keychain.init(14),
         ),

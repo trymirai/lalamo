@@ -12,7 +12,7 @@ from tokenizers import Tokenizer
 from lalamo.initializer import Initializer
 from lalamo.model import Model, ModelConfig
 from lalamo.models.chat_codec import AssistantMessage, ChatCodec, ChatCodecConfig, Message
-from lalamo.modules import Decoder, DecoderConfig, ForwardPassMode, Keychain
+from lalamo.modules import Decoder, DecoderConfig, DecoderForwardPassConfig, ForwardPassMode, Keychain
 from lalamo.modules.token_mixer import State
 from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy
@@ -131,7 +131,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             state=state,
             return_updated_state=True,
             lengths_without_padding=lengths_without_padding,
-            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
+            forward_pass_config=DecoderForwardPassConfig.for_inference(),
             keychain=keychain,
         )
         assert decoder_result.updated_state is not None
@@ -236,7 +236,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 token_positions=next_token_indices[:, None],
                 state=state.state,
                 return_updated_state=True,
-                forward_pass_mode=forward_pass_mode,
+                forward_pass_config=DecoderForwardPassConfig.for_inference(forward_pass_mode),
                 keychain=Keychain(vmapped_keys=decoding_key, batch_key=decoding_keychain.batch_key),
             )
             assert decoder_result.updated_state is not None

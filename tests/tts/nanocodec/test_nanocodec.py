@@ -10,7 +10,7 @@ from omegaconf import DictConfig
 from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.common import import_model
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
-from lalamo.models import TTSGenerator
+from lalamo.models import TTSModel
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
 from lalamo.modules.audio.common_modules import (
@@ -38,7 +38,6 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     ResidualBlockConfig,
 )
 from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder
-from lalamo.modules.audio.text_to_speech import TTSModel
 from tests.tts.nanocodec.nanocodec_torch_stuff import (
     AudioCodecModel,
     CausalHiFiGANDecoder,
@@ -442,10 +441,9 @@ def test_nanocodec_model_spec_loading() -> None:
 
     generator, _ = import_model(model_spec="nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps", dtype=jnp.float32)
 
-    assert isinstance(generator, TTSGenerator)
-    assert isinstance(generator.tts_model, TTSModel)
-    assert isinstance(generator.tts_model.text_decoder, StubTextDecoder)
-    assert isinstance(generator.tts_model.audio_decoder, NanoCodec)
+    assert isinstance(generator, TTSModel)
+    assert isinstance(generator.text_decoder, StubTextDecoder)
+    assert isinstance(generator.audio_decoder, NanoCodec)
 
     generation_result = generator.generate_speech(
         [message_to_generate],

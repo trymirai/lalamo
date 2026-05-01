@@ -43,7 +43,7 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
 )
 from lalamo.model_import.model_specs.fishaudio import FISHAUDIO_TTS_MODELS
 from lalamo.module import Keychain
-from lalamo.modules import GELU, ForwardPassMode
+from lalamo.modules import GELU
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
 )
@@ -1208,8 +1208,8 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     """
     # Load the FishAudio model
     pytorch_tts_generator = FishAudioFromTorch.build_foreign_fish_audio_tts_generator(fish_audio_local_model_path)
-    assert isinstance(pytorch_tts_generator.tts_model.text_decoder, FishAudioTextDecoder_Foreign)
-    fish_model = pytorch_tts_generator.tts_model.text_decoder.fish_model
+    assert isinstance(pytorch_tts_generator.text_decoder, FishAudioTextDecoder_Foreign)
+    fish_model = pytorch_tts_generator.text_decoder.fish_model
     config = fish_model.config
     assert isinstance(config, DualARModelArgs)
 
@@ -1346,7 +1346,6 @@ def test_audio_transformer_inference() -> None:
         return_layer_results=False,
         return_positional_embeddings=False,
         lengths_without_padding=None,
-        forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
         forward_pass_config=TransformerForwardPassConfig(),
         keychain=Keychain.init(1),
     )

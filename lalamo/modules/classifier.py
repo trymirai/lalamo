@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from enum import StrEnum
+from typing import Self
 
 import equinox as eqx
 from jax import numpy as jnp
@@ -8,9 +10,10 @@ from jaxtyping import Array, Float, Int
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
+from lalamo.weight_matrix import GradientEstimator
 
 from .activations import Activation
-from .embedding import EmbeddingBase, EmbeddingConfig
+from .embedding import EmbeddingBase, EmbeddingConfig, EmbeddingForwardPassConfig
 from .linear import Linear, LinearConfig
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
@@ -22,6 +25,7 @@ __all__ = [
     "Classifier",
     "ClassifierActivationTrace",
     "ClassifierConfig",
+    "ClassifierForwardPassConfig",
     "ClassifierResult",
 ]
 
@@ -120,6 +124,39 @@ class ClassifierResult(Exportable, eqx.Module):
 
 
 @dataclass(frozen=True)
+class ClassifierForwardPassConfig:
+    embedding_forward_pass_config: EmbeddingForwardPassConfig = dataclass_field(
+        default_factory=EmbeddingForwardPassConfig,
+    )
+    transformer_forward_pass_config: TransformerForwardPassConfig = dataclass_field(
+        default_factory=TransformerForwardPassConfig,
+    )
+
+    @classmethod
+    def for_tracer_tests(cls) -> Self:
+        return cls(
+            embedding_forward_pass_config=EmbeddingForwardPassConfig.for_tracer_tests(),
+            transformer_forward_pass_config=TransformerForwardPassConfig.for_tracer_tests(),
+        )
+
+    @classmethod
+    def for_inference(cls, mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN) -> Self:
+        return cls(
+            transformer_forward_pass_config=TransformerForwardPassConfig.for_inference(mode),
+        )
+
+    @classmethod
+    def for_training(
+        cls,
+        gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
+    ) -> Self:
+        return cls(
+            embedding_forward_pass_config=EmbeddingForwardPassConfig.for_training(gradient_estimator),
+            transformer_forward_pass_config=TransformerForwardPassConfig.for_training(gradient_estimator),
+        )
+
+
+@dataclass(frozen=True)
 class ClassifierConfig(LalamoConfig):
     embedding_config: EmbeddingConfig
     embedding_norm_config: NormalizationConfig
@@ -172,8 +209,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
         token_positions: Int[Array, "batch tokens"],
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
+        forward_pass_config: ClassifierForwardPassConfig = ClassifierForwardPassConfig(),
         *,
         keychain: Keychain,
     ) -> ClassifierResult:
@@ -181,6 +217,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
         inner_features = call_vmapped_twice(
             self.embedding.embed,
             token_ids,
+            forward_pass_config=forward_pass_config.embedding_forward_pass_config,
             keychain=embedding_keychain,
             added_sharding_axes=(ShardingAxis.DATA, None),
         )
@@ -194,8 +231,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
             return_layer_results=return_activation_trace,
             return_positional_embeddings=return_activation_trace,
             lengths_without_padding=lengths_without_padding,
-            forward_pass_mode=forward_pass_mode,
-            forward_pass_config=forward_pass_config,
+            forward_pass_config=forward_pass_config.transformer_forward_pass_config,
             keychain=transformer_keychain,
         )
 

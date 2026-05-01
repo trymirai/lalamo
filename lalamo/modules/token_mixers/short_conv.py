@@ -124,7 +124,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         pre_conv_gate, post_conv_gate, x = call_vmapped(
             self.in_projection,
             inputs,
-            forward_pass_config=forward_pass_config.arrays,
+            forward_pass_config=forward_pass_config.matmul_config,
             keychain=in_keychain,
         )
 
@@ -134,7 +134,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         (outputs,) = call_vmapped(
             self.out_projection,
             conv_output.outputs * post_conv_gate,
-            forward_pass_config=forward_pass_config.arrays,
+            forward_pass_config=forward_pass_config.matmul_config,
             keychain=out_keychain,
         )
         updated_conv_state = conv_output.state

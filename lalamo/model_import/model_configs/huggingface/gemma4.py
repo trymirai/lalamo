@@ -203,7 +203,7 @@ class HFGemma4TextConfig:
                 hidden_dim=layer_intermediate,
                 ple_config=ple_layer_config,
                 has_post_layer_scalar=True,
-                kv_source_layer=None if owns_kv_cache else kv_source,
+                kv_source_layer_index=None if owns_kv_cache else kv_source,
                 rope_config=layer_rope_config,
             )
             layer_configs.append(transformer_layer_config)

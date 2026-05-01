@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
 
-import equinox as eqx
 import numpy as np
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
@@ -15,7 +14,7 @@ from lalamo.model import Model
 from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
 from lalamo.model_import.model_configs import ForeignTTSConfig
-from lalamo.models import TTSGenerator
+from lalamo.models import TTSConfig, TTSModel
 from lalamo.modules.audio.common_modules import CausalConv1dConfig
 from lalamo.modules.audio.fishaudio.fishaudio_modules import Snake1dConfig
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec, NanoCodecConfig
@@ -38,7 +37,6 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     ResidualBlockConfig,
 )
 from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder, StubTextDecoderConfig
-from lalamo.modules.audio.text_to_speech import TTSConfig
 from lalamo.modules.audio.vocoders import NoopVocoderConfig
 from lalamo.weight_matrix import CompressionImplementation
 
@@ -147,18 +145,17 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
         *,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
     ) -> Model:
-        assert isinstance(model, TTSGenerator)
-        assert isinstance(model.tts_model.text_decoder, StubTextDecoder)
-        assert isinstance(model.tts_model.audio_decoder, NanoCodec)
+        assert isinstance(model, TTSModel)
+        assert isinstance(model.text_decoder, StubTextDecoder)
+        assert isinstance(model.audio_decoder, NanoCodec)
 
-        loaded_audio_decoder = load_nanocodec(model.tts_model.audio_decoder, weights_dict)
+        loaded_audio_decoder = load_nanocodec(model.audio_decoder, weights_dict)
 
-        tts_model = load_parameters(
+        return load_parameters(
             lambda m: (m.audio_decoder,),
-            model.tts_model,
+            model,
             (loaded_audio_decoder,),
         )
-        return eqx.tree_at(lambda m: (m.tts_model,), model, (tts_model,))
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:

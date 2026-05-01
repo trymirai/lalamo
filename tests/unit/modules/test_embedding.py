@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jax.sharding import Mesh, NamedSharding, Sharding
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.modules.embedding import (
@@ -23,6 +23,16 @@ from tests.common import assert_close
 
 MODEL_DIM = 6
 VOCAB_SIZE = 10
+
+ACTIVATION_DTYPES = [
+    pytest.param(jnp.bfloat16, id="bf16"),
+    pytest.param(jnp.float32, id="fp32"),
+]
+
+LOGIT_DTYPES = [
+    pytest.param(jnp.float32, id="fp32"),
+    pytest.param(jnp.bfloat16, id="bf16"),
+]
 
 
 def _weights(*, offset: int = 0) -> jax.Array:
@@ -68,7 +78,7 @@ def _embed_reference(
         token_id,
         dtype=forward_pass_config.activation_dtype,
         keychain=Keychain.init(10),
-        forward_pass_config=forward_pass_config.embedding,
+        forward_pass_config=forward_pass_config.matmul_config,
     )
     if module.config.input_scale is not None:
         result = result * jnp.array(module.config.input_scale, dtype=result.dtype)
@@ -84,14 +94,14 @@ def _readout_reference(
         logits = module.embedding.dot(
             inputs,
             keychain=Keychain.init(11),
-            forward_pass_config=forward_pass_config.readout,
+            forward_pass_config=forward_pass_config.matmul_config,
             transposed=True,
         )
     else:
         logits = module.readout_matrix.dot(
             inputs,
             keychain=Keychain.init(11),
-            forward_pass_config=forward_pass_config.readout,
+            forward_pass_config=forward_pass_config.matmul_config,
         )
     logits = logits.astype(forward_pass_config.logit_dtype)
     if module.config.logit_soft_cap is not None:
@@ -117,17 +127,23 @@ def _sharded_vectors(values: Array) -> Array:
 
 
 @pytest.mark.parametrize("tied", [True, False], ids=["tied", "untied"])
-def test_embedding_embed_matches_reference_under_jit(fake_mesh: Mesh, tied: bool) -> None:
+@pytest.mark.parametrize("activation_dtype", ACTIVATION_DTYPES)
+def test_embedding_embed_matches_reference_under_jit(
+    fake_mesh: Mesh,
+    tied: bool,
+    activation_dtype: DTypeLike,
+) -> None:
     module = _embedding(tied)
     token_id = jnp.array(2, dtype=jnp.int32)
+    forward_pass_config = EmbeddingForwardPassConfig(activation_dtype=activation_dtype)
 
-    result = eqx.filter_jit(lambda module, token_id: module.embed(token_id, keychain=Keychain.init(0)))(
-        module,
-        token_id,
-    )
+    def call(module: TiedEmbedding | UntiedEmbedding, token_id: Array) -> Array:
+        return module.embed(token_id, keychain=Keychain.init(0), forward_pass_config=forward_pass_config)
 
-    _assert_close(result=result, reference=_embed_reference(module, token_id))
-    assert result.dtype == jnp.bfloat16
+    result = eqx.filter_jit(call)(module, token_id)
+
+    _assert_close(result=result, reference=_embed_reference(module, token_id, forward_pass_config))
+    assert result.dtype == jnp.dtype(forward_pass_config.activation_dtype)
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == make_sharding((None,))
 
@@ -169,16 +185,23 @@ def test_embedding_embed_call_vmapped_over_tokens_keeps_token_and_feature_axes_u
 
 
 @pytest.mark.parametrize("tied", [True, False], ids=["tied", "untied"])
+@pytest.mark.parametrize("logit_dtype", LOGIT_DTYPES)
 def test_embedding_readout_matches_reference_under_jit_and_preserves_input_sharding(
     fake_mesh: Mesh,
     tied: bool,
+    logit_dtype: DTypeLike,
 ) -> None:
     module = _embedding(tied)
     inputs = _sharded_vector(jnp.linspace(-1.0, 1.25, MODEL_DIM, dtype=jnp.float32))
+    forward_pass_config = EmbeddingForwardPassConfig(logit_dtype=logit_dtype)
 
-    result = eqx.filter_jit(lambda module, values: module.readout(values, keychain=Keychain.init(2)))(module, inputs)
+    def call(module: TiedEmbedding | UntiedEmbedding, values: Array) -> Array:
+        return module.readout(values, keychain=Keychain.init(2), forward_pass_config=forward_pass_config)
 
-    _assert_close(result=result, reference=_readout_reference(module, inputs))
+    result = eqx.filter_jit(call)(module, inputs)
+
+    _assert_close(result=result, reference=_readout_reference(module, inputs, forward_pass_config))
+    assert result.dtype == jnp.dtype(forward_pass_config.logit_dtype)
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == inputs.sharding
 

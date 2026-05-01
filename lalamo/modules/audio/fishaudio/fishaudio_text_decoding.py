@@ -6,16 +6,17 @@ from jax import numpy as jnp
 from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, ShardingAxis
+from lalamo.module import Keychain, ShardingAxis
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_consts import REPEAT_WINDOW_SIZE, SHORT_LOGITS_SIZE
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfig
+from lalamo.modules.decoder import DecoderForwardPassConfig
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.token_mixer import State
-from lalamo.modules.transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
+from lalamo.modules.transformer import Transformer, TransformerConfig
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 from lalamo.sampling import SamplingPolicy
 
@@ -131,6 +132,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         keychain: Keychain,
         input_pos: Int[Array, "batch tokens"] | None = None,
         state: State | None = None,
+        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
     ) -> FishAudioTextDecoderResult:
         batch_size, seq_length = text_tokens.shape
         if input_pos is None:
@@ -145,7 +147,11 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         text_and_codebooks = text_and_codebooks.at[:, 0, :].set(text_tokens)
 
         embed_keychain, decode_keychain = keychain.split()
-        embeddings = self.embed(text_and_codebooks, keychain=embed_keychain)
+        embeddings = self.embed(
+            text_and_codebooks,
+            forward_pass_config=forward_pass_config,
+            keychain=embed_keychain,
+        )
 
         codes, updated_state = decode_next_token(
             model=self,
@@ -154,6 +160,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             input_pos=input_pos,
             sampling_policy=sampling_policy,
             previous_tokens=None,
+            forward_pass_config=forward_pass_config,
             keychain=decode_keychain,
         )
 
@@ -163,6 +170,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         self,
         inp: Int[Array, "batch codebooks tokens"],
         apply_codebook_embeddings: bool = False,
+        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch tokens embedding"]:
@@ -178,6 +186,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         embeddings = call_vmapped_twice(
             self.embeddings_slow.embed,
             inp[:, 0],
+            forward_pass_config=forward_pass_config.embedding_forward_pass_config,
             keychain=slow_embed_keychain,
             added_sharding_axes=(ShardingAxis.DATA, None),
         )
@@ -195,6 +204,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
                 return call_vmapped_twice(
                     self.codebook_embeddings.embed,
                     codebook_ids,
+                    forward_pass_config=forward_pass_config.embedding_forward_pass_config,
                     keychain=keychain,
                 )
 
@@ -224,6 +234,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         sampling_policy: SamplingPolicy | None = None,
         *,
         keychain: Keychain,
+        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
     ) -> Int[Array, "num_codebooks tokens"]:
         """
         Generate semantic tokens for a full utterance given text tokens in an autoregressive
@@ -262,13 +273,18 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         input_pos = jnp.arange(prompt_length)[None, :]
         embed_keychain, decode_keychain = keychain.split()
         first_decode_keychain, loop_keychain = decode_keychain.split()
-        embeddings = self.embed(prompt, keychain=embed_keychain)
+        embeddings = self.embed(
+            prompt,
+            forward_pass_config=forward_pass_config,
+            keychain=embed_keychain,
+        )
         first_codes, state_slow = decode_next_token(
             model=self,
             x=embeddings,
             state_slow=None,
             input_pos=input_pos,
             sampling_policy=sampling_policy,
+            forward_pass_config=forward_pass_config,
             keychain=first_decode_keychain,
             previous_tokens=None,
         )
@@ -292,7 +308,11 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
                 window = previous_tokens[:, i - win_size : i]
 
             loop_keychain, decode_keychain = loop_keychain.split()
-            embeddings = self.embed(cur_token_expanded, keychain=embed_keychain)
+            embeddings = self.embed(
+                cur_token_expanded,
+                forward_pass_config=forward_pass_config,
+                keychain=embed_keychain,
+            )
 
             input_pos = jnp.array([[prompt_length + i - 1]])
 
@@ -302,6 +322,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
                 state_slow=state_slow,
                 input_pos=input_pos,
                 sampling_policy=sampling_policy,
+                forward_pass_config=forward_pass_config,
                 keychain=decode_keychain,
                 previous_tokens=window,
             )
@@ -329,6 +350,7 @@ def decode_next_token(
     input_pos: Array,
     sampling_policy: SamplingPolicy,
     keychain: Keychain,
+    forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
     previous_tokens: Array | None = None,  # noqa: ARG001, reserved for future when repetition penalty is done
 ) -> tuple[Int[Array, "batch codes"], State | None]:
     batch_size = x.shape[0]
@@ -351,8 +373,7 @@ def decode_next_token(
         return_layer_results=True,
         return_positional_embeddings=False,
         lengths_without_padding=None,
-        forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config=TransformerForwardPassConfig(),
+        forward_pass_config=forward_pass_config.transformer_forward_pass_config,
         keychain=slow_transformer_keychain,
     )
     assert slow_model_result.layer_results is not None
@@ -394,8 +415,7 @@ def decode_next_token(
         return_layer_results=False,
         return_positional_embeddings=False,
         lengths_without_padding=None,
-        forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
-        forward_pass_config=TransformerForwardPassConfig(),
+        forward_pass_config=forward_pass_config.transformer_forward_pass_config,
         keychain=fast_transformer_keychain,
     )
     state_fast = fast_first_result.updated_state
@@ -403,6 +423,7 @@ def decode_next_token(
     embedded_logits = call_vmapped(
         model.embeddings_fast.embed,
         first_fast_code,
+        forward_pass_config=forward_pass_config.embedding_forward_pass_config,
         keychain=fast_embed_keychain,
         added_sharding_axis=ShardingAxis.DATA,
     )
@@ -424,8 +445,7 @@ def decode_next_token(
             return_layer_results=False,
             return_positional_embeddings=False,
             lengths_without_padding=None,
-            forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
-            forward_pass_config=TransformerForwardPassConfig(),
+            forward_pass_config=forward_pass_config.transformer_forward_pass_config,
             keychain=fast_transformer_keychain,
         )
         (fast_logits,) = call_vmapped_twice(
@@ -446,6 +466,7 @@ def decode_next_token(
         new_logits = call_vmapped(
             model.embeddings_fast.embed,
             code,
+            forward_pass_config=forward_pass_config.embedding_forward_pass_config,
             keychain=fast_embed_keychain,
             added_sharding_axis=ShardingAxis.DATA,
         )

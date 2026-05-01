@@ -237,14 +237,14 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         queries, keys, values = call_vmapped(
             self.qkv_projection,
             inputs,
-            forward_pass_config=forward_pass_config.arrays,
+            forward_pass_config=forward_pass_config.matmul_config,
             keychain=qkv_keychain,
         )
         if self.gate_projection is not None:
             (gate,) = call_vmapped(
                 self.gate_projection,
                 inputs,
-                forward_pass_config=forward_pass_config.arrays,
+                forward_pass_config=forward_pass_config.matmul_config,
                 keychain=gate_keychain,
             )
         else:
@@ -331,7 +331,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         (result,) = call_vmapped(
             self.out_projection,
             attention_output,
-            forward_pass_config=forward_pass_config.arrays,
+            forward_pass_config=forward_pass_config.matmul_config,
             keychain=out_keychain,
         )
 

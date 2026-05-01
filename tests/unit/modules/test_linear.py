@@ -4,6 +4,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
+from jax.lax import DotAlgorithmPreset
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
@@ -12,12 +13,17 @@ from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
-from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec
+from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, MatmulConfig
 from tests.common import assert_close
 
 INPUT_DIM = 4
 OUTPUT_DIMS = (2, 2)
 TOTAL_OUTPUT_DIM = sum(OUTPUT_DIMS)
+
+MATMUL_PRECISIONS = [
+    pytest.param(DotAlgorithmPreset.DEFAULT, id="default"),
+    pytest.param(DotAlgorithmPreset.F32_F32_F32, id="f32"),
+]
 
 
 def _weights(*leading_dims: int) -> jax.Array:
@@ -71,11 +77,16 @@ def _sharded_expert_inputs(values: Array) -> Array:
     return jax.device_put(values, make_sharding((ShardingAxis.EXPERT, ShardingAxis.TENSOR)))
 
 
-def test_linear_matches_reference_and_splits_outputs_with_biases(fake_mesh: Mesh) -> None:
+@pytest.mark.parametrize("precision", MATMUL_PRECISIONS)
+def test_linear_matches_reference_and_splits_outputs_with_biases(
+    fake_mesh: Mesh,
+    precision: DotAlgorithmPreset,
+) -> None:
     linear = _linear(_weights(), _biases())
     inputs = _sharded_input(jnp.arange(INPUT_DIM, dtype=jnp.float32))
+    forward_pass_config = MatmulConfig(precision=precision)
 
-    outputs = linear(inputs, keychain=Keychain.init(0))
+    outputs = linear(inputs, keychain=Keychain.init(0), forward_pass_config=forward_pass_config)
 
     reference = _split_outputs(_weights() @ inputs + _biases())
     _assert_close_outputs(outputs, reference)
@@ -108,13 +119,18 @@ def test_linear_output_dtype_matches_input_dtype_with_full_precision_parameters(
     _assert_close_outputs(outputs, reference)
 
 
-def test_linear_under_jit_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+@pytest.mark.parametrize("precision", MATMUL_PRECISIONS)
+def test_linear_under_jit_matches_reference_and_drops_tensor_sharding(
+    fake_mesh: Mesh,
+    precision: DotAlgorithmPreset,
+) -> None:
     linear = _linear(_weights(), _biases())
     inputs = _sharded_input(jnp.arange(INPUT_DIM, dtype=jnp.float32))
+    forward_pass_config = MatmulConfig(precision=precision)
 
     @eqx.filter_jit
     def call(module: Linear, values: Array) -> tuple[Array, ...]:
-        return module(values, keychain=Keychain.init(2))
+        return module(values, keychain=Keychain.init(2), forward_pass_config=forward_pass_config)
 
     outputs = call(linear, inputs)
 

@@ -48,8 +48,8 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
         fish_audio_local_model_path,
         precision=torch.float32,
     )
-    assert isinstance(pytorch_tts_generator.tts_model.text_decoder, FishAudioTextDecoder_Foreign)
-    fish_model = pytorch_tts_generator.tts_model.text_decoder.fish_model
+    assert isinstance(pytorch_tts_generator.text_decoder, FishAudioTextDecoder_Foreign)
+    fish_model = pytorch_tts_generator.text_decoder.fish_model
 
     # Create Lalamo text decoder config from PyTorch model config
     assert isinstance(fish_model.config, DualARModelArgs)
@@ -70,7 +70,7 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
     input_pos = jnp.arange(n_tokens)[None, :]
 
     # Run PyTorch model
-    output_pytorch = pytorch_tts_generator.tts_model.text_decoder(
+    output_pytorch = pytorch_tts_generator.text_decoder(
         tokenized_text,
         sampling_params=sampling_params_from_policy(sampling_policy),
     )

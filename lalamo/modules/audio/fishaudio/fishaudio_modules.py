@@ -4,7 +4,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, ShardingAxis
 from lalamo.modules.activations import Activation
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
@@ -511,7 +511,6 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
             return_layer_results=False,
             return_positional_embeddings=False,
             lengths_without_padding=None,
-            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
             forward_pass_config=TransformerForwardPassConfig(),
             keychain=post_keychain,
         )
