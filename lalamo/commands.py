@@ -1,4 +1,3 @@
-import json
 import shutil
 import tempfile
 from collections.abc import Callable
@@ -22,7 +21,6 @@ from lalamo.model_import.common import (
     import_model,
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
-from lalamo.safetensors import safe_write
 
 
 @dataclass
@@ -204,20 +202,6 @@ def convert(
         progress_callback=progress_callback,
     )
     callbacks.saving_model()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    exported_model = imported_model.model.export()
-    exported_metadata = None
-    if exported_model.metadata:
-        exported_metadata = {key: json.dumps(value) for key, value in exported_model.metadata.items()}
-
-    with (output_dir / "model.safetensors").open("wb") as file:
-        safe_write(
-            file,
-            exported_model.arrays,
-            metadata=exported_metadata,
-        )
-    with (output_dir / "config.json").open("w") as file:
-        json.dump(imported_model.model.config.to_json(), file, indent=4)
-    imported_model.model.token_codec.tokenizer.save(str(output_dir / "tokenizer.json"))
+    imported_model.model.export(output_dir)
 
     callbacks.finished_saving_model()

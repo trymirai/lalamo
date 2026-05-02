@@ -1,5 +1,6 @@
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -19,7 +20,7 @@ from lalamo.module import LalamoConfig, LalamoModule
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.parameter_path import ParameterPath
-from lalamo.weight_matrix import CompressionImplementation, FullPrecisionSpec, Layout, ShapeDtypeMatrix, WeightMatrix
+from lalamo.weight_matrix import CompressionImplementation, FullPrecisionSpec, Layout, WeightMatrix
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
@@ -180,7 +181,7 @@ def test_foreign_config_load_initializes_model_with_requested_dtype_and_implemen
     assert loaded.module.matrix.dtype == jnp.bfloat16
 
 
-def test_model_load_exported_uses_saved_weight_matrix_spec_with_shape_dtype_template() -> None:
+def test_model_export_load_uses_saved_weight_matrix_spec_with_shape_dtype_template(tmp_path: Path) -> None:
     tokenizer = Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]"))
     config = TinyModelConfig(
         token_codec_config=ChatCodecConfig(
@@ -202,10 +203,12 @@ def test_model_load_exported_uses_saved_weight_matrix_spec_with_shape_dtype_temp
             matrix=AWQSpec(bits=8, group_size=2).compress(jnp.arange(16, dtype=jnp.float32).reshape(4, 4)),
         ),
     )
-    template = config.init(tokenizer, EmptyInitializer(dtype=jnp.float32))
 
-    restored = template.load_exported(original.export())
+    original.export(tmp_path)
+    restored = TinyModel.load_exported(tmp_path)
+    restored_float32 = TinyModel.load_exported(tmp_path, dtype=jnp.float32)
 
-    assert isinstance(template.module.matrix, ShapeDtypeMatrix)
     assert isinstance(restored.module.matrix, AWQMatrixForInference)
     assert restored.module.matrix.spec == original.module.matrix.spec
+    assert restored.module.matrix.dtype == jnp.bfloat16
+    assert restored_float32.module.matrix.dtype == jnp.float32
