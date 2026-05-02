@@ -41,8 +41,9 @@ from lalamo.modules.token_mixers.attention import Attention
 from lalamo.modules.transformer import Transformer
 from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.surgery import load_as_at
 
-from .common import load_full_precision, load_parameters
+from .common import load_full_precision
 from .huggingface import load_rmsnorm, load_tied_embedding
 from .nanocodec_loaders import (
     load_causal_conv1d,
@@ -213,7 +214,7 @@ def load_transformer_block(
             num_groups=attn_module.config.num_groups,
             head_dim=attn_module.config.head_dim,
         )
-        new_weights = load_full_precision(qkv_projection.weights, permuted_qkv_weights)
+        new_weights = qkv_projection.weights.spec.compress(permuted_qkv_weights)
         qkv_projection = eqx.tree_at(lambda m: (m.weights,), qkv_projection, (new_weights,))
         assert isinstance(qkv_projection, Linear)
 
@@ -231,10 +232,11 @@ def load_transformer_block(
                 1,
                 query_norm.scales.shape[0],
             )
-            query_norm = load_parameters(
+            query_norm = load_as_at(
                 lambda m: (m.scales,),
                 query_norm,
                 (permuted_scales,),
+                allow_dtype_cast=True,
             )
         else:
             query_norm = None
@@ -246,18 +248,20 @@ def load_transformer_block(
                 1,
                 key_norm.scales.shape[0],
             )
-            key_norm = load_parameters(
+            key_norm = load_as_at(
                 lambda m: (m.scales,),
                 key_norm,
                 (permuted_scales,),
+                allow_dtype_cast=True,
             )
         else:
             key_norm = None
 
-        return load_parameters(
+        return load_as_at(
             lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm),
             attn_module,
             (qkv_projection, out_projection, query_norm, key_norm),
+            allow_dtype_cast=True,
         )
 
     def load_mlp(
@@ -284,10 +288,11 @@ def load_transformer_block(
             path / down_proj_key,
             scaling_to_fuse=scaling_to_fuze,
         )
-        return load_parameters(
+        return load_as_at(
             _dense_mlp_projections,
             dense_module,
             (up_projection, down_projection),
+            allow_dtype_cast=True,
         )
 
     def load_transformer_layer_local(
@@ -338,7 +343,7 @@ def load_transformer_block(
             scaling_to_fuze=layer_scale_weights,
         )
 
-        return load_parameters(
+        return load_as_at(
             lambda m: (
                 m.pre_mixer_norm,
                 m.mixer,
@@ -356,6 +361,7 @@ def load_transformer_block(
                 mlp,
                 post_mlp_norm,
             ),
+            allow_dtype_cast=True,
         )
 
     base_path = ParameterPath() if path is None else path
@@ -369,7 +375,7 @@ def load_transformer_block(
     )
     output_norm = load_rmsnorm(module.output_norm, weights_dict, base_path / norm_name)
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (
             m.layers,
             m.output_norm,
@@ -379,6 +385,7 @@ def load_transformer_block(
             transformer_layers,
             output_norm,
         ),
+        allow_dtype_cast=True,
     )
 
 
@@ -393,10 +400,11 @@ def load_fish_audio_text_decoding_modules(
     base_path = ParameterPath()
     output_linear_name = "output" if not fast else "fast_output"
     output_linear = load_linear_and_fuse_scaling(output, weights_dict, base_path / output_linear_name)
-    output = load_parameters(
+    output = load_as_at(
         lambda m: (m,),
         output,
         (output_linear,),
+        allow_dtype_cast=True,
     )
 
     return (transformer, output)
@@ -439,10 +447,11 @@ def load_vector_quantize(
     new_weights = load_full_precision(module.out_proj.weights, out_proj_weight)
     out_proj = eqx.tree_at(lambda m: (m.weights, m.biases), module.out_proj, (new_weights, out_proj_bias))
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.codebook, m.out_proj),
         module,
         (codebook, out_proj),
+        allow_dtype_cast=True,
     )
 
 
@@ -472,10 +481,11 @@ def load_residual_vector_quantize(
         for i, quantizer in enumerate(module.quantizers)
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.quantizers,),
         module,
         (quantizers,),
+        allow_dtype_cast=True,
     )
 
 
@@ -510,19 +520,21 @@ def load_convnext_block(
     # PyTorch conv weights are (out_channels, in_channels/groups, kernel_size)
     dwconv_weight = weights_dict[path / "dwconv" / "conv" / "weight"]
     dwconv_bias = weights_dict[path / "dwconv" / "conv" / "bias"]
-    depthwise_conv = load_parameters(
+    depthwise_conv = load_as_at(
         lambda m: (m.weights, m.biases),
         module.depthwise_conv,
         (dwconv_weight, dwconv_bias),
+        allow_dtype_cast=True,
     )
 
     # Load norm (LayerNorm with weight and bias)
     norm_weight = weights_dict[path / "norm" / "weight"]
     norm_bias = weights_dict[path / "norm" / "bias"]
-    norm = load_parameters(
+    norm = load_as_at(
         lambda m: (m.scales, m.biases),
         module.norm,
         (norm_weight, norm_bias),
+        allow_dtype_cast=True,
     )
 
     # Load pointwise conv 1 (Linear layer)
@@ -551,10 +563,11 @@ def load_convnext_block(
         (base2, pwconv2_bias),
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.depthwise_conv, m.norm, m.pointwise_conv_step1, m.pointwise_conv_step2),
         module,
         (depthwise_conv, norm, pointwise_conv_step1, pointwise_conv_step2),
+        allow_dtype_cast=True,
     )
 
 
@@ -592,10 +605,11 @@ def load_upsampling_block(
     # Load ConvNeXt block (at index 1)
     convnext = load_convnext_block(module.convnext, weights_dict, path / "1")
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.trans_conv, m.convnext),
         module,
         (trans_conv, convnext),
+        allow_dtype_cast=True,
     )
 
 
@@ -621,10 +635,11 @@ def load_upsampler(
     """
     blocks = tuple(load_upsampling_block(block, weights_dict, path / i) for i, block in enumerate(module.blocks))
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.blocks,),
         module,
         (blocks,),
+        allow_dtype_cast=True,
     )
 
 
@@ -714,10 +729,11 @@ def load_downsample_rvq(
 
     post_module = load_transformer_block(module.post_module, weights_dict, fast=False, path=base_path / "post_module")
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.semantic_quantizer, m.quantizer, m.upsampler, m.post_module),
         module,
         (semantic_quantizer, quantizer, upsampler, post_module),
+        allow_dtype_cast=True,
     )
 
 
@@ -747,10 +763,11 @@ def load_residual_unit(
     snake2 = load_snake1d(module.snake2, weights_dict, path / "block" / "2")
     conv2 = load_causal_conv1d(module.conv2, weights_dict, path / "block" / "3" / "conv")
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.snake1, m.conv1, m.snake2, m.conv2),
         module,
         (snake1, conv1, snake2, conv2),
+        allow_dtype_cast=True,
     )
 
 
@@ -782,10 +799,11 @@ def load_audio_decoder_block(
     res_unit2 = load_residual_unit(module.res_unit2, weights_dict, path / "block" / "3")
     res_unit3 = load_residual_unit(module.res_unit3, weights_dict, path / "block" / "4")
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.snake, m.trans_conv, m.res_unit1, m.res_unit2, m.res_unit3),
         module,
         (snake, trans_conv, res_unit1, res_unit2, res_unit3),
+        allow_dtype_cast=True,
     )
 
 
@@ -847,10 +865,11 @@ def load_audio_decoder(
     final_conv_idx = num_blocks + 2
     final_conv = load_causal_conv1d(module.final_conv, weights_dict, path / "model" / final_conv_idx / "conv")
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.first_conv, m.decoder_blocks, m.final_snake, m.final_conv),
         module,
         (first_conv, decoder_blocks, final_snake, final_conv),
+        allow_dtype_cast=True,
     )
 
 
@@ -910,7 +929,7 @@ def load_fishaudio_text_decoder(
     else:
         fast_model_projection = None
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (
             m.embeddings_slow,
             m.transformer_slow,
@@ -932,6 +951,7 @@ def load_fishaudio_text_decoder(
             codebook_embeddings,
             fast_model_projection,
         ),
+        allow_dtype_cast=True,
     )
 
 
@@ -943,7 +963,12 @@ def load_fishaudio_audio_decoder(
     loaded_quantizer = load_downsample_rvq(module.quantizer, weights_dict, base_path / "quantizer")
     loaded_decoder = load_audio_decoder(module.decoder, weights_dict, base_path / "decoder")
 
-    return load_parameters(lambda m: (m.quantizer, m.decoder), module, (loaded_quantizer, loaded_decoder))
+    return load_as_at(
+        lambda m: (m.quantizer, m.decoder),
+        module,
+        (loaded_quantizer, loaded_decoder),
+        allow_dtype_cast=True,
+    )
 
 
 def load_tokenizer_from_fishaudio_tiktoken(

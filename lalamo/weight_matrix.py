@@ -3,19 +3,18 @@ from abc import abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar, Generic, Literal, Self, TypeVar, overload
+from typing import ClassVar, Generic, Literal, Self, TypeVar, cast, overload
 
 import equinox as eqx
 import jax.numpy as jnp
 from cattrs import GenConverter
-from jax import device_put
+from jax import ShapeDtypeStruct, device_put
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable, ExportResults
-from lalamo.initializer import Initializer
 from lalamo.module import Keychain, ParameterNorm, ShardingAxis, field
-from lalamo.utils.dummy_array import supports_dummy_arrays
+from lalamo.utils.dummy_array import dummy_array, supports_dummy_arrays
 from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
@@ -313,21 +312,6 @@ class FullPrecisionSpec(WeightMatrixSpec):
             weights=self.layout.from_output_input(weights),
         )
 
-    def init(
-        self,
-        initializer: "Initializer",
-        leading_dims: tuple[int, ...],
-        output_dim: int,
-        input_dim: int,
-    ) -> "FullPrecisionMatrix":
-        std = 1 / math.sqrt(input_dim)
-        shape = self.layout.weight_shape(leading_dims, output_dim, input_dim)
-        partition = self.layout.weight_partition(len(leading_dims))
-        return FullPrecisionMatrix(
-            spec=self,
-            weights=initializer.normal(std, shape=shape, partition=partition),
-        )
-
 
 class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
     weights: Float[Array, "... m n"] = field(norm=ParameterNorm.SPECTRAL)
@@ -403,3 +387,98 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
             result = layout.matmul(weights, vector)
 
         return reshard_as(result, vector)
+
+
+@dataclass(frozen=True)
+class ShapeDtypeSpec(WeightMatrixSpec):
+    layout: Layout = Layout.OUTPUT_INPUT
+
+    def compress(
+        self,
+        weights: Float[Array, "... out_channels in_channels"],
+        preconditioner: Preconditioner | None = None,  # noqa: ARG002
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
+    ) -> "ShapeDtypeMatrix":
+        if not isinstance(weights, ShapeDtypeStruct):
+            raise TypeError("Can only compress ShapeDtypeStructs to ShapeDtypeMatrices")
+        *mixture_dims, output_dim, input_dim = weights.shape
+        return ShapeDtypeMatrix(
+            spec=self,
+            mixture_dims=tuple(mixture_dims),
+            input_dim=input_dim,
+            output_dim=output_dim,
+            dtype_=weights.dtype,
+        )
+
+
+class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
+    mixture_dims: tuple[int, ...]
+    input_dim: int
+    output_dim: int
+    dtype_: DTypeLike
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.spec.layout.weight_shape(self.mixture_dims, self.output_dim, self.input_dim)
+
+    @property
+    def dtype(self) -> DTypeLike:
+        return self.dtype_
+
+    def astype(self, dtype: DTypeLike) -> "ShapeDtypeMatrix":
+        return ShapeDtypeMatrix(
+            spec=self.spec,
+            mixture_dims=self.mixture_dims,
+            input_dim=self.input_dim,
+            output_dim=self.output_dim,
+            dtype_=dtype,
+        )
+
+    def decompress(self) -> Float[Array, "... out_channels in_channels"]:
+        return dummy_array(
+            shape=(*self.mixture_dims, self.output_dim, self.input_dim),
+            dtype=self.dtype_,
+        )
+
+    def load_exported(
+        self,
+        expored_data: ExportResults,
+        allow_dtype_cast: bool = False,
+        *,
+        prefix: ParameterPath | None = None,
+    ) -> Self:
+        if prefix is None:
+            prefix = ParameterPath()
+
+        # You call this an ugly hack, I call this an elegant solution to a difficult problem (@norpadon).
+        saved_spec = expored_data.metadata[prefix / "spec"]
+        loaded_spec = WeightMatrixSpec.from_json(saved_spec)
+        dummy_layer = loaded_spec.compress(self.decompress())
+        result = dummy_layer.load_exported(expored_data, allow_dtype_cast=allow_dtype_cast, prefix=prefix)
+        return cast("Self", result)
+
+    def to_full_precision(self) -> "FullPrecisionMatrix":
+        raise TypeError("Can't cast dummy ShapeDtypeMatrix to FullPrecisionMatrix")
+
+    def lookup_embedding(
+        self,
+        index: int | Int[Array, ""],  # noqa: ARG002
+        *,
+        dtype: DTypeLike | None = None,  # noqa: ARG002
+        keychain: Keychain,  # noqa: ARG002
+        forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
+    ) -> Float[Array, "... out_channels"]:
+        raise TypeError("Cannot perform embedding lookup on ShapeDtypeMatrix")
+
+    def dot(
+        self,
+        vector: Float[Array, " channels"],  # noqa: ARG002
+        *,
+        keychain: Keychain,  # noqa: ARG002
+        forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
+        transposed: bool = False,  # noqa: ARG002
+    ) -> Float[Array, "... channels"]:
+        raise TypeError("Cannot perform matmul on ShapeDtypeMatrix")
+
+    def export(self) -> ExportResults:
+        raise TypeError("Cannot export ShapeDtypeMatrix")

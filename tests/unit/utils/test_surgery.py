@@ -13,7 +13,16 @@ from lalamo.module import Keychain, ShardingAxis
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
 from lalamo.utils.surgery import load_as, map_nodes_of_type, map_nodes_of_type_with_path, select_nodes_of_type
-from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, MatmulConfig, WeightMatrix, WeightMatrixSpec
+from lalamo.weight_matrix import (
+    FullPrecisionMatrix,
+    FullPrecisionSpec,
+    Layout,
+    MatmulConfig,
+    ShapeDtypeMatrix,
+    ShapeDtypeSpec,
+    WeightMatrix,
+    WeightMatrixSpec,
+)
 
 
 @dataclass(frozen=True)
@@ -210,6 +219,16 @@ def test_load_as_treats_weight_matrices_as_leaf_nodes() -> None:
     result = load_as(template, value)
 
     assert result["matrix"] is value["matrix"]
+
+
+def test_load_as_accepts_shape_dtype_template_for_input_output_storage_shape() -> None:
+    template = ShapeDtypeSpec(layout=Layout.INPUT_OUTPUT).compress(dummy_array((4, 5), jnp.float32))
+    value = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(jnp.ones((4, 5), dtype=jnp.float32))
+
+    result = load_as(template, value)
+
+    assert isinstance(template, ShapeDtypeMatrix)
+    assert result is value
 
 
 def test_load_as_rejects_weight_matrix_shape_mismatch() -> None:

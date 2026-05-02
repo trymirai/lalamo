@@ -5,12 +5,21 @@ import jax.numpy as jnp
 import pytest
 from jax.sharding import Mesh, NamedSharding, Sharding
 
-from lalamo.initializer import EmptyInitializer
+from lalamo.compressed.awq import AWQSpec
+from lalamo.compressed.mlx import MLXSpec
+from lalamo.initializer import EmptyInitializer, RandomInitializer
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
-from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, Layout, Preconditioner, WeightMatrixSpec
+from lalamo.weight_matrix import (
+    FullPrecisionMatrix,
+    FullPrecisionSpec,
+    Layout,
+    Preconditioner,
+    ShapeDtypeMatrix,
+    WeightMatrixSpec,
+)
 from tests.common import assert_close
 
 
@@ -374,16 +383,66 @@ def test_full_precision_lookup_embedding_under_jit_matches_reference_and_preserv
     assert result.sharding == _embedding_sharding()
 
 
-@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
-def test_full_precision_init_uses_layout_shape_and_partition(fake_mesh: Mesh, layout: Layout) -> None:
-    matrix = FullPrecisionSpec(layout=layout).init(
-        EmptyInitializer(dtype=jnp.float32),
-        leading_dims=(2,),
+def test_empty_initializer_weight_matrix_returns_shape_dtype_matrix() -> None:
+    matrix = EmptyInitializer(dtype=jnp.float32).weight_matrix(
         output_dim=4,
-        input_dim=4,
+        input_dim=3,
+        mixture_size=2,
     )
-    expected_sharding = make_sharding((ShardingAxis.EXPERT, None, None))
 
+    assert isinstance(matrix, ShapeDtypeMatrix)
+    assert matrix.shape == (2, 4, 3)
+    assert matrix.dtype == jnp.float32
+    assert matrix.decompress().shape == (2, 4, 3)
+
+
+def test_random_initializer_embedding_matrix_uses_model_vocab_logical_shape(fake_mesh: Mesh) -> None:
+    matrix = RandomInitializer(dtype=jnp.float32, key=jax.random.key(0)).embedding_matrix(
+        vocabulary_size=5,
+        model_dim=4,
+    )
+
+    assert isinstance(matrix, FullPrecisionMatrix)
     _assert_named_sharding(matrix.weights.sharding, fake_mesh)
-    assert matrix.weights.shape == layout.weight_shape((2,), output_dim=4, input_dim=4)
-    assert matrix.weights.sharding == expected_sharding
+    assert matrix.shape == (5, 4)
+    assert matrix.decompress().shape == (4, 5)
+
+
+def test_shape_dtype_embedding_load_exported_uses_logical_model_vocab_shape(fake_mesh: Mesh) -> None:
+    weights = jnp.arange(20, dtype=jnp.float32).reshape(4, 5)
+    original = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(weights)
+    template = EmptyInitializer(dtype=jnp.float32).embedding_matrix(vocabulary_size=5, model_dim=4)
+
+    restored = template.load_exported(original.export())
+
+    assert isinstance(template, ShapeDtypeMatrix)
+    assert template.shape == (5, 4)
+    assert template.decompress().shape == (4, 5)
+    assert isinstance(restored, FullPrecisionMatrix)
+    assert restored.shape == (5, 4)
+    _assert_named_sharding(restored.weights.sharding, fake_mesh)
+    _assert_close(
+        result=restored.lookup_embedding(2, keychain=Keychain.init(11)),
+        reference=original.lookup_embedding(2, keychain=Keychain.init(12)),
+    )
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        FullPrecisionSpec(),
+        AWQSpec(bits=8, group_size=2),
+        MLXSpec(bits=8, group_size=2),
+    ],
+)
+def test_shape_dtype_matrix_load_exported_uses_saved_weight_matrix_spec(spec: WeightMatrixSpec) -> None:
+    original = spec.compress(_logical_weights())
+    template = EmptyInitializer(dtype=jnp.float32).weight_matrix(output_dim=4, input_dim=4)
+
+    restored = template.load_exported(original.export())
+
+    assert not isinstance(restored, ShapeDtypeMatrix)
+    assert restored.spec == spec
+    assert restored.shape == original.shape
+    assert restored.dtype == original.dtype
+    _assert_close(result=restored.decompress(), reference=original.decompress())

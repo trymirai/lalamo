@@ -7,6 +7,7 @@ import pytest
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array, DTypeLike
 
+from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.modules.embedding import (
     EmbeddingForwardPassConfig,
@@ -16,9 +17,8 @@ from lalamo.modules.embedding import (
     UntiedEmbeddingConfig,
 )
 from lalamo.modules.utils import apply_soft_capping, call_vmapped
-from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
-from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, Layout
+from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, Layout, ShapeDtypeMatrix
 from tests.common import assert_close
 
 MODEL_DIM = 6
@@ -246,20 +246,16 @@ def test_embedding_readout_vmapped_over_inputs_preserves_input_sharding(fake_mes
 
 def test_tied_embedding_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _tied_embedding()
-    template = TiedEmbedding(
-        config=original.config,
-        embedding=FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(
-            dummy_array(jnp.matrix_transpose(_weights()).shape, jnp.float32),
-        ),
-    )
+    template = original.config.init(EmptyInitializer(dtype=jnp.float32), model_dim=MODEL_DIM, vocab_size=VOCAB_SIZE)
     inputs = _sharded_vector(jnp.linspace(-1.0, 1.25, MODEL_DIM, dtype=jnp.float32))
 
     restored = template.load_exported(original.export())
     result = restored.readout(inputs, keychain=Keychain.init(4))
 
     assert isinstance(restored.embedding, FullPrecisionMatrix)
-    assert isinstance(template.embedding, FullPrecisionMatrix)
-    assert restored.embedding.weights.sharding == template.embedding.weights.sharding
+    assert isinstance(template.embedding, ShapeDtypeMatrix)
+    assert template.embedding.shape == (VOCAB_SIZE, MODEL_DIM)
+    assert template.embedding.decompress().shape == (MODEL_DIM, VOCAB_SIZE)
     _assert_named_sharding(restored.embedding.weights.sharding, fake_mesh)
     _assert_close(result=result, reference=original.readout(inputs, keychain=Keychain.init(5)))
     _assert_named_sharding(result.sharding, fake_mesh)
@@ -268,15 +264,7 @@ def test_tied_embedding_export_load_roundtrips_and_preserves_template_sharding(f
 
 def test_untied_embedding_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _untied_embedding()
-    template = UntiedEmbedding(
-        config=original.config,
-        input_embedding=FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(
-            dummy_array(jnp.matrix_transpose(_weights()).shape, jnp.float32),
-        ),
-        output_embedding=FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(
-            dummy_array(_weights(offset=100).shape, jnp.float32),
-        ),
-    )
+    template = original.config.init(EmptyInitializer(dtype=jnp.float32), model_dim=MODEL_DIM, vocab_size=VOCAB_SIZE)
     inputs = _sharded_vector(jnp.linspace(-1.0, 1.25, MODEL_DIM, dtype=jnp.float32))
 
     restored = template.load_exported(original.export())
@@ -284,10 +272,11 @@ def test_untied_embedding_export_load_roundtrips_and_preserves_template_sharding
 
     assert isinstance(restored.input_embedding, FullPrecisionMatrix)
     assert isinstance(restored.output_embedding, FullPrecisionMatrix)
-    assert isinstance(template.input_embedding, FullPrecisionMatrix)
-    assert isinstance(template.output_embedding, FullPrecisionMatrix)
-    assert restored.input_embedding.weights.sharding == template.input_embedding.weights.sharding
-    assert restored.output_embedding.weights.sharding == template.output_embedding.weights.sharding
+    assert isinstance(template.input_embedding, ShapeDtypeMatrix)
+    assert isinstance(template.output_embedding, ShapeDtypeMatrix)
+    assert template.input_embedding.shape == (VOCAB_SIZE, MODEL_DIM)
+    assert template.input_embedding.decompress().shape == (MODEL_DIM, VOCAB_SIZE)
+    assert template.output_embedding.shape == (VOCAB_SIZE, MODEL_DIM)
     _assert_named_sharding(restored.input_embedding.weights.sharding, fake_mesh)
     _assert_named_sharding(restored.output_embedding.weights.sharding, fake_mesh)
     _assert_close(result=result, reference=original.readout(inputs, keychain=Keychain.init(7)))

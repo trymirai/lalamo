@@ -8,12 +8,13 @@ from jax.lax import DotAlgorithmPreset
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
+from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
-from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, MatmulConfig
+from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, MatmulConfig, ShapeDtypeMatrix
 from tests.common import assert_close
 
 INPUT_DIM = 4
@@ -171,7 +172,7 @@ def test_linear_export_load_roundtrips_and_preserves_template_sharding(fake_mesh
     assert bias_template_sharding is not None
     template = Linear(
         config=LinearConfig(),
-        weights=FullPrecisionSpec().compress(dummy_array(_weights().shape, jnp.float32)),
+        weights=EmptyInitializer(dtype=jnp.float32).weight_matrix(TOTAL_OUTPUT_DIM, INPUT_DIM),
         biases=dummy_array((TOTAL_OUTPUT_DIM,), jnp.float32, bias_template_sharding),
         output_dims=OUTPUT_DIMS,
     )
@@ -180,9 +181,8 @@ def test_linear_export_load_roundtrips_and_preserves_template_sharding(fake_mesh
     restored = template.load_exported(original.export())
     outputs = restored(inputs, keychain=Keychain.init(6))
 
-    assert isinstance(template.weights, FullPrecisionMatrix)
+    assert isinstance(template.weights, ShapeDtypeMatrix)
     assert isinstance(restored.weights, FullPrecisionMatrix)
-    assert restored.weights.weights.sharding == template.weights.weights.sharding
     assert restored.biases is not None
     assert template.biases is not None
     assert isinstance(restored.biases.sharding, NamedSharding)

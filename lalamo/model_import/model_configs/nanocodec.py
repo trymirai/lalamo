@@ -11,7 +11,6 @@ from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
 from lalamo.model import Model
-from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
 from lalamo.model_import.model_configs import ForeignTTSConfig
 from lalamo.models import TTSConfig, TTSModel
@@ -38,6 +37,7 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
 )
 from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder, StubTextDecoderConfig
 from lalamo.modules.audio.vocoders import NoopVocoderConfig
+from lalamo.utils.surgery import load_as_at
 from lalamo.weight_matrix import CompressionImplementation
 
 __all__ = ["NanoCodecForeignConfig"]
@@ -156,10 +156,11 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
 
         loaded_audio_decoder = load_nanocodec(tts_model.audio_decoder, weights_dict)
 
-        return load_parameters(
+        return load_as_at(
             _tts_audio_decoder,
             tts_model,
             (loaded_audio_decoder,),
+            allow_dtype_cast=True,
         )
 
     @classmethod

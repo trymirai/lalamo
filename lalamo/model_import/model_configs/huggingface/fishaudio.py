@@ -8,7 +8,6 @@ from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
 from lalamo.model import Model
-from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.fishaudio_loaders import (
     load_fishaudio_audio_decoder,
     load_fishaudio_text_decoder,
@@ -49,6 +48,7 @@ from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer import TransformerConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
 from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.surgery import load_as_at
 from lalamo.weight_matrix import CompressionImplementation
 
 __all__ = ["FishAudioConfig"]
@@ -430,10 +430,11 @@ class FishAudioConfig(ForeignTTSConfig):
             tts_model.audio_decoder, weights_dict, ParameterPath()
         )
 
-        return load_parameters(
+        return load_as_at(
             _tts_decoders,
             tts_model,
             (loaded_text_decoder, loaded_audio_decoder),
+            allow_dtype_cast=True,
         )
 
     @classmethod

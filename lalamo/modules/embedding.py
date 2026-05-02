@@ -12,9 +12,7 @@ from lalamo.module import Keychain, LalamoConfig, LalamoModule
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.weight_matrix import (
     EmbeddingMatrix,
-    FullPrecisionSpec,
     GradientEstimator,
-    Layout,
     MatmulConfig,
     WeightMatrix,
 )
@@ -148,7 +146,7 @@ class TiedEmbeddingConfig(EmbeddingConfig):
         model_dim: int,
         vocab_size: int,
     ) -> "TiedEmbedding":
-        embedding = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).init(initializer, (), model_dim, vocab_size)
+        embedding = initializer.embedding_matrix(vocab_size, model_dim)
         return TiedEmbedding(config=self, embedding=embedding)
 
 
@@ -196,8 +194,8 @@ class UntiedEmbeddingConfig(EmbeddingConfig):
         model_dim: int,
         vocab_size: int,
     ) -> "UntiedEmbedding":
-        input_embedding = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).init(initializer, (), model_dim, vocab_size)
-        output_embedding = FullPrecisionSpec().init(initializer, (), vocab_size, model_dim)
+        input_embedding = initializer.embedding_matrix(vocab_size, model_dim)
+        output_embedding = initializer.weight_matrix(vocab_size, model_dim)
         return UntiedEmbedding(
             config=self,
             input_embedding=input_embedding,

@@ -17,8 +17,9 @@ from lalamo.model_import.model_configs.foreign_config import ForeignConfig
 from lalamo.models.chat_codec import ChatCodec, ChatCodecConfig
 from lalamo.module import LalamoConfig, LalamoModule
 from lalamo.modules.linear import Linear, LinearConfig
+from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.parameter_path import ParameterPath
-from lalamo.weight_matrix import CompressionImplementation, FullPrecisionSpec, Layout, WeightMatrix
+from lalamo.weight_matrix import CompressionImplementation, FullPrecisionSpec, Layout, ShapeDtypeMatrix, WeightMatrix
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
@@ -41,12 +42,7 @@ def _linear_template(dtype: DTypeLike, layout: Layout = Layout.OUTPUT_INPUT) -> 
     if layout == Layout.OUTPUT_INPUT:
         return result
 
-    weights = FullPrecisionSpec(layout=layout).init(
-        initializer=EmptyInitializer(dtype=dtype),
-        leading_dims=(),
-        output_dim=4,
-        input_dim=4,
-    )
+    weights = FullPrecisionSpec(layout=layout).compress(dummy_array((4, 4), dtype))
     return eqx.tree_at(lambda module: module.weights, result, weights)
 
 
@@ -104,12 +100,7 @@ class TinyConfig(LalamoConfig):
     def init(self, initializer: Initializer) -> "TinyModule":
         return TinyModule(
             config=self,
-            matrix=FullPrecisionSpec().init(
-                initializer=initializer,
-                leading_dims=(),
-                output_dim=4,
-                input_dim=4,
-            ),
+            matrix=initializer.weight_matrix(output_dim=4, input_dim=4),
         )
 
 
@@ -187,3 +178,34 @@ def test_foreign_config_load_initializes_model_with_requested_dtype_and_implemen
     assert loaded.token_codec.tokenizer is tokenizer
     assert isinstance(loaded.module.matrix, AWQMatrixForTraining)
     assert loaded.module.matrix.dtype == jnp.bfloat16
+
+
+def test_model_load_exported_uses_saved_weight_matrix_spec_with_shape_dtype_template() -> None:
+    tokenizer = Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]"))
+    config = TinyModelConfig(
+        token_codec_config=ChatCodecConfig(
+            prompt_template="",
+            output_parser_regex=None,
+            system_role_name="system",
+            user_role_name="user",
+            assistant_role_name="assistant",
+            eos_token=None,
+            bos_token=None,
+        ),
+        module_config=TinyConfig(),
+    )
+    original = TinyModel(
+        config=config,
+        token_codec=config.token_codec_config.init(tokenizer),
+        module=TinyModule(
+            config=TinyConfig(),
+            matrix=AWQSpec(bits=8, group_size=2).compress(jnp.arange(16, dtype=jnp.float32).reshape(4, 4)),
+        ),
+    )
+    template = config.init(tokenizer, EmptyInitializer(dtype=jnp.float32))
+
+    restored = template.load_exported(original.export())
+
+    assert isinstance(template.module.matrix, ShapeDtypeMatrix)
+    assert isinstance(restored.module.matrix, AWQMatrixForInference)
+    assert restored.module.matrix.spec == original.module.matrix.spec

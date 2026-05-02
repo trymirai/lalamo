@@ -27,8 +27,8 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     ResidualBlock,
 )
 from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.surgery import load_as_at
 
-from .common import load_parameters
 from .torch_utils import fuse_parametrized_weight_norm_conv1d
 
 __all__ = [
@@ -117,10 +117,11 @@ def load_snake1d(
     # PyTorch shape: (1, channels, 1) -> (channels,)
     alpha = rearrange(alpha, "1 channels 1 -> channels")
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.alpha,),
         module,
         (alpha,),
+        allow_dtype_cast=True,
     )
 
 
@@ -148,10 +149,11 @@ def load_half_snake(
     """
     snake = load_snake1d(module.snake, weights_dict, path / "snake_act")
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.snake,),
         module,
         (snake,),
+        allow_dtype_cast=True,
     )
 
 
@@ -197,10 +199,11 @@ def load_causal_conv1d(
         weight = weights_dict[path / "weight"]
         bias = weights_dict.get(path / "bias") if module.biases is not None else None
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.weights, m.biases),
         module,
         (weight, bias),
+        allow_dtype_cast=True,
     )
 
 
@@ -250,10 +253,11 @@ def load_causal_transpose_conv1d(
         groups=module.groups,
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.weights, m.biases),
         module,
         (weight_jax, bias),
+        allow_dtype_cast=True,
     )
 
 
@@ -309,10 +313,11 @@ def load_residual_block(
         path / "skip_conv" / "conv",
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.input_activation, m.skip_activation, m.input_conv, m.skip_conv),
         module,
         (input_activation, skip_activation, input_conv, skip_conv),
+        allow_dtype_cast=True,
     )
 
 
@@ -345,10 +350,11 @@ def load_hifigan_res_block(
         load_residual_block(block, weights_dict, path / "res_blocks" / i) for i, block in enumerate(module.res_blocks)
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.res_blocks,),
         module,
         (res_blocks,),
+        allow_dtype_cast=True,
     )
 
 
@@ -380,10 +386,11 @@ def load_hifigan_res_layer(
         for i, block in enumerate(module.res_blocks)
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.res_blocks,),
         module,
         (res_blocks,),
+        allow_dtype_cast=True,
     )
 
 
@@ -484,7 +491,7 @@ def load_causal_hifigan_decoder(
         base_path / "post_conv" / "conv",
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (
             m.pre_conv,
             m.activations,
@@ -495,6 +502,7 @@ def load_causal_hifigan_decoder(
         ),
         module,
         (pre_conv, activations, upsample_convs, res_layers, post_activation, post_conv),
+        allow_dtype_cast=True,
     )
 
 
@@ -543,8 +551,9 @@ def load_nanocodec(
         ParameterPath("audio_decoder"),
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.decoder,),
         module,
         (decoder,),
+        allow_dtype_cast=True,
     )

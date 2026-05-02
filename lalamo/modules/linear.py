@@ -8,7 +8,7 @@ from jaxtyping import Array, Float
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, ShardingAxis, field
 from lalamo.utils.sharding import use_out_sharding
-from lalamo.weight_matrix import FullPrecisionSpec, MatmulConfig, WeightMatrix
+from lalamo.weight_matrix import MatmulConfig, WeightMatrix
 
 __all__ = [
     "Linear",
@@ -25,11 +25,10 @@ class LinearConfig(LalamoConfig):
         output_dims: tuple[int, ...],
         has_biases: bool,
     ) -> "Linear":
-        weight_spec = FullPrecisionSpec()
         total_output_dim = sum(output_dims)
         return Linear(
             config=self,
-            weights=weight_spec.init(initializer, (), total_output_dim, input_dim),
+            weights=initializer.weight_matrix(total_output_dim, input_dim),
             biases=initializer.zeros((total_output_dim,)) if has_biases else None,
             output_dims=output_dims,
         )
@@ -42,7 +41,6 @@ class LinearConfig(LalamoConfig):
         output_dims: tuple[int, ...],
         has_biases: bool,
     ) -> "Linear":
-        weight_spec = FullPrecisionSpec()
         total_output_dim = sum(output_dims)
         if has_biases:
             biases = initializer.zeros((mixture_size, total_output_dim), (ShardingAxis.EXPERT, None))
@@ -50,7 +48,7 @@ class LinearConfig(LalamoConfig):
             biases = None
         return Linear(
             config=self,
-            weights=weight_spec.init(initializer, (mixture_size,), total_output_dim, input_dim),
+            weights=initializer.weight_matrix(total_output_dim, input_dim, mixture_size),
             biases=biases,
             output_dims=output_dims,
         )
