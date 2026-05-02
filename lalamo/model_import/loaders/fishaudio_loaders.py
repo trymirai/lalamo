@@ -52,6 +52,10 @@ from .nanocodec_loaders import (
 from .torch_utils import fuse_weight_norm_conv1d_as_linear
 
 
+def _dense_mlp_projections(module: DenseMLP) -> tuple[Linear, Linear]:
+    return module.up_projection, module.down_projection
+
+
 def _permute_for_rope_rotate_half(
     weight: Array,
     num_heads: int,
@@ -266,22 +270,23 @@ def load_transformer_block(
         scaling_to_fuze: Array | None = None,
     ) -> MLPBase:
         assert isinstance(module, DenseMLP)
+        dense_module: DenseMLP = module
         # Standard dense MLP with separate sublayers.
         up_projection = load_linear_and_fuse_scaling(
-            module.up_projection,
+            dense_module.up_projection,
             weights_dict,
             path,
             sublayers_to_fuse=[up_proj_key, gate_proj_key],
         )
         down_projection = load_linear_and_fuse_scaling(
-            module.down_projection,
+            dense_module.down_projection,
             weights_dict,
             path / down_proj_key,
             scaling_to_fuse=scaling_to_fuze,
         )
         return load_parameters(
-            lambda m: (m.up_projection, m.down_projection),
-            module,
+            _dense_mlp_projections,
+            dense_module,
             (up_projection, down_projection),
         )
 

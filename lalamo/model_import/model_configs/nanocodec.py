@@ -43,6 +43,10 @@ from lalamo.weight_matrix import CompressionImplementation
 __all__ = ["NanoCodecForeignConfig"]
 
 
+def _tts_audio_decoder(model: TTSModel) -> tuple[object]:
+    return (model.audio_decoder,)
+
+
 def _require_key(config: Mapping, key: str, context: str) -> Any:  # noqa: ANN401
     """Get a required key from config or raise a clear error."""
     if key not in config:
@@ -146,14 +150,15 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
     ) -> Model:
         assert isinstance(model, TTSModel)
-        assert isinstance(model.text_decoder, StubTextDecoder)
-        assert isinstance(model.audio_decoder, NanoCodec)
+        tts_model: TTSModel = model
+        assert isinstance(tts_model.text_decoder, StubTextDecoder)
+        assert isinstance(tts_model.audio_decoder, NanoCodec)
 
-        loaded_audio_decoder = load_nanocodec(model.audio_decoder, weights_dict)
+        loaded_audio_decoder = load_nanocodec(tts_model.audio_decoder, weights_dict)
 
         return load_parameters(
-            lambda m: (m.audio_decoder,),
-            model,
+            _tts_audio_decoder,
+            tts_model,
             (loaded_audio_decoder,),
         )
 

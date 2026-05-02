@@ -54,6 +54,10 @@ from lalamo.weight_matrix import CompressionImplementation
 __all__ = ["FishAudioConfig"]
 
 
+def _tts_decoders(model: TTSModel) -> tuple[object, object]:
+    return model.text_decoder, model.audio_decoder
+
+
 def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
     config: Mapping[Any, Any],
     window_size: int,
@@ -416,21 +420,19 @@ class FishAudioConfig(ForeignTTSConfig):
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
     ) -> Model:
         assert isinstance(model, TTSModel)
+        tts_model: TTSModel = model
 
-        assert isinstance(model.text_decoder, FishAudioTextDecoder)
-        loaded_text_decoder = load_fishaudio_text_decoder(model.text_decoder, weights_dict, ParameterPath())
+        assert isinstance(tts_model.text_decoder, FishAudioTextDecoder)
+        loaded_text_decoder = load_fishaudio_text_decoder(tts_model.text_decoder, weights_dict, ParameterPath())
 
-        assert isinstance(model.audio_decoder, DescriptAudioCodec)
+        assert isinstance(tts_model.audio_decoder, DescriptAudioCodec)
         loaded_audio_decoder = load_fishaudio_audio_decoder(
-            model.audio_decoder, weights_dict, ParameterPath()
+            tts_model.audio_decoder, weights_dict, ParameterPath()
         )
 
         return load_parameters(
-            lambda m: (
-                m.text_decoder,
-                m.audio_decoder,
-            ),
-            model,
+            _tts_decoders,
+            tts_model,
             (loaded_text_decoder, loaded_audio_decoder),
         )
 

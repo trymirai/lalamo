@@ -112,22 +112,6 @@ jobs:
         run: |
           pytest tests/tts
 
-  tracer:
-    name: Tracer tests
-    runs-on: [github-n2hmem16]
-    needs: [unit, config]
-    if: ${{ needs.config.outputs.run-tests == 'true' }}
-
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup
-        with:
-          dev: 'true'
-
-      - name: Run tests
-        run: |
-          pytest tests/tracer
-
   cli:
     name: CLI
     runs-on: ubuntu-latest

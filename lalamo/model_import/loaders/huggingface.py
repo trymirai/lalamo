@@ -32,6 +32,10 @@ __all__ = ["load_huggingface_decoder", "load_linear", "load_rmsnorm"]
 AWQ_UINT4_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
 
 
+def _dense_mlp_projections(module: DenseMLP) -> tuple[Linear, Linear]:
+    return module.up_projection, module.down_projection
+
+
 def _supported_quantization_bits(bits: int) -> Literal[4, 8]:
     if bits == 4:
         return 4
@@ -276,23 +280,24 @@ def load_mlp(
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> MLPBase:
     if isinstance(module, DenseMLP):
+        dense_module: DenseMLP = module
         # Standard dense MLP with separate sublayers.
         up_projection = load_linear(
-            module.up_projection,
+            dense_module.up_projection,
             weights_dict,
             path,
             sublayers_to_fuse=[up_proj_key, gate_proj_key],
             implementation=implementation,
         )
         down_projection = load_linear(
-            module.down_projection,
+            dense_module.down_projection,
             weights_dict,
             path / down_proj_key,
             implementation=implementation,
         )
         return load_parameters(
-            lambda m: (m.up_projection, m.down_projection),
-            module,
+            _dense_mlp_projections,
+            dense_module,
             (up_projection, down_projection),
         )
 
@@ -1368,20 +1373,21 @@ def load_huggingface_classifier(
 
     def load_mlp_local(module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLPBase:
         assert isinstance(module, DenseMLP)
+        dense_module: DenseMLP = module
         up_projection = load_linear_with_reshufling(
-            module.up_projection,
+            dense_module.up_projection,
             weights_dict,
             path / "Wi",
         )
         down_projection = load_linear(
-            module.down_projection,
+            dense_module.down_projection,
             weights_dict,
             path / "Wo",
             implementation=implementation,
         )
         return load_parameters(
-            lambda m: (m.up_projection, m.down_projection),
-            module,
+            _dense_mlp_projections,
+            dense_module,
             (up_projection, down_projection),
         )
 
