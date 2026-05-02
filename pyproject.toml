@@ -193,3 +193,10 @@ python-version = "3.12.0"
 infer-with-first-use = false
 python-interpreter-path = ".venv/bin/python"
 project-includes = ["./"]
+ignore-missing-imports = [
+    "cartesia_mlx",
+    "cartesia_mlx.*",
+    "mlx",
+    "mlx.*",
+    "mlx_lm.*",
+]
