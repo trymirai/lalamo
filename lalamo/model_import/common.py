@@ -92,7 +92,7 @@ def _instantiate_tokenizer(
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> Tokenizer:
     if tokenizer_spec is None:
-        # NOTE: once text decoder for Nanocodec is implemented - proper Tokenizer will hopefully become available
+        # NOTE: tokenizer-less TTS specs currently use a dummy tokenizer for stub text decoding.
         tokenizer = Tokenizer.from_str(dummy_char_level_tokenizer_config())
     else:
         tokenizer_file = origin.resolve_file(tokenizer_spec, progress_callback)
@@ -325,7 +325,7 @@ def _import_tts_model(
     foreign_tts_config = _load_foreign_config(model_spec, progress_callback=progress_callback)
     if dtype is None:
         dtype = foreign_tts_config.default_dtype
-    if model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":
+    if isinstance(foreign_tts_config, FishAudioConfig):
         assert isinstance(model_spec.configs.tokenizer, FileSpec)
         tokenizer_path = model_spec.origin.resolve_file(model_spec.configs.tokenizer, progress_callback)
         tokenizer_special_tokens_path = model_spec.origin.resolve_file(
@@ -336,7 +336,6 @@ def _import_tts_model(
             tokenizer_path,
             tokenizer_special_tokens_path,
         )
-        assert isinstance(foreign_tts_config, FishAudioConfig)
         foreign_tts_config = replace(
             foreign_tts_config,
             semantic_token_begin_id=special_inference_tokens.semantic_begin_id,
