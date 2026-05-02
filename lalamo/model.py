@@ -36,7 +36,7 @@ class Model[
 ](LalamoModule[ConfigT]):
     token_codec: TokenCodecT = field(static=True)
 
-    def export(self, directory: Path | str) -> None:
+    def save(self, directory: Path | str) -> None:
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
 
@@ -58,7 +58,7 @@ class Model[
         self.token_codec.tokenizer.save(str(directory / "tokenizer.json"))
 
     @classmethod
-    def load_exported(cls, directory: Path | str, dtype: DTypeLike = jnp.bfloat16) -> Self:
+    def load(cls, directory: Path | str, dtype: DTypeLike = jnp.bfloat16) -> Self:
         directory = Path(directory)
         with (directory / "config.json").open() as config_file:
             config = ModelConfig.from_json(json.load(config_file))

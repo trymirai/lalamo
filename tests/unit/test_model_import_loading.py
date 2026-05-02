@@ -204,9 +204,9 @@ def test_model_export_load_uses_saved_weight_matrix_spec_with_shape_dtype_templa
         ),
     )
 
-    original.export(tmp_path)
-    restored = TinyModel.load_exported(tmp_path)
-    restored_float32 = TinyModel.load_exported(tmp_path, dtype=jnp.float32)
+    original.save(tmp_path)
+    restored = TinyModel.load(tmp_path)
+    restored_float32 = TinyModel.load(tmp_path, dtype=jnp.float32)
 
     assert isinstance(restored.module.matrix, AWQMatrixForInference)
     assert restored.module.matrix.spec == original.module.matrix.spec

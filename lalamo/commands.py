@@ -202,6 +202,6 @@ def convert(
         progress_callback=progress_callback,
     )
     callbacks.saving_model()
-    imported_model.model.export(output_dir)
+    imported_model.model.save(output_dir)
 
     callbacks.finished_saving_model()

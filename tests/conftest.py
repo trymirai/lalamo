@@ -116,7 +116,7 @@ def mark_by_size(specs: tuple[ModelSpec, ...]) -> list[Any]:
 
 
 def load_converted_model(model_dir: Path) -> Model:
-    return Model.load_exported(model_dir)
+    return Model.load(model_dir)
 
 
 ANSI_ESCAPE_REGEX = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
