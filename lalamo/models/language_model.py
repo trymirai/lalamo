@@ -25,6 +25,9 @@ __all__ = [
 ]
 
 
+_COMPILED_PROMPT_LENGTHS = tuple(256 * 2**i for i in range(12))
+
+
 class PrefillResults(NamedTuple):
     last_token_logits: Float[Array, "batch vocabulary"]
     last_token_indices: Int[Array, " batch"]
@@ -300,20 +303,72 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         *,
         keychain: Keychain,
     ) -> Iterable[Int[Array, ""]]:
-        results = self.generate_tokens(
-            prompt_token_ids[None, :],
-            generation_config,
-            max_output_length=max_output_length,
-            eos_token_ids=eos_token_ids,
-            keychain=keychain,
-        )
-        stop_token_ids = set(self.config.generation_config.stop_token_ids)
+        if max_output_length < 1:
+            raise ValueError("max_output_length must be at least 1.")
+
         if eos_token_ids is not None:
-            stop_token_ids = {int(token_id.item()) for token_id in eos_token_ids}
-        for token_id in results.token_ids[0]:
-            yield token_id
-            if int(token_id.item()) in stop_token_ids:
+            stop_token_ids = eos_token_ids
+        else:
+            stop_token_ids = jnp.asarray(self.config.generation_config.stop_token_ids, dtype=jnp.int32)
+
+        (input_length,) = prompt_token_ids.shape
+        padded_input_length = next(
+            (length for length in _COMPILED_PROMPT_LENGTHS if length >= input_length),
+            None,
+        )
+        if padded_input_length is None:
+            raise ValueError(f"Input sequence length {input_length} exceeds largest compiled prompt bucket.")
+
+        padded_token_ids = jnp.zeros((padded_input_length,), dtype=prompt_token_ids.dtype)
+        padded_token_ids = padded_token_ids.at[:input_length].set(prompt_token_ids)
+        length_without_padding = jnp.asarray([input_length], dtype=jnp.int32)
+
+        sampling_policy = self.default_sampling_policy()
+        if generation_config is not None:
+            sampling_policy = generation_config.default_policy()
+        if sampling_policy.has_count_penalties():
+            sampling_policy = sampling_policy.with_prompt_token_counts(
+                padded_token_ids,
+                jnp.asarray(input_length, dtype=jnp.int32),
+                self.decoder.vocab_size,
+            )
+
+        prefill_keychain, sampling_keychain, decoding_keychain = keychain.split(3)
+        prefill_results = self._prefill(
+            padded_token_ids[None, :],
+            padded_input_length + max_output_length + 1,
+            length_without_padding,
+            keychain=prefill_keychain,
+        )
+
+        last_token_logits = prefill_results.last_token_logits[0]
+        last_token_index = prefill_results.last_token_indices[0]
+        state = prefill_results.state
+        sampling_keys = sampling_keychain.rolling_broadcast((max_output_length,)).vmapped_keys
+        decoding_keys = decoding_keychain.rolling_broadcast((max_output_length,)).vmapped_keys
+        for sampling_key, decoding_key in zip(sampling_keys, decoding_keys, strict=True):
+            processed_logits = sampling_policy.process_logits(last_token_logits.astype(jnp.float32))
+            next_token_id = jax.random.categorical(sampling_key, processed_logits)
+            yield next_token_id
+
+            if bool(jnp.any(next_token_id == stop_token_ids).item()):
                 return
+
+            sampling_policy = sampling_policy.with_next_token_count(next_token_id)
+            next_token_index = last_token_index + 1
+            decoder_result = self.decoder(
+                token_ids=next_token_id.reshape(1, 1),
+                token_positions=next_token_index.reshape(1, 1),
+                state=state,
+                return_updated_state=True,
+                forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+                keychain=Keychain(vmapped_keys=decoding_key, batch_key=decoding_keychain.batch_key),
+            )
+            assert decoder_result.updated_state is not None
+
+            last_token_logits = decoder_result.logits[0, 0, :].astype(jnp.float32)
+            last_token_index = next_token_index
+            state = decoder_result.updated_state
 
     def stream_reply_text(
         self,

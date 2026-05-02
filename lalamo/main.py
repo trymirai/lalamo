@@ -38,6 +38,9 @@ from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
+from lalamo.models import LanguageModel
+from lalamo.models.chat_codec import Message, UserMessage
+from lalamo.module import Keychain
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -90,6 +93,83 @@ def _error(message: str) -> None:
     panel = Panel(message, box=box.ROUNDED, title="Error", title_align="left", border_style="red")
     err_console.print(panel)
     raise Exit(1)
+
+
+@app.command(help="Chat with a converted model.")
+def chat(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    message: Annotated[
+        str | None,
+        Option(
+            help="Message for non-interactive mode.",
+            show_default="None, run interactively",
+        ),
+    ] = None,
+    max_tokens: Annotated[
+        int,
+        Option(
+            help="Maximum number of tokens to generate per reply.",
+        ),
+    ] = 8192,
+) -> None:
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=err_console,
+        transient=True,
+    ) as progress:
+        loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
+        model = LanguageModel.load(model_path)
+        progress.remove_task(loading_task)
+        warmup_task = progress.add_task("🔥 Warming up compilation cache...")
+        warmup_tokens = iter(
+            model.stream_reply_text(
+                [UserMessage("")],
+                max_output_length=max_tokens,
+                keychain=Keychain.init(0),
+            ),
+        )
+        for _ in range(2):
+            try:
+                next(warmup_tokens)
+            except StopIteration:
+                break
+        progress.remove_task(warmup_task)
+
+    if message is None:
+        console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
+        messages: list[Message] = []
+        turn_index = 0
+        while True:
+            user_text = console.input("[cyan]user> [/cyan]")
+            messages.append(UserMessage(user_text))
+
+            console.print("[red]assistant> [/red]", end="")
+            response_text_parts = []
+            for token in model.stream_reply_text(
+                messages,
+                max_output_length=max_tokens,
+                keychain=Keychain.init(turn_index + 1),
+            ):
+                console.print(token, end="")
+                response_text_parts.append(token)
+            console.print()
+            messages.append(model.token_codec.parse_response("".join(response_text_parts)))
+            turn_index += 1
+
+    for token in model.stream_reply_text(
+        [UserMessage(message)],
+        max_output_length=max_tokens,
+        keychain=Keychain.init(1),
+    ):
+        console.print(token, end="")
+    console.print()
 
 
 @dataclass

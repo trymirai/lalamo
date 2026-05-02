@@ -81,6 +81,25 @@ def test_list_models_plain_and_no_plain(run_lalamo: RunLalamo, model_registry: M
 
 
 @pytest.mark.fast
+def test_chat_non_interactive(
+    run_lalamo: RunLalamo,
+    convert_model: ConvertModel,
+) -> None:
+    converted_model_dir = convert_model(MODELS[0], cached=True)
+    output = strip_ansi_escape(
+        run_lalamo(
+            "chat",
+            str(converted_model_dir),
+            "--message",
+            CAPITAL_PROMPT,
+            "--max-tokens",
+            "64",
+        ),
+    )
+    assert "london" in output.lower(), f"Expected 'london' in {output!r}"
+
+
+@pytest.mark.fast
 @pytest.mark.parametrize("model_repo", MODELS)
 def test_converted_model_generates_batch(
     convert_model: ConvertModel,
