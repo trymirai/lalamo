@@ -278,6 +278,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         self,
         messages: Iterable[Message],
         generation_config: GenerationConfig | None = None,
+        max_output_length: int = 8192,
         *,
         keychain: Keychain,
     ) -> AssistantMessage:
@@ -285,6 +286,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         response_ids = self.generate_tokens(
             token_ids,
             generation_config,
+            max_output_length=max_output_length,
             keychain=keychain,
         ).token_ids[0]
         return self.token_codec.decode_response(self._trim_at_eos(response_ids.tolist()))

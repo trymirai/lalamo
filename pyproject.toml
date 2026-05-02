@@ -13,7 +13,7 @@ dependencies = [
     "jinja2>=3.1.6",
     "ml-dtypes>=0.5.1",
     "optax>=0.2.4",
-    "orbax-checkpoint>=0.11.33",
+    "orbax-checkpoint==0.11.33",
     "polars>=1.33.1",
     "requests>=2.32.5",
     "rich>=14.0.0",
@@ -74,6 +74,7 @@ lalamo = "lalamo.main:app"
 requires = ["setuptools>=65.5.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["lalamo*"]
@@ -115,6 +116,7 @@ markers = [
 ]
 
 [tool.pytest_env]
+env_files = [".env"]
 JAX_DEBUG_NANS = "True"
 JAX_DEBUG_KEY_REUSE = "False"
 JAX_TRACEBACK_FILTERING = "off"

@@ -57,3 +57,5 @@ _tmp
 
 # preserve github folder
 !.github
+
+.env

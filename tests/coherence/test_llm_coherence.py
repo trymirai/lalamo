@@ -2,7 +2,6 @@ import logging
 import os
 import time
 
-import jax.numpy as jnp
 import pytest
 
 from lalamo.model_import.model_spec import LanguageModelSpec, ModelSpec
@@ -28,14 +27,12 @@ def _generate_single(
     *,
     max_tokens: int,
 ) -> str:
-    token_ids = jnp.asarray(model.token_codec.encode_request([UserMessage(prompt)]), dtype=jnp.int32)[None, :]
-    response_ids = model.generate_tokens(
-        token_ids,
+    return model.reply(
+        [UserMessage(prompt)],
         generation_config=GenerationConfig(temperature=0),
         max_output_length=max_tokens,
         keychain=Keychain.init(0),
-    ).token_ids.squeeze(0)
-    return model.token_codec.decode_response(response_ids.tolist()).response
+    ).response
 
 
 @pytest.mark.parametrize(
