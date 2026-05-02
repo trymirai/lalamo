@@ -22,6 +22,7 @@ NUM_HEADS = 2
 NUM_GROUPS = 2
 HEAD_DIM = 2
 
+
 def _weights(shape: tuple[int, ...], *, offset: int = 0) -> jax.Array:
     return (jnp.arange(offset, offset + prod(shape), dtype=jnp.float32).reshape(shape) / 20) - 0.5
 

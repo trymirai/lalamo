@@ -454,11 +454,14 @@ def test_routed_moe_matches_direct_reference(fake_mesh: Mesh, mode: ForwardPassM
     assert fake_mesh is not None
     module = _routed_only_moe(num_active_routed_experts=2)
     sequence_length = _moe_sequence_length(mode)
-    inputs = jnp.arange(2 * sequence_length * MODEL_DIM, dtype=jnp.float32).reshape(
-        2,
-        sequence_length,
-        MODEL_DIM,
-    ) / 10
+    inputs = (
+        jnp.arange(2 * sequence_length * MODEL_DIM, dtype=jnp.float32).reshape(
+            2,
+            sequence_length,
+            MODEL_DIM,
+        )
+        / 10
+    )
 
     result = module(
         inputs,
@@ -474,11 +477,14 @@ def test_routed_moe_output_dtype_matches_input_dtype(fake_mesh: Mesh, mode: Forw
     assert fake_mesh is not None
     module = _routed_only_moe(num_active_routed_experts=2)
     sequence_length = _moe_sequence_length(mode)
-    inputs = jnp.arange(2 * sequence_length * MODEL_DIM, dtype=jnp.bfloat16).reshape(
-        2,
-        sequence_length,
-        MODEL_DIM,
-    ) / 10
+    inputs = (
+        jnp.arange(2 * sequence_length * MODEL_DIM, dtype=jnp.bfloat16).reshape(
+            2,
+            sequence_length,
+            MODEL_DIM,
+        )
+        / 10
+    )
 
     result = module(
         inputs,
@@ -549,6 +555,7 @@ def test_routed_moe_under_jit_matches_reference_and_keeps_data_sharding(
     _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == make_sharding((ShardingAxis.DATA, None, None))
+
 
 def test_moe_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _moe(num_active_routed_experts=2, num_shared_experts=2)

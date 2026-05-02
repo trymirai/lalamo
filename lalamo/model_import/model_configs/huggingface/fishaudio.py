@@ -426,9 +426,7 @@ class FishAudioConfig(ForeignTTSConfig):
         loaded_text_decoder = load_fishaudio_text_decoder(tts_model.text_decoder, weights_dict, ParameterPath())
 
         assert isinstance(tts_model.audio_decoder, DescriptAudioCodec)
-        loaded_audio_decoder = load_fishaudio_audio_decoder(
-            tts_model.audio_decoder, weights_dict, ParameterPath()
-        )
+        loaded_audio_decoder = load_fishaudio_audio_decoder(tts_model.audio_decoder, weights_dict, ParameterPath())
 
         return load_as_at(
             _tts_decoders,
