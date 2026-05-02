@@ -9,6 +9,7 @@ from jaxtyping import Array
 
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.modules.linear import Linear, LinearConfig
+from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPassConfig
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.dummy_array import dummy_array
@@ -34,7 +35,7 @@ def _linear(weights: Array, output_dims: tuple[int, ...]) -> Linear:
     )
 
 
-def _attention() -> Attention:
+def _attention(*, logit_soft_cap: float | None = None) -> Attention:
     qkv_dim = NUM_HEADS * HEAD_DIM
     return Attention(
         config=AttentionConfig(
@@ -48,7 +49,7 @@ def _attention() -> Attention:
             is_causal=True,
             scale=None,
             sliding_window_size=None,
-            logit_soft_cap=None,
+            logit_soft_cap=logit_soft_cap,
             has_sinks=False,
             has_qkv_biases=False,
             has_out_biases=False,
@@ -150,6 +151,58 @@ def test_attention_under_jit_matches_reference_and_drops_tensor_sharding(fake_me
     _assert_close(result=result.outputs, reference=_reference(module, inputs))
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
     assert result.outputs.sharding == make_sharding((None, None))
+
+
+def test_attention_implementations_match(fake_mesh: Mesh) -> None:
+    module = _attention()
+    inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10)
+
+    standard = module(
+        inputs,
+        positional_embeddings=None,
+        forward_pass_config=MixerForwardPassConfig(
+            attention_implementation=AttentionImplementation.STANDARD,
+        ),
+        keychain=Keychain.init(7),
+    )
+    stable_reduction = module(
+        inputs,
+        positional_embeddings=None,
+        forward_pass_config=MixerForwardPassConfig(
+            attention_implementation=AttentionImplementation.STABLE_REDUCTION,
+            attention_tile_size=2,
+        ),
+        keychain=Keychain.init(8),
+    )
+
+    _assert_close(result=stable_reduction.outputs, reference=standard.outputs)
+    _assert_named_sharding(stable_reduction.outputs.sharding, fake_mesh)
+
+
+def test_soft_capped_attention_implementations_match(fake_mesh: Mesh) -> None:
+    module = _attention(logit_soft_cap=0.5)
+    inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10)
+
+    standard = module(
+        inputs,
+        positional_embeddings=None,
+        forward_pass_config=MixerForwardPassConfig(
+            attention_implementation=AttentionImplementation.STANDARD,
+        ),
+        keychain=Keychain.init(9),
+    )
+    stable_reduction = module(
+        inputs,
+        positional_embeddings=None,
+        forward_pass_config=MixerForwardPassConfig(
+            attention_implementation=AttentionImplementation.STABLE_REDUCTION,
+            attention_tile_size=2,
+        ),
+        keychain=Keychain.init(10),
+    )
+
+    _assert_close(result=stable_reduction.outputs, reference=standard.outputs)
+    _assert_named_sharding(stable_reduction.outputs.sharding, fake_mesh)
 
 
 def test_attention_vmapped_over_inputs_matches_reference_and_keeps_data_sharding(fake_mesh: Mesh) -> None:

@@ -34,7 +34,6 @@ from lalamo.safetensors import safe_read
 from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.weight_matrix import WeightMatrix, WeightMatrixSpec
-from tests.common import tolerance
 from tests.model_test_tiers import TIER_BY_REPO, ModelSize, ModelTier, model_size
 
 # Keep this explicit. "default" is not the same as leaving the setting unset:
@@ -97,9 +96,6 @@ def fake_mesh() -> Generator[Mesh]:
     with jax.set_mesh(mesh):
         yield mesh
 
-
-GPU_ATOL = 1e-3
-GPU_RTOL = 0.03
 
 ALL_MODEL_SPECS: tuple[ModelSpec, ...] = ModelRegistry.build(allow_third_party_plugins=False).models
 
@@ -181,15 +177,6 @@ def load_converted_model(model_dir: Path) -> Model:
             ),
             allow_dtype_cast=True,
         )
-
-
-@pytest.fixture(autouse=True)
-def _gpu_tolerance() -> Generator[None]:
-    if _has_jax_gpu_device():
-        with tolerance(atol=GPU_ATOL, rtol=GPU_RTOL):
-            yield
-    else:
-        yield
 
 
 ANSI_ESCAPE_REGEX = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")

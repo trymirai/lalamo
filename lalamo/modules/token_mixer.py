@@ -55,6 +55,7 @@ class AttentionImplementation(Enum):
 class MixerForwardPassConfig:
     attention_implementation: AttentionImplementation = AttentionImplementation.STABLE_REDUCTION
     attention_accumulation_dtype: DTypeLike | None = jnp.float32
+    attention_tile_size: int = 128
     ssm_chunk_size: int = 32
     ssm_min_tail_size_to_chunk: int = 16
     matmul_config: MatmulConfig = field(default_factory=MatmulConfig)
@@ -62,6 +63,7 @@ class MixerForwardPassConfig:
     @classmethod
     def for_tracer_tests(cls) -> Self:
         return cls(
+            attention_implementation=AttentionImplementation.STANDARD,
             matmul_config=MatmulConfig.for_tracer_tests(),
         )
 

@@ -198,6 +198,36 @@ def test_repetition_penalty_applies_to_seen_tokens() -> None:
     assert jnp.array_equal(result, jnp.array([2.0, -6.0, 8.0, 1.0], dtype=jnp.float32))
 
 
+def test_repetition_penalty_ignores_out_of_vocab_prompt_tokens() -> None:
+    policy = SamplingPolicy.init(repetition_penalty=2.0).with_prompt_token_counts(
+        jnp.array([1, -1, 9, 2], dtype=jnp.int32),
+        jnp.array(4, dtype=jnp.int32),
+        vocabulary_size=4,
+    )
+
+    assert policy.token_counts is not None
+    assert jnp.array_equal(policy.token_counts, jnp.array([0, 1, 1, 0], dtype=jnp.int32))
+
+    logits = jnp.array([1.0, 2.0, 4.0, 8.0], dtype=jnp.float32)
+    result = policy.process_logits(logits)
+
+    assert jnp.array_equal(result, jnp.array([1.0, 1.0, 2.0, 8.0], dtype=jnp.float32))
+
+
+def test_repetition_penalty_ignores_out_of_vocab_generated_tokens() -> None:
+    policy = SamplingPolicy.init(repetition_penalty=2.0).with_prompt_token_counts(
+        jnp.array([1], dtype=jnp.int32),
+        jnp.array(1, dtype=jnp.int32),
+        vocabulary_size=4,
+    )
+
+    updated_policy = policy.with_next_token_count(jnp.array(99, dtype=jnp.int32))
+    updated_policy = updated_policy.with_next_token_count(jnp.array(-1, dtype=jnp.int32))
+
+    assert updated_policy.token_counts is not None
+    assert jnp.array_equal(updated_policy.token_counts, jnp.array([0, 1, 0, 0], dtype=jnp.int32))
+
+
 def test_presence_penalty_applies_once_to_seen_tokens() -> None:
     logits = jnp.array([4.0, 3.0, 2.0], dtype=jnp.float32)
     policy = SamplingPolicy.init(presence_penalty=0.5).with_prompt_token_counts(

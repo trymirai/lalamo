@@ -12,6 +12,7 @@ from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixer import (
+    AttentionImplementation,
     MixerForwardPassConfig,
     PositionalEmbeddingSelector,
     TokenMixerBase,
@@ -49,10 +50,22 @@ def _soft_capped_attention_kernel(
     queries: Float[Array, "dst_tokens heads head_channels"],
     keys: Float[Array, "src_tokens groups head_channels"],
     values: Float[Array, "src_tokens groups head_channels"],
+    *,
+    bias: Float[Array, "heads dst_tokens src_tokens"] | None,
     mask: Bool[Array, "dst_tokens src_tokens"] | None,
     scale: float | None,
-    logit_soft_cap: float,
+    logit_soft_cap: float | None,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
+    if logit_soft_cap is None:
+        return jax.nn.dot_product_attention(
+            queries,
+            keys,
+            values,
+            bias=bias,
+            mask=mask,
+            scale=scale,
+        )
+
     _, num_heads, head_dim = queries.shape
     _, num_groups, _ = keys.shape
     group_size = num_heads // num_groups
@@ -65,25 +78,192 @@ def _soft_capped_attention_kernel(
         keys_head_first,
         "heads dst_tokens channels, heads src_tokens channels -> heads dst_tokens src_tokens",
     )
-    if mask is not None:
-        attention_logits = jnp.where(
-            mask,
-            attention_logits,
-            jnp.array(float("-inf"), dtype=attention_logits.dtype),
-        )
-
     if scale is None:
         scale_val = head_dim**-0.5
     else:
         scale_val = float(scale)
     attention_logits = attention_logits * scale_val
     attention_logits = apply_soft_capping(attention_logits, logit_soft_cap)
+    if bias is not None:
+        attention_logits = attention_logits + bias
+    if mask is not None:
+        attention_logits = jnp.where(
+            mask,
+            attention_logits,
+            jnp.array(float("-inf"), dtype=attention_logits.dtype),
+        )
     attention_weights = jax.nn.softmax(attention_logits, axis=-1)
     return einsum(
         attention_weights,
         values,
         "heads dst_tokens src_tokens, src_tokens heads channels -> dst_tokens heads channels",
     )
+
+
+def _stable_reduction_attention_kernel(
+    queries: Float[Array, "dst_tokens heads head_channels"],
+    keys: Float[Array, "src_tokens groups head_channels"],
+    values: Float[Array, "src_tokens groups head_channels"],
+    *,
+    bias: Float[Array, "heads dst_tokens src_tokens"] | None,
+    mask: Bool[Array, "dst_tokens src_tokens"] | None,
+    scale: float | None,
+    logit_soft_cap: float | None,
+    tile_size: int,
+    accumulation_dtype: DTypeLike | None,
+) -> Float[Array, "dst_tokens heads head_channels"]:
+    if tile_size < 1:
+        raise ValueError("attention_tile_size must be at least 1.")
+
+    original_dtype = queries.dtype
+    accumulation_dtype = accumulation_dtype or original_dtype
+
+    num_queries, num_heads, head_dim = queries.shape
+    num_keys, num_groups, _ = keys.shape
+    group_size = num_heads // num_groups
+
+    if scale is None:
+        scale = head_dim**-0.5
+    else:
+        scale = float(scale)
+
+    if mask is None:
+        mask = jnp.ones((num_queries, num_keys), dtype=jnp.bool_)
+
+    if group_size > 1:
+        keys = _repeat_kv(keys, group_size)
+        values = _repeat_kv(values, group_size)
+
+    pad_len = (-num_keys) % tile_size
+    num_tiles = (num_keys + pad_len) // tile_size
+
+    keys = jnp.pad(keys, [(0, pad_len), (0, 0), (0, 0)])
+    values = jnp.pad(values, [(0, pad_len), (0, 0), (0, 0)])
+
+    queries = rearrange(queries, "tokens heads channels -> heads tokens channels").astype(accumulation_dtype)
+    key_tiles = rearrange(
+        keys,
+        "(tiles tokens) heads channels -> tiles heads tokens channels",
+        tiles=num_tiles,
+        tokens=tile_size,
+    )
+    value_tiles = rearrange(
+        values,
+        "(tiles tokens) heads channels -> tiles heads tokens channels",
+        tiles=num_tiles,
+        tokens=tile_size,
+    )
+    mask_tiles = rearrange(
+        jnp.pad(mask, [(0, 0), (0, pad_len)], constant_values=False),
+        "queries (tiles tokens) -> tiles queries tokens",
+        tiles=num_tiles,
+        tokens=tile_size,
+    )
+    if bias is None:
+        bias_tiles = None
+    else:
+        bias_tiles = rearrange(
+            jnp.pad(bias, [(0, 0), (0, 0), (0, pad_len)]),
+            "heads queries (tiles tokens) -> tiles heads queries tokens",
+            tiles=num_tiles,
+            tokens=tile_size,
+        )
+
+    scores = einsum(
+        queries,
+        key_tiles.astype(accumulation_dtype),
+        "heads queries channels, tiles heads tokens channels -> tiles heads queries tokens",
+    )
+    scores = scale * scores
+    if logit_soft_cap is not None:
+        scores = apply_soft_capping(scores, logit_soft_cap)
+    if bias_tiles is not None:
+        scores = scores + bias_tiles
+    scores = jnp.where(
+        mask_tiles[:, None, :, :],
+        scores,
+        jnp.array(float("-inf"), dtype=accumulation_dtype),
+    )
+
+    tile_max = jnp.max(scores, axis=-1)
+    safe_tile_max = jnp.where(jnp.isneginf(tile_max), 0.0, tile_max)
+    exp_scores = jnp.exp(scores - safe_tile_max[..., None])
+    tile_sum = jnp.sum(exp_scores, axis=-1)
+    tile_output = einsum(
+        exp_scores,
+        value_tiles.astype(accumulation_dtype),
+        "tiles heads queries tokens, tiles heads tokens channels -> tiles heads queries channels",
+    )
+
+    def combine(left: tuple, right: tuple) -> tuple:
+        left_max, left_sum, left_output = left
+        right_max, right_sum, right_output = right
+        new_max = jnp.maximum(left_max, right_max)
+        safe_new_max = jnp.where(jnp.isneginf(new_max), 0.0, new_max)
+        left_correction = jnp.exp(left_max - safe_new_max)
+        right_correction = jnp.exp(right_max - safe_new_max)
+        return (
+            new_max,
+            left_correction * left_sum + right_correction * right_sum,
+            left_correction[..., None] * left_output + right_correction[..., None] * right_output,
+        )
+
+    _, final_sum, final_output = jax.lax.associative_scan(
+        combine,
+        (tile_max, tile_sum, tile_output),
+    )
+    result = final_output[-1] / final_sum[-1, ..., None]
+    return rearrange(result, "heads queries channels -> queries heads channels").astype(original_dtype)
+
+
+def _attention_kernel(
+    queries: Float[Array, "dst_tokens heads head_channels"],
+    keys: Float[Array, "src_tokens groups head_channels"],
+    values: Float[Array, "src_tokens groups head_channels"],
+    *,
+    bias: Float[Array, "heads dst_tokens src_tokens"] | None,
+    mask: Bool[Array, "dst_tokens src_tokens"] | None,
+    scale: float | None,
+    logit_soft_cap: float | None,
+    forward_pass_config: MixerForwardPassConfig,
+) -> Float[Array, "dst_tokens heads head_channels"]:
+    match forward_pass_config.attention_implementation:
+        case AttentionImplementation.STANDARD:
+            return _soft_capped_attention_kernel(
+                queries,
+                keys,
+                values,
+                bias=bias,
+                mask=mask,
+                scale=scale,
+                logit_soft_cap=logit_soft_cap,
+            )
+        case AttentionImplementation.CUDNN:
+            if logit_soft_cap is not None:
+                raise ValueError("cuDNN attention does not support logit soft-capping.")
+            return jax.nn.dot_product_attention(
+                queries,
+                keys,
+                values,
+                bias=bias,
+                mask=mask,
+                scale=scale,
+                implementation="cudnn",
+            )
+        case AttentionImplementation.TOKAMAX:
+            raise ValueError("Tokamax attention is not implemented in this runtime.")
+        case AttentionImplementation.STABLE_REDUCTION:
+            return _stable_reduction_attention_kernel(
+                queries,
+                keys,
+                values,
+                bias=bias,
+                mask=mask,
+                scale=scale,
+                logit_soft_cap=logit_soft_cap,
+                tile_size=forward_pass_config.attention_tile_size,
+                accumulation_dtype=forward_pass_config.attention_accumulation_dtype,
+            )
 
 
 AttentionResult = TokenMixerResult[KVCacheLayer]
@@ -302,24 +482,16 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         else:
             sink_bias = None
 
-        if self.config.logit_soft_cap is not None:
-            attention_output = _soft_capped_attention_kernel(
-                queries,
-                updated_state.keys,
-                updated_state.values,
-                mask=mask,
-                scale=self.config.scale,
-                logit_soft_cap=self.config.logit_soft_cap,
-            )
-        else:
-            attention_output = jax.nn.dot_product_attention(
-                queries,
-                updated_state.keys,
-                updated_state.values,
-                bias=sink_bias,
-                mask=mask,
-                scale=self.config.scale,
-            )
+        attention_output = _attention_kernel(
+            queries,
+            updated_state.keys,
+            updated_state.values,
+            bias=sink_bias,
+            mask=mask,
+            scale=self.config.scale,
+            logit_soft_cap=self.config.logit_soft_cap,
+            forward_pass_config=forward_pass_config,
+        )
         attention_output = rearrange(
             attention_output,
             "tokens heads head_channels -> tokens (heads head_channels)",
