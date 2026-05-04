@@ -13,12 +13,12 @@ from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import CompressionImplementation, FullPrecisionMatrix, WeightMatrix
 
 
-def _key_data(key: jax.Array) -> tuple[int, ...]:
+def _key_data(*, key: jax.Array) -> tuple[int, ...]:
     return tuple(int(value) for value in jax.random.key_data(key).tolist())
 
 
 def _flat_key_data(keys: jax.Array) -> list[tuple[int, ...]]:
-    return [_key_data(key) for key in jnp.reshape(keys, (-1,))]
+    return [_key_data(key=key) for key in jnp.reshape(keys, (-1,))]
 
 
 def test_keychain_init_is_deterministic_for_seed_and_shape() -> None:
@@ -97,7 +97,7 @@ def test_keychain_split_respects_requested_count() -> None:
 
     assert len(splits) == 3
     assert all(split.vmapped_keys.shape == (2,) for split in splits)
-    assert len({_key_data(split.batch_key) for split in splits}) == 3
+    assert len({_key_data(key=split.batch_key) for split in splits}) == 3
 
 
 def test_keychain_rolling_broadcast_adds_distinct_leading_keys() -> None:

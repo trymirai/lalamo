@@ -6,7 +6,7 @@ from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
 from jax.lax import stop_gradient
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
@@ -127,6 +127,8 @@ class MLXSpec(WeightMatrixSpec):
     def compress(
         self,
         weights: Float[Array, "... out_channels in_channels"],
+        *,
+        key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> "MLXMatrix":

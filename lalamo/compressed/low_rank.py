@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float
+from jaxtyping import Array, DTypeLike, Float, Key
 
 from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.utils.dummy_array import supports_dummy_arrays
@@ -32,6 +32,8 @@ class LowRankSpec(WeightMatrixSpec):
     def compress(
         self,
         weights: Float[Array, "... out_channels in_channels"],
+        *,
+        key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
     ) -> "LowRankMatrix":

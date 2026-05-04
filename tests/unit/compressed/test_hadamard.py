@@ -1,10 +1,8 @@
-from math import prod
-
 import jax
 import jax.numpy as jnp
 import pytest
 
-from lalamo.compressed.hadamard import RHTFactors, hadamard_transform, random_incoherence_factors
+from lalamo.compressed.hadamard import hadamard_transform
 from tests.common import assert_close, gpu_only, tolerance
 
 
@@ -145,20 +143,3 @@ def test_hadamard_transform_pallas_vmap_matches_dense_reference_on_gpu() -> None
 
     with tolerance(atol=3e-2, rtol=3e-2):
         _assert_close(result=result, reference=reference)
-
-
-def test_random_incoherence_factors_are_signs() -> None:
-    factors = random_incoherence_factors(channels=32, key=jax.random.key(0))
-
-    assert factors.dtype == jnp.int32
-    assert factors.shape == (32,)
-    assert set(jax.device_get(factors).tolist()) <= {-1, 1}
-
-
-def test_rht_factors_random_init_uses_requested_shapes() -> None:
-    factors = RHTFactors.random_init(input_dim=3, output_dim=5, key=jax.random.key(1))
-
-    assert factors.input_factors.shape == (3,)
-    assert factors.output_factors.shape == (5,)
-    assert prod(factors.input_factors.shape) == 3
-    assert prod(factors.output_factors.shape) == 5

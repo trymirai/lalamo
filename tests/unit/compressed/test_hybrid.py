@@ -1,0 +1,126 @@
+from math import prod
+
+import jax
+import jax.numpy as jnp
+import pytest
+
+from lalamo.compressed.hybrid import HybridMatrix, HybridSpec
+from lalamo.compressed.low_rank import LowRankSpec
+from lalamo.module import Keychain
+from lalamo.weight_matrix import FullPrecisionSpec, Preconditioner, WeightMatrixSpec
+from tests.common import assert_close
+
+
+def _weights(output_dim: int = 32, input_dim: int = 64) -> jax.Array:
+    shape = (output_dim, input_dim)
+    return (jnp.arange(prod(shape), dtype=jnp.float32).reshape(shape) - 17) / 19
+
+
+def _assert_close(result: jax.Array, reference: jax.Array) -> None:
+    assert_close(result=jnp.asarray(jax.device_get(result)), reference=jnp.asarray(jax.device_get(reference)))
+
+
+def test_hybrid_spec_roundtrips_json() -> None:
+    spec = HybridSpec(
+        quantization_spec=FullPrecisionSpec(),
+        adapter_spec=LowRankSpec(rank=2),
+        incoherence_block_size=32,
+    )
+
+    restored = WeightMatrixSpec.from_json(spec.to_json())
+
+    assert restored == spec
+
+
+def test_hybrid_compress_requires_key_when_incoherence_is_enabled() -> None:
+    spec = HybridSpec(
+        quantization_spec=FullPrecisionSpec(),
+        adapter_spec=None,
+        incoherence_block_size=32,
+    )
+
+    with pytest.raises(ValueError, match="random incoherence signs"):
+        spec.compress(_weights())
+
+
+def test_hybrid_compress_without_incoherence_does_not_require_key() -> None:
+    weights = _weights()
+    spec = HybridSpec(
+        quantization_spec=FullPrecisionSpec(),
+        adapter_spec=None,
+        incoherence_block_size=None,
+    )
+
+    matrix = spec.compress(weights)
+
+    assert isinstance(matrix, HybridMatrix)
+    assert matrix.incoherence_signs is None
+    _assert_close(result=matrix.decompress(), reference=weights)
+
+
+def test_hybrid_incoherence_decompress_restores_original_basis() -> None:
+    weights = _weights()
+    spec = HybridSpec(
+        quantization_spec=FullPrecisionSpec(),
+        adapter_spec=None,
+        incoherence_block_size=32,
+    )
+
+    matrix = spec.compress(weights, key=jax.random.key(0))
+
+    assert isinstance(matrix, HybridMatrix)
+    assert matrix.incoherence_signs is not None
+    assert matrix.incoherence_signs.input_signs.shape == (64,)
+    assert matrix.incoherence_signs.output_signs.shape == (32,)
+    _assert_close(result=matrix.decompress(), reference=weights)
+
+
+def test_hybrid_incoherence_dot_matches_original_weights() -> None:
+    weights = _weights()
+    matrix = HybridSpec(
+        quantization_spec=FullPrecisionSpec(),
+        adapter_spec=None,
+        incoherence_block_size=32,
+    ).compress(weights, key=jax.random.key(1))
+    vector = (jnp.arange(64, dtype=jnp.float32) - 3) / 7
+
+    result = matrix.dot(vector, keychain=Keychain.init(0))
+
+    _assert_close(result=result, reference=weights @ vector)
+
+
+def test_hybrid_incoherence_transposed_dot_matches_original_weights() -> None:
+    weights = _weights()
+    matrix = HybridSpec(
+        quantization_spec=FullPrecisionSpec(),
+        adapter_spec=None,
+        incoherence_block_size=32,
+    ).compress(weights, key=jax.random.key(2))
+    vector = (jnp.arange(32, dtype=jnp.float32) + 5) / 11
+
+    result = matrix.dot(vector, keychain=Keychain.init(1), transposed=True)
+
+    _assert_close(result=result, reference=weights.T @ vector)
+
+
+def test_hybrid_adapter_compresses_residual_in_incoherent_basis() -> None:
+    weights = _weights()
+    matrix = HybridSpec(
+        quantization_spec=LowRankSpec(rank=1),
+        adapter_spec=FullPrecisionSpec(),
+        incoherence_block_size=32,
+    ).compress(weights, key=jax.random.key(3))
+
+    _assert_close(result=matrix.decompress(), reference=weights)
+
+
+def test_hybrid_compress_rejects_preconditioning() -> None:
+    preconditioner = Preconditioner.init(input_block=jnp.eye(64, dtype=jnp.float32))
+    spec = HybridSpec(
+        quantization_spec=FullPrecisionSpec(),
+        adapter_spec=None,
+        incoherence_block_size=None,
+    )
+
+    with pytest.raises(ValueError, match="Preconditioned rounding is not implemented"):
+        spec.compress(_weights(), preconditioner=preconditioner)

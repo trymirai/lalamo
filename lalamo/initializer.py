@@ -1,6 +1,6 @@
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import jax
 from jax import numpy as jnp
@@ -128,7 +128,7 @@ class EmptyInitializer(Initializer):
 
 @dataclass
 class RandomInitializer(Initializer):
-    key: Key[Array, ""]
+    key: Key[Array, ""] | None = field(default=None, kw_only=True)
 
     def normal(
         self,
@@ -136,6 +136,8 @@ class RandomInitializer(Initializer):
         shape: tuple[int, ...],
         partition: tuple[ShardingAxis | None, ...] | None = None,
     ) -> Array:
+        if self.key is None:
+            raise ValueError("RandomInitializer requires a key.")
         sharding = self._partition_to_sharding(shape, partition)
         self.key, key = jax.random.split(self.key)
         return jax.random.normal(key, shape, self.dtype, out_sharding=sharding) * std

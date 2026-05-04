@@ -349,6 +349,7 @@ def decode_next_token(
     state_slow: State | None,
     input_pos: Array,
     sampling_policy: SamplingPolicy,
+    *,
     keychain: Keychain,
     forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
     previous_tokens: Array | None = None,  # noqa: ARG001, reserved for future when repetition penalty is done

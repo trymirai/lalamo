@@ -10,7 +10,7 @@ import jax.numpy as jnp
 from cattrs import GenConverter
 from jax import ShapeDtypeStruct, device_put
 from jax.lax import DotAlgorithmPreset
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.exportable import Exportable, ExportResults
 from lalamo.module import Keychain, ParameterNorm, ShardingAxis, field
@@ -23,6 +23,8 @@ from lalamo.utils.sharding import make_sharding, reshard_as, use_out_sharding
 
 __all__ = [
     "CompressionImplementation",
+    "FullPrecisionMatrix",
+    "FullPrecisionSpec",
     "GradientEstimator",
     "Layout",
     "MatmulConfig",
@@ -137,6 +139,8 @@ class WeightMatrixSpec(RegistryABC):
     def compress(
         self,
         weights: Float[Array, "*components out_channels in_channels"],
+        *,
+        key: Key[Array, ""] | None = None,
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> "WeightMatrix": ...
@@ -306,6 +310,8 @@ class FullPrecisionSpec(WeightMatrixSpec):
     def compress(
         self,
         weights: Float[Array, "... out_channels in_channels"],
+        *,
+        key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,  # noqa: ARG002
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
     ) -> "FullPrecisionMatrix":
@@ -398,6 +404,8 @@ class ShapeDtypeSpec(WeightMatrixSpec):
     def compress(
         self,
         weights: Float[Array, "... out_channels in_channels"],
+        *,
+        key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,  # noqa: ARG002
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
     ) -> "ShapeDtypeMatrix":
