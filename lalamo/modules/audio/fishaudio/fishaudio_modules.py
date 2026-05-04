@@ -383,11 +383,6 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
         keychain: Keychain,
     ) -> Float[Array, "tokens code_size"]:
         num_input_codebooks, _ = codes.shape
-        if num_input_codebooks == 0:
-            raise ValueError("At least one codebook is required to decode residual vector quantized codes.")
-        if num_input_codebooks > self.n_codebooks:
-            raise ValueError(f"Expected at most {self.n_codebooks} codebooks, got {num_input_codebooks}.")
-
         selected_quantizers = self.quantizers[:num_input_codebooks]
         first_quantizer, *remaining_quantizers = selected_quantizers
         first_codes, *remaining_codes = codes
