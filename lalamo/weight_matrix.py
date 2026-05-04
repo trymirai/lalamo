@@ -108,16 +108,18 @@ class MatmulConfig:
         )
 
     @classmethod
-    def for_inference(cls) -> Self:
-        return cls()
+    def for_inference(cls, precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT) -> Self:
+        return cls(precision=precision)
 
     @classmethod
     def for_training(
         cls,
         gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
+        precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
     ) -> Self:
         return cls(
             gradient_estimator=gradient_estimator,
+            precision=precision,
         )
 
 

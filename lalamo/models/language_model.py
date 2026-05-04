@@ -112,21 +112,25 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         token_ids: Int[Array, "batch tokens"],
         state_capacity: int,
         lengths_without_padding: Int[Array, " batch"] | None = None,
+        forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
         keychain: Keychain,
     ) -> PrefillResults:
         batch_size, sequence_length = token_ids.shape
         if lengths_without_padding is None:
             lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
+        if forward_pass_config is None:
+            forward_pass_config = DecoderForwardPassConfig.for_inference()
 
         token_positions = jnp.broadcast_to(
             jnp.arange(sequence_length, dtype=jnp.int32),
             (batch_size, sequence_length),
         )
+        state_dtype = forward_pass_config.embedding_forward_pass_config.activation_dtype
         state = self.decoder.init_static_state(
             batch_size,
             state_capacity,
-            self.decoder.embedding.embedding_matrix.dtype,
+            state_dtype,
         )
         decoder_result = self.decoder(
             token_ids=token_ids,
@@ -134,7 +138,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             state=state,
             return_updated_state=True,
             lengths_without_padding=lengths_without_padding,
-            forward_pass_config=DecoderForwardPassConfig.for_inference(),
+            forward_pass_config=forward_pass_config,
             keychain=keychain,
         )
         assert decoder_result.updated_state is not None
@@ -155,11 +159,17 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
         num_top_logits_to_return: int | None = None,
+        prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
+        decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
         keychain: Keychain,
     ) -> GenerationResults:
         if max_output_length < 1:
             raise ValueError("max_output_length must be at least 1.")
+        if prefill_forward_pass_config is None:
+            prefill_forward_pass_config = DecoderForwardPassConfig.for_inference()
+        if decode_forward_pass_config is None:
+            decode_forward_pass_config = DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN)
 
         batch_size, prompt_length = prompt_token_ids.shape
         sampling_policy = self.default_sampling_policy()
@@ -188,6 +198,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             prompt_token_ids,
             prompt_length + max_output_length + 1,
             prompt_lengths_without_padding,
+            prefill_forward_pass_config,
             keychain=prefill_keychain,
         )
         initial_state = DecodingState(
@@ -231,15 +242,12 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
 
             next_token_indices = state.last_token_indices + 1
             next_stop_flags = state.stop_flags | jnp.any(next_token_ids[:, None] == eos_token_ids[None, :], axis=-1)
-            forward_pass_mode = ForwardPassMode.MULTI_TOKEN
-            if batch_size == 1:
-                forward_pass_mode = ForwardPassMode.SINGLE_TOKEN
             decoder_result = self.decoder(
                 token_ids=next_token_ids[:, None],
                 token_positions=next_token_indices[:, None],
                 state=state.state,
                 return_updated_state=True,
-                forward_pass_config=DecoderForwardPassConfig.for_inference(forward_pass_mode),
+                forward_pass_config=decode_forward_pass_config,
                 keychain=Keychain(vmapped_keys=decoding_key, batch_key=decoding_keychain.batch_key),
             )
             assert decoder_result.updated_state is not None
@@ -282,14 +290,18 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         messages: Iterable[Message],
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
+        prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
+        decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
         keychain: Keychain,
     ) -> AssistantMessage:
         token_ids = jnp.asarray(self.token_codec.encode_request(messages), dtype=jnp.int32)[None, :]
         response_ids = self.generate_tokens(
             token_ids,
-            generation_config,
+            generation_config=generation_config,
             max_output_length=max_output_length,
+            prefill_forward_pass_config=prefill_forward_pass_config,
+            decode_forward_pass_config=decode_forward_pass_config,
             keychain=keychain,
         ).token_ids[0]
         return self.token_codec.decode_response(self._trim_at_eos(response_ids.tolist()))
@@ -300,11 +312,17 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
+        prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
+        decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
         keychain: Keychain,
     ) -> Iterable[Int[Array, ""]]:
         if max_output_length < 1:
             raise ValueError("max_output_length must be at least 1.")
+        if prefill_forward_pass_config is None:
+            prefill_forward_pass_config = DecoderForwardPassConfig.for_inference()
+        if decode_forward_pass_config is None:
+            decode_forward_pass_config = DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN)
 
         if eos_token_ids is not None:
             stop_token_ids = eos_token_ids
@@ -338,6 +356,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             padded_token_ids[None, :],
             padded_input_length + max_output_length + 1,
             length_without_padding,
+            prefill_forward_pass_config,
             keychain=prefill_keychain,
         )
 
@@ -361,7 +380,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 token_positions=next_token_index.reshape(1, 1),
                 state=state,
                 return_updated_state=True,
-                forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+                forward_pass_config=decode_forward_pass_config,
                 keychain=Keychain(vmapped_keys=decoding_key, batch_key=decoding_keychain.batch_key),
             )
             assert decoder_result.updated_state is not None
@@ -375,6 +394,8 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         messages: Iterable[Message],
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
+        prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
+        decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
         keychain: Keychain,
     ) -> Iterable[str]:
@@ -383,8 +404,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         previous_text = ""
         for token_id in self.stream_tokens(
             token_ids,
-            generation_config,
-            max_output_length,
+            generation_config=generation_config,
+            max_output_length=max_output_length,
+            prefill_forward_pass_config=prefill_forward_pass_config,
+            decode_forward_pass_config=decode_forward_pass_config,
             keychain=keychain,
         ):
             response_token_ids.append(int(token_id.item()))
