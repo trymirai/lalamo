@@ -26,7 +26,7 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
     token_ids = jnp.array(language_model.token_codec.encode_request(prompt))[None, :]
     result = language_model.generate_tokens(
         token_ids,
-        max_output_length=32,
+        max_output_length=1024,
         num_top_logits_to_return=num_top_logits_to_return,
         keychain=Keychain.init(0),
     )
@@ -59,7 +59,7 @@ def test_padding(language_model: LanguageModel) -> None:
     response_token_ids = language_model.generate_tokens(
         token_ids,
         prompt_lengths_without_padding=jnp.array([0], dtype=jnp.int32),
-        max_output_length=32,
+        max_output_length=1024,
         keychain=Keychain.init(1),
     ).token_ids.squeeze(0)
     response_text = language_model.token_codec.tokenizer.decode(response_token_ids)
@@ -68,7 +68,7 @@ def test_padding(language_model: LanguageModel) -> None:
     response_token_ids = language_model.generate_tokens(
         token_ids,
         prompt_lengths_without_padding=jnp.array([token_ids.size]),
-        max_output_length=32,
+        max_output_length=1024,
         keychain=Keychain.init(2),
     ).token_ids.squeeze(0)
     response_text = language_model.token_codec.tokenizer.decode(response_token_ids)
@@ -102,7 +102,7 @@ def test_batch_generation(language_model: LanguageModel) -> None:
         padded_token_ids,
         generation_config=generation_config,
         prompt_lengths_without_padding=batched_prompt_lengths,
-        max_output_length=32,
+        max_output_length=1024,
         keychain=Keychain.init(3),
     ).token_ids
 
@@ -140,7 +140,7 @@ def test_streaming_generation(language_model: LanguageModel) -> None:
 
     token_stream = language_model.stream_tokens(
         token_ids,
-        max_output_length=32,
+        max_output_length=1024,
         keychain=Keychain.init(4),
     )
     response_token_ids = jnp.array(list(token_stream))
@@ -158,7 +158,7 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
     eager_token_ids = language_model.generate_tokens(
         token_ids[None, :],
         generation_config=generation_config,
-        max_output_length=10,
+        max_output_length=1024,
         keychain=generation_keychain,
     ).token_ids.squeeze(0)
 

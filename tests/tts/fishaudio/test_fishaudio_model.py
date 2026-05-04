@@ -20,6 +20,7 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
+from lalamo.modules.decoder import DecoderForwardPassConfig
 from lalamo.sampling import SamplingPolicy
 from lalamo.utils.torch_interop import torch_to_jax
 from tests.common import assert_close
@@ -81,6 +82,7 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
         input_pos=input_pos,
         sampling_policy=sampling_policy,
         keychain=Keychain(vmapped_keys=vmapped_keys, batch_key=jax.random.key(456)),
+        forward_pass_config=DecoderForwardPassConfig.for_tracer_tests(),
     )
     output_lalamo = decode_result.token_codes
 

@@ -14,7 +14,7 @@ from lalamo.modules.audio.common_modules import (
     Snake1d,
     Snake1dConfig,
 )
-from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
+from lalamo.modules.embedding import EmbeddingForwardPassConfig, TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
@@ -266,7 +266,11 @@ class VectorQuantizeConfig(LalamoConfig):
         codebook_size: int,
         codebook_dim: int,
     ) -> "VectorQuantize":
-        codebook = self.codebook_config.init(initializer, codebook_size, codebook_dim)
+        codebook = self.codebook_config.init(
+            initializer,
+            model_dim=codebook_dim,
+            vocab_size=codebook_size,
+        )
         assert isinstance(codebook, TiedEmbedding)
 
         out_proj = self.out_proj_config.init(
@@ -310,6 +314,7 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
         z_p = call_vmapped(
             self.codebook.embed,
             embed_id,
+            forward_pass_config=EmbeddingForwardPassConfig(activation_dtype=self.codebook.embedding.dtype),
             keychain=embed_keychain,
             added_sharding_axis=ShardingAxis.DATA,
         )
@@ -377,9 +382,16 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
         *,
         keychain: Keychain,
     ) -> Float[Array, "tokens code_size"]:
-        first_quantizer, *remaining_quantizers = self.quantizers
+        num_input_codebooks, _ = codes.shape
+        if num_input_codebooks == 0:
+            raise ValueError("At least one codebook is required to decode residual vector quantized codes.")
+        if num_input_codebooks > self.n_codebooks:
+            raise ValueError(f"Expected at most {self.n_codebooks} codebooks, got {num_input_codebooks}.")
+
+        selected_quantizers = self.quantizers[:num_input_codebooks]
+        first_quantizer, *remaining_quantizers = selected_quantizers
         first_codes, *remaining_codes = codes
-        first_quantizer_keychain, *remaining_quantizer_keychains = keychain.split(self.n_codebooks)
+        first_quantizer_keychain, *remaining_quantizer_keychains = keychain.split(num_input_codebooks)
         z_q = first_quantizer.decode_code(
             first_codes,
             keychain=first_quantizer_keychain,

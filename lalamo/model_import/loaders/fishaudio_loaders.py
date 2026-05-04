@@ -433,10 +433,7 @@ def load_vector_quantize(
     Returns:
         VectorQuantize module with loaded weights.
     """
-    # Load codebook weights
-    codebook_weight = weights_dict[path / "codebook" / "weight"]
-    embedding = load_full_precision(module.codebook.embedding, codebook_weight)
-    codebook = eqx.tree_at(lambda m: (m.embedding,), module.codebook, (embedding,))
+    codebook = load_tied_embedding(module.codebook, weights_dict, path / "codebook")
 
     # Load out_proj with weight norm fusion
     # The original is a Conv1d with kernel_size=1, so weight shape is (out, in, 1)
