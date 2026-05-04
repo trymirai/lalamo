@@ -1,5 +1,3 @@
-The rules below are CRITICAL. Each rule should be respected. Rules can only be overridden by the user.
-
 # Workflow rules:
 - When given a coding task, AI Assistant carefully and deeply inspects the codebase to understand the context.
 - If the Assistant has access to search tools, it uses them to search for documentation and use case examples for external libraries.
@@ -38,6 +36,7 @@ The rules below are CRITICAL. Each rule should be respected. Rules can only be o
 - AI Assistant focuses on testing core functionality, and does not test minor details such as property accessors.
 - AI Assistant avoids boilerplate in the testing code, and tries to come up with the right generic abstractions.
 - AI Assistant should run the tests via `uv run pytest -m fast -n=4` after finishing any non-trivial changes.
+- AI Assistant runs pyrefly and ruff checks after every edit to make sure there are no type errors and linter warnings.
 
 # Python coding rules:
 - Never use pip to manage dependencies. Instead use uv commands, such as `uv add`.
@@ -49,6 +48,7 @@ The rules below are CRITICAL. Each rule should be respected. Rules can only be o
 - Prefer frozen dataclasses or named tuples as primary data structures.
 - Never use dicts in place of dataclasses.
 - __init__.py files should only contain reexports.
+- Avoid single-line if expressions. Prefer multi-line if statements.
 
 # Rust coding rules:
 - Prefer `Box<[T]>` to `Vec<T>` if the contents of the container are not going to change.

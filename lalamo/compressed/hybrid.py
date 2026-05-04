@@ -1,10 +1,9 @@
 from dataclasses import dataclass
 from typing import Literal, overload
 
-import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.module import Keychain, ParameterNorm, field
+from lalamo.module import Keychain
 from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import use_out_sharding
@@ -27,6 +26,7 @@ __all__ = [
 
 class IncoherenceProcessing(StrEnum):
     RANDOM_HADAMARD = "random_hadamard"
+    NONE = "none"
 
 
 @dataclass(frozen=True)
@@ -44,24 +44,10 @@ class HybridSpec(WeightMatrixSpec):
         if preconditioner is not None:
             raise ValueError("Preconditioned rounding is not implemented yet.")
 
-        u, singular_values, vh = jnp.linalg.svd(weights, full_matrices=False)
-        *_, svd_rank = singular_values.shape
-        truncated_rank = min(self.rank, svd_rank)
-        if truncated_rank < self.rank:
-            raise ValueError(f"Requested low-rank rank {self.rank}, but SVD only produced rank {truncated_rank}.")
-        singular_value_roots = jnp.sqrt(singular_values[..., :truncated_rank])
-        up_projection = u[..., :, :truncated_rank] * singular_value_roots[..., None, :]
-        down_projection = singular_value_roots[..., :, None] * vh[..., :truncated_rank, :]
-        return LowRankMatrix(
-            spec=self,
-            up_projection=up_projection,
-            down_projection=down_projection,
-        )
 
-
-class LowRankMatrix(WeightMatrix[LowRankSpec]):
-    down_projection: Float[Array, "... rank input_channels"] = field(norm=ParameterNorm.SPECTRAL)
-    up_projection: Float[Array, "... output_channels rank"] = field(norm=ParameterNorm.SPECTRAL)
+class HybridMatrix(WeightMatrix[HybridSpec]):
+    quantized: WeightMatrix
+    adapter: WeightMatrix | None
 
     def to_full_precision(self) -> FullPrecisionMatrix:
         return FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(self.decompress())
