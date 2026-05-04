@@ -98,11 +98,12 @@ def test_batch_generation(language_model: LanguageModel) -> None:
     )
 
     generation_config = GenerationConfig(temperature=0)
+    max_output_length = 32
     response_token_ids = language_model.generate_tokens(
         padded_token_ids,
         generation_config=generation_config,
         prompt_lengths_without_padding=batched_prompt_lengths,
-        max_output_length=1024,
+        max_output_length=max_output_length,
         keychain=Keychain.init(3),
     ).token_ids
 
@@ -123,7 +124,7 @@ def test_batch_generation(language_model: LanguageModel) -> None:
             padded,
             generation_config=generation_config,
             prompt_lengths_without_padding=lengths,
-            max_output_length=32,
+            max_output_length=max_output_length,
             keychain=Keychain.init(10 + pair_index),
         ).token_ids
 
@@ -155,17 +156,18 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
     generation_config = GenerationConfig(temperature=0)
 
     generation_keychain = Keychain.init(5)
+    max_output_length = 10
     eager_token_ids = language_model.generate_tokens(
         token_ids[None, :],
         generation_config=generation_config,
-        max_output_length=1024,
+        max_output_length=max_output_length,
         keychain=generation_keychain,
     ).token_ids.squeeze(0)
 
     streaming_token_generator = language_model.stream_tokens(
         token_ids,
         generation_config=generation_config,
-        max_output_length=10,
+        max_output_length=max_output_length,
         keychain=generation_keychain,
     )
     streaming_token_ids = jnp.array(list(streaming_token_generator))

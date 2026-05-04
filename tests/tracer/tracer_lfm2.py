@@ -1,4 +1,4 @@
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Self
 
@@ -52,6 +52,12 @@ class LFM2DecoderTracer(
             hf_rope = self.hf_model.model.rotary_emb
         return hf_rope.forward(x, position_ids)
 
+    def rope_fns(self) -> list[tuple[str, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]]]:
+        has_attention_layers = any(layer.is_attention_layer for layer in self.hf_model.model.layers)
+        if not has_attention_layers:
+            return []
+        return [("Global", self.global_rope)]
+
     def rmsnorm(self, rmsnorm: Lfm2RMSNorm, x: Tensor) -> Tensor:
         return rmsnorm.forward(x)
 
@@ -98,8 +104,14 @@ class LFM2DecoderTracer(
     def layer_pre_attention_norm(self, layer: Lfm2DecoderLayer) -> Lfm2RMSNorm:
         return layer.operator_norm
 
+    def layer_post_attention_norm(self, _layer: Lfm2DecoderLayer) -> None:
+        return None
+
     def layer_pre_mlp_norm(self, layer: Lfm2DecoderLayer) -> Lfm2RMSNorm:
         return layer.ffn_norm
+
+    def layer_post_mlp_norm(self, _layer: Lfm2DecoderLayer) -> None:
+        return None
 
     def layer_attention(self, layer: Lfm2DecoderLayer) -> Lfm2Attention | Lfm2ShortConv:
         return layer.self_attn if layer.is_attention_layer else layer.conv
