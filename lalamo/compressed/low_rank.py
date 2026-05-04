@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Literal, overload
 
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
@@ -81,26 +80,6 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
     @use_out_sharding((None, None))
     def decompress(self) -> Float[Array, "... out_channels in_channels"]:
         return self.up_projection @ self.down_projection
-
-    @overload
-    def dot(
-        self,
-        vector: Float[Array, " in_channels"],
-        *,
-        keychain: Keychain,
-        forward_pass_config: MatmulConfig = MatmulConfig(),
-        transposed: Literal[False] = False,
-    ) -> Float[Array, "... out_channels"]: ...
-
-    @overload
-    def dot(
-        self,
-        vector: Float[Array, " out_channels"],
-        *,
-        keychain: Keychain,
-        forward_pass_config: MatmulConfig = MatmulConfig(),
-        transposed: Literal[True],
-    ) -> Float[Array, "... in_channels"]: ...
 
     def dot(
         self,

@@ -2,7 +2,7 @@ from abc import abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Literal, NamedTuple, Self, overload
+from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
 from jax.lax import stop_gradient
@@ -378,26 +378,6 @@ class AWQMatrixForTraining(AWQMatrix):
             ),
         )
 
-    @overload
-    def dot(
-        self,
-        vector: Float[Array, " in_channels"],
-        *,
-        keychain: Keychain,
-        forward_pass_config: MatmulConfig = MatmulConfig(),
-        transposed: Literal[False] = False,
-    ) -> Float[Array, "... out_channels"]: ...
-
-    @overload
-    def dot(
-        self,
-        vector: Float[Array, " out_channels"],
-        *,
-        keychain: Keychain,
-        forward_pass_config: MatmulConfig = MatmulConfig(),
-        transposed: Literal[True],
-    ) -> Float[Array, "... in_channels"]: ...
-
     def dot(
         self,
         vector: Float[Array, " channels"],
@@ -573,26 +553,6 @@ class AWQMatrixForInference(AWQMatrix):
             self.spec.group_size,
             self.spec.bits,
         )
-
-    @overload
-    def dot(
-        self,
-        vector: Float[Array, " in_channels"],
-        *,
-        keychain: Keychain,
-        forward_pass_config: MatmulConfig = MatmulConfig(),
-        transposed: Literal[False] = False,
-    ) -> Float[Array, "... out_channels"]: ...
-
-    @overload
-    def dot(
-        self,
-        vector: Float[Array, " out_channels"],
-        *,
-        keychain: Keychain,
-        forward_pass_config: MatmulConfig = MatmulConfig(),
-        transposed: Literal[True],
-    ) -> Float[Array, "... in_channels"]: ...
 
     def dot(
         self,

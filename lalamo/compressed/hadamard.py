@@ -1,18 +1,15 @@
 from functools import partial
 from math import prod, sqrt
-from typing import Literal
+from typing import Any, Literal, cast
 
-import equinox as eqx
 import jax
 import jax.experimental.pallas.triton as pltriton
 import jax.numpy as jnp
 from jax.experimental import pallas as pl
-from jaxtyping import Array, Float, Int, Key
+from jaxtyping import Array, Float
 
 __all__ = [
-    "RHTFactors",
     "hadamard_transform",
-    "random_incoherence_factors",
 ]
 
 
@@ -91,18 +88,26 @@ def _pallas_hadamard_transform_kernel(
     blocks_per_program: Literal[1, 4, 8],
     scale: float,
 ) -> None:
+    inputs = cast("Any", inputs_ref)
+    outputs = cast("Any", outputs_ref)
     block_offsets = jax.lax.broadcasted_iota(jnp.int32, (blocks_per_program, 32), 0) * block_size
     element_offsets = jax.lax.broadcasted_iota(jnp.int32, (blocks_per_program, 32), 1)
     first_quarter_offsets = block_offsets + element_offsets
-    first_quarter = inputs_ref[first_quarter_offsets].astype(jnp.float32)
+    first_quarter = inputs[first_quarter_offsets].astype(jnp.float32)
+    second_quarter_offsets = first_quarter_offsets
+    third_quarter_offsets = first_quarter_offsets
+    fourth_quarter_offsets = first_quarter_offsets
+    second_quarter = first_quarter
+    third_quarter = first_quarter
+    fourth_quarter = first_quarter
     if block_size >= 64:
         second_quarter_offsets = first_quarter_offsets + 32
-        second_quarter = inputs_ref[second_quarter_offsets].astype(jnp.float32)
+        second_quarter = inputs[second_quarter_offsets].astype(jnp.float32)
     if block_size >= 128:
         third_quarter_offsets = first_quarter_offsets + 64
         fourth_quarter_offsets = first_quarter_offsets + 96
-        third_quarter = inputs_ref[third_quarter_offsets].astype(jnp.float32)
-        fourth_quarter = inputs_ref[fourth_quarter_offsets].astype(jnp.float32)
+        third_quarter = inputs[third_quarter_offsets].astype(jnp.float32)
+        fourth_quarter = inputs[fourth_quarter_offsets].astype(jnp.float32)
 
     for mask in (1, 2, 4, 8, 16):
         first_partners = _warp_shuffle_xor(first_quarter, mask)
@@ -135,24 +140,24 @@ def _pallas_hadamard_transform_kernel(
     if block_size >= 64:
         first_half = first_quarter + second_quarter
         second_half = first_quarter - second_quarter
-    if block_size >= 128:
-        third_half = third_quarter + fourth_quarter
-        fourth_half = third_quarter - fourth_quarter
-        first_quarter = first_half + third_half
-        second_quarter = second_half + fourth_half
-        third_quarter = first_half - third_half
-        fourth_quarter = second_half - fourth_half
-    elif block_size >= 64:
-        first_quarter = first_half
-        second_quarter = second_half
+        if block_size >= 128:
+            third_half = third_quarter + fourth_quarter
+            fourth_half = third_quarter - fourth_quarter
+            first_quarter = first_half + third_half
+            second_quarter = second_half + fourth_half
+            third_quarter = first_half - third_half
+            fourth_quarter = second_half - fourth_half
+        else:
+            first_quarter = first_half
+            second_quarter = second_half
 
     normalization = jnp.asarray(scale, dtype=outputs_ref.dtype).astype(jnp.float32)
-    outputs_ref[first_quarter_offsets] = (first_quarter * normalization).astype(outputs_ref.dtype)
+    outputs[first_quarter_offsets] = (first_quarter * normalization).astype(outputs_ref.dtype)
     if block_size >= 64:
-        outputs_ref[second_quarter_offsets] = (second_quarter * normalization).astype(outputs_ref.dtype)
+        outputs[second_quarter_offsets] = (second_quarter * normalization).astype(outputs_ref.dtype)
     if block_size >= 128:
-        outputs_ref[third_quarter_offsets] = (third_quarter * normalization).astype(outputs_ref.dtype)
-        outputs_ref[fourth_quarter_offsets] = (fourth_quarter * normalization).astype(outputs_ref.dtype)
+        outputs[third_quarter_offsets] = (third_quarter * normalization).astype(outputs_ref.dtype)
+        outputs[fourth_quarter_offsets] = (fourth_quarter * normalization).astype(outputs_ref.dtype)
 
 
 def _pallas_hadamard_transform(
@@ -205,32 +210,3 @@ def _hadamard_transform_bwd(
 
 
 hadamard_transform.defvjp(_hadamard_transform_fwd, _hadamard_transform_bwd)
-
-
-def random_incoherence_factors(
-    channels: int,
-    key: Key[Array, ""],
-) -> Int[Array, " channels"]:
-    factors = jnp.where(jax.random.bernoulli(key, shape=(channels,)), 1, -1)
-    return factors.astype(jnp.int32)
-
-
-class RHTFactors(eqx.Module):
-    input_factors: Int[Array, " in_channels"]
-    output_factors: Int[Array, " out_channels"]
-
-    @classmethod
-    def random_init(
-        cls,
-        input_dim: int,
-        output_dim: int,
-        key: Key[Array, ""],
-    ) -> "RHTFactors":
-        input_key, output_key = jax.random.split(key, 2)
-        return cls(
-            input_factors=random_incoherence_factors(channels=input_dim, key=input_key),
-            output_factors=random_incoherence_factors(
-                channels=output_dim,
-                key=output_key,
-            ),
-        )
