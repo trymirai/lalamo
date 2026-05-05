@@ -30,6 +30,7 @@ dynamic = ["version"]
 cpu = ["jax[cpu]>=0.8.1"]
 cuda = ["jax[cuda]>=0.8.1"]
 fishaudio = ["torch>=2.8.0", "transformers>=5.2.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
+gpu-kernels = ["tilelang>=0.1.9 ; platform_system == 'Linux' and platform_machine == 'x86_64'", "torch>=2.8.0"]
 nanocodec = ["torch>=2.8.0"]
 pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
 tpu = ["jax[tpu]>=0.8.1"]

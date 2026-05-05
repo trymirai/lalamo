@@ -1,3 +1,4 @@
+from functools import partial
 from math import prod
 from typing import Literal
 
@@ -6,7 +7,16 @@ import jax.numpy as jnp
 import pytest
 from jax.sharding import Mesh, Sharding
 
-from lalamo.compressed.awq import AWQMatrix, AWQMatrixForInference, AWQMatrixForTraining, AWQSpec
+from lalamo.compressed.awq import (
+    AWQMatrix,
+    AWQMatrixForInference,
+    AWQMatrixForTraining,
+    AWQSpec,
+    _awq_quantize,
+    _awq_quantized_dot_output_input,
+)
+from lalamo.compressed.rounding import deterministic_round_to_unsigned_grid
+from lalamo.module import Keychain
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import CompressionImplementation, Layout, Preconditioner, WeightMatrixSpec
@@ -109,6 +119,75 @@ def test_awq_compress_selects_requested_implementation(implementation: Compressi
         assert isinstance(matrix, AWQMatrixForTraining)
     else:
         assert isinstance(matrix, AWQMatrixForInference)
+
+
+def test_awq_training_grouped_dot_matches_materialized_forward_and_gradients() -> None:
+    bits = 4
+    group_size = 2
+    weights = _stored_weights(Layout.OUTPUT_INPUT, _logical_weights()).astype(jnp.bfloat16)
+    scales, zero_points = _manual_awq_affine_parameters(weights, bits=bits, group_size=group_size)
+    vector = jnp.array([0.4, -0.2, 0.7, -0.5], dtype=jnp.bfloat16)
+    cotangent = jnp.array([1.0, -0.5, 0.25, -0.75], dtype=jnp.float32)
+    round_fn = partial(deterministic_round_to_unsigned_grid, bits=bits)
+
+    def grouped_loss(
+        weights: jax.Array,
+        scales: jax.Array,
+        zero_points: jax.Array,
+        vector: jax.Array,
+    ) -> jax.Array:
+        result = _awq_quantized_dot_output_input(weights, scales, zero_points, vector, group_size, round_fn)
+        return jnp.sum(result.astype(jnp.float32) * cotangent)
+
+    def materialized_loss(
+        weights: jax.Array,
+        scales: jax.Array,
+        zero_points: jax.Array,
+        vector: jax.Array,
+    ) -> jax.Array:
+        quantized = _awq_quantize(weights, scales, zero_points, group_size=group_size, round_fn=round_fn)
+        result = quantized @ vector
+        return jnp.sum(result.astype(jnp.float32) * cotangent)
+
+    grouped_value, grouped_grads = jax.value_and_grad(grouped_loss, argnums=(0, 1, 2, 3))(
+        weights,
+        scales,
+        zero_points,
+        vector,
+    )
+    materialized_value, materialized_grads = jax.value_and_grad(materialized_loss, argnums=(0, 1, 2, 3))(
+        weights,
+        scales,
+        zero_points,
+        vector,
+    )
+
+    compressed_common.assert_close_arrays(result=grouped_value[None], reference=materialized_value[None])
+    for grouped_grad, materialized_grad in zip(grouped_grads, materialized_grads, strict=True):
+        compressed_common.assert_close_arrays(result=grouped_grad, reference=materialized_grad)
+
+
+@pytest.mark.parametrize("implementation", list(CompressionImplementation))
+def test_awq_output_input_dot_vmapped_over_bfloat16_inputs_matches_decompressed(
+    implementation: CompressionImplementation,
+) -> None:
+    matrix = AWQSpec(bits=4, group_size=2, layout=Layout.OUTPUT_INPUT).compress(
+        _logical_weights(),
+        implementation=implementation,
+    )
+    vectors = jnp.asarray(
+        [
+            [0.4, -0.2, 0.7, -0.5],
+            [-0.1, 0.3, -0.6, 0.8],
+        ],
+        dtype=jnp.bfloat16,
+    )
+    reference_weights = matrix.astype(vectors.dtype).decompress()
+
+    result = jax.vmap(lambda vector: matrix.dot(vector, keychain=Keychain.init(0)))(vectors)
+    reference = jax.vmap(lambda vector: reference_weights @ vector)(vectors)
+
+    compressed_common.assert_close_arrays(result=result, reference=reference)
 
 
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])

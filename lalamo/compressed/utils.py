@@ -12,6 +12,7 @@ __all__ = [
     "group_by_last_axis",
     "grouped_last_axis_shape",
     "min_max_within_groups",
+    "packed_uint4_group_dot",
     "scale_from_min_max",
     "unsigned_qmax",
 ]
@@ -50,6 +51,29 @@ def expand_last_axis_groups(
 ) -> Float[Array, "..."]:
     expanded = jnp.broadcast_to(grouped[..., None], (*grouped.shape, group_size))
     return rearrange(expanded, "... groups group_size -> ... (groups group_size)")
+
+
+def packed_uint4_group_dot(
+    packed_weights: Array,
+    vector: Float[Array, " channels"],
+    group_size: int,
+) -> tuple[Float[Array, "rows groups"], Float[Array, " groups"]]:
+    rows, packed_cols = packed_weights.shape
+    groups = vector.shape[0] // group_size
+    packed_group_size = group_size // 2
+    assert group_size % 2 == 0
+    assert packed_cols == groups * packed_group_size
+
+    grouped = packed_weights.reshape(rows, groups, packed_group_size)
+    lo = jnp.bitwise_and(grouped, jnp.uint8(0x0F)).astype(jnp.float32)
+    hi = jnp.bitwise_and(jnp.right_shift(grouped, jnp.uint8(4)), jnp.uint8(0x0F)).astype(jnp.float32)
+
+    vector_groups = vector.reshape(groups, group_size).astype(jnp.float32)
+    even_values = vector_groups[:, 0::2]
+    odd_values = vector_groups[:, 1::2]
+    int_dot = jnp.sum(lo * even_values[None, :, :] + hi * odd_values[None, :, :], axis=-1)
+    vector_sums = jnp.sum(vector_groups, axis=-1)
+    return int_dot, vector_sums
 
 
 def unsigned_qmax(bits: int) -> int:

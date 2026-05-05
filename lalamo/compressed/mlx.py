@@ -2,7 +2,7 @@ from abc import abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Literal, NamedTuple, Self
+from typing import TYPE_CHECKING, Literal, NamedTuple, Self
 
 import jax.numpy as jnp
 from jax.lax import stop_gradient
@@ -32,8 +32,12 @@ from .utils import (
     expand_last_axis_groups,
     group_by_last_axis,
     min_max_within_groups,
+    packed_uint4_group_dot,
     scale_from_min_max,
 )
+
+if TYPE_CHECKING:
+    from .tilelang_dot import TileLangDot
 
 __all__ = [
     "MLXMatrix",
@@ -87,6 +91,25 @@ def _mlx_quantize(
     return round_fn(int_scale_weights) * expanded_scales + expanded_biases
 
 
+def _mlx_quantized_dot_output_input(
+    weights: Float[Array, "rows cols"],
+    scales: Float[Array, "rows groups"],
+    biases: Float[Array, "rows groups"],
+    vector: Float[Array, " channels"],
+    group_size: int,
+    round_fn: Callable[[Float[Array, "rows groups group_size"]], Float[Array, "rows groups group_size"]],
+) -> Float[Array, " rows"]:
+    grouped_weights = group_by_last_axis(weights, group_size=group_size)
+    int_scale_weights = (grouped_weights - stop_gradient(biases[..., None])) / stop_gradient(scales[..., None])
+    rounded_weights = round_fn(int_scale_weights)
+
+    vector_groups = vector.reshape(vector.shape[0] // group_size, group_size).astype(jnp.float32)
+    int_dot = jnp.sum(rounded_weights.astype(jnp.float32) * vector_groups[None, :, :], axis=-1)
+    vector_sums = jnp.sum(vector_groups, axis=-1)
+    group_outputs = int_dot * scales.astype(jnp.float32) + vector_sums[None, :] * biases.astype(jnp.float32)
+    return jnp.sum(group_outputs, axis=-1).astype(vector.dtype)
+
+
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
 def _mlx_pack_master_weights(
     weights: Float[Array, "... rows cols"],
@@ -116,6 +139,18 @@ def _mlx_unpack_master_weights(
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     expanded_biases = expand_last_axis_groups(biases, group_size=group_size)
     return int_weights.astype(scales.dtype) * expanded_scales + expanded_biases
+
+
+def _mlx_dot_output_input_4bit(
+    packed_weights: Int[Array, "rows packed_cols"],
+    scales: Float[Array, "rows groups"],
+    biases: Float[Array, "rows groups"],
+    vector: Float[Array, " channels"],
+    group_size: int,
+) -> Float[Array, " rows"]:
+    int_dot, vector_sums = packed_uint4_group_dot(packed_weights, vector, group_size)
+    group_outputs = int_dot * scales.astype(jnp.float32) + vector_sums[None, :] * biases.astype(jnp.float32)
+    return jnp.sum(group_outputs, axis=-1).astype(vector.dtype)
 
 
 @dataclass(frozen=True)
@@ -310,17 +345,29 @@ class MLXMatrixForTraining(MLXMatrix):
         transposed: bool = False,
     ) -> Float[Array, "... channels"]:
         self._raise_if_batched()
+        round_fn = partial(
+            round_to_unsigned_grid,
+            bits=self.spec.bits,
+            keychain=keychain,
+            gradient_estimator=forward_pass_config.gradient_estimator,
+        )
+        if self.spec.layout == Layout.OUTPUT_INPUT and vector.dtype in (jnp.bfloat16, jnp.float16) and not transposed:
+            result = _mlx_quantized_dot_output_input(
+                self.weights.astype(vector.dtype),
+                self.scales.astype(vector.dtype),
+                self.biases.astype(vector.dtype),
+                vector,
+                self.spec.group_size,
+                round_fn,
+            )
+            return reshard_as(result, vector)
+
         dequantized_weights = _mlx_quantize(
             self.weights.astype(vector.dtype),
             self.scales.astype(vector.dtype),
             self.biases.astype(vector.dtype),
             group_size=self.spec.group_size,
-            round_fn=partial(
-                round_to_unsigned_grid,
-                bits=self.spec.bits,
-                keychain=keychain,
-                gradient_estimator=forward_pass_config.gradient_estimator,
-            ),
+            round_fn=round_fn,
         )
         layout = self.spec.layout
         if transposed:
@@ -393,6 +440,20 @@ class MLXMatrixForInference(MLXMatrix):
             packed_weights=self.packed_weights,
             scales=self.scales.astype(dtype),
             biases=self.biases.astype(dtype),
+        )
+
+    def to_tilelang_dot(self, dtype: DTypeLike = jnp.float16) -> "TileLangDot":
+        if self.spec.bits != 4 or self.spec.group_size != 32 or self.spec.layout != Layout.OUTPUT_INPUT:
+            raise ValueError("TileLang dot requires 4-bit OUTPUT_INPUT weights with group_size=32.")
+
+        from .tilelang_dot import TileLangDot  # noqa: PLC0415
+
+        return TileLangDot.from_mlx_packed(
+            self.packed_weights,
+            self.scales.astype(dtype),
+            self.biases.astype(dtype),
+            self.spec.group_size,
+            dtype,
         )
 
     def load_exported(
@@ -474,6 +535,22 @@ class MLXMatrixForInference(MLXMatrix):
         transposed: bool = False,
     ) -> Float[Array, "... channels"]:
         self._raise_if_batched()
+        if (
+            self.spec.bits == 4
+            and self.spec.group_size % 2 == 0
+            and self.spec.layout == Layout.OUTPUT_INPUT
+            and vector.dtype in (jnp.bfloat16, jnp.float16)
+            and not transposed
+        ):
+            result = _mlx_dot_output_input_4bit(
+                self.packed_weights,
+                self.scales.astype(vector.dtype),
+                self.biases.astype(vector.dtype),
+                vector,
+                self.spec.group_size,
+            )
+            return reshard_as(result, vector)
+
         weights = _mlx_unpack_master_weights(
             self.packed_weights,
             self.scales.astype(vector.dtype),

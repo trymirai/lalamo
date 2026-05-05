@@ -2,7 +2,7 @@ from abc import abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Literal, NamedTuple, Self
+from typing import TYPE_CHECKING, Literal, NamedTuple, Self
 
 import jax.numpy as jnp
 from jax.lax import stop_gradient
@@ -37,8 +37,12 @@ from .utils import (
     expand_last_axis_groups,
     group_by_last_axis,
     min_max_within_groups,
+    packed_uint4_group_dot,
     scale_from_min_max,
 )
+
+if TYPE_CHECKING:
+    from .tilelang_dot import TileLangDot
 
 __all__ = [
     "AWQMatrix",
@@ -119,6 +123,31 @@ def _awq_quantize(
     return (int_weights - expanded_int_zero_points) * expanded_scales
 
 
+def _awq_quantized_dot_output_input(
+    weights: Float[Array, "rows cols"],
+    scales: Float[Array, "rows groups"],
+    zero_points: Float[Array, "rows groups"],
+    vector: Float[Array, " channels"],
+    group_size: int,
+    round_fn: Callable[[Float[Array, "..."]], Float[Array, "..."]],
+) -> Float[Array, " rows"]:
+    int_scale_zero_points = _awq_master_zero_points_to_int_scale(zero_points, stop_gradient(scales))
+    int_zero_points = round_fn(int_scale_zero_points)
+    rounded_zero_points = _awq_int_scale_zero_points_to_master(int_zero_points, scales)
+
+    grouped_weights = group_by_last_axis(weights, group_size=group_size)
+    int_scale_weights = (grouped_weights + stop_gradient(rounded_zero_points[..., None])) / stop_gradient(
+        scales[..., None]
+    )
+    int_weights = round_fn(int_scale_weights)
+
+    vector_groups = vector.reshape(vector.shape[0] // group_size, group_size).astype(jnp.float32)
+    int_dot = jnp.sum(int_weights.astype(jnp.float32) * vector_groups[None, :, :], axis=-1)
+    vector_sums = jnp.sum(vector_groups, axis=-1)
+    group_outputs = (int_dot - int_zero_points.astype(jnp.float32) * vector_sums[None, :]) * scales.astype(jnp.float32)
+    return jnp.sum(group_outputs, axis=-1).astype(vector.dtype)
+
+
 def _awq_pack_master_zero_points(
     zero_points: Float[Array, "... rows groups"],
     scales: Float[Array, "... rows groups"],
@@ -170,6 +199,19 @@ def _awq_unpack_master_weights(
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     expanded_int_zero_points = expand_last_axis_groups(int_zero_points, group_size=group_size)
     return (int_weights - expanded_int_zero_points) * expanded_scales
+
+
+def _awq_dot_output_input_4bit(
+    packed_weights: Int[Array, "rows packed_cols"],
+    scales: Float[Array, "rows groups"],
+    packed_zero_points: Int[Array, "rows packed_groups"],
+    vector: Float[Array, " channels"],
+    group_size: int,
+) -> Float[Array, " rows"]:
+    int_dot, vector_sums = packed_uint4_group_dot(packed_weights, vector, group_size)
+    int_zero_points = unpack_uint8_to_uint(packed_zero_points, bits=4, dtype=jnp.float32)
+    group_outputs = (int_dot - int_zero_points * vector_sums[None, :]) * scales.astype(jnp.float32)
+    return jnp.sum(group_outputs, axis=-1).astype(vector.dtype)
 
 
 @dataclass(frozen=True)
@@ -389,17 +431,29 @@ class AWQMatrixForTraining(AWQMatrix):
         transposed: bool = False,
     ) -> Float[Array, "... channels"]:
         self._raise_if_batched()
+        round_fn = partial(
+            round_to_unsigned_grid,
+            bits=self.spec.bits,
+            keychain=keychain,
+            gradient_estimator=forward_pass_config.gradient_estimator,
+        )
+        if self.spec.layout == Layout.OUTPUT_INPUT and vector.dtype in (jnp.bfloat16, jnp.float16) and not transposed:
+            result = _awq_quantized_dot_output_input(
+                self.weights.astype(vector.dtype),
+                self.scales.astype(vector.dtype),
+                self.zero_points.astype(vector.dtype),
+                vector,
+                self.spec.group_size,
+                round_fn,
+            )
+            return reshard_as(result, vector)
+
         dequantized_weights = _awq_quantize(
             self.weights.astype(vector.dtype),
             self.scales.astype(vector.dtype),
             self.zero_points.astype(vector.dtype),
             group_size=self.spec.group_size,
-            round_fn=partial(
-                round_to_unsigned_grid,
-                bits=self.spec.bits,
-                keychain=keychain,
-                gradient_estimator=forward_pass_config.gradient_estimator,
-            ),
+            round_fn=round_fn,
         )
         layout = self.spec.layout
         if transposed:
@@ -480,6 +534,20 @@ class AWQMatrixForInference(AWQMatrix):
             packed_weights=self.packed_weights,
             scales=self.scales.astype(dtype),
             packed_zero_points=self.packed_zero_points,
+        )
+
+    def to_tilelang_dot(self, dtype: DTypeLike = jnp.float16) -> "TileLangDot":
+        if self.spec.bits != 4 or self.spec.group_size != 32 or self.spec.layout != Layout.OUTPUT_INPUT:
+            raise ValueError("TileLang dot requires 4-bit OUTPUT_INPUT weights with group_size=32.")
+
+        from .tilelang_dot import TileLangDot  # noqa: PLC0415
+
+        return TileLangDot.from_awq_packed(
+            self.packed_weights,
+            self.scales.astype(dtype),
+            self.packed_zero_points,
+            self.spec.group_size,
+            dtype,
         )
 
     def load_exported(
@@ -565,6 +633,22 @@ class AWQMatrixForInference(AWQMatrix):
         transposed: bool = False,
     ) -> Float[Array, "... channels"]:
         self._raise_if_batched()
+        if (
+            self.spec.bits == 4
+            and self.spec.group_size % 2 == 0
+            and self.spec.layout == Layout.OUTPUT_INPUT
+            and vector.dtype in (jnp.bfloat16, jnp.float16)
+            and not transposed
+        ):
+            result = _awq_dot_output_input_4bit(
+                self.packed_weights,
+                self.scales.astype(vector.dtype),
+                self.packed_zero_points,
+                vector,
+                self.spec.group_size,
+            )
+            return reshard_as(result, vector)
+
         weights = _awq_unpack_master_weights(
             self.packed_weights,
             self.scales.astype(vector.dtype),
