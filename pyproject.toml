@@ -167,6 +167,7 @@ ignore = [
     "COM812",   # Require trailing commas in multiline literals and calls.
 
     # Comments, TODOs, and debug output.r
+    "RUF100",   # Allow explanatory noqa directives for rules ignored by this project.
     "FIX002",   # Flag TODO comments.
     "T20",      # flake8-print rules: flag `print()` and `pprint()` calls.
     "TD003",    # Require TODO comments to include an issue link.

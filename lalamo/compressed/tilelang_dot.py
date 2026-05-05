@@ -1,5 +1,5 @@
 # pyrefly: ignore-errors
-# ruff: noqa: ANN001, ANN202, ANN204, PLC0415, N806, N812
+# ruff: noqa: ANN001, ANN202, ANN204, ERA001, PLC0415, N806, N812
 from collections.abc import Callable
 from functools import lru_cache
 from typing import Literal
