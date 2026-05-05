@@ -131,9 +131,8 @@ def _compile_tilelang_gemv(
     dtype: str,
 ) -> Callable[..., None]:
     tilelang, T, unpack_uint4 = _require_tilelang()
-    use_single_row_block = scheme == "awq" and dtype == "bfloat16"
-    reduce_thread = 128 if use_single_row_block else 64
-    rows_per_block = 1 if use_single_row_block else 2
+    reduce_thread = 64
+    rows_per_block = 2
     micro_k = 16
     packed_micro_k = micro_k // 2
     block_k = reduce_thread * micro_k
