@@ -97,7 +97,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
     def default_sampling_policy(self) -> SamplingPolicy:
         return self.config.generation_config.default_policy()
 
-    def _trim_at_eos(self, token_ids: list[int]) -> list[int]:
+    def trim_at_eos(self, token_ids: list[int]) -> list[int]:
         if not self.config.generation_config.stop_token_ids:
             return token_ids
         stop_token_ids = set(self.config.generation_config.stop_token_ids)
@@ -107,7 +107,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         )
         return token_ids[:response_length]
 
-    def _prefill(
+    def _trim_at_eos(self, token_ids: list[int]) -> list[int]:
+        return self.trim_at_eos(token_ids)
+
+    def prefill_tokens(
         self,
         token_ids: Int[Array, "batch tokens"],
         state_capacity: int,
@@ -147,6 +150,21 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             state=decoder_result.updated_state,
         )
 
+    def _prefill(
+        self,
+        token_ids: Int[Array, "batch tokens"],
+        state_capacity: int,
+        lengths_without_padding: Int[Array, " batch"] | None = None,
+        *,
+        keychain: Keychain,
+    ) -> PrefillResults:
+        return self.prefill_tokens(
+            token_ids=token_ids,
+            state_capacity=state_capacity,
+            lengths_without_padding=lengths_without_padding,
+            keychain=keychain,
+        )
+
     def generate_tokens(
         self,
         prompt_token_ids: Int[Array, "batch prompt_tokens"],
@@ -184,7 +202,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             eos_token_ids = jnp.asarray(self.config.generation_config.stop_token_ids, dtype=jnp.int32)
 
         prefill_keychain, sampling_keychain, decoding_keychain = keychain.split(3)
-        prefill_results = self._prefill(
+        prefill_results = self.prefill_tokens(
             prompt_token_ids,
             prompt_length + max_output_length + 1,
             prompt_lengths_without_padding,
@@ -292,7 +310,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             max_output_length=max_output_length,
             keychain=keychain,
         ).token_ids[0]
-        return self.token_codec.decode_response(self._trim_at_eos(response_ids.tolist()))
+        return self.token_codec.decode_response(self.trim_at_eos(response_ids.tolist()))
 
     def stream_tokens(
         self,
@@ -334,7 +352,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             )
 
         prefill_keychain, sampling_keychain, decoding_keychain = keychain.split(3)
-        prefill_results = self._prefill(
+        prefill_results = self.prefill_tokens(
             padded_token_ids[None, :],
             padded_input_length + max_output_length + 1,
             length_without_padding,

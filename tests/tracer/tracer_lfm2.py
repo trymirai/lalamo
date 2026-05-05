@@ -104,14 +104,14 @@ class LFM2DecoderTracer(
     def layer_pre_attention_norm(self, layer: Lfm2DecoderLayer) -> Lfm2RMSNorm:
         return layer.operator_norm
 
-    def layer_post_attention_norm(self, _layer: Lfm2DecoderLayer) -> None:
-        return None
+    def layer_post_attention_norm(self, layer: Lfm2DecoderLayer) -> None:
+        del layer
 
     def layer_pre_mlp_norm(self, layer: Lfm2DecoderLayer) -> Lfm2RMSNorm:
         return layer.ffn_norm
 
-    def layer_post_mlp_norm(self, _layer: Lfm2DecoderLayer) -> None:
-        return None
+    def layer_post_mlp_norm(self, layer: Lfm2DecoderLayer) -> None:
+        del layer
 
     def layer_attention(self, layer: Lfm2DecoderLayer) -> Lfm2Attention | Lfm2ShortConv:
         return layer.self_attn if layer.is_attention_layer else layer.conv

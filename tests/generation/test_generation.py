@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 import pytest
 
+from lalamo.batching import BatchingConfig, FixedSizeBatching
 from lalamo.model_import.model_spec import LanguageModelSpec
 from lalamo.models import LanguageModel
 from lalamo.models.chat_codec import UserMessage
@@ -176,3 +177,16 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
         eager_token_ids.squeeze().tolist(),
         streaming_token_ids.squeeze().tolist(),
     )
+
+    batching = FixedSizeBatching(model=language_model)
+    [(idx, batch_response)] = list(
+        batching.reply_many(
+            [prompt],
+            generation_config=generation_config,
+            batching_config=BatchingConfig(batch_size=1, max_output_length=10),
+            keychain=generation_keychain,
+        ),
+    )
+    assert idx == 0
+    streaming_response = language_model.token_codec.decode_response(streaming_token_ids.tolist())
+    assert batch_response == streaming_response
