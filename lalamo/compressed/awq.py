@@ -2,7 +2,7 @@ from abc import abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Literal, NamedTuple, Self
+from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
 from jax import custom_vjp
@@ -35,6 +35,7 @@ from lalamo.weight_matrix import (
 
 from .packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from .rounding import _mask_straight_through_gradients, deterministic_round_to_unsigned_grid, round_to_unsigned_grid
+from .tilelang_dot import TileLangDot
 from .utils import (
     expand_last_axis_groups,
     group_by_last_axis,
@@ -42,9 +43,6 @@ from .utils import (
     packed_uint4_group_dot,
     scale_from_min_max,
 )
-
-if TYPE_CHECKING:
-    from .tilelang_dot import TileLangDot
 
 __all__ = [
     "AWQMatrix",
@@ -656,8 +654,6 @@ class AWQMatrixForInference(AWQMatrix):
     def to_tilelang_dot(self, dtype: DTypeLike = jnp.float16) -> "TileLangDot":
         if self.spec.bits != 4 or self.spec.group_size != 32 or self.spec.layout != Layout.OUTPUT_INPUT:
             raise ValueError("TileLang dot requires 4-bit OUTPUT_INPUT weights with group_size=32.")
-
-        from .tilelang_dot import TileLangDot
 
         return TileLangDot.from_awq_packed(
             self.packed_weights,
