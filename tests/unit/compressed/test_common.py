@@ -467,6 +467,33 @@ def test_compressed_matrix_dot_vmapped_over_inputs_matches_reference_and_preserv
 
 
 @pytest.mark.parametrize("case", COMPRESSED_MATRIX_CASES)
+@pytest.mark.parametrize("implementation", list(CompressionImplementation))
+def test_output_input_bfloat16_dot_vmapped_over_inputs_matches_reference(
+    case: CompressedMatrixCase,
+    implementation: CompressionImplementation,
+) -> None:
+    matrix = _compress(
+        case,
+        logical_weights(case),
+        layout=Layout.OUTPUT_INPUT,
+        implementation=implementation,
+    )
+    vectors = jnp.asarray(
+        [
+            [0.4, -0.2, 0.7, -0.5],
+            [-0.1, 0.3, -0.6, 0.8],
+        ],
+        dtype=jnp.bfloat16,
+    )
+
+    result = jax.vmap(lambda vector: matrix.dot(vector, keychain=Keychain.init(10)))(vectors)
+    reference = jax.vmap(lambda vector: matrix.astype(vectors.dtype).decompress() @ vector)(vectors)
+
+    assert result.dtype == vectors.dtype
+    assert_close_arrays(result=result, reference=reference)
+
+
+@pytest.mark.parametrize("case", COMPRESSED_MATRIX_CASES)
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
 @pytest.mark.parametrize("implementation", list(CompressionImplementation))
 def test_batched_compressed_matrix_dot_requires_vmap_and_matches_expert_reference(
