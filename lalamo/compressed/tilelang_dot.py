@@ -65,9 +65,9 @@ class TileLangDot:
             self.affine = affine.to(self.output_dtype).contiguous()
         else:
             self.affine = _jax_to_torch(affine).to(self.output_dtype).contiguous()
-        self.outputs = {1: torch.empty((1, rows), dtype=self.output_dtype, device=self.weights.device)}
 
     def __call__(self, inputs):
+        torch = _require_torch()
         if inputs.__class__.__module__.startswith("torch"):
             x = inputs.reshape(-1, self.channels)
         else:
@@ -77,14 +77,11 @@ class TileLangDot:
         if not x.is_contiguous():
             x = x.contiguous()
         batch = x.shape[0]
-        output = self.outputs.get(batch)
-        if output is None:
-            output = _require_torch().empty(
-                (batch, self.rows),
-                dtype=self.output_dtype,
-                device=self.weights.device,
-            )
-            self.outputs[batch] = output
+        output = torch.empty(
+            (batch, self.rows),
+            dtype=self.output_dtype,
+            device=self.weights.device,
+        )
         kernel = (
             self.kernel
             if batch == 1
