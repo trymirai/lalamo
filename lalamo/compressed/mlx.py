@@ -208,10 +208,13 @@ def _mlx_deterministic_quantized_dot_output_input_bwd(
     biases_f32 = biases.astype(jnp.float32)
     rounded_f32 = rounded_weights.astype(jnp.float32)
 
-    round_grad = output_grad[:, None, None] * scales_f32[..., None] * vector_groups[None, :, :]
-    round_grad = round_grad.astype(int_scale_weights.dtype)
-    int_scale_grad = _mask_straight_through_gradients(int_scale_weights, round_grad, bits=bits)
-    weights_grad = (int_scale_grad / scales[..., None]).reshape(int_scale_weights.shape[0], vector.shape[0])
+    weights_grad_groups = output_grad[:, None, None] * vector_groups[None, :, :]
+    weights_grad_groups = _mask_straight_through_gradients(
+        int_scale_weights,
+        weights_grad_groups.astype(int_scale_weights.dtype),
+        bits=bits,
+    )
+    weights_grad = weights_grad_groups.reshape(int_scale_weights.shape[0], vector.shape[0])
     scales_grad = output_grad[:, None] * jnp.sum(rounded_f32 * vector_groups[None, :, :], axis=-1)
     biases_grad = output_grad[:, None] * jnp.sum(vector_groups, axis=-1)[None, :]
     vector_grad_groups = jnp.sum(

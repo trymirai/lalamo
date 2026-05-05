@@ -282,26 +282,23 @@ def _awq_deterministic_quantized_dot_output_input_bwd(
     int_weights_f32 = int_weights.astype(jnp.float32)
     int_zero_points_f32 = int_zero_points.astype(jnp.float32)
 
-    weight_round_grad = output_grad[:, None, None] * scales_f32[..., None] * vector_groups[None, :, :]
-    weight_round_grad = weight_round_grad.astype(int_scale_weights.dtype)
-    int_scale_weights_grad = _mask_straight_through_gradients(
+    weights_grad_groups = output_grad[:, None, None] * vector_groups[None, :, :]
+    weights_grad_groups = _mask_straight_through_gradients(
         int_scale_weights,
-        weight_round_grad,
+        weights_grad_groups.astype(int_scale_weights.dtype),
         bits=bits,
     )
-    weights_grad = (int_scale_weights_grad / scales[..., None]).reshape(
+    weights_grad = weights_grad_groups.reshape(
         int_scale_weights.shape[0],
         vector.shape[0],
     )
 
-    zero_point_round_grad = -output_grad[:, None] * scales_f32 * vector_sums[None, :]
-    zero_point_round_grad = zero_point_round_grad.astype(int_scale_zero_points.dtype)
-    int_scale_zero_points_grad = _mask_straight_through_gradients(
+    zero_points_grad = -output_grad[:, None] * vector_sums[None, :]
+    zero_points_grad = _mask_straight_through_gradients(
         int_scale_zero_points,
-        zero_point_round_grad,
+        zero_points_grad.astype(int_scale_zero_points.dtype),
         bits=bits,
     )
-    zero_points_grad = int_scale_zero_points_grad / scales
 
     centered_weights = int_weights_f32 - int_zero_points_f32[..., None]
     scales_grad = output_grad[:, None] * jnp.sum(centered_weights * vector_groups[None, :, :], axis=-1)
