@@ -52,26 +52,53 @@ class TileLangDot:
         torch = _require_torch()
         rows, packed_cols = packed_weights.shape
         channels = packed_cols * 2
+        self.rows = rows
         self.channels = channels
+        self.group_size = group_size
+        self.scheme = scheme
+        self.tilelang_dtype = _tilelang_dtype(dtype)
         self.output_dtype = _torch_dtype(dtype)
-        self.kernel = _compile_tilelang_gemv(scheme, rows, channels, group_size, _tilelang_dtype(dtype))
+        self.kernel = _compile_tilelang_gemv(scheme, rows, channels, group_size, self.tilelang_dtype, 1)
         self.weights = _jax_to_torch(packed_weights).view(torch.int8).contiguous()
         self.scales = _jax_to_torch(scales).to(self.output_dtype).contiguous()
         if affine.__class__.__module__.startswith("torch"):
             self.affine = affine.to(self.output_dtype).contiguous()
         else:
             self.affine = _jax_to_torch(affine).to(self.output_dtype).contiguous()
-        self.output = torch.empty((1, rows), dtype=self.output_dtype, device=self.weights.device)
+        self.outputs = {1: torch.empty((1, rows), dtype=self.output_dtype, device=self.weights.device)}
 
-    def __call__(self, vector):
-        if vector.__class__.__module__.startswith("torch"):
-            x = vector.reshape(1, self.channels)
+    def __call__(self, inputs):
+        if inputs.__class__.__module__.startswith("torch"):
+            x = inputs.reshape(-1, self.channels)
         else:
-            x = _jax_to_torch(vector).reshape(1, self.channels)
+            x = _jax_to_torch(inputs).reshape(-1, self.channels)
         if x.dtype != self.output_dtype:
             x = x.to(self.output_dtype)
-        self.kernel(x, self.weights, self.scales, self.affine, self.output)
-        return self.output[0]
+        if not x.is_contiguous():
+            x = x.contiguous()
+        batch = x.shape[0]
+        output = self.outputs.get(batch)
+        if output is None:
+            output = _require_torch().empty(
+                (batch, self.rows),
+                dtype=self.output_dtype,
+                device=self.weights.device,
+            )
+            self.outputs[batch] = output
+        kernel = (
+            self.kernel
+            if batch == 1
+            else _compile_tilelang_gemv(
+                self.scheme,
+                self.rows,
+                self.channels,
+                self.group_size,
+                self.tilelang_dtype,
+                batch,
+            )
+        )
+        kernel(x, self.weights, self.scales, self.affine, output)
+        return output[0] if inputs.ndim == 1 else output
 
     def jax(self, vector: Array) -> Array:
         """Correctness-only bridge; the fast path keeps tensors in torch."""
@@ -129,6 +156,7 @@ def _compile_tilelang_gemv(
     channels: int,
     group_size: int,
     dtype: str,
+    batch: int,
 ) -> Callable[..., None]:
     tilelang, T, unpack_uint4 = _require_tilelang()
     reduce_thread = 64
@@ -148,16 +176,20 @@ def _compile_tilelang_gemv(
         groups: int,
         dtype: str,
         rows_per_block: int,
+        batch: int,
     ):
         @T.prim_func
         def gemv(
-            vector: T.Tensor((1, channels), dtype),
+            vectors: T.Tensor((batch, channels), dtype),
             weights: T.Tensor((rows, channels // 2), "int8"),
             scales: T.Tensor((rows, groups), dtype),
             affine: T.Tensor((rows, groups), dtype),
-            output: T.Tensor((1, rows), dtype),
+            output: T.Tensor((batch, rows), dtype),
         ):
-            with T.Kernel(rows // rows_per_block, 1, threads=(reduce_thread, rows_per_block)) as (row_block, _):
+            with T.Kernel(rows // rows_per_block, batch, threads=(reduce_thread, rows_per_block)) as (
+                row_block,
+                batch_index,
+            ):
                 vector_values = T.alloc_local((micro_k,), dtype)
                 packed_values = T.alloc_local((packed_micro_k,), "int8")
                 unpacked_values = T.alloc_local((micro_k,), dtype)
@@ -174,7 +206,7 @@ def _compile_tilelang_gemv(
                 for block in T.serial(channels // block_k):
                     for offset in T.vectorized(micro_k):
                         channel = block * block_k + thread * micro_k + offset
-                        vector_values[offset] = vector[0, channel]
+                        vector_values[offset] = vectors[batch_index, channel]
 
                     for offset in T.vectorized(packed_micro_k):
                         packed_channel = block * (reduce_thread * packed_micro_k) + thread * packed_micro_k + offset
@@ -205,8 +237,8 @@ def _compile_tilelang_gemv(
                 partials[row_offset, thread] = acc[0]
                 T.reduce_sum(partials, reduced, dim=1, clear=True)
                 if thread == 0:
-                    output[0, row] = reduced[row_offset]
+                    output[batch_index, row] = reduced[row_offset]
 
         return gemv
 
-    return kernel_factory(rows, channels, group_size, groups, dtype, rows_per_block)
+    return kernel_factory(rows, channels, group_size, groups, dtype, rows_per_block, batch)

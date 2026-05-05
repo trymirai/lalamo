@@ -12,6 +12,7 @@ from lalamo.compressed.mlx import (
     MLXMatrixForInference,
     MLXMatrixForTraining,
     MLXSpec,
+    _mlx_deterministic_quantized_dot_output_input,
     _mlx_quantize,
     _mlx_quantized_dot_output_input,
 )
@@ -141,6 +142,15 @@ def test_mlx_training_grouped_dot_matches_materialized_forward_and_gradients() -
         result = _mlx_quantized_dot_output_input(weights, scales, biases, vector, group_size, round_fn)
         return jnp.sum(result.astype(jnp.float32) * cotangent)
 
+    def custom_loss(
+        weights: jax.Array,
+        scales: jax.Array,
+        biases: jax.Array,
+        vector: jax.Array,
+    ) -> jax.Array:
+        result = _mlx_deterministic_quantized_dot_output_input(weights, scales, biases, vector, group_size, bits)
+        return jnp.sum(result.astype(jnp.float32) * cotangent)
+
     def materialized_loss(
         weights: jax.Array,
         scales: jax.Array,
@@ -157,6 +167,12 @@ def test_mlx_training_grouped_dot_matches_materialized_forward_and_gradients() -
         biases,
         vector,
     )
+    custom_value, custom_grads = jax.value_and_grad(custom_loss, argnums=(0, 1, 2, 3))(
+        weights,
+        scales,
+        biases,
+        vector,
+    )
     materialized_value, materialized_grads = jax.value_and_grad(materialized_loss, argnums=(0, 1, 2, 3))(
         weights,
         scales,
@@ -164,6 +180,9 @@ def test_mlx_training_grouped_dot_matches_materialized_forward_and_gradients() -
         vector,
     )
 
+    assert_close(result=custom_value[None], reference=grouped_value[None])
+    for custom_grad, grouped_grad in zip(custom_grads, grouped_grads, strict=True):
+        assert_close(result=custom_grad, reference=grouped_grad)
     assert_close(result=grouped_value[None], reference=materialized_value[None])
     for grouped_grad, materialized_grad in zip(grouped_grads, materialized_grads, strict=True):
         assert_close(result=grouped_grad, reference=materialized_grad)

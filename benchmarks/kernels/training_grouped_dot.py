@@ -11,8 +11,16 @@ import jax.numpy as jnp
 import jax.random as jr
 from jax import lax
 
-from lalamo.compressed.awq import _awq_quantize, _awq_quantized_dot_output_input
-from lalamo.compressed.mlx import _mlx_quantize, _mlx_quantized_dot_output_input
+from lalamo.compressed.awq import (
+    _awq_deterministic_quantized_dot_output_input,
+    _awq_quantize,
+    _awq_quantized_dot_output_input,
+)
+from lalamo.compressed.mlx import (
+    _mlx_deterministic_quantized_dot_output_input,
+    _mlx_quantize,
+    _mlx_quantized_dot_output_input,
+)
 from lalamo.compressed.rounding import deterministic_round_to_unsigned_grid
 
 
@@ -139,6 +147,7 @@ def main() -> None:
 
     cases = {
         "MLX": (
+            lambda w, s, b, x: _mlx_deterministic_quantized_dot_output_input(w, s, b, x, args.group_size, 4),
             lambda w, s, b, x: _mlx_quantized_dot_output_input(w, s, b, x, args.group_size, round_fn),
             lambda w, s, b, x: _mlx_quantize(w, s, b, group_size=args.group_size, round_fn=round_fn) @ x,
             lambda w, s, b, x: jnp.sum(
@@ -148,6 +157,7 @@ def main() -> None:
             ).astype(x.dtype),
         ),
         "AWQ": (
+            lambda w, s, z, x: _awq_deterministic_quantized_dot_output_input(w, s, z, x, args.group_size, 4),
             lambda w, s, z, x: _awq_quantized_dot_output_input(w, s, z, x, args.group_size, round_fn),
             lambda w, s, z, x: _awq_quantize(w, s, z, group_size=args.group_size, round_fn=round_fn) @ x,
             lambda w, s, z, x: jnp.sum(
@@ -159,20 +169,31 @@ def main() -> None:
     }
 
     print(f"shape={args.output_dim}x{args.input_dim} group={args.group_size} dtype=bf16")
-    for name, (fast, materialized, semantic_reference) in cases.items():
+    for name, (fast, grouped_reference, materialized, semantic_reference) in cases.items():
         x = xs[0]
         cotangent = cotangents[0]
         fast_output = jax.jit(fast)(weights, scales, affine, x).block_until_ready()
         reference_output = jax.jit(semantic_reference)(weights, scales, affine, x).block_until_ready()
         forward_diff = jnp.max(jnp.abs(fast_output.astype(jnp.float32) - reference_output.astype(jnp.float32)))
-        grad_max_abs, grad_rel_rms = _grad_error(fast, semantic_reference, weights, scales, affine, x, cotangent)
+        grad_max_abs, grad_rel_rms = _grad_error(fast, grouped_reference, weights, scales, affine, x, cotangent)
+        grouped_max_abs, grouped_rel_rms = _grad_error(
+            grouped_reference,
+            semantic_reference,
+            weights,
+            scales,
+            affine,
+            x,
+            cotangent,
+        )
         fast_forward = _time_forward(fast, weights, scales, affine, xs)
         reference_forward = _time_forward(materialized, weights, scales, affine, xs)
         fast_backward = _time_backward(fast, weights, scales, affine, xs, cotangents)
         reference_backward = _time_backward(materialized, weights, scales, affine, xs, cotangents)
         print(
             f"{name}: forward_diff={float(forward_diff):.6f} "
-            f"grad_max_abs={grad_max_abs:.6f} grad_rel_rms={grad_rel_rms:.6f} "
+            f"custom_grad_max_abs={grad_max_abs:.6f} custom_grad_rel_rms={grad_rel_rms:.6f} "
+            f"grouped_vs_materialized_grad_max_abs={grouped_max_abs:.6f} "
+            f"grouped_vs_materialized_grad_rel_rms={grouped_rel_rms:.6f} "
             f"forward={reference_forward:.2f}us->{fast_forward:.2f}us "
             f"backward={reference_backward:.2f}us->{fast_backward:.2f}us"
         )
