@@ -35,7 +35,6 @@ from .utils import (
     expand_last_axis_groups,
     group_by_last_axis,
     min_max_within_groups,
-    packed_uint4_group_dot,
     scale_from_min_max,
 )
 
@@ -139,18 +138,6 @@ def _mlx_unpack_master_weights(
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     expanded_biases = expand_last_axis_groups(biases, group_size=group_size)
     return int_weights.astype(scales.dtype) * expanded_scales + expanded_biases
-
-
-def _mlx_dot_output_input_4bit(
-    packed_weights: Int[Array, "rows packed_cols"],
-    scales: Float[Array, "rows groups"],
-    biases: Float[Array, "rows groups"],
-    vector: Float[Array, " channels"],
-    group_size: int,
-) -> Float[Array, " rows"]:
-    int_dot, vector_sums = packed_uint4_group_dot(packed_weights, vector, group_size)
-    group_outputs = int_dot * scales.astype(jnp.float32) + vector_sums[None, :] * biases.astype(jnp.float32)
-    return jnp.sum(group_outputs, axis=-1).astype(vector.dtype)
 
 
 @partial(custom_vjp, nondiff_argnums=(4, 5))
@@ -624,22 +611,6 @@ class MLXMatrixForInference(MLXMatrix):
         transposed: bool = False,
     ) -> Float[Array, "... channels"]:
         self._raise_if_batched()
-        if (
-            self.spec.bits == 4
-            and self.spec.group_size % 2 == 0
-            and self.spec.layout == Layout.OUTPUT_INPUT
-            and vector.dtype in (jnp.bfloat16, jnp.float16)
-            and not transposed
-        ):
-            result = _mlx_dot_output_input_4bit(
-                self.packed_weights,
-                self.scales.astype(vector.dtype),
-                self.biases.astype(vector.dtype),
-                vector,
-                self.spec.group_size,
-            )
-            return reshard_as(result, vector)
-
         weights = _mlx_unpack_master_weights(
             self.packed_weights,
             self.scales.astype(vector.dtype),

@@ -40,7 +40,6 @@ from .utils import (
     expand_last_axis_groups,
     group_by_last_axis,
     min_max_within_groups,
-    packed_uint4_group_dot,
     scale_from_min_max,
 )
 
@@ -199,19 +198,6 @@ def _awq_unpack_master_weights(
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     expanded_int_zero_points = expand_last_axis_groups(int_zero_points, group_size=group_size)
     return (int_weights - expanded_int_zero_points) * expanded_scales
-
-
-def _awq_dot_output_input_4bit(
-    packed_weights: Int[Array, "rows packed_cols"],
-    scales: Float[Array, "rows groups"],
-    packed_zero_points: Int[Array, "rows packed_groups"],
-    vector: Float[Array, " channels"],
-    group_size: int,
-) -> Float[Array, " rows"]:
-    int_dot, vector_sums = packed_uint4_group_dot(packed_weights, vector, group_size)
-    int_zero_points = unpack_uint8_to_uint(packed_zero_points, bits=4, dtype=jnp.float32)
-    group_outputs = (int_dot - int_zero_points * vector_sums[None, :]) * scales.astype(jnp.float32)
-    return jnp.sum(group_outputs, axis=-1).astype(vector.dtype)
 
 
 @partial(custom_vjp, nondiff_argnums=(4, 5))
@@ -746,22 +732,6 @@ class AWQMatrixForInference(AWQMatrix):
         transposed: bool = False,
     ) -> Float[Array, "... channels"]:
         self._raise_if_batched()
-        if (
-            self.spec.bits == 4
-            and self.spec.group_size % 2 == 0
-            and self.spec.layout == Layout.OUTPUT_INPUT
-            and vector.dtype in (jnp.bfloat16, jnp.float16)
-            and not transposed
-        ):
-            result = _awq_dot_output_input_4bit(
-                self.packed_weights,
-                self.scales.astype(vector.dtype),
-                self.packed_zero_points,
-                vector,
-                self.spec.group_size,
-            )
-            return reshard_as(result, vector)
-
         weights = _awq_unpack_master_weights(
             self.packed_weights,
             self.scales.astype(vector.dtype),
