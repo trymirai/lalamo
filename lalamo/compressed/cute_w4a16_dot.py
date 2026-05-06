@@ -11,10 +11,11 @@ from jaxtyping import Array, Float, Int
 
 GROUP_SIZE = 32
 REDUCE_THREADS = 64
-ROWS_PER_CTA = 2
+ROWS_PER_CTA = 4
 MICRO_VALUES = 16
 MICRO_PACKED = 8
 TENSORCORE_BATCH = 8
+SMALL_BATCH = 4
 DEQUANT_THREADS = 128
 DEQUANT_TILE_ROWS = 4
 DEQUANT_TILE_VALUES = 512
@@ -148,6 +149,150 @@ def _awq_kernel(
 
 
 @cute.kernel
+def _mlx_small_batch_kernel(
+    x_tiles: cute.Tensor,
+    w_tiles: cute.Tensor,
+    scales: cute.Tensor,
+    biases: cute.Tensor,
+    out: cute.Tensor,
+    batch_size: cutlass.Constexpr,
+    chunks_per_thread: cutlass.Constexpr,
+) -> None:
+    tx, ty, _ = cute.arch.thread_idx()
+    cta_row, _, _ = cute.arch.block_idx()
+    row = cta_row * ROWS_PER_CTA + ty
+
+    x_frag = cute.make_rmem_tensor(cute.size(x_tiles, mode=[0]), x_tiles.element_type)
+    w_frag = cute.make_rmem_tensor(cute.size(w_tiles, mode=[0]), w_tiles.element_type)
+    acc = cute.make_rmem_tensor(cute.make_layout(batch_size), cutlass.Float32)
+    for batch in cutlass.range_constexpr(batch_size):
+        acc[batch] = cutlass.Float32(0.0)
+
+    for block in cutlass.range_constexpr(chunks_per_thread):
+        chunk = block * REDUCE_THREADS + tx
+        cute.autovec_copy(w_tiles[(None, (row, chunk))], w_frag)
+        group = chunk * MICRO_VALUES // GROUP_SIZE
+        scale = cutlass.Float32(scales[row, group])
+        bias = cutlass.Float32(biases[row, group])
+
+        for batch in cutlass.range_constexpr(batch_size):
+            cute.autovec_copy(x_tiles[(None, (batch, chunk))], x_frag)
+
+            int_dot = cutlass.Float32(0.0)
+            x_sum = cutlass.Float32(0.0)
+            for j in cutlass.range_constexpr(MICRO_PACKED):
+                byte = w_frag[j]
+                lo = byte & cutlass.Uint8(15)
+                hi = (byte >> cutlass.Uint8(4)) & cutlass.Uint8(15)
+                x0 = cutlass.Float32(x_frag[j * 2])
+                x1 = cutlass.Float32(x_frag[j * 2 + 1])
+                int_dot += cutlass.Float32(lo) * x0 + cutlass.Float32(hi) * x1
+                x_sum += x0 + x1
+
+            acc[batch] += int_dot * scale + x_sum * bias
+
+    lane_id = tx & 31
+    warp_id = tx >> 5
+    for batch in cutlass.range_constexpr(batch_size):
+        acc[batch] += cute.arch.shuffle_sync_down(acc[batch], offset=16)
+        acc[batch] += cute.arch.shuffle_sync_down(acc[batch], offset=8)
+        acc[batch] += cute.arch.shuffle_sync_down(acc[batch], offset=4)
+        acc[batch] += cute.arch.shuffle_sync_down(acc[batch], offset=2)
+        acc[batch] += cute.arch.shuffle_sync_down(acc[batch], offset=1)
+
+    smem = cutlass.utils.SmemAllocator()
+    partials = smem.allocate_tensor(cutlass.Float32, ROWS_PER_CTA * 2 * SMALL_BATCH)
+    if lane_id == 0:
+        for batch in cutlass.range_constexpr(batch_size):
+            partials[(ty * 2 + warp_id) * SMALL_BATCH + batch] = acc[batch]
+    cute.arch.sync_threads()
+
+    if warp_id == 0:
+        for batch in cutlass.range_constexpr(batch_size):
+            total = partials[(ty * 2 + lane_id) * SMALL_BATCH + batch] if lane_id < 2 else cutlass.Float32(0.0)
+            total += cute.arch.shuffle_sync_down(total, offset=1)
+            if lane_id == 0:
+                if out.element_type == cutlass.BFloat16:
+                    out[batch, row] = cutlass.BFloat16(total)
+                else:
+                    out[batch, row] = cutlass.Float16(total)
+
+
+@cute.kernel
+def _awq_small_batch_kernel(
+    x_tiles: cute.Tensor,
+    w_tiles: cute.Tensor,
+    scales: cute.Tensor,
+    zero_tiles: cute.Tensor,
+    out: cute.Tensor,
+    batch_size: cutlass.Constexpr,
+    chunks_per_thread: cutlass.Constexpr,
+) -> None:
+    tx, ty, _ = cute.arch.thread_idx()
+    cta_row, _, _ = cute.arch.block_idx()
+    row = cta_row * ROWS_PER_CTA + ty
+
+    x_frag = cute.make_rmem_tensor(cute.size(x_tiles, mode=[0]), x_tiles.element_type)
+    w_frag = cute.make_rmem_tensor(cute.size(w_tiles, mode=[0]), w_tiles.element_type)
+    acc = cute.make_rmem_tensor(cute.make_layout(batch_size), cutlass.Float32)
+    for batch in cutlass.range_constexpr(batch_size):
+        acc[batch] = cutlass.Float32(0.0)
+
+    for block in cutlass.range_constexpr(chunks_per_thread):
+        chunk = block * REDUCE_THREADS + tx
+        cute.autovec_copy(w_tiles[(None, (row, chunk))], w_frag)
+        group = chunk * MICRO_VALUES // GROUP_SIZE
+        zero_byte = zero_tiles[row, group // 2]
+        zero_point = zero_byte & cutlass.Uint8(15)
+        if group % 2 == 1:
+            zero_point = (zero_byte >> cutlass.Uint8(4)) & cutlass.Uint8(15)
+        scale = cutlass.Float32(scales[row, group])
+        zero = cutlass.Float32(zero_point)
+
+        for batch in cutlass.range_constexpr(batch_size):
+            cute.autovec_copy(x_tiles[(None, (batch, chunk))], x_frag)
+
+            int_dot = cutlass.Float32(0.0)
+            x_sum = cutlass.Float32(0.0)
+            for j in cutlass.range_constexpr(MICRO_PACKED):
+                byte = w_frag[j]
+                lo = byte & cutlass.Uint8(15)
+                hi = (byte >> cutlass.Uint8(4)) & cutlass.Uint8(15)
+                x0 = cutlass.Float32(x_frag[j * 2])
+                x1 = cutlass.Float32(x_frag[j * 2 + 1])
+                int_dot += cutlass.Float32(lo) * x0 + cutlass.Float32(hi) * x1
+                x_sum += x0 + x1
+
+            acc[batch] += (int_dot - x_sum * zero) * scale
+
+    lane_id = tx & 31
+    warp_id = tx >> 5
+    for batch in cutlass.range_constexpr(batch_size):
+        acc[batch] += cute.arch.shuffle_sync_down(acc[batch], offset=16)
+        acc[batch] += cute.arch.shuffle_sync_down(acc[batch], offset=8)
+        acc[batch] += cute.arch.shuffle_sync_down(acc[batch], offset=4)
+        acc[batch] += cute.arch.shuffle_sync_down(acc[batch], offset=2)
+        acc[batch] += cute.arch.shuffle_sync_down(acc[batch], offset=1)
+
+    smem = cutlass.utils.SmemAllocator()
+    partials = smem.allocate_tensor(cutlass.Float32, ROWS_PER_CTA * 2 * SMALL_BATCH)
+    if lane_id == 0:
+        for batch in cutlass.range_constexpr(batch_size):
+            partials[(ty * 2 + warp_id) * SMALL_BATCH + batch] = acc[batch]
+    cute.arch.sync_threads()
+
+    if warp_id == 0:
+        for batch in cutlass.range_constexpr(batch_size):
+            total = partials[(ty * 2 + lane_id) * SMALL_BATCH + batch] if lane_id < 2 else cutlass.Float32(0.0)
+            total += cute.arch.shuffle_sync_down(total, offset=1)
+            if lane_id == 0:
+                if out.element_type == cutlass.BFloat16:
+                    out[batch, row] = cutlass.BFloat16(total)
+                else:
+                    out[batch, row] = cutlass.Float16(total)
+
+
+@cute.kernel
 def _mlx_dequant_kernel(
     packed_weights: cute.Tensor,
     scales: cute.Tensor,
@@ -252,6 +397,56 @@ def _launch_awq(
 
 
 @cute.jit
+def _launch_mlx_small_batch(
+    stream: cuda.CUstream,
+    x: cute.Tensor,
+    packed_weights: cute.Tensor,
+    scales: cute.Tensor,
+    biases: cute.Tensor,
+    out: cute.Tensor,
+    *,
+    batch_size: int,
+    chunks_per_thread: int,
+) -> None:
+    x_tiles = cute.zipped_divide(x, (1, MICRO_VALUES))
+    w_tiles = cute.zipped_divide(packed_weights, (1, MICRO_PACKED))
+    _mlx_small_batch_kernel(x_tiles, w_tiles, scales, biases, out, batch_size, chunks_per_thread).launch(
+        grid=[cute.ceil_div(packed_weights.shape[0], ROWS_PER_CTA), 1, 1],
+        block=[REDUCE_THREADS, ROWS_PER_CTA, 1],
+        stream=stream,
+    )
+
+
+@cute.jit
+def _launch_awq_small_batch(
+    stream: cuda.CUstream,
+    x: cute.Tensor,
+    packed_weights: cute.Tensor,
+    scales: cute.Tensor,
+    packed_zero_points: cute.Tensor,
+    out: cute.Tensor,
+    *,
+    batch_size: int,
+    chunks_per_thread: int,
+) -> None:
+    x_tiles = cute.zipped_divide(x, (1, MICRO_VALUES))
+    w_tiles = cute.zipped_divide(packed_weights, (1, MICRO_PACKED))
+    _awq_small_batch_kernel(
+        x_tiles,
+        w_tiles,
+        scales,
+        packed_zero_points,
+        out,
+        batch_size,
+        chunks_per_thread,
+    ).launch(
+        grid=[cute.ceil_div(packed_weights.shape[0], ROWS_PER_CTA), 1, 1],
+        block=[REDUCE_THREADS, ROWS_PER_CTA, 1],
+        stream=stream,
+    )
+
+
+@cute.jit
 def _launch_mlx_dequant(
     stream: cuda.CUstream,
     packed_weights: cute.Tensor,
@@ -317,6 +512,8 @@ def mlx_w4a16_matmul(
 ) -> Float[Array, "batch rows"]:
     if vectors.shape[0] >= TENSORCORE_BATCH and vectors.shape[1] % DEQUANT_TILE_VALUES == 0:
         return mlx_w4a16_tensorcore_matmul(vectors, packed_weights, scales, biases)
+    if 1 < vectors.shape[0] <= SMALL_BATCH:
+        return _call_small_batch(_launch_mlx_small_batch, vectors, packed_weights, scales, biases)
     return _call(_launch_mlx, vectors, packed_weights, scales, biases)
 
 
@@ -328,6 +525,8 @@ def awq_w4a16_matmul(
 ) -> Float[Array, "batch rows"]:
     if vectors.shape[0] >= TENSORCORE_BATCH and vectors.shape[1] % DEQUANT_TILE_VALUES == 0:
         return awq_w4a16_tensorcore_matmul(vectors, packed_weights, scales, packed_zero_points)
+    if 1 < vectors.shape[0] <= SMALL_BATCH:
+        return _call_small_batch(_launch_awq_small_batch, vectors, packed_weights, scales, packed_zero_points)
     return _call(_launch_awq, vectors, packed_weights, scales, packed_zero_points)
 
 
@@ -426,6 +625,31 @@ def _call(launcher: Callable[..., None], vectors: Array, packed_weights: Array, 
         launcher,
         output_shape_dtype=jax.ShapeDtypeStruct((vectors.shape[0], packed_weights.shape[0]), vectors.dtype),
         use_static_tensors=True,
+        chunks_per_thread=vectors.shape[1] // (REDUCE_THREADS * MICRO_VALUES),
+    )
+    return call(vectors, packed_weights, scales, affine)
+
+
+@partial(jax.jit, static_argnums=(0,))
+def _call_small_batch(
+    launcher: Callable[..., None],
+    vectors: Array,
+    packed_weights: Array,
+    scales: Array,
+    affine: Array,
+) -> Array:
+    assert 1 < vectors.shape[0] <= SMALL_BATCH
+    assert vectors.ndim == 2
+    assert vectors.shape[1] == packed_weights.shape[1] * 2
+    assert vectors.shape[1] == scales.shape[1] * GROUP_SIZE
+    assert vectors.shape[1] % (REDUCE_THREADS * MICRO_VALUES) == 0
+    assert packed_weights.shape[0] % ROWS_PER_CTA == 0
+
+    call = cjax.cutlass_call(
+        launcher,
+        output_shape_dtype=jax.ShapeDtypeStruct((vectors.shape[0], packed_weights.shape[0]), vectors.dtype),
+        use_static_tensors=True,
+        batch_size=vectors.shape[0],
         chunks_per_thread=vectors.shape[1] // (REDUCE_THREADS * MICRO_VALUES),
     )
     return call(vectors, packed_weights, scales, affine)
