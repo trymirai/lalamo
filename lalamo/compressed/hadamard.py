@@ -1,11 +1,9 @@
-from functools import partial
-from math import prod, sqrt
-from typing import Any, Literal, cast
+from collections.abc import Callable
+from functools import cache
+from typing import Literal
 
 import jax
-import jax.experimental.pallas.triton as pltriton
 import jax.numpy as jnp
-from jax.experimental import pallas as pl
 from jaxtyping import Array, Float
 
 __all__ = [
@@ -13,29 +11,11 @@ __all__ = [
 ]
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(1,))
 def hadamard_transform(
-    inputs: Float[Array, " channels"],
-    block_size: Literal[32, 64, 128],
-) -> Float[Array, " channels"]:
-    if block_size not in (32, 64, 128):
-        raise ValueError(f"Block size {block_size} must be one of 32, 64, or 128")
-    return _hadamard_transform_impl(inputs, block_size)
-
-
-def _hadamard_transform_impl(
     inputs: Float[Array, "... channels"],
     block_size: Literal[32, 64, 128],
 ) -> Float[Array, "... channels"]:
-    *_, input_dim = inputs.shape
-    if input_dim % block_size != 0:
-        raise ValueError(
-            f"Input dimension {input_dim} must be a multiple of block size {block_size}",
-        )
-
-    if jax.default_backend() == "gpu":
-        return _pallas_hadamard_transform(inputs, block_size)
-    return _jax_hadamard_transform(inputs, block_size)
+    return _make_hadamard_transform_for_block_size(block_size)(inputs)
 
 
 def _jax_hadamard_transform(
@@ -64,149 +44,48 @@ def _jax_hadamard_transform(
     return jnp.reshape(result / normalization, (*original_leading_dims, input_dim))
 
 
-def _warp_shuffle_xor(
-    values: Float[Array, " elements"],
-    mask: int,
-) -> Float[Array, " elements"]:
-    [result] = pltriton.elementwise_inline_asm(
-        f"shfl.sync.bfly.b32 $0, $1, {mask}, 31, 0xffffffff;",
-        args=[values],
-        constraints="=f,f",
-        pack=1,
-        result_shape_dtypes=[
-            jax.ShapeDtypeStruct(values.shape, values.dtype),
-        ],
-    )
-    return result
-
-
-def _pallas_hadamard_transform_kernel(
-    inputs_ref: pl.MemoryRef,
-    outputs_ref: pl.MemoryRef,
-    *,
+@cache
+def _make_hadamard_transform_for_block_size(
     block_size: Literal[32, 64, 128],
-    blocks_per_program: Literal[1, 4, 8],
-    scale: float,
-) -> None:
-    inputs = cast("Any", inputs_ref)
-    outputs = cast("Any", outputs_ref)
-    block_offsets = jax.lax.broadcasted_iota(jnp.int32, (blocks_per_program, 32), 0) * block_size
-    element_offsets = jax.lax.broadcasted_iota(jnp.int32, (blocks_per_program, 32), 1)
-    first_quarter_offsets = block_offsets + element_offsets
-    first_quarter = inputs[first_quarter_offsets].astype(jnp.float32)
-    second_quarter_offsets = first_quarter_offsets
-    third_quarter_offsets = first_quarter_offsets
-    fourth_quarter_offsets = first_quarter_offsets
-    second_quarter = first_quarter
-    third_quarter = first_quarter
-    fourth_quarter = first_quarter
-    if block_size >= 64:
-        second_quarter_offsets = first_quarter_offsets + 32
-        second_quarter = inputs[second_quarter_offsets].astype(jnp.float32)
-    if block_size >= 128:
-        third_quarter_offsets = first_quarter_offsets + 64
-        fourth_quarter_offsets = first_quarter_offsets + 96
-        third_quarter = inputs[third_quarter_offsets].astype(jnp.float32)
-        fourth_quarter = inputs[fourth_quarter_offsets].astype(jnp.float32)
+) -> Callable[[Float[Array, "... channels"]], Float[Array, "... channels"]]:
+    if block_size not in (32, 64, 128):
+        raise ValueError(f"Block size {block_size} must be one of 32, 64, or 128")
 
-    for mask in (1, 2, 4, 8, 16):
-        first_partners = _warp_shuffle_xor(first_quarter, mask)
-        first_quarter = jnp.where(
-            (element_offsets & mask) == 0,
-            first_quarter + first_partners,
-            first_partners - first_quarter,
-        )
-        if block_size >= 64:
-            second_partners = _warp_shuffle_xor(second_quarter, mask)
-            second_quarter = jnp.where(
-                (element_offsets & mask) == 0,
-                second_quarter + second_partners,
-                second_partners - second_quarter,
-            )
-        if block_size >= 128:
-            third_partners = _warp_shuffle_xor(third_quarter, mask)
-            fourth_partners = _warp_shuffle_xor(fourth_quarter, mask)
-            third_quarter = jnp.where(
-                (element_offsets & mask) == 0,
-                third_quarter + third_partners,
-                third_partners - third_quarter,
-            )
-            fourth_quarter = jnp.where(
-                (element_offsets & mask) == 0,
-                fourth_quarter + fourth_partners,
-                fourth_partners - fourth_quarter,
+    @jax.custom_vjp
+    @jax.custom_batching.custom_vmap
+    def transform(inputs: Float[Array, "... channels"]) -> Float[Array, "... channels"]:
+        *_, input_dim = inputs.shape
+        if input_dim % block_size != 0:
+            raise ValueError(
+                f"Input dimension {input_dim} must be a multiple of block size {block_size}",
             )
 
-    if block_size >= 64:
-        first_half = first_quarter + second_quarter
-        second_half = first_quarter - second_quarter
-        if block_size >= 128:
-            third_half = third_quarter + fourth_quarter
-            fourth_half = third_quarter - fourth_quarter
-            first_quarter = first_half + third_half
-            second_quarter = second_half + fourth_half
-            third_quarter = first_half - third_half
-            fourth_quarter = second_half - fourth_half
-        else:
-            first_quarter = first_half
-            second_quarter = second_half
+        if jax.default_backend() == "gpu":
+            from lalamo.compressed._hadamard_cute import cute_hadamard_transform  # noqa: PLC0415
 
-    normalization = jnp.asarray(scale, dtype=outputs_ref.dtype).astype(jnp.float32)
-    outputs[first_quarter_offsets] = (first_quarter * normalization).astype(outputs_ref.dtype)
-    if block_size >= 64:
-        outputs[second_quarter_offsets] = (second_quarter * normalization).astype(outputs_ref.dtype)
-    if block_size >= 128:
-        outputs[third_quarter_offsets] = (third_quarter * normalization).astype(outputs_ref.dtype)
-        outputs[fourth_quarter_offsets] = (fourth_quarter * normalization).astype(outputs_ref.dtype)
+            return cute_hadamard_transform(inputs, block_size)
+        return _jax_hadamard_transform(inputs, block_size)
 
+    @transform.def_vmap
+    def transform_vmap(
+        axis_size: int,
+        in_batched: tuple[bool],
+        inputs: Float[Array, "... channels"],
+    ) -> tuple[Float[Array, "... channels"], bool]:
+        del axis_size
+        (inputs_batched,) = in_batched
+        return transform(inputs), inputs_batched
 
-def _pallas_hadamard_transform(
-    inputs: Float[Array, "... channels"],
-    block_size: Literal[32, 64, 128],
-) -> Float[Array, "... channels"]:
-    flat_size = prod(inputs.shape)
-    if flat_size % (8 * block_size) == 0:
-        blocks_per_program = 8
-    elif flat_size % (4 * block_size) == 0:
-        blocks_per_program = 4
-    else:
-        blocks_per_program = 1
-    program_size = blocks_per_program * block_size
-    flat_inputs = jnp.reshape(inputs, (flat_size,))
-    block_spec = pl.BlockSpec(
-        block_shape=(program_size,),
-        index_map=lambda program_id: (program_id,),
-    )
-    result = pl.pallas_call(
-        partial(
-            _pallas_hadamard_transform_kernel,
-            block_size=block_size,
-            blocks_per_program=blocks_per_program,
-            scale=1 / sqrt(block_size),
-        ),
-        out_shape=jax.ShapeDtypeStruct(flat_inputs.shape, inputs.dtype),
-        grid=(flat_size // program_size,),
-        in_specs=[block_spec],
-        out_specs=block_spec,
-        compiler_params=pltriton.CompilerParams(num_warps=blocks_per_program),
-        name="hadamard_transform",
-    )(flat_inputs)
-    return jnp.reshape(result, inputs.shape)
+    def transform_fwd(
+        inputs: Float[Array, "... channels"],
+    ) -> tuple[Float[Array, "... channels"], None]:
+        return transform(inputs), None
 
+    def transform_bwd(
+        _: None,
+        cotangent: Float[Array, "... channels"],
+    ) -> tuple[Float[Array, "... channels"]]:
+        return (transform(cotangent),)
 
-def _hadamard_transform_fwd(
-    inputs: Float[Array, " channels"],
-    block_size: Literal[32, 64, 128],
-) -> tuple[Float[Array, " channels"], None]:
-    return hadamard_transform(inputs, block_size), None
-
-
-def _hadamard_transform_bwd(
-    block_size: Literal[32, 64, 128],
-    _: None,
-    cotangent: Float[Array, " channels"],
-) -> tuple[Float[Array, " channels"]]:
-    return (hadamard_transform(cotangent, block_size),)
-
-
-hadamard_transform.defvjp(_hadamard_transform_fwd, _hadamard_transform_bwd)
+    transform.defvjp(transform_fwd, transform_bwd)
+    return transform

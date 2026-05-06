@@ -1,3 +1,5 @@
+from typing import Literal
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -33,7 +35,7 @@ def _assert_close(result: jax.Array, reference: jax.Array) -> None:
 
 
 @pytest.mark.parametrize("block_size", [32, 64, 128])
-def test_hadamard_transform_matches_dense_reference(block_size: int) -> None:
+def test_hadamard_transform_matches_dense_reference(block_size: Literal[32, 64, 128]) -> None:
     inputs = (jnp.arange(2 * block_size, dtype=jnp.float32) - 3) / 5
 
     result = hadamard_transform(inputs, block_size)
@@ -64,7 +66,7 @@ def test_hadamard_transform_preserves_bfloat16_dtype() -> None:
 @pytest.mark.parametrize("block_size", [0, 8, 16, 256])
 def test_hadamard_transform_rejects_unsupported_block_size(block_size: int) -> None:
     with pytest.raises(ValueError, match="one of 32, 64, or 128"):
-        hadamard_transform(jnp.ones((256,), dtype=jnp.float32), block_size)
+        hadamard_transform(jnp.ones((256,), dtype=jnp.float32), block_size)  # type: ignore[arg-type]
 
 
 def test_hadamard_transform_rejects_input_dimension_not_divisible_by_block_size() -> None:
@@ -114,7 +116,10 @@ def test_hadamard_transform_vjp_matches_self_adjoint_reference() -> None:
 @gpu_only
 @pytest.mark.parametrize("block_size", [32, 64, 128])
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
-def test_hadamard_transform_pallas_matches_dense_reference_on_gpu(block_size: int, dtype: jnp.dtype) -> None:
+def test_hadamard_transform_cute_matches_dense_reference_on_gpu(
+    block_size: Literal[32, 64, 128],
+    dtype: jnp.dtype,
+) -> None:
     inputs = ((jnp.arange(block_size, dtype=jnp.float32) % 23) / 11).astype(dtype)
 
     result = jax.jit(lambda inputs: hadamard_transform(inputs, block_size=block_size))(inputs)
@@ -124,7 +129,7 @@ def test_hadamard_transform_pallas_matches_dense_reference_on_gpu(block_size: in
 
 
 @gpu_only
-def test_hadamard_transform_pallas_custom_vjp_matches_self_adjoint_reference_on_gpu() -> None:
+def test_hadamard_transform_cute_custom_vjp_matches_self_adjoint_reference_on_gpu() -> None:
     inputs = (jnp.arange(128, dtype=jnp.float32) - 7) / 13
     cotangent = jnp.sin(jnp.arange(128, dtype=jnp.float32))
 
@@ -135,7 +140,7 @@ def test_hadamard_transform_pallas_custom_vjp_matches_self_adjoint_reference_on_
 
 
 @gpu_only
-def test_hadamard_transform_pallas_vmap_matches_dense_reference_on_gpu() -> None:
+def test_hadamard_transform_cute_vmap_matches_dense_reference_on_gpu() -> None:
     inputs = ((jnp.reshape(jnp.arange(5 * 64 * 4, dtype=jnp.float32), (5, 64 * 4)) % 29) / 17).astype(jnp.bfloat16)
 
     result = jax.jit(jax.vmap(lambda inputs: hadamard_transform(inputs, block_size=64)))(inputs)
