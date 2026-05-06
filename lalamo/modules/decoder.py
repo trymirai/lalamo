@@ -6,6 +6,7 @@ from typing import Self
 import equinox as eqx
 import jax
 from einops import rearrange
+from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
@@ -55,20 +56,25 @@ class DecoderForwardPassConfig:
         )
 
     @classmethod
-    def for_inference(cls, mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN) -> Self:
+    def for_inference(
+        cls,
+        mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
+        precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
+    ) -> Self:
         return cls(
-            embedding_forward_pass_config=EmbeddingForwardPassConfig.for_inference(),
-            transformer_forward_pass_config=TransformerForwardPassConfig.for_inference(mode),
+            embedding_forward_pass_config=EmbeddingForwardPassConfig.for_inference(precision),
+            transformer_forward_pass_config=TransformerForwardPassConfig.for_inference(mode, precision),
         )
 
     @classmethod
     def for_training(
         cls,
         gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
+        precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
     ) -> Self:
         return cls(
-            embedding_forward_pass_config=EmbeddingForwardPassConfig.for_training(gradient_estimator),
-            transformer_forward_pass_config=TransformerForwardPassConfig.for_training(gradient_estimator),
+            embedding_forward_pass_config=EmbeddingForwardPassConfig.for_training(gradient_estimator, precision),
+            transformer_forward_pass_config=TransformerForwardPassConfig.for_training(gradient_estimator, precision),
         )
 
 

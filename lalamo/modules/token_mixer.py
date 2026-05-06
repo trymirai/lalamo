@@ -5,6 +5,7 @@ from typing import NamedTuple, Self
 
 import equinox as eqx
 from jax import numpy as jnp
+from jax.lax import DotAlgorithmPreset
 from jax.tree_util import register_pytree_node_class
 from jaxtyping import Array, DTypeLike, Float, Int
 
@@ -73,9 +74,10 @@ class MixerForwardPassConfig:
         )
 
     @classmethod
-    def for_inference(cls) -> Self:
+    def for_inference(cls, precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT) -> Self:
         return cls(
             attention_implementation=AttentionImplementation.TOKAMAX,
+            matmul_config=MatmulConfig.for_inference(precision),
             normalization_forward_pass_config=NormalizationForwardPassConfig.for_inference(),
         )
 
@@ -83,11 +85,12 @@ class MixerForwardPassConfig:
     def for_training(
         cls,
         gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
+        precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
     ) -> Self:
         return cls(
             attention_implementation=AttentionImplementation.STANDARD,
             ssm_min_tail_size_to_chunk=0,
-            matmul_config=MatmulConfig.for_training(gradient_estimator),
+            matmul_config=MatmulConfig.for_training(gradient_estimator, precision),
             normalization_forward_pass_config=NormalizationForwardPassConfig.for_training(),
         )
 

@@ -125,7 +125,7 @@ def _nested_key_shape(
     return jax.eval_shape(vmap(vmap(probe, in_axes=inner_in_axes), in_axes=outer_in_axes), *args).shape
 
 
-def _call_with_keychain[ResultT](fn: Callable[..., ResultT], keychain: Keychain) -> Callable[..., ResultT]:
+def _call_with_keychain[ResultT](fn: Callable[..., ResultT], *, keychain: Keychain) -> Callable[..., ResultT]:
     def wrapped(*args: PyTree[Shaped[Array, "..."]]) -> ResultT:
         *mapped_args, vmapped_keys = args
         if not isinstance(vmapped_keys, jax.Array):
@@ -150,7 +150,7 @@ def call_vmapped[ResultT](
         forward_pass_config=forward_pass_config,
     )
     if not isinstance(keychain, _Unspecified):
-        mapped_fn = _call_with_keychain(mapped_fn, keychain)
+        mapped_fn = _call_with_keychain(mapped_fn, keychain=keychain)
         keychain = keychain.broadcast(_key_shape(args, in_axes), sharding_axes=(added_sharding_axis,))
         vmapped_fn = vmap(
             mapped_fn,
@@ -242,7 +242,7 @@ def call_vmapped_twice[ResultT](
         forward_pass_config=forward_pass_config,
     )
     if not isinstance(keychain, _Unspecified):
-        mapped_fn = _call_with_keychain(mapped_fn, keychain)
+        mapped_fn = _call_with_keychain(mapped_fn, keychain=keychain)
         keychain = keychain.broadcast(
             _nested_key_shape(args, outer_in_axes, inner_in_axes),
             sharding_axes=added_sharding_axes,

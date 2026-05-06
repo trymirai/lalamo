@@ -5,6 +5,7 @@ from typing import Self
 
 import equinox as eqx
 import jax.numpy as jnp
+from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
@@ -58,16 +59,17 @@ class EmbeddingForwardPassConfig:
         )
 
     @classmethod
-    def for_inference(cls) -> Self:
-        return cls()
+    def for_inference(cls, precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT) -> Self:
+        return cls(matmul_config=MatmulConfig.for_inference(precision))
 
     @classmethod
     def for_training(
         cls,
         gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
+        precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
     ) -> Self:
         return cls(
-            matmul_config=MatmulConfig.for_training(gradient_estimator),
+            matmul_config=MatmulConfig.for_training(gradient_estimator, precision),
         )
 
 

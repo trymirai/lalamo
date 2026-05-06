@@ -1,12 +1,14 @@
 import jax.numpy as jnp
 import pytest
+from jax.lax import DotAlgorithmPreset
 
 from lalamo.batching import BatchingConfig, FixedSizeBatching
 from lalamo.model_import.model_spec import LanguageModelSpec
 from lalamo.models import LanguageModel
 from lalamo.models.chat_codec import UserMessage
 from lalamo.models.language_model import GenerationConfig
-from lalamo.module import Keychain
+from lalamo.module import ForwardPassMode, Keychain
+from lalamo.modules import DecoderForwardPassConfig
 from tests.conftest import ConvertModel, filter_specs, load_converted_model, mark_by_size
 from tests.model_test_tiers import ModelTier
 
@@ -155,6 +157,11 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
     token_ids = jnp.array(language_model.token_codec.encode_request(prompt))
 
     generation_config = GenerationConfig(temperature=0)
+    prefill_forward_pass_config = DecoderForwardPassConfig.for_inference(precision=DotAlgorithmPreset.F32_F32_F32)
+    decode_forward_pass_config = DecoderForwardPassConfig.for_inference(
+        ForwardPassMode.SINGLE_TOKEN,
+        precision=DotAlgorithmPreset.F32_F32_F32,
+    )
 
     generation_keychain = Keychain.init(5)
     max_output_length = 10
@@ -162,6 +169,8 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
         token_ids[None, :],
         generation_config=generation_config,
         max_output_length=max_output_length,
+        prefill_forward_pass_config=prefill_forward_pass_config,
+        decode_forward_pass_config=decode_forward_pass_config,
         keychain=generation_keychain,
     ).token_ids.squeeze(0)
 
@@ -169,6 +178,8 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
         token_ids,
         generation_config=generation_config,
         max_output_length=max_output_length,
+        prefill_forward_pass_config=prefill_forward_pass_config,
+        decode_forward_pass_config=decode_forward_pass_config,
         keychain=generation_keychain,
     )
     streaming_token_ids = jnp.array(list(streaming_token_generator))

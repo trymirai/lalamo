@@ -9,6 +9,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
+from jax.lax import DotAlgorithmPreset
 from jax.sharding import NamedSharding, PartitionSpec, reshard
 from jaxtyping import Array, Bool, Float, Int, Key
 
@@ -83,16 +84,24 @@ class MLPForwardPassConfig:
         )
 
     @classmethod
-    def for_inference(cls, mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN) -> Self:
-        return cls(mode=mode)
+    def for_inference(
+        cls,
+        mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
+        precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
+    ) -> Self:
+        return cls(
+            mode=mode,
+            matmul_config=MatmulConfig.for_inference(precision),
+        )
 
     @classmethod
     def for_training(
         cls,
         gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
+        precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
     ) -> Self:
         return cls(
-            matmul_config=MatmulConfig.for_training(gradient_estimator),
+            matmul_config=MatmulConfig.for_training(gradient_estimator, precision),
         )
 
 

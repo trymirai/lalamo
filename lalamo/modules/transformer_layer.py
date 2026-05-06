@@ -5,6 +5,7 @@ from typing import Self
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
@@ -55,10 +56,14 @@ class TransformerForwardPassConfig:
         )
 
     @classmethod
-    def for_inference(cls, mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN) -> Self:
+    def for_inference(
+        cls,
+        mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
+        precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
+    ) -> Self:
         return cls(
-            mixer_forward_pass_config=MixerForwardPassConfig.for_inference(),
-            mlp_forward_pass_config=MLPForwardPassConfig.for_inference(mode),
+            mixer_forward_pass_config=MixerForwardPassConfig.for_inference(precision),
+            mlp_forward_pass_config=MLPForwardPassConfig.for_inference(mode, precision),
             normalization_forward_pass_config=NormalizationForwardPassConfig.for_inference(),
         )
 
@@ -66,10 +71,11 @@ class TransformerForwardPassConfig:
     def for_training(
         cls,
         gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
+        precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
     ) -> Self:
         return cls(
-            mixer_forward_pass_config=MixerForwardPassConfig.for_training(gradient_estimator),
-            mlp_forward_pass_config=MLPForwardPassConfig.for_training(gradient_estimator),
+            mixer_forward_pass_config=MixerForwardPassConfig.for_training(gradient_estimator, precision),
+            mlp_forward_pass_config=MLPForwardPassConfig.for_training(gradient_estimator, precision),
             normalization_forward_pass_config=NormalizationForwardPassConfig.for_training(),
         )
 

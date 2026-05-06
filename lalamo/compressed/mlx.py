@@ -2,11 +2,11 @@ from abc import abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Literal, NamedTuple, Self, overload
+from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
 from jax.lax import stop_gradient
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
@@ -127,6 +127,8 @@ class MLXSpec(WeightMatrixSpec):
     def compress(
         self,
         weights: Float[Array, "... out_channels in_channels"],
+        *,
+        key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> "MLXMatrix":
@@ -299,26 +301,6 @@ class MLXMatrixForTraining(MLXMatrix):
             ),
         )
 
-    @overload
-    def dot(
-        self,
-        vector: Float[Array, " in_channels"],
-        *,
-        keychain: Keychain,
-        forward_pass_config: MatmulConfig = MatmulConfig(),
-        transposed: Literal[False] = False,
-    ) -> Float[Array, "... out_channels"]: ...
-
-    @overload
-    def dot(
-        self,
-        vector: Float[Array, " out_channels"],
-        *,
-        keychain: Keychain,
-        forward_pass_config: MatmulConfig = MatmulConfig(),
-        transposed: Literal[True],
-    ) -> Float[Array, "... in_channels"]: ...
-
     def dot(
         self,
         vector: Float[Array, " channels"],
@@ -482,26 +464,6 @@ class MLXMatrixForInference(MLXMatrix):
             self.spec.group_size,
             self.spec.bits,
         )
-
-    @overload
-    def dot(
-        self,
-        vector: Float[Array, " in_channels"],
-        *,
-        keychain: Keychain,
-        forward_pass_config: MatmulConfig = MatmulConfig(),
-        transposed: Literal[False] = False,
-    ) -> Float[Array, "... out_channels"]: ...
-
-    @overload
-    def dot(
-        self,
-        vector: Float[Array, " out_channels"],
-        *,
-        keychain: Keychain,
-        forward_pass_config: MatmulConfig = MatmulConfig(),
-        transposed: Literal[True],
-    ) -> Float[Array, "... in_channels"]: ...
 
     def dot(
         self,

@@ -90,17 +90,17 @@ def _stochastic_round_to_unsigned_grid_impl(
 def _stochastic_round_to_unsigned_grid(
     values: Float[Array, "..."],
     bits: int,
-    keychain: Keychain,
+    rounding_keychain: Keychain,
 ) -> Float[Array, "..."]:
-    return _stochastic_round_to_unsigned_grid_impl(values, bits=bits, keychain=keychain)
+    return _stochastic_round_to_unsigned_grid_impl(values, bits=bits, keychain=rounding_keychain)
 
 
 def _stochastic_round_to_unsigned_grid_fwd(
     values: Float[Array, "..."],
     bits: int,
-    keychain: Keychain,
+    rounding_keychain: Keychain,
 ) -> tuple[Float[Array, "..."], Float[Array, "..."]]:
-    rounded_values = _stochastic_round_to_unsigned_grid_impl(values, bits=bits, keychain=keychain)
+    rounded_values = _stochastic_round_to_unsigned_grid_impl(values, bits=bits, keychain=rounding_keychain)
     return rounded_values, values
 
 
