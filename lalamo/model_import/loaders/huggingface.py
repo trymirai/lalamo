@@ -7,7 +7,7 @@ from einops import rearrange
 from jaxtyping import Array
 
 from lalamo.compressed import AWQMatrix, AWQSpec, MLXMatrix, MLXSpec
-from lalamo.compressed.packing import pack_uint_to_uint8
+from lalamo.compressed.utils.packing import pack_uint_to_uint8
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.decoder import Decoder
 from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding

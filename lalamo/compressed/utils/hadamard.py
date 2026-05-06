@@ -61,7 +61,7 @@ def _make_hadamard_transform_for_block_size(
             )
 
         if jax.default_backend() == "gpu":
-            from lalamo.compressed._hadamard_cute import cute_hadamard_transform  # noqa: PLC0415
+            from lalamo.compressed.utils.hadamard_kernels import cute_hadamard_transform  # noqa: PLC0415
 
             return cute_hadamard_transform(inputs, block_size)
         return _jax_hadamard_transform(inputs, block_size)

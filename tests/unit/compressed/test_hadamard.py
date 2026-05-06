@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from lalamo.compressed.hadamard import hadamard_transform
+from lalamo.compressed.utils.hadamard import hadamard_transform
 from tests.common import assert_close, gpu_only, tolerance
 
 

@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.compressed.hadamard import hadamard_transform
+from lalamo.compressed.utils.hadamard import hadamard_transform
 from lalamo.module import Keychain, field
 from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.sharding import use_out_sharding

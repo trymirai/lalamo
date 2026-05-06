@@ -26,14 +26,14 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
-from .packing import pack_uint_to_uint8, unpack_uint8_to_uint
-from .rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
-from .utils import (
+from .utils.grouping import (
     expand_last_axis_groups,
     group_by_last_axis,
     min_max_within_groups,
     scale_from_min_max,
 )
+from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
+from .utils.rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
 
 __all__ = [
     "MLXMatrix",
