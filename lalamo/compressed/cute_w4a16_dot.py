@@ -18,7 +18,8 @@ TENSORCORE_BATCH = 8
 DEQUANT_THREADS = 64
 DEQUANT_TILE_ROWS = 2
 DEQUANT_TILE_VALUES = 256
-DEQUANT_VALUES_PER_THREAD = 8
+DEQUANT_TILE_PACKED = DEQUANT_TILE_VALUES // 2
+DEQUANT_PACKED_PER_THREAD = 4
 PACKED_VALUES_PER_GROUP = GROUP_SIZE // 2
 
 
@@ -156,21 +157,24 @@ def _mlx_dequant_kernel(
     tid, _, _ = cute.arch.thread_idx()
     cta_col, cta_row, _ = cute.arch.block_idx()
 
-    for i in cutlass.range_constexpr(DEQUANT_VALUES_PER_THREAD):
+    for i in cutlass.range_constexpr(DEQUANT_PACKED_PER_THREAD):
         offset = tid + i * DEQUANT_THREADS
-        row = cta_row * DEQUANT_TILE_ROWS + offset // DEQUANT_TILE_VALUES
-        col = cta_col * DEQUANT_TILE_VALUES + offset % DEQUANT_TILE_VALUES
+        row = cta_row * DEQUANT_TILE_ROWS + offset // DEQUANT_TILE_PACKED
+        packed_col = cta_col * DEQUANT_TILE_PACKED + offset % DEQUANT_TILE_PACKED
+        col = packed_col * 2
         group = col // GROUP_SIZE
-        byte = packed_weights[row, col // 2]
-        value = byte & cutlass.Uint8(15)
-        if col % 2 == 1:
-            value = (byte >> cutlass.Uint8(4)) & cutlass.Uint8(15)
-        out_value = cutlass.Float32(value) * cutlass.Float32(scales[row, group])
-        out_value += cutlass.Float32(biases[row, group])
+
+        byte = packed_weights[row, packed_col]
+        scale = cutlass.Float32(scales[row, group])
+        bias = cutlass.Float32(biases[row, group])
+        lo_value = cutlass.Float32(byte & cutlass.Uint8(15)) * scale + bias
+        hi_value = cutlass.Float32((byte >> cutlass.Uint8(4)) & cutlass.Uint8(15)) * scale + bias
         if out.element_type == cutlass.BFloat16:
-            out[row, col] = cutlass.BFloat16(out_value)
+            out[row, col] = cutlass.BFloat16(lo_value)
+            out[row, col + 1] = cutlass.BFloat16(hi_value)
         else:
-            out[row, col] = cutlass.Float16(out_value)
+            out[row, col] = cutlass.Float16(lo_value)
+            out[row, col + 1] = cutlass.Float16(hi_value)
 
 
 @cute.kernel
@@ -183,24 +187,28 @@ def _awq_dequant_kernel(
     tid, _, _ = cute.arch.thread_idx()
     cta_col, cta_row, _ = cute.arch.block_idx()
 
-    for i in cutlass.range_constexpr(DEQUANT_VALUES_PER_THREAD):
+    for i in cutlass.range_constexpr(DEQUANT_PACKED_PER_THREAD):
         offset = tid + i * DEQUANT_THREADS
-        row = cta_row * DEQUANT_TILE_ROWS + offset // DEQUANT_TILE_VALUES
-        col = cta_col * DEQUANT_TILE_VALUES + offset % DEQUANT_TILE_VALUES
+        row = cta_row * DEQUANT_TILE_ROWS + offset // DEQUANT_TILE_PACKED
+        packed_col = cta_col * DEQUANT_TILE_PACKED + offset % DEQUANT_TILE_PACKED
+        col = packed_col * 2
         group = col // GROUP_SIZE
-        byte = packed_weights[row, col // 2]
-        value = byte & cutlass.Uint8(15)
-        if col % 2 == 1:
-            value = (byte >> cutlass.Uint8(4)) & cutlass.Uint8(15)
+
+        byte = packed_weights[row, packed_col]
         zero_byte = zero_points[row, group // 2]
         zero_point = zero_byte & cutlass.Uint8(15)
         if group % 2 == 1:
             zero_point = (zero_byte >> cutlass.Uint8(4)) & cutlass.Uint8(15)
-        out_value = (cutlass.Float32(value) - cutlass.Float32(zero_point)) * cutlass.Float32(scales[row, group])
+        scale = cutlass.Float32(scales[row, group])
+        zero = cutlass.Float32(zero_point)
+        lo_value = (cutlass.Float32(byte & cutlass.Uint8(15)) - zero) * scale
+        hi_value = (cutlass.Float32((byte >> cutlass.Uint8(4)) & cutlass.Uint8(15)) - zero) * scale
         if out.element_type == cutlass.BFloat16:
-            out[row, col] = cutlass.BFloat16(out_value)
+            out[row, col] = cutlass.BFloat16(lo_value)
+            out[row, col + 1] = cutlass.BFloat16(hi_value)
         else:
-            out[row, col] = cutlass.Float16(out_value)
+            out[row, col] = cutlass.Float16(lo_value)
+            out[row, col + 1] = cutlass.Float16(hi_value)
 
 
 @cute.jit
@@ -253,7 +261,7 @@ def _launch_mlx_dequant(
 ) -> None:
     _mlx_dequant_kernel(packed_weights, scales, biases, out).launch(
         grid=[
-            cute.ceil_div(out.shape[1], DEQUANT_TILE_VALUES),
+            cute.ceil_div(packed_weights.shape[1], DEQUANT_TILE_PACKED),
             cute.ceil_div(packed_weights.shape[0], DEQUANT_TILE_ROWS),
             1,
         ],
@@ -272,7 +280,7 @@ def _launch_awq_dequant(
 ) -> None:
     _awq_dequant_kernel(packed_weights, scales, packed_zero_points, out).launch(
         grid=[
-            cute.ceil_div(out.shape[1], DEQUANT_TILE_VALUES),
+            cute.ceil_div(packed_weights.shape[1], DEQUANT_TILE_PACKED),
             cute.ceil_div(packed_weights.shape[0], DEQUANT_TILE_ROWS),
             1,
         ],
