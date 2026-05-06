@@ -43,6 +43,18 @@ def call_vmapped[ResultT](
     fn: Callable[..., ResultT],
     /,
     *args: PyTree[Shaped[Array, "..."]],
+    forward_pass_config: object,
+    in_axes: PyTree[int | None] = 0,
+    out_axes: PyTree[int | None] = 0,
+    added_sharding_axis: ShardingAxis | None = None,
+) -> ResultT: ...
+
+
+@overload
+def call_vmapped[ResultT](
+    fn: Callable[..., ResultT],
+    /,
+    *args: PyTree[Shaped[Array, "..."]],
     keychain: Keychain,
     in_axes: PyTree[int | None] = 0,
     out_axes: PyTree[int | None] = 0,
@@ -157,6 +169,18 @@ def call_vmapped_twice[ResultT](
     fn: Callable[..., ResultT],
     /,
     *args: PyTree[Shaped[Array, "..."]],
+    in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
+    out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
+    added_sharding_axes: tuple[ShardingAxis | None, ShardingAxis | None] = (None, None),
+) -> ResultT: ...
+
+
+@overload
+def call_vmapped_twice[ResultT](
+    fn: Callable[..., ResultT],
+    /,
+    *args: PyTree[Shaped[Array, "..."]],
+    forward_pass_config: object,
     in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
     out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
     added_sharding_axes: tuple[ShardingAxis | None, ShardingAxis | None] = (None, None),

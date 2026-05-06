@@ -57,6 +57,7 @@ class DecoderForwardPassConfig:
     @classmethod
     def for_inference(cls, mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN) -> Self:
         return cls(
+            embedding_forward_pass_config=EmbeddingForwardPassConfig.for_inference(),
             transformer_forward_pass_config=TransformerForwardPassConfig.for_inference(mode),
         )
 

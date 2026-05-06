@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 import equinox as eqx
 import jax
+import tokamax
 from einops import einsum, rearrange
 from jax import numpy as jnp
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
@@ -9,7 +10,12 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain
 from lalamo.modules.linear import Linear, LinearConfig
-from lalamo.modules.normalization import Normalization, NormalizationConfig
+from lalamo.modules.normalization import (
+    Normalization,
+    NormalizationConfig,
+    NormalizationForwardPassConfig,
+    NormalizationImplementation,
+)
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixer import (
     AttentionImplementation,
@@ -40,7 +46,18 @@ def _repeat_kv(
 def _rms_normalize(
     inputs: Float[Array, "... channels"],
     eps: float,
+    forward_pass_config: NormalizationForwardPassConfig,
 ) -> Float[Array, "... channels"]:
+    if forward_pass_config.implementation == NormalizationImplementation.TOKAMAX:
+        return tokamax.layer_norm(
+            inputs,
+            scale=None,
+            offset=None,
+            epsilon=eps,
+            subtract_mean=False,
+            implementation=forward_pass_config.tokamax_implementation,
+        )
+
     upcasted_inputs = inputs.astype(jnp.float32)
     variance = jnp.mean(jnp.square(upcasted_inputs), axis=-1, keepdims=True)
     return (upcasted_inputs * jax.lax.rsqrt(variance + eps)).astype(inputs.dtype)
@@ -241,6 +258,8 @@ def _attention_kernel(
         case AttentionImplementation.CUDNN:
             if logit_soft_cap is not None:
                 raise ValueError("cuDNN attention does not support logit soft-capping.")
+            if mask is not None:
+                mask = jnp.broadcast_to(mask, (queries.shape[1], *mask.shape))
             return jax.nn.dot_product_attention(
                 queries,
                 keys,
@@ -251,7 +270,15 @@ def _attention_kernel(
                 implementation="cudnn",
             )
         case AttentionImplementation.TOKAMAX:
-            raise ValueError("Tokamax attention is not implemented in this runtime.")
+            return tokamax.dot_product_attention(
+                queries,
+                keys,
+                values,
+                bias=bias,
+                mask=mask,
+                scale=scale,
+                logits_soft_cap=logit_soft_cap,
+            )
         case AttentionImplementation.STABLE_REDUCTION:
             return _stable_reduction_attention_kernel(
                 queries,
@@ -450,11 +477,23 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         )
 
         if self.query_norm is not None:
-            queries = call_vmapped_twice(self.query_norm, queries)
+            queries = call_vmapped_twice(
+                self.query_norm,
+                queries,
+                forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+            )
         if self.key_norm is not None:
-            keys = call_vmapped_twice(self.key_norm, keys)
+            keys = call_vmapped_twice(
+                self.key_norm,
+                keys,
+                forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+            )
         if self.config.normalize_values:
-            values = _rms_normalize(values, eps=1e-6)
+            values = _rms_normalize(
+                values,
+                eps=1e-6,
+                forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+            )
 
         if positional_embeddings is not None:
             queries = call_vmapped(positional_embeddings.apply, queries, in_axes=1, out_axes=1)

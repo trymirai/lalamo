@@ -15,7 +15,7 @@ from lalamo.weight_matrix import GradientEstimator
 from .activations import Activation
 from .embedding import EmbeddingBase, EmbeddingConfig, EmbeddingForwardPassConfig
 from .linear import Linear, LinearConfig
-from .normalization import Normalization, NormalizationConfig
+from .normalization import Normalization, NormalizationConfig, NormalizationForwardPassConfig
 from .rope import PositionalEmbeddings
 from .transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
 from .transformer_layer import TransformerLayerResult
@@ -131,18 +131,24 @@ class ClassifierForwardPassConfig:
     transformer_forward_pass_config: TransformerForwardPassConfig = dataclass_field(
         default_factory=TransformerForwardPassConfig,
     )
+    normalization_forward_pass_config: NormalizationForwardPassConfig = dataclass_field(
+        default_factory=NormalizationForwardPassConfig,
+    )
 
     @classmethod
     def for_tracer_tests(cls) -> Self:
         return cls(
             embedding_forward_pass_config=EmbeddingForwardPassConfig.for_tracer_tests(),
             transformer_forward_pass_config=TransformerForwardPassConfig.for_tracer_tests(),
+            normalization_forward_pass_config=NormalizationForwardPassConfig.for_tracer_tests(),
         )
 
     @classmethod
     def for_inference(cls, mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN) -> Self:
         return cls(
+            embedding_forward_pass_config=EmbeddingForwardPassConfig.for_inference(),
             transformer_forward_pass_config=TransformerForwardPassConfig.for_inference(mode),
+            normalization_forward_pass_config=NormalizationForwardPassConfig.for_inference(),
         )
 
     @classmethod
@@ -153,6 +159,7 @@ class ClassifierForwardPassConfig:
         return cls(
             embedding_forward_pass_config=EmbeddingForwardPassConfig.for_training(gradient_estimator),
             transformer_forward_pass_config=TransformerForwardPassConfig.for_training(gradient_estimator),
+            normalization_forward_pass_config=NormalizationForwardPassConfig.for_training(),
         )
 
 
@@ -221,7 +228,11 @@ class Classifier(LalamoModule[ClassifierConfig]):
             keychain=embedding_keychain,
             added_sharding_axes=(ShardingAxis.DATA, None),
         )
-        normalized_embeddings = call_vmapped_twice(self.embedding_norm, inner_features)
+        normalized_embeddings = call_vmapped_twice(
+            self.embedding_norm,
+            inner_features,
+            forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+        )
 
         transformer_result = self.transformer(
             inner_features=normalized_embeddings,

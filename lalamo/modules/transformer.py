@@ -194,7 +194,11 @@ class Transformer(LalamoModule[TransformerConfig]):
             if kv_source_layer_index is None:
                 updated_states[layer_index] = layer_result.updated_state
 
-        normalized_outputs = call_vmapped_twice(self.output_norm, inner_features)
+        normalized_outputs = call_vmapped_twice(
+            self.output_norm,
+            inner_features,
+            forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+        )
 
         if return_updated_state:
             compact_state_layers = []

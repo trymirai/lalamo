@@ -38,7 +38,13 @@ from .mlp import (
     RoutingFunction,
     SoftmaxRouting,
 )
-from .normalization import Normalization, NormalizationConfig, UpcastMode
+from .normalization import (
+    Normalization,
+    NormalizationConfig,
+    NormalizationForwardPassConfig,
+    NormalizationImplementation,
+    UpcastMode,
+)
 from .rope import (
     LinearScalingRoPEConfig,
     LlamaRoPEConfig,
@@ -131,6 +137,8 @@ __all__ = [
     "MixtureOfExpertsConfig",
     "Normalization",
     "NormalizationConfig",
+    "NormalizationForwardPassConfig",
+    "NormalizationImplementation",
     "PLELayer",
     "PLELayerConfig",
     "PLEModelConfig",

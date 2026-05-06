@@ -141,6 +141,7 @@ def estimate_batchsize_for_memory_budget(
     num_steps: int = 2,
 ) -> int:
     batch_size = max(1, starting_batchsize)
+    last_successful_batch_size: int | None = None
 
     for _ in range(num_steps):
         try:
@@ -148,6 +149,8 @@ def estimate_batchsize_for_memory_budget(
         except (JaxRuntimeError, ValueError) as error:
             if not _is_oom_error(error):
                 raise
+            if last_successful_batch_size is not None:
+                return last_successful_batch_size
 
             warnings.warn(
                 f"OOM while estimating batch size at {batch_size}. Sticking with {batch_size // 2}.",
@@ -156,7 +159,11 @@ def estimate_batchsize_for_memory_budget(
             )
             return max(1, batch_size // 2)
 
-        batch_size = max(1, int(batch_size * memory_budget / peak_bytes_in_use))
+        last_successful_batch_size = batch_size
+        estimated_batch_size = max(1, int(batch_size * memory_budget / peak_bytes_in_use))
+        if estimated_batch_size <= batch_size:
+            return estimated_batch_size
+        batch_size = estimated_batch_size
 
     return batch_size
 
@@ -221,7 +228,6 @@ def bucket_sequences[T: TokenSequence](
             continue
 
         had_successful_estimate = True
-        num_steps = 1
         batch_size_per_bucket[padded_length] = estimated
 
         remaining = sorted_lengths[idx + 1 :]
@@ -241,11 +247,12 @@ def merge_small_buckets[T: TokenSequence](
     merged: dict[int, list[tuple[int, T]]] = {}
     overflow: list[tuple[int, T]] = []
 
-    for padded_length in sorted_lengths:
+    for idx, padded_length in enumerate(sorted_lengths):
         batch_size = batch_size_for_length.get(padded_length, 1)
         items = overflow + buckets[padded_length]
+        next_length = sorted_lengths[idx + 1] if idx + 1 < len(sorted_lengths) else padded_length
 
-        if len(items) < min_batches * batch_size:
+        if len(items) < min_batches * batch_size and next_length <= 2 * padded_length:
             overflow = items
         else:
             merged[padded_length] = items
@@ -278,43 +285,6 @@ def pad_sequences(
         padded[idx, : sequence_array.size] = sequence_array
 
     return jnp.asarray(padded)
-
-
-def _select_keychain(keychain: Keychain, indices: list[int] | np.ndarray | Int[Array, " batch"]) -> Keychain:
-    return Keychain(vmapped_keys=keychain.vmapped_keys[jnp.asarray(indices)], batch_key=keychain.batch_key)
-
-
-def _pad_keychain_to_size(keychain: Keychain, size: int) -> Keychain:
-    if len(keychain.vmapped_keys) > size:
-        raise RuntimeError(f"Expected at most {size} keys, got {len(keychain.vmapped_keys)}")
-    if len(keychain.vmapped_keys) == size:
-        return keychain
-    dummy_keys = jax.random.split(keychain.batch_key, size - len(keychain.vmapped_keys))
-    return Keychain(
-        vmapped_keys=jnp.concatenate([keychain.vmapped_keys, dummy_keys]),
-        batch_key=keychain.batch_key,
-    )
-
-
-def _batched_keychain(keychain: Keychain | None, batch_size: int, *, seed: int = 0) -> Keychain:
-    if keychain is None:
-        return Keychain.init(seed, shape=(batch_size,))
-    if keychain.vmapped_keys.shape == ():
-        return keychain.broadcast((batch_size,))
-    if len(keychain.vmapped_keys) != batch_size:
-        raise RuntimeError(
-            "Length of keychain.vmapped_keys should equal the number of sequences; "
-            f"got {len(keychain.vmapped_keys)} vs {batch_size}",
-        )
-    return keychain
-
-
-def _sequence_from_batch(results: GeneratedSequence, idx: int) -> GeneratedSequence:
-    return GeneratedSequence(
-        token_ids=results.token_ids[idx],
-        top_k_token_ids=results.top_k_token_ids[idx] if results.top_k_token_ids is not None else None,
-        top_k_token_logits=results.top_k_token_logits[idx] if results.top_k_token_logits is not None else None,
-    )
 
 
 def _decrease_batchsize_on_oom[T](
@@ -372,6 +342,7 @@ class PrefillSource:
     keychain: Keychain
     prefill_batch_size: int
     padded_length: int
+    chunk_size: int
     state_capacity: int
     sampling_policy_template: SamplingPolicy
     cursor: int = 0
@@ -413,14 +384,17 @@ class PrefillSource:
         mask = np.zeros(self.prefill_batch_size, dtype=bool)
         mask[:num_designated] = True
 
-        selected_keychain = _select_keychain(self.keychain, selected_indices)
+        selected_keys = self.keychain.vmapped_keys[jnp.asarray(selected_indices)]
+        selected_keychain = Keychain(vmapped_keys=selected_keys, batch_key=self.keychain.batch_key)
         prefilled_state = model.prefill_tokens(
             token_ids=padded_sequences,
             state_capacity=self.state_capacity,
             lengths_without_padding=jnp.asarray(lengths_without_padding),
-            keychain=selected_keychain,
+            chunk_size=self.chunk_size,
+            keychain=Keychain(vmapped_keys=selected_keys[0], batch_key=selected_keychain.batch_key),
         )
         sampling_policy = self.sampling_policy_template.broadcast(self.prefill_batch_size)
+        # Avoid materializing batch x vocab token count storage unless a count-based penalty needs it.
         if self.sampling_policy_template.has_count_penalties():
             sampling_policy = call_vmapped(
                 lambda policy, prompt_token_ids, prompt_length: policy.with_prompt_token_counts(
@@ -547,9 +521,11 @@ class BlockContinuousDecoder(eqx.Module):
     ) -> tuple[tuple[DecodingState, Key[Array, " num_lines"]], Int[Array, " num_lines"]]:
         decode_state, keys = carry
 
-        split_keys = jax.vmap(jax.random.split)(keys)
+        split_keys = jax.vmap(functools.partial(jax.random.split, num=3))(keys)
         next_keys = split_keys[:, 0]
         sample_keys = split_keys[:, 1]
+        decoder_keys = split_keys[:, 2]
+        decoder_key = decoder_keys[0]
 
         processed_logits = call_vmapped(
             lambda policy, logits: policy.process_logits(logits),
@@ -571,7 +547,6 @@ class BlockContinuousDecoder(eqx.Module):
             jnp.any(next_token_ids[:, None] == eos_token_ids[None, :], axis=-1),
         )
 
-        decoder_key = next_keys[0]
         decoder_result = self.language_model.decoder(
             token_ids=next_token_ids[:, None],
             token_positions=next_token_indices[:, None],
@@ -697,7 +672,7 @@ class Batching(ABC):
         batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
     ) -> Iterator[tuple[int, AssistantMessage]]:
         messages = list(messages)
-        keychain = _batched_keychain(keychain, len(messages))
+        keychain = (keychain or Keychain.init(0, shape=(len(messages),))).broadcast((len(messages),))
 
         if vram_bytes is not None and batching_config.batch_size is not None:
             raise RuntimeError("Specify only one of batching_config.batch_size and vram_bytes.")
@@ -758,7 +733,10 @@ class Batching(ABC):
                 batch_size=bucket_batch_size,
                 padded_length=padded_length,
             )
-            bucket_keychain = _select_keychain(keychain, sequence_ids)
+            bucket_keychain = Keychain(
+                vmapped_keys=keychain.vmapped_keys[jnp.asarray(sequence_ids)],
+                batch_key=keychain.batch_key,
+            )
 
             for local_idx, result in self.generate_tokens_many(
                 sequence_tokenized,
@@ -789,7 +767,7 @@ class FixedSizeBatching(Batching):
         if batching_config.batch_size is None:
             raise RuntimeError("FixedSizeBatching requires batching_config.batch_size.")
 
-        keychain = _batched_keychain(keychain, len(tokenized))
+        keychain = (keychain or Keychain.init(0, shape=(len(tokenized),))).broadcast((len(tokenized),))
 
         def process_batches(batch_size: int) -> Iterator[tuple[int, GeneratedSequence]]:
             for batch_items in batched(enumerate(tokenized), batch_size):
@@ -800,7 +778,11 @@ class FixedSizeBatching(Batching):
                 num_padding_rows = batch_size - len(real_batch)
                 lengths = jnp.asarray([len(tokens) for tokens in real_batch] + [1] * num_padding_rows, dtype=jnp.int32)
                 padded = pad_sequences(real_batch, (batch_size, padded_length), dtype=jnp.int32)
-                batch_keychain = _pad_keychain_to_size(_select_keychain(keychain, batch_indices), batch_size)
+                padded_batch_indices = batch_indices + [0] * num_padding_rows
+                batch_keychain = Keychain(
+                    vmapped_keys=keychain.vmapped_keys[jnp.asarray(padded_batch_indices)],
+                    batch_key=keychain.batch_key,
+                )
                 batch_results = self.model.generate_tokens(
                     padded,
                     generation_config=generation_config,
@@ -809,13 +791,23 @@ class FixedSizeBatching(Batching):
                     num_top_logits_to_return=batching_config.num_top_logits_to_return,
                     keychain=batch_keychain,
                 )
-                generated = GeneratedSequence(
-                    token_ids=batch_results.token_ids,
-                    top_k_token_ids=batch_results.top_k_token_ids,
-                    top_k_token_logits=batch_results.top_k_token_logits,
-                )
                 for local_idx, sequence_id in enumerate(batch_indices):
-                    yield sequence_id, _sequence_from_batch(generated, local_idx)
+                    yield (
+                        sequence_id,
+                        GeneratedSequence(
+                            token_ids=batch_results.token_ids[local_idx],
+                            top_k_token_ids=(
+                                batch_results.top_k_token_ids[local_idx]
+                                if batch_results.top_k_token_ids is not None
+                                else None
+                            ),
+                            top_k_token_logits=(
+                                batch_results.top_k_token_logits[local_idx]
+                                if batch_results.top_k_token_logits is not None
+                                else None
+                            ),
+                        ),
+                    )
 
         if fast_peak_memory:
             yield from process_batches(batching_config.batch_size)
@@ -849,7 +841,7 @@ class ContinuousBatching(Batching):
         if batching_config.padded_length is None:
             raise RuntimeError("ContinuousBatching requires batching_config.padded_length.")
 
-        keychain = _batched_keychain(keychain, len(tokenized))
+        keychain = (keychain or Keychain.init(0, shape=(len(tokenized),))).broadcast((len(tokenized),))
 
         sampling_policy = (
             generation_config.default_policy() if generation_config else self.model.default_sampling_policy()
@@ -860,13 +852,16 @@ class ContinuousBatching(Batching):
         padded_length = batching_config.padded_length
 
         block_size = min(self.block_size, max_output_length)
-        state_capacity = padded_length + max_output_length + 1
+        prefill_chunk_size = 128
+        prefill_capacity = ((padded_length + prefill_chunk_size - 1) // prefill_chunk_size) * prefill_chunk_size
+        state_capacity = prefill_capacity + max_output_length + 1
         prefill_batch_size = max(1, min(int(batch_size * self.prefill_batch_fraction + 1), batch_size))
         prefills: PrefillSource | None = PrefillSource(
             tokenized_messages=tokenized,
             keychain=keychain,
             prefill_batch_size=prefill_batch_size,
             padded_length=padded_length,
+            chunk_size=prefill_chunk_size,
             state_capacity=state_capacity,
             sampling_policy_template=sampling_policy,
         )
