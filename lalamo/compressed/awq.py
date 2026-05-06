@@ -35,7 +35,6 @@ from lalamo.weight_matrix import (
 
 from .packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from .rounding import _mask_straight_through_gradients, deterministic_round_to_unsigned_grid, round_to_unsigned_grid
-from .tilelang_dot import TileLangDot
 from .utils import (
     expand_last_axis_groups,
     group_by_last_axis,
@@ -122,31 +121,6 @@ def _awq_quantize(
     return (int_weights - expanded_int_zero_points) * expanded_scales
 
 
-def _awq_quantized_dot_output_input(
-    weights: Float[Array, "rows cols"],
-    scales: Float[Array, "rows groups"],
-    zero_points: Float[Array, "rows groups"],
-    vector: Float[Array, " channels"],
-    group_size: int,
-    round_fn: Callable[[Float[Array, "..."]], Float[Array, "..."]],
-) -> Float[Array, " rows"]:
-    int_scale_zero_points = _awq_master_zero_points_to_int_scale(zero_points, stop_gradient(scales))
-    int_zero_points = round_fn(int_scale_zero_points)
-    rounded_zero_points = _awq_int_scale_zero_points_to_master(int_zero_points, scales)
-
-    grouped_weights = group_by_last_axis(weights, group_size=group_size)
-    int_scale_weights = (grouped_weights + stop_gradient(rounded_zero_points[..., None])) / stop_gradient(
-        scales[..., None]
-    )
-    int_weights = round_fn(int_scale_weights)
-
-    vector_groups = vector.reshape(vector.shape[0] // group_size, group_size).astype(jnp.float32)
-    int_dot = jnp.sum(int_weights.astype(jnp.float32) * vector_groups[None, :, :], axis=-1)
-    vector_sums = jnp.sum(vector_groups, axis=-1)
-    group_outputs = (int_dot - int_zero_points.astype(jnp.float32) * vector_sums[None, :]) * scales.astype(jnp.float32)
-    return jnp.sum(group_outputs, axis=-1).astype(vector.dtype)
-
-
 def _awq_pack_master_zero_points(
     zero_points: Float[Array, "... rows groups"],
     scales: Float[Array, "... rows groups"],
@@ -200,8 +174,10 @@ def _awq_unpack_master_weights(
     return (int_weights - expanded_int_zero_points) * expanded_scales
 
 
+# Training matvec fast path: do the grouped quantized dot directly so XLA
+# does not materialize the full dequantized weight matrix before the matmul.
 @partial(custom_vjp, nondiff_argnums=(4, 5))
-def _awq_deterministic_quantized_dot_output_input(
+def _awq_grouped_dot_output_input(
     weights: Float[Array, "rows cols"],
     scales: Float[Array, "rows groups"],
     zero_points: Float[Array, "rows groups"],
@@ -226,7 +202,7 @@ def _awq_deterministic_quantized_dot_output_input(
     return jnp.sum(group_outputs, axis=-1).astype(vector.dtype)
 
 
-def _awq_deterministic_quantized_dot_output_input_fwd(
+def _awq_grouped_dot_output_input_fwd(
     weights: Float[Array, "rows cols"],
     scales: Float[Array, "rows groups"],
     zero_points: Float[Array, "rows groups"],
@@ -252,7 +228,7 @@ def _awq_deterministic_quantized_dot_output_input_fwd(
     return output, (int_scale_weights, int_scale_zero_points, int_weights, int_zero_points, scales, vector)
 
 
-def _awq_deterministic_quantized_dot_output_input_bwd(
+def _awq_grouped_dot_output_input_bwd(
     group_size: int,
     bits: int,
     residuals: tuple[Array, ...],
@@ -299,9 +275,9 @@ def _awq_deterministic_quantized_dot_output_input_bwd(
     )
 
 
-_awq_deterministic_quantized_dot_output_input.defvjp(
-    _awq_deterministic_quantized_dot_output_input_fwd,
-    _awq_deterministic_quantized_dot_output_input_bwd,
+_awq_grouped_dot_output_input.defvjp(
+    _awq_grouped_dot_output_input_fwd,
+    _awq_grouped_dot_output_input_bwd,
 )
 
 
@@ -528,25 +504,21 @@ class AWQMatrixForTraining(AWQMatrix):
             keychain=keychain,
             gradient_estimator=forward_pass_config.gradient_estimator,
         )
-        if self.spec.layout == Layout.OUTPUT_INPUT and vector.dtype in (jnp.bfloat16, jnp.float16) and not transposed:
-            if forward_pass_config.gradient_estimator == GradientEstimator.DETERMINISTIC_ROUNDING:
-                result = _awq_deterministic_quantized_dot_output_input(
-                    self.weights.astype(vector.dtype),
-                    self.scales.astype(vector.dtype),
-                    self.zero_points.astype(vector.dtype),
-                    vector,
-                    self.spec.group_size,
-                    self.spec.bits,
-                )
-            else:
-                result = _awq_quantized_dot_output_input(
-                    self.weights.astype(vector.dtype),
-                    self.scales.astype(vector.dtype),
-                    self.zero_points.astype(vector.dtype),
-                    vector,
-                    self.spec.group_size,
-                    round_fn,
-                )
+        uses_grouped_dot = (
+            self.spec.layout == Layout.OUTPUT_INPUT
+            and vector.dtype in (jnp.bfloat16, jnp.float16)
+            and forward_pass_config.gradient_estimator == GradientEstimator.DETERMINISTIC_ROUNDING
+            and not transposed
+        )
+        if uses_grouped_dot:
+            result = _awq_grouped_dot_output_input(
+                self.weights.astype(vector.dtype),
+                self.scales.astype(vector.dtype),
+                self.zero_points.astype(vector.dtype),
+                vector,
+                self.spec.group_size,
+                self.spec.bits,
+            )
             return reshard_as(result, vector)
 
         dequantized_weights = _awq_quantize(
@@ -635,18 +607,6 @@ class AWQMatrixForInference(AWQMatrix):
             packed_weights=self.packed_weights,
             scales=self.scales.astype(dtype),
             packed_zero_points=self.packed_zero_points,
-        )
-
-    def to_tilelang_dot(self, dtype: DTypeLike = jnp.float16) -> "TileLangDot":
-        if self.spec.bits != 4 or self.spec.group_size != 32 or self.spec.layout != Layout.OUTPUT_INPUT:
-            raise ValueError("TileLang dot requires 4-bit OUTPUT_INPUT weights with group_size=32.")
-
-        return TileLangDot.from_awq_packed(
-            self.packed_weights,
-            self.scales.astype(dtype),
-            self.packed_zero_points,
-            self.spec.group_size,
-            dtype,
         )
 
     def load_exported(
