@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Literal, NamedTuple, Self
 
+import jax
 import jax.numpy as jnp
-from jax.lax import stop_gradient
+from jax.lax import DotAlgorithmPreset, stop_gradient
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.exportable import ExportResults
@@ -196,6 +197,27 @@ def _awq_grouped_dot_output_input(
     vector_sums = jnp.sum(vector_groups, axis=-1)
     group_outputs = (int_dot - int_zero_points.astype(jnp.float32) * vector_sums[None, :]) * scales.astype(jnp.float32)
     return jnp.sum(group_outputs, axis=-1).astype(vector.dtype)
+
+
+def _use_cute_w4a16_dot(
+    spec: "AWQSpec",
+    packed_weights: Array,
+    vector: Array,
+    forward_pass_config: MatmulConfig,
+    transposed: bool,
+) -> bool:
+    return (
+        jax.default_backend() == "gpu"
+        and spec.bits == 4
+        and spec.group_size == 32
+        and spec.layout == Layout.OUTPUT_INPUT
+        and vector.ndim == 1
+        and vector.dtype in (jnp.float16, jnp.bfloat16)
+        and vector.shape[0] % 1024 == 0
+        and packed_weights.shape[0] % 2 == 0
+        and forward_pass_config.precision == DotAlgorithmPreset.DEFAULT
+        and not transposed
+    )
 
 
 @dataclass(frozen=True)
@@ -611,6 +633,17 @@ class AWQMatrixForInference(AWQMatrix):
         transposed: bool = False,
     ) -> Float[Array, "... channels"]:
         self._raise_if_batched()
+        if _use_cute_w4a16_dot(self.spec, self.packed_weights, vector, forward_pass_config, transposed):
+            from .cute_w4a16_dot import awq_w4a16_dot  # noqa: PLC0415
+
+            result = awq_w4a16_dot(
+                vector,
+                self.packed_weights,
+                self.scales.astype(vector.dtype),
+                self.packed_zero_points,
+            )
+            return reshard_as(result, vector)
+
         weights = _awq_unpack_master_weights(
             self.packed_weights,
             self.scales.astype(vector.dtype),
