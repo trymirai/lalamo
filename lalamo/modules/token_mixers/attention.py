@@ -55,7 +55,6 @@ def _rms_normalize(
             offset=None,
             epsilon=eps,
             subtract_mean=False,
-            implementation=forward_pass_config.tokamax_implementation,
         )
 
     upcasted_inputs = inputs.astype(jnp.float32)

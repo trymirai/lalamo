@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal
 
 import equinox as eqx
 import jax
@@ -20,8 +19,6 @@ __all__ = [
     "UpcastMode",
 ]
 
-type TokamaxLayerNormImplementation = Literal["xla", "triton"] | tuple[Literal["xla", "triton"], ...] | None
-
 
 class UpcastMode(StrEnum):
     ONLY_NORMALIZATION = "only_normalization"
@@ -37,7 +34,6 @@ class NormalizationImplementation(StrEnum):
 class NormalizationForwardPassConfig:
     implementation: NormalizationImplementation = NormalizationImplementation.STANDARD
     accumulation_precision: DTypeLike | None = jnp.float32
-    tokamax_implementation: TokamaxLayerNormImplementation = "xla"
 
     @classmethod
     def for_tracer_tests(cls) -> "NormalizationForwardPassConfig":
@@ -102,7 +98,6 @@ class Normalization(LalamoModule[NormalizationConfig]):
                 epsilon=self.config.epsilon,
                 scale_offset=0.0,
                 subtract_mean=self.config.subtract_mean,
-                implementation=forward_pass_config.tokamax_implementation,
             )
             if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
                 result = result.astype(inputs.dtype)
