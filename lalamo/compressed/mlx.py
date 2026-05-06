@@ -5,7 +5,6 @@ from functools import partial
 from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
-from jax import custom_vjp
 from jax.lax import stop_gradient
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
@@ -29,7 +28,7 @@ from lalamo.weight_matrix import (
 )
 
 from .packing import pack_uint_to_uint8, unpack_uint8_to_uint
-from .rounding import _mask_straight_through_gradients, deterministic_round_to_unsigned_grid, round_to_unsigned_grid
+from .rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
 from .utils import (
     expand_last_axis_groups,
     group_by_last_axis,
@@ -120,9 +119,6 @@ def _mlx_unpack_master_weights(
     return int_weights.astype(scales.dtype) * expanded_scales + expanded_biases
 
 
-# Training matvec fast path: do the grouped quantized dot directly so XLA
-# does not materialize the full dequantized weight matrix before the matmul.
-@partial(custom_vjp, nondiff_argnums=(4, 5))
 def _mlx_grouped_dot_output_input(
     weights: Float[Array, "rows cols"],
     scales: Float[Array, "rows groups"],
@@ -140,67 +136,6 @@ def _mlx_grouped_dot_output_input(
     vector_sums = jnp.sum(vector_groups, axis=-1)
     group_outputs = int_dot * scales.astype(jnp.float32) + vector_sums[None, :] * biases.astype(jnp.float32)
     return jnp.sum(group_outputs, axis=-1).astype(vector.dtype)
-
-
-def _mlx_grouped_dot_output_input_fwd(
-    weights: Float[Array, "rows cols"],
-    scales: Float[Array, "rows groups"],
-    biases: Float[Array, "rows groups"],
-    vector: Float[Array, " channels"],
-    group_size: int,
-    bits: int,
-) -> tuple[Float[Array, " rows"], tuple[Array, ...]]:
-    grouped_weights = group_by_last_axis(weights, group_size=group_size)
-    int_scale_weights = (grouped_weights - stop_gradient(biases[..., None])) / stop_gradient(scales[..., None])
-    rounded_weights = deterministic_round_to_unsigned_grid(int_scale_weights, bits=bits)
-
-    vector_groups = vector.reshape(vector.shape[0] // group_size, group_size).astype(jnp.float32)
-    int_dot = jnp.sum(rounded_weights.astype(jnp.float32) * vector_groups[None, :, :], axis=-1)
-    vector_sums = jnp.sum(vector_groups, axis=-1)
-    group_outputs = int_dot * scales.astype(jnp.float32) + vector_sums[None, :] * biases.astype(jnp.float32)
-    output = jnp.sum(group_outputs, axis=-1).astype(vector.dtype)
-    return output, (int_scale_weights, rounded_weights, scales, biases, vector)
-
-
-def _mlx_grouped_dot_output_input_bwd(
-    group_size: int,
-    bits: int,
-    residuals: tuple[Array, ...],
-    output_grad: Float[Array, " rows"],
-) -> tuple[Array, Array, Array, Array]:
-    int_scale_weights, rounded_weights, scales, biases, vector = residuals
-    vector_groups = vector.reshape(vector.shape[0] // group_size, group_size).astype(jnp.float32)
-    output_grad = output_grad.astype(jnp.float32)
-    scales_f32 = scales.astype(jnp.float32)
-    biases_f32 = biases.astype(jnp.float32)
-    rounded_f32 = rounded_weights.astype(jnp.float32)
-
-    weights_grad_groups = output_grad[:, None, None] * vector_groups[None, :, :]
-    weights_grad_groups = _mask_straight_through_gradients(
-        int_scale_weights,
-        weights_grad_groups.astype(int_scale_weights.dtype),
-        bits=bits,
-    )
-    weights_grad = weights_grad_groups.reshape(int_scale_weights.shape[0], vector.shape[0])
-    scales_grad = output_grad[:, None] * jnp.sum(rounded_f32 * vector_groups[None, :, :], axis=-1)
-    biases_grad = output_grad[:, None] * jnp.sum(vector_groups, axis=-1)[None, :]
-    vector_grad_groups = jnp.sum(
-        output_grad[:, None, None] * (rounded_f32 * scales_f32[..., None] + biases_f32[..., None]),
-        axis=0,
-    )
-
-    return (
-        weights_grad.astype(int_scale_weights.dtype),
-        scales_grad.astype(scales.dtype),
-        biases_grad.astype(biases.dtype),
-        vector_grad_groups.reshape(vector.shape).astype(vector.dtype),
-    )
-
-
-_mlx_grouped_dot_output_input.defvjp(
-    _mlx_grouped_dot_output_input_fwd,
-    _mlx_grouped_dot_output_input_bwd,
-)
 
 
 @dataclass(frozen=True)
@@ -408,6 +343,8 @@ class MLXMatrixForTraining(MLXMatrix):
             and not transposed
         )
         if uses_grouped_dot:
+            # Compute grouped dequantized dot directly instead of materializing
+            # the full dequantized weight matrix before the matmul.
             result = _mlx_grouped_dot_output_input(
                 self.weights.astype(vector.dtype),
                 self.scales.astype(vector.dtype),
