@@ -14,6 +14,12 @@ REDUCE_THREADS = 64
 ROWS_PER_CTA = 2
 MICRO_VALUES = 16
 MICRO_PACKED = 8
+TENSORCORE_BATCH = 8
+DEQUANT_THREADS = 64
+DEQUANT_TILE_ROWS = 2
+DEQUANT_TILE_VALUES = 256
+DEQUANT_VALUES_PER_THREAD = 8
+PACKED_VALUES_PER_GROUP = GROUP_SIZE // 2
 
 
 @cute.kernel
@@ -140,6 +146,63 @@ def _awq_kernel(
                 out[batch, row] = cutlass.Float16(acc)
 
 
+@cute.kernel
+def _mlx_dequant_kernel(
+    packed_weights: cute.Tensor,
+    scales: cute.Tensor,
+    biases: cute.Tensor,
+    out: cute.Tensor,
+) -> None:
+    tid, _, _ = cute.arch.thread_idx()
+    cta_col, cta_row, _ = cute.arch.block_idx()
+
+    for i in cutlass.range_constexpr(DEQUANT_VALUES_PER_THREAD):
+        offset = tid + i * DEQUANT_THREADS
+        row = cta_row * DEQUANT_TILE_ROWS + offset // DEQUANT_TILE_VALUES
+        col = cta_col * DEQUANT_TILE_VALUES + offset % DEQUANT_TILE_VALUES
+        group = col // GROUP_SIZE
+        byte = packed_weights[row, col // 2]
+        value = byte & cutlass.Uint8(15)
+        if col % 2 == 1:
+            value = (byte >> cutlass.Uint8(4)) & cutlass.Uint8(15)
+        out_value = cutlass.Float32(value) * cutlass.Float32(scales[row, group])
+        out_value += cutlass.Float32(biases[row, group])
+        if out.element_type == cutlass.BFloat16:
+            out[row, col] = cutlass.BFloat16(out_value)
+        else:
+            out[row, col] = cutlass.Float16(out_value)
+
+
+@cute.kernel
+def _awq_dequant_kernel(
+    packed_weights: cute.Tensor,
+    scales: cute.Tensor,
+    zero_points: cute.Tensor,
+    out: cute.Tensor,
+) -> None:
+    tid, _, _ = cute.arch.thread_idx()
+    cta_col, cta_row, _ = cute.arch.block_idx()
+
+    for i in cutlass.range_constexpr(DEQUANT_VALUES_PER_THREAD):
+        offset = tid + i * DEQUANT_THREADS
+        row = cta_row * DEQUANT_TILE_ROWS + offset // DEQUANT_TILE_VALUES
+        col = cta_col * DEQUANT_TILE_VALUES + offset % DEQUANT_TILE_VALUES
+        group = col // GROUP_SIZE
+        byte = packed_weights[row, col // 2]
+        value = byte & cutlass.Uint8(15)
+        if col % 2 == 1:
+            value = (byte >> cutlass.Uint8(4)) & cutlass.Uint8(15)
+        zero_byte = zero_points[row, group // 2]
+        zero_point = zero_byte & cutlass.Uint8(15)
+        if group % 2 == 1:
+            zero_point = (zero_byte >> cutlass.Uint8(4)) & cutlass.Uint8(15)
+        out_value = (cutlass.Float32(value) - cutlass.Float32(zero_point)) * cutlass.Float32(scales[row, group])
+        if out.element_type == cutlass.BFloat16:
+            out[row, col] = cutlass.BFloat16(out_value)
+        else:
+            out[row, col] = cutlass.Float16(out_value)
+
+
 @cute.jit
 def _launch_mlx(
     stream: cuda.CUstream,
@@ -180,6 +243,44 @@ def _launch_awq(
     )
 
 
+@cute.jit
+def _launch_mlx_dequant(
+    stream: cuda.CUstream,
+    packed_weights: cute.Tensor,
+    scales: cute.Tensor,
+    biases: cute.Tensor,
+    out: cute.Tensor,
+) -> None:
+    _mlx_dequant_kernel(packed_weights, scales, biases, out).launch(
+        grid=[
+            cute.ceil_div(out.shape[1], DEQUANT_TILE_VALUES),
+            cute.ceil_div(packed_weights.shape[0], DEQUANT_TILE_ROWS),
+            1,
+        ],
+        block=[DEQUANT_THREADS, 1, 1],
+        stream=stream,
+    )
+
+
+@cute.jit
+def _launch_awq_dequant(
+    stream: cuda.CUstream,
+    packed_weights: cute.Tensor,
+    scales: cute.Tensor,
+    packed_zero_points: cute.Tensor,
+    out: cute.Tensor,
+) -> None:
+    _awq_dequant_kernel(packed_weights, scales, packed_zero_points, out).launch(
+        grid=[
+            cute.ceil_div(out.shape[1], DEQUANT_TILE_VALUES),
+            cute.ceil_div(packed_weights.shape[0], DEQUANT_TILE_ROWS),
+            1,
+        ],
+        block=[DEQUANT_THREADS, 1, 1],
+        stream=stream,
+    )
+
+
 @jax.custom_batching.custom_vmap
 def mlx_w4a16_dot(
     vector: Float[Array, " channels"],
@@ -206,6 +307,8 @@ def mlx_w4a16_matmul(
     scales: Float[Array, "rows groups"],
     biases: Float[Array, "rows groups"],
 ) -> Float[Array, "batch rows"]:
+    if vectors.shape[0] >= TENSORCORE_BATCH and vectors.shape[1] % DEQUANT_TILE_VALUES == 0:
+        return mlx_w4a16_tensorcore_matmul(vectors, packed_weights, scales, biases)
     return _call(_launch_mlx, vectors, packed_weights, scales, biases)
 
 
@@ -215,7 +318,29 @@ def awq_w4a16_matmul(
     scales: Float[Array, "rows groups"],
     packed_zero_points: Int[Array, "rows packed_groups"],
 ) -> Float[Array, "batch rows"]:
+    if vectors.shape[0] >= TENSORCORE_BATCH and vectors.shape[1] % DEQUANT_TILE_VALUES == 0:
+        return awq_w4a16_tensorcore_matmul(vectors, packed_weights, scales, packed_zero_points)
     return _call(_launch_awq, vectors, packed_weights, scales, packed_zero_points)
+
+
+def mlx_w4a16_tensorcore_matmul(
+    vectors: Float[Array, "batch channels"],
+    packed_weights: Int[Array, "rows packed_cols"],
+    scales: Float[Array, "rows groups"],
+    biases: Float[Array, "rows groups"],
+) -> Float[Array, "batch rows"]:
+    weights = _dequant(_launch_mlx_dequant, packed_weights, scales, biases, vectors.dtype)
+    return jnp.einsum("bc,rc->br", vectors, weights)
+
+
+def awq_w4a16_tensorcore_matmul(
+    vectors: Float[Array, "batch channels"],
+    packed_weights: Int[Array, "rows packed_cols"],
+    scales: Float[Array, "rows groups"],
+    packed_zero_points: Int[Array, "rows packed_groups"],
+) -> Float[Array, "batch rows"]:
+    weights = _dequant(_launch_awq_dequant, packed_weights, scales, packed_zero_points, vectors.dtype)
+    return jnp.einsum("bc,rc->br", vectors, weights)
 
 
 @mlx_w4a16_dot.def_vmap
@@ -257,6 +382,28 @@ def _vmap_dot(
         )
 
     return jax.lax.map(body, jnp.arange(axis_size)), True
+
+
+@partial(jax.jit, static_argnums=(0, 4))
+def _dequant(
+    launcher: Callable[..., None],
+    packed_weights: Array,
+    scales: Array,
+    affine: Array,
+    dtype: jnp.dtype,
+) -> Array:
+    assert packed_weights.ndim == 2
+    assert scales.ndim == 2
+    assert packed_weights.shape[1] == scales.shape[1] * PACKED_VALUES_PER_GROUP
+    assert packed_weights.shape[0] % DEQUANT_TILE_ROWS == 0
+    assert packed_weights.shape[1] * 2 % DEQUANT_TILE_VALUES == 0
+
+    call = cjax.cutlass_call(
+        launcher,
+        output_shape_dtype=jax.ShapeDtypeStruct((packed_weights.shape[0], packed_weights.shape[1] * 2), dtype),
+        use_static_tensors=True,
+    )
+    return call(packed_weights, scales, affine)
 
 
 @partial(jax.jit, static_argnums=(0,))
