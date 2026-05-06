@@ -101,11 +101,18 @@ def test_batch_generation(language_model: LanguageModel) -> None:
 
     generation_config = GenerationConfig(temperature=0)
     max_output_length = 32
+    prefill_forward_pass_config = DecoderForwardPassConfig.for_inference(precision=DotAlgorithmPreset.F32_F32_F32)
+    decode_forward_pass_config = DecoderForwardPassConfig.for_inference(
+        ForwardPassMode.SINGLE_TOKEN,
+        precision=DotAlgorithmPreset.F32_F32_F32,
+    )
     response_token_ids = language_model.generate_tokens(
         padded_token_ids,
         generation_config=generation_config,
         prompt_lengths_without_padding=batched_prompt_lengths,
         max_output_length=max_output_length,
+        prefill_forward_pass_config=prefill_forward_pass_config,
+        decode_forward_pass_config=decode_forward_pass_config,
         keychain=Keychain.init(3),
     ).token_ids
 
@@ -127,6 +134,8 @@ def test_batch_generation(language_model: LanguageModel) -> None:
             generation_config=generation_config,
             prompt_lengths_without_padding=lengths,
             max_output_length=max_output_length,
+            prefill_forward_pass_config=prefill_forward_pass_config,
+            decode_forward_pass_config=decode_forward_pass_config,
             keychain=Keychain.init(10 + pair_index),
         ).token_ids
 
