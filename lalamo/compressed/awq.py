@@ -651,6 +651,7 @@ class AWQMatrixForInference(AWQMatrix):
                 self.packed_weights,
                 self.scales.astype(vector.dtype),
                 self.packed_zero_points,
+                self.weights.astype(vector.dtype),
             )
             return reshard_as(result, vector)
 

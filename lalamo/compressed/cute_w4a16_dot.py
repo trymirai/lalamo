@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
 
 import cuda.bindings.driver as cuda
@@ -17,6 +17,8 @@ from .cute_w4a16_contract import (
     MLX_ROWS_PER_CTA,
     REDUCE_THREADS,
 )
+
+DENSE_PREFILL_BATCH = 8
 
 
 @cute.kernel
@@ -168,8 +170,9 @@ def mlx_w4a16_dot(
     packed_weights: Int[Array, "rows packed_cols"],
     scales: Float[Array, "rows groups"],
     biases: Float[Array, "rows groups"],
+    weights: Float[Array, "rows channels"],
 ) -> Float[Array, " rows"]:
-    return _call_mlx(vector[None, :], packed_weights, scales, biases)[0]
+    return mlx_w4a16_matmul(vector[None, :], packed_weights, scales, biases, weights)[0]
 
 
 @jax.custom_batching.custom_vmap
@@ -178,34 +181,61 @@ def awq_w4a16_dot(
     packed_weights: Int[Array, "rows packed_cols"],
     scales: Float[Array, "rows groups"],
     packed_zero_points: Int[Array, "rows packed_groups"],
+    weights: Float[Array, "rows channels"],
 ) -> Float[Array, " rows"]:
-    return _call_awq(vector[None, :], packed_weights, scales, packed_zero_points)[0]
+    return awq_w4a16_matmul(vector[None, :], packed_weights, scales, packed_zero_points, weights)[0]
+
+
+def mlx_w4a16_matmul(
+    vectors: Float[Array, "batch channels"],
+    packed_weights: Int[Array, "rows packed_cols"],
+    scales: Float[Array, "rows groups"],
+    biases: Float[Array, "rows groups"],
+    weights: Float[Array, "rows channels"],
+) -> Float[Array, "batch rows"]:
+    if vectors.shape[0] >= DENSE_PREFILL_BATCH:
+        return jnp.einsum("bc,rc->br", vectors, weights.astype(vectors.dtype))
+    return _call_mlx(vectors, packed_weights, scales, biases)
+
+
+def awq_w4a16_matmul(
+    vectors: Float[Array, "batch channels"],
+    packed_weights: Int[Array, "rows packed_cols"],
+    scales: Float[Array, "rows groups"],
+    packed_zero_points: Int[Array, "rows packed_groups"],
+    weights: Float[Array, "rows channels"],
+) -> Float[Array, "batch rows"]:
+    if vectors.shape[0] >= DENSE_PREFILL_BATCH:
+        return jnp.einsum("bc,rc->br", vectors, weights.astype(vectors.dtype))
+    return _call_awq(vectors, packed_weights, scales, packed_zero_points)
 
 
 @mlx_w4a16_dot.def_vmap
-def _mlx_vmap(axis_size: int, in_batched: tuple[bool, bool, bool, bool], *args: Array) -> tuple[Array, bool]:
-    return _vmap_dot(axis_size, in_batched, mlx_w4a16_dot, _call_mlx, *args)
+def _mlx_vmap(axis_size: int, in_batched: Sequence[bool], *args: Array) -> tuple[Array, bool]:
+    return _vmap_dot(axis_size, in_batched, mlx_w4a16_dot, mlx_w4a16_matmul, *args)
 
 
 @awq_w4a16_dot.def_vmap
-def _awq_vmap(axis_size: int, in_batched: tuple[bool, bool, bool, bool], *args: Array) -> tuple[Array, bool]:
-    return _vmap_dot(axis_size, in_batched, awq_w4a16_dot, _call_awq, *args)
+def _awq_vmap(axis_size: int, in_batched: Sequence[bool], *args: Array) -> tuple[Array, bool]:
+    return _vmap_dot(axis_size, in_batched, awq_w4a16_dot, awq_w4a16_matmul, *args)
 
 
 def _vmap_dot(
     axis_size: int,
-    in_batched: tuple[bool, bool, bool, bool],
-    dot_fn: Callable[[Array, Array, Array, Array], Array],
-    batched_dot_fn: Callable[[Array, Array, Array, Array], Array],
+    in_batched: Sequence[bool],
+    dot_fn: Callable[[Array, Array, Array, Array, Array], Array],
+    matmul_fn: Callable[[Array, Array, Array, Array, Array], Array],
     vector: Array,
     packed_weights: Array,
     scales: Array,
     affine: Array,
+    weights: Array,
 ) -> tuple[Array, bool]:
-    assert any(in_batched)
-    if in_batched == (True, False, False, False):
+    batched = tuple(in_batched)
+    assert any(batched)
+    if batched == (True, False, False, False, False):
         assert vector.shape[0] == axis_size
-        return batched_dot_fn(vector, packed_weights, scales, affine), True
+        return matmul_fn(vector, packed_weights, scales, affine, weights), True
 
     def take(array: Array, is_batched: bool, index: Array) -> Array:
         if is_batched:
@@ -214,10 +244,11 @@ def _vmap_dot(
 
     def body(index: Array) -> Array:
         return dot_fn(
-            take(vector, in_batched[0], index),
-            take(packed_weights, in_batched[1], index),
-            take(scales, in_batched[2], index),
-            take(affine, in_batched[3], index),
+            take(vector, batched[0], index),
+            take(packed_weights, batched[1], index),
+            take(scales, batched[2], index),
+            take(affine, batched[3], index),
+            take(weights, batched[4], index),
         )
 
     return jax.lax.map(body, jnp.arange(axis_size)), True

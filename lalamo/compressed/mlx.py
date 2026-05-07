@@ -554,6 +554,7 @@ class MLXMatrixForInference(MLXMatrix):
                 self.packed_weights,
                 self.scales.astype(vector.dtype),
                 self.biases.astype(vector.dtype),
+                self.weights.astype(vector.dtype),
             )
             return reshard_as(result, vector)
 
