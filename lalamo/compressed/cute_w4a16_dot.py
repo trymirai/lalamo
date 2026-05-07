@@ -18,7 +18,9 @@ from .cute_w4a16_contract import (
     REDUCE_THREADS,
 )
 
-DENSE_PREFILL_BATCH = 2
+DENSE_PREFILL_BATCH = 8
+PACKED_DECODE_MIN_ROWS = 6144
+PACKED_SMALL_PREFILL_MAX_ROWS = 2048
 
 
 @cute.kernel
@@ -186,6 +188,18 @@ def awq_w4a16_dot(
     return awq_w4a16_matmul(vector[None, :], packed_weights, scales, packed_zero_points, weights)[0]
 
 
+def _dense_matmul(vectors: Array, weights: Array) -> Array:
+    return jnp.einsum("bc,rc->br", vectors, weights.astype(vectors.dtype))
+
+
+def _use_dense_matmul(vectors: Array, packed_weights: Array) -> bool:
+    batch = vectors.shape[0]
+    rows = packed_weights.shape[0]
+    if batch == 1:
+        return rows < PACKED_DECODE_MIN_ROWS
+    return batch >= DENSE_PREFILL_BATCH or rows > PACKED_SMALL_PREFILL_MAX_ROWS
+
+
 def mlx_w4a16_matmul(
     vectors: Float[Array, "batch channels"],
     packed_weights: Int[Array, "rows packed_cols"],
@@ -193,8 +207,8 @@ def mlx_w4a16_matmul(
     biases: Float[Array, "rows groups"],
     weights: Float[Array, "rows channels"],
 ) -> Float[Array, "batch rows"]:
-    if vectors.shape[0] >= DENSE_PREFILL_BATCH:
-        return jnp.einsum("bc,rc->br", vectors, weights.astype(vectors.dtype))
+    if _use_dense_matmul(vectors, packed_weights):
+        return _dense_matmul(vectors, weights)
     return _call_mlx(vectors, packed_weights, scales, biases)
 
 
@@ -205,8 +219,8 @@ def awq_w4a16_matmul(
     packed_zero_points: Int[Array, "rows packed_groups"],
     weights: Float[Array, "rows channels"],
 ) -> Float[Array, "batch rows"]:
-    if vectors.shape[0] >= DENSE_PREFILL_BATCH:
-        return jnp.einsum("bc,rc->br", vectors, weights.astype(vectors.dtype))
+    if _use_dense_matmul(vectors, packed_weights):
+        return _dense_matmul(vectors, weights)
     return _call_awq(vectors, packed_weights, scales, packed_zero_points)
 
 
