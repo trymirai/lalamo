@@ -38,6 +38,7 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
+from .cute_w4a16_contract import AWQ_ROWS_PER_CTA, CHANNEL_MULTIPLE, GROUP_SIZE
 from .packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from .rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
 from .utils import (
@@ -187,6 +188,8 @@ def _awq_grouped_dot_output_input(
     group_size: int,
     bits: int,
 ) -> Float[Array, " rows"]:
+    assert vector.shape[0] == weights.shape[-1]
+    assert weights.shape[-1] % group_size == 0
     int_scale_zero_points = _awq_master_zero_points_to_int_scale(zero_points, stop_gradient(scales))
     int_zero_points = deterministic_round_to_unsigned_grid(int_scale_zero_points, bits=bits)
     rounded_zero_points = _awq_int_scale_zero_points_to_master(int_zero_points, scales)
@@ -214,12 +217,12 @@ def _use_cute_w4a16_dot(
     return (
         jax.default_backend() == "gpu"
         and spec.bits == 4
-        and spec.group_size == 32
+        and spec.group_size == GROUP_SIZE
         and spec.layout == Layout.OUTPUT_INPUT
         and vector.ndim == 1
         and vector.dtype in (jnp.float16, jnp.bfloat16)
-        and vector.shape[0] % 1024 == 0
-        and packed_weights.shape[0] % 2 == 0
+        and vector.shape[0] % CHANNEL_MULTIPLE == 0
+        and packed_weights.shape[0] % AWQ_ROWS_PER_CTA == 0
         and forward_pass_config.precision == DotAlgorithmPreset.DEFAULT
         and not transposed
     )
@@ -466,11 +469,10 @@ class AWQMatrixForTraining(AWQMatrix):
             self.spec.layout == Layout.OUTPUT_INPUT
             and vector.dtype in (jnp.bfloat16, jnp.float16)
             and forward_pass_config.gradient_estimator == GradientEstimator.DETERMINISTIC_ROUNDING
+            and forward_pass_config.precision == DotAlgorithmPreset.DEFAULT
             and not transposed
         )
         if uses_grouped_dot:
-            # Compute grouped dequantized dot directly instead of materializing
-            # the full dequantized weight matrix before the matmul.
             result = _awq_grouped_dot_output_input(
                 self.weights.astype(vector.dtype),
                 self.scales.astype(vector.dtype),
@@ -649,7 +651,6 @@ class AWQMatrixForInference(AWQMatrix):
                 self.packed_weights,
                 self.scales.astype(vector.dtype),
                 self.packed_zero_points,
-                self.weights.astype(vector.dtype),
             )
             return reshard_as(result, vector)
 

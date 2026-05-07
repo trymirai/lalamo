@@ -178,8 +178,6 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"lalamo/compressed/awq.py" = ["PLC0415"]
-"lalamo/compressed/mlx.py" = ["PLC0415"]
 "tests/tts/fishaudio/fishaudio_thin_wrapper.py" = ["ALL"]
 "tests/tts/nanocodec/nanocodec_torch_stuff.py" = ["ALL"]
 
