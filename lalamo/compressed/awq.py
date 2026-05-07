@@ -11,7 +11,12 @@ from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
-from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
+from lalamo.utils.dummy_array import (
+    dummy_array,
+    is_dummy_array,
+    preserve_first_input_sharding,
+    supports_dummy_arrays,
+)
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import (
@@ -289,9 +294,23 @@ class AWQSpec(WeightMatrixSpec):
         packed_zero_points = with_sharding(packed_zero_points, packed_zero_points_sharding)
 
         if implementation == CompressionImplementation.INFERENCE:
+            if is_dummy_array(packed_weights):
+                weights = dummy_array(
+                    (*packed_weights.shape[:-1], packed_weights.shape[-1] * (8 // self.bits)),
+                    scales.dtype,
+                )
+            else:
+                weights = _awq_unpack_master_weights(
+                    packed_weights,
+                    scales,
+                    packed_zero_points,
+                    self.group_size,
+                    self.bits,
+                )
             return AWQMatrixForInference(
                 spec=self,
                 packed_weights=packed_weights,
+                weights=with_sharding(weights, weight_sharding),
                 scales=scales,
                 packed_zero_points=packed_zero_points,
             )
@@ -522,6 +541,7 @@ class AWQMatrixForTraining(AWQMatrix):
 
 class AWQMatrixForInference(AWQMatrix):
     packed_weights: Int[Array, "... rows packed_cols"]
+    weights: Float[Array, "... rows cols"]
     scales: Float[Array, "... rows groups"]
     packed_zero_points: Int[Array, "... rows packed_groups"]
 
@@ -532,7 +552,7 @@ class AWQMatrixForInference(AWQMatrix):
 
     @property
     def dtype(self) -> DTypeLike:
-        return self.scales.dtype
+        return self.weights.dtype
 
     @property
     def _packed_quantized_weights(self) -> Int[Array, "... rows packed_cols"]:
@@ -546,6 +566,7 @@ class AWQMatrixForInference(AWQMatrix):
         return AWQMatrixForInference(
             spec=self.spec,
             packed_weights=self.packed_weights,
+            weights=self.weights.astype(dtype),
             scales=self.scales.astype(dtype),
             packed_zero_points=self.packed_zero_points,
         )
@@ -593,14 +614,7 @@ class AWQMatrixForInference(AWQMatrix):
         )
 
     def decompress(self) -> Float[Array, "... out_channels in_channels"]:
-        weights = _awq_unpack_master_weights(
-            self.packed_weights,
-            self.scales,
-            self.packed_zero_points,
-            self.spec.group_size,
-            self.spec.bits,
-        )
-        return self.spec.layout.to_output_input(weights)
+        return self.spec.layout.to_output_input(self.weights)
 
     @use_out_sharding((None,))
     def lookup_embedding(
@@ -616,13 +630,7 @@ class AWQMatrixForInference(AWQMatrix):
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
-        return _awq_unpack_master_weights(
-            self.packed_weights[index, :],
-            self.scales[index, :].astype(dtype),
-            self.packed_zero_points[index, :],
-            self.spec.group_size,
-            self.spec.bits,
-        )
+        return self.weights[index, :].astype(dtype)
 
     def dot(
         self,
@@ -634,23 +642,18 @@ class AWQMatrixForInference(AWQMatrix):
     ) -> Float[Array, "... channels"]:
         self._raise_if_batched()
         if _use_cute_w4a16_dot(self.spec, self.packed_weights, vector, forward_pass_config, transposed):
-            from .cute_w4a16_dot import awq_w4a16_dot  # noqa: PLC0415
+            from .cute_w4a16_dot import awq_w4a16_dot
 
             result = awq_w4a16_dot(
                 vector,
                 self.packed_weights,
                 self.scales.astype(vector.dtype),
                 self.packed_zero_points,
+                self.weights.astype(vector.dtype),
             )
             return reshard_as(result, vector)
 
-        weights = _awq_unpack_master_weights(
-            self.packed_weights,
-            self.scales.astype(vector.dtype),
-            self.packed_zero_points,
-            self.spec.group_size,
-            self.spec.bits,
-        )
+        weights = self.weights.astype(vector.dtype)
         layout = self.spec.layout
         if transposed:
             layout = layout.transpose()
