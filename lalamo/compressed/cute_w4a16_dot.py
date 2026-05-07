@@ -18,9 +18,8 @@ from .cute_w4a16_contract import (
     REDUCE_THREADS,
 )
 
-DENSE_PREFILL_BATCH = 8
 PACKED_DECODE_MIN_ROWS = 10240
-PACKED_SMALL_PREFILL_MAX_ROWS = 2048
+PACKED_PAIR_PREFILL_MAX_ROWS = 4096
 
 
 @cute.kernel
@@ -197,7 +196,7 @@ def _use_dense_matmul(vectors: Array, packed_weights: Array) -> bool:
     rows = packed_weights.shape[0]
     if batch == 1:
         return rows < PACKED_DECODE_MIN_ROWS
-    return batch >= DENSE_PREFILL_BATCH or rows > PACKED_SMALL_PREFILL_MAX_ROWS
+    return batch != 2 or rows > PACKED_PAIR_PREFILL_MAX_ROWS
 
 
 def mlx_w4a16_matmul(
