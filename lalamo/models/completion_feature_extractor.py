@@ -6,7 +6,11 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int
 
-from lalamo.data.completion_features import FeatureRequest, LalamoCompletionBatch, LalamoCompletionFeatures
+from lalamo.data.completion_features import (
+    FeatureRequest,
+    LalamoCompletionBatch,
+    LalamoCompletionFeatures,
+)
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.models.language_model import ForwardPassConfig, LanguageModel
 from lalamo.modules import ForwardPassMode
@@ -18,6 +22,8 @@ class OnlineCompletionFeatureExtractor:
     device_id: int
     request: FeatureRequest
     pad_token_id: int = 0
+    prompt_padding_multiple: int = 1024
+    generation_padding_multiple: int = 4096
     forward_pass_config: ForwardPassConfig | None = None
 
     @property
@@ -38,7 +44,12 @@ class OnlineCompletionFeatureExtractor:
         with jax.default_device(self.device):
             for completion_batch in batched(completions, batch_size):
                 yield self.extract_features(
-                    LalamoCompletionBatch.from_completions(completion_batch, self.pad_token_id),
+                    LalamoCompletionBatch.from_completions(
+                        completion_batch,
+                        pad_token_id=self.pad_token_id,
+                        prompt_padding_multiple=self.prompt_padding_multiple,
+                        generation_padding_multiple=self.generation_padding_multiple,
+                    ),
                 )
 
     def extract_features(self, completion_batch: LalamoCompletionBatch) -> LalamoCompletionFeatures:
@@ -111,8 +122,7 @@ class OnlineCompletionFeatureExtractor:
     def resolve_layer_indices(self) -> tuple[int, ...]:
         num_layers = len(self.model.model.transformer.layers)
         resolved = tuple(
-            layer_index if layer_index >= 0 else num_layers + layer_index
-            for layer_index in self.request.layer_indices
+            layer_index if layer_index >= 0 else num_layers + layer_index for layer_index in self.request.layer_indices
         )
         if any(layer_index < 0 or layer_index >= num_layers for layer_index in resolved):
             raise ValueError("layer_indices index out of range.")
