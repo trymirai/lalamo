@@ -86,6 +86,7 @@ def _put_on_sharding(matrix: AWQMatrix, sharding: Sharding) -> AWQMatrix:
     return AWQMatrixForInference(
         spec=matrix.spec,
         packed_weights=jax.device_put(matrix.packed_weights, sharding),
+        dense_weights=jax.device_put(matrix.dense_weights, sharding),
         scales=jax.device_put(matrix.scales, sharding),
         packed_zero_points=jax.device_put(matrix.packed_zero_points, sharding),
     )
@@ -254,6 +255,7 @@ def test_awq_export_load_roundtrips_and_preserves_template_sharding(
         assert restored.zero_points.sharding == template.zero_points.sharding
     elif isinstance(restored, AWQMatrixForInference) and isinstance(template, AWQMatrixForInference):
         assert restored.packed_weights.sharding == template.packed_weights.sharding
+        assert restored.dense_weights.sharding == template.dense_weights.sharding
         assert restored.packed_zero_points.sharding == template.packed_zero_points.sharding
 
 
@@ -288,6 +290,7 @@ def test_awq_from_packed_parameters_overrides_input_sharding(
         assert restored.zero_points.sharding == template.zero_points.sharding
     elif isinstance(restored, AWQMatrixForInference) and isinstance(template, AWQMatrixForInference):
         assert restored.packed_weights.sharding == template.packed_weights.sharding
+        assert restored.dense_weights.sharding == template.dense_weights.sharding
         assert restored.packed_zero_points.sharding == template.packed_zero_points.sharding
 
 

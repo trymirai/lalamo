@@ -9,6 +9,7 @@ import pytest
 from jax.sharding import Mesh, NamedSharding, Sharding
 
 from lalamo.compressed.awq import AWQSpec
+from lalamo.compressed.cute_w4a16_contract import use_packed_w4a16_route
 from lalamo.compressed.mlx import MLXSpec
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.modules.utils import call_vmapped
@@ -68,6 +69,20 @@ def assert_named_sharding(sharding: Sharding, mesh: Mesh) -> None:
 
 def assert_close_arrays(result: jax.Array, reference: jax.Array) -> None:
     assert_close(result=jnp.asarray(jax.device_get(result)), reference=jnp.asarray(jax.device_get(reference)))
+
+
+@pytest.mark.parametrize(
+    ("batch", "rows", "expected"),
+    [
+        (1, 8192, False),
+        (1, 10240, False),
+        (2, 4096, True),
+        (2, 6144, False),
+        (4, 4096, False),
+    ],
+)
+def test_w4a16_inference_route_is_explicit(batch: int, rows: int, expected: bool) -> None:
+    assert use_packed_w4a16_route(batch, rows) == expected
 
 
 def host_array(array: jax.Array) -> jax.Array:
@@ -463,6 +478,33 @@ def test_compressed_matrix_dot_vmapped_over_inputs_matches_reference_and_preserv
 
     assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == vectors.sharding
+    assert_close_arrays(result=result, reference=reference)
+
+
+@pytest.mark.parametrize("case", COMPRESSED_MATRIX_CASES)
+@pytest.mark.parametrize("implementation", list(CompressionImplementation))
+def test_output_input_bfloat16_dot_vmapped_over_inputs_matches_reference(
+    case: CompressedMatrixCase,
+    implementation: CompressionImplementation,
+) -> None:
+    matrix = _compress(
+        case,
+        logical_weights(case),
+        layout=Layout.OUTPUT_INPUT,
+        implementation=implementation,
+    )
+    vectors = jnp.asarray(
+        [
+            [0.4, -0.2, 0.7, -0.5],
+            [-0.1, 0.3, -0.6, 0.8],
+        ],
+        dtype=jnp.bfloat16,
+    )
+
+    result = jax.vmap(lambda vector: matrix.dot(vector, keychain=Keychain.init(10)))(vectors)
+    reference = jax.vmap(lambda vector: matrix.astype(vectors.dtype).decompress() @ vector)(vectors)
+
+    assert result.dtype == vectors.dtype
     assert_close_arrays(result=result, reference=reference)
 
 
