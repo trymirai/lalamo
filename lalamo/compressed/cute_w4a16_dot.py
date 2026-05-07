@@ -18,7 +18,7 @@ from .cute_w4a16_contract import (
     REDUCE_THREADS,
 )
 
-DENSE_PREFILL_BATCH = 8
+DENSE_PREFILL_BATCH = 2
 
 
 @cute.kernel
