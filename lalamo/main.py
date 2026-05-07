@@ -860,10 +860,6 @@ def estimate_batchsize(
         int,
         Option(help="Max output length of a model."),
     ] = 1024,
-    num_logits_per_token: Annotated[
-        int,
-        Option(help="Number of top logits that will be recorded."),
-    ] = 1024,
     vram_gb: Annotated[
         int | None,
         Option(
@@ -888,7 +884,6 @@ def estimate_batchsize(
         usable_mem,
         max_input_length,
         max_output_length,
-        num_logits_per_token,
         callbacks_type,
     )
 
@@ -963,18 +958,10 @@ def collect_traces(
     output_path: Annotated[
         Path,
         Option(
-            help="Directory to save sharded trace files to",
+            help="File to save traces to",
             metavar="OUTPUT_PATH",
         ),
     ],
-    num_logits_per_token: Annotated[
-        int,
-        Option(help="Record logits for this number of most probable tokens"),
-    ] = 1024,
-    trace_layers: Annotated[
-        list[int] | None,
-        Option(help="0-based transformer layer indices to save hidden states for"),
-    ] = None,
     max_input_length: Annotated[
         int,
         Option(help="Filter prompts that have more than this number of tokens in context"),
@@ -987,10 +974,6 @@ def collect_traces(
         int,
         Option(help="Number of sequences in one batch"),
     ] = 1,
-    shard_size: Annotated[
-        int,
-        Option(help="Number of completions to store in each output shard"),
-    ] = 64,
     num_tokens_to_generate: Annotated[
         int | None,
         Option(
@@ -1003,12 +986,9 @@ def collect_traces(
         model_path,
         dataset_path,
         output_path,
-        num_logits_per_token,
-        tuple(trace_layers or []),
         max_input_length,
         max_output_length,
         batch_size,
-        shard_size,
         num_tokens_to_generate,
         CliCollectTracesCallbacks,
     )
@@ -1019,7 +999,7 @@ def view_traces(
     trace_path: Annotated[
         Path,
         Argument(
-            help="Trace directory to view.",
+            help="Trace file to view.",
             metavar="TRACE_PATH",
         ),
     ],
@@ -1099,7 +1079,7 @@ def train(
     trace_path: Annotated[
         Path,
         Argument(
-            help="Trace directory to train the speculator on",
+            help="Trace file to train the speculator on",
             metavar="TRACE_PATH",
         ),
     ],

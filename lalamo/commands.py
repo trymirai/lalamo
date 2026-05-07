@@ -17,7 +17,7 @@ from jaxtyping import DTypeLike
 from lalamo.common import flatten_parameters, get_default_device_bytes
 from lalamo.data import load_hf_parquet, shuffle_dataset
 from lalamo.data.huggingface_message import HFMessage
-from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions, save_completions
+from lalamo.data.lalamo_completions import iter_completions, save_completions
 from lalamo.message_processor import AssistantMessage, Message
 from lalamo.model_import import ModelMetadata, ModelSpec, import_model
 from lalamo.model_import.common import (
@@ -29,7 +29,7 @@ from lalamo.model_import.common import (
     StatusEvent,
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
-from lalamo.models import GenerationConfig, GenerationTraceConfig, LanguageModelConfig
+from lalamo.models import GenerationConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
 from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
@@ -308,7 +308,6 @@ class EstimateBatchsizeCallbacks:
     model_path: Path
     max_input_length: int
     max_output_length: int
-    num_logits_per_token: int
     mem: int
 
     def loading_model(self) -> None:
@@ -329,11 +328,9 @@ def estimate_batchsize(
     mem: int,
     max_input_length: int = 1024,
     max_output_length: int = 1024,
-    num_logits_per_token: int = 1024,
     callbacks_type: Callable[
         [
             Path,
-            int,
             int,
             int,
             int,
@@ -341,7 +338,7 @@ def estimate_batchsize(
         EstimateBatchsizeCallbacks,
     ] = EstimateBatchsizeCallbacks,
 ) -> int:
-    callbacks = callbacks_type(model_path, max_input_length, max_output_length, num_logits_per_token, mem)
+    callbacks = callbacks_type(model_path, max_input_length, max_output_length, mem)
 
     callbacks.loading_model()
     model = LanguageModelConfig.load_model(model_path)
@@ -355,9 +352,6 @@ def estimate_batchsize(
         )
         return model.estimate_memory_consumption(
             inference_config=inference_config,
-            generation_trace_config=GenerationTraceConfig(
-                num_logits_per_token=num_logits_per_token,
-            ),
         )
 
     bs = estimate_batchsize_from_bytes(
@@ -375,12 +369,9 @@ class CollectTracesCallbacks:
     model_path: Path
     dataset_path: Path
     output_path: Path
-    num_logits_per_token: int
-    trace_layers: tuple[int, ...]
     max_input_length: int
     max_output_length: int
     batch_size: int
-    shard_size: int
     num_tokens_to_generate: int | None
 
     def loading_model(self) -> None:
@@ -406,12 +397,9 @@ def collect_traces(
     model_path: Path,
     dataset_path: Path,
     output_path: Path,
-    num_logits_per_token: int = 1024,
-    trace_layers: tuple[int, ...] = tuple(),
     max_input_length: int = 1024,
     max_output_length: int = 1024,
     batch_size: int = 1,
-    shard_size: int = 64,
     num_tokens_to_generate: int | None = None,
     callbacks_type: Callable[..., CollectTracesCallbacks] = CollectTracesCallbacks,
 ) -> None:
@@ -419,12 +407,9 @@ def collect_traces(
         model_path,
         dataset_path,
         output_path,
-        num_logits_per_token,
-        trace_layers,
         max_input_length,
         max_output_length,
         batch_size,
-        shard_size,
         num_tokens_to_generate,
     )
 
@@ -447,8 +432,6 @@ def collect_traces(
     traces = inference_collect_traces(
         model,
         dataset,
-        num_logits_per_token,
-        trace_layers,
         batch_size,
         max_input_length,
         max_output_length,
@@ -456,19 +439,9 @@ def collect_traces(
         progress_callback,
     )
 
-    if output_path.exists() and (not output_path.is_dir() or any(output_path.iterdir())):
-        raise RuntimeError(f"{output_path} must be an empty directory or not exist.")
-    output_path.mkdir(parents=True, exist_ok=True)
-    shard: list[LalamoCompletion] = []
-    shard_idx = 0
-    for trace in traces:
-        shard.append(trace)
-        if len(shard) >= shard_size:
-            save_completions(output_path / f"part-{shard_idx:05d}.safetensors", shard)
-            shard.clear()
-            shard_idx += 1
-    if shard:
-        save_completions(output_path / f"part-{shard_idx:05d}.safetensors", shard)
+    if output_path.exists():
+        raise RuntimeError(f"{output_path} must not exist.")
+    save_completions(output_path, traces)
 
     callbacks.finished_inference()
 
