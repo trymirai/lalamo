@@ -132,11 +132,10 @@ def main() -> None:
     print("format,batch,direct_cute_us,packed_cute_us,cached_dense_us,materialize_dense_us,best_us,best_path")
     for batch in args.batches:
         batch_vectors = vectors[:batch]
-        for name, matrix, path_builder in (
-            ("mlx", mlx_matrix, _mlx_paths),
-            ("awq", awq_matrix, _awq_paths),
+        for name, paths in (
+            ("mlx", _mlx_paths(mlx_matrix, batch_vectors)),
+            ("awq", _awq_paths(awq_matrix, batch_vectors)),
         ):
-            paths = path_builder(matrix, batch_vectors)
             times = {
                 path_name: _time_us(path, path_args, warmups=args.warmups, iters=args.iters)
                 for path_name, (path, path_args) in paths.items()
