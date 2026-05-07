@@ -44,6 +44,47 @@ def _hadamard_transform_output_axis(
     return jnp.swapaxes(transformed_transposed, -1, -2)
 
 
+def _process_preconditioner_block(
+    block: Float[Array, "channels channels"],
+    signs: Int[Array, " channels"],
+    block_size: Literal[32, 64, 128],
+) -> Float[Array, "channels channels"]:
+    signed_block = block * signs[..., None] * signs[None, ...]
+    return _hadamard_transform_output_axis(
+        hadamard_transform(signed_block, block_size),
+        block_size,
+    )
+
+
+def _process_preconditioner(
+    preconditioner: Preconditioner,
+    incoherence_signs: "IncoherenceSigns",
+    block_size: Literal[32, 64, 128],
+) -> Preconditioner:
+    input_block = preconditioner.input_block
+    output_block = preconditioner.output_block
+    processed_input_block = None
+    if input_block is not None:
+        processed_input_block = _process_preconditioner_block(
+            input_block,
+            incoherence_signs.input_signs,
+            block_size,
+        )
+
+    processed_output_block = None
+    if output_block is not None:
+        processed_output_block = _process_preconditioner_block(
+            output_block,
+            incoherence_signs.output_signs,
+            block_size,
+        )
+
+    return Preconditioner.init(
+        input_block=processed_input_block,
+        output_block=processed_output_block,
+    )
+
+
 class IncoherenceSigns(eqx.Module):
     input_signs: Int[Array, " in_channels"] = field(trainable=False)
     output_signs: Int[Array, " out_channels"] = field(trainable=False)
@@ -127,9 +168,6 @@ class HybridSpec(WeightMatrixSpec):
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> "HybridMatrix":
-        if preconditioner is not None:
-            raise ValueError("Preconditioned rounding is not implemented yet.")
-
         *_, output_dim, input_dim = weights.shape
 
         if key is not None:
@@ -144,18 +182,26 @@ class HybridSpec(WeightMatrixSpec):
                 key=incoherence_key,
             )
             weights = incoherence_signs.process_weights(weights, self.incoherence_block_size)
+            if preconditioner is not None:
+                preconditioner = _process_preconditioner(
+                    preconditioner,
+                    incoherence_signs,
+                    self.incoherence_block_size,
+                )
         else:
             incoherence_signs = None
 
         quantized = self.quantization_spec.compress(
             weights,
             key=quantization_key,
+            preconditioner=preconditioner,
             implementation=implementation,
         )
         if self.adapter_spec is not None:
             adapter = self.adapter_spec.compress(
                 weights - quantized.decompress(),
                 key=adapter_key,
+                preconditioner=preconditioner,
                 implementation=implementation,
             )
         else:

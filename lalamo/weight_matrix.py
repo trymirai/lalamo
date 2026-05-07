@@ -29,6 +29,7 @@ __all__ = [
     "Layout",
     "MatmulConfig",
     "Preconditioner",
+    "QuantizedSpec",
     "WeightMatrix",
     "WeightMatrixSpec",
 ]
@@ -74,9 +75,17 @@ class Preconditioner(eqx.Module):
         input_block: Float[Array, "input_channels input_channels"] | None = None,
         output_block: Float[Array, "output_channels output_channels"] | None = None,
     ) -> Self:
+        input_block_tril = None
+        if input_block is not None:
+            input_block_tril = sym_to_tril(input_block)
+
+        output_block_tril = None
+        if output_block is not None:
+            output_block_tril = sym_to_tril(output_block)
+
         return cls(
-            input_block_tril=sym_to_tril(input_block) if input_block is not None else None,
-            output_block_tril=sym_to_tril(output_block) if output_block is not None else None,
+            input_block_tril=input_block_tril,
+            output_block_tril=output_block_tril,
         )
 
     @classmethod
@@ -144,6 +153,19 @@ class WeightMatrixSpec(RegistryABC):
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> "WeightMatrix": ...
+
+
+@dataclass(frozen=True)
+class QuantizedSpec(WeightMatrixSpec):
+    @property
+    @abstractmethod
+    def input_block_size(self) -> int:
+        ...
+
+    @property
+    @abstractmethod
+    def output_block_size(self) -> int:
+        ...
 
 
 WeightMatrixSpecT_co = TypeVar("WeightMatrixSpecT_co", bound=WeightMatrixSpec, covariant=True)

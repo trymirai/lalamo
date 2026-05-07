@@ -7,6 +7,7 @@ import pytest
 from jax.sharding import Mesh, Sharding
 
 from lalamo.compressed.awq import AWQMatrix, AWQMatrixForInference, AWQMatrixForTraining, AWQSpec
+from lalamo.compressed.utils.yaqa import yaqa_round_weights
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import CompressionImplementation, Layout, Preconditioner, WeightMatrixSpec
@@ -20,6 +21,42 @@ pytestmark = pytest.mark.usefixtures("fake_mesh")
 def _logical_weights(*leading_dims: int) -> jax.Array:
     shape = (*leading_dims, 4, 4)
     return (jnp.arange(prod(shape), dtype=jnp.float32).reshape(shape) - 5) / 7
+
+
+def _preconditioned_weights() -> jax.Array:
+    return jnp.array(
+        [
+            [-0.15443718, 0.08470728, -0.13598049, -0.15503626],
+            [1.2666674, 0.14829758, 2.1415603, 1.0026742],
+            [-0.29033586, 0.3583448, -0.70792735, -0.24555527],
+            [0.8855825, 0.7861191, 0.88892716, 0.54932535],
+        ],
+        dtype=jnp.float32,
+    )
+
+
+def _input_block() -> jax.Array:
+    return jnp.array(
+        [
+            [1.0, 0.7, -0.2, 0.1],
+            [0.7, 1.4, 0.3, -0.1],
+            [-0.2, 0.3, 1.1, 0.5],
+            [0.1, -0.1, 0.5, 1.3],
+        ],
+        dtype=jnp.float32,
+    )
+
+
+def _output_block() -> jax.Array:
+    return jnp.array(
+        [
+            [1.2, -0.5, 0.2, 0.1],
+            [-0.5, 1.5, 0.4, -0.2],
+            [0.2, 0.4, 1.1, 0.3],
+            [0.1, -0.2, 0.3, 1.4],
+        ],
+        dtype=jnp.float32,
+    )
 
 
 def _stored_weights(layout: Layout, weights: jax.Array) -> jax.Array:
@@ -143,11 +180,16 @@ def test_awq_compress_and_decompress_match_manual_min_max_quantization(layout: L
     compressed_common.assert_close_arrays(result=inference.decompress(), reference=expected_decompressed)
 
 
-def test_awq_compress_rejects_preconditioning() -> None:
-    preconditioner = Preconditioner.init(input_block=jnp.eye(4, dtype=jnp.float32))
+def test_awq_compress_uses_yaqa_weights_when_preconditioned() -> None:
+    weights = _preconditioned_weights()
+    preconditioner = Preconditioner.init(input_block=_input_block(), output_block=_output_block())
+    spec = AWQSpec(bits=4, group_size=2)
 
-    with pytest.raises(ValueError, match="Preconditioned rounding is not implemented"):
-        AWQSpec(bits=4, group_size=2).compress(_logical_weights(), preconditioner=preconditioner)
+    yaqa_weights = yaqa_round_weights(weights, preconditioner, spec)
+    preconditioned = spec.compress(weights, preconditioner=preconditioner)
+    expected = spec.compress(yaqa_weights)
+
+    compressed_common.assert_close_arrays(result=preconditioned.decompress(), reference=expected.decompress())
 
 
 def test_awq_compress_rejects_group_size_that_does_not_divide_stored_last_axis() -> None:

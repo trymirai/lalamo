@@ -28,6 +28,7 @@ from lalamo.weight_matrix import (
     Layout,
     MatmulConfig,
     Preconditioner,
+    QuantizedSpec,
     WeightMatrixSpec,
 )
 
@@ -39,6 +40,7 @@ from .utils.grouping import (
 )
 from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from .utils.rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
+from .utils.yaqa import yaqa_round_weights
 
 __all__ = [
     "AWQMatrix",
@@ -173,10 +175,22 @@ def _awq_unpack_master_weights(
 
 
 @dataclass(frozen=True)
-class AWQSpec(WeightMatrixSpec):
+class AWQSpec(QuantizedSpec):
     bits: Literal[4, 8]
     group_size: int
     layout: Layout = Layout.OUTPUT_INPUT
+
+    @property
+    def input_block_size(self) -> int:
+        if self.layout == Layout.INPUT_OUTPUT:
+            return 1
+        return self.group_size
+
+    @property
+    def output_block_size(self) -> int:
+        if self.layout == Layout.INPUT_OUTPUT:
+            return self.group_size
+        return 1
 
     def compress(
         self,
@@ -187,24 +201,24 @@ class AWQSpec(WeightMatrixSpec):
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> "AWQMatrix":
         if preconditioner is not None:
-            raise ValueError("Preconditioned rounding is not implemented yet.")
+            weights = yaqa_round_weights(weights, preconditioner, self)
 
-        weights = self.layout.from_output_input(weights)
+        stored_weights = self.layout.from_output_input(weights)
         affine_parameters = AWQAffineParameters.from_weights(
-            weights,
+            stored_weights,
             bits=self.bits,
             group_size=self.group_size,
         )
         if implementation == CompressionImplementation.TRAINING:
             result = AWQMatrixForTraining(
                 spec=self,
-                weights=weights,
+                weights=stored_weights,
                 scales=affine_parameters.scales,
                 zero_points=affine_parameters.zero_points,
             )
         else:
             packed_weights = _awq_pack_master_weights(
-                weights,
+                stored_weights,
                 affine_parameters.scales,
                 affine_parameters.zero_points,
                 self.group_size,

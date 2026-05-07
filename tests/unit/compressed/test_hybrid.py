@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from math import prod
 
 import jax
@@ -7,7 +8,13 @@ import pytest
 from lalamo.compressed.hybrid import HybridMatrix, HybridSpec
 from lalamo.compressed.low_rank import LowRankSpec
 from lalamo.module import Keychain
-from lalamo.weight_matrix import FullPrecisionSpec, Preconditioner, WeightMatrixSpec
+from lalamo.weight_matrix import (
+    CompressionImplementation,
+    FullPrecisionMatrix,
+    FullPrecisionSpec,
+    Preconditioner,
+    WeightMatrixSpec,
+)
 from tests.common import assert_close
 
 
@@ -18,6 +25,22 @@ def _weights(output_dim: int = 32, input_dim: int = 64) -> jax.Array:
 
 def _assert_close(result: jax.Array, reference: jax.Array) -> None:
     assert_close(result=jnp.asarray(jax.device_get(result)), reference=jnp.asarray(jax.device_get(reference)))
+
+
+@dataclass(frozen=True)
+class _PreconditionerRecordingSpec(WeightMatrixSpec):
+    calls: list[Preconditioner | None]
+
+    def compress(
+        self,
+        weights: jax.Array,
+        *,
+        key: jax.Array | None = None,  # noqa: ARG002
+        preconditioner: Preconditioner | None = None,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    ) -> FullPrecisionMatrix:
+        self.calls.append(preconditioner)
+        return FullPrecisionSpec().compress(weights, implementation=implementation)
 
 
 def test_hybrid_spec_roundtrips_json() -> None:
@@ -114,13 +137,19 @@ def test_hybrid_adapter_compresses_residual_in_incoherent_basis() -> None:
     _assert_close(result=matrix.decompress(), reference=weights)
 
 
-def test_hybrid_compress_rejects_preconditioning() -> None:
+def test_hybrid_compress_reuses_preconditioner_for_quantization_and_adapter() -> None:
+    quantization_calls: list[Preconditioner | None] = []
+    adapter_calls: list[Preconditioner | None] = []
     preconditioner = Preconditioner.init(input_block=jnp.eye(64, dtype=jnp.float32))
     spec = HybridSpec(
-        quantization_spec=FullPrecisionSpec(),
-        adapter_spec=None,
+        quantization_spec=_PreconditionerRecordingSpec(quantization_calls),
+        adapter_spec=_PreconditionerRecordingSpec(adapter_calls),
         incoherence_block_size=None,
     )
 
-    with pytest.raises(ValueError, match="Preconditioned rounding is not implemented"):
-        spec.compress(_weights(), preconditioner=preconditioner)
+    spec.compress(_weights(), preconditioner=preconditioner)
+
+    assert len(quantization_calls) == 1
+    assert len(adapter_calls) == 1
+    assert quantization_calls[0] is preconditioner
+    assert adapter_calls[0] is preconditioner

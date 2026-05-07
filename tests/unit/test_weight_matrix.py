@@ -17,6 +17,7 @@ from lalamo.weight_matrix import (
     FullPrecisionSpec,
     Layout,
     Preconditioner,
+    QuantizedSpec,
     ShapeDtypeMatrix,
     WeightMatrixSpec,
 )
@@ -109,6 +110,13 @@ def test_preconditioner_identity_has_no_blocks() -> None:
 
     assert preconditioner.input_block is None
     assert preconditioner.output_block is None
+
+
+def test_only_quantized_specs_expose_block_size_properties() -> None:
+    assert isinstance(AWQSpec(bits=4, group_size=2), QuantizedSpec)
+    assert isinstance(MLXSpec(bits=4, group_size=2), QuantizedSpec)
+    assert not hasattr(FullPrecisionSpec(), "input_block_size")
+    assert not hasattr(FullPrecisionSpec(), "output_block_size")
 
 
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])

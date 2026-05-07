@@ -23,6 +23,7 @@ from lalamo.weight_matrix import (
     Layout,
     MatmulConfig,
     Preconditioner,
+    QuantizedSpec,
     WeightMatrixSpec,
 )
 
@@ -34,6 +35,7 @@ from .utils.grouping import (
 )
 from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from .utils.rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
+from .utils.yaqa import yaqa_round_weights
 
 __all__ = [
     "MLXMatrix",
@@ -119,10 +121,22 @@ def _mlx_unpack_master_weights(
 
 
 @dataclass(frozen=True)
-class MLXSpec(WeightMatrixSpec):
+class MLXSpec(QuantizedSpec):
     bits: Literal[4, 8]
     group_size: int
     layout: Layout = Layout.OUTPUT_INPUT
+
+    @property
+    def input_block_size(self) -> int:
+        if self.layout == Layout.INPUT_OUTPUT:
+            return 1
+        return self.group_size
+
+    @property
+    def output_block_size(self) -> int:
+        if self.layout == Layout.INPUT_OUTPUT:
+            return self.group_size
+        return 1
 
     def compress(
         self,
@@ -133,24 +147,24 @@ class MLXSpec(WeightMatrixSpec):
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> "MLXMatrix":
         if preconditioner is not None:
-            raise ValueError("Preconditioned rounding is not implemented yet.")
+            weights = yaqa_round_weights(weights, preconditioner, self)
 
-        weights = self.layout.from_output_input(weights)
+        stored_weights = self.layout.from_output_input(weights)
         affine_parameters = MLXAffineParameters.from_weights(
-            weights,
+            stored_weights,
             bits=self.bits,
             group_size=self.group_size,
         )
         if implementation == CompressionImplementation.TRAINING:
             result = MLXMatrixForTraining(
                 spec=self,
-                weights=weights,
+                weights=stored_weights,
                 scales=affine_parameters.scales,
                 biases=affine_parameters.biases,
             )
         else:
             packed_int_weights = _mlx_pack_master_weights(
-                weights,
+                stored_weights,
                 affine_parameters.scales,
                 affine_parameters.biases,
                 self.group_size,

@@ -1,10 +1,18 @@
+from dataclasses import dataclass
+
 import jax
 import jax.numpy as jnp
 from jax.lax import DotAlgorithmPreset
 
 from lalamo.compressed.utils.yaqa import yaqa_round_weights
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.weight_matrix import Preconditioner
+from lalamo.weight_matrix import (
+    CompressionImplementation,
+    FullPrecisionMatrix,
+    FullPrecisionSpec,
+    Preconditioner,
+    QuantizedSpec,
+)
 from tests.common import assert_close
 
 
@@ -12,49 +20,42 @@ def _round_weights(weights: jax.Array) -> jax.Array:
     return jnp.round(jnp.clip(weights, -1, 1))
 
 
+@dataclass(frozen=True)
+class _RoundSpec(QuantizedSpec):
+    def compress(
+        self,
+        weights: jax.Array,
+        *,
+        key: jax.Array | None = None,  # noqa: ARG002
+        preconditioner: Preconditioner | None = None,  # noqa: ARG002
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    ) -> FullPrecisionMatrix:
+        return FullPrecisionSpec().compress(_round_weights(weights), implementation=implementation)
+
+    @property
+    def input_block_size(self) -> int:
+        return 4
+
+    @property
+    def output_block_size(self) -> int:
+        return 4
+
+
 def _weights() -> jax.Array:
-    return jnp.array(
-        [
-            [-0.184103, 0.101259, -0.162245, -0.184811],
-            [1.192088, 0.176838, 1.451657, 1.025973],
-            [-0.342661, 0.419872, -0.781515, -0.290960],
-        ],
-        dtype=jnp.float32,
-    )
+    return 1.2 * jax.random.normal(jax.random.key(0), (64, 64), dtype=jnp.float32)
+
+
+def _positive_definite_block(seed: int) -> jax.Array:
+    factors = jax.random.normal(jax.random.key(seed), (64, 64), dtype=jnp.float32)
+    return factors @ factors.T / 64 + 0.5 * jnp.identity(64, dtype=jnp.float32)
 
 
 def _input_block() -> jax.Array:
-    return jnp.array(
-        [
-            [1.0, 0.7, -0.2, 0.1],
-            [0.7, 1.4, 0.3, -0.1],
-            [-0.2, 0.3, 1.1, 0.5],
-            [0.1, -0.1, 0.5, 1.3],
-        ],
-        dtype=jnp.float32,
-    )
+    return _positive_definite_block(11)
 
 
 def _output_block() -> jax.Array:
-    return jnp.array(
-        [
-            [1.2, -0.5, 0.2],
-            [-0.5, 1.5, 0.4],
-            [0.2, 0.4, 1.1],
-        ],
-        dtype=jnp.float32,
-    )
-
-
-def _output_only_weights() -> jax.Array:
-    return jnp.array(
-        [
-            [1.343001, 1.435740, -0.503126, -0.093995],
-            [0.209666, -1.003491, -0.569416, 0.568442],
-            [0.740300, -0.986956, 1.456061, -1.424152],
-        ],
-        dtype=jnp.float32,
-    )
+    return _positive_definite_block(17)
 
 
 def _quadratic_objective(
@@ -80,9 +81,7 @@ def _assert_yaqa_reduces_quadratic_objective(weights: jax.Array, preconditioner:
     yaqa_weights = yaqa_round_weights(
         weights,
         preconditioner,
-        _round_weights,
-        input_block_size=2,
-        output_block_size=1,
+        _RoundSpec(),
     )
 
     baseline_objective = _quadratic_objective(weights, baseline_weights, preconditioner)
@@ -100,7 +99,7 @@ def test_yaqa_round_weights_reduces_input_preconditioned_quadratic_objective() -
 
 def test_yaqa_round_weights_reduces_output_preconditioned_quadratic_objective() -> None:
     _assert_yaqa_reduces_quadratic_objective(
-        _output_only_weights(),
+        _weights(),
         Preconditioner.init(output_block=_output_block()),
     )
 
@@ -118,9 +117,7 @@ def test_yaqa_round_weights_with_identity_preconditioner_matches_baseline_roundi
     result = yaqa_round_weights(
         weights,
         Preconditioner.identity(),
-        _round_weights,
-        input_block_size=2,
-        output_block_size=1,
+        _RoundSpec(),
     )
 
     assert_close(result=result, reference=_round_weights(weights))
@@ -132,9 +129,7 @@ def test_yaqa_round_weights_single_iteration_returns_rounded_weights_with_expect
     result = yaqa_round_weights(
         weights,
         Preconditioner.init(input_block=_input_block(), output_block=_output_block()),
-        _round_weights,
-        input_block_size=2,
-        output_block_size=1,
+        _RoundSpec(),
         max_iters=1,
     )
 

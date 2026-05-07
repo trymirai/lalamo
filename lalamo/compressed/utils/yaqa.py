@@ -1,33 +1,23 @@
-from collections.abc import Callable
-
 import jax
 import jax.numpy as jnp
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, Float
 
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.weight_matrix import Preconditioner
+from lalamo.weight_matrix import CompressionImplementation, Preconditioner, QuantizedSpec
 
 from .ldlq import block_ldl
 
 __all__ = [
-    "RoundFn",
     "yaqa_round_weights",
-]
-
-type RoundFn = Callable[
-    [Float[Array, "output_channels input_channels"]],
-    Float[Array, "output_channels input_channels"],
 ]
 
 
 def yaqa_round_weights(
     weights: Float[Array, "output_channels input_channels"],
     preconditioner: Preconditioner,
-    round_fn: RoundFn,
+    spec: QuantizedSpec,
     *,
-    input_block_size: int,
-    output_block_size: int,
     max_iters: int = 15,
     atol: float = 1e-7,
 ) -> Float[Array, "output_channels input_channels"]:
@@ -37,19 +27,24 @@ def yaqa_round_weights(
     input_block = preconditioner.input_block
     output_block = preconditioner.output_block
     if input_block is None and output_block is None:
-        return round_fn(weights)
+        return spec.compress(weights, implementation=CompressionImplementation.TRAINING).decompress()
 
     if input_block is None:
         input_fisher_tril = None
     else:
-        input_fisher_tril = block_ldl(input_block, input_block_size).tril
+        input_fisher_tril = block_ldl(input_block, spec.input_block_size).tril
         input_fisher_tril = input_fisher_tril - jnp.identity(input_dim, dtype=input_fisher_tril.dtype)
 
     if output_block is None:
         output_fisher_triu = None
     else:
-        output_fisher_triu = block_ldl(output_block, output_block_size).tril.T
+        output_fisher_triu = block_ldl(output_block, spec.output_block_size).tril.T
         output_fisher_triu = output_fisher_triu - jnp.identity(output_dim, dtype=output_fisher_triu.dtype)
+
+    def round_weights(
+        candidate_weights: Float[Array, "output_channels input_channels"],
+    ) -> Float[Array, "output_channels input_channels"]:
+        return spec.compress(candidate_weights, implementation=CompressionImplementation.TRAINING).decompress()
 
     def calculate_adjustment(
         quantized_weights: Float[Array, "output_channels input_channels"],
@@ -72,7 +67,7 @@ def yaqa_round_weights(
     ) -> tuple[Float[Array, "output_channels input_channels"], Float[Array, ""]]:
         last_weights, _ = state
         adjustment = calculate_adjustment(last_weights)
-        new_weights = round_fn(weights + adjustment)
+        new_weights = round_weights(weights + adjustment)
         new_diff = jnp.max(jnp.abs(new_weights - last_weights))
         return new_weights, new_diff
 
@@ -88,6 +83,6 @@ def yaqa_round_weights(
         lower=0,
         upper=max_iters,
         body_fun=loop_body_with_early_exit,
-        init_val=(round_fn(weights), jnp.inf),
+        init_val=(round_weights(weights), jnp.inf),
     )
     return result
