@@ -644,7 +644,7 @@ class AWQMatrixForInference(AWQMatrix):
     ) -> Float[Array, "... channels"]:
         self._raise_if_batched()
         if _use_cute_w4a16_dot(self.spec, self.packed_weights, vector, forward_pass_config, transposed):
-            from .cute_w4a16_dot import awq_w4a16_dot
+            from .cute_w4a16_dot import awq_w4a16_dot  # noqa: PLC0415, RUF100
 
             result = awq_w4a16_dot(
                 vector,
