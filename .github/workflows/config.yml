@@ -1,6 +1,7 @@
 name: "Setup conditionals"
 
-permissions: {}
+permissions:
+  contents: read
 
 on:
   workflow_call:
@@ -14,6 +15,9 @@ on:
       latest-deps-python-versions:
         description: "JSON array of Python versions for latest-deps testing"
         value: ${{ jobs.config.outputs.latest-deps-python-versions }}
+      core-lm-repos:
+        description: "JSON array of CORE-tier language-model repos (one matrix shard per repo)"
+        value: ${{ jobs.config.outputs.core-lm-repos }}
 
 jobs:
   config:
@@ -21,6 +25,10 @@ jobs:
     outputs:
       run-tests: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
       is-prerelease: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease') }}
-      latest-deps-python-versions: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'prerelease')) && '["py313", "py314"]' || '["py314"]' }}
+      core-lm-repos: ${{ steps.model-test-matrix.outputs.core-lm-repos }}
     steps:
-      - run: true
+      - uses: actions/checkout@v6
+      - id: model-test-matrix
+        run: |
+          echo -n "core-lm-repos=" >> "$GITHUB_OUTPUT"
+          python -c 'import json, tomllib; tiers=tomllib.load(open("tests/model_test_tiers.toml", "rb"))["tiers"]; print(json.dumps(tiers["canonical"] + tiers["core"]))' >> "$GITHUB_OUTPUT"

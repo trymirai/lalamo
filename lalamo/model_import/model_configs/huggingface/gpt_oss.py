@@ -93,6 +93,8 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
                 precision=activation_precision,
             )
 
+        head_dim = self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads
+
         if self.rope_scaling is not None and self.rope_scaling.rope_type == "yarn":
             rope_config = YARNRoPEConfig(
                 precision=activation_precision,
@@ -103,6 +105,7 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
                 beta_fast=self.rope_scaling.beta_fast,
                 beta_slow=self.rope_scaling.beta_slow,
                 truncate=self.rope_scaling.truncate,
+                head_dim=head_dim,
             )
         else:
             rope_config = YARNRoPEConfig(
@@ -114,6 +117,7 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
                 beta_fast=32.0,
                 beta_slow=1.0,
                 truncate=True,
+                head_dim=head_dim,
             )
 
         rmsnorm_config = NormalizationConfig(
@@ -163,8 +167,6 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
                 else [None] * self.num_hidden_layers
             )
 
-        head_dim = self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads
-
         layer_configs = []
         for sliding_window_size in sliding_window_sizes:
             attention_config = AttentionConfig(
@@ -190,12 +192,11 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
                 pre_mlp_norm_config=rmsnorm_config,
                 mlp_config=moe_config,
                 post_mlp_norm_config=None,
+                rope_config=rope_config,
             )
             layer_configs.append(transformer_layer_config)
 
         transformer_config = TransformerConfig(
-            global_rope_config=rope_config,
-            local_rope_config=None,
             layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,

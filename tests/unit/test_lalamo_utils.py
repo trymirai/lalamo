@@ -1,3 +1,7 @@
+import pytest
+
+pytest.importorskip("torch")
+
 import torch
 from jax import numpy as jnp
 

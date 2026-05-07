@@ -126,7 +126,10 @@ def estimate_batchsizes_from_vram(
     result: dict[int, int] = {}
 
     first_seq_len = sorted_lengths[0]
-    bs = estimate_batchsize_from_bytes(functools.partial(memory_consumption, seq_len=sorted_lengths[0]), usable_memory)
+    bs = max(
+        estimate_batchsize_from_bytes(functools.partial(memory_consumption, seq_len=sorted_lengths[0]), usable_memory),
+        1,
+    )
     result[first_seq_len] = bs
     for seq_len in sorted_lengths[1:]:
         while bs > 1 and memory_consumption(bs, seq_len) > usable_memory:

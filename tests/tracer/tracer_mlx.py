@@ -1,6 +1,6 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Self
+from typing import Any, Self
 
 import mlx.core as mx
 from jaxtyping import Array
@@ -10,7 +10,7 @@ from mlx_lm.utils import load
 
 from lalamo.modules.decoder import DecoderResult
 from lalamo.modules.mlx_interop import jax_to_mlx, mlx_to_jax
-from tests.tracer.tracer import ActivationTrace, DType, InferenceResult, ModelTracer
+from tests.tracer.tracer import DType, InferenceResult, ModelTracer
 
 
 def _build_mlx_attention_mask(hidden_states: mx.array) -> mx.array:
@@ -37,12 +37,8 @@ class MLXDecoderTracer(ModelTracer[mx.array, nn.Module, nn.RMSNorm, nn.Module, n
 
         return self.mlx_model.model.embed_tokens(token_ids)
 
-    # mlx rope isn't precomputed, just skip
-    def match_global_rope(self, activation_trace: ActivationTrace) -> None:
-        pass
-
-    def match_local_rope(self, activation_trace: ActivationTrace) -> None:
-        pass
+    def rope_fns(self) -> list[tuple[str, Any]]:
+        return []
 
     def rmsnorm(self, rmsnorm: nn.Module, x: mx.array) -> mx.array:
         return rmsnorm(x)

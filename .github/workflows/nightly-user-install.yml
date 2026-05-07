@@ -1,0 +1,84 @@
+name: "Nightly: User Install"
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-user-install-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+jobs:
+  test:
+    name: "${{ matrix.install }} (${{ matrix.device }})"
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    timeout-minutes: 120
+
+    strategy:
+      fail-fast: false
+      matrix:
+        install: [user-install]
+        device: [cpu, gpu]
+        include:
+          - device: cpu
+            runner: '["ubuntu-latest"]'
+          - device: gpu
+            runner: '["self-hosted", "linux", "gpu"]'
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: ./.github/actions/setup
+        with:
+          install-dependencies: 'false'
+
+      - name: Run tox
+        run: |
+          uvx tox -e ${{ matrix.install }}-${{ matrix.device }}
+
+  notify:
+    name: Notify Discord
+    needs: [test]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Post aggregate result to Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          STATUS: ${{ needs.test.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          # Discord mention (e.g. "<@123...>" or "<@&roleid>") for non-success runs.
+          MENTION: ${{ secrets.CI_ONCALL_MENTION }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "::error:: DISCORD_WEBHOOK secret is not set; cannot deliver message." >&2
+            exit 1
+          fi
+          case "$STATUS" in
+            success)   EMOJI="✅" ;;
+            failure)   EMOJI="$MENTION: ❌" ;;
+            cancelled) EMOJI="$MENTION: ⚪" ;;
+            *)         EMOJI="$MENTION: ⚠️" ;;
+          esac
+          CONTENT="$EMOJI Nightly user installation on \`$REPO\`: **$STATUS** (<$RUN_URL>)"
+          PAYLOAD=$(jq -n --arg content "$CONTENT" '{content: $content}')
+          curl -sS \
+            --retry 5 --retry-all-errors --retry-delay 2 --max-time 30 \
+            -H "Content-Type: application/json" \
+            -X POST -d "$PAYLOAD" "$DISCORD_WEBHOOK"
