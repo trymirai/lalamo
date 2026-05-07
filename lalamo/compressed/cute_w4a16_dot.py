@@ -14,8 +14,8 @@ REDUCE_THREADS = 64
 ROWS_PER_CTA = 4
 MICRO_VALUES = 16
 MICRO_PACKED = 8
-TENSORCORE_BATCH = 8
-SMALL_BATCH = 4
+TENSORCORE_BATCH = 16
+SMALL_BATCH = 8
 DEQUANT_THREADS = 128
 DEQUANT_TILE_ROWS = 4
 DEQUANT_TILE_VALUES = 512
@@ -301,6 +301,7 @@ def _mlx_dequant_kernel(
 ) -> None:
     tid, _, _ = cute.arch.thread_idx()
     cta_col, cta_row, _ = cute.arch.block_idx()
+    out_frag = cute.make_rmem_tensor(cute.size(out, mode=[0]), out.element_type)
 
     for i in cutlass.range_constexpr(DEQUANT_PACKED_PER_THREAD):
         offset = tid + i * DEQUANT_THREADS
@@ -315,11 +316,12 @@ def _mlx_dequant_kernel(
         lo_value = cutlass.Float32(byte & cutlass.Uint8(15)) * scale + bias
         hi_value = cutlass.Float32((byte >> cutlass.Uint8(4)) & cutlass.Uint8(15)) * scale + bias
         if out.element_type == cutlass.BFloat16:
-            out[row, col] = cutlass.BFloat16(lo_value)
-            out[row, col + 1] = cutlass.BFloat16(hi_value)
+            out_frag[0] = cutlass.BFloat16(lo_value)
+            out_frag[1] = cutlass.BFloat16(hi_value)
         else:
-            out[row, col] = cutlass.Float16(lo_value)
-            out[row, col + 1] = cutlass.Float16(hi_value)
+            out_frag[0] = cutlass.Float16(lo_value)
+            out_frag[1] = cutlass.Float16(hi_value)
+        cute.autovec_copy(out_frag, out[(None, (row, packed_col))])
 
 
 @cute.kernel
@@ -331,6 +333,7 @@ def _awq_dequant_kernel(
 ) -> None:
     tid, _, _ = cute.arch.thread_idx()
     cta_col, cta_row, _ = cute.arch.block_idx()
+    out_frag = cute.make_rmem_tensor(cute.size(out, mode=[0]), out.element_type)
 
     for i in cutlass.range_constexpr(DEQUANT_PACKED_PER_THREAD):
         offset = tid + i * DEQUANT_THREADS
@@ -349,11 +352,12 @@ def _awq_dequant_kernel(
         lo_value = (cutlass.Float32(byte & cutlass.Uint8(15)) - zero) * scale
         hi_value = (cutlass.Float32((byte >> cutlass.Uint8(4)) & cutlass.Uint8(15)) - zero) * scale
         if out.element_type == cutlass.BFloat16:
-            out[row, col] = cutlass.BFloat16(lo_value)
-            out[row, col + 1] = cutlass.BFloat16(hi_value)
+            out_frag[0] = cutlass.BFloat16(lo_value)
+            out_frag[1] = cutlass.BFloat16(hi_value)
         else:
-            out[row, col] = cutlass.Float16(lo_value)
-            out[row, col + 1] = cutlass.Float16(hi_value)
+            out_frag[0] = cutlass.Float16(lo_value)
+            out_frag[1] = cutlass.Float16(hi_value)
+        cute.autovec_copy(out_frag, out[(None, (row, packed_col))])
 
 
 @cute.jit
@@ -454,7 +458,8 @@ def _launch_mlx_dequant(
     biases: cute.Tensor,
     out: cute.Tensor,
 ) -> None:
-    _mlx_dequant_kernel(packed_weights, scales, biases, out).launch(
+    out_tiles = cute.zipped_divide(out, (1, 2))
+    _mlx_dequant_kernel(packed_weights, scales, biases, out_tiles).launch(
         grid=[
             cute.ceil_div(packed_weights.shape[1], DEQUANT_TILE_PACKED),
             cute.ceil_div(packed_weights.shape[0], DEQUANT_TILE_ROWS),
@@ -473,7 +478,8 @@ def _launch_awq_dequant(
     packed_zero_points: cute.Tensor,
     out: cute.Tensor,
 ) -> None:
-    _awq_dequant_kernel(packed_weights, scales, packed_zero_points, out).launch(
+    out_tiles = cute.zipped_divide(out, (1, 2))
+    _awq_dequant_kernel(packed_weights, scales, packed_zero_points, out_tiles).launch(
         grid=[
             cute.ceil_div(packed_weights.shape[1], DEQUANT_TILE_PACKED),
             cute.ceil_div(packed_weights.shape[0], DEQUANT_TILE_ROWS),
