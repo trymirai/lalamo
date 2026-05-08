@@ -22,8 +22,8 @@ class OnlineCompletionFeatureExtractor:
     device_id: int
     request: FeatureRequest
     pad_token_id: int = 0
-    prompt_padding_multiple: int = 1024
-    generation_padding_multiple: int = 4096
+    prompt_padding_multiple: int = 128
+    generation_padding_multiple: int = 512
     forward_pass_config: ForwardPassConfig | None = None
 
     @property

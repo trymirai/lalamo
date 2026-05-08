@@ -46,8 +46,8 @@ class LalamoCompletionBatch:
         cls,
         completions: Iterable[LalamoCompletion],
         pad_token_id: int = 0,
-        prompt_padding_multiple: int = 1024,
-        generation_padding_multiple: int = 4096,
+        prompt_padding_multiple: int = 128,
+        generation_padding_multiple: int = 512,
     ) -> Self:
         completion_list = list(completions)
         if not completion_list:
