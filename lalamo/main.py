@@ -970,6 +970,7 @@ class CliCollectTracesCallbacks(CollectTracesCallbacks):
         self.live.update(self.progress, refresh=True)
         self.inference_task = self.progress.add_task(
             "🔮 [cyan]Running inference...[/cyan]",
+            total=None,
         )
 
     def inference_progress(self, event: CollectTracesEvent) -> None:
