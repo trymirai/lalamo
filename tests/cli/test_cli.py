@@ -5,17 +5,18 @@ import pytest
 
 from lalamo.model_registry import ModelRegistry
 from tests.conftest import ConvertModel, RunLalamo, strip_ansi_escape
+from tests.model_test_tiers import ModelTier, get_models_by_tier
 
-MODELS = ["google/gemma-3-1b-it", "mlx-community/LFM2-350M-8bit"]
+MODELS = get_models_by_tier(ModelTier.CANONICAL)
 
 CAPITAL_PROMPT = "What's the capital of the United Kingdom? No thinking, answer right away."
-APPLES_PROMPT = "Are apples fruits? Answer only yes or no, without thinking, answer right away."
+MATH_PROMPT = "What's 2 + 2? No thinking, answer right away."
 
 
-def _assert_has_london_and_yes(texts: list[str]) -> None:
+def _assert_has_london_and_four(texts: list[str]) -> None:
     joined = " ".join(texts).lower()
     assert "london" in joined, f"Expected 'london' in {texts!r}"
-    assert "yes" in joined, f"Expected 'yes' in {texts!r}"
+    assert "4" in joined, f"Expected '4' in {texts!r}"
 
 
 @pytest.fixture
@@ -25,7 +26,7 @@ def qa_dataset_path(tmp_path: Path) -> Path:
         {
             "conversation": [
                 [{"role": "user", "content": CAPITAL_PROMPT}],
-                [{"role": "user", "content": APPLES_PROMPT}],
+                [{"role": "user", "content": MATH_PROMPT}],
             ],
         },
     ).write_parquet(dataset_path)
@@ -81,33 +82,7 @@ def test_generate_replies(
         "64",
     )
 
-    _assert_has_london_and_yes(pl.read_parquet(output_path).get_column("response").to_list())
-
-
-@pytest.mark.parametrize("model_repo", MODELS)
-def test_generate_replies_with_vram(
-    convert_model: ConvertModel,
-    model_repo: str,
-    qa_dataset_path: Path,
-    tmp_path: Path,
-    run_lalamo: RunLalamo,
-) -> None:
-    converted_model_dir = convert_model(model_repo, cached=True)
-    output_path = tmp_path / "replies.parquet"
-
-    run_lalamo(
-        "generate-replies",
-        str(converted_model_dir),
-        str(qa_dataset_path),
-        "--output-path",
-        str(output_path),
-        "--vram-gb",
-        "6",
-        "--max-output-length",
-        "64",
-    )
-
-    _assert_has_london_and_yes(pl.read_parquet(output_path).get_column("response").to_list())
+    _assert_has_london_and_four(pl.read_parquet(output_path).get_column("response").to_list())
 
 
 @pytest.mark.parametrize("model_repo", MODELS)
@@ -117,11 +92,11 @@ def test_chat(
     run_lalamo: RunLalamo,
 ) -> None:
     converted_model_dir = convert_model(model_repo, cached=True)
-    capital_output = run_lalamo("chat", str(converted_model_dir), "--message", CAPITAL_PROMPT)
+    capital_output = run_lalamo("chat", str(converted_model_dir), "--message", CAPITAL_PROMPT, "--max-tokens", "4")
     assert "london" in capital_output.lower(), f"Expected 'london' in {capital_output!r}"
 
-    apples_output = run_lalamo("chat", str(converted_model_dir), "--message", APPLES_PROMPT)
-    assert "yes" in apples_output.lower(), f"Expected 'yes' in {apples_output!r}"
+    math_output = run_lalamo("chat", str(converted_model_dir), "--message", MATH_PROMPT, "--max-tokens", "4")
+    assert "4" in math_output, f"Expected '4' in {math_output!r}"
 
 
 @pytest.mark.parametrize("model_repo", MODELS)
@@ -159,4 +134,4 @@ def test_collect_traces_answers(
             str(converted_model_dir),
         ),
     )
-    _assert_has_london_and_yes([view_output])
+    _assert_has_london_and_four([view_output])

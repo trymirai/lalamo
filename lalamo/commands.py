@@ -635,7 +635,7 @@ def generate_replies(
             )
 
     # Count rows without loading full dataset
-    total_rows: int = pl.scan_parquet(dataset_path).select(pl.len()).collect().item()  # type: ignore[possibly-missing-attribute]
+    total_rows: int = pl.scan_parquet(dataset_path).select(pl.len()).collect().item()
 
     callbacks = callbacks_type(
         model_path,
@@ -652,7 +652,7 @@ def generate_replies(
     callbacks.finished_loading_model()
 
     callbacks.loading_dataset()
-    dataframe: pl.DataFrame = load_hf_parquet(dataset_path).collect()  # type: ignore[possibly-missing-attribute]
+    dataframe: pl.DataFrame = load_hf_parquet(dataset_path).collect()
     conversations = dataframe.get_column("conversation")
     dataset = iter(
         [HFMessage.from_dict(message).as_message() for message in conversation] for conversation in conversations
