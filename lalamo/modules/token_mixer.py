@@ -76,7 +76,7 @@ class MixerForwardPassConfig:
     @classmethod
     def for_inference(cls, precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT) -> Self:
         return cls(
-            attention_implementation=AttentionImplementation.TOKAMAX,
+            attention_implementation=AttentionImplementation.CUDNN,
             matmul_config=MatmulConfig.for_inference(precision),
             normalization_forward_pass_config=NormalizationForwardPassConfig.for_inference(),
         )

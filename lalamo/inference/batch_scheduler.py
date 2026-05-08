@@ -1,5 +1,4 @@
 import functools
-import gc
 import threading
 import time
 import warnings
@@ -25,13 +24,13 @@ from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy
 
 __all__ = [
+    "BatchScheduler",
+    "BatchSchedulerConfig",
+    "BatchSchedulerKind",
     "BatchSizeInfo",
     "BatchSizesComputedEvent",
-    "Batching",
-    "BatchingConfig",
-    "BatchingKind",
-    "ContinuousBatching",
-    "FixedSizeBatching",
+    "ContinuousBatchScheduler",
+    "FixedSizeBatchScheduler",
     "GeneratedSequence",
     "estimate_batchsize_for_memory_budget",
 ]
@@ -39,10 +38,11 @@ __all__ = [
 type TokenSequence = list[int] | np.ndarray | jnp.ndarray
 
 PROMPT_SIZE_BUCKETS: tuple[int, ...] = tuple(256 * 4**i for i in range(8))
+MIN_BATCHES_PER_BUCKET: int = 10
 
 
 @dataclass(frozen=True)
-class BatchingConfig:
+class BatchSchedulerConfig:
     max_output_length: int = 8192
     padded_length: int | None = None
     batch_size: int | None = 1
@@ -68,7 +68,7 @@ class GeneratedSequence:
     top_k_token_logits: Float[Array, "response_tokens k"] | None = None
 
 
-class BatchingKind(StrEnum):
+class BatchSchedulerKind(StrEnum):
     FIXED_SIZE = "fixed-size"
     CONTINUOUS = "continuous"
 
@@ -137,8 +137,8 @@ def _is_oom_error(error: Exception) -> bool:
 def estimate_batchsize_for_memory_budget(
     fn: Callable[[int], None],
     memory_budget: int,
+    num_steps: int,
     starting_batchsize: int = 2,
-    num_steps: int = 2,
 ) -> int:
     batch_size = max(1, starting_batchsize)
     last_successful_batch_size: int | None = None
@@ -169,7 +169,7 @@ def estimate_batchsize_for_memory_budget(
 
 
 def _usable_bytes_from_available_bytes(available_bytes: int) -> int:
-    return int(available_bytes * 0.95)
+    return int(available_bytes * 0.98)
 
 
 def _assert_sorted(values: list[int]) -> None:
@@ -194,45 +194,33 @@ def bucket_sequences[T: TokenSequence](
     *,
     max_vram: int,
     starting_batch_size: int = 2,
-    min_batches_per_bucket: int = 10,
+    min_batches_per_bucket: int = MIN_BATCHES_PER_BUCKET,
 ) -> tuple[dict[int, list[tuple[int, T]]], dict[int, int]]:
     sequences_per_bucket = bucket_by_length(tokenized)
     sorted_lengths = sorted(sequences_per_bucket.keys(), reverse=True)
     batch_size_per_bucket: dict[int, int] = {}
     estimated = starting_batch_size
-    had_successful_estimate = False
-    num_steps = 2
+    num_steps = 3
 
     for idx, padded_length in enumerate(sorted_lengths):
-        try:
-            estimated = estimate_batchsize_for_memory_budget(
-                functools.partial(memory_probe, padded_length=padded_length),
-                memory_budget=max_vram,
-                starting_batchsize=estimated,
-                num_steps=num_steps,
-            )
-        except (JaxRuntimeError, ValueError) as error:
-            if not _is_oom_error(error):
-                raise
-            if had_successful_estimate:
-                batch_size_per_bucket.update(dict.fromkeys(sorted_lengths[idx:], estimated))
-                return sequences_per_bucket, batch_size_per_bucket
-            warnings.warn(
-                f"Falling back to batch_size=1 for padded_length={padded_length}: {error}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            batch_size_per_bucket[padded_length] = 1
-            estimated = 1
-            num_steps = 2
-            continue
+        estimated = estimate_batchsize_for_memory_budget(
+            functools.partial(memory_probe, padded_length=padded_length),
+            memory_budget=max_vram,
+            starting_batchsize=estimated,
+            num_steps=num_steps,
+        )
 
-        had_successful_estimate = True
+        # 1 estimator step suffices for each consecutive estimation, since we will already have
+        # ~80% VRAM allocation ratio by starting from the last batchsize estimate, and 1 step is enough
+        # to bring it to 98% ish util
+        num_steps = 1
+
         batch_size_per_bucket[padded_length] = estimated
+        remaining_lengths = sorted_lengths[idx + 1 :]
 
-        remaining = sorted_lengths[idx + 1 :]
-        if sum(len(sequences_per_bucket[length]) for length in remaining) < min_batches_per_bucket * estimated:
-            batch_size_per_bucket.update(dict.fromkeys(remaining, estimated))
+        # shortcircuit if there are only a few remaining samples -> fit all of them into the current bucket
+        if sum(len(sequences_per_bucket[length]) for length in remaining_lengths) < min_batches_per_bucket * estimated:
+            batch_size_per_bucket.update(dict.fromkeys(remaining_lengths, estimated))
             return sequences_per_bucket, batch_size_per_bucket
 
     return sequences_per_bucket, batch_size_per_bucket
@@ -243,6 +231,9 @@ def merge_small_buckets[T: TokenSequence](
     batch_size_for_length: dict[int, int],
     min_batches: int = 4,
 ) -> dict[int, list[tuple[int, T]]]:
+    # Given a bunch of buckets, this utility attempts to merge them upward in such a way that there is only one bucket
+    # smaller that the required size of min_batches * batch_size.
+    # Naturally, the "only" underfull bucket will be the largest one
     sorted_lengths = sorted(buckets.keys())
     merged: dict[int, list[tuple[int, T]]] = {}
     overflow: list[tuple[int, T]] = []
@@ -318,15 +309,18 @@ class PrefillBatch(eqx.Module):
     prefill_results: PrefillResults
     sampling_policy: SamplingPolicy
     mask: Bool[Array, " prefill_bs"]
-    keys: Key[Array, " prefill_bs"]
+    sampling_keys: Key[Array, " prefill_bs"]
+    decoding_keys: Key[Array, " prefill_bs"]
     sequence_ids: Int[Array, " prefill_bs"]
 
     def __check_init__(self) -> None:
         (prefill_batch_size,) = self.prefill_results.last_token_indices.shape
         if self.mask.shape != (prefill_batch_size,):
             raise RuntimeError(f"mask shape {self.mask.shape} != ({prefill_batch_size},)")
-        if self.keys.shape != (prefill_batch_size,):
-            raise RuntimeError(f"keys shape {self.keys.shape} != ({prefill_batch_size},)")
+        if self.sampling_keys.shape != (prefill_batch_size,):
+            raise RuntimeError(f"sampling_keys shape {self.sampling_keys.shape} != ({prefill_batch_size},)")
+        if self.decoding_keys.shape != (prefill_batch_size,):
+            raise RuntimeError(f"decoding_keys shape {self.decoding_keys.shape} != ({prefill_batch_size},)")
         if self.sequence_ids.shape != (prefill_batch_size,):
             raise RuntimeError(f"sequence_ids shape {self.sequence_ids.shape} != ({prefill_batch_size},)")
         if self.prefill_results.last_token_logits.shape[0] != prefill_batch_size:
@@ -386,16 +380,17 @@ class PrefillSource:
 
         selected_keys = self.keychain.vmapped_keys[jnp.asarray(selected_indices)]
         selected_keychain = Keychain(vmapped_keys=selected_keys, batch_key=self.keychain.batch_key)
+        prefill_keychain, sampling_keychain, decoding_keychain = selected_keychain.split(3)
         prefilled_state = model.prefill_tokens(
             token_ids=padded_sequences,
             state_capacity=self.state_capacity,
             lengths_without_padding=jnp.asarray(lengths_without_padding),
             chunk_size=self.chunk_size,
-            keychain=Keychain(vmapped_keys=selected_keys[0], batch_key=selected_keychain.batch_key),
+            keychain=prefill_keychain,
         )
         sampling_policy = self.sampling_policy_template.broadcast(self.prefill_batch_size)
         # Avoid materializing batch x vocab token count storage unless a count-based penalty needs it.
-        if self.sampling_policy_template.has_count_penalties():
+        if self.sampling_policy_template.has_count_penalties:
             sampling_policy = call_vmapped(
                 lambda policy, prompt_token_ids, prompt_length: policy.with_prompt_token_counts(
                     prompt_token_ids,
@@ -411,7 +406,8 @@ class PrefillSource:
             prefill_results=prefilled_state,
             sampling_policy=sampling_policy,
             mask=jnp.asarray(mask),
-            keys=selected_keychain.vmapped_keys,
+            sampling_keys=sampling_keychain.vmapped_keys,
+            decoding_keys=decoding_keychain.vmapped_keys,
             sequence_ids=jnp.asarray(selected_indices),
         )
         return replace(self, cursor=self.cursor + num_designated), batch
@@ -437,7 +433,8 @@ class BlockContinuousState(eqx.Module):
     stop_flags: Bool[Array, " num_lines"]
     token_buffer: Int[Array, "num_lines max_output"]
     num_generated: Int[Array, " num_lines"]
-    keys: Key[Array, " num_lines"]
+    sampling_keys: Key[Array, " num_lines"]
+    decoding_keys: Key[Array, " num_lines"]
     in_batch_index_to_sequence_id: Int[Array, " num_lines"]
 
     def __check_init__(self) -> None:
@@ -456,6 +453,10 @@ class BlockContinuousState(eqx.Module):
         model: LanguageModel,
         sampling_policy_template: SamplingPolicy,
     ) -> "BlockContinuousState":
+        if sampling_policy_template.has_count_penalties:
+            sampling_policy_template = sampling_policy_template.with_empty_token_counts(model.decoder.vocab_size)
+        sampling_policy = sampling_policy_template.broadcast(num_lines)
+
         return BlockContinuousState(
             last_token_logits=jnp.zeros((num_lines, model.decoder.vocab_size), dtype=jnp.float32),
             last_token_indices=jnp.zeros(num_lines, dtype=jnp.int32),
@@ -464,11 +465,12 @@ class BlockContinuousState(eqx.Module):
                 state_capacity,
                 model.decoder.embedding.embedding_matrix.dtype,
             ),
-            sampling_policy=sampling_policy_template.broadcast(num_lines),
+            sampling_policy=sampling_policy,
             stop_flags=jnp.ones(num_lines, dtype=bool),
             token_buffer=jnp.zeros((num_lines, max_output_length), dtype=jnp.int32),
             num_generated=jnp.zeros(num_lines, dtype=jnp.int32),
-            keys=jax.random.split(jax.random.key(0), num_lines),
+            sampling_keys=jax.random.split(jax.random.key(0), num_lines),
+            decoding_keys=jax.random.split(jax.random.key(1), num_lines),
             in_batch_index_to_sequence_id=jnp.zeros(num_lines, dtype=jnp.int32),
         )
 
@@ -498,6 +500,7 @@ class BlockContinuousDecoder(eqx.Module):
     max_output_length: int
     language_model: LanguageModel
     sampling_policy_template: SamplingPolicy
+    decoding_batch_key: Key[Array, ""]
 
     @classmethod
     def init(
@@ -506,26 +509,29 @@ class BlockContinuousDecoder(eqx.Module):
         block_size: int,
         model: LanguageModel,
         sampling_policy: SamplingPolicy,
+        decoding_batch_key: Key[Array, ""],
     ) -> "BlockContinuousDecoder":
         return cls(
             block_size=block_size,
             max_output_length=max_output_length,
             language_model=model,
             sampling_policy_template=sampling_policy,
+            decoding_batch_key=decoding_batch_key,
         )
 
     def _step(
         self,
-        carry: tuple[DecodingState, Key[Array, " num_lines"]],
+        carry: tuple[DecodingState, Key[Array, " num_lines"], Key[Array, " num_lines"]],
         eos_token_ids: Int[Array, " eos_tokens"],
-    ) -> tuple[tuple[DecodingState, Key[Array, " num_lines"]], Int[Array, " num_lines"]]:
-        decode_state, keys = carry
+    ) -> tuple[tuple[DecodingState, Key[Array, " num_lines"], Key[Array, " num_lines"]], Int[Array, " num_lines"]]:
+        decode_state, sampling_keys, decoding_keys = carry
 
-        split_keys = jax.vmap(functools.partial(jax.random.split, num=3))(keys)
-        next_keys = split_keys[:, 0]
-        sample_keys = split_keys[:, 1]
-        decoder_keys = split_keys[:, 2]
-        decoder_key = decoder_keys[0]
+        split_sampling_keys = jax.vmap(jax.random.split)(sampling_keys)
+        next_sampling_keys = split_sampling_keys[:, 0]
+        sample_keys = split_sampling_keys[:, 1]
+        split_decoding_keys = jax.vmap(jax.random.split)(decoding_keys)
+        next_decoding_keys = split_decoding_keys[:, 0]
+        decoder_keys = split_decoding_keys[:, 1]
 
         processed_logits = call_vmapped(
             lambda policy, logits: policy.process_logits(logits),
@@ -553,7 +559,7 @@ class BlockContinuousDecoder(eqx.Module):
             state=decode_state.state,
             return_updated_state=True,
             forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.MULTI_TOKEN),
-            keychain=Keychain(vmapped_keys=decoder_key, batch_key=decoder_key),
+            keychain=Keychain(vmapped_keys=decoder_keys, batch_key=self.decoding_batch_key),
         )
         assert decoder_result.updated_state is not None
         new_decode_state = DecodingState(
@@ -565,7 +571,7 @@ class BlockContinuousDecoder(eqx.Module):
             stop_flags=stop_flags,
             sampling_policy=next_sampling_policy,
         )
-        return (new_decode_state, next_keys), next_token_ids
+        return (new_decode_state, next_sampling_keys, next_decoding_keys), next_token_ids
 
     def fill_lines(self, state: BlockContinuousState, batch: PrefillBatch) -> BlockContinuousState:
         (prefill_batch_size,) = batch.prefill_results.last_token_indices.shape
@@ -606,7 +612,8 @@ class BlockContinuousDecoder(eqx.Module):
             stop_flags=new_decode_state.stop_flags,
             token_buffer=state.token_buffer,
             num_generated=apply_updates(jnp.zeros_like(state.num_generated), state.num_generated),
-            keys=apply_updates(batch.keys[source_idx], state.keys),
+            sampling_keys=apply_updates(batch.sampling_keys[source_idx], state.sampling_keys),
+            decoding_keys=apply_updates(batch.decoding_keys[source_idx], state.decoding_keys),
             in_batch_index_to_sequence_id=apply_updates(
                 batch.sequence_ids[source_idx],
                 state.in_batch_index_to_sequence_id,
@@ -622,9 +629,9 @@ class BlockContinuousDecoder(eqx.Module):
             stop_flags=state.stop_flags,
             sampling_policy=state.sampling_policy,
         )
-        (new_decode_state, new_keys), block_tokens = jax.lax.scan(
+        (new_decode_state, new_sampling_keys, new_decoding_keys), block_tokens = jax.lax.scan(
             lambda carry, _: self._step(carry, eos_token_ids),
-            (initial_decode_state, state.keys),
+            (initial_decode_state, state.sampling_keys, state.decoding_keys),
             None,
             length=self.block_size,
         )
@@ -641,13 +648,14 @@ class BlockContinuousDecoder(eqx.Module):
             stop_flags=combined_stop,
             token_buffer=new_buffer,
             num_generated=new_num_generated,
-            keys=new_keys,
+            sampling_keys=new_sampling_keys,
+            decoding_keys=new_decoding_keys,
             in_batch_index_to_sequence_id=state.in_batch_index_to_sequence_id,
         ), completed_mask
 
 
 @dataclass(frozen=True)
-class Batching(ABC):
+class BatchScheduler(ABC):
     model: LanguageModel
 
     @abstractmethod
@@ -655,7 +663,7 @@ class Batching(ABC):
         self,
         tokenized: Iterable[list[int]],
         generation_config: GenerationConfig | None = None,
-        batching_config: BatchingConfig = BatchingConfig(),
+        batch_scheduler_config: BatchSchedulerConfig = BatchSchedulerConfig(),
         *,
         fast_peak_memory: bool = False,
         keychain: Keychain | None = None,
@@ -665,7 +673,7 @@ class Batching(ABC):
         self,
         messages: Iterable[Iterable[Message]],
         generation_config: GenerationConfig | None = None,
-        batching_config: BatchingConfig = BatchingConfig(),
+        batch_scheduler_config: BatchSchedulerConfig = BatchSchedulerConfig(),
         *,
         keychain: Keychain | None = None,
         vram_bytes: int | None = None,
@@ -674,17 +682,17 @@ class Batching(ABC):
         messages = list(messages)
         keychain = (keychain or Keychain.init(0, shape=(len(messages),))).broadcast((len(messages),))
 
-        if vram_bytes is not None and batching_config.batch_size is not None:
-            raise RuntimeError("Specify only one of batching_config.batch_size and vram_bytes.")
+        if vram_bytes is not None and batch_scheduler_config.batch_size is not None:
+            raise RuntimeError("Specify only one of batch_scheduler_config.batch_size and vram_bytes.")
 
-        if vram_bytes is None and batching_config.batch_size is None:
-            raise RuntimeError("Specify either batching_config.batch_size or vram_bytes.")
+        if vram_bytes is None and batch_scheduler_config.batch_size is None:
+            raise RuntimeError("Specify either batch_scheduler_config.batch_size or vram_bytes.")
 
         tokenized = [self.model.token_codec.encode_request(message) for message in messages]
 
-        if batching_config.batch_size is not None:
+        if batch_scheduler_config.batch_size is not None:
             sequences_per_bucket = bucket_by_length(tokenized)
-            batch_size_per_bucket = dict.fromkeys(sequences_per_bucket, batching_config.batch_size)
+            batch_size_per_bucket = dict.fromkeys(sequences_per_bucket, batch_scheduler_config.batch_size)
         else:
             assert vram_bytes is not None
 
@@ -692,8 +700,8 @@ class Batching(ABC):
                 iterator = self.generate_tokens_many(
                     [tokenized[0]] * batch_size,
                     generation_config=generation_config,
-                    batching_config=replace(
-                        batching_config,
+                    batch_scheduler_config=replace(
+                        batch_scheduler_config,
                         batch_size=batch_size,
                         padded_length=padded_length,
                     ),
@@ -707,10 +715,10 @@ class Batching(ABC):
                 tokenized,
                 memory_probe,
                 max_vram=_usable_bytes_from_available_bytes(vram_bytes),
-                min_batches_per_bucket=10,
+                min_batches_per_bucket=MIN_BATCHES_PER_BUCKET,
             )
 
-        buckets = merge_small_buckets(sequences_per_bucket, batch_size_per_bucket, min_batches=10)
+        buckets = merge_small_buckets(sequences_per_bucket, batch_size_per_bucket, min_batches=MIN_BATCHES_PER_BUCKET)
         assert sum(len(bucket) for bucket in buckets.values()) == len(tokenized)
 
         if batch_sizes_callback is not None:
@@ -729,7 +737,7 @@ class Batching(ABC):
             sequence_ids = list(sequence_ids)
             bucket_batch_size = batch_size_per_bucket[padded_length]
             bucket_config = replace(
-                batching_config,
+                batch_scheduler_config,
                 batch_size=bucket_batch_size,
                 padded_length=padded_length,
             )
@@ -741,7 +749,7 @@ class Batching(ABC):
             for local_idx, result in self.generate_tokens_many(
                 sequence_tokenized,
                 generation_config=generation_config,
-                batching_config=bucket_config,
+                batch_scheduler_config=bucket_config,
                 fast_peak_memory=False,
                 keychain=bucket_keychain,
             ):
@@ -751,12 +759,12 @@ class Batching(ABC):
 
 
 @dataclass(frozen=True)
-class FixedSizeBatching(Batching):
+class FixedSizeBatchScheduler(BatchScheduler):
     def generate_tokens_many(
         self,
         tokenized: Iterable[list[int]],
         generation_config: GenerationConfig | None = None,
-        batching_config: BatchingConfig = BatchingConfig(),
+        batch_scheduler_config: BatchSchedulerConfig = BatchSchedulerConfig(),
         *,
         fast_peak_memory: bool = False,
         keychain: Keychain | None = None,
@@ -764,8 +772,8 @@ class FixedSizeBatching(Batching):
         tokenized = list(tokenized)
         if not tokenized:
             return
-        if batching_config.batch_size is None:
-            raise RuntimeError("FixedSizeBatching requires batching_config.batch_size.")
+        if batch_scheduler_config.batch_size is None:
+            raise RuntimeError("FixedSizeBatchScheduler requires batch_scheduler_config.batch_size.")
 
         keychain = (keychain or Keychain.init(0, shape=(len(tokenized),))).broadcast((len(tokenized),))
 
@@ -774,7 +782,7 @@ class FixedSizeBatching(Batching):
                 batch_with_ids = list(batch_items)
                 batch_indices = [idx for idx, _ in batch_with_ids]
                 real_batch = [tokens for _, tokens in batch_with_ids]
-                padded_length = batching_config.padded_length or max(len(tokens) for tokens in real_batch)
+                padded_length = batch_scheduler_config.padded_length or max(len(tokens) for tokens in real_batch)
                 num_padding_rows = batch_size - len(real_batch)
                 lengths = jnp.asarray([len(tokens) for tokens in real_batch] + [1] * num_padding_rows, dtype=jnp.int32)
                 padded = pad_sequences(real_batch, (batch_size, padded_length), dtype=jnp.int32)
@@ -782,13 +790,13 @@ class FixedSizeBatching(Batching):
                 batch_keychain = Keychain(
                     vmapped_keys=keychain.vmapped_keys[jnp.asarray(padded_batch_indices)],
                     batch_key=keychain.batch_key,
-                )
+                ).squeeze()
                 batch_results = self.model.generate_tokens(
                     padded,
                     generation_config=generation_config,
                     prompt_lengths_without_padding=lengths,
-                    max_output_length=batching_config.max_output_length,
-                    num_top_logits_to_return=batching_config.num_top_logits_to_return,
+                    max_output_length=batch_scheduler_config.max_output_length,
+                    num_top_logits_to_return=batch_scheduler_config.num_top_logits_to_return,
                     keychain=batch_keychain,
                 )
                 for local_idx, sequence_id in enumerate(batch_indices):
@@ -810,36 +818,37 @@ class FixedSizeBatching(Batching):
                     )
 
         if fast_peak_memory:
-            yield from process_batches(batching_config.batch_size)
+            yield from process_batches(batch_scheduler_config.batch_size)
             return
 
-        yield from _decrease_batchsize_on_oom(process_batches, starting_batch_size=batching_config.batch_size)
+        yield from _decrease_batchsize_on_oom(process_batches, starting_batch_size=batch_scheduler_config.batch_size)
 
 
 @dataclass(frozen=True)
-class ContinuousBatching(Batching):
+class ContinuousBatchScheduler(BatchScheduler):
     block_size: int = 256
     prefill_batch_fraction: float = 0.2
+    prefill_chunk_size: int = 128
 
     def generate_tokens_many(
         self,
         tokenized: Iterable[list[int]],
         generation_config: GenerationConfig | None = None,
-        batching_config: BatchingConfig = BatchingConfig(),
+        batch_scheduler_config: BatchSchedulerConfig = BatchSchedulerConfig(),
         *,
         fast_peak_memory: bool = False,
         keychain: Keychain | None = None,
     ) -> Iterator[tuple[int, GeneratedSequence]]:
-        if batching_config.num_top_logits_to_return is not None:
-            raise RuntimeError("num_top_logits_to_return is not supported with ContinuousBatching.")
+        if batch_scheduler_config.num_top_logits_to_return is not None:
+            raise RuntimeError("num_top_logits_to_return is not supported with ContinuousBatchScheduler.")
 
         tokenized = list(tokenized)
         if not tokenized:
             return
-        if batching_config.batch_size is None:
-            raise RuntimeError("ContinuousBatching requires batching_config.batch_size.")
-        if batching_config.padded_length is None:
-            raise RuntimeError("ContinuousBatching requires batching_config.padded_length.")
+        if batch_scheduler_config.batch_size is None:
+            raise RuntimeError("ContinuousBatchScheduler requires batch_scheduler_config.batch_size.")
+        if batch_scheduler_config.padded_length is None:
+            raise RuntimeError("ContinuousBatchScheduler requires batch_scheduler_config.padded_length.")
 
         keychain = (keychain or Keychain.init(0, shape=(len(tokenized),))).broadcast((len(tokenized),))
 
@@ -847,29 +856,35 @@ class ContinuousBatching(Batching):
             generation_config.default_policy() if generation_config else self.model.default_sampling_policy()
         )
 
-        batch_size = batching_config.batch_size
-        max_output_length = batching_config.max_output_length
-        padded_length = batching_config.padded_length
+        batch_size = batch_scheduler_config.batch_size
+        max_output_length = batch_scheduler_config.max_output_length
+        padded_length = batch_scheduler_config.padded_length
 
         block_size = min(self.block_size, max_output_length)
-        prefill_chunk_size = 128
-        prefill_capacity = ((padded_length + prefill_chunk_size - 1) // prefill_chunk_size) * prefill_chunk_size
+        prefill_capacity = (
+            (padded_length + self.prefill_chunk_size - 1) // self.prefill_chunk_size
+        ) * self.prefill_chunk_size
         state_capacity = prefill_capacity + max_output_length + 1
         prefill_batch_size = max(1, min(int(batch_size * self.prefill_batch_fraction + 1), batch_size))
-        prefills: PrefillSource | None = PrefillSource(
+
+        prefills: PrefillSource = PrefillSource(
             tokenized_messages=tokenized,
             keychain=keychain,
             prefill_batch_size=prefill_batch_size,
             padded_length=padded_length,
-            chunk_size=prefill_chunk_size,
+            chunk_size=self.prefill_chunk_size,
             state_capacity=state_capacity,
             sampling_policy_template=sampling_policy,
         )
+
+        # make sure the key used is the same as the one in FixedBatchScheduler
+        _, _, decoding_keychain = keychain.split(3)
         decoder = BlockContinuousDecoder.init(
             max_output_length=max_output_length,
             block_size=block_size,
             model=self.model,
             sampling_policy=sampling_policy,
+            decoding_batch_key=decoding_keychain.batch_key,
         )
         state = BlockContinuousState.init(
             num_lines=batch_size,
@@ -883,18 +898,13 @@ class ContinuousBatching(Batching):
         jitted_fill_lines = eqx.filter_jit(decoder.fill_lines, donate="all")
 
         while True:
-            if prefills is not None:
+            if not prefills.exhausted:
                 prefills, state = prefills.fill(decoder, state, jitted_fill_lines)
 
             state, completed_mask = jitted_decode(state)
             yield from state.extract_completed_sequences(completed_mask)
 
-            if prefills is not None and prefills.exhausted:
-                del prefills
-                prefills = None
-                gc.collect()
-
-            if state.is_empty() and prefills is None:
+            if state.is_empty() and prefills.exhausted:
                 break
 
             if fast_peak_memory:

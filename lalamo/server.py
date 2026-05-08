@@ -18,8 +18,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from jax import numpy as jnp
 
-from lalamo.batching import BatchingConfig, ContinuousBatching
 from lalamo.data.huggingface_message import HFMessage
+from lalamo.inference.batch_scheduler import BatchSchedulerConfig, ContinuousBatchScheduler
 from lalamo.model_import.common import import_model
 from lalamo.models import GenerationConfig, LanguageModel
 from lalamo.module import Keychain
@@ -164,12 +164,15 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
     keychain = Keychain(vmapped_keys=keys, batch_key=batch_key)
 
     sequence_ids = [request.sequence_id for request in requests]
-    batching = ContinuousBatching(model=model)
+    batch_scheduler = ContinuousBatchScheduler(model=model)
 
-    for reply_idx, reply in batching.reply_many(
+    for reply_idx, reply in batch_scheduler.reply_many(
         dataset,
         generation_config=reference.generation_config,
-        batching_config=BatchingConfig(max_output_length=reference.max_completion_tokens, batch_size=None),
+        batch_scheduler_config=BatchSchedulerConfig(
+            max_output_length=reference.max_completion_tokens,
+            batch_size=None,
+        ),
         keychain=keychain,
         vram_bytes=app.state.vram_bytes,
     ):

@@ -7,7 +7,15 @@ import pytest
 from jax.sharding import Mesh, NamedSharding
 
 from lalamo.compressed.awq import AWQMatrixForInference, AWQMatrixForTraining, AWQSpec
-from lalamo.module import Keychain, LalamoConfig, LalamoModule, ParameterNorm, ShardingAxis, field
+from lalamo.module import (
+    Keychain,
+    KeychainBroadcastMode,
+    LalamoConfig,
+    LalamoModule,
+    ParameterNorm,
+    ShardingAxis,
+    field,
+)
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import CompressionImplementation, FullPrecisionMatrix, WeightMatrix
@@ -51,6 +59,30 @@ def test_keychain_broadcast_adds_distinct_leading_keys() -> None:
         jax.random.key_data(broadcast.vmapped_keys[0]),
         jax.random.key_data(broadcast.vmapped_keys[1]),
     )
+
+
+def test_keychain_broadcast_adds_distinct_trailing_keys() -> None:
+    keychain = Keychain.init(0, shape=(2,))
+
+    broadcast = keychain.broadcast((2, 3))
+
+    assert broadcast.vmapped_keys.shape == (2, 3)
+    assert jnp.array_equal(jax.random.key_data(broadcast.batch_key), jax.random.key_data(keychain.batch_key))
+    assert len(set(_flat_key_data(broadcast.vmapped_keys))) == 6
+    assert not jnp.array_equal(
+        jax.random.key_data(broadcast.vmapped_keys[:, 0]),
+        jax.random.key_data(broadcast.vmapped_keys[:, 1]),
+    )
+
+
+def test_keychain_broadcast_rejects_ambiguous_auto_mode() -> None:
+    keychain = Keychain.init(0, shape=(2,))
+
+    with pytest.raises(ValueError, match="Ambiguous"):
+        keychain.broadcast((2, 2))
+
+    assert keychain.broadcast((2, 2), mode=KeychainBroadcastMode.PREFIX).vmapped_keys.shape == (2, 2)
+    assert keychain.broadcast((2, 2), mode=KeychainBroadcastMode.SUFFIX).vmapped_keys.shape == (2, 2)
 
 
 def test_keychain_broadcast_to_current_shape_preserves_keys() -> None:
@@ -98,6 +130,19 @@ def test_keychain_split_respects_requested_count() -> None:
     assert len(splits) == 3
     assert all(split.vmapped_keys.shape == (2,) for split in splits)
     assert len({_key_data(key=split.batch_key) for split in splits}) == 3
+
+
+def test_keychain_squeeze_removes_singleton_vmapped_axes() -> None:
+    keychain = Keychain.init(0, shape=(1, 2, 1))
+
+    squeezed = keychain.squeeze()
+
+    assert squeezed.vmapped_keys.shape == (2,)
+    assert jnp.array_equal(jax.random.key_data(squeezed.batch_key), jax.random.key_data(keychain.batch_key))
+    assert jnp.array_equal(
+        jax.random.key_data(squeezed.vmapped_keys),
+        jax.random.key_data(keychain.vmapped_keys[0, :, 0]),
+    )
 
 
 def test_keychain_rolling_broadcast_adds_distinct_leading_keys() -> None:

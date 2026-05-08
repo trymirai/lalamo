@@ -27,8 +27,8 @@ def sampling_params_from_policy(
             temperature=0.0,
             repetition_penalty=0.0,
         )
-    temperature = _scalar_float(policy.temperature)
-    top_p = _scalar_float(policy.top_p)
+    temperature = _scalar_float(policy.temperature, default=1.0)
+    top_p = _scalar_float(policy.top_p, default=1.0)
     argmax_decoding = temperature == 0.0
 
     return FishAudioSamplingParams(
@@ -39,7 +39,9 @@ def sampling_params_from_policy(
     )
 
 
-def _scalar_float(value: Array) -> float:
+def _scalar_float(value: Array | None, *, default: float) -> float:
+    if value is None:
+        return default
     if value.shape != ():
         raise ValueError("FishAudio sampling params expect a scalar sampling policy.")
     return float(np.asarray(jax.device_get(value)).item())

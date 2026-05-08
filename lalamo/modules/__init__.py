@@ -1,4 +1,4 @@
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, KeychainBroadcastMode, LalamoConfig, LalamoModule
 
 from .activations import GELU, Activation, Identity, SiLU
 from .classifier import (
@@ -121,6 +121,7 @@ __all__ = [
     "Identity",
     "KVCacheLayer",
     "Keychain",
+    "KeychainBroadcastMode",
     "LalamoConfig",
     "LalamoModule",
     "Linear",

@@ -2,7 +2,11 @@ import random
 
 import pytest
 
-from lalamo.batching import BatchingConfig, ContinuousBatching, FixedSizeBatching
+from lalamo.inference.batch_scheduler import (
+    BatchSchedulerConfig,
+    ContinuousBatchScheduler,
+    FixedSizeBatchScheduler,
+)
 from lalamo.models import LanguageModel
 from lalamo.models.chat_codec import UserMessage
 from lalamo.models.language_model import GenerationConfig
@@ -72,27 +76,27 @@ def test_continuous_vs_fixed_fuzz(
         frequency_penalty=0.5,
         stop_token_ids=fuzz_language_model.config.generation_config.stop_token_ids,
     )
-    batching_config = BatchingConfig(
+    batch_scheduler_config = BatchSchedulerConfig(
         batch_size=batch_size,
         max_output_length=max_output_length,
         padded_length=padded_length,
     )
 
     fixed_results = dict(
-        FixedSizeBatching(model=fuzz_language_model).generate_tokens_many(
+        FixedSizeBatchScheduler(model=fuzz_language_model).generate_tokens_many(
             tokenized,
             generation_config=generation_config,
-            batching_config=batching_config,
+            batch_scheduler_config=batch_scheduler_config,
         ),
     )
     continuous_results = dict(
-        ContinuousBatching(
+        ContinuousBatchScheduler(
             model=fuzz_language_model,
             block_size=block_size,
         ).generate_tokens_many(
             tokenized,
             generation_config=generation_config,
-            batching_config=batching_config,
+            batch_scheduler_config=batch_scheduler_config,
         ),
     )
 

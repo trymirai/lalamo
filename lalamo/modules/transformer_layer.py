@@ -258,6 +258,8 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 Int[Array, ""] | None,
                 Int[Array, " suffix_tokens"] | None,
             ],
+            *,
+            keychain: Keychain,
         ) -> tuple[Float[Array, "suffix_tokens channels"], StateLayerBase | None]:
             mixer_input, positional_embedding, mixer_state, length_without_padding, parent_indices = mixer_inputs
             return self.mixer(
@@ -268,7 +270,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 length_without_padding=length_without_padding,
                 forward_pass_config=forward_pass_config.mixer_forward_pass_config,
                 attention_parent_indices=parent_indices,
-                keychain=mixer_keychain,
+                keychain=keychain,
             )
 
         mixer_outputs, updated_state = call_vmapped(
@@ -280,6 +282,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 lengths_without_padding,
                 attention_parent_indices,
             ),
+            keychain=mixer_keychain,
             added_sharding_axis=ShardingAxis.DATA,
         )
         if self.post_mixer_norm is not None:

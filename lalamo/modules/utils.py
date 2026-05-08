@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from jax import vmap
 from jaxtyping import Array, Float, PyTree, Shaped
 
-from lalamo.module import Keychain, ShardingAxis
+from lalamo.module import Keychain, KeychainBroadcastMode, ShardingAxis
 
 __all__ = [
     "apply_soft_capping",
@@ -245,6 +245,7 @@ def call_vmapped_twice[ResultT](
         mapped_fn = _call_with_keychain(mapped_fn, keychain=keychain)
         keychain = keychain.broadcast(
             _nested_key_shape(args, outer_in_axes, inner_in_axes),
+            mode=KeychainBroadcastMode.SUFFIX,
             sharding_axes=added_sharding_axes,
         )
         vmapped_once = vmap(

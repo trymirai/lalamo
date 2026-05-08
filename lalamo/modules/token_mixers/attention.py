@@ -48,18 +48,20 @@ def _rms_normalize(
     eps: float,
     forward_pass_config: NormalizationForwardPassConfig,
 ) -> Float[Array, "... channels"]:
-    if forward_pass_config.implementation == NormalizationImplementation.TOKAMAX:
-        return tokamax.layer_norm(
-            inputs,
-            scale=None,
-            offset=None,
-            epsilon=eps,
-            subtract_mean=False,
-        )
+    match forward_pass_config.implementation:
+        case NormalizationImplementation.STANDARD:
+            upcasted_inputs = inputs.astype(jnp.float32)
+            variance = jnp.mean(jnp.square(upcasted_inputs), axis=-1, keepdims=True)
+            return (upcasted_inputs * jax.lax.rsqrt(variance + eps)).astype(inputs.dtype)
 
-    upcasted_inputs = inputs.astype(jnp.float32)
-    variance = jnp.mean(jnp.square(upcasted_inputs), axis=-1, keepdims=True)
-    return (upcasted_inputs * jax.lax.rsqrt(variance + eps)).astype(inputs.dtype)
+        case NormalizationImplementation.TOKAMAX:
+            return tokamax.layer_norm(
+                inputs,
+                scale=None,
+                offset=None,
+                epsilon=eps,
+                subtract_mean=False,
+            ).astype(inputs.dtype)
 
 
 def _soft_capped_attention_kernel(
@@ -256,7 +258,7 @@ def _attention_kernel(
             )
         case AttentionImplementation.CUDNN:
             if logit_soft_cap is not None:
-                raise ValueError("cuDNN attention does not support logit soft-capping.")
+                raise RuntimeError("cuDNN attention does not support logit soft-capping.")
             if mask is not None:
                 mask = jnp.broadcast_to(mask, (queries.shape[1], *mask.shape))
             return jax.nn.dot_product_attention(
@@ -269,6 +271,8 @@ def _attention_kernel(
                 implementation="cudnn",
             )
         case AttentionImplementation.TOKAMAX:
+            if bias is not None and logit_soft_cap is not None:
+                raise RuntimeError("Tokamax attention does not support logit soft-capping with additive bias.")
             return tokamax.dot_product_attention(
                 queries,
                 keys,
@@ -277,7 +281,7 @@ def _attention_kernel(
                 mask=mask,
                 scale=scale,
                 logits_soft_cap=logit_soft_cap,
-            )
+            ).astype(queries.dtype)
         case AttentionImplementation.STABLE_REDUCTION:
             return _stable_reduction_attention_kernel(
                 queries,

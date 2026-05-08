@@ -13,7 +13,14 @@ from tokenizers import Tokenizer
 from lalamo.initializer import Initializer
 from lalamo.model import Model, ModelConfig
 from lalamo.models.chat_codec import AssistantMessage, ChatCodec, ChatCodecConfig, Message
-from lalamo.modules import Decoder, DecoderConfig, DecoderForwardPassConfig, ForwardPassMode, Keychain
+from lalamo.modules import (
+    Decoder,
+    DecoderConfig,
+    DecoderForwardPassConfig,
+    ForwardPassMode,
+    Keychain,
+    KeychainBroadcastMode,
+)
 from lalamo.modules.token_mixer import State
 from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy
@@ -116,7 +123,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         return token_ids[:response_length]
 
     @eqx.filter_jit
-    def _make_chunks(
+    def _make_attention_chunks(
         self,
         token_ids: Int[Array, "batch tokens"],
         lengths_without_padding: Int[Array, " batch"] | None,
@@ -169,7 +176,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         if forward_pass_config is None:
             forward_pass_config = DecoderForwardPassConfig.for_inference()
 
-        chunks = self._make_chunks(token_ids, lengths_without_padding, chunk_size)
+        chunks = self._make_attention_chunks(token_ids, lengths_without_padding, chunk_size)
         num_chunks, _, chunk_size = chunks.tokens.shape
         state_dtype = forward_pass_config.embedding_forward_pass_config.activation_dtype
         state = self.decoder.init_static_state(
@@ -178,21 +185,14 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             state_dtype,
         )
         logits_like = jnp.zeros((batch_size, self.decoder.vocab_size), dtype=jnp.float32)
-        chunk_keys = (
-            Keychain(
-                vmapped_keys=jnp.ravel(keychain.vmapped_keys)[0],
-                batch_key=keychain.batch_key,
-            )
-            .rolling_broadcast((num_chunks,))
-            .vmapped_keys
-        )
+        chunk_keychains = jax.tree.map(lambda *nodes: jnp.stack(nodes), *keychain.split(num_chunks))
 
         def apply_chunk(
             state_and_logits: tuple[State, Float[Array, "batch vocabulary"]],
-            chunk_and_key: tuple[Chunk, Key[Array, ""]],
+            chunk_inputs: tuple[Chunk, Keychain],
         ) -> tuple[tuple[State, Float[Array, "batch vocabulary"]], None]:
             current_state, previous_logits = state_and_logits
-            chunk, chunk_key = chunk_and_key
+            chunk, current_chunk_keychain = chunk_inputs
             decoder_result = self.decoder(
                 token_ids=chunk.tokens,
                 token_positions=chunk.indices,
@@ -200,7 +200,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 return_updated_state=True,
                 lengths_without_padding=chunk.sequence_ends,
                 forward_pass_config=forward_pass_config,
-                keychain=Keychain(vmapped_keys=chunk_key, batch_key=keychain.batch_key),
+                keychain=current_chunk_keychain,
             )
             assert decoder_result.updated_state is not None
 
@@ -213,7 +213,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         (state, last_token_logits), _ = jax.lax.scan(
             apply_chunk,
             (state, logits_like),
-            (chunks, chunk_keys),
+            (chunks, chunk_keychains),
         )
 
         return PrefillResults(
@@ -222,6 +222,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             state=state,
         )
 
+    @eqx.filter_jit
     def generate_tokens(
         self,
         prompt_token_ids: Int[Array, "batch prompt_tokens"],
@@ -246,7 +247,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
             sampling_policy = generation_config.default_policy()
-        use_count_penalties = sampling_policy.has_count_penalties()
+        use_count_penalties = sampling_policy.has_count_penalties
         sampling_policy = sampling_policy.broadcast(batch_size)
         if prompt_lengths_without_padding is None:
             prompt_lengths_without_padding = jnp.full((batch_size,), prompt_length, dtype=jnp.int32)
@@ -288,7 +289,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
 
         def loop_iteration(
             state: DecodingState,
-            step_keys: tuple[Key[Array, " batch"], Key[Array, ""]],
+            step_keys: tuple[Key[Array, " batch"], Key[Array, "..."]],
         ) -> tuple[DecodingState, GenerationStepResults]:
             sampling_keys, decoding_key = step_keys
             processed_logits = call_vmapped(
@@ -338,8 +339,14 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 ),
             )
 
-        sampling_keys = sampling_keychain.rolling_broadcast((max_output_length, batch_size)).vmapped_keys
-        decoding_keys = decoding_keychain.rolling_broadcast((max_output_length,)).vmapped_keys
+        sampling_keys = sampling_keychain.rolling_broadcast(
+            (max_output_length, batch_size),
+            mode=KeychainBroadcastMode.SUFFIX,
+        ).vmapped_keys
+        decoding_keys = decoding_keychain.rolling_broadcast(
+            (max_output_length, *decoding_keychain.vmapped_keys.shape),
+            mode=KeychainBroadcastMode.SUFFIX,
+        ).vmapped_keys
         _, generated = jax.lax.scan(loop_iteration, initial_state, (sampling_keys, decoding_keys))
 
         token_ids = rearrange(generated.token_ids, "step batch -> batch step")
@@ -415,7 +422,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
             sampling_policy = generation_config.default_policy()
-        if sampling_policy.has_count_penalties():
+        if sampling_policy.has_count_penalties:
             sampling_policy = sampling_policy.with_prompt_token_counts(
                 padded_token_ids,
                 jnp.asarray(input_length, dtype=jnp.int32),

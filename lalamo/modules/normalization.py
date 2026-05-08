@@ -86,37 +86,35 @@ class Normalization(LalamoModule[NormalizationConfig]):
         upcasted_inputs = inputs.astype(accumulation_precision)
 
         scale_dtype = accumulation_precision if self.config.upcast_mode == UpcastMode.FULL_LAYER else inputs.dtype
-        adjusted_scales = self.scales.astype(scale_dtype)
-        if self.config.scale_offset is not None:
-            adjusted_scales = adjusted_scales + self.config.scale_offset
+        scales = self.scales.astype(scale_dtype)
 
-        if forward_pass_config.implementation == NormalizationImplementation.TOKAMAX:
-            result = tokamax.layer_norm(
-                upcasted_inputs,
-                scale=adjusted_scales,
-                offset=None,
-                epsilon=self.config.epsilon,
-                scale_offset=0.0,
-                subtract_mean=self.config.subtract_mean,
-            )
-            if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
-                result = result.astype(inputs.dtype)
-            if self.biases is not None:
-                result += self.biases.astype(result.dtype)
-            return result.astype(inputs.dtype)
+        match forward_pass_config.implementation:
+            case NormalizationImplementation.STANDARD:
+                if self.config.scale_offset is not None:
+                    scales = scales + self.config.scale_offset
 
-        if self.config.subtract_mean:
-            mean = jnp.mean(upcasted_inputs)
-            upcasted_inputs = upcasted_inputs - mean
+                if self.config.subtract_mean:
+                    mean = jnp.mean(upcasted_inputs)
+                    upcasted_inputs = upcasted_inputs - mean
 
-        adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.config.epsilon
-        normalized_x = upcasted_inputs * jax.lax.rsqrt(adjusted_variance)
+                adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.config.epsilon
+                normalized_x = upcasted_inputs * jax.lax.rsqrt(adjusted_variance)
 
-        if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
-            normalized_x = normalized_x.astype(inputs.dtype)
+                if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
+                    normalized_x = normalized_x.astype(inputs.dtype)
 
-        result = normalized_x * adjusted_scales
+                result = normalized_x * scales
 
-        if self.biases is not None:
-            result += self.biases.astype(result.dtype)
-        return result.astype(inputs.dtype)
+                if self.biases is not None:
+                    result += self.biases.astype(result.dtype)
+                return result.astype(inputs.dtype)
+
+            case NormalizationImplementation.TOKAMAX:
+                return tokamax.layer_norm(
+                    upcasted_inputs,
+                    scale=scales,
+                    offset=self.biases,
+                    epsilon=self.config.epsilon,
+                    scale_offset=self.config.scale_offset if self.config.scale_offset is not None else 0.0,
+                    subtract_mean=self.config.subtract_mean,
+                ).astype(inputs.dtype)

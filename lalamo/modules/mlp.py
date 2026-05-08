@@ -14,7 +14,7 @@ from jax.sharding import NamedSharding, PartitionSpec, reshard
 from jaxtyping import Array, Bool, Float, Int, Key
 
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
+from lalamo.module import ForwardPassMode, Keychain, KeychainBroadcastMode, LalamoConfig, LalamoModule, ShardingAxis
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.utils.sharding import is_sharded, sharding_of, use_out_sharding
 from lalamo.weight_matrix import GradientEstimator, MatmulConfig
@@ -494,12 +494,22 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         flattened_inputs = rearrange(inputs, "batch suffix_tokens channels -> (batch suffix_tokens) channels")
         flattened_padding_mask = rearrange(padding_mask, "batch suffix_tokens -> (batch suffix_tokens)")
 
+        def flatten_token_keychain(token_keychain: Keychain) -> Keychain:
+            token_keychain = token_keychain.broadcast(
+                (batch_size, sequence_length),
+                mode=KeychainBroadcastMode.PREFIX,
+            )
+            return Keychain(
+                vmapped_keys=rearrange(token_keychain.vmapped_keys, "batch suffix_tokens -> (batch suffix_tokens)"),
+                batch_key=token_keychain.batch_key,
+            )
+
         router_keychain, chunk_keychain, shared_weight_keychain, shared_expert_keychain = keychain.split(4)
         (router_logits,) = call_vmapped(
             self.router,
             flattened_inputs,
             forward_pass_config=forward_pass_config.matmul_config,
-            keychain=router_keychain,
+            keychain=flatten_token_keychain(router_keychain),
             added_sharding_axis=ShardingAxis.DATA,
         )
         routing_map = self.config.routing_function(router_logits, self.config.num_active_routed_experts)
@@ -621,7 +631,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             shared_weights = call_vmapped(
                 shared_expert_weight,
                 flattened_inputs,
-                keychain=shared_weight_keychain,
+                keychain=flatten_token_keychain(shared_weight_keychain),
                 added_sharding_axis=ShardingAxis.DATA,
             )
             shared_weights = jnp.where(flattened_padding_mask[:, None], shared_weights, 0.0)
