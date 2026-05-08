@@ -284,7 +284,7 @@ def _uses_final_cache(output_dim: int, matrix: HybridMatrix) -> bool:
 
 
 class HybridMatrixForInference(HybridMatrix):
-    weights: FullPrecisionMatrix = field(trainable=False)
+    final_weights: FullPrecisionMatrix = field(trainable=False)
 
     @classmethod
     def from_hybrid(cls, matrix: HybridMatrix) -> "HybridMatrixForInference":
@@ -293,7 +293,7 @@ class HybridMatrixForInference(HybridMatrix):
             quantized=matrix.quantized,
             adapter=matrix.adapter,
             incoherence_signs=matrix.incoherence_signs,
-            weights=_full_precision_cache(matrix),
+            final_weights=_full_precision_cache(matrix),
         )
 
     def _without_cache(self) -> HybridMatrix:
@@ -309,28 +309,28 @@ class HybridMatrixForInference(HybridMatrix):
 
     def load_exported(
         self,
-        expored_data: ExportResults,
+        exported_data: ExportResults,
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> "HybridMatrixForInference":
         loaded = self._without_cache().load_exported(
-            expored_data,
+            exported_data,
             allow_dtype_cast=allow_dtype_cast,
             prefix=prefix,
         )
         return HybridMatrixForInference.from_hybrid(loaded)
 
     def to_full_precision(self) -> FullPrecisionMatrix:
-        return self.weights
+        return self.final_weights
 
     @property
     def shape(self) -> tuple[int, ...]:
-        return self.weights.shape
+        return self.final_weights.shape
 
     @property
     def dtype(self) -> DTypeLike:
-        return self.weights.dtype
+        return self.final_weights.dtype
 
     def astype(self, dtype: DTypeLike) -> "HybridMatrixForInference":
         return HybridMatrixForInference(
@@ -338,12 +338,12 @@ class HybridMatrixForInference(HybridMatrix):
             quantized=self.quantized.astype(dtype),
             adapter=self.adapter.astype(dtype) if self.adapter is not None else None,
             incoherence_signs=self.incoherence_signs,
-            weights=self.weights.astype(dtype),
+            final_weights=self.final_weights.astype(dtype),
         )
 
     @use_out_sharding((None, None))
     def decompress(self) -> Float[Array, "... out_channels in_channels"]:
-        return self.weights.decompress()
+        return self.final_weights.decompress()
 
     def switch_implementation(self, implementation: CompressionImplementation) -> HybridMatrix:
         if implementation == CompressionImplementation.INFERENCE:
@@ -358,7 +358,7 @@ class HybridMatrixForInference(HybridMatrix):
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
     ) -> Float[Array, "... channels"]:
-        return self.weights.dot(
+        return self.final_weights.dot(
             vector,
             keychain=keychain,
             forward_pass_config=forward_pass_config,
