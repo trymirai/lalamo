@@ -1,9 +1,10 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Self
+from typing import Annotated, Self
 
 import jax.numpy as jnp
 import numpy as np
+from annotated_types import Ge
 from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.data.lalamo_completions import LalamoCompletion
@@ -12,22 +13,8 @@ from lalamo.data.lalamo_completions import LalamoCompletion
 @dataclass(frozen=True)
 class FeatureRequest:
     completions: tuple[LalamoCompletion, ...]
-    top_k_logits: int | None = None
-    full_logits: bool = False
-    output_features: bool = False
+    top_k_logits: Annotated[int, Ge(1)] = 128
     layer_indices: tuple[int, ...] = tuple()
-
-    def __post_init__(self) -> None:
-        if self.top_k_logits is not None and self.top_k_logits < 1:
-            raise ValueError("top_k_logits must be positive when requested.")
-
-    @property
-    def logits(self) -> bool:
-        return self.full_logits or self.top_k_logits is not None
-
-    @property
-    def activation_trace(self) -> bool:
-        return self.output_features or bool(self.layer_indices)
 
 
 @dataclass(frozen=True)
@@ -53,8 +40,6 @@ class LalamoCompletionBatch:
         completion_list = list(completions)
         if not completion_list:
             raise ValueError("completion batch must not be empty.")
-        if any(not completion.prefix_token_ids for completion in completion_list):
-            raise ValueError("prefix_token_ids must not be empty for teacher-forced extraction.")
 
         prefix_sequences = [completion.prefix_token_ids for completion in completion_list]
         completion_sequences = [completion.completion_token_ids for completion in completion_list]
@@ -99,11 +84,9 @@ class LalamoCompletionBatch:
 @dataclass(frozen=True)
 class LalamoCompletionFeatures:
     completion_batch: LalamoCompletionBatch
-    target_logits: Float[Array, "batch completion_tokens vocabulary"] | None = None
     target_logsumexp: Float[Array, "batch completion_tokens"] | None = None
     target_top_k_ids: Int[Array, "batch completion_tokens k"] | None = None
     target_top_k_logits: Float[Array, "batch completion_tokens k"] | None = None
-    output_features: Float[Array, "batch completion_tokens hidden"] | None = None
     layer_features: Float[Array, "batch layers completion_tokens hidden"] | None = None
 
 

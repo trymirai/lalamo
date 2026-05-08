@@ -42,13 +42,12 @@ class OnlineCompletionFeatureExtractor:
 
     def extract_features(self, request: FeatureRequest) -> LalamoCompletionFeatures:
         with jax.default_device(self.device):
-            completion_batch = LalamoCompletionBatch.from_completions(
+            batch = LalamoCompletionBatch.from_completions(
                 request.completions,
                 pad_token_id=self.pad_token_id,
                 prompt_padding_multiple=self.prompt_padding_multiple,
                 generation_padding_multiple=self.generation_padding_multiple,
             )
-            batch = self.place_batch_on_device(completion_batch)
             token_positions = jnp.broadcast_to(
                 jnp.arange(batch.input_token_ids.shape[1], dtype=jnp.int32),
                 batch.input_token_ids.shape,
@@ -56,62 +55,39 @@ class OnlineCompletionFeatureExtractor:
             decoder_result = self.model.model(
                 batch.input_token_ids,
                 token_positions,
-                return_activation_trace=request.activation_trace,
+                return_activation_trace=bool(request.layer_indices),
                 lengths_without_padding=batch.input_lengths,
                 forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
                 forward_pass_config=self.forward_pass_config,
             )
             target_logits = gather_target_positions(decoder_result.logits, batch.target_positions)
 
-            target_logsumexp = jax.nn.logsumexp(target_logits, axis=-1) if request.logits else None
-            target_top_k_logits = None
-            target_top_k_ids = None
-            if request.top_k_logits is not None:
-                top_k = min(request.top_k_logits, target_logits.shape[-1])
-                target_top_k_logits, target_top_k_ids = jax.lax.top_k(target_logits, top_k)
+            target_logsumexp = jax.nn.logsumexp(target_logits, axis=-1)
+            top_k = min(request.top_k_logits, target_logits.shape[-1])
+            target_top_k_logits, target_top_k_ids = jax.lax.top_k(target_logits, top_k)
 
-            output_features = None
             layer_features = None
-            if request.activation_trace:
+            if request.layer_indices:
                 activation_trace = decoder_result.activation_trace
                 assert activation_trace is not None
-                if request.output_features:
-                    output_features = gather_target_positions(activation_trace.output_norm, batch.target_positions)
-                if request.layer_indices:
-                    layer_features = jnp.stack(
-                        [
-                            gather_target_positions(
-                                activation_trace.layer_results[layer_index].outputs,
-                                batch.target_positions,
-                            )
-                            for layer_index in self.resolve_layer_indices(request)
-                        ],
-                        axis=1,
-                    )
+                layer_features = jnp.stack(
+                    [
+                        gather_target_positions(
+                            activation_trace.layer_results[layer_index].outputs,
+                            batch.target_positions,
+                        )
+                        for layer_index in self.resolve_layer_indices(request)
+                    ],
+                    axis=1,
+                )
 
             return LalamoCompletionFeatures(
                 completion_batch=batch,
-                target_logits=target_logits if request.full_logits else None,
                 target_logsumexp=target_logsumexp,
                 target_top_k_ids=target_top_k_ids,
                 target_top_k_logits=target_top_k_logits,
-                output_features=output_features,
                 layer_features=layer_features,
             )
-
-    def place_batch_on_device(self, completion_batch: LalamoCompletionBatch) -> LalamoCompletionBatch:
-        device = self.device
-        return LalamoCompletionBatch(
-            prefix_token_ids=jax.device_put(completion_batch.prefix_token_ids, device),
-            prefix_mask=jax.device_put(completion_batch.prefix_mask, device),
-            completion_token_ids=jax.device_put(completion_batch.completion_token_ids, device),
-            completion_mask=jax.device_put(completion_batch.completion_mask, device),
-            input_token_ids=jax.device_put(completion_batch.input_token_ids, device),
-            input_lengths=jax.device_put(completion_batch.input_lengths, device),
-            target_token_ids=jax.device_put(completion_batch.target_token_ids, device),
-            target_mask=jax.device_put(completion_batch.target_mask, device),
-            target_positions=jax.device_put(completion_batch.target_positions, device),
-        )
 
     def resolve_layer_indices(self, request: FeatureRequest) -> tuple[int, ...]:
         num_layers = len(self.model.model.transformer.layers)
