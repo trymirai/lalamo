@@ -7,7 +7,7 @@ import numpy as np
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.data.utils import get_prefixes_ending_in_user_message
 from lalamo.message_processor import Message
-from lalamo.models import GenerationTraceConfig, LanguageModel
+from lalamo.models import GenerationConfig, GenerationTraceConfig, LanguageModel
 from lalamo.models.common import InferenceConfig
 
 
@@ -25,6 +25,7 @@ def inference_collect_traces(
     max_input_length: int = 1024,
     max_output_length: int = 1024,
     tokens_to_generate: int | None = None,
+    generation_config: GenerationConfig | None = None,
     progress_callback: Callable[[CollectTracesEvent], None] | None = None,
 ) -> Iterable[LalamoCompletion]:
     prefixes = chain.from_iterable(map(get_prefixes_ending_in_user_message, conversations))
@@ -47,6 +48,7 @@ def inference_collect_traces(
     for idx, generated in enumerate(
         model.generate_tokens_many(
             filtered_prefixes,
+            generation_config=generation_config,
             inference_config=config,
             generation_trace_config=trace_config,
         ),
