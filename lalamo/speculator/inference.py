@@ -11,6 +11,7 @@ from lalamo.models.common import InferenceConfig
 
 class CollectTracesEvent(NamedTuple):
     sequences_processed: int
+    total_sequences: int
     tokens_generated: int
 
 
@@ -27,6 +28,7 @@ def inference_collect_traces(
     tokenized_prefixes = map(model.message_processor.tokenize_request, prefixes)
     filtered_prefixes = filter(lambda conv: len(conv) <= max_input_length, tokenized_prefixes)
     filtered_prefixes = list(filtered_prefixes)  # eagerly materialize the prompts into RAM
+    total_sequences = len(filtered_prefixes)
 
     config = InferenceConfig(
         max_output_length=max_output_length,
@@ -59,7 +61,7 @@ def inference_collect_traces(
         )
 
         if progress_callback is not None:
-            progress_callback(CollectTracesEvent(idx + 1, tokens_generated))
+            progress_callback(CollectTracesEvent(idx + 1, total_sequences, tokens_generated))
 
         if tokens_to_generate is not None and tokens_generated >= tokens_to_generate:
             break

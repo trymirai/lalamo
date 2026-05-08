@@ -386,7 +386,7 @@ class CollectTracesCallbacks:
     def finished_loading_dataset(self) -> None:
         pass
 
-    def inference_progress(self, tokens_generated: int) -> None:
+    def inference_progress(self, event: CollectTracesEvent) -> None:
         pass
 
     def finished_inference(self) -> None:
@@ -427,7 +427,7 @@ def collect_traces(
     callbacks.finished_loading_dataset()
 
     def progress_callback(event: CollectTracesEvent) -> None:
-        callbacks.inference_progress(event.tokens_generated)
+        callbacks.inference_progress(event)
 
     traces = inference_collect_traces(
         model,

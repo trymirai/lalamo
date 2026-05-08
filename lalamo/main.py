@@ -36,6 +36,7 @@ from typer import Argument, Context, Exit, Option, Typer
 from lalamo.audio.utils import play_mono_audio
 from lalamo.commands import (
     CollectTracesCallbacks,
+    CollectTracesEvent,
     ConversionCallbacks,
     EstimateBatchsizeCallbacks,
     GenerateRepliesCallbacks,
@@ -969,12 +970,15 @@ class CliCollectTracesCallbacks(CollectTracesCallbacks):
         self.live.update(self.progress, refresh=True)
         self.inference_task = self.progress.add_task(
             "🔮 [cyan]Running inference...[/cyan]",
-            total=self.num_tokens_to_generate,
         )
 
-    def inference_progress(self, tokens_generated: int) -> None:
+    def inference_progress(self, event: CollectTracesEvent) -> None:
         assert self.inference_task is not None
-        self.progress.update(self.inference_task, completed=tokens_generated)
+        self.progress.update(
+            self.inference_task,
+            completed=event.sequences_processed,
+            total=event.total_sequences,
+        )
 
     def finished_inference(self) -> None:
         assert self.inference_task is not None
