@@ -24,7 +24,7 @@ def _time_us(fn: Callable[..., jax.Array], args: tuple[jax.Array, ...], *, warmu
     return (time.perf_counter() - start) * 1_000_000 / iters
 
 
-def _mlx_packed(
+def _mlx_routed(
     vectors: jax.Array,
     packed_weights: jax.Array,
     scales: jax.Array,
@@ -44,7 +44,7 @@ def _mlx_materialize(
     return jnp.einsum("bc,rc->br", vectors, weights)
 
 
-def _awq_packed(
+def _awq_routed(
     vectors: jax.Array,
     packed_weights: jax.Array,
     scales: jax.Array,
@@ -76,7 +76,7 @@ def _mlx_paths(matrix: MLXMatrixForInference, vectors: jax.Array) -> dict[str, B
 
     return {
         "direct_cute": (_call_mlx, (vectors, packed_weights, scales, biases)),
-        "packed_cute": (_mlx_packed, (vectors, packed_weights, scales, biases, dense_weights)),
+        "routed_public": (_mlx_routed, (vectors, packed_weights, scales, biases, dense_weights)),
         "cached_dense": (_dense, (vectors, dense_weights)),
         "materialize_dense": (_mlx_materialize, (vectors, packed_weights, scales, biases)),
     }
@@ -90,7 +90,7 @@ def _awq_paths(matrix: AWQMatrixForInference, vectors: jax.Array) -> dict[str, B
 
     return {
         "direct_cute": (_call_awq, (vectors, packed_weights, scales, packed_zero_points)),
-        "packed_cute": (_awq_packed, (vectors, packed_weights, scales, packed_zero_points, dense_weights)),
+        "routed_public": (_awq_routed, (vectors, packed_weights, scales, packed_zero_points, dense_weights)),
         "cached_dense": (_dense, (vectors, dense_weights)),
         "materialize_dense": (_awq_materialize, (vectors, packed_weights, scales, packed_zero_points)),
     }
@@ -129,7 +129,7 @@ def main() -> None:
     assert isinstance(awq_matrix, AWQMatrixForInference)
 
     print(f"backend={jax.default_backend()} shape={args.rows}x{args.cols} group={args.group_size} dtype={args.dtype}")
-    print("format,batch,direct_cute_us,packed_cute_us,cached_dense_us,materialize_dense_us,best_us,best_path")
+    print("format,batch,direct_cute_us,routed_public_us,cached_dense_us,materialize_dense_us,best_us,best_path")
     for batch in args.batches:
         batch_vectors = vectors[:batch]
         for name, paths in (
@@ -142,7 +142,7 @@ def main() -> None:
             }
             best_path = min(times, key=times.__getitem__)
             print(
-                f"{name},{batch},{times['direct_cute']:.2f},{times['packed_cute']:.2f},{times['cached_dense']:.2f},"
+                f"{name},{batch},{times['direct_cute']:.2f},{times['routed_public']:.2f},{times['cached_dense']:.2f},"
                 f"{times['materialize_dense']:.2f},{times[best_path]:.2f},{best_path}",
                 flush=True,
             )
