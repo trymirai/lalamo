@@ -113,7 +113,7 @@ type FeatureQueueItem = LalamoCompletionFeatures | FeatureQueueEnd | FeatureQueu
 
 
 @dataclass(frozen=True)
-class InMemoryCompletionFeatureQueue:
+class FeatureQueue:
     extractor: OnlineCompletionFeatureExtractor
     max_batches: int
 
