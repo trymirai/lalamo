@@ -37,16 +37,15 @@ def inference_collect_traces(
     )
     tokens_generated = 0
     sequences_processed = 0
+    key = jax.random.key(0)
 
     for prefix_batch in batched(filtered_prefixes, batch_size):
-        keys = tuple(
-            jax.random.fold_in(jax.random.key(0), sequences_processed + index)
-            for index in range(len(prefix_batch))
-        )
+        keys = jax.random.split(key, len(prefix_batch) + 1)
+        key = keys[0]
         generated_batch = model.generate_tokens_many(
             prefix_batch,
             inference_config=config,
-            keys=keys,
+            keys=keys[1:],
         )
         for prefix_token_ids, generated in zip(prefix_batch, generated_batch, strict=True):
             token_ids = generated.token_ids.tolist()
