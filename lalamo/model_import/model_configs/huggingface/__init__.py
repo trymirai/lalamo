@@ -9,6 +9,7 @@ from .llama import HFLlamaConfig
 from .llamba import HFLlambaConfig
 from .mistral import HFMistralConfig
 from .modern_bert import ModernBERTConfig
+from .neutts import HFNeuTTSConfig
 from .qwen2 import HFQwen2Config
 from .qwen3 import HFQwen3Config
 from .qwen3_5 import HFQwen35Config
@@ -26,6 +27,7 @@ __all__ = [
     "HFLlamaConfig",
     "HFLlambaConfig",
     "HFMistralConfig",
+    "HFNeuTTSConfig",
     "HFQwen2Config",
     "HFQwen3Config",
     "HFQwen3NextConfig",

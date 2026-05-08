@@ -4,7 +4,6 @@ from pathlib import Path
 import jax.numpy as jnp
 
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
-from lalamo.model_registry import ModelRegistry
 from lalamo.modules.rope import LinearScalingRoPEConfig
 
 
@@ -59,10 +58,3 @@ def test_neutts_nano_config_uses_dtype_and_linear_rope(tmp_path: Path) -> None:
     assert config.default_precision == jnp.dtype("float32")
     assert isinstance(rope_config, LinearScalingRoPEConfig)
     assert rope_config.scaling_factor == 32.0
-
-
-def test_neutts_nano_is_registered_as_llama_backbone() -> None:
-    spec = ModelRegistry.build(allow_third_party_plugins=False).repo_to_model["neuphonic/neutts-nano"]
-
-    assert spec.config_type is HFLlamaConfig
-    assert spec.family == "NeuTTS Nano"

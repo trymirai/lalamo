@@ -33,6 +33,8 @@ from rich.prompt import Confirm
 from rich.table import Table
 from typer import Argument, Context, Exit, Option, Typer
 
+from lalamo.audio.neutts import build_voice_prompt
+from lalamo.audio.tts_message_processor import TTSMessage, VoicePrompt
 from lalamo.audio.utils import play_mono_audio
 from lalamo.commands import (
     CollectTracesCallbacks,
@@ -64,7 +66,7 @@ from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.model_registry import ModelRegistry
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
-from lalamo.models.tts_model import TTSGenerator, TTSMessage
+from lalamo.models.tts_model import TTSGenerator
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
 
@@ -119,6 +121,13 @@ def _error(message: str) -> None:
     panel = Panel(message, box=box.ROUNDED, title="Error", title_align="left", border_style="red")
     err_console.print(panel)
     raise Exit(1)
+
+
+def _voice_prompt_from_cli_options(
+    reference_audio_path: Path | None,
+    reference_text: str | None,
+) -> VoicePrompt | None:
+    return build_voice_prompt(reference_audio_path, reference_text)
 
 
 @app.command(help="Chat with a converted model.")
@@ -345,7 +354,24 @@ def tts(
             help="Render synthesized speech into default audio interface.",
         ),
     ] = False,
+    ref_audio: Annotated[
+        Path | None,
+        Option(
+            help="Reference WAV file for voice-prompted TTS models.",
+        ),
+    ] = None,
+    ref_text: Annotated[
+        str | None,
+        Option(
+            help="Transcript matching --ref-audio for voice-prompted TTS models.",
+        ),
+    ] = None,
 ) -> None:
+    try:
+        voice_prompt = _voice_prompt_from_cli_options(ref_audio, ref_text)
+    except ValueError as e:
+        _error(str(e))
+
     if output_file is None:
         output_file = Path.cwd() / "generated_speech.wav"
         console.print(f"Will save output to file {output_file}")
@@ -367,7 +393,12 @@ def tts(
         if user_text == "":
             continue
 
-        user_message = TTSMessage(content=user_text, speaker_id="speaker:0", style="interleave")
+        user_message = TTSMessage(
+            content=user_text,
+            speaker_id="speaker:0",
+            style="interleave",
+            voice_prompt=voice_prompt,
+        )
 
         tts_result = model.generate_speech([user_message])
 

@@ -28,10 +28,12 @@ from lalamo.models import (
     GenerationConfig,
     LanguageModel,
     LanguageModelConfig,
+    NeuTTSGenerator,
     TTSGenerator,
     TTSGeneratorConfig,
 )
 from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
+from lalamo.modules.audio.neutts import NeuTTSTextDecoderConfig
 from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
@@ -503,7 +505,15 @@ def _import_tts_model(
         ),
         message_processor_config=message_processor.config,
     )
-    tts_generator = TTSGenerator(tts_generator_config, tts_model, message_processor)
+    tts_generator_type = (
+        NeuTTSGenerator
+        if isinstance(
+            tts_generator_config.tts_config.text_decoder_config,
+            NeuTTSTextDecoderConfig,
+        )
+        else TTSGenerator
+    )
+    tts_generator = tts_generator_type(tts_generator_config, tts_model, message_processor)
 
     return (tts_generator, tts_generator_config)
 

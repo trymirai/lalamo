@@ -12,6 +12,12 @@ from jaxtyping import DTypeLike, Float, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 
 from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
+from lalamo.audio.neutts import (
+    build_neutts_prompt_text,
+    parse_neutts_speech_tokens,
+    phonemize_neutts_text,
+    require_neutts_message,
+)
 from lalamo.audio.tts_message_processor import (
     TTSMessage,
     TTSMessageProcessor,
@@ -28,6 +34,11 @@ from lalamo.modules.audio.fishaudio.fishaudio_consts import (
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
     FishAudioTextDecoder,
 )
+from lalamo.modules.audio.neutts import (
+    NeuCodecAudioDecoder,
+    NeuTTSTextDecoder,
+    NeuTTSTextDecoderConfig,
+)
 from lalamo.modules.audio.text_to_speech import (
     DEFAULT_TTS_REPETITION_PENALTY,
     DEFAULT_TTS_SAMPLING_POLICY,
@@ -38,7 +49,7 @@ from lalamo.sampling import SamplingPolicy
 
 from .common import ParameterTree, unflatten_parameters
 
-__all__ = ["TTSGenerationResult", "TTSGenerator", "TTSGeneratorConfig"]
+__all__ = ["NeuTTSGenerator", "TTSGenerationResult", "TTSGenerator", "TTSGeneratorConfig"]
 
 
 @dataclass(frozen=True)
@@ -142,7 +153,10 @@ class TTSGenerator(eqx.Module):
             model = config.tts_config.empty().import_weights(weights)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = TTSMessageProcessor(config.message_processor_config, tokenizer)
-        return TTSGenerator(
+        generator_type = (
+            NeuTTSGenerator if isinstance(config.tts_config.text_decoder_config, NeuTTSTextDecoderConfig) else cls
+        )
+        return generator_type(
             config=config,
             tts_model=model,
             message_processor=message_processor,
@@ -183,4 +197,72 @@ class FishAudioTTSGenerator(TTSGenerator):
             output_channels=1,
             bitwidth=16,
             encoding=AudioEncoding.PCM,
+        )
+
+
+class NeuTTSGenerator(TTSGenerator):
+    def decode_text(
+        self,
+        text_tokens: Int[Array, "batch sequence"],
+        sampling_policy: SamplingPolicy | None = None,
+        repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,  # noqa: ARG002, reserved for API compatibility
+        random_key: PRNGKeyArray | None = None,
+    ) -> Int[Array, " speech_tokens"]:
+        assert isinstance(self.tts_model.text_decoder, NeuTTSTextDecoder)
+
+        generated_token_ids = self.tts_model.text_decoder.decode_utterance(
+            text_tokens,
+            sampling_policy=sampling_policy,
+            key=random_key,
+        )
+        generated_text = self.message_processor.detokenize(generated_token_ids.tolist())
+        speech_tokens = parse_neutts_speech_tokens(generated_text)
+        return jnp.asarray(speech_tokens, dtype=jnp.int32)
+
+    def decode_audio(self, semantic_tokens: Int[Array, " speech_tokens"]) -> Float[Array, " audio_samples"]:
+        assert isinstance(self.tts_model.audio_decoder, NeuCodecAudioDecoder)
+        return self.tts_model.audio_decoder.audio_from_codes(semantic_tokens)
+
+    def generate_speech(
+        self,
+        messages: Iterable[TTSMessage],
+        sampling_policy: SamplingPolicy | None = None,
+        repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,
+        random_key: PRNGKeyArray | None = None,
+    ) -> TTSGenerationResult:
+        assert isinstance(self.tts_model.text_decoder, NeuTTSTextDecoder)
+        assert isinstance(self.tts_model.audio_decoder, NeuCodecAudioDecoder)
+
+        message = require_neutts_message(messages)
+        assert message.voice_prompt is not None
+
+        reference_codes = self.tts_model.audio_decoder.encode_reference_audio(
+            message.voice_prompt.reference_audio_path,
+        )
+        reference_phones = phonemize_neutts_text(
+            message.voice_prompt.reference_text,
+            language_code=self.tts_model.text_decoder.config.language_code,
+        )
+        input_phones = phonemize_neutts_text(
+            message.content,
+            language_code=self.tts_model.text_decoder.config.language_code,
+        )
+        prompt_text = build_neutts_prompt_text(
+            input_phones=input_phones,
+            reference_phones=reference_phones,
+            reference_codes=reference_codes.tolist(),
+        )
+        prompt_tokens = jnp.asarray(self.message_processor.tokenize_text(prompt_text), dtype=jnp.int32)[None, :]
+        semantic_tokens = self.decode_text(
+            prompt_tokens,
+            sampling_policy=sampling_policy,
+            repetition_penalty=repetition_penalty,
+            random_key=random_key,
+        )
+        audio_features = self.decode_audio(semantic_tokens)
+        audio_waveform = self.generate_waveform(audio_features)
+
+        return TTSGenerationResult(
+            audio=np.array(audio_waveform),
+            audio_params=self.get_generated_audio_params(),
         )

@@ -1,7 +1,7 @@
 from .classifier import ClassifierModel, ClassifierModelConfig
 from .common import BatchSizeInfo, BatchSizesComputedEvent
 from .language_model import GenerationConfig, GenerationTraceConfig, LanguageModel, LanguageModelConfig
-from .tts_model import TTSGenerator, TTSGeneratorConfig
+from .tts_model import NeuTTSGenerator, TTSGenerator, TTSGeneratorConfig
 
 __all__ = [
     "BatchSizeInfo",
@@ -12,6 +12,7 @@ __all__ = [
     "GenerationTraceConfig",
     "LanguageModel",
     "LanguageModelConfig",
+    "NeuTTSGenerator",
     "TTSGenerator",
     "TTSGeneratorConfig",
 ]

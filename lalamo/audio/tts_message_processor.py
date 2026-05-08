@@ -1,6 +1,7 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
+from pathlib import Path
 from typing import TypedDict
 
 from jinja2 import Template
@@ -9,10 +10,8 @@ from tokenizers import Tokenizer
 
 @dataclass(frozen=True)
 class VoicePrompt:
-    """
-    Current class is reserved for future usage of audio prompts
-    to condition style of generated audio
-    """
+    reference_audio_path: Path | str
+    reference_text: str
 
 
 @dataclass(frozen=True)
@@ -20,6 +19,7 @@ class TTSMessage:
     content: str
     speaker_id: str
     style: str
+    voice_prompt: VoicePrompt | None = None
 
 
 class TTSRequest(TypedDict):

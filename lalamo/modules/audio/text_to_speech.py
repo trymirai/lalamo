@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Self
+from typing import Self, cast
 
 import jax
 from jaxtyping import Array, DTypeLike, PRNGKeyArray
@@ -14,6 +14,8 @@ from .fishaudio.fishaudio_audio_decoding import DescriptAudioCodecConfig
 from .fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig
 from .nanocodec.audio_decoding import NanoCodecConfig
 from .nanocodec.stub_text_decoder import StubTextDecoderConfig
+from .neutts.audio_decoding import NeuCodecAudioDecoderConfig
+from .neutts.text_decoding import NeuTTSTextDecoderConfig
 from .text_decoder import TTSTextDecoder
 from .vocoders import Vocoder, VocoderConfig
 
@@ -21,10 +23,10 @@ DEFAULT_TTS_SAMPLING_POLICY: SamplingPolicy = CompositePolicy((TemperaturePolicy
 DEFAULT_TTS_REPETITION_PENALTY: float = 1.1
 
 
-TTSAudioDecoderConfig = DescriptAudioCodecConfig | NanoCodecConfig
+TTSAudioDecoderConfig = DescriptAudioCodecConfig | NanoCodecConfig | NeuCodecAudioDecoderConfig
 register_config_union(TTSAudioDecoderConfig)
 
-TTSTextDecoderConfig = FishAudioTextDecoderConfig | StubTextDecoderConfig
+TTSTextDecoderConfig = FishAudioTextDecoderConfig | StubTextDecoderConfig | NeuTTSTextDecoderConfig
 register_config_union(TTSTextDecoderConfig)
 
 
@@ -67,8 +69,11 @@ class TTSModel(LalamoModule[TTSConfig]):
         weights: ParameterTree[Array],
     ) -> Self:
         assert isinstance(weights, Mapping)
+        audio_decoder_weights = (
+            require_tree(weights["audio_decoder"]) if "audio_decoder" in weights else cast("ParameterTree[Array]", {})
+        )
         return replace(
             self,
             text_decoder=self.text_decoder.import_weights(require_tree(weights["text_decoder"])),
-            audio_decoder=self.audio_decoder.import_weights(require_tree(weights["audio_decoder"])),
+            audio_decoder=self.audio_decoder.import_weights(audio_decoder_weights),
         )
