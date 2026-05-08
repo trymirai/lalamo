@@ -11,6 +11,7 @@ from lalamo.data.lalamo_completions import LalamoCompletion
 
 @dataclass(frozen=True)
 class FeatureRequest:
+    completions: tuple[LalamoCompletion, ...]
     top_k_logits: int | None = None
     full_logits: bool = False
     output_features: bool = False

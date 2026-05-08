@@ -1,6 +1,7 @@
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from itertools import batched
+from queue import Full, Queue
+from threading import Event, Thread
 
 import jax
 import jax.numpy as jnp
@@ -11,7 +12,6 @@ from lalamo.data.completion_features import (
     LalamoCompletionBatch,
     LalamoCompletionFeatures,
 )
-from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.models.language_model import ForwardPassConfig, LanguageModel
 from lalamo.modules import ForwardPassMode
 
@@ -20,7 +20,6 @@ from lalamo.modules import ForwardPassMode
 class OnlineCompletionFeatureExtractor:
     model: LanguageModel
     device_id: int
-    request: FeatureRequest
     pad_token_id: int = 0
     prompt_padding_multiple: int = 128
     generation_padding_multiple: int = 512
@@ -35,25 +34,20 @@ class OnlineCompletionFeatureExtractor:
 
     def iter_features(
         self,
-        completions: Iterable[LalamoCompletion],
-        batch_size: int,
+        requests: Iterable[FeatureRequest],
     ) -> Iterator[LalamoCompletionFeatures]:
-        if batch_size < 1:
-            raise ValueError("batch_size must be positive.")
-
         with jax.default_device(self.device):
-            for completion_batch in batched(completions, batch_size):
-                yield self.extract_features(
-                    LalamoCompletionBatch.from_completions(
-                        completion_batch,
-                        pad_token_id=self.pad_token_id,
-                        prompt_padding_multiple=self.prompt_padding_multiple,
-                        generation_padding_multiple=self.generation_padding_multiple,
-                    ),
-                )
+            for request in requests:
+                yield self.extract_features(request)
 
-    def extract_features(self, completion_batch: LalamoCompletionBatch) -> LalamoCompletionFeatures:
+    def extract_features(self, request: FeatureRequest) -> LalamoCompletionFeatures:
         with jax.default_device(self.device):
+            completion_batch = LalamoCompletionBatch.from_completions(
+                request.completions,
+                pad_token_id=self.pad_token_id,
+                prompt_padding_multiple=self.prompt_padding_multiple,
+                generation_padding_multiple=self.generation_padding_multiple,
+            )
             batch = self.place_batch_on_device(completion_batch)
             token_positions = jnp.broadcast_to(
                 jnp.arange(batch.input_token_ids.shape[1], dtype=jnp.int32),
@@ -62,42 +56,42 @@ class OnlineCompletionFeatureExtractor:
             decoder_result = self.model.model(
                 batch.input_token_ids,
                 token_positions,
-                return_activation_trace=self.request.activation_trace,
+                return_activation_trace=request.activation_trace,
                 lengths_without_padding=batch.input_lengths,
                 forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
                 forward_pass_config=self.forward_pass_config,
             )
             target_logits = gather_target_positions(decoder_result.logits, batch.target_positions)
 
-            target_logsumexp = jax.nn.logsumexp(target_logits, axis=-1) if self.request.logits else None
+            target_logsumexp = jax.nn.logsumexp(target_logits, axis=-1) if request.logits else None
             target_top_k_logits = None
             target_top_k_ids = None
-            if self.request.top_k_logits is not None:
-                top_k = min(self.request.top_k_logits, target_logits.shape[-1])
+            if request.top_k_logits is not None:
+                top_k = min(request.top_k_logits, target_logits.shape[-1])
                 target_top_k_logits, target_top_k_ids = jax.lax.top_k(target_logits, top_k)
 
             output_features = None
             layer_features = None
-            if self.request.activation_trace:
+            if request.activation_trace:
                 activation_trace = decoder_result.activation_trace
                 assert activation_trace is not None
-                if self.request.output_features:
+                if request.output_features:
                     output_features = gather_target_positions(activation_trace.output_norm, batch.target_positions)
-                if self.request.layer_indices:
+                if request.layer_indices:
                     layer_features = jnp.stack(
                         [
                             gather_target_positions(
                                 activation_trace.layer_results[layer_index].outputs,
                                 batch.target_positions,
                             )
-                            for layer_index in self.resolve_layer_indices()
+                            for layer_index in self.resolve_layer_indices(request)
                         ],
                         axis=1,
                     )
 
             return LalamoCompletionFeatures(
                 completion_batch=batch,
-                target_logits=target_logits if self.request.full_logits else None,
+                target_logits=target_logits if request.full_logits else None,
                 target_logsumexp=target_logsumexp,
                 target_top_k_ids=target_top_k_ids,
                 target_top_k_logits=target_top_k_logits,
@@ -119,14 +113,89 @@ class OnlineCompletionFeatureExtractor:
             target_positions=jax.device_put(completion_batch.target_positions, device),
         )
 
-    def resolve_layer_indices(self) -> tuple[int, ...]:
+    def resolve_layer_indices(self, request: FeatureRequest) -> tuple[int, ...]:
         num_layers = len(self.model.model.transformer.layers)
         resolved = tuple(
-            layer_index if layer_index >= 0 else num_layers + layer_index for layer_index in self.request.layer_indices
+            layer_index if layer_index >= 0 else num_layers + layer_index for layer_index in request.layer_indices
         )
         if any(layer_index < 0 or layer_index >= num_layers for layer_index in resolved):
             raise ValueError("layer_indices index out of range.")
         return tuple(sorted(set(resolved)))
+
+
+@dataclass(frozen=True)
+class FeatureQueueEnd:
+    pass
+
+
+@dataclass(frozen=True)
+class FeatureQueueError:
+    error: Exception
+
+
+type FeatureQueueItem = LalamoCompletionFeatures | FeatureQueueEnd | FeatureQueueError
+
+
+@dataclass(frozen=True)
+class InMemoryCompletionFeatureQueue:
+    extractor: OnlineCompletionFeatureExtractor
+    max_batches: int
+
+    def iter_features(
+        self,
+        requests: Iterable[FeatureRequest],
+    ) -> Iterator[LalamoCompletionFeatures]:
+        assert self.max_batches > 0
+        queue: Queue[FeatureQueueItem] = Queue(maxsize=self.max_batches)
+        stop_event = Event()
+        worker = Thread(
+            target=self.run_worker,
+            args=(requests, queue, stop_event),
+            daemon=True,
+        )
+        worker.start()
+
+        try:
+            while True:
+                item = queue.get()
+                match item:
+                    case LalamoCompletionFeatures():
+                        yield item
+                    case FeatureQueueEnd():
+                        break
+                    case FeatureQueueError(error):
+                        raise error
+        finally:
+            stop_event.set()
+
+    def run_worker(
+        self,
+        requests: Iterable[FeatureRequest],
+        queue: Queue[FeatureQueueItem],
+        stop_event: Event,
+    ) -> None:
+        try:
+            for features in self.extractor.iter_features(requests):
+                if stop_event.is_set():
+                    return
+                put_feature_queue_item(queue, features, stop_event)
+            put_feature_queue_item(queue, FeatureQueueEnd(), stop_event)
+        except Exception as error:  # noqa: BLE001
+            put_feature_queue_item(queue, FeatureQueueError(error), stop_event)
+
+
+def put_feature_queue_item(
+    queue: Queue[FeatureQueueItem],
+    item: FeatureQueueItem,
+    stop_event: Event,
+) -> None:
+    while not stop_event.is_set():
+        try:
+            queue.put(item, timeout=0.1)
+        except Full:
+            pass
+        else:
+            return
 
 
 def gather_target_positions(
