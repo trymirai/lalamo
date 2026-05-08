@@ -1012,11 +1012,11 @@ def collect_traces(
     max_input_length: Annotated[
         int,
         Option(help="Filter prompts that have more than this number of tokens in context"),
-    ] = 1024,
+    ] = 4096,
     max_output_length: Annotated[
         int,
         Option(help="Maximum number of tokens to generate in one completion"),
-    ] = 1024,
+    ] = 4096,
     batch_size: Annotated[
         int,
         Option(help="Number of sequences in one batch"),

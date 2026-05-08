@@ -20,7 +20,7 @@ def inference_collect_traces(
     conversations: Iterable[Iterable[Message]],
     batch_size: int = 1,
     max_input_length: int = 1024,
-    max_output_length: int = 1024,
+    max_output_length: int = 4096,
     tokens_to_generate: int | None = None,
     progress_callback: Callable[[CollectTracesEvent], None] | None = None,
 ) -> Iterable[LalamoCompletion]:

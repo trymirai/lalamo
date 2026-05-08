@@ -327,7 +327,7 @@ def estimate_batchsize(
     model_path: Path,
     mem: int,
     max_input_length: int = 1024,
-    max_output_length: int = 1024,
+    max_output_length: int = 4096,
     callbacks_type: Callable[
         [
             Path,
@@ -398,7 +398,7 @@ def collect_traces(
     dataset_path: Path,
     output_path: Path,
     max_input_length: int = 1024,
-    max_output_length: int = 1024,
+    max_output_length: int = 4096,
     batch_size: int = 1,
     num_tokens_to_generate: int | None = None,
     callbacks_type: Callable[..., CollectTracesCallbacks] = CollectTracesCallbacks,
