@@ -97,4 +97,20 @@ LLAMA32 = [
     ),
 ]
 
-LLAMA_MODELS = LLAMA31 + LLAMA32
+NEUTTS_NANO_BACKBONE_CHAT_TEMPLATE = "{% for message in messages %}{{ message.content }}{% endfor %}"
+
+NEUTTS_NANO_MODELS = [
+    ModelSpec(
+        vendor="Neuphonic",
+        family="NeuTTS Nano",
+        name="NeuTTS Nano",
+        size="0.23B",
+        quantization=None,
+        repo="neuphonic/neutts-nano",
+        config_type=HFLlamaConfig,
+        configs=ConfigMap(chat_template=NEUTTS_NANO_BACKBONE_CHAT_TEMPLATE),
+        use_cases=tuple(),
+    ),
+]
+
+LLAMA_MODELS = LLAMA31 + LLAMA32 + NEUTTS_NANO_MODELS

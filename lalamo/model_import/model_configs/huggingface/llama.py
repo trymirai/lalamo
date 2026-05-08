@@ -2,6 +2,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
+import jax.numpy as jnp
 from jaxtyping import DTypeLike
 
 from lalamo.modules import (
@@ -10,6 +11,7 @@ from lalamo.modules import (
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
+    LinearScalingRoPEConfig,
     LlamaRoPEConfig,
     MLXQuantizedLinearConfig,
     MLXQuantizedTiedEmbeddingConfig,
@@ -51,8 +53,13 @@ class YarnRopeScalingConfig:
 
 
 @dataclass(frozen=True)
+class LinearRopeScalingConfig:
+    factor: float
+    rope_type: Literal["linear"]
+
+
+@dataclass(frozen=True)
 class HFLlamaConfig(HuggingFaceLMConfig):
-    torch_dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[Literal["LlamaForCausalLM"]]
     attention_bias: bool
     attention_dropout: float
@@ -70,16 +77,25 @@ class HFLlamaConfig(HuggingFaceLMConfig):
     num_key_value_heads: int
     pretraining_tp: int
     rms_norm_eps: float
-    rope_scaling: LlamaRopeScalingConfig | YarnRopeScalingConfig | None
+    rope_scaling: LlamaRopeScalingConfig | YarnRopeScalingConfig | LinearRopeScalingConfig | None
     rope_theta: float
     tie_word_embeddings: bool
     transformers_version: str
     use_cache: bool
     vocab_size: int
     head_dim: int | None = None
+    torch_dtype: Literal["bfloat16", "float16", "float32"] | None = None
+    dtype: Literal["bfloat16", "float16", "float32"] | None = None
 
     quantization: QuantizationConfigType = None
     quantization_config: QuantizationConfigType = None
+
+    @property
+    def default_precision(self) -> DTypeLike:
+        assert self.dtype is not None or self.torch_dtype is not None, (
+            "at least one of dtype or torch_dtype must be specified"
+        )
+        return jnp.dtype(self.dtype or self.torch_dtype)
 
     def to_decoder_config(
         self,
@@ -149,6 +165,14 @@ class HFLlamaConfig(HuggingFaceLMConfig):
                 original_context_length=self.rope_scaling.original_max_position_embeddings,
                 low_frequency_factor=self.rope_scaling.low_freq_factor,
                 high_frequency_factor=self.rope_scaling.high_freq_factor,
+                head_dim=self.head_dim or self.hidden_size // self.num_attention_heads,
+            )
+        elif isinstance(self.rope_scaling, LinearRopeScalingConfig):
+            rope_config = LinearScalingRoPEConfig(
+                precision=activation_precision,
+                base=self.rope_theta,
+                max_sequence_length=context_length or self.max_position_embeddings,
+                scaling_factor=self.rope_scaling.factor,
                 head_dim=self.head_dim or self.hidden_size // self.num_attention_heads,
             )
         else:
