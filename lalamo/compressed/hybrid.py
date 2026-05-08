@@ -7,8 +7,10 @@ import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.compressed.hadamard import hadamard_transform
+from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, field
-from lalamo.utils.dummy_array import supports_dummy_arrays
+from lalamo.utils.dummy_array import contains_dummy_arrays, dummy_array, supports_dummy_arrays
+from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import use_out_sharding
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -25,6 +27,8 @@ __all__ = [
     "HybridMatrix",
     "HybridSpec",
 ]
+
+_HYBRID_FINAL_CACHE_MIN_OUTPUT_DIM = 10240
 
 
 def _random_incoherence_signs(
@@ -161,12 +165,15 @@ class HybridSpec(WeightMatrixSpec):
         else:
             adapter = None
 
-        return HybridMatrix(
+        matrix = HybridMatrix(
             spec=self,
             quantized=quantized,
             adapter=adapter,
             incoherence_signs=incoherence_signs,
         )
+        if implementation == CompressionImplementation.INFERENCE and _uses_final_cache(output_dim, matrix):
+            return HybridMatrixForInference.from_hybrid(matrix)
+        return matrix
 
 
 class HybridMatrix(WeightMatrix[HybridSpec]):
@@ -213,12 +220,15 @@ class HybridMatrix(WeightMatrix[HybridSpec]):
         adapter = self.adapter
         if adapter is not None:
             adapter = adapter.switch_implementation(implementation)
-        return HybridMatrix(
+        matrix = HybridMatrix(
             spec=self.spec,
             quantized=quantized,
             adapter=adapter,
             incoherence_signs=self.incoherence_signs,
         )
+        if implementation == CompressionImplementation.INFERENCE and _uses_final_cache(matrix.shape[-2], matrix):
+            return HybridMatrixForInference.from_hybrid(matrix)
+        return matrix
 
     def dot(
         self,
@@ -258,3 +268,99 @@ class HybridMatrix(WeightMatrix[HybridSpec]):
                 transposed=transposed,
             )
         return result
+
+
+def _full_precision_cache(matrix: HybridMatrix) -> FullPrecisionMatrix:
+    if contains_dummy_arrays(matrix):
+        weights = dummy_array(matrix.shape, matrix.dtype)
+    else:
+        weights = matrix.decompress()
+    return FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(weights)
+
+
+def _uses_final_cache(output_dim: int, matrix: HybridMatrix) -> bool:
+    has_wrapper_work = matrix.incoherence_signs is not None or matrix.adapter is not None
+    return has_wrapper_work and output_dim >= _HYBRID_FINAL_CACHE_MIN_OUTPUT_DIM
+
+
+class HybridMatrixForInference(HybridMatrix):
+    final_weights: FullPrecisionMatrix = field(trainable=False)
+
+    @classmethod
+    def from_hybrid(cls, matrix: HybridMatrix) -> "HybridMatrixForInference":
+        return cls(
+            spec=matrix.spec,
+            quantized=matrix.quantized,
+            adapter=matrix.adapter,
+            incoherence_signs=matrix.incoherence_signs,
+            final_weights=_full_precision_cache(matrix),
+        )
+
+    def _without_cache(self) -> HybridMatrix:
+        return HybridMatrix(
+            spec=self.spec,
+            quantized=self.quantized,
+            adapter=self.adapter,
+            incoherence_signs=self.incoherence_signs,
+        )
+
+    def export(self) -> ExportResults:
+        return self._without_cache().export()
+
+    def load_exported(
+        self,
+        exported_data: ExportResults,
+        allow_dtype_cast: bool = False,
+        *,
+        prefix: ParameterPath | None = None,
+    ) -> "HybridMatrixForInference":
+        loaded = self._without_cache().load_exported(
+            exported_data,
+            allow_dtype_cast=allow_dtype_cast,
+            prefix=prefix,
+        )
+        return HybridMatrixForInference.from_hybrid(loaded)
+
+    def to_full_precision(self) -> FullPrecisionMatrix:
+        return self.final_weights
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.final_weights.shape
+
+    @property
+    def dtype(self) -> DTypeLike:
+        return self.final_weights.dtype
+
+    def astype(self, dtype: DTypeLike) -> "HybridMatrixForInference":
+        return HybridMatrixForInference(
+            spec=self.spec,
+            quantized=self.quantized.astype(dtype),
+            adapter=self.adapter.astype(dtype) if self.adapter is not None else None,
+            incoherence_signs=self.incoherence_signs,
+            final_weights=self.final_weights.astype(dtype),
+        )
+
+    @use_out_sharding((None, None))
+    def decompress(self) -> Float[Array, "... out_channels in_channels"]:
+        return self.final_weights.decompress()
+
+    def switch_implementation(self, implementation: CompressionImplementation) -> HybridMatrix:
+        if implementation == CompressionImplementation.INFERENCE:
+            return self
+        return self._without_cache().switch_implementation(implementation)
+
+    def dot(
+        self,
+        vector: Float[Array, " channels"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: bool = False,
+    ) -> Float[Array, "... channels"]:
+        return self.final_weights.dot(
+            vector,
+            keychain=keychain,
+            forward_pass_config=forward_pass_config,
+            transposed=transposed,
+        )
