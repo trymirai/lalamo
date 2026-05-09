@@ -125,6 +125,12 @@ markers = [
     "fast: quick smoke tests",
     "benchmark: slow benchmarks that require model downloads (opt-in via -m benchmark)",
 ]
+filterwarnings = [
+    "ignore:datetime\\.datetime\\.utcfromtimestamp\\(\\) is deprecated.*:DeprecationWarning:google\\.protobuf\\.internal\\.well_known_types",
+    "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
+]
 
 [tool.pytest_env]
 JAX_DEBUG_NANS = "True"
