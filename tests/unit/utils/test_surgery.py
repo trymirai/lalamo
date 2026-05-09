@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, DTypeLike, Float
+from jaxtyping import Array, DTypeLike, Float, Key
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, ShardingAxis
@@ -14,10 +14,12 @@ from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
 from lalamo.utils.surgery import load_as, map_nodes_of_type, map_nodes_of_type_with_path, select_nodes_of_type
 from lalamo.weight_matrix import (
+    CompressionImplementation,
     FullPrecisionMatrix,
     FullPrecisionSpec,
     Layout,
     MatmulConfig,
+    Preconditioner,
     ShapeDtypeMatrix,
     ShapeDtypeSpec,
     WeightMatrix,
@@ -27,6 +29,17 @@ from lalamo.weight_matrix import (
 
 @dataclass(frozen=True)
 class SurgeryWeightMatrixSpec(WeightMatrixSpec):
+    def compress(
+        self,
+        weights: Float[Array, "*batch out_channels in_channels"],
+        *,
+        key: Key[Array, ""] | None = None,
+        preconditioner: Preconditioner | None = None,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    ) -> WeightMatrix:
+        del weights, key, preconditioner, implementation
+        raise NotImplementedError
+
     def init(
         self,
         initializer: Initializer,

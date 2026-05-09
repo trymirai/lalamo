@@ -193,6 +193,22 @@ def test_mlx_compress_uses_yaqa_weights_when_preconditioned() -> None:
     _assert_close(result=preconditioned.decompress(), reference=expected.decompress())
 
 
+def test_mlx_compress_maps_batched_preconditioned_weights() -> None:
+    weights = jnp.stack([_preconditioned_weights(), _logical_weights()])
+    input_blocks = jnp.stack([_input_block(), _input_block() + 0.1 * jnp.identity(4, dtype=jnp.float32)])
+    output_blocks = jnp.stack([_output_block(), _output_block() + 0.1 * jnp.identity(4, dtype=jnp.float32)])
+    preconditioner = Preconditioner.init(input_block=input_blocks, output_block=output_blocks)
+    spec = MLXSpec(bits=4, group_size=4)
+
+    def compress_one(weights: jax.Array, preconditioner: Preconditioner) -> jax.Array:
+        return spec.compress(weights, preconditioner=preconditioner).decompress()
+
+    result = spec.compress(weights, preconditioner=preconditioner).decompress()
+    reference = jax.vmap(compress_one)(weights, preconditioner)
+
+    _assert_close(result=result, reference=reference)
+
+
 def test_mlx_compress_rejects_group_size_that_does_not_divide_stored_last_axis() -> None:
     weights = jnp.ones((4, 5), dtype=jnp.float32)
 

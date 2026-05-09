@@ -8,7 +8,7 @@ from typing import ClassVar, Generic, Literal, Self, TypeVar, cast, overload
 import equinox as eqx
 import jax.numpy as jnp
 from cattrs import GenConverter
-from jax import ShapeDtypeStruct, device_put
+from jax import ShapeDtypeStruct
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
@@ -19,7 +19,7 @@ from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.registry_abc import RegistryABC, make_registry_abc_converter
-from lalamo.utils.sharding import make_sharding, reshard_as, use_out_sharding
+from lalamo.utils.sharding import make_sharding, reshard_as, use_out_sharding, with_sharding
 
 __all__ = [
     "CompressionImplementation",
@@ -36,27 +36,28 @@ __all__ = [
 
 
 @eqx.filter_jit
-def sym_to_tril(sym_matrix: Float[Array, "n n"]) -> Float[Array, " n*(n+1)//2"]:
-    tril_indices = jnp.tril_indices_from(sym_matrix)
-    return sym_matrix[tril_indices]
+def sym_to_tril(sym_matrix: Float[Array, "*batch n n"]) -> Float[Array, "*batch n*(n+1)//2"]:
+    *_, num_rows, _ = sym_matrix.shape
+    tril_rows, tril_cols = jnp.tril_indices(num_rows)
+    return sym_matrix[..., tril_rows, tril_cols]
 
 
 @eqx.filter_jit
-def tril_to_sym(tril_vector: Float[Array, " n*(n+1)//2"]) -> Float[Array, "n n"]:
-    (numel,) = tril_vector.shape
+def tril_to_sym(tril_vector: Float[Array, "*batch n*(n+1)//2"]) -> Float[Array, "*batch n n"]:
+    *leading_dims, numel = tril_vector.shape
     num_rows = int(math.sqrt(8 * numel + 1) - 1) // 2
-    result = jnp.empty((num_rows, num_rows), dtype=tril_vector.dtype)
-    tril_rows, tril_cols = jnp.tril_indices_from(result)
-    result = result.at[tril_rows, tril_cols].set(tril_vector)
-    return result.at[tril_cols, tril_rows].set(tril_vector)
+    result = jnp.empty((*leading_dims, num_rows, num_rows), dtype=tril_vector.dtype)
+    tril_rows, tril_cols = jnp.tril_indices(num_rows)
+    result = result.at[..., tril_rows, tril_cols].set(tril_vector)
+    return result.at[..., tril_cols, tril_rows].set(tril_vector)
 
 
 class Preconditioner(eqx.Module):
-    input_block_tril: Float[Array, " input_channels*(input_channels+1)//2"] | None
-    output_block_tril: Float[Array, " output_channels*(output_channels+1)//2"] | None
+    input_block_tril: Float[Array, "*batch input_channels*(input_channels+1)//2"] | None
+    output_block_tril: Float[Array, "*batch output_channels*(output_channels+1)//2"] | None
 
     @property
-    def input_block(self) -> Float[Array, "input_channels input_channels"] | None:
+    def input_block(self) -> Float[Array, "*batch input_channels input_channels"] | None:
         if self.input_block_tril is None:
             return None
         return tril_to_sym(self.input_block_tril)
@@ -64,7 +65,7 @@ class Preconditioner(eqx.Module):
     @property
     def output_block(
         self,
-    ) -> Float[Array, "output_channels output_channels"] | None:
+    ) -> Float[Array, "*batch output_channels output_channels"] | None:
         if self.output_block_tril is None:
             return None
         return tril_to_sym(self.output_block_tril)
@@ -72,8 +73,8 @@ class Preconditioner(eqx.Module):
     @classmethod
     def init(
         cls,
-        input_block: Float[Array, "input_channels input_channels"] | None = None,
-        output_block: Float[Array, "output_channels output_channels"] | None = None,
+        input_block: Float[Array, "*batch input_channels input_channels"] | None = None,
+        output_block: Float[Array, "*batch output_channels output_channels"] | None = None,
     ) -> Self:
         input_block_tril = None
         if input_block is not None:
@@ -145,6 +146,8 @@ class WeightMatrixSpec(RegistryABC):
     def to_json(self) -> JSON:
         return self._converter.unstructure(self)
 
+    @supports_dummy_arrays()
+    @abstractmethod
     def compress(
         self,
         weights: Float[Array, "*components out_channels in_channels"],
@@ -295,7 +298,7 @@ class Layout(StrEnum):
         sharding = make_sharding(self.weight_partition(weights.ndim - 2))
         if self == Layout.INPUT_OUTPUT:
             weights = weights.swapaxes(-1, -2)
-        return device_put(weights, sharding)
+        return with_sharding(weights, sharding)
 
     @supports_dummy_arrays()
     def to_output_input(
@@ -331,7 +334,7 @@ class FullPrecisionSpec(WeightMatrixSpec):
 
     def compress(
         self,
-        weights: Float[Array, "... out_channels in_channels"],
+        weights: Float[Array, "*components out_channels in_channels"],
         *,
         key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,  # noqa: ARG002
@@ -425,7 +428,7 @@ class ShapeDtypeSpec(WeightMatrixSpec):
 
     def compress(
         self,
-        weights: Float[Array, "... out_channels in_channels"],
+        weights: Float[Array, "*components out_channels in_channels"],
         *,
         key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,  # noqa: ARG002

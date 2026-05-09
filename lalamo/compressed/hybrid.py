@@ -162,7 +162,7 @@ class HybridSpec(WeightMatrixSpec):
     @supports_dummy_arrays()
     def compress(
         self,
-        weights: Float[Array, "... out_channels in_channels"],
+        weights: Float[Array, "*batch out_channels in_channels"],
         *,
         key: Key[Array, ""] | None = None,
         preconditioner: Preconditioner | None = None,

@@ -112,6 +112,37 @@ def test_preconditioner_identity_has_no_blocks() -> None:
     assert preconditioner.output_block is None
 
 
+def test_preconditioner_supports_batched_symmetric_blocks() -> None:
+    input_block = jnp.array(
+        [
+            [2.0, -1.0, 0.5],
+            [-1.0, 3.0, 4.0],
+            [0.5, 4.0, 5.0],
+        ],
+        dtype=jnp.float32,
+    )
+    output_block = jnp.array(
+        [
+            [7.0, 2.0],
+            [2.0, 11.0],
+        ],
+        dtype=jnp.float32,
+    )
+    input_blocks = jnp.stack([input_block, input_block + jnp.identity(3, dtype=jnp.float32)])
+    output_blocks = jnp.stack([output_block, output_block + jnp.identity(2, dtype=jnp.float32)])
+
+    preconditioner = Preconditioner.init(input_block=input_blocks, output_block=output_blocks)
+
+    assert preconditioner.input_block_tril is not None
+    assert preconditioner.input_block_tril.shape == (2, 6)
+    assert preconditioner.output_block_tril is not None
+    assert preconditioner.output_block_tril.shape == (2, 3)
+    assert preconditioner.input_block is not None
+    assert preconditioner.output_block is not None
+    _assert_close(result=preconditioner.input_block, reference=input_blocks)
+    _assert_close(result=preconditioner.output_block, reference=output_blocks)
+
+
 def test_only_quantized_specs_expose_block_size_properties() -> None:
     assert isinstance(AWQSpec(bits=4, group_size=2), QuantizedSpec)
     assert isinstance(MLXSpec(bits=4, group_size=2), QuantizedSpec)

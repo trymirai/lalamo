@@ -136,3 +136,29 @@ def test_yaqa_round_weights_single_iteration_returns_rounded_weights_with_expect
     assert result.shape == weights.shape
     assert result.dtype == weights.dtype
     assert bool(jnp.all(result == _round_weights(result)))
+
+
+def test_yaqa_round_weights_runs_under_vmap_with_batched_preconditioners() -> None:
+    weights = jnp.stack([_weights(), _weights() * 0.5])
+    input_blocks = jnp.stack([_input_block(), _positive_definite_block(23)])
+    output_blocks = jnp.stack([_output_block(), _positive_definite_block(29)])
+    preconditioner = Preconditioner.init(input_block=input_blocks, output_block=output_blocks)
+    spec = _RoundSpec()
+
+    result = yaqa_round_weights(weights, preconditioner, spec)
+    reference = jnp.stack(
+        [
+            yaqa_round_weights(
+                weights[0],
+                Preconditioner.init(input_block=input_blocks[0], output_block=output_blocks[0]),
+                spec,
+            ),
+            yaqa_round_weights(
+                weights[1],
+                Preconditioner.init(input_block=input_blocks[1], output_block=output_blocks[1]),
+                spec,
+            ),
+        ],
+    )
+
+    assert_close(result=result, reference=reference)

@@ -1,8 +1,11 @@
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, Float
 
+from lalamo.module import ShardingAxis
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.weight_matrix import CompressionImplementation, Preconditioner, QuantizedSpec
 
@@ -14,13 +17,25 @@ __all__ = [
 
 
 def yaqa_round_weights(
-    weights: Float[Array, "output_channels input_channels"],
+    weights: Float[Array, "*batch output_channels input_channels"],
     preconditioner: Preconditioner,
     spec: QuantizedSpec,
     *,
     max_iters: int = 15,
     atol: float = 1e-7,
-) -> Float[Array, "output_channels input_channels"]:
+) -> Float[Array, "*batch output_channels input_channels"]:
+    if weights.ndim > 2:
+        return jax.vmap(
+            partial(
+                yaqa_round_weights,
+                spec=spec,
+                max_iters=max_iters,
+                atol=atol,
+            ),
+            in_axes=(0, 0),
+            spmd_axis_name=ShardingAxis.EXPERT,
+        )(weights, preconditioner)
+
     weights = weights.astype(jnp.float32)
     output_dim, input_dim = weights.shape
 
