@@ -17,6 +17,7 @@ CAPITAL_PROMPT = "What's the capital of the United Kingdom? No thinking, answer 
 MATH_PROMPT = "What's 2 + 2? No thinking, answer right away."
 
 MAX_OUTPUT_LENGTH = 8
+GREEDY_GENERATION_CONFIG = {"temperature": 0.0}
 
 
 def _free_port() -> int:
@@ -81,6 +82,7 @@ def _make_request(sequence_id: str, model_repo: str, prompt: str, *, seed: int |
         "model": model_repo,
         "messages": [{"role": "user", "content": prompt}],
         "max_completion_tokens": MAX_OUTPUT_LENGTH,
+        "generation_config": GREEDY_GENERATION_CONFIG,
     }
     if seed is not None:
         body["seed"] = seed

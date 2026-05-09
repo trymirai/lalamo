@@ -709,6 +709,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         else:
             batch_size_per_bucket = estimate_batchsizes_from_vram(
                 lambda config: self.estimate_memory_consumption(
+                    generation_config=generation_config,
                     inference_config=config,
                     sharding_config=sharding_config,
                 ),
