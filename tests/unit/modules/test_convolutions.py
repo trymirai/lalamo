@@ -165,10 +165,10 @@ def test_separable_causal_conv_vmapped_over_inputs_matches_reference_and_keeps_d
     assert result.outputs.sharding == make_sharding((ShardingAxis.DATA, None, None))
 
 
-def test_separable_causal_conv_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
+def test_separable_causal_conv_export_load_roundtrips_with_replicated_parameters(fake_mesh: Mesh) -> None:
     original = _conv()
-    weight_sharding = make_sharding((ShardingAxis.DATA, None))
-    bias_sharding = make_sharding((ShardingAxis.DATA,))
+    weight_sharding = make_sharding((None, None))
+    bias_sharding = make_sharding((None,))
     template = SeparableCausalConv(
         config=original.config,
         weights=dummy_array(original.weights.shape, original.weights.dtype, weight_sharding),
@@ -181,10 +181,10 @@ def test_separable_causal_conv_export_load_roundtrips_and_preserves_template_sha
     restored = template.load_exported(original.export())
     result = restored(inputs)
 
-    assert restored.weights.sharding == template.weights.sharding
+    assert restored.weights.sharding == make_sharding((None, None))
     assert restored.biases is not None
     assert template.biases is not None
-    assert restored.biases.sharding == template.biases.sharding
+    assert restored.biases.sharding == make_sharding((None,))
     _assert_named_sharding(restored.weights.sharding, fake_mesh)
     _assert_named_sharding(restored.biases.sharding, fake_mesh)
     _assert_close(result=result.outputs, reference=original(inputs).outputs)

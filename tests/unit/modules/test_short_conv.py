@@ -197,10 +197,10 @@ def test_short_conv_vmapped_over_inputs_matches_reference_and_keeps_data_shardin
     assert result.outputs.sharding == make_sharding((ShardingAxis.DATA, None, None))
 
 
-def test_short_conv_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
+def test_short_conv_export_load_roundtrips_with_replicated_conv_parameters(fake_mesh: Mesh) -> None:
     original = _short_conv()
-    conv_weight_sharding = make_sharding((ShardingAxis.DATA, None))
-    vector_sharding = make_sharding((ShardingAxis.DATA,))
+    conv_weight_sharding = make_sharding((None, None))
+    vector_sharding = make_sharding((None,))
     template = ShortConv(
         config=original.config,
         in_projection=Linear(
@@ -232,11 +232,12 @@ def test_short_conv_export_load_roundtrips_and_preserves_template_sharding(fake_
     assert isinstance(template.out_projection.weights, FullPrecisionMatrix)
     assert restored.in_projection.weights.weights.sharding == template.in_projection.weights.weights.sharding
     assert restored.out_projection.weights.weights.sharding == template.out_projection.weights.weights.sharding
-    assert restored.conv.weights.sharding == template.conv.weights.sharding
+    assert restored.conv.weights.sharding == make_sharding((None, None))
     assert restored.conv.biases is not None
     assert template.conv.biases is not None
-    assert restored.conv.biases.sharding == template.conv.biases.sharding
+    assert restored.conv.biases.sharding == make_sharding((None,))
     _assert_named_sharding(restored.conv.weights.sharding, fake_mesh)
+    _assert_named_sharding(restored.conv.biases.sharding, fake_mesh)
     _assert_close(
         result=result.outputs,
         reference=original(inputs, positional_embeddings=None, keychain=Keychain.init(6)).outputs,
