@@ -127,6 +127,7 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         return output, new_state
 
 
+@use_out_sharding((None, None, None))
 def _separable_causal_conv(
     inputs: Float[Array, "batch context_tokens channels"],
     weights: Float[Array, "channels kernel"],

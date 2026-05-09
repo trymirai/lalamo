@@ -165,6 +165,22 @@ def test_separable_causal_conv_vmapped_over_inputs_matches_reference_and_keeps_d
     assert result.outputs.sharding == make_sharding((ShardingAxis.DATA, None, None))
 
 
+def test_separable_causal_conv_vmapped_gradient_under_explicit_mesh(fake_mesh: Mesh) -> None:
+    module = _conv()
+    inputs = _sharded_sequences(jnp.arange(2 * 5 * CHANNELS, dtype=jnp.float32).reshape(2, 5, CHANNELS) / 10)
+
+    def loss(module: SeparableCausalConv, inputs: Array) -> Array:
+        return jnp.sum(module(inputs).outputs)
+
+    result = jax.vmap(eqx.filter_grad(loss), in_axes=(None, 0))(module, inputs)
+
+    assert result.weights.shape == (2, CHANNELS, KERNEL_SIZE)
+    assert result.biases is not None
+    assert result.biases.shape == (2, CHANNELS)
+    _assert_named_sharding(result.weights.sharding, fake_mesh)
+    _assert_named_sharding(result.biases.sharding, fake_mesh)
+
+
 def test_separable_causal_conv_export_load_roundtrips_with_replicated_parameters(fake_mesh: Mesh) -> None:
     original = _conv()
     weight_sharding = make_sharding((None, None))
