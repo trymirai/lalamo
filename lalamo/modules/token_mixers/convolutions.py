@@ -10,7 +10,6 @@ from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
-from lalamo.utils.sharding import use_out_sharding
 
 __all__ = [
     "CausalConvResult",
@@ -203,7 +202,6 @@ def _separable_causal_conv_backward(
 _separable_causal_conv.defvjp(_separable_causal_conv_forward, _separable_causal_conv_backward)
 
 
-@use_out_sharding((None, None))
 def _causal_conv_context(
     state: Float[Array, "state_tokens channels"],
     inputs: Float[Array, "suffix_tokens channels"],
@@ -211,7 +209,6 @@ def _causal_conv_context(
     return jnp.concatenate([state, inputs], axis=0)
 
 
-@use_out_sharding((None, None))
 def _add_conv_biases(
     outputs: Float[Array, "suffix_tokens channels"],
     biases: Float[Array, " channels"],
@@ -219,7 +216,6 @@ def _add_conv_biases(
     return outputs + biases
 
 
-@use_out_sharding((None, None))
 def _updated_causal_conv_state(
     inputs_with_history: Float[Array, "context_tokens channels"],
     inputs: Float[Array, "suffix_tokens channels"],

@@ -99,14 +99,14 @@ def _assert_close(result: Array, reference: Array) -> None:
 
 
 def _sharded_sequence(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((None, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((None, None)))
 
 
 def _sharded_sequences(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, None)))
 
 
-def test_attention_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_attention_matches_reference_and_keeps_unsharded_features(fake_mesh: Mesh) -> None:
     module = _attention()
     inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10)
 
@@ -141,7 +141,7 @@ def test_attention_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
 
 
-def test_attention_under_jit_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_attention_under_jit_matches_reference_and_keeps_unsharded_features(fake_mesh: Mesh) -> None:
     module = _attention()
     inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10)
 

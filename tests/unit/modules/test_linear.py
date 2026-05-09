@@ -67,15 +67,15 @@ def _assert_outputs_sharded_like(outputs: tuple[Array, ...], sharding: Sharding 
 
 
 def _sharded_input(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.TENSOR,)))
+    return jax.device_put(values, make_sharding((None,)))
 
 
 def _sharded_batched_inputs(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None)))
 
 
 def _sharded_expert_inputs(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.EXPERT, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((ShardingAxis.EXPERT, None)))
 
 
 @pytest.mark.parametrize("precision", MATMUL_PRECISIONS)
@@ -121,7 +121,7 @@ def test_linear_output_dtype_matches_input_dtype_with_full_precision_parameters(
 
 
 @pytest.mark.parametrize("precision", MATMUL_PRECISIONS)
-def test_linear_under_jit_matches_reference_and_drops_tensor_sharding(
+def test_linear_under_jit_matches_reference_and_keeps_unsharded_features(
     fake_mesh: Mesh,
     precision: DotAlgorithmPreset,
 ) -> None:
@@ -152,8 +152,7 @@ def test_linear_vmapped_over_inputs_matches_reference_and_keeps_data_sharding(fa
 
 
 def test_linear_mixture_vmapped_over_experts_matches_reference_and_keeps_expert_sharding(fake_mesh: Mesh) -> None:
-    biases = jax.device_put(_biases(2), make_sharding((ShardingAxis.EXPERT, None)))
-    linear = _linear(_weights(2), biases)
+    linear = _linear(_weights(2), None)
     inputs = _sharded_expert_inputs(jnp.arange(8, dtype=jnp.float32).reshape(2, INPUT_DIM))
 
     with pytest.raises(ValueError, match="Use vmap"):
@@ -161,14 +160,27 @@ def test_linear_mixture_vmapped_over_experts_matches_reference_and_keeps_expert_
 
     outputs = eqx.filter_vmap(lambda expert, values: expert(values, keychain=Keychain.init(5)))(linear, inputs)
 
-    reference = _split_outputs(jnp.einsum("eoi,ei->eo", _weights(2), inputs) + _biases(2))
+    reference = _split_outputs(jnp.einsum("eoi,ei->eo", _weights(2), inputs))
     _assert_close_outputs(outputs, reference)
     _assert_outputs_sharded_like(outputs, make_sharding((ShardingAxis.EXPERT, None)), fake_mesh)
 
 
+def test_linear_config_init_mixture_keeps_biases_unsharded() -> None:
+    linear = LinearConfig().init_mixture(
+        EmptyInitializer(dtype=jnp.float32),
+        mixture_size=2,
+        input_dim=INPUT_DIM,
+        output_dims=OUTPUT_DIMS,
+        has_biases=True,
+    )
+
+    assert linear.biases is not None
+    assert linear.biases.sharding is None
+
+
 def test_linear_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _linear(_weights(), _biases())
-    bias_template_sharding = make_sharding((ShardingAxis.DATA,))
+    bias_template_sharding = make_sharding((None,))
     assert bias_template_sharding is not None
     template = Linear(
         config=LinearConfig(),

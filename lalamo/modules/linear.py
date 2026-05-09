@@ -6,8 +6,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from lalamo.initializer import Initializer
-from lalamo.module import Keychain, LalamoConfig, LalamoModule, ShardingAxis, field
-from lalamo.utils.sharding import use_out_sharding
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, field
 from lalamo.weight_matrix import MatmulConfig, WeightMatrix
 
 __all__ = [
@@ -43,7 +42,7 @@ class LinearConfig(LalamoConfig):
     ) -> "Linear":
         total_output_dim = sum(output_dims)
         if has_biases:
-            biases = initializer.zeros((mixture_size, total_output_dim), (ShardingAxis.EXPERT, None))
+            biases = initializer.zeros((mixture_size, total_output_dim))
         else:
             biases = None
         return Linear(
@@ -85,7 +84,6 @@ class Linear(LalamoModule[LinearConfig]):
         return tuple(accumulate(output_dims[:-1]))
 
     @eqx.filter_jit
-    @use_out_sharding((None,))
     def __call__(
         self,
         inputs: Float[Array, " in_channels"],

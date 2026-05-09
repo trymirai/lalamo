@@ -10,7 +10,6 @@ from lalamo.compressed.utils.hadamard import hadamard_transform
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
-from lalamo.utils.sharding import use_out_sharding
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
@@ -243,7 +242,6 @@ class HybridMatrix(WeightMatrix[HybridSpec]):
             incoherence_signs=self.incoherence_signs,
         )
 
-    @use_out_sharding((None, None))
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
         result = self.quantized.decompress()
         if self.adapter is not None:

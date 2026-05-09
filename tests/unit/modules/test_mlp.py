@@ -117,7 +117,7 @@ def _moe(
         gate_config=LinearConfig() if has_gate else None,
     )
     mixture_size = NUM_ROUTED_EXPERTS + num_shared_experts
-    expert_bias_sharding = make_sharding((ShardingAxis.EXPERT, None))
+    expert_bias_sharding = make_sharding((None, None))
     return MixtureOfExperts(
         config=config,
         router=_linear(
@@ -164,7 +164,7 @@ def _moe_template(module: MixtureOfExperts) -> MixtureOfExperts:
             (module.config.num_routed_experts, MODEL_DIM),
             (module.config.num_routed_experts,) if module.config.router_has_biases else None,
             (module.config.num_routed_experts,),
-            (ShardingAxis.TENSOR,),
+            (None,),
         ),
         experts=DenseMLP(
             config=module.experts.config,
@@ -172,13 +172,13 @@ def _moe_template(module: MixtureOfExperts) -> MixtureOfExperts:
                 (mixture_size, 2 * HIDDEN_DIM, MODEL_DIM),
                 (mixture_size, 2 * HIDDEN_DIM) if module.experts.config.has_up_biases else None,
                 (HIDDEN_DIM, HIDDEN_DIM),
-                (ShardingAxis.EXPERT, None),
+                (None, None),
             ),
             down_projection=_linear_template(
                 (mixture_size, MODEL_DIM, HIDDEN_DIM),
                 (mixture_size, MODEL_DIM) if module.experts.config.has_down_biases else None,
                 (MODEL_DIM,),
-                (ShardingAxis.EXPERT, None),
+                (None, None),
             ),
         ),
         gate=None,
@@ -282,15 +282,15 @@ def _assert_named_sharding(sharding: Sharding, mesh: Mesh) -> None:
 
 
 def _sharded_vector(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.TENSOR,)))
+    return jax.device_put(values, make_sharding((None,)))
 
 
 def _sharded_vectors(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None)))
 
 
 def _sharded_sequences(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, None)))
 
 
 def _moe_sequence_length(mode: ForwardPassMode) -> int:
@@ -299,7 +299,7 @@ def _moe_sequence_length(mode: ForwardPassMode) -> int:
     return 3
 
 
-def test_dense_mlp_call_unbatched_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_dense_mlp_call_unbatched_matches_reference_and_keeps_unsharded_features(fake_mesh: Mesh) -> None:
     module = _dense_mlp()
     inputs = _sharded_vector(jnp.arange(MODEL_DIM, dtype=jnp.float32))
 
@@ -384,7 +384,7 @@ def test_dense_mlp_full_call_matches_reference_and_keeps_data_sharding(fake_mesh
 def test_dense_mlp_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _dense_mlp()
     weight_template = make_sharding((ShardingAxis.TENSOR, None))
-    bias_template = make_sharding((ShardingAxis.DATA,))
+    bias_template = make_sharding((None,))
     assert weight_template is not None
     assert bias_template is not None
     template = DenseMLP(

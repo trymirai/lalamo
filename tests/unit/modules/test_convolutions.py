@@ -61,14 +61,14 @@ def _assert_close(result: Array, reference: Array) -> None:
 
 
 def _sharded_sequence(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((None, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((None, None)))
 
 
 def _sharded_sequences(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, None)))
 
 
-def test_separable_causal_conv_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_separable_causal_conv_matches_reference_and_keeps_unsharded_features(fake_mesh: Mesh) -> None:
     module = _conv()
     inputs = _sharded_sequence(jnp.arange(5 * CHANNELS, dtype=jnp.float32).reshape(5, CHANNELS) / 10)
 
@@ -184,7 +184,7 @@ def test_separable_causal_conv_input_gradient_matches_reference() -> None:
     _assert_close(result=result, reference=context_gradient[KERNEL_SIZE - 1 :])
 
 
-def test_separable_causal_conv_under_jit_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_separable_causal_conv_under_jit_matches_reference_and_keeps_unsharded_features(fake_mesh: Mesh) -> None:
     module = _conv()
     inputs = _sharded_sequence(jnp.arange(5 * CHANNELS, dtype=jnp.float32).reshape(5, CHANNELS) / 10)
 
