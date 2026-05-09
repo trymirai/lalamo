@@ -41,9 +41,9 @@ class TrieProposal:
 
     def add_node(self, parent_index: int, token_id: int) -> tuple[TrieProposal, int]:
         node_index = len(self.nodes)
-        gumbel_position = self.nodes[-1].gumbel_position + 1
-        depth = self.nodes[parent_index].depth + 1
-        return TrieProposal((*self.nodes, ProposalNode(token_id, parent_index, gumbel_position, depth))), node_index
+        parent = self.nodes[parent_index]
+        node = ProposalNode(token_id, parent_index, parent.gumbel_position + 1, parent.depth + 1)
+        return TrieProposal((*self.nodes, node)), node_index
 
     @property
     def token_ids(self) -> tuple[int, ...]:
@@ -95,28 +95,27 @@ class TrieProposal:
         child_index_by_parent_and_token = {
             (node.parent_index, node.token_id): node_index for node_index, node in enumerate(self.nodes)
         }
-        token_ids: tuple[int, ...] = ()
-        node_indices: tuple[int, ...] = ()
-        terminal_node_index = 0
+        path: list[int] = []
+        node_index = 0
 
         for _ in self.nodes[1:]:
-            sampled_token_id = sampled_token_ids[terminal_node_index]
-            next_node_index = child_index_by_parent_and_token.get((terminal_node_index, sampled_token_id))
-            if next_node_index is None:
+            sampled_token_id = sampled_token_ids[node_index]
+            child_index = child_index_by_parent_and_token.get((node_index, sampled_token_id))
+            if child_index is None:
                 break
 
-            token_ids = (*token_ids, sampled_token_id)
-            node_indices = (*node_indices, next_node_index)
-            terminal_node_index = next_node_index
+            path.append(child_index)
+            node_index = child_index
 
-        unpadded_compact_indices = (0, *node_indices)
-        compact_padding = (0 for _ in range(len(self.nodes) - len(unpadded_compact_indices)))
-        compact_indices = (*unpadded_compact_indices, *compact_padding)
+        node_indices = tuple(path)
+        token_ids = tuple(self.nodes[index].token_id for index in node_indices)
+        accepted_indices = (0, *node_indices)
+        compact_indices = accepted_indices + (0,) * (len(self.nodes) - len(accepted_indices))
         return AcceptedProposal(
             token_ids=token_ids,
             node_indices=node_indices,
             compact_indices=compact_indices,
-            num_compact_indices=len(unpadded_compact_indices),
-            terminal_node_index=terminal_node_index,
-            bonus_token_id=sampled_token_ids[terminal_node_index],
+            num_compact_indices=len(accepted_indices),
+            terminal_node_index=node_index,
+            bonus_token_id=sampled_token_ids[node_index],
         )
