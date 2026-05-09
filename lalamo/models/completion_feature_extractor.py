@@ -41,36 +41,47 @@ class OnlineCompletionFeatureExtractor:
                 yield self.extract_features(request)
 
     def extract_features(self, request: FeatureRequest) -> LalamoCompletionFeatures:
-        with jax.default_device(self.device):
-            batch = LalamoCompletionBatch.from_completions(
-                request.completions,
-                pad_token_id=self.pad_token_id,
-                prompt_padding_multiple=self.prompt_padding_multiple,
-                generation_padding_multiple=self.generation_padding_multiple,
-            )
-            token_positions = jnp.broadcast_to(
-                jnp.arange(batch.input_token_ids.shape[1], dtype=jnp.int32),
-                batch.input_token_ids.shape,
-            )
-            decoder_result = self.model.model(
-                batch.input_token_ids,
-                token_positions,
-                return_activation_trace=bool(request.layer_indices),
-                lengths_without_padding=batch.input_lengths,
-                forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-                forward_pass_config=self.forward_pass_config,
-            )
-            target_logits = gather_target_positions(decoder_result.logits, batch.target_positions)
+        batch = LalamoCompletionBatch.from_completions(
+            request.completions,
+            pad_token_id=self.pad_token_id,
+            prompt_padding_multiple=self.prompt_padding_multiple,
+            generation_padding_multiple=self.generation_padding_multiple,
+        )
+        token_positions = jnp.broadcast_to(
+            jnp.arange(batch.input_token_ids.shape[1], dtype=jnp.int32),
+            batch.input_token_ids.shape,
+        )
+        decoder_result = self.model.model(
+            batch.input_token_ids,
+            token_positions,
+            return_activation_trace=request.output_features or bool(request.layer_indices),
+            lengths_without_padding=batch.input_lengths,
+            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
+            forward_pass_config=self.forward_pass_config,
+        )
+        target_logits = gather_target_positions(decoder_result.logits, batch.target_positions)
 
-            target_logsumexp = jax.nn.logsumexp(target_logits, axis=-1)
-            top_k = min(request.top_k_logits, target_logits.shape[-1])
-            target_top_k_logits, target_top_k_ids = jax.lax.top_k(target_logits, top_k)
+        target_logsumexp = jax.nn.logsumexp(target_logits, axis=-1)
+        top_k = min(request.top_k_logits, target_logits.shape[-1])
+        target_top_k_logits, target_top_k_ids = jax.lax.top_k(target_logits, top_k)
 
-            layer_features = None
-            if request.layer_indices:
-                activation_trace = decoder_result.activation_trace
-                assert activation_trace is not None
-                layer_features = jnp.stack(
+        activation_trace = decoder_result.activation_trace
+
+        return LalamoCompletionFeatures(
+            completion_batch=batch,
+            target_logsumexp=target_logsumexp,
+            target_top_k_ids=target_top_k_ids,
+            target_top_k_logits=target_top_k_logits,
+            output_features=(
+                gather_target_positions(
+                    activation_trace.output_norm,
+                    batch.target_positions,
+                )
+                if request.output_features
+                else None
+            ),
+            layer_features=(
+                jnp.stack(
                     [
                         gather_target_positions(
                             activation_trace.layer_results[layer_index].outputs,
@@ -80,14 +91,10 @@ class OnlineCompletionFeatureExtractor:
                     ],
                     axis=1,
                 )
-
-            return LalamoCompletionFeatures(
-                completion_batch=batch,
-                target_logsumexp=target_logsumexp,
-                target_top_k_ids=target_top_k_ids,
-                target_top_k_logits=target_top_k_logits,
-                layer_features=layer_features,
-            )
+                if request.layer_indices
+                else None
+            ),
+        )
 
     def resolve_layer_indices(self, request: FeatureRequest) -> tuple[int, ...]:
         num_layers = len(self.model.model.transformer.layers)

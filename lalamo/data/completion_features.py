@@ -15,6 +15,7 @@ class FeatureRequest:
     completions: tuple[LalamoCompletion, ...]
     top_k_logits: Annotated[int, Ge(1)] = 128
     layer_indices: tuple[int, ...] = tuple()
+    output_features: bool = False
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,7 @@ class LalamoCompletionFeatures:
     target_logsumexp: Float[Array, "batch completion_tokens"] | None = None
     target_top_k_ids: Int[Array, "batch completion_tokens k"] | None = None
     target_top_k_logits: Float[Array, "batch completion_tokens k"] | None = None
+    output_features: Float[Array, "batch completion_tokens hidden"] | None = None
     layer_features: Float[Array, "batch layers completion_tokens hidden"] | None = None
 
 
