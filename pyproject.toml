@@ -38,7 +38,9 @@ neutts = [
     "espeakng-loader>=0.2.4",
     "neucodec>=0.0.5",
     "phonemizer>=3.0.0",
-    "torch>=2.8.0",
+    "torch>=2.9.0,<2.10.0",
+    "torchaudio>=2.9.0,<2.10.0",
+    "torchcodec>=0.9.0,<0.10.0",
 ]
 server = ["fastapi>=0.135.3", "uvicorn>=0.44.0"]
 
@@ -111,6 +113,7 @@ explicit = true
 [tool.uv.sources]
 torch = { index = "torch-cpu" }
 torchaudio = { index = "torch-cpu" }
+torchcodec = { index = "torch-cpu" }
 cartesia-metal = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="035939e9" , subdirectory = "cartesia-metal" }
 cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="035939e9" , subdirectory = "cartesia-mlx" }
 fish-speech = { git="https://github.com/trymirai/fish-speech.git", tag="c6dd030" }
