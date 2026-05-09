@@ -2,9 +2,11 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from queue import Full, Queue
 from threading import Event, Thread
+from typing import Annotated
 
 import jax
 import jax.numpy as jnp
+from annotated_types import Ge
 from jaxtyping import Array, Float, Int
 
 from lalamo.data.completion_features import (
@@ -107,33 +109,20 @@ class OnlineCompletionFeatureExtractor:
 
 
 @dataclass(frozen=True)
-class FeatureQueueEnd:
-    pass
-
-
-@dataclass(frozen=True)
-class FeatureQueueError:
-    error: Exception
-
-
-type FeatureQueueItem = LalamoCompletionFeatures | FeatureQueueEnd | FeatureQueueError
-
-
-@dataclass(frozen=True)
 class FeatureQueue:
     extractor: OnlineCompletionFeatureExtractor
-    max_batches: int
+    max_prefetch: Annotated[int, Ge(1)]
 
     def iter_features(
         self,
         requests: Iterable[FeatureRequest],
     ) -> Iterator[LalamoCompletionFeatures]:
-        assert self.max_batches > 0
-        queue: Queue[FeatureQueueItem] = Queue(maxsize=self.max_batches)
+        queue: Queue[LalamoCompletionFeatures | None] = Queue(maxsize=self.max_prefetch)
         stop_event = Event()
+        error_holder: list[BaseException] = []
         worker = Thread(
             target=self.run_worker,
-            args=(requests, queue, stop_event),
+            args=(requests, queue, stop_event, error_holder),
             daemon=True,
         )
         worker.start()
@@ -141,35 +130,35 @@ class FeatureQueue:
         try:
             while True:
                 item = queue.get()
-                match item:
-                    case LalamoCompletionFeatures():
-                        yield item
-                    case FeatureQueueEnd():
-                        break
-                    case FeatureQueueError(error):
-                        raise error
+                if item is None:
+                    if error_holder:
+                        raise error_holder[0]
+                    return
+                yield item
         finally:
             stop_event.set()
 
     def run_worker(
         self,
         requests: Iterable[FeatureRequest],
-        queue: Queue[FeatureQueueItem],
+        queue: Queue[LalamoCompletionFeatures | None],
         stop_event: Event,
+        error_holder: list[BaseException],
     ) -> None:
         try:
             for features in self.extractor.iter_features(requests):
                 if stop_event.is_set():
                     return
                 put_feature_queue_item(queue, features, stop_event)
-            put_feature_queue_item(queue, FeatureQueueEnd(), stop_event)
-        except Exception as error:  # noqa: BLE001
-            put_feature_queue_item(queue, FeatureQueueError(error), stop_event)
+        except BaseException as error:  # noqa: BLE001
+            error_holder.append(error)
+        finally:
+            put_feature_queue_item(queue, None, stop_event)
 
 
 def put_feature_queue_item(
-    queue: Queue[FeatureQueueItem],
-    item: FeatureQueueItem,
+    queue: Queue[LalamoCompletionFeatures | None],
+    item: LalamoCompletionFeatures | None,
     stop_event: Event,
 ) -> None:
     while not stop_event.is_set():

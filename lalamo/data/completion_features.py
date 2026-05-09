@@ -3,11 +3,11 @@ from dataclasses import dataclass
 from typing import Annotated, Self
 
 import jax.numpy as jnp
-import numpy as np
 from annotated_types import Ge
 from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.data.lalamo_completions import LalamoCompletion
+from lalamo.data.utils import make_target_positions, pad_sequences, round_up_to_multiple
 
 
 @dataclass(frozen=True)
@@ -90,35 +90,3 @@ class LalamoCompletionFeatures:
     target_top_k_logits: Float[Array, "batch completion_tokens k"] | None = None
     output_features: Float[Array, "batch completion_tokens hidden"] | None = None
     layer_features: Float[Array, "batch layers completion_tokens hidden"] | None = None
-
-
-def pad_sequences(
-    sequences: Iterable[list[int]],
-    pad_token_id: int,
-    padded_length: int,
-) -> tuple[Int[Array, "batch tokens"], Bool[Array, "batch tokens"]]:
-    sequence_list = list(sequences)
-    padded = np.full((len(sequence_list), padded_length), pad_token_id, dtype=np.int32)
-    mask = np.zeros((len(sequence_list), padded_length), dtype=np.bool_)
-
-    for index, sequence in enumerate(sequence_list):
-        padded[index, : len(sequence)] = np.asarray(sequence, dtype=np.int32)
-        mask[index, : len(sequence)] = True
-
-    return jnp.asarray(padded), jnp.asarray(mask)
-
-
-def make_target_positions(
-    prefix_lengths: list[int],
-    completion_lengths: list[int],
-    max_completion_length: int,
-) -> Int[Array, "batch completion_tokens"]:
-    positions = np.zeros((len(prefix_lengths), max_completion_length), dtype=np.int32)
-    for index, (prefix_length, completion_length) in enumerate(zip(prefix_lengths, completion_lengths, strict=True)):
-        positions[index, :completion_length] = prefix_length - 1 + np.arange(completion_length, dtype=np.int32)
-    return jnp.asarray(positions)
-
-
-def round_up_to_multiple(value: int, multiple: int) -> int:
-    assert multiple > 0
-    return ((value + multiple - 1) // multiple) * multiple
