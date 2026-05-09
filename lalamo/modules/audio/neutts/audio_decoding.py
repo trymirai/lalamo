@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from functools import cache
+from importlib import import_module
 from pathlib import Path
 from typing import Protocol, Self, cast
 
@@ -32,6 +33,10 @@ class _NeuCodec(Protocol):
     def decode_code(self, codes: object) -> _TorchTensor: ...
 
 
+class _NeuCodecFactory(Protocol):
+    def from_pretrained(self, repo_id: str) -> _NeuCodec: ...
+
+
 @dataclass(frozen=True)
 class NeuCodecAudioDecoderConfig(TTSAudioDecoderConfigBase):
     precision: DTypeLike
@@ -49,23 +54,25 @@ class NeuCodecAudioDecoderConfig(TTSAudioDecoderConfigBase):
 @cache
 def _load_neucodec(codec_repo: str, device: str) -> _NeuCodec:
     try:
-        from neucodec import DistillNeuCodec, NeuCodec
+        neucodec_module = import_module("neucodec")
     except ImportError as e:
         raise ImportError(
             "NeuTTS audio decoding requires the optional neucodec dependency. Install lalamo with the neutts extra.",
         ) from e
 
+    neucodec_factory = cast("_NeuCodecFactory", neucodec_module.NeuCodec)
+    distill_neucodec_factory = cast("_NeuCodecFactory", neucodec_module.DistillNeuCodec)
     match codec_repo:
         case "neuphonic/neucodec":
-            codec = NeuCodec.from_pretrained(codec_repo)
+            codec = neucodec_factory.from_pretrained(codec_repo)
         case "neuphonic/distill-neucodec":
-            codec = DistillNeuCodec.from_pretrained(codec_repo)
+            codec = distill_neucodec_factory.from_pretrained(codec_repo)
         case _:
             raise ValueError(
                 "NeuTTS codec_repo must be 'neuphonic/neucodec' or 'neuphonic/distill-neucodec'.",
             )
 
-    return cast("_NeuCodec", codec.eval().to(device))
+    return codec.eval().to(device)
 
 
 class NeuCodecAudioDecoder(TTSAudioDecoder[NeuCodecAudioDecoderConfig]):

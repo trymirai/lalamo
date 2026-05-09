@@ -2,6 +2,7 @@ import os
 import re
 from collections.abc import Iterable
 from functools import cache
+from importlib import import_module
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -20,6 +21,24 @@ class _PhonemizerBackend(Protocol):
 class _EspeakWrapper(Protocol):
     @staticmethod
     def set_library(path: str) -> None: ...
+
+
+class _EspeakLoader(Protocol):
+    def get_library_path(self) -> Path: ...
+
+    def get_data_path(self) -> Path: ...
+
+
+class _PhonemizerBackendFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        language: str,
+        preserve_punctuation: bool,
+        with_stress: bool,
+        words_mismatch: str,
+        language_switch: str,
+    ) -> _PhonemizerBackend: ...
 
 
 def speech_codes_to_text(speech_codes: Iterable[int]) -> str:
@@ -89,12 +108,12 @@ def require_neutts_message(messages: Iterable[TTSMessage]) -> TTSMessage:
 
 def _configure_bundled_espeak() -> None:
     try:
-        import espeakng_loader
-        from phonemizer.backend.espeak.wrapper import EspeakWrapper
+        espeakng_loader = cast("_EspeakLoader", import_module("espeakng_loader"))
+        espeak_wrapper_module = import_module("phonemizer.backend.espeak.wrapper")
     except ImportError:
         return
 
-    wrapper = cast("_EspeakWrapper", EspeakWrapper)
+    wrapper = cast("_EspeakWrapper", espeak_wrapper_module.EspeakWrapper)
     wrapper.set_library(str(espeakng_loader.get_library_path()))
     os.environ["ESPEAK_DATA_PATH"] = str(espeakng_loader.get_data_path())
 
@@ -102,7 +121,7 @@ def _configure_bundled_espeak() -> None:
 @cache
 def _get_espeak_backend(language_code: str) -> _PhonemizerBackend:
     try:
-        from phonemizer.backend import EspeakBackend
+        phonemizer_backend_module = import_module("phonemizer.backend")
     except ImportError as e:
         raise ImportError(
             "NeuTTS phonemization requires the optional phonemizer dependency. Install lalamo with the neutts extra.",
@@ -110,15 +129,16 @@ def _get_espeak_backend(language_code: str) -> _PhonemizerBackend:
 
     try:
         _configure_bundled_espeak()
-        return cast(
-            "_PhonemizerBackend",
-            EspeakBackend(
-                language=language_code,
-                preserve_punctuation=True,
-                with_stress=True,
-                words_mismatch="ignore",
-                language_switch="remove-flags",
-            ),
+        espeak_backend = cast(
+            "_PhonemizerBackendFactory",
+            phonemizer_backend_module.EspeakBackend,
+        )
+        return espeak_backend(
+            language=language_code,
+            preserve_punctuation=True,
+            with_stress=True,
+            words_mismatch="ignore",
+            language_switch="remove-flags",
         )
     except Exception as e:
         raise RuntimeError(

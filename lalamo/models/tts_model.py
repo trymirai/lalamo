@@ -107,6 +107,8 @@ class TTSGenerator(eqx.Module):
         )
 
     def decode_audio(self, semantic_tokens: Array | CodebookCodes) -> Array:
+        if isinstance(semantic_tokens, CodebookCodes):
+            raise TypeError("Structured TTS codebooks require a model-specific TTS generator.")
         return self.tts_model.audio_decoder.audio_from_codes(semantic_tokens)
 
     def generate_waveform(self, audio_features: Array) -> Array:
