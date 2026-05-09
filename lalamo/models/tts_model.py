@@ -50,7 +50,13 @@ from lalamo.sampling import SamplingPolicy
 
 from .common import ParameterTree, unflatten_parameters
 
-__all__ = ["NeuTTSGenerator", "TTSGenerationResult", "TTSGenerator", "TTSGeneratorConfig"]
+__all__ = [
+    "NeuTTSGenerator",
+    "TTSGenerationResult",
+    "TTSGenerator",
+    "TTSGeneratorConfig",
+    "tts_generator_type_for_config",
+]
 
 
 @dataclass(frozen=True)
@@ -154,9 +160,7 @@ class TTSGenerator(eqx.Module):
             model = config.tts_config.empty().import_weights(weights)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = TTSMessageProcessor(config.message_processor_config, tokenizer)
-        generator_type = (
-            NeuTTSGenerator if isinstance(config.tts_config.text_decoder_config, NeuTTSTextDecoderConfig) else cls
-        )
+        generator_type = tts_generator_type_for_config(config, default_type=cls)
         return generator_type(
             config=config,
             tts_model=model,
@@ -266,3 +270,13 @@ class NeuTTSGenerator(TTSGenerator):
             audio=np.array(audio_waveform),
             audio_params=self.get_generated_audio_params(),
         )
+
+
+def tts_generator_type_for_config(
+    config: TTSGeneratorConfig,
+    *,
+    default_type: type[TTSGenerator] = TTSGenerator,
+) -> type[TTSGenerator]:
+    if isinstance(config.tts_config.text_decoder_config, NeuTTSTextDecoderConfig):
+        return NeuTTSGenerator
+    return default_type
