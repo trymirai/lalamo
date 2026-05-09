@@ -3,6 +3,7 @@ from typing import Literal
 import jax
 import jax.numpy as jnp
 import pytest
+from jaxtyping import TypeCheckError
 
 from lalamo.compressed.utils.hadamard import hadamard_transform
 from tests.common import assert_close, gpu_only, tolerance
@@ -65,7 +66,7 @@ def test_hadamard_transform_preserves_bfloat16_dtype() -> None:
 
 @pytest.mark.parametrize("block_size", [0, 8, 16, 256])
 def test_hadamard_transform_rejects_unsupported_block_size(block_size: int) -> None:
-    with pytest.raises(ValueError, match="one of 32, 64, or 128"):
+    with pytest.raises((TypeCheckError, ValueError)):
         hadamard_transform(jnp.ones((256,), dtype=jnp.float32), block_size)  # type: ignore[arg-type]
 
 

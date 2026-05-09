@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import pytest
 from einops import rearrange
 from jax.lax import DotAlgorithmPreset
+from jaxtyping import TypeCheckError
 
 from lalamo.compressed.utils.block_ldl import block_ldl
 from lalamo.utils.precision import use_dot_algorithm_preset
@@ -73,7 +74,7 @@ def test_block_ldl_can_be_jitted_with_static_block_size() -> None:
 def test_block_ldl_rejects_non_square_matrix() -> None:
     matrix = jnp.ones((2, 3), dtype=jnp.float32)
 
-    with pytest.raises(ValueError, match="must be square"):
+    with pytest.raises((TypeCheckError, ValueError)):
         block_ldl(matrix, block_size=1)
 
 

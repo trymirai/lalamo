@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import cache
 from typing import Literal
 
@@ -69,7 +69,7 @@ def _make_hadamard_transform_for_block_size(
     @transform.def_vmap
     def transform_vmap(
         axis_size: int,
-        in_batched: tuple[bool],
+        in_batched: Sequence[bool],
         inputs: Float[Array, "... channels"],
     ) -> tuple[Float[Array, "... channels"], bool]:
         del axis_size

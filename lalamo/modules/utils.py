@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from functools import partial
-from typing import Final, Protocol, overload
+from typing import Final, Protocol, overload, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -23,6 +23,7 @@ class _Unspecified:
 _UNSPECIFIED: Final = _Unspecified()
 
 
+@runtime_checkable
 class VmappableWithKeychain[*ArgT, ResultT](Protocol):
     def __call__(self, *args: *ArgT, keychain: Keychain) -> ResultT: ...
 

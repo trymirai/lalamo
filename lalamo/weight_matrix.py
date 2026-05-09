@@ -162,13 +162,11 @@ class WeightMatrixSpec(RegistryABC):
 class QuantizedSpec(WeightMatrixSpec):
     @property
     @abstractmethod
-    def input_block_size(self) -> int:
-        ...
+    def input_block_size(self) -> int: ...
 
     @property
     @abstractmethod
-    def output_block_size(self) -> int:
-        ...
+    def output_block_size(self) -> int: ...
 
 
 WeightMatrixSpecT_co = TypeVar("WeightMatrixSpecT_co", bound=WeightMatrixSpec, covariant=True)
@@ -230,12 +228,12 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
     @abstractmethod
     def dot(
         self,
-        vector: Float[Array, " channels"],
+        vector: Float[Array, " source_channels"],
         *,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
-    ) -> Float[Array, " channels"]: ...
+    ) -> Float[Array, " target_channels"]: ...
 
     def export(self) -> ExportResults:
         arrays, metadata = super().export()
@@ -333,14 +331,14 @@ class Layout(StrEnum):
     def matmul(
         self: "Layout",
         weights: Float[Array, "rows cols"],
-        vector: Float[Array, " channels"],
-    ) -> Float[Array, " channels"]: ...
+        vector: Float[Array, " source_channels"],
+    ) -> Float[Array, " target_channels"]: ...
 
     def matmul(
         self,
         weights: Float[Array, "rows cols"],
-        vector: Float[Array, " channels"],
-    ) -> Float[Array, " channels"]:
+        vector: Float[Array, " source_channels"],
+    ) -> Float[Array, " target_channels"]:
         if self == Layout.INPUT_OUTPUT:
             return vector @ weights
         return weights @ vector
@@ -428,12 +426,12 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
 
     def dot(
         self,
-        vector: Float[Array, " channels"],
+        vector: Float[Array, " source_channels"],
         *,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
-    ) -> Float[Array, " channels"]:
+    ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
         weights = self.weights.astype(vector.dtype)
         layout = self.spec.layout
@@ -530,12 +528,12 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
 
     def dot(
         self,
-        vector: Float[Array, " channels"],  # noqa: ARG002
+        vector: Float[Array, " source_channels"],  # noqa: ARG002
         *,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
         transposed: bool = False,  # noqa: ARG002
-    ) -> Float[Array, " channels"]:
+    ) -> Float[Array, " target_channels"]:
         raise TypeError("Cannot perform matmul on ShapeDtypeMatrix")
 
     def export(self) -> ExportResults:

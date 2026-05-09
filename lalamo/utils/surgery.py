@@ -169,7 +169,7 @@ def load_as_at[TreeT: PyTree](
 
 def map_nodes_of_type[
     TreeT: PyTree,
-    NodeT: PyTree,
+    NodeT,
 ](
     node_type: type[NodeT],
     map_fn: Callable[[NodeT], NodeT],
@@ -183,12 +183,12 @@ def map_nodes_of_type[
     return jax.tree.map(wrapper, tree, is_leaf=lambda leaf: isinstance(leaf, node_type))
 
 
-def map_nodes_of_type_with_path[TreeT: PyTree, NodeT: PyTree](
+def map_nodes_of_type_with_path[TreeT: PyTree, NodeT](
     node_type: type[NodeT],
     map_fn: Callable[[tuple[str, ...], NodeT], NodeT],
     tree: TreeT,
 ) -> TreeT:
-    def wrapper(path: tuple[object, ...], node: eqx.Module) -> eqx.Module:
+    def wrapper(path: tuple[object, ...], node: PyTree) -> PyTree:
         if isinstance(node, node_type):
             return map_fn(tuple(map(str, path)), node)
         return node

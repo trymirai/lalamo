@@ -217,7 +217,7 @@ class YARNRoPEConfig(RoPEConfig):
         if truncate:
             low = math.floor(low)
             high = math.ceil(high)
-        return max(low, 0.0), min(high, float(dim - 1))
+        return float(max(low, 0.0)), float(min(high, float(dim - 1)))
 
     @classmethod
     def _linear_ramp_factor(cls, min_value: float, max_value: float, dim: int) -> Float[Array, " rotary_pairs"]:

@@ -6,7 +6,7 @@ from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
 from jax.lax import stop_gradient
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
@@ -125,7 +125,7 @@ def _awq_pack_master_zero_points(
     zero_points: Float[Array, "*components rows groups"],
     scales: Float[Array, "*components rows groups"],
     bits: int,
-) -> Int[Array, "*components rows packed_groups"]:
+) -> UInt8[Array, "*components rows packed_groups"]:
     int_scale_zero_points = _awq_master_zero_points_to_int_scale(zero_points, scales)
     int_zero_points = deterministic_round_to_unsigned_grid(int_scale_zero_points, bits=bits)
     return pack_uint_to_uint8(int_zero_points, bits)
@@ -137,7 +137,7 @@ def _awq_pack_master_weights(
     zero_points: Float[Array, "*components rows groups"],
     group_size: int,
     bits: int,
-) -> Int[Array, "*components rows packed_cols"]:
+) -> UInt8[Array, "*components rows packed_cols"]:
     int_scale_zero_points = _awq_master_zero_points_to_int_scale(zero_points, scales)
     int_zero_points = deterministic_round_to_unsigned_grid(int_scale_zero_points, bits=bits)
     rounded_zero_points = _awq_int_scale_zero_points_to_master(int_zero_points, scales)
@@ -152,7 +152,7 @@ def _awq_pack_master_weights(
 
 
 def _awq_unpack_master_zero_points(
-    packed_zero_points: Int[Array, "*components rows packed_groups"],
+    packed_zero_points: UInt8[Array, "*components rows packed_groups"],
     scales: Float[Array, "*components rows groups"],
     bits: int,
 ) -> Float[Array, "*components rows groups"]:
@@ -161,9 +161,9 @@ def _awq_unpack_master_zero_points(
 
 
 def _awq_unpack_master_weights(
-    packed_weights: Int[Array, "... packed_cols"],
+    packed_weights: UInt8[Array, "... packed_cols"],
     scales: Float[Array, "... groups"],
-    packed_zero_points: Int[Array, "... packed_groups"],
+    packed_zero_points: UInt8[Array, "... packed_groups"],
     group_size: int,
     bits: int,
 ) -> Float[Array, "... cols"]:
@@ -241,9 +241,9 @@ class AWQSpec(QuantizedSpec):
     def from_packed_parameters(
         self,
         *,
-        packed_weights: Int[Array, "*components rows packed_cols"],
+        packed_weights: UInt8[Array, "*components rows packed_cols"],
         scales: Float[Array, "*components rows groups"],
-        packed_zero_points: Int[Array, "*components rows packed_groups"],
+        packed_zero_points: UInt8[Array, "*components rows packed_groups"],
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> "AWQMatrix":
         weight_partition = self.layout.weight_partition(scales.ndim - 2)
@@ -287,11 +287,11 @@ class AWQMatrix(EmbeddingMatrix[AWQSpec]):
 
     @property
     @abstractmethod
-    def _packed_quantized_weights(self) -> Int[Array, "*components rows packed_cols"]: ...
+    def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]: ...
 
     @property
     @abstractmethod
-    def _packed_quantized_zero_points(self) -> Int[Array, "*components rows packed_groups"]: ...
+    def _packed_quantized_zero_points(self) -> UInt8[Array, "*components rows packed_groups"]: ...
 
     def export(self) -> ExportResults:
         return ExportResults(
@@ -332,7 +332,7 @@ class AWQMatrixForTraining(AWQMatrix):
         return self.weights.dtype
 
     @property
-    def _packed_quantized_weights(self) -> Int[Array, "*components rows packed_cols"]:
+    def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]:
         return _awq_pack_master_weights(
             self.weights,
             self.scales,
@@ -342,7 +342,7 @@ class AWQMatrixForTraining(AWQMatrix):
         )
 
     @property
-    def _packed_quantized_zero_points(self) -> Int[Array, "*components rows packed_groups"]:
+    def _packed_quantized_zero_points(self) -> UInt8[Array, "*components rows packed_groups"]:
         return _awq_pack_master_zero_points(
             self.zero_points,
             self.scales,
@@ -396,12 +396,12 @@ class AWQMatrixForTraining(AWQMatrix):
 
     def dot(
         self,
-        vector: Float[Array, " channels"],
+        vector: Float[Array, " source_channels"],
         *,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
-    ) -> Float[Array, " channels"]:
+    ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
         dequantized_weights = _awq_quantize(
             self.weights.astype(vector.dtype),
@@ -467,9 +467,9 @@ class AWQMatrixForTraining(AWQMatrix):
 
 
 class AWQMatrixForInference(AWQMatrix):
-    packed_weights: Int[Array, "*components rows packed_cols"]
+    packed_weights: UInt8[Array, "*components rows packed_cols"]
     scales: Float[Array, "*components rows groups"]
-    packed_zero_points: Int[Array, "*components rows packed_groups"]
+    packed_zero_points: UInt8[Array, "*components rows packed_groups"]
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -481,11 +481,11 @@ class AWQMatrixForInference(AWQMatrix):
         return self.scales.dtype
 
     @property
-    def _packed_quantized_weights(self) -> Int[Array, "*components rows packed_cols"]:
+    def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]:
         return self.packed_weights
 
     @property
-    def _packed_quantized_zero_points(self) -> Int[Array, "*components rows packed_groups"]:
+    def _packed_quantized_zero_points(self) -> UInt8[Array, "*components rows packed_groups"]:
         return self.packed_zero_points
 
     def astype(self, dtype: DTypeLike) -> "AWQMatrixForInference":
@@ -572,12 +572,12 @@ class AWQMatrixForInference(AWQMatrix):
 
     def dot(
         self,
-        vector: Float[Array, " channels"],
+        vector: Float[Array, " source_channels"],
         *,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
-    ) -> Float[Array, " channels"]:
+    ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
         weights = _awq_unpack_master_weights(
             self.packed_weights,

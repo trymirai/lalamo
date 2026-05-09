@@ -268,12 +268,12 @@ class HybridMatrix(WeightMatrix[HybridSpec]):
 
     def dot(
         self,
-        vector: Float[Array, " channels"],
+        vector: Float[Array, " source_channels"],
         *,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
-    ) -> Float[Array, " channels"]:
+    ) -> Float[Array, " target_channels"]:
         block_size = self.spec.incoherence_block_size
         if self.incoherence_signs is not None:
             assert block_size is not None

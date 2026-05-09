@@ -123,7 +123,7 @@ def make_registry_abc_converter() -> GenConverter:
 
     @converter.register_unstructure_hook_factory(is_registry_abc_type)
     def unstructure_abc_type_factory(
-        maybe_registry_abc_type: type[type[RegistryABC]] | type[type[RegistryABC] | None],
+        maybe_registry_abc_type: object,
     ) -> Callable[[object], str | None]:
         registry_abc = _maybe_registry_abc_from_type_option(maybe_registry_abc_type)
         if registry_abc is None:
@@ -141,8 +141,8 @@ def make_registry_abc_converter() -> GenConverter:
 
     @converter.register_structure_hook_factory(is_registry_abc_type)
     def structure_abc_type_factory(
-        maybe_registry_abc_type: type[type[RegistryABC]] | type[type[RegistryABC] | None],
-    ) -> Callable[[str | type[RegistryABC] | None, type[type[RegistryABC]]], type[RegistryABC] | None]:
+        maybe_registry_abc_type: object,
+    ) -> Callable[[str | type[RegistryABC] | None, object], type[RegistryABC] | None]:
         registry_abc = _maybe_registry_abc_from_type_option(maybe_registry_abc_type)
         if registry_abc is None:
             raise TypeError(f"Expected a RegistryABC type annotation, got {maybe_registry_abc_type}")
@@ -150,7 +150,7 @@ def make_registry_abc_converter() -> GenConverter:
 
         def structure_abc_type(
             value: str | type[RegistryABC] | None,
-            _: type[type[RegistryABC]],
+            _: object,
         ) -> type[RegistryABC] | None:
             if value is None:
                 return None
@@ -162,7 +162,7 @@ def make_registry_abc_converter() -> GenConverter:
 
     @converter.register_unstructure_hook_factory(is_registry_abc)
     def unstructure_abc_factory(
-        _: type[RegistryABC] | type[RegistryABC | None],
+        _: object,
         converter: GenConverter,
     ) -> Callable[[object], dict[str, Any] | None]:
         def unstructure_abc(obj: object) -> dict[str, Any] | None:
@@ -177,8 +177,8 @@ def make_registry_abc_converter() -> GenConverter:
 
     @converter.register_structure_hook_factory(is_registry_abc)
     def structure_abc_factory(
-        maybe_registry_abc: type[RegistryABC] | type[RegistryABC | None],
-    ) -> Callable[[dict[str, Any] | None, type[RegistryABC] | type[RegistryABC | None]], RegistryABC | None]:
+        maybe_registry_abc: object,
+    ) -> Callable[[dict[str, Any] | None, object], RegistryABC | None]:
         registry_abc = _maybe_registry_abc_from_option(maybe_registry_abc)
         if registry_abc is None:
             raise TypeError(f"Expected a RegistryABC subclass, got {maybe_registry_abc}")
@@ -186,7 +186,7 @@ def make_registry_abc_converter() -> GenConverter:
 
         def structure_abc(
             config: dict[str, Any] | None,
-            _: type[RegistryABC] | type[RegistryABC | None],
+            _: object,
         ) -> RegistryABC | None:
             if config is None:
                 return None

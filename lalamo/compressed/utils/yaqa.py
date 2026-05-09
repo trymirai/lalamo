@@ -3,7 +3,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from jax.lax import DotAlgorithmPreset
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, Int
 
 from lalamo.module import ShardingAxis
 from lalamo.utils.precision import use_dot_algorithm_preset
@@ -87,7 +87,7 @@ def yaqa_round_weights(
         return new_weights, new_diff
 
     def loop_body_with_early_exit(
-        iteration: int,
+        iteration: Int[Array, ""] | int,
         state: tuple[Float[Array, "output_channels input_channels"], Float[Array, ""]],
     ) -> tuple[Float[Array, "output_channels input_channels"], Float[Array, ""]]:
         del iteration

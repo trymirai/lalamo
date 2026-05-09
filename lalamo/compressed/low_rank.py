@@ -85,12 +85,12 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
 
     def dot(
         self,
-        vector: Float[Array, " channels"],
+        vector: Float[Array, " source_channels"],
         *,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
-    ) -> Float[Array, " channels"]:
+    ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
         up_projection = self.up_projection.astype(vector.dtype)
         down_projection = self.down_projection.astype(vector.dtype)

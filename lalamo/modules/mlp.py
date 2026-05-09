@@ -268,8 +268,8 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
 
 
 class RoutingMap(eqx.Module):
-    expert_mask: Bool[Array, "batch_tokens experts"]
-    expert_weights: Float[Array, "batch_tokens experts"]
+    expert_mask: Bool[Array, "*batch_and_tokens experts"]
+    expert_weights: Float[Array, "*batch_and_tokens experts"]
 
 
 @dataclass(frozen=True)

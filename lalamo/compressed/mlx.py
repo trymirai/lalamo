@@ -6,7 +6,7 @@ from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
 from jax.lax import stop_gradient
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
@@ -96,7 +96,7 @@ def _mlx_pack_master_weights(
     biases: Float[Array, "*components rows groups"],
     group_size: int,
     bits: int,
-) -> Int[Array, "*components rows packed_cols"]:
+) -> UInt8[Array, "*components rows packed_cols"]:
     int_scale_weights = _mlx_master_weights_to_int_scale(
         weights,
         scales,
@@ -108,7 +108,7 @@ def _mlx_pack_master_weights(
 
 
 def _mlx_unpack_master_weights(
-    packed_weights: Int[Array, "... packed_cols"],
+    packed_weights: UInt8[Array, "... packed_cols"],
     scales: Float[Array, "... groups"],
     biases: Float[Array, "... groups"],
     group_size: int,
@@ -182,7 +182,7 @@ class MLXSpec(QuantizedSpec):
     def from_packed_parameters(
         self,
         *,
-        packed_weights: Int[Array, "*components rows packed_cols"],
+        packed_weights: UInt8[Array, "*components rows packed_cols"],
         scales: Float[Array, "*components rows groups"],
         biases: Float[Array, "*components rows groups"],
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
@@ -221,7 +221,7 @@ class MLXMatrix(EmbeddingMatrix[MLXSpec]):
 
     @property
     @abstractmethod
-    def _packed_quantized_weights(self) -> Int[Array, "*components rows packed_cols"]: ...
+    def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]: ...
 
     def export(self) -> ExportResults:
         return ExportResults(
@@ -261,7 +261,7 @@ class MLXMatrixForTraining(MLXMatrix):
         return self.weights.dtype
 
     @property
-    def _packed_quantized_weights(self) -> Int[Array, "*components rows packed_cols"]:
+    def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]:
         return _mlx_pack_master_weights(
             self.weights,
             self.scales,
@@ -317,12 +317,12 @@ class MLXMatrixForTraining(MLXMatrix):
 
     def dot(
         self,
-        vector: Float[Array, " channels"],
+        vector: Float[Array, " source_channels"],
         *,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
-    ) -> Float[Array, " channels"]:
+    ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
         dequantized_weights = _mlx_quantize(
             self.weights.astype(vector.dtype),
@@ -384,7 +384,7 @@ class MLXMatrixForTraining(MLXMatrix):
 
 
 class MLXMatrixForInference(MLXMatrix):
-    packed_weights: Int[Array, "*components rows packed_cols"]
+    packed_weights: UInt8[Array, "*components rows packed_cols"]
     scales: Float[Array, "*components rows groups"]
     biases: Float[Array, "*components rows groups"]
 
@@ -398,7 +398,7 @@ class MLXMatrixForInference(MLXMatrix):
         return self.scales.dtype
 
     @property
-    def _packed_quantized_weights(self) -> Int[Array, "*components rows packed_cols"]:
+    def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]:
         return self.packed_weights
 
     def astype(self, dtype: DTypeLike) -> "MLXMatrixForInference":
@@ -481,12 +481,12 @@ class MLXMatrixForInference(MLXMatrix):
 
     def dot(
         self,
-        vector: Float[Array, " channels"],
+        vector: Float[Array, " source_channels"],
         *,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
-    ) -> Float[Array, " channels"]:
+    ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
         weights = _mlx_unpack_master_weights(
             self.packed_weights,

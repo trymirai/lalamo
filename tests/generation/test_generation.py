@@ -99,7 +99,7 @@ def test_batch_generation(language_model: LanguageModel) -> None:
         ],
     )
 
-    generation_config = GenerationConfig(temperature=0)
+    generation_config = GenerationConfig(temperature=0.0)
     max_output_length = 32
     response_token_ids = language_model.generate_tokens(
         padded_token_ids,
@@ -155,7 +155,7 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
     prompt = [UserMessage("What's the largest domestic cat breed?")]
     token_ids = jnp.array(language_model.token_codec.encode_request(prompt))
 
-    generation_config = GenerationConfig(temperature=0)
+    generation_config = GenerationConfig(temperature=0.0)
     prefill_forward_pass_config = DecoderForwardPassConfig.for_inference(precision=DotAlgorithmPreset.F32_F32_F32)
     decode_forward_pass_config = DecoderForwardPassConfig.for_inference(
         ForwardPassMode.SINGLE_TOKEN,
