@@ -1,4 +1,14 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
+
+import jax.numpy as jnp
+from jaxtyping import Array, Float
+
+from lalamo.modules.common import ForwardPassMode
+from lalamo.modules.decoder import Decoder, DecoderResult
+from lalamo.modules.token_mixers.state.common import State
+from lalamo.speculator.sampler import GumbelSampler
 
 __all__ = ["AcceptedProposal", "ProposalNode", "TrieProposal"]
 
@@ -17,7 +27,7 @@ class AcceptedProposal:
 class ProposalNode:
     token_id: int
     parent_index: int
-    sample_position: int
+    gumbel_position: int
     depth: int
 
 
@@ -26,14 +36,14 @@ class TrieProposal:
     nodes: tuple[ProposalNode, ...]
 
     @staticmethod
-    def create(root_token_id: int, first_sample_position: int = 1) -> "TrieProposal":
-        return TrieProposal((ProposalNode(root_token_id, -1, first_sample_position, 0),))
+    def create(root: int, first_gumbel_position: int = 1) -> TrieProposal:
+        return TrieProposal((ProposalNode(root, -1, first_gumbel_position, 0),))
 
-    def add_node(self, parent_index: int, token_id: int) -> tuple["TrieProposal", int]:
+    def add_node(self, parent_index: int, token_id: int) -> tuple[TrieProposal, int]:
         node_index = len(self.nodes)
-        sample_position = self.nodes[-1].sample_position + 1
+        gumbel_position = self.nodes[-1].gumbel_position + 1
         depth = self.nodes[parent_index].depth + 1
-        return TrieProposal((*self.nodes, ProposalNode(token_id, parent_index, sample_position, depth))), node_index
+        return TrieProposal((*self.nodes, ProposalNode(token_id, parent_index, gumbel_position, depth))), node_index
 
     @property
     def token_ids(self) -> tuple[int, ...]:
@@ -44,27 +54,54 @@ class TrieProposal:
         return tuple(node.parent_index for node in self.nodes)
 
     @property
-    def sample_positions(self) -> tuple[int, ...]:
-        return tuple(node.sample_position for node in self.nodes)
+    def gumbel_positions(self) -> tuple[int, ...]:
+        return tuple(node.gumbel_position for node in self.nodes)
 
     @property
     def depths(self) -> tuple[int, ...]:
         return tuple(node.depth for node in self.nodes)
 
+    def forward(
+        self,
+        decoder: Decoder,
+        kv_cache: State,
+        next_token_position: int,
+        sampler: GumbelSampler,
+        return_activation_trace: bool,
+    ) -> tuple[DecoderResult, tuple[int, ...]]:
+        token_ids = jnp.array([self.token_ids], dtype=jnp.int32)
+        token_positions = jnp.array(
+            [[next_token_position + depth for depth in self.depths]],
+            dtype=jnp.int32,
+        )
+        parent_indices = jnp.array([self.parent_indices], dtype=jnp.int32)
+        decoder_result = decoder(
+            token_ids,
+            token_positions,
+            kv_cache,
+            return_updated_state=True,
+            return_activation_trace=return_activation_trace,
+            forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
+            attention_parent_indices=parent_indices,
+        )
+        return decoder_result, self.sample(decoder_result.logits[0], sampler)
+
+    def sample(self, logits: Float[Array, "nodes vocab"], sampler: GumbelSampler) -> tuple[int, ...]:
+        return tuple(
+            sampler.sample_logits(logit, node.gumbel_position) for logit, node in zip(logits, self.nodes, strict=True)
+        )
+
     def verify(self, sampled_token_ids: tuple[int, ...]) -> AcceptedProposal:
+        child_index_by_parent_and_token = {
+            (node.parent_index, node.token_id): node_index for node_index, node in enumerate(self.nodes)
+        }
         token_ids: tuple[int, ...] = ()
         node_indices: tuple[int, ...] = ()
         terminal_node_index = 0
 
-        while True:
+        for _ in self.nodes[1:]:
             sampled_token_id = sampled_token_ids[terminal_node_index]
-            next_node_index: int | None = None
-
-            for node_index, node in enumerate(self.nodes):
-                if node.parent_index == terminal_node_index and node.token_id == sampled_token_id:
-                    next_node_index = node_index
-                    break
-
+            next_node_index = child_index_by_parent_and_token.get((terminal_node_index, sampled_token_id))
             if next_node_index is None:
                 break
 
