@@ -9,7 +9,7 @@ from lalamo.module import ShardingAxis
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.weight_matrix import CompressionImplementation, Preconditioner, QuantizedSpec
 
-from .ldlq import block_ldl
+from .block_ldl import block_ldl
 
 __all__ = [
     "yaqa_round_weights",

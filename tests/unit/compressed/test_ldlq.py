@@ -4,7 +4,7 @@ import pytest
 from einops import rearrange
 from jax.lax import DotAlgorithmPreset
 
-from lalamo.compressed.utils.ldlq import block_ldl
+from lalamo.compressed.utils.block_ldl import block_ldl
 from lalamo.utils.precision import use_dot_algorithm_preset
 from tests.common import assert_close
 
