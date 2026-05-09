@@ -107,6 +107,10 @@ def test_preconditioner_preserves_symmetric_blocks() -> None:
     assert preconditioner.output_block is not None
     _assert_close(result=preconditioner.input_block, reference=input_block)
     _assert_close(result=preconditioner.output_block, reference=output_block)
+    _assert_close(
+        result=jnp.asarray(preconditioner.magnitude),
+        reference=jnp.trace(input_block) * jnp.trace(output_block),
+    )
 
 
 def test_preconditioner_identity_has_no_blocks() -> None:
@@ -114,6 +118,31 @@ def test_preconditioner_identity_has_no_blocks() -> None:
 
     assert preconditioner.input_block is None
     assert preconditioner.output_block is None
+    _assert_close(result=preconditioner.magnitude, reference=jnp.asarray(1.0))
+
+
+def test_preconditioner_magnitude_uses_only_present_blocks() -> None:
+    input_block = jnp.array(
+        [
+            [2.0, -1.0, 0.5],
+            [-1.0, 3.0, 4.0],
+            [0.5, 4.0, 5.0],
+        ],
+        dtype=jnp.float32,
+    )
+    output_block = jnp.array(
+        [
+            [7.0, 2.0],
+            [2.0, 11.0],
+        ],
+        dtype=jnp.float32,
+    )
+
+    input_preconditioner = Preconditioner.init(input_block=input_block)
+    output_preconditioner = Preconditioner.init(output_block=output_block)
+
+    _assert_close(result=jnp.asarray(input_preconditioner.magnitude), reference=jnp.trace(input_block))
+    _assert_close(result=jnp.asarray(output_preconditioner.magnitude), reference=jnp.trace(output_block))
 
 
 def test_preconditioner_supports_batched_symmetric_blocks() -> None:
@@ -145,6 +174,12 @@ def test_preconditioner_supports_batched_symmetric_blocks() -> None:
     assert preconditioner.output_block is not None
     _assert_close(result=preconditioner.input_block, reference=input_blocks)
     _assert_close(result=preconditioner.output_block, reference=output_blocks)
+    _assert_close(
+        result=jnp.asarray(preconditioner.magnitude),
+        reference=jnp.mean(
+            jnp.trace(input_blocks, axis1=-2, axis2=-1) * jnp.trace(output_blocks, axis1=-2, axis2=-1),
+        ),
+    )
 
 
 def test_only_quantized_specs_expose_block_size_properties() -> None:
@@ -152,6 +187,15 @@ def test_only_quantized_specs_expose_block_size_properties() -> None:
     assert isinstance(MLXSpec(bits=4, group_size=2), QuantizedSpec)
     assert not hasattr(FullPrecisionSpec(), "input_block_size")
     assert not hasattr(FullPrecisionSpec(), "output_block_size")
+
+
+@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
+def test_weight_matrix_numel_returns_product_of_shape(layout: Layout) -> None:
+    weights = jnp.ones((2, 3, 5), dtype=jnp.float32)
+
+    matrix = FullPrecisionSpec(layout=layout).compress(weights)
+
+    assert matrix.numel == 30
 
 
 @pytest.mark.parametrize(
