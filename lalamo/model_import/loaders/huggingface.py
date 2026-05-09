@@ -100,12 +100,23 @@ def _fuse_awq_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
-) -> tuple[Array, Array, Array]:
+) -> tuple[Array, Array | None, Array]:
     if sublayers_to_fuse is None:
-        return weights_dict[path / "qweight"], weights_dict[path / "qzeros"], weights_dict[path / "scales"]
+        qzeros_path = path / "qzeros"
+        qzeros = weights_dict.get(qzeros_path)
+        return weights_dict[path / "qweight"], qzeros, weights_dict[path / "scales"]
+
+    qzeros_paths = [path / layer_name / "qzeros" for layer_name in sublayers_to_fuse]
+    if all(qzeros_path in weights_dict for qzeros_path in qzeros_paths):
+        qzeros = jnp.concatenate([weights_dict[qzeros_path] for qzeros_path in qzeros_paths], axis=1)
+    elif any(qzeros_path in weights_dict for qzeros_path in qzeros_paths):
+        raise ValueError("Cannot fuse AWQ layers with mixed symmetric and asymmetric zero-point parameters.")
+    else:
+        qzeros = None
+
     return (
         jnp.concatenate([weights_dict[path / layer_name / "qweight"] for layer_name in sublayers_to_fuse], axis=1),
-        jnp.concatenate([weights_dict[path / layer_name / "qzeros"] for layer_name in sublayers_to_fuse], axis=1),
+        qzeros,
         jnp.concatenate([weights_dict[path / layer_name / "scales"] for layer_name in sublayers_to_fuse], axis=1),
     )
 
@@ -178,20 +189,33 @@ def _load_awq_array(
     group_size = packed_qweights.shape[0] // num_groups
 
     unpacked_weights = unpack_int32(packed_qweights, bits)
-    unpacked_zeros = unpack_int32(packed_qzeros, bits)
+    unpacked_zeros = None
+    if packed_qzeros is not None:
+        unpacked_zeros = unpack_int32(packed_qzeros, bits)
     if bits == 4:
         unpacked_weights = _reverse_uint4_order(unpacked_weights, AWQ_UINT4_REVERSE_ORDER)
-        unpacked_zeros = _reverse_uint4_order(unpacked_zeros, AWQ_UINT4_REVERSE_ORDER)
+        if unpacked_zeros is not None:
+            unpacked_zeros = _reverse_uint4_order(unpacked_zeros, AWQ_UINT4_REVERSE_ORDER)
 
     weight_values = unpacked_weights.T.astype(template.dtype)
     scale_values = scales.T.astype(template.dtype)
-    zero_point_values = unpacked_zeros.T.astype(template.dtype)
+    zero_point_values = None
+    if unpacked_zeros is not None:
+        zero_point_values = unpacked_zeros.T.astype(template.dtype)
 
-    spec = AWQSpec(bits=_supported_quantization_bits(bits), group_size=group_size, layout=layout)
+    spec = AWQSpec(
+        bits=_supported_quantization_bits(bits),
+        group_size=group_size,
+        is_symmetric=zero_point_values is None,
+        layout=layout,
+    )
+    packed_zero_points = None
+    if zero_point_values is not None:
+        packed_zero_points = pack_uint_to_uint8(zero_point_values, bits)
     return spec.from_packed_parameters(
         packed_weights=pack_uint_to_uint8(weight_values, bits),
         scales=scale_values,
-        packed_zero_points=pack_uint_to_uint8(zero_point_values, bits),
+        packed_zero_points=packed_zero_points,
         implementation=implementation,
     )
 
