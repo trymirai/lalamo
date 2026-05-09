@@ -1,9 +1,12 @@
 from dataclasses import dataclass
+from functools import partial
 
+import jax
 import jax.numpy as jnp
+from jax.scipy.linalg import solve_triangular
 from jaxtyping import Array, DTypeLike, Float, Key
 
-from lalamo.module import Keychain, ParameterNorm, field
+from lalamo.module import Keychain, ParameterNorm, ShardingAxis, field
 from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import use_out_sharding
@@ -33,12 +36,32 @@ class LowRankSpec(WeightMatrixSpec):
         self,
         weights: Float[Array, "*components out_channels in_channels"],
         *,
-        key: Key[Array, ""] | None = None,  # noqa: ARG002
+        key: Key[Array, ""] | None = None,
         preconditioner: Preconditioner | None = None,
-        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> "LowRankMatrix":
+        if weights.ndim > 2 and preconditioner is not None:
+            compress_component = partial(
+                self.compress,
+                key=key,
+                implementation=implementation,
+            )
+            return jax.vmap(compress_component, spmd_axis_name=ShardingAxis.EXPERT)(
+                weights,
+                preconditioner=preconditioner,
+            )
+
+        input_factor = None
+        output_factor = None
         if preconditioner is not None:
-            raise ValueError("Preconditioned rounding is not implemented yet.")
+            input_block = preconditioner.input_block
+            output_block = preconditioner.output_block
+            if output_block is not None:
+                output_factor = jnp.linalg.cholesky(output_block, upper=True)
+                weights = output_factor @ weights
+            if input_block is not None:
+                input_factor = jnp.linalg.cholesky(input_block, upper=True)
+                weights = weights @ input_factor.T
 
         u, singular_values, vh = jnp.linalg.svd(weights, full_matrices=False)
         *_, svd_rank = singular_values.shape
@@ -48,6 +71,10 @@ class LowRankSpec(WeightMatrixSpec):
         singular_value_roots = jnp.sqrt(singular_values[..., :truncated_rank])
         up_projection = u[..., :, :truncated_rank] * singular_value_roots[..., None, :]
         down_projection = singular_value_roots[..., :, None] * vh[..., :truncated_rank, :]
+        if output_factor is not None:
+            up_projection = solve_triangular(output_factor, up_projection, lower=False)
+        if input_factor is not None:
+            down_projection = solve_triangular(input_factor, down_projection.T, lower=False).T
         return LowRankMatrix(
             spec=self,
             up_projection=up_projection,

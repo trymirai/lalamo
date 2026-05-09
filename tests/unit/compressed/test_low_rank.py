@@ -35,6 +35,26 @@ def _manual_low_rank_decompress(weights: jax.Array, rank: int) -> jax.Array:
     return up_projection @ down_projection
 
 
+def _positive_definite_block(seed: int) -> jax.Array:
+    factors = jax.random.normal(jax.random.key(seed), (4, 4), dtype=jnp.float32)
+    return factors @ factors.T / 4 + 0.5 * jnp.identity(4, dtype=jnp.float32)
+
+
+def _apply_preconditioner(weights: jax.Array, preconditioner: Preconditioner) -> jax.Array:
+    result = weights
+    output_block = preconditioner.output_block
+    if output_block is not None:
+        output_factor = jnp.linalg.cholesky(output_block, upper=True)
+        result = output_factor @ result
+
+    input_block = preconditioner.input_block
+    if input_block is not None:
+        input_factor = jnp.linalg.cholesky(input_block, upper=True)
+        result = result @ input_factor.T
+
+    return result
+
+
 def _assert_named_sharding(sharding: Sharding, mesh: Mesh) -> None:
     assert isinstance(sharding, NamedSharding)
     assert sharding.mesh == mesh
@@ -90,11 +110,49 @@ def test_batched_low_rank_compress_and_decompress_match_truncated_svd() -> None:
     _assert_close(result=matrix.decompress(), reference=_manual_low_rank_decompress(weights, 2))
 
 
-def test_low_rank_compress_rejects_preconditioning() -> None:
-    preconditioner = Preconditioner.init(input_block=jnp.eye(4, dtype=jnp.float32))
+def test_low_rank_compress_with_identity_preconditioner_matches_truncated_svd() -> None:
+    weights = _logical_weights()
 
-    with pytest.raises(ValueError, match="Preconditioned rounding is not implemented"):
-        LowRankSpec(rank=2).compress(_logical_weights(), preconditioner=preconditioner)
+    matrix = LowRankSpec(rank=2).compress(weights, preconditioner=Preconditioner.identity())
+
+    _assert_close(result=matrix.decompress(), reference=_manual_low_rank_decompress(weights, 2))
+
+
+@pytest.mark.parametrize("input_seed, output_seed", [(11, None), (None, 17), (11, 17)])
+def test_low_rank_compress_with_preconditioner_matches_truncated_svd_in_weighted_space(
+    input_seed: int | None,
+    output_seed: int | None,
+) -> None:
+    weights = _logical_weights()
+    input_block = None
+    if input_seed is not None:
+        input_block = _positive_definite_block(input_seed)
+    output_block = None
+    if output_seed is not None:
+        output_block = _positive_definite_block(output_seed)
+    preconditioner = Preconditioner.init(input_block=input_block, output_block=output_block)
+
+    matrix = LowRankSpec(rank=2).compress(weights, preconditioner=preconditioner)
+
+    transformed_result = _apply_preconditioner(matrix.decompress(), preconditioner)
+    transformed_reference = _manual_low_rank_decompress(_apply_preconditioner(weights, preconditioner), 2)
+    _assert_close(result=transformed_result, reference=transformed_reference)
+
+
+def test_low_rank_compress_maps_batched_preconditioned_weights() -> None:
+    weights = jnp.stack([_logical_weights(), _logical_weights() * 0.5])
+    input_blocks = jnp.stack([_positive_definite_block(11), _positive_definite_block(13)])
+    output_blocks = jnp.stack([_positive_definite_block(17), _positive_definite_block(19)])
+    preconditioner = Preconditioner.init(input_block=input_blocks, output_block=output_blocks)
+    spec = LowRankSpec(rank=2)
+
+    def compress_one(weights: jax.Array, preconditioner: Preconditioner) -> jax.Array:
+        return spec.compress(weights, preconditioner=preconditioner).decompress()
+
+    result = spec.compress(weights, preconditioner=preconditioner).decompress()
+    reference = jax.vmap(compress_one)(weights, preconditioner)
+
+    _assert_close(result=result, reference=reference)
 
 
 def test_low_rank_compress_rejects_rank_larger_than_svd_rank() -> None:
