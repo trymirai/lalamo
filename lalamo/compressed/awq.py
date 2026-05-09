@@ -95,7 +95,7 @@ def _awq_master_weights_to_int_scale(
     scales: Float[Array, "... groups"],
     zero_points: Float[Array, "... groups"],
     group_size: int,
-) -> Float[Array, "... rows cols"]:
+) -> Float[Array, "... cols"]:
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     expanded_zero_points = expand_last_axis_groups(zero_points, group_size=group_size)
     return (weights + expanded_zero_points) / expanded_scales
@@ -108,7 +108,7 @@ def _awq_quantize(
     zero_points: Float[Array, "... groups"],
     group_size: int,
     round_fn: Callable[[Float[Array, "..."]], Float[Array, "..."]],
-) -> Float[Array, "... rows cols"]:
+) -> Float[Array, "... cols"]:
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     int_scale_zero_points = _awq_master_zero_points_to_int_scale(zero_points, stop_gradient(scales))
     int_zero_points = round_fn(int_scale_zero_points)
@@ -161,12 +161,12 @@ def _awq_unpack_master_zero_points(
 
 
 def _awq_unpack_master_weights(
-    packed_weights: Int[Array, "... rows packed_cols"],
-    scales: Float[Array, "... rows groups"],
-    packed_zero_points: Int[Array, "... rows packed_groups"],
+    packed_weights: Int[Array, "... packed_cols"],
+    scales: Float[Array, "... groups"],
+    packed_zero_points: Int[Array, "... packed_groups"],
     group_size: int,
     bits: int,
-) -> Float[Array, "... rows cols"]:
+) -> Float[Array, "... cols"]:
     int_weights = unpack_uint8_to_uint(packed_weights, bits=bits, dtype=scales.dtype)
     int_zero_points = unpack_uint8_to_uint(packed_zero_points, bits=bits, dtype=scales.dtype)
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)

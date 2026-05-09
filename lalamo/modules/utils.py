@@ -253,7 +253,7 @@ def call_vmapped_twice[ResultT](
 
 
 def apply_soft_capping(
-    values: Float[Array, "*"],
+    values: Float[Array, "..."],
     soft_cap: float,
-) -> Float[Array, "dst_tokens src_tokens"]:
+) -> Float[Array, "..."]:
     return jax.nn.tanh(values / soft_cap) * soft_cap

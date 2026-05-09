@@ -68,7 +68,7 @@ def _mlx_master_weights_to_int_scale(
     scales: Float[Array, "... groups"],
     biases: Float[Array, "... groups"],
     group_size: int,
-) -> Float[Array, "... rows cols"]:
+) -> Float[Array, "... cols"]:
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     expanded_biases = expand_last_axis_groups(biases, group_size=group_size)
     return (weights - expanded_biases) / expanded_scales
@@ -80,8 +80,8 @@ def _mlx_quantize(
     scales: Float[Array, "... groups"],
     biases: Float[Array, "... groups"],
     group_size: int,
-    round_fn: Callable[[Float[Array, "... rows cols"]], Float[Array, "... rows cols"]],
-) -> Float[Array, "... rows cols"]:
+    round_fn: Callable[[Float[Array, "... cols"]], Float[Array, "... cols"]],
+) -> Float[Array, "... cols"]:
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     expanded_biases = expand_last_axis_groups(biases, group_size=group_size)
     int_scale_weights = (weights - stop_gradient(expanded_biases)) / stop_gradient(expanded_scales)
@@ -108,12 +108,12 @@ def _mlx_pack_master_weights(
 
 
 def _mlx_unpack_master_weights(
-    packed_weights: Int[Array, "... rows packed_cols"],
-    scales: Float[Array, "... rows groups"],
-    biases: Float[Array, "... rows groups"],
+    packed_weights: Int[Array, "... packed_cols"],
+    scales: Float[Array, "... groups"],
+    biases: Float[Array, "... groups"],
     group_size: int,
     bits: int,
-) -> Float[Array, "... rows cols"]:
+) -> Float[Array, "... cols"]:
     int_weights = unpack_uint8_to_uint(packed_weights, bits=bits)
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     expanded_biases = expand_last_axis_groups(biases, group_size=group_size)

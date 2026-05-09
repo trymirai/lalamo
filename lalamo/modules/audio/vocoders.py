@@ -18,8 +18,8 @@ class Vocoder[ConfigT: VocoderConfig](LalamoModule[ConfigT]):
     @abstractmethod
     def __call__(
         self,
-        audio_features: Float[Array, "batch audio_channels samples"],
-    ) -> Float[Array, "batch audio_channels samples"]: ...
+        audio_features: Float[Array, " audio_samples"],
+    ) -> Float[Array, " audio_samples"]: ...
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,6 @@ class NoopVocoderConfig(VocoderConfig):
 class NoopVocoder(Vocoder[NoopVocoderConfig]):
     def __call__(
         self,
-        audio_features: Float[Array, "batch audio_channels samples"],
-    ) -> Float[Array, "batch audio_channels samples"]:
+        audio_features: Float[Array, " audio_samples"],
+    ) -> Float[Array, " audio_samples"]:
         return audio_features

@@ -80,21 +80,21 @@ def _permute_for_rope_rotate_half(
         # For 1D vectors: swap interleaved pairs to grouped halves
         return rearrange(weight, "(half_dim pair) -> (pair half_dim)", pair=2)
 
-    out_features, _ = weight.shape
-    assert out_features == num_heads * head_dim, (
-        f"Output features {out_features} must equal num_heads * head_dim = {num_heads * head_dim}"
+    out_channels, _ = weight.shape
+    assert out_channels == num_heads * head_dim, (
+        f"Output channels {out_channels} must equal num_heads * head_dim = {num_heads * head_dim}"
     )
     # For 2D matrices: swap interleaved pairs to grouped halves within each head
     return rearrange(
         weight,
-        "(heads half_dim pair) in_features -> (heads pair half_dim) in_features",
+        "(heads half_dim pair) in_channels -> (heads pair half_dim) in_channels",
         heads=num_heads,
         pair=2,
     )
 
 
 def _permute_qkv_for_rope_rotate_half(
-    qkv_weight: Float[Array, "q_dim+k_dim+v_dim in_features"],
+    qkv_weight: Float[Array, "qkv_channels in_channels"],
     num_heads: int,
     num_groups: int,
     head_dim: int,
@@ -105,7 +105,7 @@ def _permute_qkv_for_rope_rotate_half(
     Only Q and K need permutation (they use RoPE). V is unchanged.
 
     Args:
-        qkv_weight: Fused QKV weight of shape (q_dim + k_dim + v_dim, in_features)
+        qkv_weight: Fused QKV weight of shape (q_dim + k_dim + v_dim, in_channels)
                     where q_dim = num_heads * head_dim, k_dim = v_dim = num_groups * head_dim
         num_heads: Number of query heads.
         num_groups: Number of key/value heads (groups for GQA).
@@ -535,7 +535,7 @@ def load_convnext_block(
     )
 
     # Load pointwise conv 1 (Linear layer)
-    # PyTorch Linear weight is (out_features, in_features)
+    # PyTorch Linear weight is (out_channels, in_channels)
     pwconv1_weight = weights_dict[path / "pwconv1" / "weight"]
     pwconv1_bias = weights_dict[path / "pwconv1" / "bias"]
     base1 = load_full_precision(module.pointwise_conv_step1.weights, pwconv1_weight)

@@ -23,7 +23,7 @@ from lalamo.sampling import SamplingPolicy
 
 @dataclass
 class FishAudioTextDecoderResult:
-    token_codes: Float[Array, "batch codes"]
+    token_codes: Int[Array, "batch codebooks"]
     hidden_states: Array | None
     state: State | None
 
@@ -384,7 +384,7 @@ def decode_next_token(
     keychain: Keychain,
     forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
     previous_tokens: Array | None = None,  # noqa: ARG001, reserved for future when repetition penalty is done
-) -> tuple[Int[Array, "batch codes"], State | None]:
+) -> tuple[Int[Array, "batch codebooks"], State | None]:
     batch_size = x.shape[0]
     assert batch_size == 1, "Batching not supported yet"
     (

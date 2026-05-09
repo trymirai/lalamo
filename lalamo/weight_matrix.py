@@ -43,7 +43,7 @@ def sym_to_tril(sym_matrix: Float[Array, "*batch n n"]) -> Float[Array, "*batch 
 
 
 @eqx.filter_jit
-def tril_to_sym(tril_vector: Float[Array, "*batch n*(n+1)//2"]) -> Float[Array, "*batch n n"]:
+def tril_to_sym(tril_vector: Float[Array, "*batch tril"]) -> Float[Array, "*batch n n"]:
     *leading_dims, numel = tril_vector.shape
     num_rows = int(math.sqrt(8 * numel + 1) - 1) // 2
     result = jnp.empty((*leading_dims, num_rows, num_rows), dtype=tril_vector.dtype)
@@ -53,8 +53,8 @@ def tril_to_sym(tril_vector: Float[Array, "*batch n*(n+1)//2"]) -> Float[Array, 
 
 
 class Preconditioner(eqx.Module):
-    input_block_tril: Float[Array, "*batch input_channels*(input_channels+1)//2"] | None
-    output_block_tril: Float[Array, "*batch output_channels*(output_channels+1)//2"] | None
+    input_block_tril: Float[Array, "*batch input_tril"] | None
+    output_block_tril: Float[Array, "*batch output_tril"] | None
 
     @property
     def input_block(self) -> Float[Array, "*batch input_channels input_channels"] | None:
@@ -313,11 +313,32 @@ class Layout(StrEnum):
 
         return convert(weights)
 
+    @overload
+    def matmul(
+        self: "Literal[Layout.OUTPUT_INPUT]",
+        weights: Float[Array, "out_channels in_channels"],
+        vector: Float[Array, " in_channels"],
+    ) -> Float[Array, " out_channels"]: ...
+
+    @overload
+    def matmul(
+        self: "Literal[Layout.INPUT_OUTPUT]",
+        weights: Float[Array, "in_channels out_channels"],
+        vector: Float[Array, " in_channels"],
+    ) -> Float[Array, " out_channels"]: ...
+
+    @overload
+    def matmul(
+        self: "Layout",
+        weights: Float[Array, "rows cols"],
+        vector: Float[Array, " channels"],
+    ) -> Float[Array, " channels"]: ...
+
     def matmul(
         self,
-        weights: Float[Array, "row cols"],
-        vector: Float[Array, " in_channels"],
-    ) -> Float[Array, " out_channels"]:
+        weights: Float[Array, "rows cols"],
+        vector: Float[Array, " channels"],
+    ) -> Float[Array, " channels"]:
         if self == Layout.INPUT_OUTPUT:
             return vector @ weights
         return weights @ vector
