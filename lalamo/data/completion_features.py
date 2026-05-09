@@ -1,6 +1,6 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Annotated, Literal, Self
+from typing import Annotated, Self
 
 import jax.numpy as jnp
 import numpy as np
@@ -9,22 +9,12 @@ from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.data.lalamo_completions import LalamoCompletion
 
-type LayerSelection = Literal["all"] | tuple[int, ...]
-type PositionSelection = Literal["all"]
-
 
 @dataclass(frozen=True)
 class FeatureRequest:
-    completions: Iterable[LalamoCompletion]
-    batch_size: Annotated[int, Ge(1)] = 1
-    layers: LayerSelection = tuple()
-    positions: PositionSelection = "all"
-    k: int = 8
+    completions: tuple[LalamoCompletion, ...]
     top_k_logits: Annotated[int, Ge(1)] = 128
-    output_features: bool = False
-    pad_token_id: int = 0
-    prompt_padding_multiple: int = 128
-    generation_padding_multiple: int = 512
+    layer_indices: tuple[int, ...] = tuple()
 
 
 @dataclass(frozen=True)
@@ -97,7 +87,6 @@ class LalamoCompletionFeatures:
     target_logsumexp: Float[Array, "batch completion_tokens"] | None = None
     target_top_k_ids: Int[Array, "batch completion_tokens k"] | None = None
     target_top_k_logits: Float[Array, "batch completion_tokens k"] | None = None
-    output_features: Float[Array, "batch completion_tokens hidden"] | None = None
     layer_features: Float[Array, "batch layers completion_tokens hidden"] | None = None
 
 
