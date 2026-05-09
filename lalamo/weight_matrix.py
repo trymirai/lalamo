@@ -168,6 +168,14 @@ class QuantizedSpec(WeightMatrixSpec):
     @abstractmethod
     def output_block_size(self) -> int: ...
 
+    @property
+    @abstractmethod
+    def rate(self) -> float: ...
+
+    @property
+    @abstractmethod
+    def distortion(self) -> float: ...
+
 
 WeightMatrixSpecT_co = TypeVar("WeightMatrixSpecT_co", bound=WeightMatrixSpec, covariant=True)
 

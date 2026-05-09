@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from math import erfc, exp, log2, pi, sqrt
 
 import jax
 import jax.numpy as jnp
@@ -39,6 +40,17 @@ class _RoundSpec(QuantizedSpec):
     @property
     def output_block_size(self) -> int:
         return 4
+
+    @property
+    def rate(self) -> float:
+        return log2(3)
+
+    @property
+    def distortion(self) -> float:
+        threshold = 0.5
+        density = exp(-(threshold**2) / 2) / sqrt(2 * pi)
+        tail_probability = erfc(threshold / sqrt(2)) / 2
+        return 1 - 4 * density + 2 * tail_probability
 
 
 def _weights() -> jax.Array:

@@ -32,6 +32,7 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
+from .utils.gaussian_order_statistics import standard_normal_absmax_squared, standard_normal_range_squared
 from .utils.grouping import (
     group_by_last_axis,
     min_max_within_groups,
@@ -231,6 +232,23 @@ class AWQSpec(QuantizedSpec):
         if self.layout == Layout.INPUT_OUTPUT:
             return self.group_size
         return 1
+
+    @property
+    def rate(self) -> float:
+        if self.is_symmetric:
+            zero_point_bits = 0
+        else:
+            zero_point_bits = self.bits
+        return float(self.bits + (16 + zero_point_bits) / self.group_size)
+
+    @property
+    def distortion(self) -> float:
+        if self.is_symmetric:
+            qmax = (2 ** (self.bits - 1)) - 1
+            return standard_normal_absmax_squared(self.group_size) / (12 * qmax**2)
+
+        qmax = (2**self.bits) - 1
+        return standard_normal_range_squared(self.group_size) / (12 * qmax**2)
 
     def compress(
         self,

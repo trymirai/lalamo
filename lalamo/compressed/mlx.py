@@ -27,6 +27,7 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
+from .utils.gaussian_order_statistics import standard_normal_range_squared
 from .utils.grouping import (
     expand_last_axis_groups,
     group_by_last_axis,
@@ -137,6 +138,15 @@ class MLXSpec(QuantizedSpec):
         if self.layout == Layout.INPUT_OUTPUT:
             return self.group_size
         return 1
+
+    @property
+    def rate(self) -> float:
+        return float(self.bits + 32 / self.group_size)
+
+    @property
+    def distortion(self) -> float:
+        qmax = (2**self.bits) - 1
+        return standard_normal_range_squared(self.group_size) / (12 * qmax**2)
 
     def compress(
         self,
