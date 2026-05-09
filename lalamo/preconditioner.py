@@ -1,13 +1,19 @@
 import math
+from pathlib import Path
 from typing import Self
 
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, Float
+import orbax.checkpoint as ocp
+from jaxtyping import Array, Float, PyTree
 
 __all__ = [
     "Preconditioner",
+    "PreconditionerDict",
 ]
+
+
+type PytreePath = tuple[str, ...]
 
 
 @eqx.filter_jit
@@ -86,4 +92,43 @@ class Preconditioner(eqx.Module):
         return cls(
             input_block_tril=None,
             output_block_tril=None,
+        )
+
+
+class PreconditionerDict(dict[PytreePath, Preconditioner]):
+    @classmethod
+    def init_for_model(cls, model: PyTree) -> Self:
+        from lalamo.utils.surgery import select_nodes_of_type  # noqa: PLC0415
+        from lalamo.weight_matrix import WeightMatrix  # noqa: PLC0415
+
+        return cls(
+            {
+                path: Preconditioner.identity()
+                for path, _matrix in select_nodes_of_type(WeightMatrix, model)
+            },
+        )
+
+    def save(self, directory: Path | str) -> None:
+        paths = tuple(sorted(self))
+        checkpointer = ocp.StandardCheckpointer()
+        checkpointer.save(
+            Path(directory),
+            tuple(self[path] for path in paths),
+            custom_metadata={"paths": paths},
+        )
+        checkpointer.wait_until_finished()
+
+    @classmethod
+    def restore(cls, directory: Path | str) -> Self:
+        checkpointer = ocp.StandardCheckpointer()
+        paths = checkpointer.metadata(Path(directory)).custom_metadata["paths"]
+        restored = checkpointer.restore(Path(directory))
+        return cls(
+            {
+                tuple(path): Preconditioner(
+                    input_block_tril=preconditioner["input_block_tril"],
+                    output_block_tril=preconditioner["output_block_tril"],
+                )
+                for path, preconditioner in zip(paths, restored, strict=True)
+            },
         )
