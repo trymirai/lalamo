@@ -9,7 +9,7 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree
 
-from .common import StateLayerBase
+from .common import CompactableStateLayer, State, StateLayerBase
 
 __all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
 
@@ -63,6 +63,24 @@ def build_tree_attention_mask(
     if has_sinks:
         mask = mask.at[:, 0].set(True)
     return mask
+
+
+@eqx.filter_jit
+def compact_state_layers(
+    state: State,
+    cache_len: Int[Array, ""],
+    accepted_indices: Int[Array, " max_slots"],
+    num_accepted: Int[Array, ""],
+    max_slots: int,
+) -> State:
+    new_layers = []
+    for layer in state:
+        if not isinstance(layer, CompactableStateLayer):
+            raise TypeError(
+                f"speculative decoding requires CompactableStateLayer, got {type(layer).__name__}",
+            )
+        new_layers.append(layer.compact(cache_len, accepted_indices, num_accepted, max_slots))
+    return State(new_layers)
 
 
 class KVCacheLayer(StateLayerBase):
@@ -226,8 +244,11 @@ class DynamicKVCacheLayer(KVCacheLayer):
         return DynamicKVCacheLayer(self.has_sinks, updated_keys, updated_values, updated_padding_mask)
 
 
-class StaticKVCacheLayer(KVCacheLayer):
+class StaticKVCacheLayer(KVCacheLayer, CompactableStateLayer):
     current_length: Int[Array, "*batch"]
+
+    def prefix_lengths(self) -> Int[Array, "*batch"]:
+        return self.current_length
 
     def current_prefix_length(self) -> Int[Array, ""]:
         self._raise_if_batched()
@@ -308,6 +329,25 @@ class StaticKVCacheLayer(KVCacheLayer):
             keys=updated_keys,
             values=updated_values,
             current_length=updated_sequence_length,
+        )
+
+    def compact(
+        self,
+        cache_len: Int[Array, ""],
+        accepted_indices: Int[Array, " max_slots"],
+        num_accepted: Int[Array, ""],
+        max_slots: int,
+    ) -> "StaticKVCacheLayer":
+        dst = jnp.arange(max_slots, dtype=jnp.int32) + cache_len
+        src = cache_len + accepted_indices
+        valid = jnp.arange(max_slots) < num_accepted
+        src = jnp.where(valid, src, dst)
+        new_length = cache_len + num_accepted
+        return StaticKVCacheLayer(
+            has_sinks=self.has_sinks,
+            keys=self.keys.at[:, dst].set(self.keys[:, src]),
+            values=self.values.at[:, dst].set(self.values[:, src]),
+            current_length=jnp.full_like(self.current_length, new_length),
         )
 
     @classmethod

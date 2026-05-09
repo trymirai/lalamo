@@ -1,17 +1,38 @@
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from typing import Self
 
 import equinox as eqx
 from jax.tree_util import register_pytree_node_class
+from jaxtyping import Array, Int
 
 from lalamo.common import ParameterTree
 
-__all__ = ["State", "StateLayerBase"]
+__all__ = ["CompactableStateLayer", "State", "StateLayerBase"]
 
 
 class StateLayerBase(eqx.Module):
     @abstractmethod
     def export(self) -> ParameterTree: ...
+
+
+class CompactableStateLayer(StateLayerBase, ABC):
+    @abstractmethod
+    def prefix_lengths(self) -> Int[Array, "*batch"]: ...
+
+    def prefix_length_for_sample(self, sample_index: int) -> int:
+        prefix_lengths = self.prefix_lengths()
+        if prefix_lengths.ndim == 0:
+            return int(prefix_lengths)
+        return int(prefix_lengths[sample_index])
+
+    @abstractmethod
+    def compact(
+        self,
+        cache_len: Int[Array, ""],
+        accepted_indices: Int[Array, " max_slots"],
+        num_accepted: Int[Array, ""],
+        max_slots: int,
+    ) -> Self: ...
 
 
 @register_pytree_node_class
