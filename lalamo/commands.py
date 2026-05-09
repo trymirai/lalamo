@@ -413,6 +413,7 @@ def collect_traces(
     batch_size: int = 1,
     shard_size: int = 64,
     num_tokens_to_generate: int | None = None,
+    generation_config_override: GenerationConfig | None = None,
     callbacks_type: Callable[..., CollectTracesCallbacks] = CollectTracesCallbacks,
 ) -> None:
     callbacks = callbacks_type(
@@ -453,6 +454,7 @@ def collect_traces(
         max_input_length,
         max_output_length,
         num_tokens_to_generate,
+        generation_config_override,
         progress_callback,
     )
 

@@ -62,7 +62,7 @@ from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
-from lalamo.models import ClassifierModelConfig, LanguageModelConfig
+from lalamo.models import ClassifierModelConfig, GenerationConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
 from lalamo.speculator.ngram import NGramSpeculator
@@ -143,7 +143,13 @@ def chat(
             help="Maximum number of tokens to generate per reply.",
         ),
     ] = 8192,
+    temperature: Annotated[
+        float | None,
+        Option(help="Sampling temperature override. Use 0 for greedy decoding.", show_default="model default"),
+    ] = None,
 ) -> None:
+    generation_config = GenerationConfig(temperature=temperature) if temperature is not None else None
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -154,7 +160,7 @@ def chat(
         model = LanguageModelConfig.load_model(model_path)
         progress.remove_task(loading_task)
         warmup_task = progress.add_task("🔥 Warming up compilation cache...")
-        list(model.stream_reply_text([UserMessage("")], max_output_length=1))
+        list(model.stream_reply_text([UserMessage("")], generation_config=generation_config, max_output_length=1))
         progress.remove_task(warmup_task)
 
     if message is None:
@@ -168,14 +174,22 @@ def chat(
 
             console.print("[red]assistant> [/red]", end="")
             model_response_tokens = []
-            for token in model.stream_reply_text(messages, max_output_length=max_tokens):
+            for token in model.stream_reply_text(
+                messages,
+                generation_config=generation_config,
+                max_output_length=max_tokens,
+            ):
                 console.print(token, end="")
                 model_response_tokens.append(token)
             console.print()
             model_response_text = "".join(model_response_tokens)
             messages.append(model.message_processor.parse_response(model_response_text))
     else:
-        for token in model.stream_reply_text([UserMessage(message)], max_output_length=max_tokens):
+        for token in model.stream_reply_text(
+            [UserMessage(message)],
+            generation_config=generation_config,
+            max_output_length=max_tokens,
+        ):
             console.print(token, end="")
         console.print()
 
@@ -778,6 +792,10 @@ def generate_replies(
         int | None,
         Option(help="Fixed batch size to use, skipping automatic estimation."),
     ] = None,
+    temperature: Annotated[
+        float | None,
+        Option(help="Sampling temperature override. Use 0 for greedy decoding.", show_default="model default"),
+    ] = None,
 ) -> None:
     if batch_size is not None and vram_gb is not None:
         err_console.print("Cannot use both --batch-size and --vram-gb")
@@ -800,6 +818,7 @@ def generate_replies(
         max_vram=max_vram,
         max_output_length=max_output_length,
         batch_size=batch_size,
+        generation_config_override=GenerationConfig(temperature=temperature) if temperature is not None else None,
         callbacks_type=CliGenerateRepliesCallbacks,
     )
 
@@ -1041,19 +1060,24 @@ def collect_traces(
             show_default="all",
         ),
     ] = None,
+    temperature: Annotated[
+        float | None,
+        Option(help="Sampling temperature override. Use 0 for greedy decoding.", show_default="model default"),
+    ] = None,
 ) -> None:
     _collect_traces(
-        model_path,
-        dataset_path,
-        output_path,
-        num_logits_per_token,
-        tuple(trace_layers or []),
-        max_input_length,
-        max_output_length,
-        batch_size,
-        shard_size,
-        num_tokens_to_generate,
-        CliCollectTracesCallbacks,
+        model_path=model_path,
+        dataset_path=dataset_path,
+        output_path=output_path,
+        num_logits_per_token=num_logits_per_token,
+        trace_layers=tuple(trace_layers or []),
+        max_input_length=max_input_length,
+        max_output_length=max_output_length,
+        batch_size=batch_size,
+        shard_size=shard_size,
+        num_tokens_to_generate=num_tokens_to_generate,
+        generation_config_override=GenerationConfig(temperature=temperature) if temperature is not None else None,
+        callbacks_type=CliCollectTracesCallbacks,
     )
 
 

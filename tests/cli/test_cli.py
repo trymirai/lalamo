@@ -80,6 +80,8 @@ def test_generate_replies(
         "2",
         "--max-output-length",
         "64",
+        "--temperature",
+        "0",
     )
 
     _assert_has_london_and_four(pl.read_parquet(output_path).get_column("response").to_list())
@@ -92,10 +94,28 @@ def test_chat(
     run_lalamo: RunLalamo,
 ) -> None:
     converted_model_dir = convert_model(model_repo, cached=True)
-    capital_output = run_lalamo("chat", str(converted_model_dir), "--message", CAPITAL_PROMPT, "--max-tokens", "4")
+    capital_output = run_lalamo(
+        "chat",
+        str(converted_model_dir),
+        "--message",
+        CAPITAL_PROMPT,
+        "--max-tokens",
+        "4",
+        "--temperature",
+        "0",
+    )
     assert "london" in capital_output.lower(), f"Expected 'london' in {capital_output!r}"
 
-    math_output = run_lalamo("chat", str(converted_model_dir), "--message", MATH_PROMPT, "--max-tokens", "4")
+    math_output = run_lalamo(
+        "chat",
+        str(converted_model_dir),
+        "--message",
+        MATH_PROMPT,
+        "--max-tokens",
+        "4",
+        "--temperature",
+        "0",
+    )
     assert "4" in math_output, f"Expected '4' in {math_output!r}"
 
 
@@ -123,6 +143,8 @@ def test_collect_traces_answers(
         "32",
         "--max-output-length",
         "64",
+        "--temperature",
+        "0",
     )
 
     # view-traces detokenizes the completions; collect-traces shuffles so check unordered
