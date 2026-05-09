@@ -9,7 +9,7 @@ __all__ = [
 
 def load_full_precision(
     template: WeightMatrix,
-    weights: Float[Array, "... out_channels in_channels"],
+    weights: Float[Array, "*components out_channels in_channels"],
 ) -> FullPrecisionMatrix:
     if not isinstance(template, ShapeDtypeMatrix):
         raise TypeError(f"Expected ShapeDtypeMatrix, got {type(template).__name__}.")

@@ -57,7 +57,7 @@ class LinearConfig(LalamoConfig):
 class Linear(LalamoModule[LinearConfig]):
     output_dims: tuple[int, ...] = field(static=True)
     weights: WeightMatrix
-    biases: Float[Array, "*batch total_out_channels"] | None
+    biases: Float[Array, "*components total_out_channels"] | None
 
     @property
     def input_dim(self) -> int:

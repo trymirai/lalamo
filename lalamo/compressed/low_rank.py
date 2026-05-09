@@ -31,7 +31,7 @@ class LowRankSpec(WeightMatrixSpec):
     @supports_dummy_arrays()
     def compress(
         self,
-        weights: Float[Array, "*batch out_channels in_channels"],
+        weights: Float[Array, "*components out_channels in_channels"],
         *,
         key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,
@@ -56,8 +56,8 @@ class LowRankSpec(WeightMatrixSpec):
 
 
 class LowRankMatrix(WeightMatrix[LowRankSpec]):
-    down_projection: Float[Array, "... rank input_channels"] = field(norm=ParameterNorm.SPECTRAL)
-    up_projection: Float[Array, "... output_channels rank"] = field(norm=ParameterNorm.SPECTRAL)
+    down_projection: Float[Array, "*components rank input_channels"] = field(norm=ParameterNorm.SPECTRAL)
+    up_projection: Float[Array, "*components output_channels rank"] = field(norm=ParameterNorm.SPECTRAL)
 
     def to_full_precision(self) -> FullPrecisionMatrix:
         return FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(self.decompress())
@@ -80,7 +80,7 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
         )
 
     @use_out_sharding((None, None))
-    def decompress(self) -> Float[Array, "... out_channels in_channels"]:
+    def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
         return self.up_projection @ self.down_projection
 
     def dot(
@@ -90,7 +90,7 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
-    ) -> Float[Array, "... channels"]:
+    ) -> Float[Array, " channels"]:
         self._raise_if_batched()
         up_projection = self.up_projection.astype(vector.dtype)
         down_projection = self.down_projection.astype(vector.dtype)

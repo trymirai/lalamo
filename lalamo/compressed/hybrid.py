@@ -36,9 +36,9 @@ def _random_incoherence_signs(
 
 
 def _hadamard_transform_output_axis(
-    inputs: Float[Array, "... out_channels in_channels"],
+    inputs: Float[Array, "*components out_channels in_channels"],
     block_size: Literal[32, 64, 128],
-) -> Float[Array, "... out_channels in_channels"]:
+) -> Float[Array, "*components out_channels in_channels"]:
     transposed = jnp.swapaxes(inputs, -1, -2)
     transformed_transposed = hadamard_transform(transposed, block_size)
     return jnp.swapaxes(transformed_transposed, -1, -2)
@@ -106,9 +106,9 @@ class IncoherenceSigns(eqx.Module):
 
     def process_weights(
         self,
-        weights: Float[Array, "... out_channels in_channels"],
+        weights: Float[Array, "*components out_channels in_channels"],
         block_size: Literal[32, 64, 128],
-    ) -> Float[Array, "... out_channels in_channels"]:
+    ) -> Float[Array, "*components out_channels in_channels"]:
         signed_weights = weights * self.output_signs.astype(weights.dtype)[..., None]
         signed_weights = signed_weights * self.input_signs.astype(weights.dtype)
         return _hadamard_transform_output_axis(
@@ -118,9 +118,9 @@ class IncoherenceSigns(eqx.Module):
 
     def unprocess_weights(
         self,
-        weights: Float[Array, "... out_channels in_channels"],
+        weights: Float[Array, "*components out_channels in_channels"],
         block_size: Literal[32, 64, 128],
-    ) -> Float[Array, "... out_channels in_channels"]:
+    ) -> Float[Array, "*components out_channels in_channels"]:
         output_restored = _hadamard_transform_output_axis(weights, block_size)
         output_restored = output_restored * self.output_signs.astype(output_restored.dtype)[..., None]
         input_restored = hadamard_transform(output_restored, block_size)
@@ -162,7 +162,7 @@ class HybridSpec(WeightMatrixSpec):
     @supports_dummy_arrays()
     def compress(
         self,
-        weights: Float[Array, "*batch out_channels in_channels"],
+        weights: Float[Array, "*components out_channels in_channels"],
         *,
         key: Key[Array, ""] | None = None,
         preconditioner: Preconditioner | None = None,
@@ -244,7 +244,7 @@ class HybridMatrix(WeightMatrix[HybridSpec]):
         )
 
     @use_out_sharding((None, None))
-    def decompress(self) -> Float[Array, "... out_channels in_channels"]:
+    def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
         result = self.quantized.decompress()
         if self.adapter is not None:
             result = result + self.adapter.decompress()
@@ -273,7 +273,7 @@ class HybridMatrix(WeightMatrix[HybridSpec]):
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
-    ) -> Float[Array, "... channels"]:
+    ) -> Float[Array, " channels"]:
         block_size = self.spec.incoherence_block_size
         if self.incoherence_signs is not None:
             assert block_size is not None

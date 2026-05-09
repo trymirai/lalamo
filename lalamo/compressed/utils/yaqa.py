@@ -17,13 +17,13 @@ __all__ = [
 
 
 def yaqa_round_weights(
-    weights: Float[Array, "*batch output_channels input_channels"],
+    weights: Float[Array, "*components output_channels input_channels"],
     preconditioner: Preconditioner,
     spec: QuantizedSpec,
     *,
     max_iters: int = 15,
     atol: float = 1e-7,
-) -> Float[Array, "*batch output_channels input_channels"]:
+) -> Float[Array, "*components output_channels input_channels"]:
     if weights.ndim > 2:
         return jax.vmap(
             partial(
