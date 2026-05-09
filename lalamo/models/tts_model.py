@@ -14,7 +14,7 @@ from tokenizers import Tokenizer
 from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
 from lalamo.audio.neutts import (
     build_neutts_prompt_text,
-    parse_neutts_speech_tokens,
+    parse_neutts_codebook_codes,
     phonemize_neutts_text,
     require_neutts_message,
 )
@@ -39,6 +39,7 @@ from lalamo.modules.audio.neutts import (
     NeuTTSTextDecoder,
     NeuTTSTextDecoderConfig,
 )
+from lalamo.modules.audio.text_decoder import CodebookCodes
 from lalamo.modules.audio.text_to_speech import (
     DEFAULT_TTS_REPETITION_PENALTY,
     DEFAULT_TTS_SAMPLING_POLICY,
@@ -91,7 +92,7 @@ class TTSGenerator(eqx.Module):
         sampling_policy: SamplingPolicy,
         repetition_penalty: float,  # noqa: ARG002, reserved for near future
         random_key: PRNGKeyArray | None = None,
-    ) -> Array:
+    ) -> Array | CodebookCodes:
         random_key = jax.random.PRNGKey(123) if random_key is None else random_key
         return self.tts_model.text_decoder.decode_utterance(
             text_tokens,
@@ -99,7 +100,7 @@ class TTSGenerator(eqx.Module):
             key=random_key,
         )
 
-    def decode_audio(self, semantic_tokens: Array) -> Array:
+    def decode_audio(self, semantic_tokens: Array | CodebookCodes) -> Array:
         return self.tts_model.audio_decoder.audio_from_codes(semantic_tokens)
 
     def generate_waveform(self, audio_features: Array) -> Array:
@@ -184,8 +185,8 @@ class FishAudioTTSGenerator(TTSGenerator):
 
     def decode_audio(
         self,
-        semantic_tokens: Int[Array, "batch n_codebooks sequence"],
-    ) -> Float[Array, "batch audio_samples 1"]:
+        semantic_tokens: Array | CodebookCodes,
+    ) -> Array:
         return super().decode_audio(semantic_tokens)
 
     def generate_waveform(self, audio_features: Array) -> Array:
@@ -207,7 +208,7 @@ class NeuTTSGenerator(TTSGenerator):
         sampling_policy: SamplingPolicy | None = None,
         repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,  # noqa: ARG002, reserved for API compatibility
         random_key: PRNGKeyArray | None = None,
-    ) -> Int[Array, " speech_tokens"]:
+    ) -> CodebookCodes:
         assert isinstance(self.tts_model.text_decoder, NeuTTSTextDecoder)
 
         generated_token_ids = self.tts_model.text_decoder.decode_utterance(
@@ -216,10 +217,9 @@ class NeuTTSGenerator(TTSGenerator):
             key=random_key,
         )
         generated_text = self.message_processor.detokenize(generated_token_ids.tolist())
-        speech_tokens = parse_neutts_speech_tokens(generated_text)
-        return jnp.asarray(speech_tokens, dtype=jnp.int32)
+        return parse_neutts_codebook_codes(generated_text)
 
-    def decode_audio(self, semantic_tokens: Int[Array, " speech_tokens"]) -> Float[Array, " audio_samples"]:
+    def decode_audio(self, semantic_tokens: Array | CodebookCodes) -> Float[Array, " audio_samples"]:
         assert isinstance(self.tts_model.audio_decoder, NeuCodecAudioDecoder)
         return self.tts_model.audio_decoder.audio_from_codes(semantic_tokens)
 

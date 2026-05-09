@@ -9,6 +9,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
+from lalamo.modules.audio.text_decoder import CodebookCodes
 
 
 class _TorchTensor(Protocol):
@@ -100,6 +101,13 @@ class NeuCodecAudioDecoder(TTSAudioDecoder[NeuCodecAudioDecoderConfig]):
             codes = codec.encode_code(audio_or_path=str(audio_path)).squeeze(0).squeeze(0)
         return jnp.asarray(codes.cpu().numpy(), dtype=jnp.int32)
 
+    def _semantic_indices(self, codes: Array | CodebookCodes) -> Array:
+        if not isinstance(codes, CodebookCodes):
+            return codes
+        if codes.acoustic is not None and codes.acoustic.size != 0:
+            raise ValueError("NeuCodec accepts semantic codes only; acoustic codebooks are not supported.")
+        return codes.semantic
+
     def _normalize_codes(self, indices: Array) -> np.ndarray:
         codes = np.asarray(indices, dtype=np.int64)
         if codes.ndim == 1:
@@ -116,14 +124,14 @@ class NeuCodecAudioDecoder(TTSAudioDecoder[NeuCodecAudioDecoderConfig]):
 
     def __call__(
         self,
-        indices: Int[Array, "*shape"],
+        indices: Int[Array, "*shape"] | CodebookCodes,
     ) -> Float[Array, " samples"]:
         try:
             import torch
         except ImportError as e:
             raise ImportError("NeuTTS audio decoding requires torch.") from e
 
-        codes = self._normalize_codes(indices)
+        codes = self._normalize_codes(self._semantic_indices(indices))
         codec = self._codec
         device = getattr(codec, "device", self.config.device)
         with torch.no_grad():
@@ -131,5 +139,5 @@ class NeuCodecAudioDecoder(TTSAudioDecoder[NeuCodecAudioDecoderConfig]):
             reconstructed = codec.decode_code(code_tensor).cpu().numpy()
         return jnp.asarray(reconstructed[0, 0, :], dtype=self.config.precision)
 
-    def audio_from_codes(self, indices: Array) -> Array:
+    def audio_from_codes(self, indices: Array | CodebookCodes) -> Array:
         return self(indices)

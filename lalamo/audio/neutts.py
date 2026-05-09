@@ -5,7 +5,10 @@ from functools import cache
 from pathlib import Path
 from typing import Protocol, cast
 
+import jax.numpy as jnp
+
 from lalamo.audio.tts_message_processor import TTSMessage, VoicePrompt
+from lalamo.modules.audio.text_decoder import CodebookCodes
 
 SPEECH_TOKEN_PATTERN = re.compile(r"<\|speech_(\d+)\|>")
 
@@ -52,6 +55,18 @@ def parse_neutts_speech_tokens(text: str) -> tuple[int, ...]:
     if not speech_tokens:
         raise ValueError("No valid speech tokens found in the output.")
     return speech_tokens
+
+
+def speech_tokens_to_codebook_codes(speech_tokens: Iterable[int]) -> CodebookCodes:
+    speech_token_tuple = tuple(speech_tokens)
+    if not speech_token_tuple:
+        raise ValueError("No valid speech tokens found in the output.")
+    semantic_codes = jnp.asarray(speech_token_tuple, dtype=jnp.int32)[None, None, :]
+    return CodebookCodes(semantic=semantic_codes)
+
+
+def parse_neutts_codebook_codes(text: str) -> CodebookCodes:
+    return speech_tokens_to_codebook_codes(parse_neutts_speech_tokens(text))
 
 
 def require_neutts_message(messages: Iterable[TTSMessage]) -> TTSMessage:

@@ -4,7 +4,7 @@ from pathlib import Path
 import jax.numpy as jnp
 import pytest
 
-from lalamo.audio.neutts import build_neutts_prompt_text, parse_neutts_speech_tokens
+from lalamo.audio.neutts import build_neutts_prompt_text, parse_neutts_codebook_codes, parse_neutts_speech_tokens
 from lalamo.audio.tts_message_processor import VoicePrompt
 from lalamo.main import _voice_prompt_from_cli_options
 from lalamo.model_import.model_configs.huggingface.neutts import HFNeuTTSConfig
@@ -69,6 +69,14 @@ def test_build_neutts_prompt_text_includes_reference_text_input_text_and_referen
 
 def test_parse_neutts_speech_tokens() -> None:
     assert parse_neutts_speech_tokens("<|speech_12|>ignored<|speech_34|>") == (12, 34)
+
+
+def test_parse_neutts_codebook_codes_returns_single_semantic_codebook() -> None:
+    codes = parse_neutts_codebook_codes("<|speech_12|>ignored<|speech_34|>")
+
+    assert codes.acoustic is None
+    assert codes.semantic.shape == (1, 1, 2)
+    assert codes.semantic.tolist() == [[[12, 34]]]
 
 
 def test_parse_neutts_speech_tokens_requires_at_least_one_token() -> None:

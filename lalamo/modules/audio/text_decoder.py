@@ -1,12 +1,17 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Self
+from typing import NamedTuple, Self
 
-from jaxtyping import Array, DTypeLike, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 from lalamo.modules.common import LalamoModule
 from lalamo.sampling import SamplingPolicy
+
+
+class CodebookCodes(NamedTuple):
+    semantic: Int[Array, "batch num_codebooks tokens"]
+    acoustic: Int[Array, "batch num_codebooks tokens"] | None = None
 
 
 @dataclass(frozen=True)
@@ -38,4 +43,4 @@ class TTSTextDecoder[ConfigT](LalamoModule[ConfigT]):
         text_tokens: Array,
         sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray | None = None,
-    ) -> Array: ...
+    ) -> Array | CodebookCodes: ...
