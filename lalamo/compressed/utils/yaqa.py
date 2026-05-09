@@ -5,9 +5,11 @@ import jax.numpy as jnp
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, Float, Int
 
+from lalamo.compressed.quantized_spec import QuantizedSpec
 from lalamo.module import ShardingAxis
+from lalamo.preconditioner import Preconditioner
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.weight_matrix import CompressionImplementation, Preconditioner, QuantizedSpec
+from lalamo.weight_matrix import CompressionImplementation
 
 from .block_ldl import block_ldl
 

@@ -10,6 +10,7 @@ from jaxtyping import Array, DTypeLike, Float, Key
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, ShardingAxis
+from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
 from lalamo.utils.surgery import load_as, map_nodes_of_type, map_nodes_of_type_with_path, select_nodes_of_type
@@ -19,7 +20,6 @@ from lalamo.weight_matrix import (
     FullPrecisionSpec,
     Layout,
     MatmulConfig,
-    Preconditioner,
     ShapeDtypeMatrix,
     ShapeDtypeSpec,
     WeightMatrix,

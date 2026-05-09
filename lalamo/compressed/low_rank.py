@@ -7,6 +7,7 @@ from jax.scipy.linalg import solve_triangular
 from jaxtyping import Array, DTypeLike, Float, Key
 
 from lalamo.module import Keychain, ParameterNorm, ShardingAxis, field
+from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import use_out_sharding
@@ -16,7 +17,6 @@ from lalamo.weight_matrix import (
     FullPrecisionSpec,
     Layout,
     MatmulConfig,
-    Preconditioner,
     WeightMatrix,
     WeightMatrixSpec,
 )

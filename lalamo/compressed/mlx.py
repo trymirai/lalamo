@@ -10,6 +10,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
+from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
@@ -22,11 +23,10 @@ from lalamo.weight_matrix import (
     FullPrecisionSpec,
     Layout,
     MatmulConfig,
-    Preconditioner,
-    QuantizedSpec,
     WeightMatrixSpec,
 )
 
+from .quantized_spec import QuantizedSpec
 from .utils.gaussian_order_statistics import standard_normal_range_squared
 from .utils.grouping import (
     expand_last_axis_groups,

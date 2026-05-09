@@ -8,11 +8,11 @@ import pytest
 from lalamo.compressed.hybrid import HybridMatrix, HybridSpec
 from lalamo.compressed.low_rank import LowRankSpec
 from lalamo.module import Keychain
+from lalamo.preconditioner import Preconditioner
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
     FullPrecisionSpec,
-    Preconditioner,
     WeightMatrixSpec,
 )
 from tests.common import assert_close

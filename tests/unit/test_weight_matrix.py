@@ -7,10 +7,6 @@ from jax.sharding import Mesh, NamedSharding, Sharding
 
 from lalamo.compressed.awq import AWQSpec
 from lalamo.compressed.mlx import MLXSpec
-from lalamo.compressed.utils.gaussian_order_statistics import (
-    standard_normal_absmax_squared,
-    standard_normal_range_squared,
-)
 from lalamo.initializer import EmptyInitializer, RandomInitializer
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.modules.utils import call_vmapped
@@ -20,8 +16,6 @@ from lalamo.weight_matrix import (
     FullPrecisionMatrix,
     FullPrecisionSpec,
     Layout,
-    Preconditioner,
-    QuantizedSpec,
     ShapeDtypeMatrix,
     WeightMatrixSpec,
 )
@@ -80,115 +74,6 @@ def _unsharded_weights() -> NamedSharding:
     return sharding
 
 
-def test_preconditioner_preserves_symmetric_blocks() -> None:
-    input_block = jnp.array(
-        [
-            [2.0, -1.0, 0.5],
-            [-1.0, 3.0, 4.0],
-            [0.5, 4.0, 5.0],
-        ],
-        dtype=jnp.float32,
-    )
-    output_block = jnp.array(
-        [
-            [7.0, 2.0],
-            [2.0, 11.0],
-        ],
-        dtype=jnp.float32,
-    )
-
-    preconditioner = Preconditioner.init(input_block=input_block, output_block=output_block)
-
-    assert preconditioner.input_block_tril is not None
-    assert preconditioner.input_block_tril.shape == (6,)
-    assert preconditioner.output_block_tril is not None
-    assert preconditioner.output_block_tril.shape == (3,)
-    assert preconditioner.input_block is not None
-    assert preconditioner.output_block is not None
-    _assert_close(result=preconditioner.input_block, reference=input_block)
-    _assert_close(result=preconditioner.output_block, reference=output_block)
-    _assert_close(
-        result=jnp.asarray(preconditioner.magnitude),
-        reference=jnp.trace(input_block) * jnp.trace(output_block),
-    )
-
-
-def test_preconditioner_identity_has_no_blocks() -> None:
-    preconditioner = Preconditioner.identity()
-
-    assert preconditioner.input_block is None
-    assert preconditioner.output_block is None
-    _assert_close(result=preconditioner.magnitude, reference=jnp.asarray(1.0))
-
-
-def test_preconditioner_magnitude_uses_only_present_blocks() -> None:
-    input_block = jnp.array(
-        [
-            [2.0, -1.0, 0.5],
-            [-1.0, 3.0, 4.0],
-            [0.5, 4.0, 5.0],
-        ],
-        dtype=jnp.float32,
-    )
-    output_block = jnp.array(
-        [
-            [7.0, 2.0],
-            [2.0, 11.0],
-        ],
-        dtype=jnp.float32,
-    )
-
-    input_preconditioner = Preconditioner.init(input_block=input_block)
-    output_preconditioner = Preconditioner.init(output_block=output_block)
-
-    _assert_close(result=jnp.asarray(input_preconditioner.magnitude), reference=jnp.trace(input_block))
-    _assert_close(result=jnp.asarray(output_preconditioner.magnitude), reference=jnp.trace(output_block))
-
-
-def test_preconditioner_supports_batched_symmetric_blocks() -> None:
-    input_block = jnp.array(
-        [
-            [2.0, -1.0, 0.5],
-            [-1.0, 3.0, 4.0],
-            [0.5, 4.0, 5.0],
-        ],
-        dtype=jnp.float32,
-    )
-    output_block = jnp.array(
-        [
-            [7.0, 2.0],
-            [2.0, 11.0],
-        ],
-        dtype=jnp.float32,
-    )
-    input_blocks = jnp.stack([input_block, input_block + jnp.identity(3, dtype=jnp.float32)])
-    output_blocks = jnp.stack([output_block, output_block + jnp.identity(2, dtype=jnp.float32)])
-
-    preconditioner = Preconditioner.init(input_block=input_blocks, output_block=output_blocks)
-
-    assert preconditioner.input_block_tril is not None
-    assert preconditioner.input_block_tril.shape == (2, 6)
-    assert preconditioner.output_block_tril is not None
-    assert preconditioner.output_block_tril.shape == (2, 3)
-    assert preconditioner.input_block is not None
-    assert preconditioner.output_block is not None
-    _assert_close(result=preconditioner.input_block, reference=input_blocks)
-    _assert_close(result=preconditioner.output_block, reference=output_blocks)
-    _assert_close(
-        result=jnp.asarray(preconditioner.magnitude),
-        reference=jnp.mean(
-            jnp.trace(input_blocks, axis1=-2, axis2=-1) * jnp.trace(output_blocks, axis1=-2, axis2=-1),
-        ),
-    )
-
-
-def test_only_quantized_specs_expose_block_size_properties() -> None:
-    assert isinstance(AWQSpec(bits=4, group_size=2), QuantizedSpec)
-    assert isinstance(MLXSpec(bits=4, group_size=2), QuantizedSpec)
-    assert not hasattr(FullPrecisionSpec(), "input_block_size")
-    assert not hasattr(FullPrecisionSpec(), "output_block_size")
-
-
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
 def test_weight_matrix_numel_returns_product_of_shape(layout: Layout) -> None:
     weights = jnp.ones((2, 3, 5), dtype=jnp.float32)
@@ -196,44 +81,6 @@ def test_weight_matrix_numel_returns_product_of_shape(layout: Layout) -> None:
     matrix = FullPrecisionSpec(layout=layout).compress(weights)
 
     assert matrix.numel == 30
-
-
-@pytest.mark.parametrize(
-    ("spec", "expected_rate"),
-    [
-        (AWQSpec(bits=4, group_size=2), 14.0),
-        (AWQSpec(bits=4, group_size=2, is_symmetric=True), 12.0),
-        (MLXSpec(bits=4, group_size=2), 20.0),
-    ],
-)
-def test_quantized_spec_rate_counts_bits_per_weight_including_group_parameters(
-    spec: QuantizedSpec,
-    expected_rate: float,
-) -> None:
-    assert spec.rate == expected_rate
-
-
-@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
-def test_quantized_spec_distortion_is_layout_invariant_for_isotropic_gaussian(layout: Layout) -> None:
-    assert AWQSpec(bits=4, group_size=2, layout=layout).distortion == pytest.approx(2 / (12 * 15**2))
-    assert MLXSpec(bits=4, group_size=2, layout=layout).distortion == pytest.approx(2 / (12 * 15**2))
-
-
-def test_symmetric_awq_distortion_uses_gaussian_absmax() -> None:
-    assert AWQSpec(bits=4, group_size=1, is_symmetric=True).distortion == pytest.approx(1 / (12 * 7**2))
-
-
-def test_standard_normal_order_statistic_results_are_cached() -> None:
-    standard_normal_range_squared.cache_clear()
-    standard_normal_absmax_squared.cache_clear()
-
-    standard_normal_range_squared(4)
-    standard_normal_range_squared(4)
-    standard_normal_absmax_squared(4)
-    standard_normal_absmax_squared(4)
-
-    assert standard_normal_range_squared.cache_info().hits == 1
-    assert standard_normal_absmax_squared.cache_info().hits == 1
 
 
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])

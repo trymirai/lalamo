@@ -8,9 +8,10 @@ from jax.sharding import Mesh, Sharding
 
 from lalamo.compressed.awq import AWQMatrix, AWQMatrixForInference, AWQMatrixForTraining, AWQSpec
 from lalamo.compressed.utils.yaqa import yaqa_round_weights
+from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
-from lalamo.weight_matrix import CompressionImplementation, Layout, Preconditioner, WeightMatrixSpec
+from lalamo.weight_matrix import CompressionImplementation, Layout, WeightMatrixSpec
 from tests.unit.compressed import test_common as compressed_common
 
 type Bits = Literal[4, 8]

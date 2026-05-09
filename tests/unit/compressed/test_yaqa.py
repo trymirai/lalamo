@@ -5,14 +5,14 @@ import jax
 import jax.numpy as jnp
 from jax.lax import DotAlgorithmPreset
 
+from lalamo.compressed.quantized_spec import QuantizedSpec
 from lalamo.compressed.utils.yaqa import yaqa_round_weights
+from lalamo.preconditioner import Preconditioner
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
     FullPrecisionSpec,
-    Preconditioner,
-    QuantizedSpec,
 )
 from tests.common import assert_close
 

@@ -7,13 +7,13 @@ from jax.sharding import Mesh, NamedSharding, Sharding
 
 from lalamo.compressed.low_rank import LowRankMatrix, LowRankSpec
 from lalamo.module import Keychain
+from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
     Layout,
-    Preconditioner,
     WeightMatrixSpec,
 )
 from tests.common import assert_close
