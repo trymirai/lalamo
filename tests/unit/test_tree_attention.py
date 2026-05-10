@@ -99,17 +99,15 @@ def decoder() -> Decoder:
 
 def test_tree_ancestor_mask_chain() -> None:
     """Linear chain: each node should attend to itself and all ancestors."""
-    parent_indices = jnp.array([[-1, 0, 1, 2]], dtype=jnp.int32)
+    parent_indices = jnp.array([-1, 0, 1, 2], dtype=jnp.int32)
     mask = tree_ancestor_mask(parent_indices)
 
     expected = jnp.array(
         [
-            [
-                [True, False, False, False],
-                [True, True, False, False],
-                [True, True, True, False],
-                [True, True, True, True],
-            ],
+            [True, False, False, False],
+            [True, True, False, False],
+            [True, True, True, False],
+            [True, True, True, True],
         ],
         dtype=jnp.bool,
     )
@@ -118,46 +116,14 @@ def test_tree_ancestor_mask_chain() -> None:
 
 def test_tree_ancestor_mask_fork() -> None:
     """Forked tree: siblings must not see each other."""
-    parent_indices = jnp.array([[-1, 0, 0]], dtype=jnp.int32)
+    parent_indices = jnp.array([-1, 0, 0], dtype=jnp.int32)
     mask = tree_ancestor_mask(parent_indices)
 
     expected = jnp.array(
         [
-            [
-                [True, False, False],
-                [True, True, False],
-                [True, False, True],
-            ],
-        ],
-        dtype=jnp.bool,
-    )
-    assert jnp.array_equal(mask, expected)
-
-
-def test_tree_ancestor_mask_batched_tree_shapes() -> None:
-    parent_indices = jnp.array(
-        [
-            [-1, 0, 1, 2],
-            [-1, 0, 0, 2],
-        ],
-        dtype=jnp.int32,
-    )
-    mask = tree_ancestor_mask(parent_indices)
-
-    expected = jnp.array(
-        [
-            [
-                [True, False, False, False],
-                [True, True, False, False],
-                [True, True, True, False],
-                [True, True, True, True],
-            ],
-            [
-                [True, False, False, False],
-                [True, True, False, False],
-                [True, False, True, False],
-                [True, False, True, True],
-            ],
+            [True, False, False],
+            [True, True, False],
+            [True, False, True],
         ],
         dtype=jnp.bool,
     )
@@ -166,10 +132,10 @@ def test_tree_ancestor_mask_batched_tree_shapes() -> None:
 
 def test_build_tree_attention_mask_prefix_plus_draft() -> None:
     """Draft nodes attend to all prefix tokens plus their own ancestor chain."""
-    parent_indices = jnp.array([[-1, 0, 0]], dtype=jnp.int32)
+    parent_indices = jnp.array([-1, 0, 0], dtype=jnp.int32)
     mask = build_tree_attention_mask(
         total_capacity=5,
-        prefix_lengths=jnp.array([2], dtype=jnp.int32),
+        prefix_length=2,
         parent_indices=parent_indices,
         has_sinks=False,
     )
@@ -177,44 +143,9 @@ def test_build_tree_attention_mask_prefix_plus_draft() -> None:
     # Columns: [prefix0, prefix1, draft0, draft1, draft2]
     expected = jnp.array(
         [
-            [
-                [True, True, True, False, False],
-                [True, True, True, True, False],
-                [True, True, True, False, True],
-            ],
-        ],
-        dtype=jnp.bool,
-    )
-    assert jnp.array_equal(mask, expected)
-
-
-def test_build_tree_attention_mask_batched_prefix_and_tree() -> None:
-    parent_indices = jnp.array(
-        [
-            [-1, 0, 1],
-            [-1, 0, 0],
-        ],
-        dtype=jnp.int32,
-    )
-    mask = build_tree_attention_mask(
-        total_capacity=7,
-        prefix_lengths=jnp.array([2, 3], dtype=jnp.int32),
-        parent_indices=parent_indices,
-        has_sinks=False,
-    )
-
-    expected = jnp.array(
-        [
-            [
-                [True, True, True, False, False, False, False],
-                [True, True, True, True, False, False, False],
-                [True, True, True, True, True, False, False],
-            ],
-            [
-                [True, True, True, True, False, False, False],
-                [True, True, True, True, True, False, False],
-                [True, True, True, True, False, True, False],
-            ],
+            [True, True, True, False, False],
+            [True, True, True, True, False],
+            [True, True, True, False, True],
         ],
         dtype=jnp.bool,
     )

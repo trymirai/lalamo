@@ -16,18 +16,24 @@ __all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
 
 @eqx.filter_jit
 def tree_ancestor_mask(
-    parent_indices: Int[Array, "batch nodes"],
-) -> Bool[Array, "batch nodes nodes"]:
-    batch_size, num_nodes = parent_indices.shape
-    batch_indices = jnp.arange(batch_size, dtype=jnp.int32)
-    initial = jnp.broadcast_to(jnp.eye(num_nodes, dtype=jnp.bool), (batch_size, num_nodes, num_nodes))
+    parent_indices: Int[Array, " nodes"],
+) -> Bool[Array, "nodes nodes"]:
+    """Ancestor matrix from parent_indices.
 
-    def step(mask: Bool[Array, "batch nodes nodes"], i: Int[Array, ""]) -> tuple[Bool[Array, "batch nodes nodes"], None]:
-        parent = parent_indices[:, i]
-        parent_row = mask[batch_indices, jnp.maximum(parent, 0)]
+    Root is at index 0 with ``parent_indices[0] == -1``; other nodes must have
+    ``parent_indices[i] < i`` so a single forward sweep sees the parent's row
+    already closed. For the root the ``parent >= 0`` guard zeroes out the
+    ``maximum(parent, 0)`` self-lookup, preserving eye[0].
+    """
+    (num_nodes,) = parent_indices.shape
+    initial = jnp.eye(num_nodes, dtype=jnp.bool)
+
+    def step(mask: Bool[Array, "nodes nodes"], i: Int[Array, ""]) -> tuple[Bool[Array, "nodes nodes"], None]:
+        parent = parent_indices[i]
+        parent_row = mask[jnp.maximum(parent, 0)]
         zero_row = jnp.zeros_like(parent_row)
-        inherited = jnp.where((parent >= 0)[:, None], parent_row, zero_row)
-        return mask.at[batch_indices, i].set(mask[batch_indices, i] | inherited), None
+        inherited = jnp.where(parent >= 0, parent_row, zero_row)
+        return mask.at[i].set(mask[i] | inherited), None
 
     mask, _ = jax.lax.scan(step, initial, jnp.arange(num_nodes, dtype=jnp.int32))
     return mask
@@ -36,27 +42,26 @@ def tree_ancestor_mask(
 @eqx.filter_jit
 def build_tree_attention_mask(
     total_capacity: int,
-    prefix_lengths: Int[Array, " batch"],
-    parent_indices: Int[Array, "batch nodes"],
+    prefix_length: Int[Array, ""] | int,
+    parent_indices: Int[Array, " nodes"],
     has_sinks: bool,
-) -> Bool[Array, "batch nodes total_capacity"]:
-    prefix_lengths = jnp.asarray(prefix_lengths, dtype=jnp.int32)
-    batch_size, num_nodes = parent_indices.shape
+) -> Bool[Array, "nodes total_capacity"]:
+    """Tree attention mask: each draft node attends to prefix + ancestors + self."""
+    prefix_length = jnp.asarray(prefix_length, dtype=jnp.int32)
+    (num_nodes,) = parent_indices.shape
 
     col_indices = jnp.arange(total_capacity, dtype=jnp.int32)
-    prefix_mask = col_indices[None, None, :] < prefix_lengths[:, None, None]
-    prefix_mask = jnp.broadcast_to(prefix_mask, (batch_size, num_nodes, total_capacity))
+    prefix_mask = col_indices[None, :] < prefix_length
 
     ancestor_matrix = tree_ancestor_mask(parent_indices)
-    draft_offsets = col_indices[None, :] - prefix_lengths[:, None]
+    draft_offsets = col_indices - prefix_length
     in_draft = (draft_offsets >= 0) & (draft_offsets < num_nodes)
     clamped = jnp.clip(draft_offsets, 0, num_nodes - 1)
-    draft_mask = jnp.take_along_axis(ancestor_matrix, clamped[:, None, :], axis=2)
-    draft_mask = draft_mask & in_draft[:, None, :]
+    draft_mask = ancestor_matrix[:, clamped] & in_draft[None, :]
 
     mask = prefix_mask | draft_mask
     if has_sinks:
-        mask = mask.at[:, :, 0].set(True)
+        mask = mask.at[:, 0].set(True)
     return mask
 
 
@@ -120,12 +125,7 @@ class KVCacheLayer(StateLayerBase):
     ) -> Bool[Array, "nodes tokens"]:
         self._raise_if_batched()
         total, _, _ = self.keys.shape
-        mask = build_tree_attention_mask(
-            total,
-            jnp.asarray(prefix_length, dtype=jnp.int32)[None],
-            parent_indices[None, :],
-            self.has_sinks,
-        )[0]
+        mask = build_tree_attention_mask(total, prefix_length, parent_indices, self.has_sinks)
         padding_mask = self.padding_mask
         if padding_mask is not None:
             mask = mask & padding_mask[None, :]
