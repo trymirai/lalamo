@@ -1,12 +1,13 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Self
+from typing import Annotated, Literal, Self
 
+from annotated_types import Ge
 import jax.numpy as jnp
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, Int
 
 from lalamo.modules.common import ForwardPassMode
-from lalamo.modules.decoder import Decoder, DecoderActivationTrace, DecoderResult
+from lalamo.modules.decoder import Decoder, DecoderResult
 from lalamo.modules.token_mixers.state.common import State
 from lalamo.modules.token_mixers.state.kv_cache import compact_state_layers
 from lalamo.speculator.proposal import AcceptedProposal, TrieProposal
@@ -24,20 +25,30 @@ __all__ = [
 @dataclass(frozen=True)
 class StateRequest:
     output_norm: bool = False
+    output_logits: bool = False
     layer_indices: tuple[int, ...] = ()
-    history_length: int | None = 1
+    context_length: Annotated[int, Ge(1)] | Literal["all"] = 1
 
     @property
-    def activation_trace(self) -> bool:
-        return self.output_norm or bool(self.layer_indices)
+    def context_slice(self) -> slice:
+        if self.context_length == "all":
+            return slice(None)
+        return slice(-self.context_length, None)
+
+    def prefill_compact_indices(self, prompt_length: int) -> Int[Array, " positions"]:
+        start = 0
+        if self.context_length != "all":
+            start = max(prompt_length - self.context_length, 0)
+        return jnp.arange(start, prompt_length, dtype=jnp.int32)
 
 
 @dataclass(frozen=True)
 class RequestedState:
-    token_positions: tuple[int, ...] = ()
+    token_positions: Int[Array, " positions"] = field(default_factory=lambda: jnp.array((), dtype=jnp.int32))
     output_norm: Float[Array, "positions channels"] | None = None
-    layer_indices: tuple[int, ...] = ()
     layer_outputs: tuple[Float[Array, "positions channels"], ...] = ()
+    last_sampled_ids: Int[Array, " positions"] = field(default_factory=lambda: jnp.array((), dtype=jnp.int32))
+    last_sampled_logits: Float[Array, "positions vocab"] | None = None
 
 
 @dataclass(frozen=True)
@@ -76,12 +87,13 @@ class Speculator(ABC):
             token_positions,
             state=None,
             return_updated_state=True,
-            return_activation_trace=self.state_request.activation_trace,
+            return_activation_trace=True,
             forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
         )
         bonus_token_logits = decoder_result.logits[0, -1]
         updated_state = decoder_result.updated_state
         assert updated_state is not None
+        compact_indices = self.state_request.prefill_compact_indices(len(prompt_ids))
         return self, LMState(
             kv_cache=updated_state,
             next_token_position=len(prompt_ids),
@@ -90,8 +102,8 @@ class Speculator(ABC):
             requested=self.collect_requested_state(
                 previous=RequestedState(),
                 decoder_result=decoder_result,
-                token_positions=self.prefill_trace_indices(len(prompt_ids)),
-                trace_indices=self.prefill_trace_indices(len(prompt_ids)),
+                compact_indices=compact_indices,
+                num_compact_indices=compact_indices.shape[0],
             ),
         )
 
@@ -102,7 +114,7 @@ class Speculator(ABC):
             kv_cache=state.kv_cache,
             next_token_position=state.next_token_position,
             sampler=self.sampler,
-            return_activation_trace=self.state_request.activation_trace,
+            return_activation_trace=True,
         )
         accepted = proposal.verify(sampled_token_ids)
         next_state = self.build_next_state(state, decoder_result, proposal, accepted)
@@ -125,7 +137,7 @@ class Speculator(ABC):
         new_kv_cache = compact_state_layers(
             updated_state,
             cache_len=jnp.array(state.next_token_position, dtype=jnp.int32),
-            accepted_indices=jnp.array(accepted.compact_indices, dtype=jnp.int32),
+            accepted_indices=accepted.compact_indices,
             num_accepted=jnp.array(accepted.num_compact_indices, dtype=jnp.int32),
             max_slots=len(proposal.nodes),
         )
@@ -137,60 +149,70 @@ class Speculator(ABC):
             requested=self.collect_requested_state(
                 previous=state.requested,
                 decoder_result=decoder_result,
-                token_positions=tuple(
-                    state.next_token_position + proposal.depths[index]
-                    for index in accepted.compact_indices[: accepted.num_compact_indices]
-                ),
-                trace_indices=accepted.compact_indices[: accepted.num_compact_indices],
+                compact_indices=accepted.compact_indices,
+                num_compact_indices=accepted.num_compact_indices,
             ),
         )
-
-    def prefill_trace_indices(self, prompt_length: int) -> tuple[int, ...]:
-        start = 0
-        if self.state_request.history_length is not None:
-            start = max(prompt_length - self.state_request.history_length, 0)
-        return tuple(range(start, prompt_length))
 
     def collect_requested_state(
         self,
         previous: RequestedState,
         decoder_result: DecoderResult,
-        token_positions: tuple[int, ...],
-        trace_indices: tuple[int, ...],
+        compact_indices: Int[Array, " max_slots"],
+        num_compact_indices: int,
     ) -> RequestedState:
-        if not self.state_request.activation_trace:
-            return RequestedState()
-
-        token_positions = (*previous.token_positions, *token_positions)
-        if self.state_request.history_length is not None:
-            token_positions = token_positions[-self.state_request.history_length :]
-
         activation_trace = decoder_result.activation_trace
         assert activation_trace is not None
-        jax_trace_indices = jnp.array(trace_indices, dtype=jnp.int32)
+        context_slice = self.state_request.context_slice
+
+        def compact_rows(values: Array) -> Array:
+            slots = jnp.arange(compact_indices.shape[0], dtype=jnp.int32)
+            source_indices = jnp.where(slots < num_compact_indices, compact_indices, 0)
+            return values[source_indices][:num_compact_indices]
+
+        def append_context(previous_context: Array | None, current_context: Array) -> Array:
+            context = (
+                current_context
+                if previous_context is None
+                else jnp.concatenate([previous_context, current_context], axis=0)
+            )
+            return context[context_slice]
+
+        token_positions = append_context(
+            previous.token_positions,
+            compact_rows(activation_trace.token_positions[0]),
+        )
+        last_sampled_ids = append_context(
+            previous.last_sampled_ids,
+            compact_rows(activation_trace.token_ids[0]),
+        )
+
         output_norm = None
         if self.state_request.output_norm:
-            output_norm = activation_trace.output_norm[0, jax_trace_indices]
-            if previous.output_norm is not None:
-                output_norm = jnp.concatenate([previous.output_norm, output_norm], axis=0)
-            if self.state_request.history_length is not None:
-                output_norm = output_norm[-self.state_request.history_length :]
+            output_norm = append_context(
+                previous.output_norm,
+                compact_rows(activation_trace.output_norm[0]),
+            )
 
         layer_outputs = tuple(
-            activation_trace.layer_results[layer_index].outputs[0, jax_trace_indices]
-            for layer_index in self.state_request.layer_indices
-        )
-        if previous.layer_outputs:
-            layer_outputs = tuple(
-                jnp.concatenate([previous_output, new_output], axis=0)
-                for previous_output, new_output in zip(previous.layer_outputs, layer_outputs, strict=True)
+            append_context(
+                previous.layer_outputs[index] if index < len(previous.layer_outputs) else None,
+                compact_rows(activation_trace.layer_results[layer_index].outputs[0]),
             )
-        if self.state_request.history_length is not None:
-            layer_outputs = tuple(output[-self.state_request.history_length :] for output in layer_outputs)
+            for index, layer_index in enumerate(self.state_request.layer_indices)
+        )
+
+        last_sampled_logits = None
+        if self.state_request.output_logits:
+            last_sampled_logits = append_context(
+                previous.last_sampled_logits,
+                compact_rows(decoder_result.logits[0]),
+            )
 
         return RequestedState(
             token_positions=token_positions,
             output_norm=output_norm,
-            layer_indices=self.state_request.layer_indices,
             layer_outputs=layer_outputs,
+            last_sampled_ids=last_sampled_ids,
+            last_sampled_logits=last_sampled_logits,
         )

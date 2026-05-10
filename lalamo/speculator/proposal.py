@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import jax.numpy as jnp
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, Int
 
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.decoder import Decoder, DecoderResult
@@ -17,7 +17,7 @@ __all__ = ["AcceptedProposal", "ProposalNode", "TrieProposal"]
 class AcceptedProposal:
     token_ids: tuple[int, ...]
     node_indices: tuple[int, ...]
-    compact_indices: tuple[int, ...]
+    compact_indices: Int[Array, " max_slots"]
     num_compact_indices: int
     terminal_node_index: int
     bonus_token_id: int
@@ -110,7 +110,10 @@ class TrieProposal:
         node_indices = tuple(path)
         token_ids = tuple(self.nodes[index].token_id for index in node_indices)
         accepted_indices = (0, *node_indices)
-        compact_indices = accepted_indices + (0,) * (len(self.nodes) - len(accepted_indices))
+        compact_indices = jnp.array(
+            accepted_indices + (0,) * (len(self.nodes) - len(accepted_indices)),
+            dtype=jnp.int32,
+        )
         return AcceptedProposal(
             token_ids=token_ids,
             node_indices=node_indices,
