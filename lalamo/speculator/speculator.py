@@ -65,7 +65,8 @@ class Speculator(ABC):
         assert updated_state is not None
         activation_trace = decoder_result.activation_trace
         assert activation_trace is not None
-        memory = MemoryBuffers.from_prefill(self.state_request, activation_trace)
+        prompt_lengths = jnp.array([len(prompt_ids)], dtype=jnp.int32)
+        memory = MemoryBuffers.from_prefill(self.state_request, activation_trace, prompt_lengths)
         return self, LMState(
             kv_cache=updated_state,
             next_token_position=jnp.array(len(prompt_ids), dtype=jnp.int32),
@@ -104,20 +105,20 @@ class Speculator(ABC):
         updated_state = decoder_result.updated_state
         assert updated_state is not None
         cache_length = state.kv_cache[0].prefix_lengths()
-        if cache_length.ndim > 0:
-            cache_length = cache_length[0]
+        compact_indices = accepted.compact_indices[None, :]
+        num_compact_indices = jnp.array([accepted.num_compact_indices], dtype=jnp.int32)
         new_kv_cache = compact_state_layers(
             updated_state,
-            cache_len=jnp.asarray(cache_length, dtype=jnp.int32),
-            accepted_indices=accepted.compact_indices,
-            num_accepted=jnp.array(accepted.num_compact_indices, dtype=jnp.int32),
+            cache_len=cache_length,
+            accepted_indices=compact_indices,
+            num_accepted=num_compact_indices,
             max_slots=len(proposal.nodes),
         )
         memory = state.memory.commit(
             self.state_request,
             decoder_result,
-            accepted.compact_indices,
-            accepted.num_compact_indices,
+            compact_indices,
+            num_compact_indices,
         )
         return LMState(
             kv_cache=new_kv_cache,
