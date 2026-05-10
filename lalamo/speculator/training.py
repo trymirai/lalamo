@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from itertools import batched
 from typing import Annotated
 
 from annotated_types import Ge
@@ -21,7 +22,6 @@ __all__ = [
     "SpeculatorTrainingContext",
     "SpeculatorTrainingEvent",
     "SpeculatorTrainingProgress",
-    "TrainingFeatureRequest",
     "train_speculator",
 ]
 
@@ -34,7 +34,6 @@ class SpeculatorTrainingConfig:
     epochs: Annotated[int, Ge(1)] = 1
     eval_every_epochs: Annotated[int, Ge(1)] = 1
     early_stopping_patience: Annotated[int, Ge(1)] | None = None
-    tokens_to_train: int | None = None
 
 
 @dataclass(frozen=True)
@@ -100,16 +99,13 @@ class SpeculatorBatchResult:
     loss_weight: float = 1.0
 
 
-@dataclass(frozen=True)
-class TrainingFeatureRequest:
-    output_features: bool = False
-    layer_indices: tuple[int, ...] = ()
-
-
 class SpeculatorTrainer[SpeculatorT: Speculator, StateT](ABC):
-    @property
     @abstractmethod
-    def feature_request(self) -> TrainingFeatureRequest: ...
+    def make_feature_request(
+        self,
+        completions: tuple[LalamoCompletion, ...],
+        config: SpeculatorTrainingConfig,
+    ) -> FeatureRequest: ...
 
     @abstractmethod
     def init_state(self) -> StateT: ...
@@ -167,12 +163,6 @@ def train_speculator[SpeculatorT: Speculator, StateT](
     progress = SpeculatorTrainingProgress.create()
 
     for epoch in range(1, config.epochs + 1):
-        token_budget = None
-        if config.tokens_to_train is not None:
-            token_budget = max(config.tokens_to_train - progress.trained_tokens, 0)
-            if token_budget == 0:
-                break
-
         state, progress, last_event = run_training_epoch(
             trainer,
             extractor,
@@ -181,7 +171,6 @@ def train_speculator[SpeculatorT: Speculator, StateT](
             state,
             epoch,
             progress,
-            token_budget,
             progress_callback,
         )
 
@@ -235,15 +224,12 @@ def run_training_epoch[SpeculatorT: Speculator, StateT](
     state: StateT,
     epoch: int,
     progress: SpeculatorTrainingProgress,
-    token_budget: int | None,
     progress_callback: Callable[[SpeculatorTrainingEvent], None] | None,
 ) -> tuple[StateT, SpeculatorTrainingProgress, SpeculatorTrainingEvent | None]:
     last_event = None
-    requests = iter_training_feature_requests(
-        train_completions,
-        trainer.feature_request,
-        config,
-        token_budget,
+    requests = (
+        trainer.make_feature_request(completion_batch, config)
+        for completion_batch in batched(train_completions(), config.batch_size)
     )
     feature_queue = FeatureQueue(extractor, config.max_prefetch)
 
@@ -279,10 +265,9 @@ def run_evaluation_epoch[SpeculatorT: Speculator, StateT](
     total_loss = 0.0
     total_loss_weight = 0.0
     last_event = None
-    requests = iter_evaluation_feature_requests(
-        eval_completions,
-        trainer.feature_request,
-        config,
+    requests = (
+        trainer.make_feature_request(completion_batch, config)
+        for completion_batch in batched(eval_completions(), config.batch_size)
     )
     feature_queue = FeatureQueue(extractor, config.max_prefetch)
 
@@ -308,60 +293,6 @@ def run_evaluation_epoch[SpeculatorT: Speculator, StateT](
 
     return progress, last_event
 
-
-def iter_training_feature_requests(
-    completions: Callable[[], Iterable[LalamoCompletion]],
-    training_request: TrainingFeatureRequest,
-    config: SpeculatorTrainingConfig,
-    token_budget: int | None,
-) -> Iterator[FeatureRequest]:
-    requested_tokens = 0
-    batch: list[LalamoCompletion] = []
-
-    for sequence_index, completion in enumerate(completions()):
-        if token_budget is not None and requested_tokens >= token_budget:
-            break
-
-        requested_tokens += len(completion.completion_token_ids)
-        batch.append(completion)
-
-        if len(batch) == config.batch_size:
-            yield make_feature_request(tuple(batch), training_request, config)
-            batch.clear()
-
-    if batch:
-        yield make_feature_request(tuple(batch), training_request, config)
-
-
-def iter_evaluation_feature_requests(
-    completions: Callable[[], Iterable[LalamoCompletion]],
-    training_request: TrainingFeatureRequest,
-    config: SpeculatorTrainingConfig,
-) -> Iterator[FeatureRequest]:
-    batch: list[LalamoCompletion] = []
-
-    for completion in completions():
-        batch.append(completion)
-
-        if len(batch) == config.batch_size:
-            yield make_feature_request(tuple(batch), training_request, config)
-            batch.clear()
-
-    if batch:
-        yield make_feature_request(tuple(batch), training_request, config)
-
-
-def make_feature_request(
-    completions: tuple[LalamoCompletion, ...],
-    training_request: TrainingFeatureRequest,
-    config: SpeculatorTrainingConfig,
-) -> FeatureRequest:
-    return FeatureRequest(
-        completions=completions,
-        top_k_logits=config.top_k_logits,
-        layer_indices=training_request.layer_indices,
-        output_features=training_request.output_features,
-    )
 
 def count_feature_tokens(features: LalamoCompletionFeatures) -> tuple[int, int]:
     return features.completion_batch.target_mask.shape[0], int(features.completion_batch.target_mask.sum())
