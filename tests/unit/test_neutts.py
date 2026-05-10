@@ -2,11 +2,17 @@ import json
 from pathlib import Path
 
 import jax.numpy as jnp
+import numpy as np
 import pytest
+import soundfile as sf
 
-from lalamo.audio.neutts import build_neutts_prompt_text, parse_neutts_speech_tokens, speech_tokens_to_codebook_codes
+from lalamo.audio.neutts import (
+    build_neutts_prompt_text,
+    load_voice_prompt,
+    parse_neutts_speech_tokens,
+    speech_tokens_to_codebook_codes,
+)
 from lalamo.audio.tts_message_processor import VoicePrompt
-from lalamo.main import _voice_prompt_from_cli_options
 from lalamo.model_import.model_configs.huggingface.neutts import HFNeuTTSConfig
 from lalamo.model_import.model_specs.common import ModelType
 from lalamo.model_registry import ModelRegistry
@@ -91,20 +97,25 @@ def test_parse_neutts_speech_tokens_requires_at_least_one_token() -> None:
         parse_neutts_speech_tokens("no speech here")
 
 
-def test_tts_cli_reference_options_build_voice_prompt(tmp_path: Path) -> None:
+def test_tts_cli_reference_options_load_voice_prompt(tmp_path: Path) -> None:
     reference_audio_path = tmp_path / "reference.wav"
+    reference_audio = np.asarray([0.0, 0.25, -0.25], dtype=np.float32)
+    sf.write(reference_audio_path, reference_audio, 16_000)
 
-    assert _voice_prompt_from_cli_options(None, None) is None
-    assert _voice_prompt_from_cli_options(reference_audio_path, "hello") == VoicePrompt(
-        reference_audio_path=reference_audio_path,
-        reference_text="hello",
-    )
+    assert load_voice_prompt(None, None) is None
+    voice_prompt = load_voice_prompt(reference_audio_path, "hello")
+
+    assert voice_prompt is not None
+    assert voice_prompt.reference_samplerate == 16_000
+    np.testing.assert_allclose(voice_prompt.reference_audio, reference_audio, atol=1e-4)
+    assert voice_prompt.reference_text == "hello"
+    assert isinstance(voice_prompt, VoicePrompt)
 
     with pytest.raises(ValueError, match="--ref-audio and --ref-text must be provided together"):
-        _voice_prompt_from_cli_options(reference_audio_path, None)
+        load_voice_prompt(reference_audio_path, None)
 
     with pytest.raises(ValueError, match="--ref-audio and --ref-text must be provided together"):
-        _voice_prompt_from_cli_options(None, "hello")
+        load_voice_prompt(None, "hello")
 
 
 def test_neutts_config_delegates_backbone_to_llama_config(tmp_path: Path) -> None:
@@ -127,7 +138,7 @@ def test_neutts_config_delegates_backbone_to_llama_config(tmp_path: Path) -> Non
     assert rope_config.scaling_factor == 32.0
 
 
-def test_neutts_tts_model_import_weights_accepts_weightless_audio_decoder(tmp_path: Path) -> None:
+def test_tts_model_import_weights_keeps_weightless_audio_decoder_when_weights_are_absent(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     _write_neutts_config(config_path)
     config = HFNeuTTSConfig.from_json(config_path)

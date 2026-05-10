@@ -245,7 +245,8 @@ class NeuTTSGenerator(TTSGenerator):
         assert message.voice_prompt is not None
 
         reference_codes = self.tts_model.audio_decoder.encode_reference_audio(
-            message.voice_prompt.reference_audio_path,
+            message.voice_prompt.reference_audio,
+            message.voice_prompt.reference_samplerate,
         )
         reference_phones = phonemize_neutts_text(
             message.voice_prompt.reference_text,

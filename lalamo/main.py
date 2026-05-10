@@ -33,8 +33,8 @@ from rich.prompt import Confirm
 from rich.table import Table
 from typer import Argument, Context, Exit, Option, Typer
 
-from lalamo.audio.neutts import build_voice_prompt
-from lalamo.audio.tts_message_processor import TTSMessage, VoicePrompt
+from lalamo.audio.neutts import load_voice_prompt
+from lalamo.audio.tts_message_processor import TTSMessage
 from lalamo.audio.utils import play_mono_audio
 from lalamo.commands import (
     CollectTracesCallbacks,
@@ -121,13 +121,6 @@ def _error(message: str) -> None:
     panel = Panel(message, box=box.ROUNDED, title="Error", title_align="left", border_style="red")
     err_console.print(panel)
     raise Exit(1)
-
-
-def _voice_prompt_from_cli_options(
-    reference_audio_path: Path | None,
-    reference_text: str | None,
-) -> VoicePrompt | None:
-    return build_voice_prompt(reference_audio_path, reference_text)
 
 
 @app.command(help="Chat with a converted model.")
@@ -368,7 +361,7 @@ def tts(
     ] = None,
 ) -> None:
     try:
-        voice_prompt = _voice_prompt_from_cli_options(ref_audio, ref_text)
+        voice_prompt = load_voice_prompt(ref_audio, ref_text)
     except ValueError as e:
         _error(str(e))
 

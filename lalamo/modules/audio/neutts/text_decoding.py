@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
@@ -6,7 +5,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_tree
+from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.decoder import Decoder, DecoderConfig
@@ -23,7 +22,6 @@ class NeuTTSTextDecoderConfig(TTSTextDecoderConfigBase):
     speech_generation_end_token_id: int
     max_context_length: int
     language_code: str
-    min_new_tokens: int = 50
 
     def empty(self) -> "NeuTTSTextDecoder":
         return NeuTTSTextDecoder(
@@ -52,8 +50,7 @@ class NeuTTSTextDecoder(TTSTextDecoder[NeuTTSTextDecoderConfig]):
         self,
         weights: ParameterTree[Array],
     ) -> Self:
-        if not isinstance(weights, Mapping):
-            raise TypeError("NeuTTSTextDecoder weights must be a mapping.")
+        weights = require_mapping(weights)
         return replace(
             self,
             decoder=self.decoder.import_weights(require_tree(weights["decoder"])),
@@ -95,19 +92,15 @@ class NeuTTSTextDecoder(TTSTextDecoder[NeuTTSTextDecoderConfig]):
         max_new_tokens = self.config.max_context_length - prompt_length
         token_position = prompt_length
 
-        for generation_step in range(max_new_tokens):
+        for _ in range(max_new_tokens):
             current_key, sample_key = jax.random.split(current_key)
-            processed_logits = current_policy.process_logits(current_logits[0])
-            if generation_step + 1 < self.config.min_new_tokens:
-                processed_logits = processed_logits.at[self.config.speech_generation_end_token_id].set(-jnp.inf)
+            (current_logit,) = current_logits
+            processed_logits = current_policy.process_logits(current_logit)
             next_token = jax.random.categorical(sample_key, processed_logits).astype(jnp.int32)
             generated_tokens.append(next_token)
             current_policy = current_policy.update(next_token)
 
-            if (
-                generation_step + 1 >= self.config.min_new_tokens
-                and int(next_token.item()) == self.config.speech_generation_end_token_id
-            ):
+            if int(next_token.item()) == self.config.speech_generation_end_token_id:
                 break
 
             decode_result = self.decoder(

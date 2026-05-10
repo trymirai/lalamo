@@ -25,7 +25,6 @@ class HFNeuTTSConfig(ForeignTTSConfig):
     codec_repo: str = "neuphonic/neucodec"
     codec_device: str = "cpu"
     language_code: str = "en-us"
-    min_new_tokens: int = 50
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
@@ -53,7 +52,6 @@ class HFNeuTTSConfig(ForeignTTSConfig):
             speech_generation_end_token_id=speech_generation_end_token_id,
             max_context_length=decoder_config.transformer_config.context_length,
             language_code=self.language_code,
-            min_new_tokens=self.min_new_tokens,
         )
         audio_decoder_config = NeuCodecAudioDecoderConfig(
             precision=activation_precision,

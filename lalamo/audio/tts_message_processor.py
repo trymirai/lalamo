@@ -1,16 +1,17 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
-from pathlib import Path
 from typing import TypedDict
 
+import numpy as np
 from jinja2 import Template
 from tokenizers import Tokenizer
 
 
 @dataclass(frozen=True)
 class VoicePrompt:
-    reference_audio_path: Path | str
+    reference_audio: np.ndarray
+    reference_samplerate: int
     reference_text: str
 
 

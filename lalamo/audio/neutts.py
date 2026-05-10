@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Protocol, cast
 
 import jax.numpy as jnp
+import numpy as np
+import soundfile as sf
 
 from lalamo.audio.tts_message_processor import TTSMessage, VoicePrompt
 from lalamo.modules.audio.text_decoder import CodebookCodes
@@ -149,11 +151,19 @@ def phonemize_neutts_text(text: str, *, language_code: str) -> str:
     return " ".join(phonemes.split())
 
 
-def build_voice_prompt(reference_audio_path: Path | str | None, reference_text: str | None) -> VoicePrompt | None:
+def load_voice_prompt(reference_audio_path: Path | str | None, reference_text: str | None) -> VoicePrompt | None:
     if reference_audio_path is None and reference_text is None:
         return None
     if reference_audio_path is None or reference_text is None:
         raise ValueError("--ref-audio and --ref-text must be provided together.")
     if not isinstance(reference_text, str) or not reference_text.strip():
         raise ValueError("--ref-text must not be empty.")
-    return VoicePrompt(reference_audio_path=reference_audio_path, reference_text=reference_text)
+    reference_audio, reference_samplerate = sf.read(str(reference_audio_path), dtype="float32", always_2d=False)
+    reference_audio = np.asarray(reference_audio, dtype=np.float32)
+    if reference_audio.ndim != 1:
+        raise ValueError("--ref-audio must be mono.")
+    return VoicePrompt(
+        reference_audio=reference_audio,
+        reference_samplerate=reference_samplerate,
+        reference_text=reference_text,
+    )

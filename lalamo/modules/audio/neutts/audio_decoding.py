@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from functools import cache
-from pathlib import Path
 from typing import Any, Protocol, Self, cast
 
 import jax
@@ -28,7 +27,7 @@ class NeuCodecLike(Protocol):
 
     def to(self, device: str) -> Self: ...
 
-    def encode_code(self, audio_or_path: str) -> TorchTensorLike: ...
+    def encode_code(self, audio_or_path: object) -> TorchTensorLike: ...
 
     def decode_code(self, codes: object) -> TorchTensorLike: ...
 
@@ -91,15 +90,23 @@ class NeuCodecAudioDecoder(TTSAudioDecoder[NeuCodecAudioDecoderConfig]):
     ) -> Self:
         return self
 
-    def encode_reference_audio(self, audio_path: Path | str) -> Int[Array, " speech_tokens"]:
+    def encode_reference_audio(self, audio: np.ndarray, samplerate: int) -> Int[Array, " speech_tokens"]:
         try:
             import torch
+            from torchaudio import transforms as T
         except ImportError as e:
             raise ImportError("NeuTTS reference encoding requires torch.") from e
 
+        audio_array = np.asarray(audio, dtype=np.float32)
+        if audio_array.ndim != 1:
+            raise ValueError("NeuTTS reference audio must be mono.")
+        audio_tensor = torch.as_tensor(audio_array, dtype=torch.float32)[None, None, :]
+        if samplerate != 16_000:
+            audio_tensor = T.Resample(samplerate, 16_000)(audio_tensor)
+
         codec = self._codec
         with torch.no_grad():
-            codes = codec.encode_code(audio_or_path=str(audio_path)).squeeze(0).squeeze(0)
+            codes = codec.encode_code(audio_or_path=audio_tensor).squeeze(0).squeeze(0)
         return jnp.asarray(codes.cpu().numpy(), dtype=jnp.int32)
 
     def _semantic_indices(self, codes: Int[Array, "*shape"] | CodebookCodes) -> Int[Array, "*shape"]:
@@ -137,7 +144,7 @@ class NeuCodecAudioDecoder(TTSAudioDecoder[NeuCodecAudioDecoderConfig]):
         codec = self._codec
         with torch.no_grad():
             code_tensor = torch.as_tensor(
-                np.asarray(jax.device_get(codes)),
+                np.array(jax.device_get(codes), copy=True),
                 dtype=torch.long,
                 device=codec.device,
             )

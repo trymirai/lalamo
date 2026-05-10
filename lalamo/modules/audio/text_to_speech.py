@@ -1,11 +1,10 @@
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Self, cast
+from typing import Self
 
 import jax
 from jaxtyping import Array, DTypeLike, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_tree
+from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.common import LalamoModule, register_config_union
 from lalamo.sampling import CompositePolicy, SamplingPolicy, TemperaturePolicy, TopPPolicy
 
@@ -68,12 +67,15 @@ class TTSModel(LalamoModule[TTSConfig]):
         self,
         weights: ParameterTree[Array],
     ) -> Self:
-        assert isinstance(weights, Mapping)
-        audio_decoder_weights = (
-            require_tree(weights["audio_decoder"]) if "audio_decoder" in weights else cast("ParameterTree[Array]", {})
+        weights = require_mapping(weights)
+        audio_decoder_weights = require_tree(weights["audio_decoder"]) if "audio_decoder" in weights else None
+        audio_decoder = (
+            self.audio_decoder
+            if audio_decoder_weights is None
+            else self.audio_decoder.import_weights(audio_decoder_weights)
         )
         return replace(
             self,
             text_decoder=self.text_decoder.import_weights(require_tree(weights["text_decoder"])),
-            audio_decoder=self.audio_decoder.import_weights(audio_decoder_weights),
+            audio_decoder=audio_decoder,
         )
