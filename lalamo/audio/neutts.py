@@ -77,23 +77,19 @@ def parse_neutts_speech_tokens(text: str) -> tuple[int, ...]:
 
 
 def speech_tokens_to_codebook_codes(speech_tokens: Iterable[int]) -> CodebookCodes:
-    speech_token_tuple = tuple(speech_tokens)
-    if not speech_token_tuple:
+    speech_tokens = tuple(speech_tokens)
+    if not speech_tokens:
         raise ValueError("No valid speech tokens found in the output.")
-    semantic_codes = jnp.asarray(speech_token_tuple, dtype=jnp.int32)[None, None, :]
+    semantic_codes = jnp.asarray(speech_tokens, dtype=jnp.int32)[None, None, :]
     return CodebookCodes(semantic=semantic_codes)
 
 
-def parse_neutts_codebook_codes(text: str) -> CodebookCodes:
-    return speech_tokens_to_codebook_codes(parse_neutts_speech_tokens(text))
-
-
 def require_neutts_message(messages: Iterable[TTSMessage]) -> TTSMessage:
-    message_tuple = tuple(messages)
-    if len(message_tuple) != 1:
+    messages = tuple(messages)
+    if len(messages) != 1:
         raise ValueError("NeuTTS currently supports exactly one TTS message per request.")
 
-    (message,) = message_tuple
+    (message,) = messages
     if not message.content.strip():
         raise ValueError("NeuTTS input text must not be empty.")
 

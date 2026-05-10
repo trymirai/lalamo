@@ -14,9 +14,10 @@ from tokenizers import Tokenizer
 from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
 from lalamo.audio.neutts import (
     build_neutts_prompt_text,
-    parse_neutts_codebook_codes,
+    parse_neutts_speech_tokens,
     phonemize_neutts_text,
     require_neutts_message,
+    speech_tokens_to_codebook_codes,
 )
 from lalamo.audio.tts_message_processor import (
     TTSMessage,
@@ -223,7 +224,8 @@ class NeuTTSGenerator(TTSGenerator):
             key=random_key,
         )
         generated_text = self.message_processor.detokenize(generated_token_ids.tolist())
-        return parse_neutts_codebook_codes(generated_text)
+        speech_tokens = parse_neutts_speech_tokens(generated_text)
+        return speech_tokens_to_codebook_codes(speech_tokens)
 
     def decode_audio(self, semantic_tokens: Array | CodebookCodes) -> Float[Array, " audio_samples"]:
         assert isinstance(self.tts_model.audio_decoder, NeuCodecAudioDecoder)
