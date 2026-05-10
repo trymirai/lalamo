@@ -1,7 +1,8 @@
 from .inference import CollectTracesEvent, inference_collect_traces
 from .proposal import AcceptedProposal, ProposalNode, TrieProposal
 from .sampler import GumbelSampler, GumbelSeed
-from .speculator import LMState, RequestedState, SpeculationStep, Speculator, StateRequest
+from .speculator import SpeculationStep, Speculator
+from .state import LMState, MemoryBuffers, RingBuffer, StateRequest
 
 __all__ = [
     "AcceptedProposal",
@@ -9,8 +10,9 @@ __all__ = [
     "GumbelSampler",
     "GumbelSeed",
     "LMState",
+    "MemoryBuffers",
     "ProposalNode",
-    "RequestedState",
+    "RingBuffer",
     "SpeculationStep",
     "Speculator",
     "StateRequest",
