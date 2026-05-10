@@ -25,9 +25,9 @@ class AcceptedProposal:
 
 @dataclass(frozen=True)
 class ProposalNode:
-    token_id: int
+    token_id: Int[Array, ""] | int
     parent_index: int
-    gumbel_position: int
+    gumbel_position: Int[Array, ""] | int
     depth: int
 
 
@@ -36,7 +36,10 @@ class TrieProposal:
     nodes: tuple[ProposalNode, ...]
 
     @staticmethod
-    def create(root: int, root_sample_position: int) -> TrieProposal:
+    def create(
+        root: Int[Array, ""] | int,
+        root_sample_position: Int[Array, ""] | int,
+    ) -> TrieProposal:
         return TrieProposal((ProposalNode(root, -1, root_sample_position, 0),))
 
     def add_node(self, parent_index: int, token_id: int) -> tuple[TrieProposal, int]:
@@ -46,7 +49,7 @@ class TrieProposal:
         return TrieProposal((*self.nodes, node)), node_index
 
     @property
-    def token_ids(self) -> tuple[int, ...]:
+    def token_ids(self) -> tuple[Int[Array, ""] | int, ...]:
         return tuple(node.token_id for node in self.nodes)
 
     @property
@@ -54,7 +57,7 @@ class TrieProposal:
         return tuple(node.parent_index for node in self.nodes)
 
     @property
-    def gumbel_positions(self) -> tuple[int, ...]:
+    def gumbel_positions(self) -> tuple[Int[Array, ""] | int, ...]:
         return tuple(node.gumbel_position for node in self.nodes)
 
     @property
@@ -65,7 +68,7 @@ class TrieProposal:
         self,
         decoder: Decoder,
         kv_cache: State,
-        next_token_position: int,
+        next_token_position: Int[Array, ""] | int,
         sampler: GumbelSampler,
         return_activation_trace: bool,
     ) -> tuple[DecoderResult, tuple[int, ...]]:
@@ -93,7 +96,8 @@ class TrieProposal:
 
     def verify(self, sampled_token_ids: tuple[int, ...]) -> AcceptedProposal:
         child_index_by_parent_and_token = {
-            (node.parent_index, node.token_id): node_index for node_index, node in enumerate(self.nodes)
+            (node.parent_index, node.token_id): node_index
+            for node_index, node in enumerate(self.nodes[1:], start=1)
         }
         path: list[int] = []
         node_index = 0

@@ -3,16 +3,18 @@ from dataclasses import dataclass, field
 from typing import Self
 
 import jax.numpy as jnp
+from jaxtyping import Array, Int
 
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.decoder import Decoder, DecoderResult
 from lalamo.modules.token_mixers.state.kv_cache import compact_state_layers
 from lalamo.speculator.proposal import AcceptedProposal, TrieProposal
 from lalamo.speculator.sampler import GumbelSampler
-from lalamo.speculator.state import LMState, RingBuffer, StateRequest, build_prefill_memory, commit_memory
+from lalamo.speculator.state import LMState, MemoryBuffers, RingBuffer, StateRequest
 
 __all__ = [
     "LMState",
+    "MemoryBuffers",
     "RingBuffer",
     "SpeculationStep",
     "Speculator",
@@ -22,7 +24,7 @@ __all__ = [
 
 @dataclass(frozen=True)
 class SpeculationStep:
-    token_ids: tuple[int, ...]
+    token_ids: tuple[Int[Array, ""] | int, ...]
     accepted_token_ids: tuple[int, ...]
     bonus_token_id: int
 
@@ -63,12 +65,14 @@ class Speculator(ABC):
         assert updated_state is not None
         activation_trace = decoder_result.activation_trace
         assert activation_trace is not None
-        memory = build_prefill_memory(self.state_request, activation_trace)
+        memory = MemoryBuffers.from_prefill(self.state_request, activation_trace)
         return self, LMState(
             kv_cache=updated_state,
-            next_token_position=len(prompt_ids),
-            root_bonus_logits=root_bonus_logits,
-            root_bonus_id=self.sampler.sample_logits(root_bonus_logits, len(prompt_ids)),
+            next_token_position=jnp.array(len(prompt_ids), dtype=jnp.int32),
+            root_bonus_id=jnp.array(
+                self.sampler.sample_logits(root_bonus_logits, len(prompt_ids)),
+                dtype=jnp.int32,
+            ),
             memory=memory,
         )
 
@@ -109,9 +113,8 @@ class Speculator(ABC):
             num_accepted=jnp.array(accepted.num_compact_indices, dtype=jnp.int32),
             max_slots=len(proposal.nodes),
         )
-        memory = commit_memory(
+        memory = state.memory.commit(
             self.state_request,
-            state,
             decoder_result,
             accepted.compact_indices,
             accepted.num_compact_indices,
@@ -119,7 +122,6 @@ class Speculator(ABC):
         return LMState(
             kv_cache=new_kv_cache,
             next_token_position=state.next_token_position + accepted.num_compact_indices,
-            root_bonus_logits=decoder_result.logits[0, accepted.terminal_node_index],
-            root_bonus_id=accepted.bonus_token_id,
+            root_bonus_id=jnp.array(accepted.bonus_token_id, dtype=jnp.int32),
             memory=memory,
         )
