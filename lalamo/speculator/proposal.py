@@ -36,8 +36,8 @@ class TrieProposal:
     nodes: tuple[ProposalNode, ...]
 
     @staticmethod
-    def create(root: int, first_gumbel_position: int = 1) -> TrieProposal:
-        return TrieProposal((ProposalNode(root, -1, first_gumbel_position, 0),))
+    def create(root: int, root_sample_position: int) -> TrieProposal:
+        return TrieProposal((ProposalNode(root, -1, root_sample_position, 0),))
 
     def add_node(self, parent_index: int, token_id: int) -> tuple[TrieProposal, int]:
         node_index = len(self.nodes)
