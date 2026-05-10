@@ -47,16 +47,16 @@ class RequestedState:
     token_positions: Int[Array, " positions"] = field(default_factory=lambda: jnp.array((), dtype=jnp.int32))
     output_norm: Float[Array, "positions channels"] | None = None
     layer_outputs: tuple[Float[Array, "positions channels"], ...] = ()
-    last_sampled_ids: Int[Array, " positions"] = field(default_factory=lambda: jnp.array((), dtype=jnp.int32))
-    last_sampled_logits: Float[Array, "positions vocab"] | None = None
+    accepted_token_ids: Int[Array, " positions"] = field(default_factory=lambda: jnp.array((), dtype=jnp.int32))
+    accepted_token_logits: Float[Array, "positions vocab"] | None = None
 
 
 @dataclass(frozen=True)
 class LMState:
     kv_cache: State
     next_token_position: int
-    bonus_token_logits: Float[Array, " vocab"]
-    bonus_token_id: int
+    root_bonus_logits: Float[Array, " vocab"]
+    root_bonus_id: int
     requested: RequestedState = field(default_factory=RequestedState)
 
 
@@ -90,15 +90,15 @@ class Speculator(ABC):
             return_activation_trace=True,
             forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
         )
-        bonus_token_logits = decoder_result.logits[0, -1]
+        root_bonus_logits = decoder_result.logits[0, -1]
         updated_state = decoder_result.updated_state
         assert updated_state is not None
         compact_indices = self.state_request.prefill_compact_indices(len(prompt_ids))
         return self, LMState(
             kv_cache=updated_state,
             next_token_position=len(prompt_ids),
-            bonus_token_logits=bonus_token_logits,
-            bonus_token_id=self.sampler.sample_logits(bonus_token_logits, 0),
+            root_bonus_logits=root_bonus_logits,
+            root_bonus_id=self.sampler.sample_logits(root_bonus_logits, 0),
             requested=self.collect_requested_state(
                 previous=RequestedState(),
                 decoder_result=decoder_result,
@@ -119,7 +119,7 @@ class Speculator(ABC):
         accepted = proposal.verify(sampled_token_ids)
         next_state = self.build_next_state(state, decoder_result, proposal, accepted)
         step = SpeculationStep(
-            token_ids=(state.bonus_token_id, *accepted.token_ids),
+            token_ids=(state.root_bonus_id, *accepted.token_ids),
             accepted_token_ids=accepted.token_ids,
             bonus_token_id=accepted.bonus_token_id,
         )
@@ -144,13 +144,14 @@ class Speculator(ABC):
         return LMState(
             kv_cache=new_kv_cache,
             next_token_position=state.next_token_position + accepted.num_compact_indices,
-            bonus_token_logits=decoder_result.logits[0, accepted.terminal_node_index],
-            bonus_token_id=accepted.bonus_token_id,
+            root_bonus_logits=decoder_result.logits[0, accepted.terminal_node_index],
+            root_bonus_id=accepted.bonus_token_id,
             requested=self.collect_requested_state(
                 previous=state.requested,
                 decoder_result=decoder_result,
                 compact_indices=accepted.compact_indices,
                 num_compact_indices=accepted.num_compact_indices,
+                num_accepted_tokens=len(accepted.token_ids),
             ),
         )
 
@@ -160,15 +161,16 @@ class Speculator(ABC):
         decoder_result: DecoderResult,
         compact_indices: Int[Array, " max_slots"],
         num_compact_indices: int,
+        num_accepted_tokens: int = 0,
     ) -> RequestedState:
         activation_trace = decoder_result.activation_trace
         assert activation_trace is not None
         context_slice = self.state_request.context_slice
 
-        def compact_rows(values: Array) -> Array:
-            slots = jnp.arange(compact_indices.shape[0], dtype=jnp.int32)
-            source_indices = jnp.where(slots < num_compact_indices, compact_indices, 0)
-            return values[source_indices][:num_compact_indices]
+        def compact_rows(values: Array, row_indices: Int[Array, " rows"], num_rows: int) -> Array:
+            slots = jnp.arange(row_indices.shape[0], dtype=jnp.int32)
+            row_indices = jnp.where(slots < num_rows, row_indices, 0)
+            return values[row_indices][:num_rows]
 
         def append_context(previous_context: Array | None, current_context: Array) -> Array:
             context = (
@@ -180,39 +182,39 @@ class Speculator(ABC):
 
         token_positions = append_context(
             previous.token_positions,
-            compact_rows(activation_trace.token_positions[0]),
+            compact_rows(activation_trace.token_positions[0], compact_indices, num_compact_indices),
         )
-        last_sampled_ids = append_context(
-            previous.last_sampled_ids,
-            compact_rows(activation_trace.token_ids[0]),
+        accepted_token_ids = append_context(
+            previous.accepted_token_ids,
+            compact_rows(activation_trace.token_ids[0], compact_indices[1:], num_accepted_tokens),
         )
 
         output_norm = None
         if self.state_request.output_norm:
             output_norm = append_context(
                 previous.output_norm,
-                compact_rows(activation_trace.output_norm[0]),
+                compact_rows(activation_trace.output_norm[0], compact_indices, num_compact_indices),
             )
 
         layer_outputs = tuple(
             append_context(
                 previous.layer_outputs[index] if index < len(previous.layer_outputs) else None,
-                compact_rows(activation_trace.layer_results[layer_index].outputs[0]),
+                compact_rows(activation_trace.layer_results[layer_index].outputs[0], compact_indices, num_compact_indices),
             )
             for index, layer_index in enumerate(self.state_request.layer_indices)
         )
 
-        last_sampled_logits = None
+        accepted_token_logits = None
         if self.state_request.output_logits:
-            last_sampled_logits = append_context(
-                previous.last_sampled_logits,
-                compact_rows(decoder_result.logits[0]),
+            accepted_token_logits = append_context(
+                previous.accepted_token_logits,
+                compact_rows(decoder_result.logits[0], compact_indices, num_accepted_tokens),
             )
 
         return RequestedState(
             token_positions=token_positions,
             output_norm=output_norm,
             layer_outputs=layer_outputs,
-            last_sampled_ids=last_sampled_ids,
-            last_sampled_logits=last_sampled_logits,
+            accepted_token_ids=accepted_token_ids,
+            accepted_token_logits=accepted_token_logits,
         )
