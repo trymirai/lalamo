@@ -30,7 +30,6 @@ from lalamo.modules.common import ShardingConfig, pad_and_apply_data_sharding
 from lalamo.quantization import QuantizationMode
 from lalamo.speculator import (
     CollectTracesEvent,
-    SpeculatorTrainingEvent,
 )
 
 __version__ = "0.7.0"
@@ -54,7 +53,6 @@ __all__ = [
     "Precision",
     "QuantizationMode",
     "ShardingConfig",
-    "SpeculatorTrainingEvent",
     "SystemMessage",
     "ToolSchema",
     "TrainCallbacks",

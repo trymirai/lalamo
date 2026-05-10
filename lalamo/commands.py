@@ -36,8 +36,6 @@ from lalamo.modules import config_converter
 from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.safetensors import safe_write
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
-from lalamo.speculator.ngram import NGramSpeculator
-from lalamo.speculator.utils import SpeculatorTrainingEvent, train_speculator
 
 
 @dataclass
@@ -505,10 +503,13 @@ def train(
 
     callbacks.started()
 
+    from lalamo.speculator.ngram import NGramSpeculator
+    from lalamo.speculator.utils import train_speculator
+
     traces = iter_completions(trace_path)
     speculator = NGramSpeculator.init(hashtable_size, num_logits_per_token, max_order, discount)
 
-    def progress_callback(event: SpeculatorTrainingEvent) -> None:
+    def progress_callback(event: object) -> None:
         callbacks.training_progress(event.trained_tokens)
 
     train_speculator(speculator, traces, subsample_size, progress_callback)

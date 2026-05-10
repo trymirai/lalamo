@@ -66,8 +66,6 @@ from lalamo.model_registry import ModelRegistry
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
-from lalamo.speculator.ngram import NGramSpeculator
-from lalamo.speculator.utils import test_speculator
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -1200,6 +1198,9 @@ def test(
     ] = 8,
 ) -> None:
     model = LanguageModelConfig.load_model(model_path)
+
+    from lalamo.speculator.ngram import NGramSpeculator
+    from lalamo.speculator.utils import test_speculator
 
     with open(speculator_path, "rb") as fd:
         speculator = NGramSpeculator.deserialize(fd.read())
