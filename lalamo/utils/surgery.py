@@ -214,6 +214,7 @@ def zip_nodes_with[TreeT: PyTree](
     *trees: TreeT,
     is_leaf: Callable[[PyTree], bool] | None = None,
     leaf_dtype: type | tuple[type, ...] | None = None,
+    ignore_nones: bool = False,
 ) -> TreeT:
     if leaf_dtype is not None:
         base_is_leaf = is_leaf
@@ -225,4 +226,9 @@ def zip_nodes_with[TreeT: PyTree](
                 return False
             return base_is_leaf(leaf)
 
-    return jax.tree.map(map_fn, first_tree, *trees, is_leaf=is_leaf)
+    def wrapper(*leaves: PyTree) -> PyTree:
+        if ignore_nones and all(leaf is None for leaf in leaves):
+            return None
+        return map_fn(*leaves)
+
+    return jax.tree.map(wrapper, first_tree, *trees, is_leaf=is_leaf)

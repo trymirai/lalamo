@@ -370,6 +370,43 @@ def test_zip_nodes_with_updates_matching_leaves() -> None:
     assert jnp.array_equal(result.linears[0].bias, first_block.linears[0].bias)
 
 
+def test_zip_nodes_with_ignore_nones_skips_all_none_leaves() -> None:
+    calls: list[tuple[PyTree, PyTree]] = []
+
+    def add_leaves(first_leaf: PyTree, second_leaf: PyTree) -> PyTree:
+        calls.append((first_leaf, second_leaf))
+        return cast("int", first_leaf) + cast("int", second_leaf)
+
+    result = zip_nodes_with(
+        add_leaves,
+        {"empty": None, "value": 1},
+        {"empty": None, "value": 2},
+        is_leaf=lambda leaf: leaf is None,
+        ignore_nones=True,
+    )
+
+    assert result == {"empty": None, "value": 3}
+    assert calls == [(1, 2)]
+
+
+def test_zip_nodes_with_maps_all_none_leaves_by_default() -> None:
+    calls: list[tuple[PyTree, PyTree]] = []
+
+    def map_none_leaves(first_leaf: PyTree, second_leaf: PyTree) -> PyTree:
+        calls.append((first_leaf, second_leaf))
+        return "mapped"
+
+    result = zip_nodes_with(
+        map_none_leaves,
+        {"empty": None},
+        {"empty": None},
+        is_leaf=lambda leaf: leaf is None,
+    )
+
+    assert result == {"empty": "mapped"}
+    assert calls == [(None, None)]
+
+
 def test_zip_nodes_with_rejects_mismatched_paths() -> None:
     first_block = Block(
         matrix=_value_matrix(),
