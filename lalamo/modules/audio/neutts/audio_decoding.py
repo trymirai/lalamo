@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 from functools import cache
-from importlib import import_module
 from pathlib import Path
-from typing import Protocol, Self, cast
+from typing import Any, Protocol, Self, cast
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
@@ -13,7 +13,7 @@ from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderC
 from lalamo.modules.audio.text_decoder import CodebookCodes
 
 
-class _TorchTensor(Protocol):
+class TorchTensorLike(Protocol):
     def squeeze(self, dim: int) -> Self: ...
 
     def cpu(self) -> Self: ...
@@ -21,20 +21,16 @@ class _TorchTensor(Protocol):
     def numpy(self) -> np.ndarray: ...
 
 
-class _NeuCodec(Protocol):
-    device: object
+class NeuCodecLike(Protocol):
+    device: Any
 
     def eval(self) -> Self: ...
 
     def to(self, device: str) -> Self: ...
 
-    def encode_code(self, audio_or_path: str) -> _TorchTensor: ...
+    def encode_code(self, audio_or_path: str) -> TorchTensorLike: ...
 
-    def decode_code(self, codes: object) -> _TorchTensor: ...
-
-
-class _NeuCodecFactory(Protocol):
-    def from_pretrained(self, repo_id: str) -> _NeuCodec: ...
+    def decode_code(self, codes: object) -> TorchTensorLike: ...
 
 
 @dataclass(frozen=True)
@@ -52,27 +48,25 @@ class NeuCodecAudioDecoderConfig(TTSAudioDecoderConfigBase):
 
 
 @cache
-def _load_neucodec(codec_repo: str, device: str) -> _NeuCodec:
+def _load_neucodec(codec_repo: str, device: str) -> NeuCodecLike:
     try:
-        neucodec_module = import_module("neucodec")
+        from neucodec import DistillNeuCodec, NeuCodec  # type: ignore[unresolved-import]
     except ImportError as e:
         raise ImportError(
             "NeuTTS audio decoding requires the optional neucodec dependency. Install lalamo with the neutts extra.",
         ) from e
 
-    neucodec_factory = cast("_NeuCodecFactory", neucodec_module.NeuCodec)
-    distill_neucodec_factory = cast("_NeuCodecFactory", neucodec_module.DistillNeuCodec)
     match codec_repo:
         case "neuphonic/neucodec":
-            codec = neucodec_factory.from_pretrained(codec_repo)
+            codec = NeuCodec.from_pretrained(codec_repo)
         case "neuphonic/distill-neucodec":
-            codec = distill_neucodec_factory.from_pretrained(codec_repo)
+            codec = DistillNeuCodec.from_pretrained(codec_repo)
         case _:
             raise ValueError(
                 "NeuTTS codec_repo must be 'neuphonic/neucodec' or 'neuphonic/distill-neucodec'.",
             )
 
-    return codec.eval().to(device)
+    return cast("NeuCodecLike", codec.eval().to(device))
 
 
 class NeuCodecAudioDecoder(TTSAudioDecoder[NeuCodecAudioDecoderConfig]):
@@ -85,7 +79,7 @@ class NeuCodecAudioDecoder(TTSAudioDecoder[NeuCodecAudioDecoderConfig]):
         return self.config.samplerate
 
     @property
-    def _codec(self) -> _NeuCodec:
+    def _codec(self) -> NeuCodecLike:
         return _load_neucodec(self.config.codec_repo, self.config.device)
 
     def export_weights(self) -> ParameterTree[Array]:
@@ -108,26 +102,27 @@ class NeuCodecAudioDecoder(TTSAudioDecoder[NeuCodecAudioDecoderConfig]):
             codes = codec.encode_code(audio_or_path=str(audio_path)).squeeze(0).squeeze(0)
         return jnp.asarray(codes.cpu().numpy(), dtype=jnp.int32)
 
-    def _semantic_indices(self, codes: Array | CodebookCodes) -> Array:
+    def _semantic_indices(self, codes: Int[Array, "*shape"] | CodebookCodes) -> Int[Array, "*shape"]:
         if not isinstance(codes, CodebookCodes):
             return codes
         if codes.acoustic is not None and codes.acoustic.size != 0:
             raise ValueError("NeuCodec accepts semantic codes only; acoustic codebooks are not supported.")
         return codes.semantic
 
-    def _normalize_codes(self, indices: Array) -> np.ndarray:
-        codes = np.asarray(indices, dtype=np.int64)
-        if codes.ndim == 1:
-            return codes[None, None, :]
-        if codes.ndim == 2:
-            if codes.shape[0] != 1:
+    def _normalize_codes(self, indices: Int[Array, "*shape"]) -> Int[Array, "1 1 tokens"]:
+        if indices.ndim == 1:
+            return indices[None, None, :]
+        if indices.ndim == 2:
+            if indices.shape[0] != 1:
                 raise ValueError("NeuCodec expects a single codebook.")
-            return codes[None, :, :]
-        if codes.ndim == 3:
-            if codes.shape[1] != 1:
+            return indices[None, :, :]
+        if indices.ndim == 3:
+            if indices.shape[0] != 1:
+                raise ValueError("NeuCodec expects a single batch item.")
+            if indices.shape[1] != 1:
                 raise ValueError("NeuCodec expects a single codebook.")
-            return codes
-        raise ValueError(f"NeuCodec code tensor must have 1, 2, or 3 dimensions; got {codes.shape}.")
+            return indices
+        raise ValueError(f"NeuCodec code tensor must have 1, 2, or 3 dimensions; got {indices.shape}.")
 
     def __call__(
         self,
@@ -140,9 +135,12 @@ class NeuCodecAudioDecoder(TTSAudioDecoder[NeuCodecAudioDecoderConfig]):
 
         codes = self._normalize_codes(self._semantic_indices(indices))
         codec = self._codec
-        device = getattr(codec, "device", self.config.device)
         with torch.no_grad():
-            code_tensor = torch.tensor(codes, dtype=torch.long).to(device)
+            code_tensor = torch.as_tensor(
+                np.asarray(jax.device_get(codes)),
+                dtype=torch.long,
+                device=codec.device,
+            )
             reconstructed = codec.decode_code(code_tensor).cpu().numpy()
         return jnp.asarray(reconstructed[0, 0, :], dtype=self.config.precision)
 

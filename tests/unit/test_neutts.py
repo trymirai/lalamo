@@ -10,7 +10,7 @@ from lalamo.main import _voice_prompt_from_cli_options
 from lalamo.model_import.model_configs.huggingface.neutts import HFNeuTTSConfig
 from lalamo.model_import.model_specs.common import ModelType
 from lalamo.model_registry import ModelRegistry
-from lalamo.modules.audio.neutts.audio_decoding import NeuCodecAudioDecoderConfig
+from lalamo.modules.audio.neutts.audio_decoding import NeuCodecAudioDecoder, NeuCodecAudioDecoderConfig
 from lalamo.modules.audio.neutts.text_decoding import NeuTTSTextDecoderConfig
 from lalamo.modules.rope import LinearScalingRoPEConfig
 
@@ -77,6 +77,13 @@ def test_speech_tokens_to_codebook_codes_returns_single_semantic_codebook() -> N
     assert codes.acoustic is None
     assert codes.semantic.shape == (1, 1, 2)
     assert codes.semantic.tolist() == [[[12, 34]]]
+
+
+def test_neucodec_normalize_codes_rejects_multiple_batch_items() -> None:
+    decoder = NeuCodecAudioDecoder(config=NeuCodecAudioDecoderConfig(precision=jnp.float32))
+
+    with pytest.raises(ValueError, match="single batch item"):
+        decoder._normalize_codes(jnp.zeros((2, 1, 3), dtype=jnp.int32))  # noqa: SLF001
 
 
 def test_parse_neutts_speech_tokens_requires_at_least_one_token() -> None:
