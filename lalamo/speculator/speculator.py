@@ -21,7 +21,7 @@ __all__ = [
     "StateRequest",
 ]
 
-
+# TODO(hikettei): Move this thing into lalamo/model/decoder.py after big refactor
 @dataclass(frozen=True)
 class StateRequest:
     output_norm: bool = False
@@ -41,7 +41,7 @@ class StateRequest:
             start = max(prompt_length - self.context_length, 0)
         return jnp.arange(start, prompt_length, dtype=jnp.int32)
 
-
+# TODO(hikettei): This should be DecoderResult without speculator things
 @dataclass(frozen=True)
 class RequestedState:
     token_positions: Int[Array, " positions"] = field(default_factory=lambda: jnp.array((), dtype=jnp.int32))
@@ -84,7 +84,7 @@ class Speculator(ABC):
             root=state.root_bonus_id,
             root_sample_position=state.next_token_position + 1,
         )
-
+    # TODO(hikettei): integrate language_model.py later
     def prefill(self, prompt_ids: tuple[int, ...]) -> tuple[Self, LMState]:
         token_ids = jnp.array([prompt_ids], dtype=jnp.int32)
         token_positions = jnp.arange(len(prompt_ids), dtype=jnp.int32)[None, :]
@@ -160,7 +160,7 @@ class Speculator(ABC):
                 num_accepted_tokens=len(accepted.token_ids),
             ),
         )
-
+    # TODO(hikettei) integrate to decoder later?
     def collect_requested_state(
         self,
         previous: RequestedState,
