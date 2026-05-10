@@ -245,10 +245,12 @@ class AWQSpec(QuantizedSpec):
     def distortion(self) -> float:
         if self.is_symmetric:
             qmax = (2 ** (self.bits - 1)) - 1
-            return standard_normal_absmax_squared(self.group_size) / (12 * qmax**2)
+            endpoint_correction = (self.group_size - 1) / self.group_size
+            return endpoint_correction * standard_normal_absmax_squared(self.group_size) / (12 * qmax**2)
 
         qmax = (2**self.bits) - 1
-        return standard_normal_range_squared(self.group_size) / (12 * qmax**2)
+        endpoint_correction = (self.group_size - 2) / self.group_size
+        return endpoint_correction * standard_normal_range_squared(self.group_size) / (12 * qmax**2)
 
     def compress(
         self,
