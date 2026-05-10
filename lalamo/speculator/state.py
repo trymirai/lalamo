@@ -7,6 +7,7 @@ from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.modules.decoder import DecoderActivationTrace, DecoderResult
 from lalamo.modules.token_mixers.state.common import State
+from lalamo.speculator.proposal import TrieProposal
 
 __all__ = [
     "LMState",
@@ -164,6 +165,12 @@ class LMState:
     next_token_position: Int[Array, ""]
     root_bonus_id: Int[Array, ""]
     memory: MemoryBuffers = field(default_factory=MemoryBuffers)
+
+    def create_root_proposal(self) -> TrieProposal:
+        return TrieProposal.create(
+            root=self.root_bonus_id,
+            root_sample_position=self.next_token_position + 1,
+        )
 
     def recent_token_ids(self, length: int) -> tuple[Int[Array, "batch length"], Bool[Array, "batch length"]]:
         assert self.memory.token_ids is not None

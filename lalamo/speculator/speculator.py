@@ -36,16 +36,10 @@ class Speculator(ABC):
     state_request: StateRequest = field(default_factory=StateRequest)
 
     @abstractmethod
-    def draft(self, root: TrieProposal, state: LMState) -> TrieProposal: ...
+    def draft(self, state: LMState) -> TrieProposal: ...
 
     @abstractmethod
     def update(self, state: LMState, step: SpeculationStep) -> Self: ...
-
-    def create_root_proposal(self, state: LMState) -> TrieProposal:
-        return TrieProposal.create(
-            root=state.root_bonus_id,
-            root_sample_position=state.next_token_position + 1,
-        )
 
     def prefill(self, prompt_ids: tuple[int, ...], max_output_length: int = 8192) -> tuple[Self, LMState]:
         capacity = len(prompt_ids) + max_output_length
@@ -78,7 +72,7 @@ class Speculator(ABC):
         )
 
     def step(self, state: LMState) -> tuple[Self, LMState, SpeculationStep]:
-        proposal = self.draft(self.create_root_proposal(state), state)
+        proposal = self.draft(state)
         decoder_result, sampled_token_ids = proposal.forward(
             decoder=self.decoder,
             kv_cache=state.kv_cache,
