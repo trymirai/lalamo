@@ -1,6 +1,5 @@
 from .inference import CollectTracesEvent, inference_collect_traces
-from .proposal import AcceptedProposal, TrieProposal
-from .sampler import GumbelSampler
+from .proposal import AcceptedProposal, GumbelSampler, TrieProposal
 from .speculator import Speculator
 from .state import LMState, MemoryBuffers, RingBuffer, StateRequest
 

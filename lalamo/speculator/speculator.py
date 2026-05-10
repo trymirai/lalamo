@@ -8,8 +8,7 @@ from jaxtyping import Array, Int
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.decoder import Decoder, DecoderResult
 from lalamo.modules.token_mixers.state.kv_cache import compact_state_layers
-from lalamo.speculator.proposal import AcceptedProposal, TrieProposal
-from lalamo.speculator.sampler import GumbelSampler
+from lalamo.speculator.proposal import AcceptedProposal, GumbelSampler, TrieProposal
 from lalamo.speculator.state import LMState, MemoryBuffers, RingBuffer, StateRequest
 
 __all__ = [
