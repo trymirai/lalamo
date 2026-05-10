@@ -28,9 +28,9 @@ class CompactableStateLayer(StateLayerBase, ABC):
     @abstractmethod
     def compact(
         self,
-        cache_len: Int[Array, ""],
-        accepted_indices: Int[Array, " max_slots"],
-        num_accepted: Int[Array, ""],
+        cache_len: Int[Array, " batch"],
+        accepted_indices: Int[Array, "batch max_slots"],
+        num_accepted: Int[Array, " batch"],
         max_slots: int,
     ) -> Self: ...
 

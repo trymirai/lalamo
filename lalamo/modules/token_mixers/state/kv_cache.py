@@ -68,9 +68,9 @@ def build_tree_attention_mask(
 @eqx.filter_jit
 def compact_state_layers(
     state: State,
-    cache_len: Int[Array, ""],
-    accepted_indices: Int[Array, " max_slots"],
-    num_accepted: Int[Array, ""],
+    cache_len: Int[Array, " batch"],
+    accepted_indices: Int[Array, "batch max_slots"],
+    num_accepted: Int[Array, " batch"],
     max_slots: int,
 ) -> State:
     new_layers = []
@@ -333,21 +333,22 @@ class StaticKVCacheLayer(KVCacheLayer, CompactableStateLayer):
 
     def compact(
         self,
-        cache_len: Int[Array, ""],
-        accepted_indices: Int[Array, " max_slots"],
-        num_accepted: Int[Array, ""],
+        cache_len: Int[Array, " batch"],
+        accepted_indices: Int[Array, "batch max_slots"],
+        num_accepted: Int[Array, " batch"],
         max_slots: int,
     ) -> "StaticKVCacheLayer":
-        dst = jnp.arange(max_slots, dtype=jnp.int32) + cache_len
-        src = cache_len + accepted_indices
-        valid = jnp.arange(max_slots) < num_accepted
+        slots = jnp.arange(max_slots, dtype=jnp.int32)
+        batch_indices = jnp.arange(self.keys.shape[0], dtype=jnp.int32)[:, None]
+        dst = cache_len[:, None] + slots[None, :]
+        src = cache_len[:, None] + accepted_indices
+        valid = slots[None, :] < num_accepted[:, None]
         src = jnp.where(valid, src, dst)
-        new_length = cache_len + num_accepted
         return StaticKVCacheLayer(
             has_sinks=self.has_sinks,
-            keys=self.keys.at[:, dst].set(self.keys[:, src]),
-            values=self.values.at[:, dst].set(self.values[:, src]),
-            current_length=jnp.full_like(self.current_length, new_length),
+            keys=self.keys.at[batch_indices, dst].set(self.keys[batch_indices, src]),
+            values=self.values.at[batch_indices, dst].set(self.values[batch_indices, src]),
+            current_length=cache_len + num_accepted,
         )
 
     @classmethod
