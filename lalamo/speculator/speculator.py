@@ -34,7 +34,7 @@ class StateRequest:
 
 @dataclass(frozen=True)
 class RequestedState:
-    token_positions: tuple[int, ...]
+    token_positions: tuple[int, ...] = ()
     output_norm: Float[Array, "positions channels"] | None = None
     layer_indices: tuple[int, ...] = ()
     layer_outputs: tuple[Float[Array, "positions channels"], ...] = ()
@@ -44,9 +44,9 @@ class RequestedState:
 class LMState:
     kv_cache: State
     next_token_position: int
-    logits: Float[Array, " vocab"]
+    bonus_token_logits: Float[Array, " vocab"]
     bonus_token_id: int
-    requested: RequestedState = field(default_factory=lambda: RequestedState(token_positions=()))
+    requested: RequestedState = field(default_factory=RequestedState)
 
 
 @dataclass(frozen=True)
@@ -79,16 +79,16 @@ class Speculator(ABC):
             return_activation_trace=self.state_request.activation_trace,
             forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
         )
-        logits = decoder_result.logits[0, -1]
+        bonus_token_logits = decoder_result.logits[0, -1]
         updated_state = decoder_result.updated_state
         assert updated_state is not None
         return self, LMState(
             kv_cache=updated_state,
             next_token_position=len(prompt_ids),
-            logits=logits,
-            bonus_token_id=self.sampler.sample_logits(logits, 0),
+            bonus_token_logits=bonus_token_logits,
+            bonus_token_id=self.sampler.sample_logits(bonus_token_logits, 0),
             requested=self.collect_requested_state(
-                previous=RequestedState(token_positions=()),
+                previous=RequestedState(),
                 decoder_result=decoder_result,
                 token_positions=self.prefill_trace_indices(len(prompt_ids)),
                 trace_indices=self.prefill_trace_indices(len(prompt_ids)),
@@ -132,7 +132,7 @@ class Speculator(ABC):
         return LMState(
             kv_cache=new_kv_cache,
             next_token_position=state.next_token_position + accepted.num_compact_indices,
-            logits=decoder_result.logits[0, accepted.terminal_node_index],
+            bonus_token_logits=decoder_result.logits[0, accepted.terminal_node_index],
             bonus_token_id=accepted.bonus_token_id,
             requested=self.collect_requested_state(
                 previous=state.requested,
@@ -159,7 +159,7 @@ class Speculator(ABC):
         trace_indices: tuple[int, ...],
     ) -> RequestedState:
         if not self.state_request.activation_trace:
-            return RequestedState(token_positions=())
+            return RequestedState()
 
         token_positions = (*previous.token_positions, *token_positions)
         if self.state_request.history_length is not None:
