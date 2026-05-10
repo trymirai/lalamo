@@ -24,9 +24,9 @@ __all__ = [
 
 @dataclass(frozen=True)
 class SpeculationStep:
-    token_ids: tuple[Int[Array, ""] | int, ...]
-    accepted_token_ids: tuple[int, ...]
-    bonus_token_id: int
+    token_ids: Int[Array, "batch max_slots"]
+    accepted_token_ids: Int[Array, "batch max_slots"]
+    bonus_token_ids: Int[Array, " batch"]
 
 
 @dataclass(frozen=True)
@@ -63,10 +63,10 @@ class Speculator(ABC):
         memory = MemoryBuffers.from_prefill(self.state_request, activation_trace, prompt_lengths)
         return self, LMState(
             kv_cache=updated_state,
-            next_token_position=jnp.array(len(prompt_ids), dtype=jnp.int32),
-            root_bonus_id=jnp.array(
-                self.sampler.sample_logits(root_bonus_logits, len(prompt_ids)),
-                dtype=jnp.int32,
+            next_token_position=jnp.array([len(prompt_ids)], dtype=jnp.int32),
+            root_bonus_id=self.sampler.sample_logits(
+                root_bonus_logits[None, :],
+                jnp.array([len(prompt_ids)], dtype=jnp.int32),
             ),
             memory=memory,
         )
@@ -76,16 +76,16 @@ class Speculator(ABC):
         decoder_result, sampled_token_ids = proposal.forward(
             decoder=self.decoder,
             kv_cache=state.kv_cache,
-            next_token_position=state.next_token_position,
+            next_token_positions=state.next_token_position,
             sampler=self.sampler,
             return_activation_trace=True,
         )
         accepted = proposal.verify(sampled_token_ids)
         next_state = self.build_next_state(state, decoder_result, proposal, accepted)
         step = SpeculationStep(
-            token_ids=(state.root_bonus_id, *accepted.token_ids),
+            token_ids=jnp.concatenate([state.root_bonus_id[:, None], accepted.token_ids], axis=1),
             accepted_token_ids=accepted.token_ids,
-            bonus_token_id=accepted.bonus_token_id,
+            bonus_token_ids=accepted.bonus_token_ids,
         )
         return self.update(state, step), next_state, step
 
@@ -99,24 +99,22 @@ class Speculator(ABC):
         updated_state = decoder_result.updated_state
         assert updated_state is not None
         cache_length = state.kv_cache[0].prefix_lengths()
-        compact_indices = accepted.compact_indices[None, :]
-        num_compact_indices = jnp.array([accepted.num_compact_indices], dtype=jnp.int32)
         new_kv_cache = compact_state_layers(
             updated_state,
             cache_len=cache_length,
-            accepted_indices=compact_indices,
-            num_accepted=num_compact_indices,
-            max_slots=len(proposal.nodes),
+            accepted_indices=accepted.compact_indices,
+            num_accepted=accepted.num_compact_indices,
+            max_slots=proposal.budget,
         )
         memory = state.memory.commit(
             self.state_request,
             decoder_result,
-            compact_indices,
-            num_compact_indices,
+            accepted.compact_indices,
+            accepted.num_compact_indices,
         )
         return LMState(
             kv_cache=new_kv_cache,
             next_token_position=state.next_token_position + accepted.num_compact_indices,
-            root_bonus_id=jnp.array(accepted.bonus_token_id, dtype=jnp.int32),
+            root_bonus_id=accepted.bonus_token_ids,
             memory=memory,
         )

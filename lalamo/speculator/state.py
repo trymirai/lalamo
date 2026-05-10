@@ -162,14 +162,15 @@ class MemoryBuffers:
 @dataclass(frozen=True)
 class LMState:
     kv_cache: State
-    next_token_position: Int[Array, ""]
-    root_bonus_id: Int[Array, ""]
+    next_token_position: Int[Array, " batch"]
+    root_bonus_id: Int[Array, " batch"]
     memory: MemoryBuffers = field(default_factory=MemoryBuffers)
 
-    def create_root_proposal(self) -> TrieProposal:
+    def create_root_proposal(self, budget: int=128) -> TrieProposal:
         return TrieProposal.create(
-            root=self.root_bonus_id,
-            root_sample_position=self.next_token_position + 1,
+            root_ids=self.root_bonus_id,
+            root_sample_positions=self.next_token_position + 1,
+            budget=budget,
         )
 
     def recent_token_ids(self, length: int) -> tuple[Int[Array, "batch length"], Bool[Array, "batch length"]]:
