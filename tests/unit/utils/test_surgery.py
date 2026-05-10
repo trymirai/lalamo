@@ -1,19 +1,25 @@
 from dataclasses import dataclass
-from typing import Literal, Self, overload
+from typing import Literal, Self, cast, overload
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, DTypeLike, Float, Key
+from jaxtyping import Array, DTypeLike, Float, Key, PyTree
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
-from lalamo.utils.surgery import load_as, map_nodes_of_type, map_nodes_of_type_with_path, select_nodes_of_type
+from lalamo.utils.surgery import (
+    load_as,
+    map_nodes_of_type,
+    map_nodes_of_type_with_path,
+    select_nodes_of_type,
+    zip_nodes_with,
+)
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
@@ -323,3 +329,70 @@ def test_select_nodes_of_type_returns_selected_nodes_with_paths() -> None:
         ((".linears", "[0]"), 1.0),
         ((".linears", "[1]"), 2.0),
     ]
+
+
+def test_zip_nodes_with_updates_matching_leaves() -> None:
+    first_block = Block(
+        matrix=_value_matrix(),
+        linears=(
+            Linear(weight=jnp.ones((2, 2)), bias=jnp.ones((2,))),
+            Linear(weight=jnp.full((2, 2), 2), bias=jnp.full((2,), 2)),
+        ),
+    )
+    second_block = Block(
+        matrix=_value_matrix(),
+        linears=(
+            Linear(weight=jnp.full((2, 2), 3), bias=jnp.full((2,), 3)),
+            Linear(weight=jnp.full((2, 2), 4), bias=jnp.full((2,), 4)),
+        ),
+    )
+
+    def add_linears(first_leaf: PyTree, second_leaf: PyTree) -> PyTree:
+        if isinstance(first_leaf, Linear):
+            return Linear(
+                weight=first_leaf.weight + cast("Linear", second_leaf).weight,
+                bias=first_leaf.bias,
+            )
+        return first_leaf
+
+    result = zip_nodes_with(
+        add_linears,
+        first_block,
+        second_block,
+        is_leaf=lambda leaf: isinstance(leaf, SurgeryWeightMatrix),
+        leaf_dtype=Linear,
+    )
+
+    assert isinstance(result, Block)
+    assert jnp.array_equal(result.matrix.weights, first_block.matrix.weights)
+    assert jnp.array_equal(result.linears[0].weight, jnp.full((2, 2), 4))
+    assert jnp.array_equal(result.linears[1].weight, jnp.full((2, 2), 6))
+    assert jnp.array_equal(result.linears[0].bias, first_block.linears[0].bias)
+
+
+def test_zip_nodes_with_rejects_mismatched_paths() -> None:
+    first_block = Block(
+        matrix=_value_matrix(),
+        linears=(
+            Linear(weight=jnp.ones((2, 2)), bias=jnp.ones((2,))),
+            Linear(weight=jnp.full((2, 2), 2), bias=jnp.full((2,), 2)),
+        ),
+    )
+    second_block = Block(
+        matrix=_value_matrix(),
+        linears=(
+            Linear(weight=jnp.full((2, 2), 3), bias=jnp.full((2,), 3)),
+        ),
+    )
+
+    def keep_leaf(first_leaf: PyTree, _second_leaf: PyTree) -> PyTree:
+        return first_leaf
+
+    with pytest.raises(ValueError):
+        zip_nodes_with(
+            keep_leaf,
+            first_block,
+            second_block,
+            is_leaf=lambda leaf: isinstance(leaf, Linear),
+            leaf_dtype=Linear,
+        )

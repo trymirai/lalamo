@@ -17,6 +17,7 @@ __all__ = [
     "map_nodes_of_type",
     "map_nodes_of_type_with_path",
     "select_nodes_of_type",
+    "zip_nodes_with",
 ]
 
 
@@ -185,7 +186,7 @@ def map_nodes_of_type[
 
 def map_nodes_of_type_with_path[TreeT: PyTree, NodeT](
     node_type: type[NodeT],
-    map_fn: Callable[[tuple[str, ...], NodeT], NodeT],
+    map_fn: Callable[[tuple[str, ...], NodeT], PyTree],
     tree: TreeT,
 ) -> TreeT:
     def wrapper(path: tuple[object, ...], node: PyTree) -> PyTree:
@@ -205,3 +206,23 @@ def select_nodes_of_type[NodeT: eqx.Module](
         for (path, leaf) in jax.tree.leaves_with_path(tree, is_leaf=lambda node: isinstance(node, node_type))
         if isinstance(leaf, node_type)
     ]
+
+
+def zip_nodes_with[TreeT: PyTree](
+    map_fn: Callable[..., PyTree],
+    first_tree: TreeT,
+    *trees: TreeT,
+    is_leaf: Callable[[PyTree], bool] | None = None,
+    leaf_dtype: type | tuple[type, ...] | None = None,
+) -> TreeT:
+    if leaf_dtype is not None:
+        base_is_leaf = is_leaf
+
+        def is_leaf(leaf: PyTree) -> bool:
+            if isinstance(leaf, leaf_dtype):
+                return True
+            if base_is_leaf is None:
+                return False
+            return base_is_leaf(leaf)
+
+    return jax.tree.map(map_fn, first_tree, *trees, is_leaf=is_leaf)
