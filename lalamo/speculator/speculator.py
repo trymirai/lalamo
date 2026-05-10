@@ -16,62 +16,67 @@ __all__ = [
     "LMState",
     "MemoryBuffers",
     "RingBuffer",
-    "SpeculationStep",
     "Speculator",
     "StateRequest",
 ]
 
 
 @dataclass(frozen=True)
-class SpeculationStep:
-    token_ids: Int[Array, "batch max_slots"]
-    accepted_token_ids: Int[Array, "batch max_slots"]
-    bonus_token_ids: Int[Array, " batch"]
-
-
-@dataclass(frozen=True)
 class Speculator(ABC):
     decoder: Decoder
     sampler: GumbelSampler
+    capacity: int = 8192
     state_request: StateRequest = field(default_factory=StateRequest)
 
     @abstractmethod
     def draft(self, state: LMState) -> TrieProposal: ...
 
     @abstractmethod
-    def update(self, state: LMState, step: SpeculationStep) -> Self: ...
+    def update(self, state: LMState, accepted: AcceptedProposal) -> Self: ...
 
-    def prefill(self, prompt_ids: tuple[int, ...], max_output_length: int = 8192) -> tuple[Self, LMState]:
-        capacity = len(prompt_ids) + max_output_length
-        token_ids = jnp.array([prompt_ids], dtype=jnp.int32)
-        token_positions = jnp.arange(len(prompt_ids), dtype=jnp.int32)[None, :]
-        initial_state = self.decoder.init_static_state(batch_size=1, capacity=capacity)
+    # TODO: Remove prefill/step/build_next_state into somewhere else
+    # And add utils on AcceptedProposal for measuring mal etc is clean ig
+    def prefill(
+        self,
+        prompt_ids: Int[Array, "batch prompt"],
+        prompt_lengths: Int[Array, " batch"],
+    ) -> tuple[Self, LMState]:
+        batch_size, prompt_capacity = prompt_ids.shape
+        token_positions = jnp.broadcast_to(
+            jnp.arange(prompt_capacity, dtype=jnp.int32)[None, :],
+            prompt_ids.shape,
+        )
+        initial_state = self.decoder.init_static_state(
+            batch_size=batch_size,
+            capacity=self.capacity,
+        )
         decoder_result = self.decoder(
-            token_ids,
+            prompt_ids,
             token_positions,
             state=initial_state,
             return_updated_state=True,
             return_activation_trace=True,
+            lengths_without_padding=prompt_lengths,
             forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
         )
-        root_bonus_logits = decoder_result.logits[0, -1]
+        batch_indices = jnp.arange(batch_size, dtype=jnp.int32)
+        root_bonus_logits = decoder_result.logits[batch_indices, prompt_lengths - 1]
         updated_state = decoder_result.updated_state
         assert updated_state is not None
         activation_trace = decoder_result.activation_trace
         assert activation_trace is not None
-        prompt_lengths = jnp.array([len(prompt_ids)], dtype=jnp.int32)
         memory = MemoryBuffers.from_prefill(self.state_request, activation_trace, prompt_lengths)
         return self, LMState(
             kv_cache=updated_state,
-            next_token_position=jnp.array([len(prompt_ids)], dtype=jnp.int32),
+            next_token_position=prompt_lengths,
             root_bonus_id=self.sampler.sample_logits(
-                root_bonus_logits[None, :],
-                jnp.array([len(prompt_ids)], dtype=jnp.int32),
+                root_bonus_logits,
+                prompt_lengths,
             ),
             memory=memory,
         )
 
-    def step(self, state: LMState) -> tuple[Self, LMState, SpeculationStep]:
+    def step(self, state: LMState) -> tuple[Self, LMState, AcceptedProposal]:
         proposal = self.draft(state)
         decoder_result, sampled_token_ids = proposal.forward(
             decoder=self.decoder,
@@ -82,12 +87,7 @@ class Speculator(ABC):
         )
         accepted = proposal.verify(sampled_token_ids)
         next_state = self.build_next_state(state, decoder_result, proposal, accepted)
-        step = SpeculationStep(
-            token_ids=jnp.concatenate([state.root_bonus_id[:, None], accepted.token_ids], axis=1),
-            accepted_token_ids=accepted.token_ids,
-            bonus_token_ids=accepted.bonus_token_ids,
-        )
-        return self.update(state, step), next_state, step
+        return self.update(state, accepted), next_state, accepted
 
     def build_next_state(
         self,

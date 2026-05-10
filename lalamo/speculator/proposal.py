@@ -16,7 +16,7 @@ __all__ = ["AcceptedProposal", "TrieProposal"]
 
 @dataclass(frozen=True)
 class AcceptedProposal:
-    token_ids: Int[Array, "batch max_slots"]
+    accepted_token_ids: Int[Array, "batch max_slots"]
     node_indices: Int[Array, "batch max_slots"]
     compact_indices: Int[Array, "batch max_slots"]
     num_compact_indices: Int[Array, " batch"]
@@ -111,7 +111,7 @@ class TrieProposal:
             logits.reshape((-1, logits.shape[-1])),
             self.gumbel_positions.reshape(-1),
         )
-        return jnp.where(self.node_mask, sampled_token_ids.reshape(self.gumbel_positions.shape), 0)
+        return jnp.where(self.node_mask, sampled_token_ids.reshape(self.gumbel_positions.shape), -1)
 
     def verify(self, sampled_token_ids: Int[Array, "batch nodes"]) -> AcceptedProposal:
         batch_indices = jnp.arange(self.batch_size, dtype=jnp.int32)
@@ -133,7 +133,7 @@ class TrieProposal:
                     ),
                 ),
             )
-            accepted = alive & jnp.any(child_mask, axis=1)
+            accepted = jnp.logical_and(alive, jnp.any(child_mask, axis=1))
             child_indices = jnp.argmax(child_mask, axis=1).astype(jnp.int32)
             next_terminal_node_indices = jnp.where(accepted, child_indices, terminal_node_indices)
             return (next_terminal_node_indices, accepted), (child_indices, accepted)
@@ -158,10 +158,10 @@ class TrieProposal:
             [path_mask, jnp.zeros((self.batch_size, 1), dtype=jnp.bool)],
             axis=1,
         )
-        token_ids = jnp.where(
+        accepted_token_ids = jnp.where(
             node_mask,
             jnp.take_along_axis(self.token_ids, node_indices, axis=1),
-            0,
+            -1,
         )
         compact_indices = jnp.concatenate(
             [jnp.zeros((self.batch_size, 1), dtype=jnp.int32), node_indices[:, :-1]],
@@ -171,7 +171,7 @@ class TrieProposal:
         bonus_token_ids = sampled_token_ids[batch_indices, terminal_node_indices]
 
         return AcceptedProposal(
-            token_ids=token_ids,
+            accepted_token_ids=accepted_token_ids,
             node_indices=node_indices,
             compact_indices=compact_indices,
             num_compact_indices=num_compact_indices,
