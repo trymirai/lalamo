@@ -33,7 +33,7 @@ __all__ = [
 def _repeat_kv(
     keys_or_values: Float[Array, "tokens groups channels"],
     group_size: int,
-) -> Float[Array, "tokens groups*group_size channels"]:
+) -> Float[Array, "tokens heads channels"]:
     return jnp.repeat(keys_or_values, group_size, axis=1)
 
 

@@ -66,6 +66,14 @@ def _awq_weights(path: ParameterPath) -> Mapping[str, Array]:
     }
 
 
+def _symmetric_awq_weights(path: ParameterPath) -> Mapping[str, Array]:
+    unpacked_weights = jnp.arange(16, dtype=jnp.int32).reshape(4, 4) + 128
+    return {
+        path / "qweight": _pack_int32(unpacked_weights, bits=8),
+        path / "scales": jnp.ones((2, 4), dtype=jnp.float32),
+    }
+
+
 @pytest.mark.parametrize(
     ("weights_factory", "implementation", "expected_type"),
     [
@@ -94,6 +102,21 @@ def test_load_linear_quantized_checkpoint_uses_requested_dtype_and_implementatio
     assert isinstance(loaded.weights, expected_type)
     assert loaded.weights.spec.layout == Layout.OUTPUT_INPUT
     assert loaded.weights.dtype == jnp.bfloat16
+
+
+def test_load_linear_symmetric_awq_without_qzeros_uses_symmetric_spec() -> None:
+    path = ParameterPath("layer")
+
+    loaded = load_linear(
+        _linear_template(jnp.bfloat16),
+        _symmetric_awq_weights(path),
+        path,
+        implementation=CompressionImplementation.INFERENCE,
+    )
+
+    assert isinstance(loaded.weights, AWQMatrixForInference)
+    assert loaded.weights.spec.is_symmetric
+    assert loaded.weights.packed_zero_points is None
 
 
 @dataclass(frozen=True)

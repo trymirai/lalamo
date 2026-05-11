@@ -10,7 +10,7 @@ __all__ = ["SSMStateLayer"]
 
 class SSMStateLayer(StateLayerBase):
     conv_state: Float[Array, "*batch tokens conv_channels"]
-    ssm_state: Float[Array, "*batch groups state_channels head_channels"]
+    ssm_state: Float[Array, "*batch heads value_channels key_channels"]
 
     def __post_init__(self) -> None:
         if self.conv_state.ndim not in (2, 3):

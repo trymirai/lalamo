@@ -7,9 +7,11 @@ import pytest
 from jax.sharding import Mesh, NamedSharding, Sharding
 
 from lalamo.compressed.mlx import MLXMatrix, MLXMatrixForInference, MLXMatrixForTraining, MLXSpec
+from lalamo.compressed.utils.yaqa import yaqa_round_weights
+from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
-from lalamo.weight_matrix import CompressionImplementation, Layout, Preconditioner, WeightMatrixSpec
+from lalamo.weight_matrix import CompressionImplementation, Layout, WeightMatrixSpec
 from tests.common import assert_close
 
 type Bits = Literal[4, 8]
@@ -20,6 +22,42 @@ pytestmark = pytest.mark.usefixtures("fake_mesh")
 def _logical_weights(*leading_dims: int) -> jax.Array:
     shape = (*leading_dims, 4, 4)
     return (jnp.arange(prod(shape), dtype=jnp.float32).reshape(shape) - 3) / 5
+
+
+def _preconditioned_weights() -> jax.Array:
+    return jnp.array(
+        [
+            [1.6226422, 2.0252647, -0.43359444, -0.07861735],
+            [0.1760909, -0.97208923, -0.49529874, 0.4943786],
+            [0.6643493, -0.9501635, 2.1795304, -1.9551506],
+            [0.35857072, 0.15779513, 1.2770847, 1.5104648],
+        ],
+        dtype=jnp.float32,
+    )
+
+
+def _input_block() -> jax.Array:
+    return jnp.array(
+        [
+            [1.0, 0.7, -0.2, 0.1],
+            [0.7, 1.4, 0.3, -0.1],
+            [-0.2, 0.3, 1.1, 0.5],
+            [0.1, -0.1, 0.5, 1.3],
+        ],
+        dtype=jnp.float32,
+    )
+
+
+def _output_block() -> jax.Array:
+    return jnp.array(
+        [
+            [1.2, -0.5, 0.2, 0.1],
+            [-0.5, 1.5, 0.4, -0.2],
+            [0.2, 0.4, 1.1, 0.3],
+            [0.1, -0.2, 0.3, 1.4],
+        ],
+        dtype=jnp.float32,
+    )
 
 
 def _stored_weights(layout: Layout, weights: jax.Array) -> jax.Array:
@@ -80,6 +118,7 @@ def _put_on_sharding(matrix: MLXMatrix, sharding: Sharding) -> MLXMatrix:
     if isinstance(matrix, MLXMatrixForTraining):
         return MLXMatrixForTraining(
             spec=matrix.spec,
+            is_sharded=matrix.is_sharded,
             weights=jax.device_put(matrix.weights, sharding),
             scales=jax.device_put(matrix.scales, sharding),
             biases=jax.device_put(matrix.biases, sharding),
@@ -87,6 +126,7 @@ def _put_on_sharding(matrix: MLXMatrix, sharding: Sharding) -> MLXMatrix:
     assert isinstance(matrix, MLXMatrixForInference)
     return MLXMatrixForInference(
         spec=matrix.spec,
+        is_sharded=matrix.is_sharded,
         packed_weights=jax.device_put(matrix.packed_weights, sharding),
         dense_weights=jax.device_put(matrix.dense_weights, sharding),
         scales=jax.device_put(matrix.scales, sharding),
@@ -145,11 +185,32 @@ def test_mlx_compress_and_decompress_match_manual_min_max_quantization(layout: L
     _assert_close(result=inference.decompress(), reference=expected_decompressed)
 
 
-def test_mlx_compress_rejects_preconditioning() -> None:
-    preconditioner = Preconditioner.init(input_block=jnp.eye(4, dtype=jnp.float32))
+def test_mlx_compress_uses_yaqa_weights_when_preconditioned() -> None:
+    weights = _preconditioned_weights()
+    preconditioner = Preconditioner.init(input_block=_input_block(), output_block=_output_block())
+    spec = MLXSpec(bits=4, group_size=4)
 
-    with pytest.raises(ValueError, match="Preconditioned rounding is not implemented"):
-        MLXSpec(bits=4, group_size=2).compress(_logical_weights(), preconditioner=preconditioner)
+    yaqa_weights = yaqa_round_weights(weights, preconditioner, spec)
+    preconditioned = spec.compress(weights, preconditioner=preconditioner)
+    expected = spec.compress(yaqa_weights)
+
+    _assert_close(result=preconditioned.decompress(), reference=expected.decompress())
+
+
+def test_mlx_compress_maps_batched_preconditioned_weights() -> None:
+    weights = jnp.stack([_preconditioned_weights(), _logical_weights()])
+    input_blocks = jnp.stack([_input_block(), _input_block() + 0.1 * jnp.identity(4, dtype=jnp.float32)])
+    output_blocks = jnp.stack([_output_block(), _output_block() + 0.1 * jnp.identity(4, dtype=jnp.float32)])
+    preconditioner = Preconditioner.init(input_block=input_blocks, output_block=output_blocks)
+    spec = MLXSpec(bits=4, group_size=4)
+
+    def compress_one(weights: jax.Array, preconditioner: Preconditioner) -> jax.Array:
+        return spec.compress(weights, preconditioner=preconditioner).decompress()
+
+    result = spec.compress(weights, preconditioner=preconditioner).decompress()
+    reference = jax.vmap(compress_one)(weights, preconditioner)
+
+    _assert_close(result=result, reference=reference)
 
 
 def test_mlx_compress_rejects_group_size_that_does_not_divide_stored_last_axis() -> None:
@@ -274,6 +335,53 @@ def test_mlx_from_packed_parameters_overrides_input_sharding(
     elif isinstance(restored, MLXMatrixForInference) and isinstance(template, MLXMatrixForInference):
         assert restored.packed_weights.sharding == template.packed_weights.sharding
         assert restored.dense_weights.sharding == template.dense_weights.sharding
+
+
+def _assert_mlx_replicated(matrix: MLXMatrix, fake_mesh: Mesh) -> None:
+    replicated = make_sharding((None, None))
+    assert replicated is not None
+
+    _assert_named_sharding(matrix.scales.sharding, fake_mesh)
+    assert matrix.scales.sharding == replicated
+    assert matrix.biases.sharding == replicated
+    if isinstance(matrix, MLXMatrixForTraining):
+        assert matrix.weights.sharding == replicated
+    else:
+        assert isinstance(matrix, MLXMatrixForInference)
+        assert matrix.packed_weights.sharding == replicated
+    assert not matrix.is_sharded
+
+
+@pytest.mark.parametrize("implementation", list(CompressionImplementation))
+def test_mlx_is_sharded_false_is_preserved_through_packed_conversions(
+    fake_mesh: Mesh,
+    implementation: CompressionImplementation,
+) -> None:
+    spec = MLXSpec(bits=4, group_size=2)
+    original = spec.compress(_logical_weights(), implementation=CompressionImplementation.INFERENCE, is_sharded=False)
+    assert isinstance(original, MLXMatrixForInference)
+
+    restored = spec.from_packed_parameters(
+        packed_weights=original.packed_weights,
+        scales=original.scales,
+        biases=original.biases,
+        implementation=implementation,
+        is_sharded=False,
+    )
+    switched = restored.switch_implementation(
+        CompressionImplementation.INFERENCE
+        if implementation == CompressionImplementation.TRAINING
+        else CompressionImplementation.TRAINING,
+    )
+    full_precision = restored.to_full_precision()
+
+    _assert_mlx_replicated(restored, fake_mesh)
+    _assert_mlx_replicated(switched, fake_mesh)
+    _assert_named_sharding(full_precision.weights.sharding, fake_mesh)
+    assert full_precision.weights.sharding == make_sharding((None, None))
+    assert not full_precision.is_sharded
+    _assert_close(result=restored.decompress(), reference=original.decompress())
+    _assert_close(result=full_precision.decompress(), reference=original.decompress())
 
 
 def test_mlx_load_rejects_spec_mismatch() -> None:

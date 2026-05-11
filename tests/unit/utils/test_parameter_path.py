@@ -3,6 +3,7 @@ import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 import pytest
+from jaxtyping import TypeCheckError
 
 from lalamo.utils.parameter_path import ParameterPath
 
@@ -41,7 +42,7 @@ def test_parameter_path_rejects_ambiguous_dict_keys() -> None:
 
 
 def test_parameter_path_rejects_unknown_key_types() -> None:
-    with pytest.raises(TypeError, match="Unsupported type"):
+    with pytest.raises((TypeCheckError, TypeError)):
         ParameterPath("model") / object()
 
 

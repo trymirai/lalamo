@@ -6,10 +6,11 @@ from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
 from jax.lax import DotAlgorithmPreset, stop_gradient
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
+from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import (
     dummy_array,
     is_dummy_array,
@@ -28,19 +29,21 @@ from lalamo.weight_matrix import (
     GradientEstimator,
     Layout,
     MatmulConfig,
-    Preconditioner,
     WeightMatrixSpec,
 )
 
 from .cute_w4a16_contract import MLX_ROWS_PER_CTA, can_use_cute_w4a16_dot
-from .packing import pack_uint_to_uint8, unpack_uint8_to_uint
-from .rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
-from .utils import (
+from .quantized_spec import QuantizedSpec
+from .utils.gaussian_order_statistics import standard_normal_range_squared
+from .utils.grouping import (
     expand_last_axis_groups,
     group_by_last_axis,
     min_max_within_groups,
     scale_from_min_max,
 )
+from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
+from .utils.rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
+from .utils.yaqa import yaqa_round_weights
 from .w4a16_inference_dot import mlx_w4a16_inference_dot
 
 __all__ = [
@@ -52,14 +55,14 @@ __all__ = [
 
 
 class MLXAffineParameters(NamedTuple):
-    scales: Float[Array, "... groups"]
-    biases: Float[Array, "... groups"]
+    scales: Float[Array, "*components rows groups"]
+    biases: Float[Array, "*components rows groups"]
 
     @classmethod
     @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
     def from_weights(
         cls,
-        weights: Float[Array, "... rows cols"],
+        weights: Float[Array, "*components rows cols"],
         bits: int,
         group_size: int,
     ) -> Self:
@@ -74,7 +77,7 @@ def _mlx_master_weights_to_int_scale(
     scales: Float[Array, "... groups"],
     biases: Float[Array, "... groups"],
     group_size: int,
-) -> Float[Array, "... rows cols"]:
+) -> Float[Array, "... cols"]:
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     expanded_biases = expand_last_axis_groups(biases, group_size=group_size)
     return (weights - expanded_biases) / expanded_scales
@@ -86,8 +89,8 @@ def _mlx_quantize(
     scales: Float[Array, "... groups"],
     biases: Float[Array, "... groups"],
     group_size: int,
-    round_fn: Callable[[Float[Array, "... rows cols"]], Float[Array, "... rows cols"]],
-) -> Float[Array, "... rows cols"]:
+    round_fn: Callable[[Float[Array, "... cols"]], Float[Array, "... cols"]],
+) -> Float[Array, "... cols"]:
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     expanded_biases = expand_last_axis_groups(biases, group_size=group_size)
     int_scale_weights = (weights - stop_gradient(expanded_biases)) / stop_gradient(expanded_scales)
@@ -97,12 +100,12 @@ def _mlx_quantize(
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
 def _mlx_pack_master_weights(
-    weights: Float[Array, "... rows cols"],
-    scales: Float[Array, "... rows groups"],
-    biases: Float[Array, "... rows groups"],
+    weights: Float[Array, "*components rows cols"],
+    scales: Float[Array, "*components rows groups"],
+    biases: Float[Array, "*components rows groups"],
     group_size: int,
     bits: int,
-) -> Int[Array, "... rows packed_cols"]:
+) -> UInt8[Array, "*components rows packed_cols"]:
     int_scale_weights = _mlx_master_weights_to_int_scale(
         weights,
         scales,
@@ -114,12 +117,12 @@ def _mlx_pack_master_weights(
 
 
 def _mlx_unpack_master_weights(
-    packed_weights: Int[Array, "... rows packed_cols"],
-    scales: Float[Array, "... rows groups"],
-    biases: Float[Array, "... rows groups"],
+    packed_weights: UInt8[Array, "... packed_cols"],
+    scales: Float[Array, "... groups"],
+    biases: Float[Array, "... groups"],
     group_size: int,
     bits: int,
-) -> Float[Array, "... rows cols"]:
+) -> Float[Array, "... cols"]:
     int_weights = unpack_uint8_to_uint(packed_weights, bits=bits)
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     expanded_biases = expand_last_axis_groups(biases, group_size=group_size)
@@ -165,38 +168,62 @@ def _use_cute_w4a16_dot(
 
 
 @dataclass(frozen=True)
-class MLXSpec(WeightMatrixSpec):
+class MLXSpec(QuantizedSpec):
     bits: Literal[4, 8]
     group_size: int
     layout: Layout = Layout.OUTPUT_INPUT
 
+    @property
+    def input_block_size(self) -> int:
+        if self.layout == Layout.INPUT_OUTPUT:
+            return 1
+        return self.group_size
+
+    @property
+    def output_block_size(self) -> int:
+        if self.layout == Layout.INPUT_OUTPUT:
+            return self.group_size
+        return 1
+
+    @property
+    def rate(self) -> float:
+        return float(self.bits + 32 / self.group_size)
+
+    @property
+    def distortion(self) -> float:
+        qmax = (2**self.bits) - 1
+        endpoint_correction = (self.group_size - 2) / self.group_size
+        return endpoint_correction * standard_normal_range_squared(self.group_size) / (12 * qmax**2)
+
     def compress(
         self,
-        weights: Float[Array, "... out_channels in_channels"],
+        weights: Float[Array, "*components out_channels in_channels"],
         *,
         key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        is_sharded: bool = True,
     ) -> "MLXMatrix":
         if preconditioner is not None:
-            raise ValueError("Preconditioned rounding is not implemented yet.")
+            weights = yaqa_round_weights(weights, preconditioner, self, is_sharded=is_sharded)
 
-        weights = self.layout.from_output_input(weights)
+        stored_weights = self.layout.from_output_input(weights, is_sharded=is_sharded)
         affine_parameters = MLXAffineParameters.from_weights(
-            weights,
+            stored_weights,
             bits=self.bits,
             group_size=self.group_size,
         )
         if implementation == CompressionImplementation.TRAINING:
             result = MLXMatrixForTraining(
                 spec=self,
-                weights=weights,
+                is_sharded=is_sharded,
+                weights=stored_weights,
                 scales=affine_parameters.scales,
                 biases=affine_parameters.biases,
             )
         else:
             packed_int_weights = _mlx_pack_master_weights(
-                weights,
+                stored_weights,
                 affine_parameters.scales,
                 affine_parameters.biases,
                 self.group_size,
@@ -207,6 +234,7 @@ class MLXSpec(WeightMatrixSpec):
                 scales=affine_parameters.scales,
                 biases=affine_parameters.biases,
                 implementation=CompressionImplementation.INFERENCE,
+                is_sharded=is_sharded,
             )
 
         return result
@@ -214,12 +242,13 @@ class MLXSpec(WeightMatrixSpec):
     def from_packed_parameters(
         self,
         *,
-        packed_weights: Int[Array, "... rows packed_cols"],
-        scales: Float[Array, "... rows groups"],
-        biases: Float[Array, "... rows groups"],
+        packed_weights: UInt8[Array, "*components rows packed_cols"],
+        scales: Float[Array, "*components rows groups"],
+        biases: Float[Array, "*components rows groups"],
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        is_sharded: bool = True,
     ) -> "MLXMatrix":
-        weight_sharding = make_sharding(self.layout.weight_partition(scales.ndim - 2))
+        weight_sharding = make_sharding(self.layout.weight_partition(scales.ndim - 2, is_sharded=is_sharded))
         packed_weights = with_sharding(packed_weights, weight_sharding)
         scales = with_sharding(scales, weight_sharding)
         biases = with_sharding(biases, weight_sharding)
@@ -240,6 +269,7 @@ class MLXSpec(WeightMatrixSpec):
                 )
             return MLXMatrixForInference(
                 spec=self,
+                is_sharded=is_sharded,
                 packed_weights=packed_weights,
                 dense_weights=with_sharding(weights, weight_sharding),
                 scales=scales,
@@ -255,6 +285,7 @@ class MLXSpec(WeightMatrixSpec):
         )
         return MLXMatrixForTraining(
             spec=self,
+            is_sharded=is_sharded,
             weights=with_sharding(weights, weight_sharding),
             scales=scales,
             biases=biases,
@@ -262,12 +293,12 @@ class MLXSpec(WeightMatrixSpec):
 
 
 class MLXMatrix(EmbeddingMatrix[MLXSpec]):
-    scales: Float[Array, "... rows groups"] = field(norm=ParameterNorm.L_INF)
-    biases: Float[Array, "... rows groups"] = field(norm=ParameterNorm.L_INF)
+    scales: Float[Array, "*components rows groups"] = field(norm=ParameterNorm.L_INF)
+    biases: Float[Array, "*components rows groups"] = field(norm=ParameterNorm.L_INF)
 
     @property
     @abstractmethod
-    def _packed_quantized_weights(self) -> Int[Array, "... rows packed_cols"]: ...
+    def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]: ...
 
     def export(self) -> ExportResults:
         return ExportResults(
@@ -292,11 +323,11 @@ class MLXMatrix(EmbeddingMatrix[MLXSpec]):
     def switch_implementation(self, implementation: CompressionImplementation) -> "MLXMatrix": ...
 
     def to_full_precision(self) -> FullPrecisionMatrix:
-        return FullPrecisionSpec(layout=self.spec.layout).compress(self.decompress())
+        return FullPrecisionSpec(layout=self.spec.layout).compress(self.decompress(), is_sharded=self.is_sharded)
 
 
 class MLXMatrixForTraining(MLXMatrix):
-    weights: Float[Array, "... rows cols"] = field(norm=ParameterNorm.SPECTRAL)
+    weights: Float[Array, "*components rows cols"] = field(norm=ParameterNorm.SPECTRAL)
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -307,7 +338,7 @@ class MLXMatrixForTraining(MLXMatrix):
         return self.weights.dtype
 
     @property
-    def _packed_quantized_weights(self) -> Int[Array, "... rows packed_cols"]:
+    def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]:
         return _mlx_pack_master_weights(
             self.weights,
             self.scales,
@@ -319,12 +350,13 @@ class MLXMatrixForTraining(MLXMatrix):
     def astype(self, dtype: DTypeLike) -> "MLXMatrixForTraining":
         return MLXMatrixForTraining(
             spec=self.spec,
+            is_sharded=self.is_sharded,
             weights=self.weights.astype(dtype),
             scales=self.scales.astype(dtype),
             biases=self.biases.astype(dtype),
         )
 
-    def decompress(self) -> Float[Array, "... out_channels in_channels"]:
+    def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
         weights = _mlx_quantize(
             self.weights,
             self.scales,
@@ -363,12 +395,12 @@ class MLXMatrixForTraining(MLXMatrix):
 
     def dot(
         self,
-        vector: Float[Array, " channels"],
+        vector: Float[Array, " source_channels"],
         *,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
-    ) -> Float[Array, "... channels"]:
+    ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
         if (
             self.spec.layout == Layout.OUTPUT_INPUT
@@ -433,6 +465,7 @@ class MLXMatrixForTraining(MLXMatrix):
             scales=scales,
             biases=biases,
             implementation=CompressionImplementation.TRAINING,
+            is_sharded=self.is_sharded,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> MLXMatrix:
@@ -443,14 +476,15 @@ class MLXMatrixForTraining(MLXMatrix):
             scales=self.scales,
             biases=self.biases,
             implementation=CompressionImplementation.INFERENCE,
+            is_sharded=self.is_sharded,
         )
 
 
 class MLXMatrixForInference(MLXMatrix):
-    packed_weights: Int[Array, "... rows packed_cols"]
-    dense_weights: Float[Array, "... rows cols"]
-    scales: Float[Array, "... rows groups"]
-    biases: Float[Array, "... rows groups"]
+    packed_weights: UInt8[Array, "*components rows packed_cols"]
+    dense_weights: Float[Array, "*components rows cols"]
+    scales: Float[Array, "*components rows groups"]
+    biases: Float[Array, "*components rows groups"]
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -462,12 +496,13 @@ class MLXMatrixForInference(MLXMatrix):
         return self.dense_weights.dtype
 
     @property
-    def _packed_quantized_weights(self) -> Int[Array, "... rows packed_cols"]:
+    def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]:
         return self.packed_weights
 
     def astype(self, dtype: DTypeLike) -> "MLXMatrixForInference":
         return MLXMatrixForInference(
             spec=self.spec,
+            is_sharded=self.is_sharded,
             packed_weights=self.packed_weights,
             dense_weights=self.dense_weights.astype(dtype),
             scales=self.scales.astype(dtype),
@@ -500,6 +535,7 @@ class MLXMatrixForInference(MLXMatrix):
             scales=scales,
             biases=biases,
             implementation=CompressionImplementation.INFERENCE,
+            is_sharded=self.is_sharded,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> MLXMatrix:
@@ -510,9 +546,10 @@ class MLXMatrixForInference(MLXMatrix):
             scales=self.scales,
             biases=self.biases,
             implementation=CompressionImplementation.TRAINING,
+            is_sharded=self.is_sharded,
         )
 
-    def decompress(self) -> Float[Array, "... out_channels in_channels"]:
+    def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
         return self.spec.layout.to_output_input(self.dense_weights)
 
     @use_out_sharding((None,))
@@ -533,12 +570,12 @@ class MLXMatrixForInference(MLXMatrix):
 
     def dot(
         self,
-        vector: Float[Array, " channels"],
+        vector: Float[Array, " source_channels"],
         *,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
-    ) -> Float[Array, "... channels"]:
+    ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
         if _use_cute_w4a16_dot(self.spec, self.packed_weights, vector, forward_pass_config, transposed):
             result = mlx_w4a16_inference_dot(

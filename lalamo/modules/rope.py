@@ -85,17 +85,17 @@ class RoPEConfig(LalamoConfig, RegistryABC):
 
     def _scale_inverse_frequencies(
         self,
-        inverse_frequencies: Float[Array, " tokens"],
+        inverse_frequencies: Float[Array, " rotary_pairs"],
         head_dim: int,  # noqa: ARG002
         max_sequence_length: int,  # noqa: ARG002
-    ) -> Float[Array, " tokens"]:
+    ) -> Float[Array, " rotary_pairs"]:
         return inverse_frequencies
 
     def _mask_inverse_frequencies(
         self,
-        inverse_frequencies: Float[Array, " tokens"],
+        inverse_frequencies: Float[Array, " rotary_pairs"],
         head_dim: int,
-    ) -> Float[Array, " tokens"]:
+    ) -> Float[Array, " rotary_pairs"]:
         if self.partial_rotary_dim is None or self.partial_rotary_dim >= head_dim:
             return inverse_frequencies
         rope_angles = self.partial_rotary_dim // 2
@@ -164,10 +164,10 @@ class LlamaRoPEConfig(RoPEConfig):
 
     def _scale_inverse_frequencies(
         self,
-        inverse_frequencies: Float[Array, " tokens"],
+        inverse_frequencies: Float[Array, " rotary_pairs"],
         head_dim: int,  # noqa: ARG002
         max_sequence_length: int,  # noqa: ARG002
-    ) -> Float[Array, " tokens"]:
+    ) -> Float[Array, " rotary_pairs"]:
         low_frequency_wavelength = self.original_context_length / self.low_frequency_factor
         high_frequency_wavelength = self.original_context_length / self.high_frequency_factor
 
@@ -217,10 +217,10 @@ class YARNRoPEConfig(RoPEConfig):
         if truncate:
             low = math.floor(low)
             high = math.ceil(high)
-        return max(low, 0.0), min(high, float(dim - 1))
+        return float(max(low, 0.0)), float(min(high, float(dim - 1)))
 
     @classmethod
-    def _linear_ramp_factor(cls, min_value: float, max_value: float, dim: int) -> Float[Array, " head_dim"]:
+    def _linear_ramp_factor(cls, min_value: float, max_value: float, dim: int) -> Float[Array, " rotary_pairs"]:
         if min_value == max_value:
             max_value += 0.001
 
@@ -231,10 +231,10 @@ class YARNRoPEConfig(RoPEConfig):
 
     def _scale_inverse_frequencies(
         self,
-        inverse_frequencies: Float[Array, " tokens"],
+        inverse_frequencies: Float[Array, " rotary_pairs"],
         head_dim: int,
         max_sequence_length: int,  # noqa: ARG002
-    ) -> Float[Array, " tokens"]:
+    ) -> Float[Array, " rotary_pairs"]:
         scaled_frequencies = inverse_frequencies / self.scaling_factor
 
         low, high = self._find_correction_range(
@@ -260,8 +260,8 @@ class LinearScalingRoPEConfig(RoPEConfig):
 
     def _scale_inverse_frequencies(
         self,
-        inverse_frequencies: Float[Array, " tokens"],
+        inverse_frequencies: Float[Array, " rotary_pairs"],
         head_dim: int,  # noqa: ARG002
         max_sequence_length: int,  # noqa: ARG002
-    ) -> Float[Array, " tokens"]:
+    ) -> Float[Array, " rotary_pairs"]:
         return inverse_frequencies / self.scaling_factor

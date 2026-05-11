@@ -91,7 +91,7 @@ class DecoderActivationTrace(Exportable, eqx.Module):
 
 
 class DecoderResult(Exportable, eqx.Module):
-    logits: Float[Array, "batch suffix_tokens channels"]
+    logits: Float[Array, "batch suffix_tokens vocabulary"]
     updated_state: State | None = None
     activation_trace: DecoderActivationTrace | None = None
 

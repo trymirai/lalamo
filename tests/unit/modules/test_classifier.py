@@ -95,14 +95,14 @@ def _assert_close(result: Array, reference: Array) -> None:
 
 
 def _sharded_vector(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.TENSOR,)))
+    return jax.device_put(values, make_sharding((None,)))
 
 
 def _sharded_vectors(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None)))
 
 
-def test_prediction_head_call_unbatched_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_prediction_head_call_unbatched_matches_reference_and_keeps_unsharded_features(fake_mesh: Mesh) -> None:
     module = _prediction_head()
     inputs = _sharded_vector(jnp.array([-1.0, -0.25, 0.5, 1.25], dtype=jnp.float32))
 
@@ -154,8 +154,8 @@ def test_prediction_head_vmapped_over_inputs_matches_reference_and_keeps_data_sh
 
 def test_prediction_head_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _prediction_head()
-    bias_sharding = make_sharding((ShardingAxis.DATA,))
-    norm_sharding = make_sharding((ShardingAxis.DATA,))
+    bias_sharding = make_sharding((None,))
+    norm_sharding = make_sharding((None,))
     template = PredictionHead(
         config=original.config,
         dense=Linear(

@@ -67,20 +67,27 @@ def fused_ssd_intra_chunk(
         weighted = decay_local * cb_slice
         return weighted @ x_slice
 
-    def compute_chunk_group_head(chunk_idx: int, group_idx: int, head_idx: int) -> Float[Array, "chunk_size head_dim"]:
+    def compute_chunk_group_head(
+        chunk_idx: Int[Array, ""] | int,
+        group_idx: Int[Array, ""] | int,
+        head_idx: Int[Array, ""] | int,
+    ) -> Float[Array, "chunk_size head_dim"]:
         return compute_one(
             a_cumsum[group_idx, head_idx, chunk_idx, :],
             cb[chunk_idx, :, :, group_idx],
             x[chunk_idx, :, group_idx, head_idx, :],
         )
 
-    def over_heads(chunk_idx: int, group_idx: int) -> Float[Array, "heads_per_group chunk_size head_dim"]:
+    def over_heads(
+        chunk_idx: Int[Array, ""] | int,
+        group_idx: Int[Array, ""] | int,
+    ) -> Float[Array, "heads_per_group chunk_size head_dim"]:
         return call_vmapped(
             lambda head_idx: compute_chunk_group_head(chunk_idx, group_idx, head_idx),
             jnp.arange(heads_per_group),
         )
 
-    def over_groups(chunk_idx: int) -> Float[Array, "groups heads_per_group chunk_size head_dim"]:
+    def over_groups(chunk_idx: Int[Array, ""] | int) -> Float[Array, "groups heads_per_group chunk_size head_dim"]:
         return call_vmapped(lambda group_idx: over_heads(chunk_idx, group_idx), jnp.arange(groups))
 
     result = call_vmapped(over_groups, jnp.arange(chunks))

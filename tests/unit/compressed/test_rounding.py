@@ -4,7 +4,7 @@ import pytest
 from jax import ShapeDtypeStruct
 from jaxtyping import Array, Float
 
-from lalamo.compressed.rounding import (
+from lalamo.compressed.utils.rounding import (
     deterministic_round_to_unsigned_grid,
     round_to_unsigned_grid,
     stochastic_round_to_unsigned_grid,

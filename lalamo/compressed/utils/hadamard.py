@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import cache
 from typing import Literal
 
@@ -61,7 +61,7 @@ def _make_hadamard_transform_for_block_size(
             )
 
         if jax.default_backend() == "gpu":
-            from lalamo.compressed._hadamard_cute import cute_hadamard_transform  # noqa: PLC0415
+            from lalamo.compressed.utils.hadamard_kernels import cute_hadamard_transform  # noqa: PLC0415
 
             return cute_hadamard_transform(inputs, block_size)
         return _jax_hadamard_transform(inputs, block_size)
@@ -69,7 +69,7 @@ def _make_hadamard_transform_for_block_size(
     @transform.def_vmap
     def transform_vmap(
         axis_size: int,
-        in_batched: tuple[bool],
+        in_batched: Sequence[bool],
         inputs: Float[Array, "... channels"],
     ) -> tuple[Float[Array, "... channels"], bool]:
         del axis_size

@@ -16,7 +16,6 @@ from lalamo.weight_matrix import (
     FullPrecisionMatrix,
     FullPrecisionSpec,
     Layout,
-    Preconditioner,
     ShapeDtypeMatrix,
     WeightMatrixSpec,
 )
@@ -75,40 +74,13 @@ def _unsharded_weights() -> NamedSharding:
     return sharding
 
 
-def test_preconditioner_preserves_symmetric_blocks() -> None:
-    input_block = jnp.array(
-        [
-            [2.0, -1.0, 0.5],
-            [-1.0, 3.0, 4.0],
-            [0.5, 4.0, 5.0],
-        ],
-        dtype=jnp.float32,
-    )
-    output_block = jnp.array(
-        [
-            [7.0, 2.0],
-            [2.0, 11.0],
-        ],
-        dtype=jnp.float32,
-    )
+@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
+def test_weight_matrix_numel_returns_product_of_shape(layout: Layout) -> None:
+    weights = jnp.ones((2, 3, 5), dtype=jnp.float32)
 
-    preconditioner = Preconditioner.init(input_block=input_block, output_block=output_block)
+    matrix = FullPrecisionSpec(layout=layout).compress(weights)
 
-    assert preconditioner.input_block_tril is not None
-    assert preconditioner.input_block_tril.shape == (6,)
-    assert preconditioner.output_block_tril is not None
-    assert preconditioner.output_block_tril.shape == (3,)
-    assert preconditioner.input_block is not None
-    assert preconditioner.output_block is not None
-    _assert_close(result=preconditioner.input_block, reference=input_block)
-    _assert_close(result=preconditioner.output_block, reference=output_block)
-
-
-def test_preconditioner_identity_has_no_blocks() -> None:
-    preconditioner = Preconditioner.identity()
-
-    assert preconditioner.input_block is None
-    assert preconditioner.output_block is None
+    assert matrix.numel == 30
 
 
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
@@ -130,6 +102,7 @@ def test_full_precision_export_load_roundtrips_weights_spec_and_template_shardin
     saved_sharding = make_sharding((None, None))
     original = FullPrecisionMatrix(
         spec=spec,
+        is_sharded=False,
         weights=jax.device_put(_stored_weights(layout, weights), saved_sharding),
     )
     skeleton = spec.compress(dummy_array(weights.shape, weights.dtype))
@@ -152,6 +125,17 @@ def test_full_precision_compress_overrides_input_sharding(fake_mesh: Mesh, layou
 
     _assert_named_sharding(matrix.weights.sharding, fake_mesh)
     assert matrix.weights.sharding == _weight_sharding(layout)
+
+
+@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
+def test_full_precision_compress_can_replicate_weights(fake_mesh: Mesh, layout: Layout) -> None:
+    weights = jax.device_put(_logical_weights(), make_sharding((ShardingAxis.DATA, None)))
+
+    matrix = FullPrecisionSpec(layout=layout).compress(weights, is_sharded=False)
+
+    _assert_named_sharding(matrix.weights.sharding, fake_mesh)
+    assert matrix.weights.sharding == _unsharded_weights()
+    assert not matrix.is_sharded
 
 
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
@@ -253,6 +237,7 @@ def test_full_precision_dot_works_with_single_device_input_sharding(layout: Layo
     vector = jnp.arange(4, dtype=jnp.float32)
     matrix = FullPrecisionMatrix(
         spec=FullPrecisionSpec(layout=layout),
+        is_sharded=False,
         weights=_stored_weights(layout, weights),
     )
 
@@ -445,4 +430,17 @@ def test_shape_dtype_matrix_load_exported_uses_saved_weight_matrix_spec(spec: We
     assert restored.spec == spec
     assert restored.shape == original.shape
     assert restored.dtype == original.dtype
+    _assert_close(result=restored.decompress(), reference=original.decompress())
+
+
+def test_shape_dtype_matrix_load_exported_preserves_replicated_template_sharding(fake_mesh: Mesh) -> None:
+    original = FullPrecisionSpec().compress(_logical_weights())
+    template = EmptyInitializer(dtype=jnp.float32).weight_matrix(output_dim=4, input_dim=4, is_sharded=False)
+
+    restored = template.load_exported(original.export())
+
+    assert isinstance(restored, FullPrecisionMatrix)
+    _assert_named_sharding(restored.weights.sharding, fake_mesh)
+    assert restored.weights.sharding == _unsharded_weights()
+    assert not restored.is_sharded
     _assert_close(result=restored.decompress(), reference=original.decompress())

@@ -89,7 +89,7 @@ class TransformerLayerActivationTrace(Exportable, eqx.Module):
 
 
 class TransformerLayerResult(Exportable, eqx.Module):
-    outputs: Float[Array, "batch tokens channels"]
+    outputs: Float[Array, "batch suffix_tokens channels"]
     updated_state: StateLayerBase | None
     activation_trace: TransformerLayerActivationTrace | None
 

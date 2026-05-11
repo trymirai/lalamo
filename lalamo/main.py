@@ -24,7 +24,7 @@ from rich.progress import (
 )
 from rich.prompt import Confirm
 from rich.table import Table
-from typer import Argument, Context, Exit, Option, Typer
+from typer import Argument, Exit, Option, Typer
 
 from lalamo.commands import (
     ConversionCallbacks,
@@ -446,7 +446,7 @@ def list_models(
 
 @app.callback()
 def _profile_memory(
-    ctx: Context,
+    ctx: ClickContext,
     profile_memory: Annotated[
         Path | None,
         Option(

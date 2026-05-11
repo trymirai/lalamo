@@ -7,6 +7,7 @@ import pytest
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
+from lalamo.initializer import RandomInitializer
 from lalamo.module import ForwardPassMode, Keychain, ShardingAxis
 from lalamo.modules.activations import Identity, SiLU
 from lalamo.modules.linear import Linear, LinearConfig
@@ -117,7 +118,7 @@ def _moe(
         gate_config=LinearConfig() if has_gate else None,
     )
     mixture_size = NUM_ROUTED_EXPERTS + num_shared_experts
-    expert_bias_sharding = make_sharding((ShardingAxis.EXPERT, None))
+    expert_bias_sharding = make_sharding((None, None))
     return MixtureOfExperts(
         config=config,
         router=_linear(
@@ -142,6 +143,7 @@ def _moe(
             config=LinearConfig(),
             weights=FullPrecisionMatrix(
                 spec=FullPrecisionSpec(),
+                is_sharded=False,
                 weights=_moe_array((1, MODEL_DIM), offset=600),
             ),
             biases=None,
@@ -164,7 +166,7 @@ def _moe_template(module: MixtureOfExperts) -> MixtureOfExperts:
             (module.config.num_routed_experts, MODEL_DIM),
             (module.config.num_routed_experts,) if module.config.router_has_biases else None,
             (module.config.num_routed_experts,),
-            (ShardingAxis.TENSOR,),
+            (None,),
         ),
         experts=DenseMLP(
             config=module.experts.config,
@@ -172,13 +174,13 @@ def _moe_template(module: MixtureOfExperts) -> MixtureOfExperts:
                 (mixture_size, 2 * HIDDEN_DIM, MODEL_DIM),
                 (mixture_size, 2 * HIDDEN_DIM) if module.experts.config.has_up_biases else None,
                 (HIDDEN_DIM, HIDDEN_DIM),
-                (ShardingAxis.EXPERT, None),
+                (None, None),
             ),
             down_projection=_linear_template(
                 (mixture_size, MODEL_DIM, HIDDEN_DIM),
                 (mixture_size, MODEL_DIM) if module.experts.config.has_down_biases else None,
                 (MODEL_DIM,),
-                (ShardingAxis.EXPERT, None),
+                (None, None),
             ),
         ),
         gate=None,
@@ -282,15 +284,15 @@ def _assert_named_sharding(sharding: Sharding, mesh: Mesh) -> None:
 
 
 def _sharded_vector(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.TENSOR,)))
+    return jax.device_put(values, make_sharding((None,)))
 
 
 def _sharded_vectors(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None)))
 
 
 def _sharded_sequences(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, None)))
 
 
 def _moe_sequence_length(mode: ForwardPassMode) -> int:
@@ -299,7 +301,7 @@ def _moe_sequence_length(mode: ForwardPassMode) -> int:
     return 3
 
 
-def test_dense_mlp_call_unbatched_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_dense_mlp_call_unbatched_matches_reference_and_keeps_unsharded_features(fake_mesh: Mesh) -> None:
     module = _dense_mlp()
     inputs = _sharded_vector(jnp.arange(MODEL_DIM, dtype=jnp.float32))
 
@@ -384,7 +386,7 @@ def test_dense_mlp_full_call_matches_reference_and_keeps_data_sharding(fake_mesh
 def test_dense_mlp_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _dense_mlp()
     weight_template = make_sharding((ShardingAxis.TENSOR, None))
-    bias_template = make_sharding((ShardingAxis.DATA,))
+    bias_template = make_sharding((None,))
     assert weight_template is not None
     assert bias_template is not None
     template = DenseMLP(
@@ -447,6 +449,60 @@ def test_softmax_routing_vmapped_call_matches_unbatched() -> None:
 
     assert jnp.array_equal(result.expert_mask, reference.expert_mask)
     assert_close(result=result.expert_weights, reference=reference.expert_weights)
+
+
+def test_moe_config_init_replicates_router_weights_without_changing_outputs(fake_mesh: Mesh) -> None:
+    expert_config = DenseMLPConfig(
+        linear_config=LinearConfig(),
+        activation=Identity(),
+        has_up_biases=False,
+        has_down_biases=False,
+        gate_clipping=None,
+        up_clipping=None,
+    )
+    config = MixtureOfExpertsConfig(
+        expert_config=expert_config,
+        router_config=LinearConfig(),
+        routing_function=SoftmaxRouting(),
+        num_routed_experts=NUM_ROUTED_EXPERTS,
+        num_active_routed_experts=1,
+        router_has_biases=False,
+        num_shared_experts=0,
+        expert_hidden_dim=HIDDEN_DIM,
+    )
+    module = config.init(
+        RandomInitializer(dtype=jnp.float32, key=jax.random.key(21)),
+        model_dim=MODEL_DIM,
+        hidden_dim=HIDDEN_DIM,
+    )
+    sharded_router_weights = FullPrecisionSpec().compress(module.router.weights.decompress())
+    sharded_router_module = eqx.tree_at(lambda m: m.router.weights, module, sharded_router_weights)
+    inputs = _sharded_sequences(jnp.arange(2 * 3 * MODEL_DIM, dtype=jnp.float32).reshape(2, 3, MODEL_DIM) / 10)
+
+    result = module(
+        inputs,
+        forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
+        keychain=Keychain.init(27),
+    )
+    reference = sharded_router_module(
+        inputs,
+        forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
+        keychain=Keychain.init(27),
+    )
+
+    assert isinstance(module.router.weights, FullPrecisionMatrix)
+    assert isinstance(module.experts.up_projection.weights, FullPrecisionMatrix)
+    assert isinstance(module.experts.down_projection.weights, FullPrecisionMatrix)
+    assert module.router.weights.weights.sharding == make_sharding((None, None))
+    assert module.experts.up_projection.weights.weights.sharding == make_sharding((ShardingAxis.EXPERT, None, None))
+    assert module.experts.down_projection.weights.weights.sharding == make_sharding((ShardingAxis.EXPERT, None, None))
+    assert not module.router.weights.is_sharded
+    assert module.experts.up_projection.weights.is_sharded
+    assert module.experts.down_projection.weights.is_sharded
+    _assert_named_sharding(module.router.weights.weights.sharding, fake_mesh)
+    _assert_named_sharding(module.experts.up_projection.weights.weights.sharding, fake_mesh)
+    _assert_named_sharding(module.experts.down_projection.weights.weights.sharding, fake_mesh)
+    _assert_close(result=result, reference=reference)
 
 
 @pytest.mark.parametrize("mode", MOE_MODES)

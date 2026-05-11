@@ -44,7 +44,7 @@ def _generate_texts(model: LanguageModel, prompts: list[str]) -> list[str]:
     )
     generated = model.generate_tokens(
         token_ids,
-        generation_config=GenerationConfig(temperature=0),
+        generation_config=GenerationConfig(temperature=0.0),
         prompt_lengths_without_padding=prompt_lengths,
         max_output_length=64,
         keychain=Keychain.init(0),
@@ -118,7 +118,7 @@ def test_converted_model_streams_reply(
     capital_output = "".join(
         model.stream_reply_text(
             [UserMessage(CAPITAL_PROMPT)],
-            generation_config=GenerationConfig(temperature=0),
+            generation_config=GenerationConfig(temperature=0.0),
             max_output_length=64,
             keychain=Keychain.init(1),
         ),
@@ -128,7 +128,7 @@ def test_converted_model_streams_reply(
     apples_output = "".join(
         model.stream_reply_text(
             [UserMessage(APPLES_PROMPT)],
-            generation_config=GenerationConfig(temperature=0),
+            generation_config=GenerationConfig(temperature=0.0),
             max_output_length=64,
             keychain=Keychain.init(2),
         ),
@@ -145,7 +145,7 @@ def test_converted_model_returns_top_logits(
     token_ids = jnp.asarray(model.token_codec.encode_request([UserMessage(CAPITAL_PROMPT)]), dtype=jnp.int32)[None, :]
     result = model.generate_tokens(
         token_ids,
-        generation_config=GenerationConfig(temperature=0),
+        generation_config=GenerationConfig(temperature=0.0),
         max_output_length=8,
         num_top_logits_to_return=4,
         keychain=Keychain.init(3),
