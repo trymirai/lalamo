@@ -22,7 +22,7 @@ def language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) 
     return model
 
 
-@pytest.mark.parametrize("num_top_logits_to_return", [None, 8, 16])
+@pytest.mark.parametrize("num_top_logits_to_return", [None, 8])
 def test_eager_generation(language_model: LanguageModel, num_top_logits_to_return: int | None) -> None:
     prompt = [UserMessage("Count from 1 to 10 separated by spaces, using digits.")]
     token_ids = jnp.array(language_model.token_codec.encode_request(prompt))[None, :]

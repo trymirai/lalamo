@@ -92,7 +92,7 @@ def test_reshard_as_places_array_on_shape_dtype_struct_reference_sharding(fake_m
 
 
 def test_reshard_as_clears_shape_dtype_struct_sharding_when_reference_has_none(fake_mesh: Mesh) -> None:
-    assert fake_mesh is not None
+    del fake_mesh
     source = dummy_array((4,), jnp.float32, make_sharding((ShardingAxis.TENSOR,)))
     reference = dummy_array((4,), jnp.float32)
 

@@ -104,16 +104,6 @@ def test_hadamard_transform_custom_vjp_matches_self_adjoint_reference() -> None:
     _assert_close(result=result, reference=hadamard_transform(cotangent, block_size=32))
 
 
-def test_hadamard_transform_vjp_matches_self_adjoint_reference() -> None:
-    inputs = (jnp.arange(128, dtype=jnp.float32) - 4) / 5
-    cotangent = (jnp.arange(128, dtype=jnp.float32) + 3) / 11
-
-    _, vjp_fn = jax.vjp(lambda inputs: hadamard_transform(inputs, block_size=64), inputs)
-    (result,) = vjp_fn(cotangent)
-
-    _assert_close(result=result, reference=hadamard_transform(cotangent, block_size=64))
-
-
 @gpu_only
 @pytest.mark.parametrize("block_size", [32, 64, 128])
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])

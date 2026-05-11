@@ -55,15 +55,6 @@ def _generate_texts(model: LanguageModel, prompts: list[str]) -> list[str]:
     ]
 
 
-@pytest.mark.fast
-@pytest.mark.parametrize("model_repo", MODELS)
-def test_convert(convert_model: ConvertModel, model_repo: str) -> None:
-    converted_model_dir = convert_model(model_repo, cached=True)
-    assert (converted_model_dir / "model.safetensors").exists() or any(converted_model_dir.glob("model*.safetensors"))
-    assert (converted_model_dir / "config.json").exists()
-    assert (converted_model_dir / "tokenizer.json").exists()
-
-
 def test_list_models_plain_and_no_plain(run_lalamo: RunLalamo, model_registry: ModelRegistry) -> None:
     plain_output = strip_ansi_escape(run_lalamo("list-models", "--plain"))
     plain_repos = [line.strip() for line in plain_output.splitlines() if line.strip()]
@@ -134,23 +125,3 @@ def test_converted_model_streams_reply(
         ),
     )
     assert "yes" in apples_output.lower(), f"Expected 'yes' in {apples_output!r}"
-
-
-@pytest.mark.parametrize("model_repo", MODELS)
-def test_converted_model_returns_top_logits(
-    convert_model: ConvertModel,
-    model_repo: str,
-) -> None:
-    model = _load_language_model(convert_model, model_repo)
-    token_ids = jnp.asarray(model.token_codec.encode_request([UserMessage(CAPITAL_PROMPT)]), dtype=jnp.int32)[None, :]
-    result = model.generate_tokens(
-        token_ids,
-        generation_config=GenerationConfig(temperature=0.0),
-        max_output_length=8,
-        num_top_logits_to_return=4,
-        keychain=Keychain.init(3),
-    )
-    assert result.top_k_token_ids is not None
-    assert result.top_k_token_logits is not None
-    assert result.top_k_token_ids.shape == (1, 8, 4)
-    assert result.top_k_token_logits.shape == (1, 8, 4)

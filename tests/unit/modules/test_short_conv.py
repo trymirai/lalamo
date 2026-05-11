@@ -154,8 +154,8 @@ def test_short_conv_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
 
 
-def test_short_conv_rejects_positional_embeddings(fake_mesh: Mesh) -> None:
-    assert fake_mesh is not None
+@pytest.mark.usefixtures("fake_mesh")
+def test_short_conv_rejects_positional_embeddings() -> None:
     module = _short_conv()
     inputs = jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10
     positional_embeddings = PositionalEmbeddings(
