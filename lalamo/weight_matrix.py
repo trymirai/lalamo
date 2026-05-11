@@ -7,7 +7,7 @@ from typing import ClassVar, Generic, Literal, Self, TypeVar, cast, overload
 
 import equinox as eqx
 from cattrs import GenConverter
-from jax import ShapeDtypeStruct
+from jax import ShapeDtypeStruct, lax
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
@@ -71,6 +71,17 @@ class MatmulConfig:
         )
 
 
+@use_out_sharding((None, None))
+def _ragged_dot(
+    vectors: Float[Array, "tokens input_channels"],
+    expert_weights: Float[Array, "experts input_channels output_channels"],
+    group_sizes: Int[Array, " experts"],
+    *,
+    precision: DotAlgorithmPreset,
+) -> Float[Array, "tokens output_channels"]:
+    return lax.ragged_dot(vectors, expert_weights, group_sizes, precision=precision)
+
+
 @dataclass(frozen=True)
 class WeightMatrixSpec(RegistryABC):
     _converter: ClassVar[GenConverter] = make_registry_abc_converter()
@@ -107,6 +118,10 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
             raise ValueError(
                 "Attempted to call a method directly on a batched version of WeightMatrix. Use vmap instead.",
             )
+
+    def _raise_if_not_batched(self) -> None:
+        if self.ndim != 3:
+            raise ValueError("WeightMatrix.ragged_dot() requires a batched matrix with one expert axis.")
 
     def switch_implementation(self, implementation: CompressionImplementation) -> Self:  # noqa: ARG002
         return self
@@ -165,6 +180,16 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]: ...
+
+    @abstractmethod
+    def ragged_dot(
+        self,
+        vectors: Float[Array, "tokens input_channels"],
+        group_sizes: Int[Array, " experts"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+    ) -> Float[Array, "tokens output_channels"]: ...
 
     def export(self) -> ExportResults:
         arrays, metadata = super().export()
@@ -278,6 +303,20 @@ class Layout(StrEnum):
             return vector @ weights
         return weights @ vector
 
+    def ragged_dot(
+        self,
+        weights: Float[Array, "experts rows cols"],
+        vectors: Float[Array, "tokens input_channels"],
+        group_sizes: Int[Array, " experts"],
+        *,
+        precision: DotAlgorithmPreset,
+    ) -> Float[Array, "tokens output_channels"]:
+        if self == Layout.INPUT_OUTPUT:
+            expert_weights = weights
+        else:
+            expert_weights = weights.swapaxes(-1, -2)
+        return _ragged_dot(vectors, expert_weights, group_sizes, precision=precision)
+
     def transpose(self) -> "Layout":
         if self == Layout.INPUT_OUTPUT:
             return Layout.OUTPUT_INPUT
@@ -379,6 +418,24 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
 
         return reshard_as(result, vector)
 
+    def ragged_dot(
+        self,
+        vectors: Float[Array, "tokens input_channels"],
+        group_sizes: Int[Array, " experts"],
+        *,
+        keychain: Keychain,  # noqa: ARG002
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+    ) -> Float[Array, "tokens output_channels"]:
+        self._raise_if_not_batched()
+        weights = self.weights.astype(vectors.dtype)
+        result = self.spec.layout.ragged_dot(
+            weights,
+            vectors,
+            group_sizes,
+            precision=forward_pass_config.precision,
+        )
+        return reshard_as(result, vectors)
+
 
 @dataclass(frozen=True)
 class ShapeDtypeSpec(WeightMatrixSpec):
@@ -475,6 +532,16 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
         transposed: bool = False,  # noqa: ARG002
     ) -> Float[Array, " target_channels"]:
         raise TypeError("Cannot perform matmul on ShapeDtypeMatrix")
+
+    def ragged_dot(
+        self,
+        vectors: Float[Array, "tokens input_channels"],  # noqa: ARG002
+        group_sizes: Int[Array, " experts"],  # noqa: ARG002
+        *,
+        keychain: Keychain,  # noqa: ARG002
+        forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
+    ) -> Float[Array, "tokens output_channels"]:
+        raise TypeError("Cannot perform ragged matmul on ShapeDtypeMatrix")
 
     def export(self) -> ExportResults:
         raise TypeError("Cannot export ShapeDtypeMatrix")

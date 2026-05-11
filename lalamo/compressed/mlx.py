@@ -362,6 +362,35 @@ class MLXMatrixForTraining(MLXMatrix):
 
         return reshard_as(result, vector)
 
+    def ragged_dot(
+        self,
+        vectors: Float[Array, "tokens input_channels"],
+        group_sizes: Int[Array, " experts"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+    ) -> Float[Array, "tokens output_channels"]:
+        self._raise_if_not_batched()
+        dequantized_weights = _mlx_quantize(
+            self.weights.astype(vectors.dtype),
+            self.scales.astype(vectors.dtype),
+            self.biases.astype(vectors.dtype),
+            group_size=self.spec.group_size,
+            round_fn=partial(
+                round_to_unsigned_grid,
+                bits=self.spec.bits,
+                keychain=keychain,
+                gradient_estimator=forward_pass_config.gradient_estimator,
+            ),
+        )
+        result = self.spec.layout.ragged_dot(
+            dequantized_weights,
+            vectors,
+            group_sizes,
+            precision=forward_pass_config.precision,
+        )
+        return reshard_as(result, vectors)
+
     def load_exported(
         self,
         expored_data: ExportResults,
@@ -525,3 +554,27 @@ class MLXMatrixForInference(MLXMatrix):
             result = layout.matmul(weights, vector)
 
         return reshard_as(result, vector)
+
+    def ragged_dot(
+        self,
+        vectors: Float[Array, "tokens input_channels"],
+        group_sizes: Int[Array, " experts"],
+        *,
+        keychain: Keychain,  # noqa: ARG002
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+    ) -> Float[Array, "tokens output_channels"]:
+        self._raise_if_not_batched()
+        weights = _mlx_unpack_master_weights(
+            self.packed_weights,
+            self.scales.astype(vectors.dtype),
+            self.biases.astype(vectors.dtype),
+            self.spec.group_size,
+            self.spec.bits,
+        )
+        result = self.spec.layout.ragged_dot(
+            weights,
+            vectors,
+            group_sizes,
+            precision=forward_pass_config.precision,
+        )
+        return reshard_as(result, vectors)

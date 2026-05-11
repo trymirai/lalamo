@@ -77,13 +77,13 @@ def _tokenizer() -> Tokenizer:
     )
 
 
-def _model() -> ExampleModel:
-    config = ExampleModelConfig(token_codec_config=ExampleTokenCodecConfig(), width=3)
+def _model(width: int = 3) -> ExampleModel:
+    config = ExampleModelConfig(token_codec_config=ExampleTokenCodecConfig(), width=width)
     return ExampleModel(
         config=config,
         token_codec=config.token_codec_config.init(_tokenizer()),
-        dense_weight=jnp.arange(3, dtype=jnp.float32),
-        sharded_weight=jnp.arange(9, dtype=jnp.float32).reshape(3, 3),
+        dense_weight=jnp.arange(width, dtype=jnp.float32),
+        sharded_weight=jnp.arange(width * width, dtype=jnp.float32).reshape(width, width),
     )
 
 
@@ -123,12 +123,12 @@ def test_checkpoint_restore_casts_arrays_to_requested_dtype(tmp_path: Path) -> N
     assert jnp.array_equal(restored.sharded_weight, model.sharded_weight.astype(jnp.bfloat16))
 
 
-def test_checkpoint_restore_uses_template_sharding_not_saved_sharding(tmp_path: Path) -> None:
-    model = _model()
+def test_checkpoint_restore_uses_template_sharding_not_saved_sharding(tmp_path: Path, fake_mesh: Mesh) -> None:
+    model = _model(width=4)
     saved_sharding = model.sharded_weight.sharding
     manager = _save_model(tmp_path, model)
 
-    with jax.set_mesh(_single_device_tensor_mesh()):
+    with jax.set_mesh(fake_mesh):
         expected_sharding = make_sharding((ShardingAxis.TENSOR, None))
         restored = manager.restore(ExampleBaseModelConfig, "example", dtype=jnp.float32)
 

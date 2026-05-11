@@ -9,7 +9,7 @@ from lalamo.compressed.utils.gaussian_order_statistics import (
     standard_normal_absmax_squared,
     standard_normal_range_squared,
 )
-from lalamo.weight_matrix import FullPrecisionSpec, Layout
+from lalamo.weight_matrix import CompressionImplementation, FullPrecisionSpec, Layout
 
 
 def test_only_quantized_specs_expose_block_size_properties() -> None:
@@ -58,8 +58,6 @@ def test_standard_normal_order_statistic_results_are_cached() -> None:
 
 
 def test_awq_distortion_matches_empirical_quantization_error() -> None:
-    from lalamo.weight_matrix import CompressionImplementation
-
     spec = AWQSpec(bits=4, group_size=32)
     weights = jax.random.normal(jax.random.key(0), (256, 256), dtype=jnp.float32)
     compressed = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
@@ -68,8 +66,6 @@ def test_awq_distortion_matches_empirical_quantization_error() -> None:
 
 
 def test_mlx_distortion_matches_empirical_quantization_error() -> None:
-    from lalamo.weight_matrix import CompressionImplementation
-
     spec = MLXSpec(bits=4, group_size=32)
     weights = jax.random.normal(jax.random.key(0), (256, 256), dtype=jnp.float32)
     compressed = spec.compress(weights, implementation=CompressionImplementation.TRAINING)

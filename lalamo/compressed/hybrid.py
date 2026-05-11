@@ -127,11 +127,11 @@ class IncoherenceSigns(eqx.Module):
 
     def input_transform(
         self,
-        vector: Float[Array, " channels"],
+        vector: Float[Array, "... channels"],
         block_size: Literal[32, 64, 128],
         *,
         transposed: bool,
-    ) -> Float[Array, " channels"]:
+    ) -> Float[Array, "... channels"]:
         if transposed:
             signs = self.output_signs
         else:
@@ -140,11 +140,11 @@ class IncoherenceSigns(eqx.Module):
 
     def output_transform(
         self,
-        vector: Float[Array, " channels"],
+        vector: Float[Array, "... channels"],
         block_size: Literal[32, 64, 128],
         *,
         transposed: bool,
-    ) -> Float[Array, " channels"]:
+    ) -> Float[Array, "... channels"]:
         if transposed:
             signs = self.input_signs
         else:
@@ -306,5 +306,45 @@ class HybridMatrix(WeightMatrix[HybridSpec]):
                 result,
                 block_size,
                 transposed=transposed,
+            )
+        return result
+
+    def ragged_dot(
+        self,
+        vectors: Float[Array, "tokens input_channels"],
+        group_sizes: Int[Array, " experts"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+    ) -> Float[Array, "tokens output_channels"]:
+        self._raise_if_not_batched()
+        block_size = self.spec.incoherence_block_size
+        if self.incoherence_signs is not None:
+            assert block_size is not None
+            vectors = self.incoherence_signs.input_transform(
+                vectors,
+                block_size,
+                transposed=False,
+            )
+        quantized_keychain, adapter_keychain = keychain.split(2)
+        result = self.quantized.ragged_dot(
+            vectors,
+            group_sizes,
+            keychain=quantized_keychain,
+            forward_pass_config=forward_pass_config,
+        )
+        if self.adapter is not None:
+            result = result + self.adapter.ragged_dot(
+                vectors,
+                group_sizes,
+                keychain=adapter_keychain,
+                forward_pass_config=forward_pass_config,
+            )
+        if self.incoherence_signs is not None:
+            assert block_size is not None
+            result = self.incoherence_signs.output_transform(
+                result,
+                block_size,
+                transposed=False,
             )
         return result

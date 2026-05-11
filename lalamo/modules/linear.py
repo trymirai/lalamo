@@ -3,7 +3,7 @@ from itertools import accumulate
 
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, field
@@ -99,3 +99,22 @@ class Linear(LalamoModule[LinearConfig]):
         if self.biases is not None:
             result = result + self.biases.astype(result.dtype)
         return tuple(jnp.split(result, self.get_split_points(self.output_dims)))
+
+    def call_ragged(
+        self,
+        inputs: Float[Array, "tokens in_channels"],
+        expert_indices: Int[Array, " tokens"],
+        group_sizes: Int[Array, " experts"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+    ) -> tuple[Float[Array, "tokens out_channels"], ...]:
+        result = self.weights.ragged_dot(
+            inputs,
+            group_sizes,
+            keychain=keychain,
+            forward_pass_config=forward_pass_config,
+        )
+        if self.biases is not None:
+            result = result + self.biases.astype(result.dtype)[expert_indices]
+        return tuple(jnp.split(result, self.get_split_points(self.output_dims), axis=-1))
