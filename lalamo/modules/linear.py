@@ -18,6 +18,7 @@ from .common import (
     LalamoModule,
     ShardingOrder,
     TensorSharding,
+    config_converter,
     register_config_union,
     sharded_field,
 )
@@ -950,38 +951,6 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         subkeys = jax.random.split(key, mixture_size)
         return eqx.filter_vmap(lambda k: self.random_init(input_dim, output_dims, has_biases, key=k))(subkeys)
 
-    def empty(
-        self,
-        input_dim: int,
-        output_dims: tuple[int, ...],
-        has_biases: bool,
-    ) -> LinearBase:
-        group_quantized_linear = super().empty(input_dim, output_dims, has_biases)
-        assert isinstance(group_quantized_linear, GroupQuantizedLinear)
-        hidden_lora_rank = len(output_dims) * self.lora_rank
-        lora_down_weights = dummy_array(
-            (input_dim, hidden_lora_rank),
-            dtype=self.activation_precision,
-        )
-        lora_up_weights = tuple(
-            dummy_array(
-                (self.lora_rank, output_dim),
-                dtype=self.activation_precision,
-            )
-            for output_dim in output_dims
-        )
-
-        return QLoRALinear(
-            config=self,
-            output_dims=output_dims,
-            weights=group_quantized_linear.weights,
-            scales=group_quantized_linear.scales,
-            biases=group_quantized_linear.biases,
-            zero_points=group_quantized_linear.zero_points,
-            lora_down_weights=lora_down_weights,
-            lora_up_weights=lora_up_weights,
-        )
-
     def _empty_general(
         self,
         leading_dims: tuple[int, ...],
@@ -989,7 +958,7 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         output_dims: tuple[int, ...],
         has_biases: bool,
     ) -> LinearBase:
-        group_quantized_linear = super().empty(input_dim, output_dims, has_biases)
+        group_quantized_linear = super()._empty_general(leading_dims, input_dim, output_dims, has_biases)
         assert isinstance(group_quantized_linear, GroupQuantizedLinear)
 
         hidden_lora_rank = len(output_dims) * self.lora_rank
@@ -1131,18 +1100,32 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
         self,
         weights: ParameterTree[Array],
     ) -> "QLoRALinear":
-        base = super().import_weights(weights)
-        weights = require_mapping(weights)
-        assert isinstance(weights["up_weights"], Sequence)
-        result = replace(
+        params = require_mapping(weights)
+        if "inner_linear" in params:
+            params = require_mapping(params["inner_linear"])
+        base = super().import_weights(params)
+        return replace(
             base,
-            lora_down_weights=weights["down_weights"],
-            lora_up_weights=tuple(up_weights for up_weights in weights["up_weights"]),
+            lora_down_weights=require_array(params["down_weights"]),
+            lora_up_weights=tuple(require_array(w) for w in params["up_weights"]),
         )
-        return result
 
 
 LinearConfig = FullPrecisionLinearConfig | GroupQuantizedLinearConfig | MLXQuantizedLinearConfig | QLoRALinearConfig
 
 
 register_config_union(LinearConfig)
+
+_lc_types = {t.__name__: t for t in LinearConfig.__args__}
+
+
+def _structure_linear_config(config: dict | None, _: type) -> LinearConfig | None:
+    if config is None:
+        return None
+    if config.get("type") == "RHTLinearWrapperConfig":
+        config = config["inner_config"]
+    return config_converter.structure({k: v for k, v in config.items() if k != "type"}, _lc_types[config["type"]])
+
+
+config_converter.register_structure_hook(LinearConfig, _structure_linear_config)
+config_converter.register_structure_hook(LinearConfig | None, _structure_linear_config)
