@@ -4,6 +4,7 @@ import pytest
 
 from lalamo.modules.audio.neutts.codec_modules import (
     NeuCodecFSQConfig,
+    NeuCodecISTFTHeadConfig,
     NeuCodecResidualFSQConfig,
     NeuCodecResnetBlockConfig,
     NeuCodecTransformerBlockConfig,
@@ -139,3 +140,45 @@ def test_neucodec_transformer_block_matches_torch_vocos_reference() -> None:
     actual_output = np.asarray(lalamo_block(lalamo_input))
 
     np.testing.assert_allclose(actual_output, expected_output, rtol=2e-4, atol=2e-4)
+
+
+@pytest.mark.parametrize(
+    ("n_fft", "hop_length", "num_frames"),
+    [
+        (16, 4, 5),
+        (1280, 320, 3),
+    ],
+)
+def test_neucodec_istft_head_matches_torch_vocos_reference(
+    n_fft: int,
+    hop_length: int,
+    num_frames: int,
+) -> None:
+    torch = pytest.importorskip("torch")
+    codec_decoder_vocos = pytest.importorskip("neucodec.codec_decoder_vocos")
+    torch.manual_seed(0)
+    torch_head = codec_decoder_vocos.ISTFTHead(dim=16, n_fft=n_fft, hop_length=hop_length, padding="same").eval()
+    lalamo_head = NeuCodecISTFTHeadConfig(
+        dim=16,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        precision=jnp.float32,
+    ).empty()
+    torch_input = torch.linspace(-0.2, 0.2, steps=num_frames * 16, dtype=torch.float32).reshape(1, num_frames, 16)
+    lalamo_input = jnp.asarray(torch_input.detach().cpu().numpy())
+
+    state_dict = torch_head.state_dict()
+    lalamo_head = lalamo_head.import_weights(
+        {
+            "out": {
+                "weights": jnp.asarray(state_dict["out.weight"].detach().cpu().numpy()),
+                "biases": jnp.asarray(state_dict["out.bias"].detach().cpu().numpy()),
+            },
+        },
+    )
+
+    with torch.no_grad():
+        expected_output = torch_head(torch_input)[0].detach().cpu().numpy()
+    actual_output = np.asarray(lalamo_head(lalamo_input))
+
+    np.testing.assert_allclose(actual_output, expected_output, rtol=1e-4, atol=1e-4)

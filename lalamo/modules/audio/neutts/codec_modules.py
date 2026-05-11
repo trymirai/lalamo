@@ -4,8 +4,8 @@ from math import prod
 from typing import Self
 
 import jax.numpy as jnp
-from jax import lax, nn
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jax import lax, nn, vmap
+from jaxtyping import Array, Complex, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_array, require_tree
 from lalamo.modules.common import LalamoModule
@@ -19,6 +19,8 @@ __all__ = [
     "NeuCodecFSQConfig",
     "NeuCodecGroupNorm",
     "NeuCodecGroupNormConfig",
+    "NeuCodecISTFTHead",
+    "NeuCodecISTFTHeadConfig",
     "NeuCodecLinear",
     "NeuCodecLinearConfig",
     "NeuCodecMLP",
@@ -163,6 +165,143 @@ class NeuCodecLinear(LalamoModule[NeuCodecLinearConfig]):
             weights=require_array(weights["weights"]),
             biases=require_array(weights["biases"]) if self.biases is not None else None,
         )
+
+
+@dataclass(frozen=True)
+class NeuCodecISTFTHeadConfig:
+    dim: int
+    n_fft: int
+    hop_length: int
+    precision: DTypeLike
+
+    def __post_init__(self) -> None:
+        if self.dim <= 0:
+            raise ValueError("NeuCodec ISTFTHead dim must be positive.")
+        if self.n_fft <= 0:
+            raise ValueError("NeuCodec ISTFTHead n_fft must be positive.")
+        if self.n_fft % 2 != 0:
+            raise ValueError("NeuCodec ISTFTHead n_fft must be even.")
+        if self.hop_length <= 0:
+            raise ValueError("NeuCodec ISTFTHead hop_length must be positive.")
+        if self.hop_length >= self.n_fft:
+            raise ValueError("NeuCodec ISTFTHead hop_length must be smaller than n_fft.")
+        if (self.n_fft - self.hop_length) % 2 != 0:
+            raise ValueError("NeuCodec ISTFTHead same padding requires an even n_fft - hop_length.")
+
+    @property
+    def frequency_bins(self) -> int:
+        return self.n_fft // 2 + 1
+
+    @property
+    def output_dim(self) -> int:
+        return 2 * self.frequency_bins
+
+    def empty(self) -> "NeuCodecISTFTHead":
+        return NeuCodecISTFTHead(
+            config=self,
+            out=NeuCodecLinearConfig(
+                input_dim=self.dim,
+                output_dim=self.output_dim,
+                precision=self.precision,
+            ).empty(),
+        )
+
+    def random_init(
+        self,
+        *,
+        key: PRNGKeyArray,  # noqa: ARG002
+    ) -> "NeuCodecISTFTHead":
+        return self.empty()
+
+
+class NeuCodecISTFTHead(LalamoModule[NeuCodecISTFTHeadConfig]):
+    out: NeuCodecLinear
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    def __call__(
+        self,
+        inputs: Float[Array, "batch tokens dim"],
+    ) -> Float[Array, "batch channels samples"]:
+        projected = jnp.transpose(self.out(inputs), (0, 2, 1))
+        magnitudes, phases = jnp.split(projected, 2, axis=1)
+        magnitudes = jnp.minimum(jnp.exp(magnitudes), jnp.asarray(1e2, dtype=magnitudes.dtype))
+        spectrogram = magnitudes * (jnp.cos(phases) + 1j * jnp.sin(phases))
+        audio = _neucodec_istft_same(
+            spectrogram,
+            n_fft=self.config.n_fft,
+            hop_length=self.config.hop_length,
+        )
+        return audio[:, None, :]
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "out": self.out.export_weights(),
+        }
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        assert isinstance(weights, Mapping)
+        return replace(
+            self,
+            out=self.out.import_weights(require_tree(weights["out"])),
+        )
+
+
+def _neucodec_istft_same(
+    spectrogram: Complex[Array, "batch frequency_bins frames"],
+    *,
+    n_fft: int,
+    hop_length: int,
+) -> Float[Array, "batch samples"]:
+    _, _, num_frames = spectrogram.shape
+    window = _periodic_hann_window(n_fft, dtype=jnp.float32)
+    inverse_fft = jnp.fft.irfft(spectrogram, n=n_fft, axis=1, norm="backward") * window[None, :, None]
+    frames = jnp.transpose(inverse_fft, (0, 2, 1))
+    output_size = (num_frames - 1) * hop_length + n_fft
+    sample_indices = _istft_frame_sample_indices(
+        num_frames=num_frames,
+        win_length=n_fft,
+        hop_length=hop_length,
+    )
+    audio = vmap(lambda batch_frames: _overlap_add(batch_frames, sample_indices, output_size))(frames)
+    window_envelope = _overlap_add(
+        jnp.broadcast_to(jnp.square(window)[None, :], (num_frames, n_fft)),
+        sample_indices,
+        output_size,
+    )
+    pad = (n_fft - hop_length) // 2
+    return audio[:, pad:-pad] / window_envelope[pad:-pad]
+
+
+def _periodic_hann_window(
+    win_length: int,
+    *,
+    dtype: DTypeLike,
+) -> Float[Array, " win_length"]:
+    positions = jnp.arange(win_length, dtype=jnp.float32)
+    window = 0.5 - 0.5 * jnp.cos(2.0 * jnp.pi * positions / win_length)
+    return window.astype(dtype)
+
+
+def _istft_frame_sample_indices(
+    *,
+    num_frames: int,
+    win_length: int,
+    hop_length: int,
+) -> Int[Array, "frames win_length"]:
+    frame_starts = hop_length * jnp.arange(num_frames, dtype=jnp.int32)
+    sample_offsets = jnp.arange(win_length, dtype=jnp.int32)
+    return frame_starts[:, None] + sample_offsets[None, :]
+
+
+def _overlap_add(
+    frames: Float[Array, "frames win_length"],
+    sample_indices: Int[Array, "frames win_length"],
+    output_size: int,
+) -> Float[Array, " samples"]:
+    return jnp.zeros((output_size,), dtype=frames.dtype).at[sample_indices].add(frames)
 
 
 @dataclass(frozen=True)
