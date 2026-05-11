@@ -259,11 +259,12 @@ class AWQSpec(QuantizedSpec):
         key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        is_sharded: bool = True,
     ) -> "AWQMatrix":
         if preconditioner is not None:
-            weights = yaqa_round_weights(weights, preconditioner, self)
+            weights = yaqa_round_weights(weights, preconditioner, self, is_sharded=is_sharded)
 
-        stored_weights = self.layout.from_output_input(weights)
+        stored_weights = self.layout.from_output_input(weights, is_sharded=is_sharded)
         affine_parameters = AWQAffineParameters.from_weights(
             stored_weights,
             bits=self.bits,
@@ -273,6 +274,7 @@ class AWQSpec(QuantizedSpec):
         if implementation == CompressionImplementation.TRAINING:
             result = AWQMatrixForTraining(
                 spec=self,
+                is_sharded=is_sharded,
                 weights=stored_weights,
                 scales=affine_parameters.scales,
                 zero_points=affine_parameters.zero_points,
@@ -295,6 +297,7 @@ class AWQSpec(QuantizedSpec):
                 scales=affine_parameters.scales,
                 packed_zero_points=packed_zero_points,
                 implementation=CompressionImplementation.INFERENCE,
+                is_sharded=is_sharded,
             )
 
         return result
@@ -306,6 +309,7 @@ class AWQSpec(QuantizedSpec):
         scales: Float[Array, "*components rows groups"],
         packed_zero_points: UInt8[Array, "*components rows packed_groups"] | None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        is_sharded: bool = True,
     ) -> "AWQMatrix":
         if self.is_symmetric:
             if packed_zero_points is not None:
@@ -313,7 +317,7 @@ class AWQSpec(QuantizedSpec):
         elif packed_zero_points is None:
             raise ValueError("Asymmetric AWQ parameters require packed zero points.")
 
-        weight_partition = self.layout.weight_partition(scales.ndim - 2)
+        weight_partition = self.layout.weight_partition(scales.ndim - 2, is_sharded=is_sharded)
         weight_sharding = make_sharding(weight_partition)
 
         packed_weights = with_sharding(packed_weights, weight_sharding)
@@ -325,6 +329,7 @@ class AWQSpec(QuantizedSpec):
         if implementation == CompressionImplementation.INFERENCE:
             return AWQMatrixForInference(
                 spec=self,
+                is_sharded=is_sharded,
                 packed_weights=packed_weights,
                 scales=scales,
                 packed_zero_points=packed_zero_points,
@@ -346,6 +351,7 @@ class AWQSpec(QuantizedSpec):
             zero_points = with_sharding(zero_points, weight_sharding)
         return AWQMatrixForTraining(
             spec=self,
+            is_sharded=is_sharded,
             weights=with_sharding(weights, weight_sharding),
             scales=scales,
             zero_points=zero_points,
@@ -390,7 +396,7 @@ class AWQMatrix(EmbeddingMatrix[AWQSpec]):
     def switch_implementation(self, implementation: CompressionImplementation) -> "AWQMatrix": ...
 
     def to_full_precision(self) -> FullPrecisionMatrix:
-        return FullPrecisionSpec(layout=self.spec.layout).compress(self.decompress())
+        return FullPrecisionSpec(layout=self.spec.layout).compress(self.decompress(), is_sharded=self.is_sharded)
 
 
 class AWQMatrixForTraining(AWQMatrix):
@@ -429,6 +435,7 @@ class AWQMatrixForTraining(AWQMatrix):
             zero_points = zero_points.astype(dtype)
         return AWQMatrixForTraining(
             spec=self.spec,
+            is_sharded=self.is_sharded,
             weights=self.weights.astype(dtype),
             scales=self.scales.astype(dtype),
             zero_points=zero_points,
@@ -574,6 +581,7 @@ class AWQMatrixForTraining(AWQMatrix):
             scales=scales,
             packed_zero_points=packed_zero_points,
             implementation=CompressionImplementation.TRAINING,
+            is_sharded=self.is_sharded,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> AWQMatrix:
@@ -584,6 +592,7 @@ class AWQMatrixForTraining(AWQMatrix):
             scales=self.scales,
             packed_zero_points=self._packed_quantized_zero_points,
             implementation=CompressionImplementation.INFERENCE,
+            is_sharded=self.is_sharded,
         )
 
 
@@ -612,6 +621,7 @@ class AWQMatrixForInference(AWQMatrix):
     def astype(self, dtype: DTypeLike) -> "AWQMatrixForInference":
         return AWQMatrixForInference(
             spec=self.spec,
+            is_sharded=self.is_sharded,
             packed_weights=self.packed_weights,
             scales=self.scales.astype(dtype),
             packed_zero_points=self.packed_zero_points,
@@ -649,6 +659,7 @@ class AWQMatrixForInference(AWQMatrix):
             scales=scales,
             packed_zero_points=packed_zero_points,
             implementation=CompressionImplementation.INFERENCE,
+            is_sharded=self.is_sharded,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> AWQMatrix:
@@ -659,6 +670,7 @@ class AWQMatrixForInference(AWQMatrix):
             scales=self.scales,
             packed_zero_points=self.packed_zero_points,
             implementation=CompressionImplementation.TRAINING,
+            is_sharded=self.is_sharded,
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:

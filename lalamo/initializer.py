@@ -64,7 +64,14 @@ class Initializer(ABC):
     ) -> Array: ...
 
     @abstractmethod
-    def weight_matrix(self, output_dim: int, input_dim: int, mixture_size: int | None = None) -> WeightMatrix: ...
+    def weight_matrix(
+        self,
+        output_dim: int,
+        input_dim: int,
+        mixture_size: int | None = None,
+        *,
+        is_sharded: bool = True,
+    ) -> WeightMatrix: ...
 
     @abstractmethod
     def embedding_matrix(self, vocabulary_size: int, model_dim: int) -> EmbeddingMatrix: ...
@@ -103,13 +110,21 @@ class EmptyInitializer(Initializer):
     ) -> Array:
         return self._dummy_array(shape, self.dtype, partition)
 
-    def weight_matrix(self, output_dim: int, input_dim: int, mixture_size: int | None = None) -> ShapeDtypeMatrix:
+    def weight_matrix(
+        self,
+        output_dim: int,
+        input_dim: int,
+        mixture_size: int | None = None,
+        *,
+        is_sharded: bool = True,
+    ) -> ShapeDtypeMatrix:
         if mixture_size is None:
             mixture_dims = ()
         else:
             mixture_dims = (mixture_size,)
         return ShapeDtypeMatrix(
             spec=ShapeDtypeSpec(layout=Layout.OUTPUT_INPUT),
+            is_sharded=is_sharded,
             mixture_dims=mixture_dims,
             input_dim=input_dim,
             output_dim=output_dim,
@@ -119,6 +134,7 @@ class EmptyInitializer(Initializer):
     def embedding_matrix(self, vocabulary_size: int, model_dim: int) -> ShapeDtypeMatrix:
         return ShapeDtypeMatrix(
             spec=ShapeDtypeSpec(layout=Layout.INPUT_OUTPUT),
+            is_sharded=True,
             mixture_dims=(),
             input_dim=vocabulary_size,
             output_dim=model_dim,
@@ -158,14 +174,21 @@ class RandomInitializer(Initializer):
         sharding = self._partition_to_sharding(shape, partition)
         return jnp.zeros(shape, self.dtype, out_sharding=sharding)
 
-    def weight_matrix(self, output_dim: int, input_dim: int, mixture_size: int | None = None) -> FullPrecisionMatrix:
+    def weight_matrix(
+        self,
+        output_dim: int,
+        input_dim: int,
+        mixture_size: int | None = None,
+        *,
+        is_sharded: bool = True,
+    ) -> FullPrecisionMatrix:
         if mixture_size is None:
             mixture_dims = ()
         else:
             mixture_dims = (mixture_size,)
         std = 1.0 / math.sqrt(input_dim)
         weights = self.normal(std, (*mixture_dims, output_dim, input_dim))
-        return FullPrecisionSpec(Layout.OUTPUT_INPUT).compress(weights)
+        return FullPrecisionSpec(Layout.OUTPUT_INPUT).compress(weights, is_sharded=is_sharded)
 
     def embedding_matrix(self, vocabulary_size: int, model_dim: int) -> FullPrecisionMatrix:
         std = 1.0 / math.sqrt(model_dim)

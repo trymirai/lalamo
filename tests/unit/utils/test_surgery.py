@@ -42,8 +42,9 @@ class SurgeryWeightMatrixSpec(WeightMatrixSpec):
         key: Key[Array, ""] | None = None,
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        is_sharded: bool = True,
     ) -> WeightMatrix:
-        del weights, key, preconditioner, implementation
+        del weights, key, preconditioner, implementation, is_sharded
         raise NotImplementedError
 
     def init(
@@ -68,10 +69,10 @@ class SurgeryWeightMatrix(WeightMatrix[SurgeryWeightMatrixSpec]):
         return self.weights.dtype
 
     def astype(self, dtype: DTypeLike) -> Self:
-        return type(self)(spec=self.spec, weights=self.weights.astype(dtype))
+        return type(self)(spec=self.spec, is_sharded=self.is_sharded, weights=self.weights.astype(dtype))
 
     def to_full_precision(self) -> FullPrecisionMatrix:
-        return FullPrecisionMatrix(spec=FullPrecisionSpec(), weights=self.weights)
+        return FullPrecisionMatrix(spec=FullPrecisionSpec(), is_sharded=self.is_sharded, weights=self.weights)
 
     def decompress(self) -> Float[Array, "out_channels in_channels"]:
         return self.weights
@@ -142,14 +143,18 @@ def _template_matrix(
     shape: tuple[int, int] = (2, 3),
     dtype: DTypeLike = jnp.float32,
 ) -> TemplateWeightMatrix:
-    return TemplateWeightMatrix(spec=SurgeryWeightMatrixSpec(), weights=jnp.zeros(shape, dtype=dtype))
+    return TemplateWeightMatrix(
+        spec=SurgeryWeightMatrixSpec(),
+        is_sharded=False,
+        weights=jnp.zeros(shape, dtype=dtype),
+    )
 
 
 def _value_matrix(
     shape: tuple[int, int] = (2, 3),
     dtype: DTypeLike = jnp.float32,
 ) -> ValueWeightMatrix:
-    return ValueWeightMatrix(spec=SurgeryWeightMatrixSpec(), weights=jnp.ones(shape, dtype=dtype))
+    return ValueWeightMatrix(spec=SurgeryWeightMatrixSpec(), is_sharded=False, weights=jnp.ones(shape, dtype=dtype))
 
 
 def test_load_as_loads_matching_array_tree() -> None:

@@ -325,6 +325,7 @@ class MixtureOfExpertsConfig(MLPConfig):
             model_dim,
             (self.num_routed_experts,),
             has_biases=self.router_has_biases,
+            is_sharded=False,
         )
         experts = self.expert_config.init_mixture(
             initializer,

@@ -166,6 +166,7 @@ class HybridSpec(WeightMatrixSpec):
         key: Key[Array, ""] | None = None,
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        is_sharded: bool = True,
     ) -> "HybridMatrix":
         *_, output_dim, input_dim = weights.shape
 
@@ -195,6 +196,7 @@ class HybridSpec(WeightMatrixSpec):
             key=quantization_key,
             preconditioner=preconditioner,
             implementation=implementation,
+            is_sharded=is_sharded,
         )
         if self.adapter_spec is not None:
             adapter = self.adapter_spec.compress(
@@ -202,12 +204,14 @@ class HybridSpec(WeightMatrixSpec):
                 key=adapter_key,
                 preconditioner=preconditioner,
                 implementation=implementation,
+                is_sharded=is_sharded,
             )
         else:
             adapter = None
 
         return HybridMatrix(
             spec=self,
+            is_sharded=is_sharded,
             quantized=quantized,
             adapter=adapter,
             incoherence_signs=incoherence_signs,
@@ -220,7 +224,7 @@ class HybridMatrix(WeightMatrix[HybridSpec]):
     incoherence_signs: IncoherenceSigns | None
 
     def to_full_precision(self) -> FullPrecisionMatrix:
-        return FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(self.decompress())
+        return FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(self.decompress(), is_sharded=self.is_sharded)
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -237,6 +241,7 @@ class HybridMatrix(WeightMatrix[HybridSpec]):
             adapter = adapter.astype(dtype)
         return HybridMatrix(
             spec=self.spec,
+            is_sharded=self.is_sharded,
             quantized=quantized,
             adapter=adapter,
             incoherence_signs=self.incoherence_signs,
@@ -259,6 +264,7 @@ class HybridMatrix(WeightMatrix[HybridSpec]):
             adapter = adapter.switch_implementation(implementation)
         return HybridMatrix(
             spec=self.spec,
+            is_sharded=self.is_sharded,
             quantized=quantized,
             adapter=adapter,
             incoherence_signs=self.incoherence_signs,

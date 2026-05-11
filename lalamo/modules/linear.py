@@ -23,11 +23,13 @@ class LinearConfig(LalamoConfig):
         input_dim: int,
         output_dims: tuple[int, ...],
         has_biases: bool,
+        *,
+        is_sharded: bool = True,
     ) -> "Linear":
         total_output_dim = sum(output_dims)
         return Linear(
             config=self,
-            weights=initializer.weight_matrix(total_output_dim, input_dim),
+            weights=initializer.weight_matrix(total_output_dim, input_dim, is_sharded=is_sharded),
             biases=initializer.zeros((total_output_dim,)) if has_biases else None,
             output_dims=output_dims,
         )
@@ -39,6 +41,8 @@ class LinearConfig(LalamoConfig):
         input_dim: int,
         output_dims: tuple[int, ...],
         has_biases: bool,
+        *,
+        is_sharded: bool = True,
     ) -> "Linear":
         total_output_dim = sum(output_dims)
         if has_biases:
@@ -47,7 +51,7 @@ class LinearConfig(LalamoConfig):
             biases = None
         return Linear(
             config=self,
-            weights=initializer.weight_matrix(total_output_dim, input_dim, mixture_size),
+            weights=initializer.weight_matrix(total_output_dim, input_dim, mixture_size, is_sharded=is_sharded),
             biases=biases,
             output_dims=output_dims,
         )

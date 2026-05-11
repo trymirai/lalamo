@@ -206,6 +206,27 @@ def test_compressed_matrix_compress_overrides_input_sharding(
 @pytest.mark.parametrize("case", COMPRESSED_MATRIX_CASES)
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
 @pytest.mark.parametrize("implementation", list(CompressionImplementation))
+def test_compressed_matrix_compress_can_replicate_parameters(
+    fake_mesh: Mesh,
+    case: CompressedMatrixCase,
+    layout: Layout,
+    implementation: CompressionImplementation,
+) -> None:
+    weights = jax.device_put(logical_weights(case), make_sharding((ShardingAxis.DATA, None)))
+
+    matrix = _compress(case, weights, layout=layout, implementation=implementation)
+    replicated = case.make_spec(4, 2, layout).compress(weights, implementation=implementation, is_sharded=False)
+
+    assert matrix.is_sharded
+    assert not replicated.is_sharded
+    for array in replicated.export().arrays.values():
+        assert_named_sharding(array.sharding, fake_mesh)
+        assert array.sharding == make_sharding((None,) * array.ndim)
+
+
+@pytest.mark.parametrize("case", COMPRESSED_MATRIX_CASES)
+@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
+@pytest.mark.parametrize("implementation", list(CompressionImplementation))
 def test_compressed_matrix_decompress_removes_weight_sharding(
     case: CompressedMatrixCase,
     layout: Layout,
