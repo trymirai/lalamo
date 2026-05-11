@@ -2,7 +2,9 @@ import json
 import struct
 from collections.abc import Mapping
 from dataclasses import dataclass
+from importlib.metadata import version
 from io import BufferedReader, BufferedWriter
+from pathlib import Path
 from typing import Any, ClassVar, Self
 
 import cattrs
@@ -31,6 +33,9 @@ SF2J = {
 }
 
 J2SF = {v: k for k, v in SF2J.items()}
+
+LALAMO_VERSION_METADATA_KEY = "lalamo_version"
+LALAMO_VERSION = version("lalamo")
 
 
 @dataclass(frozen=True)
@@ -78,10 +83,33 @@ def safe_read(fd: BufferedReader) -> tuple[dict[str, str] | None, LazyDict[str, 
     return (metadata, lazy_tensors)
 
 
-def safe_write(fd: BufferedWriter, tensors: Mapping[str, Array]) -> None:
+def current_lalamo_metadata() -> dict[str, str]:
+    return {LALAMO_VERSION_METADATA_KEY: LALAMO_VERSION}
+
+
+def _major_version(version_string: str) -> str:
+    _, major, _ = version_string.split(".")
+    return major
+
+
+def assert_compatible_lalamo_metadata(metadata: Mapping[str, str] | None, path: Path | str) -> None:
+    converted_version = None if metadata is None else metadata.get(LALAMO_VERSION_METADATA_KEY)
+    if converted_version is not None and _major_version(converted_version) == _major_version(LALAMO_VERSION):
+        return
+
+    raise RuntimeError(
+        f"STALE CONVERTED MODEL: {path} was converted with lalamo {converted_version}, which is not compatible "
+        f"with the current lalamo version {LALAMO_VERSION}. Re-run `lalamo convert` before loading this model."
+    )
+
+
+def safe_write(fd: BufferedWriter, tensors: Mapping[str, Array], metadata: Mapping[str, str] | None = None) -> None:
     sorted_tensors = dict(sorted(tensors.items(), key=lambda x: (-x[1].dtype.alignment, x[0])))
 
-    header_dict = {}
+    header_dict: dict[str, Any] = {}
+    if metadata is not None:
+        header_dict["__metadata__"] = dict(metadata)
+
     offset = 0
     for key, tensor in sorted_tensors.items():
         assert offset % tensor.dtype.alignment == 0

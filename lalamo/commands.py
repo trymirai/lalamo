@@ -34,7 +34,7 @@ from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
 from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
 from lalamo.modules.common import ShardingConfig, use_sharding
-from lalamo.safetensors import safe_write
+from lalamo.safetensors import current_lalamo_metadata, safe_write
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import SpeculatorTrainingEvent, train_speculator
@@ -227,7 +227,7 @@ def convert(
     del model
 
     with Path(output_dir / "model.safetensors").open("wb") as fd:
-        safe_write(fd, weights)
+        safe_write(fd, weights, metadata=current_lalamo_metadata())
 
     config_json = config_converter.unstructure(metadata, ModelMetadata)
     with open(output_dir / "config.json", "w") as file:
