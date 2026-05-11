@@ -109,6 +109,7 @@ class PreconditionerDict(dict[PytreePath, Preconditioner]):
         )
 
     def save(self, directory: Path | str) -> None:
+        directory = Path(directory).resolve()
         paths = tuple(self)
 
         def unshard_leaf(leaf: object) -> object:
@@ -119,7 +120,7 @@ class PreconditionerDict(dict[PytreePath, Preconditioner]):
         unsharded_preconditioners = jtu.tree_map(unshard_leaf, tuple(self.values()))
         checkpointer = ocp.StandardCheckpointer()
         checkpointer.save(
-            Path(directory),
+            directory,
             unsharded_preconditioners,
             custom_metadata={"paths": paths},
         )
@@ -127,9 +128,10 @@ class PreconditionerDict(dict[PytreePath, Preconditioner]):
 
     @classmethod
     def restore(cls, directory: Path | str) -> Self:
+        directory = Path(directory).resolve()
         checkpointer = ocp.StandardCheckpointer()
-        paths = checkpointer.metadata(Path(directory)).custom_metadata["paths"]
-        restored = checkpointer.restore(Path(directory))
+        paths = checkpointer.metadata(directory).custom_metadata["paths"]
+        restored = checkpointer.restore(directory)
         return cls(
             {
                 tuple(path): Preconditioner(
