@@ -95,6 +95,15 @@ def test_neucodec_normalize_codes_rejects_multiple_batch_items() -> None:
         decoder._normalize_codes(jnp.zeros((2, 1, 3), dtype=jnp.int32))  # noqa: SLF001
 
 
+@pytest.mark.xfail(reason="Runtime NeuCodec bridge still exists until native decoder replacement lands.", strict=True)
+def test_neucodec_runtime_decode_bridge_is_absent() -> None:
+    source = Path("lalamo/modules/audio/neutts/audio_decoding.py").read_text()
+
+    assert "from neucodec import" not in source
+    assert "_load_neucodec" not in source
+    assert "codec.decode_code" not in source
+
+
 def test_parse_neutts_speech_tokens_requires_at_least_one_token() -> None:
     with pytest.raises(ValueError, match="No valid speech tokens"):
         parse_neutts_speech_tokens("no speech here")
