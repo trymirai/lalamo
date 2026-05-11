@@ -6,11 +6,12 @@ from dataclasses import dataclass
 from itertools import batched
 from typing import Annotated
 
+import jax
 from annotated_types import Ge
 
-from lalamo.data.completion_features import FeatureRequest, LalamoCompletionFeatures
-from lalamo.data.lalamo_completions import LalamoCompletion
-from lalamo.models.completion_feature_extractor import FeatureQueue, OnlineCompletionFeatureExtractor
+from lalamo.data.completion_features import FeatureRequest, LalamoCompletionFeatures  # noqa: TC001
+from lalamo.data.lalamo_completions import LalamoCompletion  # noqa: TC001
+from lalamo.models.completion_feature_extractor import FeatureQueue, OnlineCompletionFeatureExtractor, jax_device
 from lalamo.speculator.common import Speculator
 
 __all__ = [
@@ -44,7 +45,7 @@ class SpeculatorTrainingProgress:
     evaluated_steps: int
 
     @staticmethod
-    def create() -> "SpeculatorTrainingProgress":
+    def create() -> SpeculatorTrainingProgress:
         return SpeculatorTrainingProgress(
             trained_sequences=0,
             trained_tokens=0,
@@ -54,7 +55,7 @@ class SpeculatorTrainingProgress:
             evaluated_steps=0,
         )
 
-    def after_train(self, features: LalamoCompletionFeatures) -> "SpeculatorTrainingProgress":
+    def after_train(self, features: LalamoCompletionFeatures) -> SpeculatorTrainingProgress:
         sequences, tokens = count_feature_tokens(features)
         return SpeculatorTrainingProgress(
             trained_sequences=self.trained_sequences + sequences,
@@ -65,7 +66,7 @@ class SpeculatorTrainingProgress:
             evaluated_steps=self.evaluated_steps,
         )
 
-    def after_evaluate(self, features: LalamoCompletionFeatures) -> "SpeculatorTrainingProgress":
+    def after_evaluate(self, features: LalamoCompletionFeatures) -> SpeculatorTrainingProgress:
         sequences, tokens = count_feature_tokens(features)
         return SpeculatorTrainingProgress(
             trained_sequences=self.trained_sequences,
@@ -144,9 +145,12 @@ def train_speculator[SpeculatorT: Speculator, StateT](
     train_completions: Callable[[], Iterable[LalamoCompletion]],
     eval_completions: Callable[[], Iterable[LalamoCompletion]] | None,
     config: SpeculatorTrainingConfig,
+    training_device_id: int = 0,
     progress_callback: Callable[[SpeculatorTrainingEvent], None] | None = None,
 ) -> SpeculatorT:
-    state = trainer.init_state()
+    training_device = jax_device(training_device_id)
+    with jax.default_device(training_device):
+        state = trainer.init_state()
     best_state = state
     best_event: SpeculatorTrainingEvent | None = None
     best_loss: float | None = None
@@ -163,6 +167,8 @@ def train_speculator[SpeculatorT: Speculator, StateT](
             state,
             epoch,
             progress,
+            training_device,
+            training_device_id,
             progress_callback,
         )
 
@@ -177,6 +183,8 @@ def train_speculator[SpeculatorT: Speculator, StateT](
             state,
             epoch,
             progress,
+            training_device,
+            training_device_id,
             progress_callback,
         )
         if eval_event is None or eval_event.loss is None:
@@ -216,6 +224,8 @@ def run_training_epoch[SpeculatorT: Speculator, StateT](
     state: StateT,
     epoch: int,
     progress: SpeculatorTrainingProgress,
+    training_device: jax.Device,
+    training_device_id: int,
     progress_callback: Callable[[SpeculatorTrainingEvent], None] | None,
 ) -> tuple[StateT, SpeculatorTrainingProgress, SpeculatorTrainingEvent | None]:
     last_event = None
@@ -223,7 +233,11 @@ def run_training_epoch[SpeculatorT: Speculator, StateT](
         trainer.make_feature_request(completion_batch, config)
         for completion_batch in batched(train_completions(), config.batch_size)
     )
-    feature_queue = FeatureQueue(extractor, config.max_prefetch)
+    feature_queue = FeatureQueue(
+        extractor=extractor,
+        max_prefetch=config.max_prefetch,
+        target_device_id=training_device_id,
+    )
 
     for features in feature_queue.iter_features(requests):
         context = SpeculatorTrainingContext(
@@ -231,7 +245,8 @@ def run_training_epoch[SpeculatorT: Speculator, StateT](
             step=progress.trained_steps + 1,
             progress=progress,
         )
-        state, result = trainer.train(state, features, context)
+        with jax.default_device(training_device):
+            state, result = trainer.train(state, features, context)
         progress = progress.after_train(features)
         last_event = SpeculatorTrainingEvent(
             epoch=epoch,
@@ -252,6 +267,8 @@ def run_evaluation_epoch[SpeculatorT: Speculator, StateT](
     state: StateT,
     epoch: int,
     progress: SpeculatorTrainingProgress,
+    training_device: jax.Device,
+    training_device_id: int,
     progress_callback: Callable[[SpeculatorTrainingEvent], None] | None,
 ) -> tuple[SpeculatorTrainingProgress, SpeculatorTrainingEvent | None]:
     total_loss = 0.0
@@ -261,7 +278,11 @@ def run_evaluation_epoch[SpeculatorT: Speculator, StateT](
         trainer.make_feature_request(completion_batch, config)
         for completion_batch in batched(eval_completions(), config.batch_size)
     )
-    feature_queue = FeatureQueue(extractor, config.max_prefetch)
+    feature_queue = FeatureQueue(
+        extractor=extractor,
+        max_prefetch=config.max_prefetch,
+        target_device_id=training_device_id,
+    )
 
     for features in feature_queue.iter_features(requests):
         context = SpeculatorTrainingContext(
@@ -269,7 +290,8 @@ def run_evaluation_epoch[SpeculatorT: Speculator, StateT](
             step=progress.evaluated_steps + 1,
             progress=progress,
         )
-        result = trainer.evaluate(state, features, context)
+        with jax.default_device(training_device):
+            result = trainer.evaluate(state, features, context)
         if result.loss is not None:
             total_loss += result.loss * result.loss_weight
             total_loss_weight += result.loss_weight

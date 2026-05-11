@@ -29,10 +29,7 @@ class OnlineCompletionFeatureExtractor:
 
     @property
     def device(self) -> jax.Device:
-        devices = jax.devices()
-        if self.device_id < 0 or self.device_id >= len(devices):
-            raise ValueError(f"device_id {self.device_id} is out of range for {len(devices)} JAX devices.")
-        return devices[self.device_id]
+        return jax_device(self.device_id)
 
     def iter_features(
         self,
@@ -112,6 +109,7 @@ class OnlineCompletionFeatureExtractor:
 class FeatureQueue:
     extractor: OnlineCompletionFeatureExtractor
     max_prefetch: Annotated[int, Ge(1)]
+    target_device_id: int
 
     def iter_features(
         self,
@@ -145,15 +143,27 @@ class FeatureQueue:
         stop_event: Event,
         error_holder: list[BaseException],
     ) -> None:
+        target_device = jax_device(self.target_device_id)
         try:
             for features in self.extractor.iter_features(requests):
                 if stop_event.is_set():
                     return
-                put_feature_queue_item(queue, features, stop_event)
+                put_feature_queue_item(
+                    queue,
+                    jax.device_put(features, target_device),
+                    stop_event,
+                )
         except BaseException as error:  # noqa: BLE001
             error_holder.append(error)
         finally:
             put_feature_queue_item(queue, None, stop_event)
+
+
+def jax_device(device_id: int) -> jax.Device:
+    devices = jax.devices()
+    if device_id < 0 or device_id >= len(devices):
+        raise ValueError(f"device_id {device_id} is out of range for {len(devices)} JAX devices.")
+    return devices[device_id]
 
 
 def put_feature_queue_item(

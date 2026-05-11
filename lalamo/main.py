@@ -1202,7 +1202,8 @@ def backend_train_command[ConfigT](
             train_path=values["train_path"],
             output_path=values["output_path"],
             eval_path=values["eval_path"],
-            device_id=values["device_id"],
+            feature_device_id=values["feature_device_id"],
+            training_device_id=values["training_device_id"],
             training_config=SpeculatorTrainingConfig(
                 batch_size=values["batch_size"],
                 max_prefetch=values["max_prefetch"],
@@ -1240,15 +1241,16 @@ def backend_train_command[ConfigT](
     ]
     common_parameter_names = {
         "batch_size",
-        "device_id",
         "early_stopping_patience",
         "epochs",
         "eval_every_epochs",
         "eval_path",
+        "feature_device_id",
         "max_prefetch",
         "model_path",
         "output_path",
         "top_k_logits",
+        "training_device_id",
         "train_path",
     }
     for config_field in config_type_fields:
@@ -1326,10 +1328,22 @@ def backend_train_command[ConfigT](
                 annotation=Annotated[int, Option("--max_prefetch", help="Number of feature batches to prefetch.")],
             ),
             Parameter(
-                "device_id",
+                "feature_device_id",
                 kind=Parameter.KEYWORD_ONLY,
                 default=0,
-                annotation=Annotated[int, Option("--device_id", help="JAX device id used for feature extraction.")],
+                annotation=Annotated[
+                    int,
+                    Option("--feature_device_id", help="JAX device id used for target feature extraction."),
+                ],
+            ),
+            Parameter(
+                "training_device_id",
+                kind=Parameter.KEYWORD_ONLY,
+                default=0,
+                annotation=Annotated[
+                    int,
+                    Option("--training_device_id", help="JAX device id used for speculator training."),
+                ],
             ),
         ],
     )

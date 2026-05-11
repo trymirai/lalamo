@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Annotated, Self
 
 import jax.numpy as jnp
+import jax.tree_util as jtu
 from annotated_types import Ge
 from jaxtyping import Array, Bool, Float, Int
 
@@ -18,6 +19,7 @@ class FeatureRequest:
     output_features: bool = False
 
 
+@jtu.register_dataclass
 @dataclass(frozen=True)
 class LalamoCompletionBatch:
     prefix_token_ids: Int[Array, "batch prefix_tokens"]
@@ -82,6 +84,7 @@ class LalamoCompletionBatch:
         )
 
 
+@jtu.register_dataclass
 @dataclass(frozen=True)
 class LalamoCompletionFeatures:
     completion_batch: LalamoCompletionBatch

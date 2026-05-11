@@ -482,7 +482,8 @@ def train[ConfigT](
     train_path: Path,
     output_path: Path,
     eval_path: Path | None = None,
-    device_id: int = 0,
+    feature_device_id: int = 0,
+    training_device_id: int = 0,
     training_config: SpeculatorTrainingConfig = SpeculatorTrainingConfig(),  # noqa: B008
     callbacks_type: Callable[
         [
@@ -518,7 +519,7 @@ def train[ConfigT](
     )
     extractor = OnlineCompletionFeatureExtractor(
         model=model,
-        device_id=device_id,
+        device_id=feature_device_id,
     )
 
     if eval_path is not None:
@@ -536,6 +537,7 @@ def train[ConfigT](
         train_completions=lambda: iter_completions(train_path),
         eval_completions=eval_completions,
         config=training_config,
+        training_device_id=training_device_id,
         progress_callback=callbacks.training_progress,
     )
 
