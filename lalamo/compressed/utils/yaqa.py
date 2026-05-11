@@ -23,6 +23,7 @@ def yaqa_round_weights(
     preconditioner: Preconditioner,
     spec: QuantizedSpec,
     *,
+    is_sharded: bool = True,
     max_iters: int = 15,
     atol: float = 1e-7,
 ) -> Float[Array, "*components output_channels input_channels"]:
@@ -31,6 +32,7 @@ def yaqa_round_weights(
             partial(
                 yaqa_round_weights,
                 spec=spec,
+                is_sharded=is_sharded,
                 max_iters=max_iters,
                 atol=atol,
             ),
@@ -44,7 +46,11 @@ def yaqa_round_weights(
     input_block = preconditioner.input_block
     output_block = preconditioner.output_block
     if input_block is None and output_block is None:
-        return spec.compress(weights, implementation=CompressionImplementation.TRAINING).decompress()
+        return spec.compress(
+            weights,
+            implementation=CompressionImplementation.TRAINING,
+            is_sharded=is_sharded,
+        ).decompress()
 
     if input_block is None:
         input_fisher_tril = None
@@ -61,7 +67,11 @@ def yaqa_round_weights(
     def round_weights(
         candidate_weights: Float[Array, "output_channels input_channels"],
     ) -> Float[Array, "output_channels input_channels"]:
-        return spec.compress(candidate_weights, implementation=CompressionImplementation.TRAINING).decompress()
+        return spec.compress(
+            candidate_weights,
+            implementation=CompressionImplementation.TRAINING,
+            is_sharded=is_sharded,
+        ).decompress()
 
     def calculate_adjustment(
         quantized_weights: Float[Array, "output_channels input_channels"],

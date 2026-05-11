@@ -30,8 +30,13 @@ class _RoundSpec(QuantizedSpec):
         key: jax.Array | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,  # noqa: ARG002
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        is_sharded: bool = True,
     ) -> FullPrecisionMatrix:
-        return FullPrecisionSpec().compress(_round_weights(weights), implementation=implementation)
+        return FullPrecisionSpec().compress(
+            _round_weights(weights),
+            implementation=implementation,
+            is_sharded=is_sharded,
+        )
 
     @property
     def input_block_size(self) -> int:

@@ -179,6 +179,7 @@ def _load_awq_array(
     template: WeightMatrix,
     layout: Layout,
     implementation: CompressionImplementation,
+    is_sharded: bool,
 ) -> AWQMatrix:
     packed_qweights, packed_qzeros, scales = _fuse_awq_weights(weights_dict, path, sublayers_to_fuse)
     # AWQ HF layout: qweight [in_channels, out_packed], scales [num_groups, out_channels]
@@ -217,6 +218,7 @@ def _load_awq_array(
         scales=scale_values,
         packed_zero_points=packed_zero_points,
         implementation=implementation,
+        is_sharded=is_sharded,
     )
 
 
@@ -229,6 +231,7 @@ def _load_mlx_matrix(
     template: WeightMatrix,
     layout: Layout,
     implementation: CompressionImplementation,
+    is_sharded: bool,
 ) -> MLXMatrix:
     packed_weights, deq_biases, scales = _fuse_mlx_weights(weights_dict, path, sublayers_to_fuse)
     # MLX HF layout: weight [rows, packed_cols], scales [rows, num_groups].
@@ -253,6 +256,7 @@ def _load_mlx_matrix(
         scales=scale_values,
         biases=bias_values,
         implementation=implementation,
+        is_sharded=is_sharded,
     )
 
 
@@ -263,8 +267,11 @@ def load_linear(
     sublayers_to_fuse: list[str] | None = None,
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    is_sharded: bool | None = None,
 ) -> Linear:
     bias = _load_bias(module, weights_dict, path, sublayers_to_fuse)
+    if is_sharded is None:
+        is_sharded = module.weights.is_sharded
 
     if _is_awq(weights_dict, path, sublayers_to_fuse):
         weights = _load_awq_array(
@@ -274,6 +281,7 @@ def load_linear(
             template=module.weights,
             layout=Layout.OUTPUT_INPUT,
             implementation=implementation,
+            is_sharded=is_sharded,
         )
     elif _is_mlx(weights_dict, path, sublayers_to_fuse):
         weights = _load_mlx_matrix(
@@ -284,11 +292,13 @@ def load_linear(
             template=module.weights,
             layout=Layout.OUTPUT_INPUT,
             implementation=implementation,
+            is_sharded=is_sharded,
         )
     else:
         weights = load_full_precision(
             module.weights,
             _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse),
+            is_sharded=is_sharded,
         )
 
     return eqx.tree_at(lambda m: (m.weights, m.biases), module, (weights, bias))
@@ -951,6 +961,7 @@ def load_delta_net_attention(
                 scales=new_scale_values,
                 biases=new_bias_values,
                 implementation=implementation,
+                is_sharded=module.in_proj.weights.is_sharded,
             )
         in_proj = eqx.tree_at(lambda m: (m.weights, m.biases), module.in_proj, (new_weights, None))
     conv = _load_conv(module.conv, weights_dict, path, permute_conv)
@@ -1127,6 +1138,7 @@ def _load_weight_matrix(
             template=matrix,
             layout=Layout.OUTPUT_INPUT,
             implementation=implementation,
+            is_sharded=matrix.is_sharded,
         )
     if _is_mlx(weights_dict, path, None):
         return _load_mlx_matrix(
@@ -1137,6 +1149,7 @@ def _load_weight_matrix(
             template=matrix,
             layout=Layout.OUTPUT_INPUT,
             implementation=implementation,
+            is_sharded=matrix.is_sharded,
         )
     return load_full_precision(matrix, weights_dict[path / "weight"])
 
@@ -1156,6 +1169,7 @@ def _load_input_embedding_matrix(
             template=matrix,
             layout=Layout.INPUT_OUTPUT,
             implementation=implementation,
+            is_sharded=matrix.is_sharded,
         )
     if _is_mlx(weights_dict, path, None):
         return _load_mlx_matrix(
@@ -1166,6 +1180,7 @@ def _load_input_embedding_matrix(
             template=matrix,
             layout=Layout.INPUT_OUTPUT,
             implementation=implementation,
+            is_sharded=matrix.is_sharded,
         )
     return load_full_precision(matrix, jnp.matrix_transpose(weights_dict[path / "weight"]))
 

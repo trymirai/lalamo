@@ -38,9 +38,10 @@ class _PreconditionerRecordingSpec(WeightMatrixSpec):
         key: jax.Array | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        is_sharded: bool = True,
     ) -> FullPrecisionMatrix:
         self.calls.append(preconditioner)
-        return FullPrecisionSpec().compress(weights, implementation=implementation)
+        return FullPrecisionSpec().compress(weights, implementation=implementation, is_sharded=is_sharded)
 
 
 def test_hybrid_spec_roundtrips_json() -> None:
