@@ -3,7 +3,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from jax.lax import DotAlgorithmPreset
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.compressed.quantized_spec import QuantizedSpec
 from lalamo.module import ShardingAxis
@@ -14,8 +14,13 @@ from lalamo.weight_matrix import CompressionImplementation
 from .block_ldl import block_ldl
 
 __all__ = [
+    "ConvergenceError",
     "yaqa_round_weights",
 ]
+
+
+class ConvergenceError(RuntimeError):
+    pass
 
 
 def yaqa_round_weights(
@@ -24,13 +29,36 @@ def yaqa_round_weights(
     spec: QuantizedSpec,
     *,
     is_sharded: bool = True,
-    max_iters: int = 15,
+    max_iters: int = 2048,
     atol: float = 1e-7,
 ) -> Float[Array, "*components output_channels input_channels"]:
+    result, has_converged = _yaqa_round_weights(
+        weights,
+        preconditioner,
+        spec,
+        is_sharded=is_sharded,
+        max_iters=max_iters,
+        atol=atol,
+    )
+    if not bool(jax.device_get(jnp.all(has_converged))):
+        raise ConvergenceError(f"YAQA failed to converge in {max_iters} iterations.")
+
+    return result
+
+
+def _yaqa_round_weights(
+    weights: Float[Array, "*components output_channels input_channels"],
+    preconditioner: Preconditioner,
+    spec: QuantizedSpec,
+    *,
+    is_sharded: bool,
+    max_iters: int,
+    atol: float,
+) -> tuple[Float[Array, "*components output_channels input_channels"], Bool[Array, "*components"]]:
     if weights.ndim > 2:
         return jax.vmap(
             partial(
-                yaqa_round_weights,
+                _yaqa_round_weights,
                 spec=spec,
                 is_sharded=is_sharded,
                 max_iters=max_iters,
@@ -50,7 +78,7 @@ def yaqa_round_weights(
             weights,
             implementation=CompressionImplementation.TRAINING,
             is_sharded=is_sharded,
-        ).decompress()
+        ).decompress(), jnp.ones((), dtype=jnp.bool_)
 
     if input_block is None:
         input_fisher_tril = None
@@ -89,27 +117,24 @@ def yaqa_round_weights(
 
         return adjustment
 
+    def should_continue(
+        state: tuple[Int[Array, ""], Float[Array, "output_channels input_channels"], Float[Array, ""]],
+    ) -> Bool[Array, ""]:
+        iteration, _last_weights, diff = state
+        return (iteration < max_iters) & (diff >= atol)
+
     def loop_body(
-        state: tuple[Float[Array, "output_channels input_channels"], Float[Array, ""]],
-    ) -> tuple[Float[Array, "output_channels input_channels"], Float[Array, ""]]:
-        last_weights, _ = state
+        state: tuple[Int[Array, ""], Float[Array, "output_channels input_channels"], Float[Array, ""]],
+    ) -> tuple[Int[Array, ""], Float[Array, "output_channels input_channels"], Float[Array, ""]]:
+        iteration, last_weights, _diff = state
         adjustment = calculate_adjustment(last_weights)
         new_weights = round_weights(weights + adjustment)
         new_diff = jnp.max(jnp.abs(new_weights - last_weights))
-        return new_weights, new_diff
+        return iteration + 1, new_weights, new_diff
 
-    def loop_body_with_early_exit(
-        iteration: Int[Array, ""] | int,
-        state: tuple[Float[Array, "output_channels input_channels"], Float[Array, ""]],
-    ) -> tuple[Float[Array, "output_channels input_channels"], Float[Array, ""]]:
-        del iteration
-        diff = state[1]
-        return jax.lax.cond(diff < atol, lambda state: state, loop_body, state)
-
-    result, _ = jax.lax.fori_loop(
-        lower=0,
-        upper=max_iters,
-        body_fun=loop_body_with_early_exit,
-        init_val=(round_weights(weights), jnp.inf),
+    _iteration, result, diff = jax.lax.while_loop(
+        should_continue,
+        loop_body,
+        (jnp.array(0), round_weights(weights), jnp.inf),
     )
-    return result
+    return result, diff < atol

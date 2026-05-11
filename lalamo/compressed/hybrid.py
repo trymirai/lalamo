@@ -5,6 +5,7 @@ from typing import Literal
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from jax.core import Tracer
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.compressed.utils.hadamard import hadamard_transform
@@ -191,6 +192,8 @@ class HybridSpec(WeightMatrixSpec):
         is_sharded: bool = True,
     ) -> "HybridMatrix":
         *_, output_dim, input_dim = weights.shape
+        if key is None and isinstance(weights, Tracer):
+            key = jax.random.key(0)
 
         if key is not None:
             quantization_key, adapter_key, incoherence_key = jax.random.split(key, 3)
