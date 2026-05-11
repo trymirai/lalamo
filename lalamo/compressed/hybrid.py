@@ -30,8 +30,7 @@ def _random_incoherence_signs(
     channels: int,
     key: Key[Array, ""],
 ) -> Int[Array, " channels"]:
-    factors = jnp.where(jax.random.bernoulli(key, shape=(channels,)), 1, -1)
-    return factors.astype(jnp.int32)
+    return jnp.where(jax.random.bernoulli(key, shape=(channels,)), 1, -1)
 
 
 def _hadamard_transform_output_axis(
@@ -44,10 +43,12 @@ def _hadamard_transform_output_axis(
 
 
 def _process_preconditioner_block(
-    block: Float[Array, "channels channels"],
+    block: Float[Array, "*components channels channels"] | None,
     signs: Int[Array, " channels"],
     block_size: Literal[32, 64, 128],
-) -> Float[Array, "channels channels"]:
+) -> Float[Array, "*components channels channels"] | None:
+    if block is None:
+        return None
     signed_block = block * signs[..., None] * signs[None, ...]
     return _hadamard_transform_output_axis(
         hadamard_transform(signed_block, block_size),
@@ -60,27 +61,17 @@ def _process_preconditioner(
     incoherence_signs: "IncoherenceSigns",
     block_size: Literal[32, 64, 128],
 ) -> Preconditioner:
-    input_block = preconditioner.input_block
-    output_block = preconditioner.output_block
-    processed_input_block = None
-    if input_block is not None:
-        processed_input_block = _process_preconditioner_block(
-            input_block,
+    return Preconditioner.init(
+        input_block=_process_preconditioner_block(
+            preconditioner.input_block,
             incoherence_signs.input_signs,
             block_size,
-        )
-
-    processed_output_block = None
-    if output_block is not None:
-        processed_output_block = _process_preconditioner_block(
-            output_block,
+        ),
+        output_block=_process_preconditioner_block(
+            preconditioner.output_block,
             incoherence_signs.output_signs,
             block_size,
-        )
-
-    return Preconditioner.init(
-        input_block=processed_input_block,
-        output_block=processed_output_block,
+        ),
     )
 
 
@@ -108,8 +99,7 @@ class IncoherenceSigns(eqx.Module):
         weights: Float[Array, "*components out_channels in_channels"],
         block_size: Literal[32, 64, 128],
     ) -> Float[Array, "*components out_channels in_channels"]:
-        signed_weights = weights * self.output_signs.astype(weights.dtype)[..., None]
-        signed_weights = signed_weights * self.input_signs.astype(weights.dtype)
+        signed_weights = weights * self.output_signs[..., None] * self.input_signs
         return _hadamard_transform_output_axis(
             hadamard_transform(signed_weights, block_size),
             block_size,
@@ -120,36 +110,26 @@ class IncoherenceSigns(eqx.Module):
         weights: Float[Array, "*components out_channels in_channels"],
         block_size: Literal[32, 64, 128],
     ) -> Float[Array, "*components out_channels in_channels"]:
-        output_restored = _hadamard_transform_output_axis(weights, block_size)
-        output_restored = output_restored * self.output_signs.astype(output_restored.dtype)[..., None]
-        input_restored = hadamard_transform(output_restored, block_size)
-        return input_restored * self.input_signs.astype(input_restored.dtype)
+        return self.unprocess_weight_input_axis(
+            self.unprocess_weight_output_axis(weights, block_size),
+            block_size,
+        )
 
-    def input_transform(
+    def unprocess_weight_input_axis(
         self,
-        vector: Float[Array, " channels"],
+        weights: Float[Array, "*components out_channels in_channels"],
         block_size: Literal[32, 64, 128],
-        *,
-        transposed: bool,
-    ) -> Float[Array, " channels"]:
-        if transposed:
-            signs = self.output_signs
-        else:
-            signs = self.input_signs
-        return hadamard_transform(vector * signs.astype(vector.dtype), block_size)
+    ) -> Float[Array, "*components out_channels in_channels"]:
+        restored = hadamard_transform(weights, block_size)
+        return restored * self.input_signs
 
-    def output_transform(
+    def unprocess_weight_output_axis(
         self,
-        vector: Float[Array, " channels"],
+        weights: Float[Array, "*components out_channels in_channels"],
         block_size: Literal[32, 64, 128],
-        *,
-        transposed: bool,
-    ) -> Float[Array, " channels"]:
-        if transposed:
-            signs = self.input_signs
-        else:
-            signs = self.output_signs
-        return hadamard_transform(vector, block_size) * signs.astype(vector.dtype)
+    ) -> Float[Array, "*components out_channels in_channels"]:
+        restored = _hadamard_transform_output_axis(weights, block_size)
+        return restored * self.output_signs[..., None]
 
 
 @dataclass(frozen=True)
@@ -175,6 +155,8 @@ class HybridSpec(WeightMatrixSpec):
         else:
             quantization_key, adapter_key, incoherence_key = None, None, None
 
+        incoherence_signs = None
+        quantization_preconditioner = preconditioner
         if self.incoherence_block_size is not None:
             incoherence_signs = IncoherenceSigns.random_init(
                 input_dim=input_dim,
@@ -183,26 +165,38 @@ class HybridSpec(WeightMatrixSpec):
             )
             weights = incoherence_signs.process_weights(weights, self.incoherence_block_size)
             if preconditioner is not None:
-                preconditioner = _process_preconditioner(
+                quantization_preconditioner = _process_preconditioner(
                     preconditioner,
                     incoherence_signs,
                     self.incoherence_block_size,
                 )
-        else:
-            incoherence_signs = None
 
         quantized = self.quantization_spec.compress(
             weights,
             key=quantization_key,
-            preconditioner=preconditioner,
+            preconditioner=quantization_preconditioner,
             implementation=implementation,
             is_sharded=is_sharded,
         )
         if self.adapter_spec is not None:
+            residual = weights - quantized.decompress()
+            adapter_preconditioner = preconditioner
+            if incoherence_signs is not None:
+                assert self.incoherence_block_size is not None
+                residual = incoherence_signs.unprocess_weight_input_axis(
+                    residual,
+                    self.incoherence_block_size,
+                )
+                if preconditioner is not None:
+                    assert quantization_preconditioner is not None
+                    adapter_preconditioner = Preconditioner.init(
+                        input_block=preconditioner.input_block,
+                        output_block=quantization_preconditioner.output_block,
+                    )
             adapter = self.adapter_spec.compress(
-                weights - quantized.decompress(),
+                residual,
                 key=adapter_key,
-                preconditioner=preconditioner,
+                preconditioner=adapter_preconditioner,
                 implementation=implementation,
                 is_sharded=is_sharded,
             )
@@ -249,13 +243,17 @@ class HybridMatrix(WeightMatrix[HybridSpec]):
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
         result = self.quantized.decompress()
-        if self.adapter is not None:
-            result = result + self.adapter.decompress()
-        if self.incoherence_signs is None:
-            return result
         block_size = self.spec.incoherence_block_size
-        assert block_size is not None
-        return self.incoherence_signs.unprocess_weights(result, block_size)
+        if self.incoherence_signs is not None:
+            assert block_size is not None
+            result = self.incoherence_signs.unprocess_weights(result, block_size)
+        if self.adapter is not None:
+            adapter = self.adapter.decompress()
+            if self.incoherence_signs is not None:
+                assert block_size is not None
+                adapter = self.incoherence_signs.unprocess_weight_output_axis(adapter, block_size)
+            result = result + adapter
+        return result
 
     def switch_implementation(self, implementation: CompressionImplementation) -> "HybridMatrix":
         quantized = self.quantized.switch_implementation(implementation)
@@ -278,33 +276,29 @@ class HybridMatrix(WeightMatrix[HybridSpec]):
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
-        block_size = self.spec.incoherence_block_size
-        if self.incoherence_signs is not None:
-            assert block_size is not None
-            vector = self.incoherence_signs.input_transform(
-                vector,
-                block_size,
-                transposed=transposed,
-            )
+        if transposed:
+            raise ValueError("Transposed matmul is not supported for HybridMatrix.")
         quantized_keychain, adapter_keychain = keychain.split(2)
+        quantized_vector = vector
+        if self.incoherence_signs is not None:
+            assert self.spec.incoherence_block_size is not None
+            quantized_vector = hadamard_transform(
+                vector * self.incoherence_signs.input_signs,
+                self.spec.incoherence_block_size,
+            )
+
         result = self.quantized.dot(
-            vector,
+            quantized_vector,
             keychain=quantized_keychain,
             forward_pass_config=forward_pass_config,
-            transposed=transposed,
         )
         if self.adapter is not None:
-            result += self.adapter.dot(
+            result = result + self.adapter.dot(
                 vector,
                 keychain=adapter_keychain,
                 forward_pass_config=forward_pass_config,
-                transposed=transposed,
             )
         if self.incoherence_signs is not None:
-            assert block_size is not None
-            result = self.incoherence_signs.output_transform(
-                result,
-                block_size,
-                transposed=transposed,
-            )
+            assert self.spec.incoherence_block_size is not None
+            return hadamard_transform(result, self.spec.incoherence_block_size) * self.incoherence_signs.output_signs
         return result

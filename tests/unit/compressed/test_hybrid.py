@@ -4,9 +4,11 @@ from math import prod
 import jax
 import jax.numpy as jnp
 import pytest
+from jaxtyping import Array, Float, Int, Key
 
 from lalamo.compressed.hybrid import HybridMatrix, HybridSpec
 from lalamo.compressed.low_rank import LowRankSpec
+from lalamo.compressed.utils.hadamard import hadamard_transform
 from lalamo.module import Keychain
 from lalamo.preconditioner import Preconditioner
 from lalamo.weight_matrix import (
@@ -18,13 +20,23 @@ from lalamo.weight_matrix import (
 from tests.common import assert_close
 
 
-def _weights(output_dim: int = 32, input_dim: int = 64) -> jax.Array:
+def _weights(output_dim: int = 32, input_dim: int = 64) -> Float[Array, "output_dim input_dim"]:
     shape = (output_dim, input_dim)
     return (jnp.arange(prod(shape), dtype=jnp.float32).reshape(shape) - 17) / 19
 
 
-def _assert_close(result: jax.Array, reference: jax.Array) -> None:
+def _assert_close(result: Float[Array, "*shape"], reference: Float[Array, "*shape"]) -> None:
     assert_close(result=jnp.asarray(jax.device_get(result)), reference=jnp.asarray(jax.device_get(reference)))
+
+
+def _process_preconditioner_block(
+    block: Float[Array, "channels channels"],
+    signs: Int[Array, " channels"],
+) -> Float[Array, "channels channels"]:
+    signed_block = block * signs[..., None] * signs[None, ...]
+    transformed_input = hadamard_transform(signed_block, block_size=32)
+    transformed_output = hadamard_transform(jnp.swapaxes(transformed_input, -1, -2), block_size=32)
+    return jnp.swapaxes(transformed_output, -1, -2)
 
 
 @dataclass(frozen=True)
@@ -33,9 +45,9 @@ class _PreconditionerRecordingSpec(WeightMatrixSpec):
 
     def compress(
         self,
-        weights: jax.Array,
+        weights: Float[Array, "*components out_channels in_channels"],
         *,
-        key: jax.Array | None = None,  # noqa: ARG002
+        key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         is_sharded: bool = True,
@@ -113,7 +125,7 @@ def test_hybrid_incoherence_dot_matches_original_weights() -> None:
     _assert_close(result=result, reference=weights @ vector)
 
 
-def test_hybrid_incoherence_transposed_dot_matches_original_weights() -> None:
+def test_hybrid_transposed_dot_is_not_supported() -> None:
     weights = _weights()
     matrix = HybridSpec(
         quantization_spec=FullPrecisionSpec(),
@@ -122,12 +134,11 @@ def test_hybrid_incoherence_transposed_dot_matches_original_weights() -> None:
     ).compress(weights, key=jax.random.key(2))
     vector = (jnp.arange(32, dtype=jnp.float32) + 5) / 11
 
-    result = matrix.dot(vector, keychain=Keychain.init(1), transposed=True)
+    with pytest.raises(ValueError, match="Transposed matmul is not supported"):
+        matrix.dot(vector, keychain=Keychain.init(1), transposed=True)
 
-    _assert_close(result=result, reference=weights.T @ vector)
 
-
-def test_hybrid_adapter_compresses_residual_in_incoherent_basis() -> None:
+def test_hybrid_adapter_compresses_residual_with_original_input_and_transformed_output_basis() -> None:
     weights = _weights()
     matrix = HybridSpec(
         quantization_spec=LowRankSpec(rank=1),
@@ -135,7 +146,31 @@ def test_hybrid_adapter_compresses_residual_in_incoherent_basis() -> None:
         incoherence_block_size=32,
     ).compress(weights, key=jax.random.key(3))
 
+    assert matrix.incoherence_signs is not None
+    assert matrix.adapter is not None
+    transformed_weights = matrix.incoherence_signs.process_weights(weights, block_size=32)
+    transformed_residual = transformed_weights - matrix.quantized.decompress()
+    expected_adapter = matrix.incoherence_signs.unprocess_weight_input_axis(
+        transformed_residual,
+        block_size=32,
+    )
+
+    _assert_close(result=matrix.adapter.decompress(), reference=expected_adapter)
     _assert_close(result=matrix.decompress(), reference=weights)
+
+
+def test_hybrid_adapter_dot_matches_original_weights() -> None:
+    weights = _weights()
+    matrix = HybridSpec(
+        quantization_spec=LowRankSpec(rank=1),
+        adapter_spec=FullPrecisionSpec(),
+        incoherence_block_size=32,
+    ).compress(weights, key=jax.random.key(4))
+    vector = (jnp.arange(64, dtype=jnp.float32) - 13) / 17
+
+    result = matrix.dot(vector, keychain=Keychain.init(2))
+
+    _assert_close(result=result, reference=weights @ vector)
 
 
 def test_hybrid_compress_reuses_preconditioner_for_quantization_and_adapter() -> None:
@@ -154,3 +189,47 @@ def test_hybrid_compress_reuses_preconditioner_for_quantization_and_adapter() ->
     assert len(adapter_calls) == 1
     assert quantization_calls[0] is preconditioner
     assert adapter_calls[0] is preconditioner
+
+
+def test_hybrid_incoherence_adapts_preconditioner_to_adapter_basis() -> None:
+    quantization_calls: list[Preconditioner | None] = []
+    adapter_calls: list[Preconditioner | None] = []
+    input_block = jnp.diag(jnp.linspace(1, 2, 64, dtype=jnp.float32))
+    output_block = jnp.diag(jnp.linspace(3, 4, 32, dtype=jnp.float32))
+    preconditioner = Preconditioner.init(input_block=input_block, output_block=output_block)
+    spec = HybridSpec(
+        quantization_spec=_PreconditionerRecordingSpec(quantization_calls),
+        adapter_spec=_PreconditionerRecordingSpec(adapter_calls),
+        incoherence_block_size=32,
+    )
+
+    matrix = spec.compress(_weights(), key=jax.random.key(6), preconditioner=preconditioner)
+
+    assert matrix.incoherence_signs is not None
+    assert len(quantization_calls) == 1
+    assert len(adapter_calls) == 1
+    quantization_preconditioner = quantization_calls[0]
+    adapter_preconditioner = adapter_calls[0]
+    assert quantization_preconditioner is not None
+    assert adapter_preconditioner is not None
+    quantization_input_block = quantization_preconditioner.input_block
+    quantization_output_block = quantization_preconditioner.output_block
+    adapter_input_block = adapter_preconditioner.input_block
+    adapter_output_block = adapter_preconditioner.output_block
+    assert quantization_input_block is not None
+    assert quantization_output_block is not None
+    assert adapter_input_block is not None
+    assert adapter_output_block is not None
+    _assert_close(
+        result=quantization_input_block,
+        reference=_process_preconditioner_block(input_block, matrix.incoherence_signs.input_signs),
+    )
+    _assert_close(
+        result=quantization_output_block,
+        reference=_process_preconditioner_block(output_block, matrix.incoherence_signs.output_signs),
+    )
+    _assert_close(result=adapter_input_block, reference=input_block)
+    _assert_close(
+        result=adapter_output_block,
+        reference=_process_preconditioner_block(output_block, matrix.incoherence_signs.output_signs),
+    )
