@@ -3,8 +3,11 @@ from pathlib import Path
 from typing import Self
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
+import jax.tree_util as jtu
 import orbax.checkpoint as ocp
+from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, Float, PyTree
 
 __all__ = [
@@ -102,18 +105,22 @@ class PreconditionerDict(dict[PytreePath, Preconditioner]):
         from lalamo.weight_matrix import WeightMatrix  # noqa: PLC0415
 
         return cls(
-            {
-                path: Preconditioner.identity()
-                for path, _matrix in select_nodes_of_type(WeightMatrix, model)
-            },
+            {path: Preconditioner.identity() for path, _matrix in select_nodes_of_type(WeightMatrix, model)},
         )
 
     def save(self, directory: Path | str) -> None:
-        paths = tuple(sorted(self))
+        paths = tuple(self)
+
+        def unshard_leaf(leaf: object) -> object:
+            if isinstance(leaf, jax.Array) and isinstance(leaf.sharding, NamedSharding):
+                return jax.device_put(leaf, NamedSharding(leaf.sharding.mesh, PartitionSpec(*((None,) * leaf.ndim))))
+            return leaf
+
+        unsharded_preconditioners = jtu.tree_map(unshard_leaf, tuple(self.values()))
         checkpointer = ocp.StandardCheckpointer()
         checkpointer.save(
             Path(directory),
-            tuple(self[path] for path in paths),
+            unsharded_preconditioners,
             custom_metadata={"paths": paths},
         )
         checkpointer.wait_until_finished()

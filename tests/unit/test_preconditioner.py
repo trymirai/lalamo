@@ -3,14 +3,17 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+import orbax.checkpoint as ocp
+from jax.sharding import NamedSharding
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 
 from lalamo.initializer import Initializer
 from lalamo.model import Model, ModelConfig
 from lalamo.models.chat_codec import ChatCodec, ChatCodecConfig
-from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.module import LalamoConfig, LalamoModule, ShardingAxis
 from lalamo.preconditioner import Preconditioner, PreconditionerDict
+from lalamo.utils.sharding import is_sharded, make_sharding
 from lalamo.weight_matrix import FullPrecisionSpec, WeightMatrix
 from tests.common import assert_close
 
@@ -230,4 +233,52 @@ def test_preconditioner_dict_save_restore_roundtrips_preconditioners(tmp_path: P
     _assert_close(
         result=restored_output_block,
         reference=output_block,
+    )
+
+
+def test_preconditioner_dict_save_restores_unsharded_preconditioners(
+    tmp_path: Path,
+    fake_mesh: jax.sharding.Mesh,
+) -> None:
+    input_block = jax.device_put(
+        jnp.stack(
+            [
+                jnp.eye(2, dtype=jnp.float32),
+                2 * jnp.eye(2, dtype=jnp.float32),
+            ],
+        ),
+        make_sharding((ShardingAxis.DATA, None, None)),
+    )
+    assert is_sharded(input_block.sharding)
+    assert input_block.sharding.mesh == fake_mesh
+
+    preconditioners = PreconditionerDict(
+        {
+            (".first",): Preconditioner.init(input_block=input_block),
+        },
+    )
+
+    preconditioners.save(tmp_path / "preconditioners")
+    metadata = ocp.StandardCheckpointer().metadata(tmp_path / "preconditioners")
+    assert metadata.item_metadata is not None
+    input_block_metadata = metadata.item_metadata.tree[0]["input_block_tril"]
+    assert input_block_metadata.sharding is not None
+    metadata_sharding = input_block_metadata.sharding.to_jax_sharding()
+    assert isinstance(metadata_sharding, NamedSharding)
+    assert metadata_sharding.mesh == fake_mesh
+    assert tuple(metadata_sharding.spec) == (None, None)
+
+    restored_preconditioner = PreconditionerDict.restore(tmp_path / "preconditioners")[(".first",)]
+
+    assert restored_preconditioner.input_block_tril is not None
+    assert isinstance(restored_preconditioner.input_block_tril, jax.Array)
+    restored_sharding = restored_preconditioner.input_block_tril.sharding
+    assert isinstance(restored_sharding, NamedSharding)
+    assert restored_sharding.mesh == fake_mesh
+    assert tuple(restored_sharding.spec) == (None, None)
+    restored_input_block = restored_preconditioner.input_block
+    assert restored_input_block is not None
+    _assert_close(
+        result=restored_input_block,
+        reference=input_block,
     )
