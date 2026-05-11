@@ -2,7 +2,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from lalamo.modules.audio.neutts.codec_modules import NeuCodecFSQConfig, NeuCodecResidualFSQConfig
+from lalamo.modules.audio.neutts.codec_modules import (
+    NeuCodecFSQConfig,
+    NeuCodecResidualFSQConfig,
+    NeuCodecResnetBlockConfig,
+)
 
 
 def test_neucodec_fsq_indices_to_codes_matches_torch_reference() -> None:
@@ -45,3 +49,46 @@ def test_neucodec_residual_fsq_get_output_from_indices_matches_torch_reference()
     actual_output = np.asarray(lalamo_residual_fsq.get_output_from_indices(jnp.asarray(indices, dtype=jnp.int32)))
 
     np.testing.assert_allclose(actual_output, expected_output.detach().cpu().numpy(), rtol=1e-5, atol=1e-5)
+
+
+def test_neucodec_resnet_block_matches_torch_vocos_reference() -> None:
+    torch = pytest.importorskip("torch")
+    codec_decoder_vocos = pytest.importorskip("neucodec.codec_decoder_vocos")
+    torch.manual_seed(0)
+    torch_block = codec_decoder_vocos.ResnetBlock(
+        in_channels=32,
+        out_channels=32,
+        temb_channels=0,
+        dropout=0.1,
+    ).eval()
+    lalamo_block = NeuCodecResnetBlockConfig(channels=32, precision=jnp.float32).empty()
+    torch_input = torch.linspace(-1.0, 1.0, steps=1 * 32 * 7, dtype=torch.float32).reshape(1, 32, 7)
+    lalamo_input = jnp.asarray(torch_input.detach().cpu().numpy()).transpose(0, 2, 1)
+
+    state_dict = torch_block.state_dict()
+    lalamo_block = lalamo_block.import_weights(
+        {
+            "norm1": {
+                "weights": jnp.asarray(state_dict["norm1.weight"].detach().cpu().numpy()),
+                "biases": jnp.asarray(state_dict["norm1.bias"].detach().cpu().numpy()),
+            },
+            "conv1": {
+                "weights": jnp.asarray(state_dict["conv1.weight"].detach().cpu().numpy()),
+                "biases": jnp.asarray(state_dict["conv1.bias"].detach().cpu().numpy()),
+            },
+            "norm2": {
+                "weights": jnp.asarray(state_dict["norm2.weight"].detach().cpu().numpy()),
+                "biases": jnp.asarray(state_dict["norm2.bias"].detach().cpu().numpy()),
+            },
+            "conv2": {
+                "weights": jnp.asarray(state_dict["conv2.weight"].detach().cpu().numpy()),
+                "biases": jnp.asarray(state_dict["conv2.bias"].detach().cpu().numpy()),
+            },
+        },
+    )
+
+    with torch.no_grad():
+        expected_output = torch_block(torch_input).detach().cpu().numpy()
+    actual_output = np.asarray(lalamo_block(lalamo_input)).transpose(0, 2, 1)
+
+    np.testing.assert_allclose(actual_output, expected_output, rtol=1e-5, atol=1e-5)

@@ -4,18 +4,25 @@ from math import prod
 from typing import Self
 
 import jax.numpy as jnp
+from jax import lax, nn
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_array, require_tree
 from lalamo.modules.common import LalamoModule
 
 __all__ = [
+    "NeuCodecConv1d",
+    "NeuCodecConv1dConfig",
     "NeuCodecFSQ",
     "NeuCodecFSQConfig",
+    "NeuCodecGroupNorm",
+    "NeuCodecGroupNormConfig",
     "NeuCodecLinear",
     "NeuCodecLinearConfig",
     "NeuCodecResidualFSQ",
     "NeuCodecResidualFSQConfig",
+    "NeuCodecResnetBlock",
+    "NeuCodecResnetBlockConfig",
 ]
 
 
@@ -148,6 +155,219 @@ class NeuCodecLinear(LalamoModule[NeuCodecLinearConfig]):
             weights=require_array(weights["weights"]),
             biases=require_array(weights["biases"]) if self.biases is not None else None,
         )
+
+
+@dataclass(frozen=True)
+class NeuCodecConv1dConfig:
+    in_channels: int
+    out_channels: int
+    kernel_size: int
+    padding: int
+    precision: DTypeLike
+    has_bias: bool = True
+
+    def __post_init__(self) -> None:
+        if self.in_channels <= 0:
+            raise ValueError("NeuCodec Conv1d in_channels must be positive.")
+        if self.out_channels <= 0:
+            raise ValueError("NeuCodec Conv1d out_channels must be positive.")
+        if self.kernel_size <= 0:
+            raise ValueError("NeuCodec Conv1d kernel_size must be positive.")
+        if self.padding < 0:
+            raise ValueError("NeuCodec Conv1d padding must be non-negative.")
+
+    def empty(self) -> "NeuCodecConv1d":
+        weights = jnp.zeros((self.out_channels, self.in_channels, self.kernel_size), dtype=self.precision)
+        biases = jnp.zeros((self.out_channels,), dtype=self.precision) if self.has_bias else None
+        return NeuCodecConv1d(config=self, weights=weights, biases=biases)
+
+    def random_init(
+        self,
+        *,
+        key: PRNGKeyArray,  # noqa: ARG002
+    ) -> "NeuCodecConv1d":
+        return self.empty()
+
+
+class NeuCodecConv1d(LalamoModule[NeuCodecConv1dConfig]):
+    weights: Float[Array, "out_channels in_channels kernel_size"]
+    biases: Float[Array, " out_channels"] | None
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    def __call__(
+        self,
+        inputs: Float[Array, "batch sequence in_channels"],
+    ) -> Float[Array, "batch sequence_out out_channels"]:
+        output = lax.conv_general_dilated(
+            inputs,
+            self.weights,
+            window_strides=(1,),
+            padding=((self.config.padding, self.config.padding),),
+            dimension_numbers=("NHC", "OIH", "NHC"),
+        )
+        if self.biases is not None:
+            output = output + self.biases[None, None, :]
+        return output
+
+    def export_weights(self) -> ParameterTree[Array]:
+        result: dict[str, Array] = {"weights": self.weights}
+        if self.biases is not None:
+            result["biases"] = self.biases
+        return result
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        assert isinstance(weights, Mapping)
+        return replace(
+            self,
+            weights=require_array(weights["weights"]),
+            biases=require_array(weights["biases"]) if self.biases is not None else None,
+        )
+
+
+@dataclass(frozen=True)
+class NeuCodecGroupNormConfig:
+    channels: int
+    precision: DTypeLike
+    num_groups: int = 32
+    eps: float = 1e-6
+
+    def __post_init__(self) -> None:
+        if self.channels <= 0:
+            raise ValueError("NeuCodec GroupNorm channels must be positive.")
+        if self.num_groups <= 0:
+            raise ValueError("NeuCodec GroupNorm num_groups must be positive.")
+        if self.channels % self.num_groups != 0:
+            raise ValueError("NeuCodec GroupNorm channels must be divisible by num_groups.")
+        if self.eps <= 0:
+            raise ValueError("NeuCodec GroupNorm eps must be positive.")
+
+    def empty(self) -> "NeuCodecGroupNorm":
+        return NeuCodecGroupNorm(
+            config=self,
+            weights=jnp.ones((self.channels,), dtype=self.precision),
+            biases=jnp.zeros((self.channels,), dtype=self.precision),
+        )
+
+    def random_init(
+        self,
+        *,
+        key: PRNGKeyArray,  # noqa: ARG002
+    ) -> "NeuCodecGroupNorm":
+        return self.empty()
+
+
+class NeuCodecGroupNorm(LalamoModule[NeuCodecGroupNormConfig]):
+    weights: Float[Array, " channels"]
+    biases: Float[Array, " channels"]
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    def __call__(
+        self,
+        inputs: Float[Array, "batch sequence channels"],
+    ) -> Float[Array, "batch sequence channels"]:
+        batch_size, sequence_length, channels = inputs.shape
+        channels_per_group = channels // self.config.num_groups
+        grouped_inputs = inputs.reshape(batch_size, sequence_length, self.config.num_groups, channels_per_group)
+        mean = jnp.mean(grouped_inputs, axis=(1, 3), keepdims=True)
+        variance = jnp.mean(jnp.square(grouped_inputs - mean), axis=(1, 3), keepdims=True)
+        normalized = (grouped_inputs - mean) * lax.rsqrt(variance + self.config.eps)
+        return normalized.reshape(inputs.shape) * self.weights[None, None, :] + self.biases[None, None, :]
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "weights": self.weights,
+            "biases": self.biases,
+        }
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        assert isinstance(weights, Mapping)
+        return replace(
+            self,
+            weights=require_array(weights["weights"]),
+            biases=require_array(weights["biases"]),
+        )
+
+
+@dataclass(frozen=True)
+class NeuCodecResnetBlockConfig:
+    channels: int
+    precision: DTypeLike
+
+    def __post_init__(self) -> None:
+        if self.channels <= 0:
+            raise ValueError("NeuCodec ResnetBlock channels must be positive.")
+        NeuCodecGroupNormConfig(channels=self.channels, precision=self.precision)
+
+    def empty(self) -> "NeuCodecResnetBlock":
+        norm_config = NeuCodecGroupNormConfig(channels=self.channels, precision=self.precision)
+        conv_config = NeuCodecConv1dConfig(
+            in_channels=self.channels,
+            out_channels=self.channels,
+            kernel_size=3,
+            padding=1,
+            precision=self.precision,
+        )
+        return NeuCodecResnetBlock(
+            config=self,
+            norm1=norm_config.empty(),
+            conv1=conv_config.empty(),
+            norm2=norm_config.empty(),
+            conv2=conv_config.empty(),
+        )
+
+    def random_init(
+        self,
+        *,
+        key: PRNGKeyArray,  # noqa: ARG002
+    ) -> "NeuCodecResnetBlock":
+        return self.empty()
+
+
+class NeuCodecResnetBlock(LalamoModule[NeuCodecResnetBlockConfig]):
+    norm1: NeuCodecGroupNorm
+    conv1: NeuCodecConv1d
+    norm2: NeuCodecGroupNorm
+    conv2: NeuCodecConv1d
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    def __call__(
+        self,
+        inputs: Float[Array, "batch sequence channels"],
+    ) -> Float[Array, "batch sequence channels"]:
+        hidden_states = self.conv1(_swish(self.norm1(inputs)))
+        hidden_states = self.conv2(_swish(self.norm2(hidden_states)))
+        return inputs + hidden_states
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "norm1": self.norm1.export_weights(),
+            "conv1": self.conv1.export_weights(),
+            "norm2": self.norm2.export_weights(),
+            "conv2": self.conv2.export_weights(),
+        }
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        assert isinstance(weights, Mapping)
+        return replace(
+            self,
+            norm1=self.norm1.import_weights(require_tree(weights["norm1"])),
+            conv1=self.conv1.import_weights(require_tree(weights["conv1"])),
+            norm2=self.norm2.import_weights(require_tree(weights["norm2"])),
+            conv2=self.conv2.import_weights(require_tree(weights["conv2"])),
+        )
+
+
+def _swish(inputs: Float[Array, "*batch"]) -> Float[Array, "*batch"]:
+    return inputs * nn.sigmoid(inputs)
 
 
 @dataclass(frozen=True)
