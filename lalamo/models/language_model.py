@@ -119,6 +119,8 @@ class GenerationResults(NamedTuple):
     token_ids: Int[Array, "batch response_tokens"]
     top_k_token_ids: Int[Array, "batch response_tokens k"] | None
     top_k_token_logits: Float[Array, "batch response_tokens k"] | None
+    mean_accepted_length: Float[Array, " batch"]
+    tokens_per_step: Int[Array, "batch generation_steps"]
     trace: StepTrace | None = None
 
 
@@ -554,16 +556,27 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         if prompt_lengths_without_padding is None:
             prompt_lengths_without_padding = jnp.full((batch_size,), prompt_token_ids.shape[1], dtype=jnp.int32)
 
-        def scan_step(state: DecodingState, _: None) -> tuple[DecodingState, None]:
-            next_state = jax.lax.cond(
+        def scan_step(state: DecodingState, _: None) -> tuple[DecodingState, Int[Array, " batch"]]:
+            def decode_step(state: DecodingState) -> tuple[DecodingState, Int[Array, " batch"]]:
+                next_state, accepted = setup.step(state)
+                return next_state, accepted.num_compact_indices
+
+            return jax.lax.cond(
                 jnp.all(setup.is_done(state)),
-                lambda state: state,
-                lambda state: setup.step(state)[0],
+                lambda state: (state, jnp.zeros((batch_size,), dtype=jnp.int32)),
+                decode_step,
                 state,
             )
-            return next_state, None
 
-        final_state, _ = jax.lax.scan(scan_step, setup.initial_state, xs=None, length=max_output_length)
+        final_state, scan_tokens_per_step = jax.lax.scan(
+            scan_step,
+            setup.initial_state,
+            xs=None,
+            length=max_output_length,
+        )
+        tokens_per_step = rearrange(scan_tokens_per_step, "generation_step batch -> batch generation_step")
+        num_steps = jnp.sum(tokens_per_step > 0, axis=1)
+        mean_accepted_length = jnp.sum(tokens_per_step, axis=1) / jnp.maximum(num_steps, 1)
         final_lm_state = final_state.lm_state
         memory = final_lm_state.memory
         assert memory.token_ids is not None
@@ -631,7 +644,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 layer_indices=setup.traced_layers_array,
             )
 
-        return GenerationResults(token_ids, top_k_token_ids, top_k_token_logits, trace)
+        return GenerationResults(token_ids, top_k_token_ids, top_k_token_logits, mean_accepted_length, tokens_per_step, trace)
 
     def _generate_tokens_batch(
         self,
@@ -697,6 +710,8 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 token_ids=results.token_ids[i],
                 top_k_token_ids=results.top_k_token_ids[i] if results.top_k_token_ids is not None else None,
                 top_k_token_logits=results.top_k_token_logits[i] if results.top_k_token_logits is not None else None,
+                mean_accepted_length=results.mean_accepted_length[i],
+                tokens_per_step=results.tokens_per_step[i],
                 trace=trace_i,
             )
 
