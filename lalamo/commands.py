@@ -37,9 +37,8 @@ from lalamo.modules import config_converter
 from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.safetensors import safe_write
 from lalamo.speculator.common import (
-    Speculator,
     SpeculatorBackend,
-    SpeculatorTrainingTarget,
+    load_speculator,
 )
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.training import SpeculatorTrainingConfig, SpeculatorTrainingEvent, train_speculator
@@ -515,7 +514,7 @@ def train[ConfigT](
     trainer = backend.create_trainer(
         backend_config,
         output_path,
-        SpeculatorTrainingTarget(vocab_size=model.model.vocab_size),
+        model.model,
     )
     extractor = OnlineCompletionFeatureExtractor(
         model=model,
@@ -588,7 +587,7 @@ def generate_replies(
     max_output_length: int = 8192,
     batch_size: int | None = None,
     generation_config_override: GenerationConfig | None = None,
-    speculator: Speculator | None = None,
+    speculator_path: Path | None = None,
     callbacks_type: Callable[
         [
             Path,
@@ -643,6 +642,7 @@ def generate_replies(
     callbacks.loading_model()
     with use_sharding(sharding_config):
         model = LanguageModelConfig.load_model(model_path)
+        speculator = load_speculator(speculator_path, model.model) if speculator_path is not None else None
     callbacks.finished_loading_model()
 
     callbacks.loading_dataset()

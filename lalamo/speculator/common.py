@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from importlib.metadata import entry_points
 from inspect import isabstract
 from pathlib import Path
@@ -7,6 +6,7 @@ from typing import Any, ClassVar
 
 import msgpack
 
+from lalamo.modules.decoder import Decoder
 from lalamo.registry_abc import RegistryABC
 from lalamo.speculator.proposal import TrieProposal
 from lalamo.speculator.state import LMState, MemoryBuffers, RingBuffer, StateRequest
@@ -20,7 +20,6 @@ __all__ = [
     "RingBuffer",
     "Speculator",
     "SpeculatorBackend",
-    "SpeculatorTrainingTarget",
     "StateRequest",
     "get_speculator_backend",
     "load_speculator",
@@ -48,11 +47,6 @@ class NoSpeculator(Speculator):
         return state.create_root_proposal(budget=1)
 
 
-@dataclass(frozen=True)
-class SpeculatorTrainingTarget:
-    vocab_size: int
-
-
 class SpeculatorBackend[ConfigT](RegistryABC):
     name: ClassVar[str]
     config_type: ClassVar[type[ConfigT]]
@@ -63,12 +57,12 @@ class SpeculatorBackend[ConfigT](RegistryABC):
         cls,
         config: ConfigT,
         artifact_path: Path,
-        target: SpeculatorTrainingTarget,
+        target_model: Decoder,
     ) -> Any: ...  # noqa: ANN401
 
     @classmethod
     @abstractmethod
-    def deserialize(cls, fields: tuple[Any, ...]) -> Speculator: ...
+    def deserialize(cls, fields: tuple[Any, ...], target_model: Decoder) -> Speculator: ...
 
 
 def write_speculator_artifact(
@@ -122,7 +116,7 @@ def get_speculator_backend(name: str) -> type[SpeculatorBackend[Any]]:
     return backend
 
 
-def load_speculator(path: Path | str) -> Speculator:
+def load_speculator(path: Path | str, target_model: Decoder) -> Speculator:
     speculator_kind, backend_fields = read_speculator_artifact(path)
     backend = get_speculator_backend(speculator_kind)
-    return backend.deserialize(backend_fields)
+    return backend.deserialize(backend_fields, target_model)

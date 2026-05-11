@@ -168,7 +168,7 @@ def chat(
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
         model = LanguageModelConfig.load_model(model_path)
-        speculator = load_speculator(speculator_path) if speculator_path is not None else None
+        speculator = load_speculator(speculator_path, model.model) if speculator_path is not None else None
         progress.remove_task(loading_task)
         warmup_task = progress.add_task("🔥 Warming up compilation cache...")
         list(model.stream_reply_text([UserMessage("")], max_output_length=1, speculator=speculator))
@@ -820,8 +820,6 @@ def generate_replies(
 
         max_vram = mem_bytes
 
-    speculator = load_speculator(speculator_path) if speculator_path is not None else None
-
     _generate_replies(
         model_path=model_path,
         dataset_path=dataset_path,
@@ -829,7 +827,7 @@ def generate_replies(
         max_vram=max_vram,
         max_output_length=max_output_length,
         batch_size=batch_size,
-        speculator=speculator,
+        speculator_path=speculator_path,
         callbacks_type=CliGenerateRepliesCallbacks,
     )
 

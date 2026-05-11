@@ -10,16 +10,15 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
-from annotated_types import Ge
 from jaxtyping import Array, Float, PRNGKeyArray  # noqa: TC002
 from typer import Option
 
 from lalamo.data.completion_features import FeatureRequest, LalamoCompletionFeatures
 from lalamo.data.lalamo_completions import LalamoCompletion  # noqa: TC001
+from lalamo.modules.decoder import Decoder  # noqa: TC001
 from lalamo.speculator.common import (
     Speculator,
     SpeculatorBackend,
-    SpeculatorTrainingTarget,
     write_speculator_artifact,
 )
 from lalamo.speculator.proposal import TrieProposal  # noqa: TC001
@@ -159,13 +158,8 @@ class MLPTrainingState:
 @dataclass(frozen=True, kw_only=True)
 class MLPTrainer(SpeculatorTrainer[MLPSpeculator, MLPTrainingState]):
     artifact_path: Path | str
-    vocab_size: Annotated[int, Ge(1)]
-    hidden_dim: Annotated[int, Ge(1)] = 512
-    depth: Annotated[int, Ge(1)] = 4
-    width: Annotated[int, Ge(1)] = 4
-    learning_rate: float = 3e-4
-    weight_decay: float = 0.0
-    seed: int = 0
+    target_model: Decoder
+    config: MLPConfig
 
     def make_feature_request(
         self,
@@ -182,7 +176,7 @@ class MLPTrainer(SpeculatorTrainer[MLPSpeculator, MLPTrainingState]):
         return MLPTrainingState(
             model=None,
             optimizer_state=None,
-            key=jax.random.key(self.seed),
+            key=jax.random.key(self.config.seed),
         )
 
     def train(
@@ -229,7 +223,7 @@ class MLPTrainer(SpeculatorTrainer[MLPSpeculator, MLPTrainingState]):
         assert state.model is not None
         return MLPSpeculator.create(
             model=state.model,
-            width=self.width,
+            width=self.config.width,
         )
 
     def save(
@@ -244,7 +238,7 @@ class MLPTrainer(SpeculatorTrainer[MLPSpeculator, MLPTrainingState]):
         write_speculator_artifact(
             self.artifact_path,
             MLPBackend,
-            self.width,
+            self.config.width,
             state.model.depth,
             state.model.input_dim,
             state.model.hidden_dim,
@@ -255,8 +249,8 @@ class MLPTrainer(SpeculatorTrainer[MLPSpeculator, MLPTrainingState]):
     @property
     def optimizer(self) -> optax.GradientTransformation:
         return optax.adamw(
-            learning_rate=self.learning_rate,
-            weight_decay=self.weight_decay,
+            learning_rate=self.config.learning_rate,
+            weight_decay=self.config.weight_decay,
         )
 
     def init_model_and_optimizer(
@@ -271,9 +265,9 @@ class MLPTrainer(SpeculatorTrainer[MLPSpeculator, MLPTrainingState]):
         assert output_features is not None
         model = MLPModel.init(
             input_dim=output_features.shape[-1],
-            hidden_dim=self.hidden_dim,
-            vocab_size=self.vocab_size,
-            depth=self.depth,
+            hidden_dim=self.config.hidden_dim,
+            vocab_size=self.target_model.vocab_size,
+            depth=self.config.depth,
             key=state.key,
         )
         return model, self.optimizer.init(eqx.filter(model, eqx.is_array))
@@ -315,21 +309,17 @@ class MLPBackend(SpeculatorBackend[MLPConfig]):
         cls,
         config: MLPConfig,
         artifact_path: Path,
-        target: SpeculatorTrainingTarget,
+        target_model: Decoder,
     ) -> MLPTrainer:
         return MLPTrainer(
             artifact_path=artifact_path,
-            vocab_size=target.vocab_size,
-            hidden_dim=config.hidden_dim,
-            depth=config.depth,
-            width=config.width,
-            learning_rate=config.learning_rate,
-            weight_decay=config.weight_decay,
-            seed=config.seed,
+            target_model=target_model,
+            config=config,
         )
 
     @classmethod
-    def deserialize(cls, fields: tuple[Any, ...]) -> MLPSpeculator:
+    def deserialize(cls, fields: tuple[Any, ...], target_model: Decoder) -> MLPSpeculator:
+        del target_model
         if len(fields) != 6:
             raise ValueError(
                 "mlp speculator artifact must contain width, depth, input_dim, hidden_dim, "

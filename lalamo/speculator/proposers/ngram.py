@@ -11,15 +11,14 @@ from typing import Annotated, Any, Self
 
 import jax.numpy as jnp
 import xxhash
-from annotated_types import Ge
 from typer import Option
 
 from lalamo.data.completion_features import FeatureRequest, LalamoCompletionFeatures
 from lalamo.data.lalamo_completions import LalamoCompletion  # noqa: TC001
+from lalamo.modules.decoder import Decoder  # noqa: TC001
 from lalamo.speculator.common import (
     Speculator,
     SpeculatorBackend,
-    SpeculatorTrainingTarget,
     write_speculator_artifact,
 )
 from lalamo.speculator.proposal import TrieProposal  # noqa: TC001
@@ -452,12 +451,7 @@ class NGramTrainingState:
 @dataclass(frozen=True, kw_only=True)
 class NGramTrainer(SpeculatorTrainer[NGramSpeculator, NGramTrainingState]):
     artifact_path: Path | str
-    hashtable_size: Annotated[int, Ge(1)] = 65536
-    num_logits_per_token: Annotated[int, Ge(1)] = 8
-    max_order: Annotated[int, Ge(1)] = 4
-    discount: float = 0.002
-    width: Annotated[int, Ge(1)] = 4
-    depth: Annotated[int, Ge(1)] = 8
+    config: NGramConfig
 
     def make_feature_request(
         self,
@@ -472,10 +466,10 @@ class NGramTrainer(SpeculatorTrainer[NGramSpeculator, NGramTrainingState]):
     def init_state(self) -> NGramTrainingState:
         return NGramTrainingState(
             model=NGramModel.init(
-                hashtable_size=self.hashtable_size,
-                ngram_k=self.num_logits_per_token,
-                max_order=self.max_order,
-                discount=self.discount,
+                hashtable_size=self.config.hash_table_size,
+                ngram_k=self.config.num_logits_per_token,
+                max_order=self.config.max_order,
+                discount=self.config.discount,
             ),
         )
 
@@ -506,8 +500,8 @@ class NGramTrainer(SpeculatorTrainer[NGramSpeculator, NGramTrainingState]):
         state.model.compress()
         return NGramSpeculator.create(
             model=state.model,
-            width=self.width,
-            depth=self.depth,
+            width=self.config.width,
+            depth=self.config.depth,
         )
 
     def save(
@@ -520,8 +514,8 @@ class NGramTrainer(SpeculatorTrainer[NGramSpeculator, NGramTrainingState]):
         write_speculator_artifact(
             self.artifact_path,
             NGramBackend,
-            self.width,
-            self.depth,
+            self.config.width,
+            self.config.depth,
             speculator.serialize(),
         )
 
@@ -535,21 +529,17 @@ class NGramBackend(SpeculatorBackend[NGramConfig]):
         cls,
         config: NGramConfig,
         artifact_path: Path,
-        target: SpeculatorTrainingTarget,
+        target_model: Decoder,
     ) -> NGramTrainer:
-        del target
+        del target_model
         return NGramTrainer(
             artifact_path=artifact_path,
-            hashtable_size=config.hash_table_size,
-            num_logits_per_token=config.num_logits_per_token,
-            max_order=config.max_order,
-            discount=config.discount,
-            width=config.width,
-            depth=config.depth,
+            config=config,
         )
 
     @classmethod
-    def deserialize(cls, fields: tuple[Any, ...]) -> NGramSpeculator:
+    def deserialize(cls, fields: tuple[Any, ...], target_model: Decoder) -> NGramSpeculator:
+        del target_model
         if len(fields) != 3:
             raise ValueError("ngram speculator artifact must contain width, depth, and model bytes.")
         width, depth, data = fields
