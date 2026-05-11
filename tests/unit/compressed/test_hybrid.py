@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import pytest
 from jaxtyping import Array, Float, Int, Key
 
-from lalamo.compressed.hybrid import HybridMatrix, HybridSpec
+from lalamo.compressed.hybrid import HybridMatrix, HybridSpec, IncoherenceProcessingMode
 from lalamo.compressed.low_rank import LowRankSpec
 from lalamo.compressed.utils.hadamard import hadamard_transform
 from lalamo.module import Keychain
@@ -29,14 +29,20 @@ def _assert_close(result: Float[Array, "*shape"], reference: Float[Array, "*shap
     assert_close(result=jnp.asarray(jax.device_get(result)), reference=jnp.asarray(jax.device_get(reference)))
 
 
+def _hadamard_transform_output_axis(
+    weights: Float[Array, "*components out_channels in_channels"],
+) -> Float[Array, "*components out_channels in_channels"]:
+    transformed = hadamard_transform(jnp.swapaxes(weights, -1, -2), block_size=32)
+    return jnp.swapaxes(transformed, -1, -2)
+
+
 def _process_preconditioner_block(
     block: Float[Array, "channels channels"],
     signs: Int[Array, " channels"],
 ) -> Float[Array, "channels channels"]:
     signed_block = block * signs[..., None] * signs[None, ...]
     transformed_input = hadamard_transform(signed_block, block_size=32)
-    transformed_output = hadamard_transform(jnp.swapaxes(transformed_input, -1, -2), block_size=32)
-    return jnp.swapaxes(transformed_output, -1, -2)
+    return _hadamard_transform_output_axis(transformed_input)
 
 
 @dataclass(frozen=True)
@@ -61,6 +67,7 @@ def test_hybrid_spec_roundtrips_json() -> None:
         quantization_spec=FullPrecisionSpec(),
         adapter_spec=LowRankSpec(rank=2),
         incoherence_block_size=32,
+        incoherence_processing_mode=IncoherenceProcessingMode.INPUT,
     )
 
     restored = WeightMatrixSpec.from_json(spec.to_json())
@@ -106,8 +113,56 @@ def test_hybrid_incoherence_decompress_restores_original_basis() -> None:
 
     assert isinstance(matrix, HybridMatrix)
     assert matrix.incoherence_signs is not None
-    assert matrix.incoherence_signs.input_signs.shape == (64,)
-    assert matrix.incoherence_signs.output_signs.shape == (32,)
+    input_signs = matrix.incoherence_signs.input_signs
+    output_signs = matrix.incoherence_signs.output_signs
+    assert input_signs is not None
+    assert output_signs is not None
+    assert input_signs.shape == (64,)
+    assert output_signs.shape == (32,)
+    _assert_close(result=matrix.decompress(), reference=weights)
+
+
+def test_hybrid_input_incoherence_leaves_output_basis_unprocessed() -> None:
+    weights = _weights()
+    matrix = HybridSpec(
+        quantization_spec=FullPrecisionSpec(),
+        adapter_spec=None,
+        incoherence_block_size=32,
+        incoherence_processing_mode=IncoherenceProcessingMode.INPUT,
+    ).compress(weights, key=jax.random.key(1))
+    vector = (jnp.arange(64, dtype=jnp.float32) - 3) / 7
+
+    assert matrix.incoherence_signs is not None
+    input_signs = matrix.incoherence_signs.input_signs
+    assert input_signs is not None
+    assert matrix.incoherence_signs.output_signs is None
+    _assert_close(
+        result=matrix.quantized.decompress(),
+        reference=hadamard_transform(weights * input_signs, block_size=32),
+    )
+    _assert_close(result=matrix.dot(vector, keychain=Keychain.init(0)), reference=weights @ vector)
+    _assert_close(result=matrix.decompress(), reference=weights)
+
+
+def test_hybrid_output_incoherence_leaves_input_basis_unprocessed() -> None:
+    weights = _weights()
+    matrix = HybridSpec(
+        quantization_spec=FullPrecisionSpec(),
+        adapter_spec=None,
+        incoherence_block_size=32,
+        incoherence_processing_mode=IncoherenceProcessingMode.OUTPUT,
+    ).compress(weights, key=jax.random.key(2))
+    vector = (jnp.arange(64, dtype=jnp.float32) - 3) / 7
+
+    assert matrix.incoherence_signs is not None
+    output_signs = matrix.incoherence_signs.output_signs
+    assert matrix.incoherence_signs.input_signs is None
+    assert output_signs is not None
+    _assert_close(
+        result=matrix.quantized.decompress(),
+        reference=_hadamard_transform_output_axis(weights * output_signs[..., None]),
+    )
+    _assert_close(result=matrix.dot(vector, keychain=Keychain.init(0)), reference=weights @ vector)
     _assert_close(result=matrix.decompress(), reference=weights)
 
 
@@ -220,16 +275,52 @@ def test_hybrid_incoherence_adapts_preconditioner_to_adapter_basis() -> None:
     assert quantization_output_block is not None
     assert adapter_input_block is not None
     assert adapter_output_block is not None
+    input_signs = matrix.incoherence_signs.input_signs
+    output_signs = matrix.incoherence_signs.output_signs
+    assert input_signs is not None
+    assert output_signs is not None
     _assert_close(
         result=quantization_input_block,
-        reference=_process_preconditioner_block(input_block, matrix.incoherence_signs.input_signs),
+        reference=_process_preconditioner_block(input_block, input_signs),
     )
     _assert_close(
         result=quantization_output_block,
-        reference=_process_preconditioner_block(output_block, matrix.incoherence_signs.output_signs),
+        reference=_process_preconditioner_block(output_block, output_signs),
     )
     _assert_close(result=adapter_input_block, reference=input_block)
     _assert_close(
         result=adapter_output_block,
-        reference=_process_preconditioner_block(output_block, matrix.incoherence_signs.output_signs),
+        reference=_process_preconditioner_block(output_block, output_signs),
     )
+
+
+def test_hybrid_input_incoherence_keeps_output_preconditioner_basis() -> None:
+    quantization_calls: list[Preconditioner | None] = []
+    input_block = jnp.diag(jnp.linspace(1, 2, 64, dtype=jnp.float32))
+    output_block = jnp.diag(jnp.linspace(3, 4, 32, dtype=jnp.float32))
+    preconditioner = Preconditioner.init(input_block=input_block, output_block=output_block)
+    spec = HybridSpec(
+        quantization_spec=_PreconditionerRecordingSpec(quantization_calls),
+        adapter_spec=None,
+        incoherence_block_size=32,
+        incoherence_processing_mode=IncoherenceProcessingMode.INPUT,
+    )
+
+    matrix = spec.compress(_weights(), key=jax.random.key(7), preconditioner=preconditioner)
+
+    assert matrix.incoherence_signs is not None
+    input_signs = matrix.incoherence_signs.input_signs
+    assert input_signs is not None
+    assert matrix.incoherence_signs.output_signs is None
+    assert len(quantization_calls) == 1
+    quantization_preconditioner = quantization_calls[0]
+    assert quantization_preconditioner is not None
+    quantization_input_block = quantization_preconditioner.input_block
+    quantization_output_block = quantization_preconditioner.output_block
+    assert quantization_input_block is not None
+    assert quantization_output_block is not None
+    _assert_close(
+        result=quantization_input_block,
+        reference=_process_preconditioner_block(input_block, input_signs),
+    )
+    _assert_close(result=quantization_output_block, reference=output_block)

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Literal
 
 import equinox as eqx
@@ -23,6 +24,7 @@ from lalamo.weight_matrix import (
 __all__ = [
     "HybridMatrix",
     "HybridSpec",
+    "IncoherenceProcessingMode",
 ]
 
 
@@ -44,11 +46,11 @@ def _hadamard_transform_output_axis(
 
 def _process_preconditioner_block(
     block: Float[Array, "*components channels channels"] | None,
-    signs: Int[Array, " channels"],
+    signs: Int[Array, " channels"] | None,
     block_size: Literal[32, 64, 128],
 ) -> Float[Array, "*components channels channels"] | None:
-    if block is None:
-        return None
+    if block is None or signs is None:
+        return block
     signed_block = block * signs[..., None] * signs[None, ...]
     return _hadamard_transform_output_axis(
         hadamard_transform(signed_block, block_size),
@@ -75,23 +77,38 @@ def _process_preconditioner(
     )
 
 
+class IncoherenceProcessingMode(StrEnum):
+    INPUT = "input"
+    OUTPUT = "output"
+    INPUT_OUTPUT = "input_output"
+
+
 class IncoherenceSigns(eqx.Module):
-    input_signs: Int[Array, " in_channels"] = field(trainable=False)
-    output_signs: Int[Array, " out_channels"] = field(trainable=False)
+    input_signs: Int[Array, " in_channels"] | None = field(trainable=False)
+    output_signs: Int[Array, " out_channels"] | None = field(trainable=False)
 
     @classmethod
     def random_init(
         cls,
         input_dim: int,
         output_dim: int,
+        mode: IncoherenceProcessingMode,
         key: Key[Array, ""] | None,
     ) -> "IncoherenceSigns":
         if key is None:
             raise ValueError("Cannot initialize random incoherence signs without a random key.")
         input_key, output_key = jax.random.split(key, 2)
         return cls(
-            input_signs=_random_incoherence_signs(channels=input_dim, key=input_key),
-            output_signs=_random_incoherence_signs(channels=output_dim, key=output_key),
+            input_signs=(
+                None
+                if mode == IncoherenceProcessingMode.OUTPUT
+                else _random_incoherence_signs(channels=input_dim, key=input_key)
+            ),
+            output_signs=(
+                None
+                if mode == IncoherenceProcessingMode.INPUT
+                else _random_incoherence_signs(channels=output_dim, key=output_key)
+            ),
         )
 
     def process_weights(
@@ -99,11 +116,11 @@ class IncoherenceSigns(eqx.Module):
         weights: Float[Array, "*components out_channels in_channels"],
         block_size: Literal[32, 64, 128],
     ) -> Float[Array, "*components out_channels in_channels"]:
-        signed_weights = weights * self.output_signs[..., None] * self.input_signs
-        return _hadamard_transform_output_axis(
-            hadamard_transform(signed_weights, block_size),
-            block_size,
-        )
+        if self.input_signs is not None:
+            weights = hadamard_transform(weights * self.input_signs, block_size)
+        if self.output_signs is not None:
+            weights = _hadamard_transform_output_axis(weights * self.output_signs[..., None], block_size)
+        return weights
 
     def unprocess_weights(
         self,
@@ -120,6 +137,8 @@ class IncoherenceSigns(eqx.Module):
         weights: Float[Array, "*components out_channels in_channels"],
         block_size: Literal[32, 64, 128],
     ) -> Float[Array, "*components out_channels in_channels"]:
+        if self.input_signs is None:
+            return weights
         restored = hadamard_transform(weights, block_size)
         return restored * self.input_signs
 
@@ -128,8 +147,28 @@ class IncoherenceSigns(eqx.Module):
         weights: Float[Array, "*components out_channels in_channels"],
         block_size: Literal[32, 64, 128],
     ) -> Float[Array, "*components out_channels in_channels"]:
+        if self.output_signs is None:
+            return weights
         restored = _hadamard_transform_output_axis(weights, block_size)
         return restored * self.output_signs[..., None]
+
+    def input_transform(
+        self,
+        vector: Float[Array, " source_channels"],
+        block_size: Literal[32, 64, 128],
+    ) -> Float[Array, " source_channels"]:
+        if self.input_signs is None:
+            return vector
+        return hadamard_transform(vector * self.input_signs, block_size)
+
+    def output_transform(
+        self,
+        vector: Float[Array, " target_channels"],
+        block_size: Literal[32, 64, 128],
+    ) -> Float[Array, " target_channels"]:
+        if self.output_signs is None:
+            return vector
+        return hadamard_transform(vector, block_size) * self.output_signs
 
 
 @dataclass(frozen=True)
@@ -137,6 +176,7 @@ class HybridSpec(WeightMatrixSpec):
     quantization_spec: WeightMatrixSpec
     adapter_spec: WeightMatrixSpec | None
     incoherence_block_size: Literal[32, 64, 128] | None = 32
+    incoherence_processing_mode: IncoherenceProcessingMode = IncoherenceProcessingMode.INPUT_OUTPUT
 
     @supports_dummy_arrays()
     def compress(
@@ -161,6 +201,7 @@ class HybridSpec(WeightMatrixSpec):
             incoherence_signs = IncoherenceSigns.random_init(
                 input_dim=input_dim,
                 output_dim=output_dim,
+                mode=self.incoherence_processing_mode,
                 key=incoherence_key,
             )
             weights = incoherence_signs.process_weights(weights, self.incoherence_block_size)
@@ -282,10 +323,7 @@ class HybridMatrix(WeightMatrix[HybridSpec]):
         quantized_vector = vector
         if self.incoherence_signs is not None:
             assert self.spec.incoherence_block_size is not None
-            quantized_vector = hadamard_transform(
-                vector * self.incoherence_signs.input_signs,
-                self.spec.incoherence_block_size,
-            )
+            quantized_vector = self.incoherence_signs.input_transform(vector, self.spec.incoherence_block_size)
 
         result = self.quantized.dot(
             quantized_vector,
@@ -300,5 +338,5 @@ class HybridMatrix(WeightMatrix[HybridSpec]):
             )
         if self.incoherence_signs is not None:
             assert self.spec.incoherence_block_size is not None
-            return hadamard_transform(result, self.spec.incoherence_block_size) * self.incoherence_signs.output_signs
+            return self.incoherence_signs.output_transform(result, self.spec.incoherence_block_size)
         return result
