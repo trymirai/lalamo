@@ -6,6 +6,7 @@ from lalamo.modules.audio.neutts.codec_modules import (
     NeuCodecFSQConfig,
     NeuCodecResidualFSQConfig,
     NeuCodecResnetBlockConfig,
+    NeuCodecTransformerBlockConfig,
 )
 
 
@@ -92,3 +93,49 @@ def test_neucodec_resnet_block_matches_torch_vocos_reference() -> None:
     actual_output = np.asarray(lalamo_block(lalamo_input)).transpose(0, 2, 1)
 
     np.testing.assert_allclose(actual_output, expected_output, rtol=1e-5, atol=1e-5)
+
+
+def test_neucodec_transformer_block_matches_torch_vocos_reference() -> None:
+    torch = pytest.importorskip("torch")
+    bs_roformer5 = pytest.importorskip("neucodec.bs_roformer5")
+    torchtune_modules = pytest.importorskip("torchtune.modules")
+    torch.manual_seed(0)
+    rotary = torchtune_modules.RotaryPositionalEmbeddings(dim=16)
+    torch_block = bs_roformer5.TransformerBlock(dim=64, n_heads=4, rotary_embed=rotary).eval()
+    lalamo_block = NeuCodecTransformerBlockConfig(dim=64, num_heads=4, rotary_dim=16, precision=jnp.float32).empty()
+    torch_input = torch.linspace(-0.5, 0.5, steps=1 * 5 * 64, dtype=torch.float32).reshape(1, 5, 64)
+    lalamo_input = jnp.asarray(torch_input.detach().cpu().numpy())
+
+    state_dict = torch_block.state_dict()
+    lalamo_block = lalamo_block.import_weights(
+        {
+            "att_norm": {
+                "weights": jnp.asarray(state_dict["att_norm.weight"].detach().cpu().numpy()),
+            },
+            "ffn_norm": {
+                "weights": jnp.asarray(state_dict["ffn_norm.weight"].detach().cpu().numpy()),
+            },
+            "att": {
+                "c_attn": {
+                    "weights": jnp.asarray(state_dict["att.c_attn.weight"].detach().cpu().numpy()),
+                },
+                "c_proj": {
+                    "weights": jnp.asarray(state_dict["att.c_proj.weight"].detach().cpu().numpy()),
+                },
+            },
+            "mlp": {
+                "fc1": {
+                    "weights": jnp.asarray(state_dict["mlp.fc1.weight"].detach().cpu().numpy()),
+                },
+                "fc2": {
+                    "weights": jnp.asarray(state_dict["mlp.fc2.weight"].detach().cpu().numpy()),
+                },
+            },
+        },
+    )
+
+    with torch.no_grad():
+        expected_output = torch_block(torch_input).detach().cpu().numpy()
+    actual_output = np.asarray(lalamo_block(lalamo_input))
+
+    np.testing.assert_allclose(actual_output, expected_output, rtol=2e-4, atol=2e-4)

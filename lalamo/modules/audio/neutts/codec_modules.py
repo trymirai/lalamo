@@ -11,6 +11,8 @@ from lalamo.common import ParameterTree, require_array, require_tree
 from lalamo.modules.common import LalamoModule
 
 __all__ = [
+    "NeuCodecAttention",
+    "NeuCodecAttentionConfig",
     "NeuCodecConv1d",
     "NeuCodecConv1dConfig",
     "NeuCodecFSQ",
@@ -19,10 +21,16 @@ __all__ = [
     "NeuCodecGroupNormConfig",
     "NeuCodecLinear",
     "NeuCodecLinearConfig",
+    "NeuCodecMLP",
+    "NeuCodecMLPConfig",
+    "NeuCodecRMSNorm",
+    "NeuCodecRMSNormConfig",
     "NeuCodecResidualFSQ",
     "NeuCodecResidualFSQConfig",
     "NeuCodecResnetBlock",
     "NeuCodecResnetBlockConfig",
+    "NeuCodecTransformerBlock",
+    "NeuCodecTransformerBlockConfig",
 ]
 
 
@@ -368,6 +376,330 @@ class NeuCodecResnetBlock(LalamoModule[NeuCodecResnetBlockConfig]):
 
 def _swish(inputs: Float[Array, "*batch"]) -> Float[Array, "*batch"]:
     return inputs * nn.sigmoid(inputs)
+
+
+@dataclass(frozen=True)
+class NeuCodecRMSNormConfig:
+    dim: int
+    precision: DTypeLike
+    eps: float = 1e-6
+
+    def __post_init__(self) -> None:
+        if self.dim <= 0:
+            raise ValueError("NeuCodec RMSNorm dim must be positive.")
+        if self.eps <= 0:
+            raise ValueError("NeuCodec RMSNorm eps must be positive.")
+
+    def empty(self) -> "NeuCodecRMSNorm":
+        return NeuCodecRMSNorm(
+            config=self,
+            weights=jnp.ones((self.dim,), dtype=self.precision),
+        )
+
+    def random_init(
+        self,
+        *,
+        key: PRNGKeyArray,  # noqa: ARG002
+    ) -> "NeuCodecRMSNorm":
+        return self.empty()
+
+
+class NeuCodecRMSNorm(LalamoModule[NeuCodecRMSNormConfig]):
+    weights: Float[Array, " dim"]
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    def __call__(
+        self,
+        inputs: Float[Array, "*batch dim"],
+    ) -> Float[Array, "*batch dim"]:
+        norm_x = jnp.mean(jnp.square(inputs), axis=-1, keepdims=True)
+        return inputs * lax.rsqrt(norm_x + self.config.eps) * self.weights
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "weights": self.weights,
+        }
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        assert isinstance(weights, Mapping)
+        return replace(
+            self,
+            weights=require_array(weights["weights"]),
+        )
+
+
+@dataclass(frozen=True)
+class NeuCodecAttentionConfig:
+    dim: int
+    num_heads: int
+    rotary_dim: int
+    precision: DTypeLike
+    rope_base: float = 10_000.0
+
+    def __post_init__(self) -> None:
+        if self.dim <= 0:
+            raise ValueError("NeuCodec attention dim must be positive.")
+        if self.num_heads <= 0:
+            raise ValueError("NeuCodec attention num_heads must be positive.")
+        if self.dim % self.num_heads != 0:
+            raise ValueError("NeuCodec attention dim must be divisible by num_heads.")
+        if self.rotary_dim <= 0:
+            raise ValueError("NeuCodec attention rotary_dim must be positive.")
+        if self.rotary_dim % 2 != 0:
+            raise ValueError("NeuCodec attention rotary_dim must be even.")
+        if self.rotary_dim > self.head_dim:
+            raise ValueError("NeuCodec attention rotary_dim must not exceed head_dim.")
+        if self.rope_base <= 0:
+            raise ValueError("NeuCodec attention rope_base must be positive.")
+
+    @property
+    def head_dim(self) -> int:
+        return self.dim // self.num_heads
+
+    def empty(self) -> "NeuCodecAttention":
+        return NeuCodecAttention(
+            config=self,
+            c_attn=NeuCodecLinearConfig(
+                input_dim=self.dim,
+                output_dim=3 * self.dim,
+                precision=self.precision,
+                has_bias=False,
+            ).empty(),
+            c_proj=NeuCodecLinearConfig(
+                input_dim=self.dim,
+                output_dim=self.dim,
+                precision=self.precision,
+                has_bias=False,
+            ).empty(),
+        )
+
+    def random_init(
+        self,
+        *,
+        key: PRNGKeyArray,  # noqa: ARG002
+    ) -> "NeuCodecAttention":
+        return self.empty()
+
+
+class NeuCodecAttention(LalamoModule[NeuCodecAttentionConfig]):
+    c_attn: NeuCodecLinear
+    c_proj: NeuCodecLinear
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    def __call__(
+        self,
+        inputs: Float[Array, "batch tokens dim"],
+    ) -> Float[Array, "batch tokens dim"]:
+        batch_size, num_tokens, _ = inputs.shape
+        head_dim = self.config.head_dim
+        qkv = self.c_attn(inputs).reshape(batch_size, num_tokens, 3, self.config.num_heads, head_dim)
+        qkv = jnp.transpose(qkv, (2, 0, 3, 1, 4))
+        queries, keys, values = qkv[0], qkv[1], qkv[2]
+        queries = _apply_neucodec_rotary_embeddings(
+            queries,
+            rotary_dim=self.config.rotary_dim,
+            base=self.config.rope_base,
+        )
+        keys = _apply_neucodec_rotary_embeddings(
+            keys,
+            rotary_dim=self.config.rotary_dim,
+            base=self.config.rope_base,
+        )
+        attention_logits = jnp.einsum("bhtd,bhsd->bhts", queries, keys) * (head_dim**-0.5)
+        attention_weights = nn.softmax(attention_logits, axis=-1)
+        attended = jnp.einsum("bhts,bhsd->bhtd", attention_weights, values)
+        output = jnp.transpose(attended, (0, 2, 1, 3)).reshape(batch_size, num_tokens, self.config.dim)
+        return self.c_proj(output)
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "c_attn": self.c_attn.export_weights(),
+            "c_proj": self.c_proj.export_weights(),
+        }
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        assert isinstance(weights, Mapping)
+        return replace(
+            self,
+            c_attn=self.c_attn.import_weights(require_tree(weights["c_attn"])),
+            c_proj=self.c_proj.import_weights(require_tree(weights["c_proj"])),
+        )
+
+
+def _apply_neucodec_rotary_embeddings(
+    inputs: Float[Array, "batch heads tokens head_dim"],
+    *,
+    rotary_dim: int,
+    base: float,
+) -> Float[Array, "batch heads tokens head_dim"]:
+    _, num_heads, _, _ = inputs.shape
+    positions = jnp.arange(num_heads, dtype=jnp.float32)
+    channel_indices = jnp.arange(0, rotary_dim, 2, dtype=jnp.float32)
+    theta = 1.0 / (base ** (channel_indices / rotary_dim))
+    idx_theta = jnp.einsum("i,j->ij", positions, theta)
+    cosines = jnp.cos(idx_theta)[None, :, None, :, None]
+    sines = jnp.sin(idx_theta)[None, :, None, :, None]
+
+    rotated = inputs[..., :rotary_dim].astype(jnp.float32).reshape(*inputs.shape[:-1], rotary_dim // 2, 2)
+    rotated_output = jnp.stack(
+        [
+            rotated[..., 0] * cosines[..., 0] - rotated[..., 1] * sines[..., 0],
+            rotated[..., 1] * cosines[..., 0] + rotated[..., 0] * sines[..., 0],
+        ],
+        axis=-1,
+    ).reshape(*inputs.shape[:-1], rotary_dim)
+    rotated_output = rotated_output.astype(inputs.dtype)
+    if rotary_dim == inputs.shape[-1]:
+        return rotated_output
+    return jnp.concatenate([rotated_output, inputs[..., rotary_dim:]], axis=-1)
+
+
+@dataclass(frozen=True)
+class NeuCodecMLPConfig:
+    dim: int
+    precision: DTypeLike
+
+    def __post_init__(self) -> None:
+        if self.dim <= 0:
+            raise ValueError("NeuCodec MLP dim must be positive.")
+
+    def empty(self) -> "NeuCodecMLP":
+        return NeuCodecMLP(
+            config=self,
+            fc1=NeuCodecLinearConfig(
+                input_dim=self.dim,
+                output_dim=4 * self.dim,
+                precision=self.precision,
+                has_bias=False,
+            ).empty(),
+            fc2=NeuCodecLinearConfig(
+                input_dim=4 * self.dim,
+                output_dim=self.dim,
+                precision=self.precision,
+                has_bias=False,
+            ).empty(),
+        )
+
+    def random_init(
+        self,
+        *,
+        key: PRNGKeyArray,  # noqa: ARG002
+    ) -> "NeuCodecMLP":
+        return self.empty()
+
+
+class NeuCodecMLP(LalamoModule[NeuCodecMLPConfig]):
+    fc1: NeuCodecLinear
+    fc2: NeuCodecLinear
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    def __call__(
+        self,
+        inputs: Float[Array, "batch tokens dim"],
+    ) -> Float[Array, "batch tokens dim"]:
+        return self.fc2(_swish(self.fc1(inputs)))
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "fc1": self.fc1.export_weights(),
+            "fc2": self.fc2.export_weights(),
+        }
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        assert isinstance(weights, Mapping)
+        return replace(
+            self,
+            fc1=self.fc1.import_weights(require_tree(weights["fc1"])),
+            fc2=self.fc2.import_weights(require_tree(weights["fc2"])),
+        )
+
+
+@dataclass(frozen=True)
+class NeuCodecTransformerBlockConfig:
+    dim: int
+    num_heads: int
+    rotary_dim: int
+    precision: DTypeLike
+    eps: float = 1e-6
+    rope_base: float = 10_000.0
+
+    def __post_init__(self) -> None:
+        NeuCodecRMSNormConfig(dim=self.dim, precision=self.precision, eps=self.eps)
+        NeuCodecAttentionConfig(
+            dim=self.dim,
+            num_heads=self.num_heads,
+            rotary_dim=self.rotary_dim,
+            precision=self.precision,
+            rope_base=self.rope_base,
+        )
+        NeuCodecMLPConfig(dim=self.dim, precision=self.precision)
+
+    def empty(self) -> "NeuCodecTransformerBlock":
+        return NeuCodecTransformerBlock(
+            config=self,
+            att_norm=NeuCodecRMSNormConfig(dim=self.dim, precision=self.precision, eps=self.eps).empty(),
+            ffn_norm=NeuCodecRMSNormConfig(dim=self.dim, precision=self.precision, eps=self.eps).empty(),
+            att=NeuCodecAttentionConfig(
+                dim=self.dim,
+                num_heads=self.num_heads,
+                rotary_dim=self.rotary_dim,
+                precision=self.precision,
+                rope_base=self.rope_base,
+            ).empty(),
+            mlp=NeuCodecMLPConfig(dim=self.dim, precision=self.precision).empty(),
+        )
+
+    def random_init(
+        self,
+        *,
+        key: PRNGKeyArray,  # noqa: ARG002
+    ) -> "NeuCodecTransformerBlock":
+        return self.empty()
+
+
+class NeuCodecTransformerBlock(LalamoModule[NeuCodecTransformerBlockConfig]):
+    att_norm: NeuCodecRMSNorm
+    ffn_norm: NeuCodecRMSNorm
+    att: NeuCodecAttention
+    mlp: NeuCodecMLP
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    def __call__(
+        self,
+        inputs: Float[Array, "batch tokens dim"],
+    ) -> Float[Array, "batch tokens dim"]:
+        hidden_states = inputs + self.att(self.att_norm(inputs))
+        return hidden_states + self.mlp(self.ffn_norm(hidden_states))
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "att_norm": self.att_norm.export_weights(),
+            "ffn_norm": self.ffn_norm.export_weights(),
+            "att": self.att.export_weights(),
+            "mlp": self.mlp.export_weights(),
+        }
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        assert isinstance(weights, Mapping)
+        return replace(
+            self,
+            att_norm=self.att_norm.import_weights(require_tree(weights["att_norm"])),
+            ffn_norm=self.ffn_norm.import_weights(require_tree(weights["ffn_norm"])),
+            att=self.att.import_weights(require_tree(weights["att"])),
+            mlp=self.mlp.import_weights(require_tree(weights["mlp"])),
+        )
 
 
 @dataclass(frozen=True)
