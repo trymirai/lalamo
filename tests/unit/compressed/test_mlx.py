@@ -128,6 +128,7 @@ def _put_on_sharding(matrix: MLXMatrix, sharding: Sharding) -> MLXMatrix:
         spec=matrix.spec,
         is_sharded=matrix.is_sharded,
         packed_weights=jax.device_put(matrix.packed_weights, sharding),
+        dense_weights=jax.device_put(matrix.dense_weights, sharding),
         scales=jax.device_put(matrix.scales, sharding),
         biases=jax.device_put(matrix.biases, sharding),
     )
@@ -299,6 +300,7 @@ def test_mlx_export_load_roundtrips_and_preserves_template_sharding(
         assert restored.weights.sharding == template.weights.sharding
     elif isinstance(restored, MLXMatrixForInference) and isinstance(template, MLXMatrixForInference):
         assert restored.packed_weights.sharding == template.packed_weights.sharding
+        assert restored.dense_weights.sharding == template.dense_weights.sharding
 
 
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
@@ -332,6 +334,7 @@ def test_mlx_from_packed_parameters_overrides_input_sharding(
         assert restored.weights.sharding == template.weights.sharding
     elif isinstance(restored, MLXMatrixForInference) and isinstance(template, MLXMatrixForInference):
         assert restored.packed_weights.sharding == template.packed_weights.sharding
+        assert restored.dense_weights.sharding == template.dense_weights.sharding
 
 
 def _assert_mlx_replicated(matrix: MLXMatrix, fake_mesh: Mesh) -> None:

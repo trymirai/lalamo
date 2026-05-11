@@ -5,13 +5,18 @@ from functools import partial
 from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
-from jax.lax import stop_gradient
+from jax.lax import DotAlgorithmPreset, stop_gradient
 from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
+from lalamo.utils.dummy_array import (
+    dummy_array,
+    is_dummy_array,
+    preserve_first_input_sharding,
+    supports_dummy_arrays,
+)
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import make_sharding, reshard_as, use_out_sharding, with_sharding
@@ -21,11 +26,13 @@ from lalamo.weight_matrix import (
     EmbeddingMatrix,
     FullPrecisionMatrix,
     FullPrecisionSpec,
+    GradientEstimator,
     Layout,
     MatmulConfig,
     WeightMatrixSpec,
 )
 
+from .cute_w4a16_contract import MLX_ROWS_PER_CTA, can_use_cute_w4a16_dot
 from .quantized_spec import QuantizedSpec
 from .utils.gaussian_order_statistics import standard_normal_range_squared
 from .utils.grouping import (
@@ -37,6 +44,7 @@ from .utils.grouping import (
 from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from .utils.rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
 from .utils.yaqa import yaqa_round_weights
+from .w4a16_inference_dot import mlx_w4a16_inference_dot
 
 __all__ = [
     "MLXMatrix",
@@ -119,6 +127,44 @@ def _mlx_unpack_master_weights(
     expanded_scales = expand_last_axis_groups(scales, group_size=group_size)
     expanded_biases = expand_last_axis_groups(biases, group_size=group_size)
     return int_weights.astype(scales.dtype) * expanded_scales + expanded_biases
+
+
+def _mlx_grouped_training_dot(
+    weights: Float[Array, "rows cols"],
+    scales: Float[Array, "rows groups"],
+    biases: Float[Array, "rows groups"],
+    vector: Float[Array, " channels"],
+    group_size: int,
+    bits: int,
+) -> Float[Array, " rows"]:
+    grouped_weights = group_by_last_axis(weights, group_size=group_size)
+    int_scale_weights = (grouped_weights - stop_gradient(biases[..., None])) / stop_gradient(scales[..., None])
+    int_weights = deterministic_round_to_unsigned_grid(int_scale_weights, bits=bits)
+
+    vector_groups = vector.reshape(vector.shape[0] // group_size, group_size).astype(jnp.float32)
+    int_dot = jnp.sum(int_weights.astype(jnp.float32) * vector_groups[None, :, :], axis=-1)
+    vector_sums = jnp.sum(vector_groups, axis=-1)
+    groups = int_dot * scales.astype(jnp.float32) + vector_sums[None, :] * biases.astype(jnp.float32)
+    return jnp.sum(groups, axis=-1).astype(vector.dtype)
+
+
+def _use_cute_w4a16_dot(
+    spec: "MLXSpec",
+    packed_weights: Array,
+    vector: Array,
+    forward_pass_config: MatmulConfig,
+    transposed: bool,
+) -> bool:
+    return can_use_cute_w4a16_dot(
+        bits=spec.bits,
+        group_size=spec.group_size,
+        layout=spec.layout,
+        row_count=packed_weights.shape[0],
+        row_multiple=MLX_ROWS_PER_CTA,
+        vector=vector,
+        forward_pass_config=forward_pass_config,
+        transposed=transposed,
+    )
 
 
 @dataclass(frozen=True)
@@ -208,10 +254,24 @@ class MLXSpec(QuantizedSpec):
         biases = with_sharding(biases, weight_sharding)
 
         if implementation == CompressionImplementation.INFERENCE:
+            if is_dummy_array(packed_weights):
+                weights = dummy_array(
+                    (*packed_weights.shape[:-1], packed_weights.shape[-1] * (8 // self.bits)),
+                    scales.dtype,
+                )
+            else:
+                weights = _mlx_unpack_master_weights(
+                    packed_weights,
+                    scales,
+                    biases,
+                    self.group_size,
+                    self.bits,
+                )
             return MLXMatrixForInference(
                 spec=self,
                 is_sharded=is_sharded,
                 packed_weights=packed_weights,
+                dense_weights=with_sharding(weights, weight_sharding),
                 scales=scales,
                 biases=biases,
             )
@@ -342,6 +402,23 @@ class MLXMatrixForTraining(MLXMatrix):
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
+        if (
+            self.spec.layout == Layout.OUTPUT_INPUT
+            and vector.dtype in (jnp.bfloat16, jnp.float16)
+            and forward_pass_config.gradient_estimator == GradientEstimator.DETERMINISTIC_ROUNDING
+            and forward_pass_config.precision == DotAlgorithmPreset.DEFAULT
+            and not transposed
+        ):
+            result = _mlx_grouped_training_dot(
+                self.weights.astype(vector.dtype),
+                self.scales.astype(vector.dtype),
+                self.biases.astype(vector.dtype),
+                vector,
+                self.spec.group_size,
+                self.spec.bits,
+            )
+            return reshard_as(result, vector)
+
         dequantized_weights = _mlx_quantize(
             self.weights.astype(vector.dtype),
             self.scales.astype(vector.dtype),
@@ -405,6 +482,7 @@ class MLXMatrixForTraining(MLXMatrix):
 
 class MLXMatrixForInference(MLXMatrix):
     packed_weights: UInt8[Array, "*components rows packed_cols"]
+    dense_weights: Float[Array, "*components rows cols"]
     scales: Float[Array, "*components rows groups"]
     biases: Float[Array, "*components rows groups"]
 
@@ -415,7 +493,7 @@ class MLXMatrixForInference(MLXMatrix):
 
     @property
     def dtype(self) -> DTypeLike:
-        return self.scales.dtype
+        return self.dense_weights.dtype
 
     @property
     def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]:
@@ -426,6 +504,7 @@ class MLXMatrixForInference(MLXMatrix):
             spec=self.spec,
             is_sharded=self.is_sharded,
             packed_weights=self.packed_weights,
+            dense_weights=self.dense_weights.astype(dtype),
             scales=self.scales.astype(dtype),
             biases=self.biases.astype(dtype),
         )
@@ -471,14 +550,7 @@ class MLXMatrixForInference(MLXMatrix):
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
-        weights = _mlx_unpack_master_weights(
-            self.packed_weights,
-            self.scales,
-            self.biases,
-            self.spec.group_size,
-            self.spec.bits,
-        )
-        return self.spec.layout.to_output_input(weights)
+        return self.spec.layout.to_output_input(self.dense_weights)
 
     @use_out_sharding((None,))
     def lookup_embedding(
@@ -494,13 +566,7 @@ class MLXMatrixForInference(MLXMatrix):
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
-        return _mlx_unpack_master_weights(
-            self.packed_weights[index, :],
-            self.scales[index, :].astype(dtype),
-            self.biases[index, :].astype(dtype),
-            self.spec.group_size,
-            self.spec.bits,
-        )
+        return self.dense_weights[index, :].astype(dtype)
 
     def dot(
         self,
@@ -511,13 +577,17 @@ class MLXMatrixForInference(MLXMatrix):
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
-        weights = _mlx_unpack_master_weights(
-            self.packed_weights,
-            self.scales.astype(vector.dtype),
-            self.biases.astype(vector.dtype),
-            self.spec.group_size,
-            self.spec.bits,
-        )
+        if _use_cute_w4a16_dot(self.spec, self.packed_weights, vector, forward_pass_config, transposed):
+            result = mlx_w4a16_inference_dot(
+                vector,
+                self.packed_weights,
+                self.scales.astype(vector.dtype),
+                self.biases.astype(vector.dtype),
+                self.dense_weights.astype(vector.dtype),
+            )
+            return reshard_as(result, vector)
+
+        weights = self.dense_weights.astype(vector.dtype)
         layout = self.spec.layout
         if transposed:
             layout = layout.transpose()

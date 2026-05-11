@@ -5,13 +5,18 @@ from functools import partial
 from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
-from jax.lax import stop_gradient
+from jax.lax import DotAlgorithmPreset, stop_gradient
 from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
+from lalamo.utils.dummy_array import (
+    dummy_array,
+    is_dummy_array,
+    preserve_first_input_sharding,
+    supports_dummy_arrays,
+)
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import (
@@ -26,11 +31,13 @@ from lalamo.weight_matrix import (
     EmbeddingMatrix,
     FullPrecisionMatrix,
     FullPrecisionSpec,
+    GradientEstimator,
     Layout,
     MatmulConfig,
     WeightMatrixSpec,
 )
 
+from .cute_w4a16_contract import AWQ_ROWS_PER_CTA, can_use_cute_w4a16_dot
 from .quantized_spec import QuantizedSpec
 from .utils.gaussian_order_statistics import standard_normal_absmax_squared, standard_normal_range_squared
 from .utils.grouping import (
@@ -41,6 +48,7 @@ from .utils.grouping import (
 from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from .utils.rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
 from .utils.yaqa import yaqa_round_weights
+from .w4a16_inference_dot import awq_w4a16_inference_dot
 
 __all__ = [
     "AWQMatrix",
@@ -214,6 +222,57 @@ def _awq_unpack_master_weights(
     return _awq_int_scale_weights_to_master(int_weights, scales, int_scale_zero_points, group_size, bits)
 
 
+def _awq_grouped_training_dot(
+    weights: Float[Array, "rows cols"],
+    scales: Float[Array, "rows groups"],
+    zero_points: Float[Array, "rows groups"] | None,
+    vector: Float[Array, " channels"],
+    group_size: int,
+    bits: int,
+) -> Float[Array, " rows"]:
+    if zero_points is None:
+        int_zero_points = None
+        zero_point_values = jnp.asarray(2 ** (bits - 1), dtype=jnp.float32)
+    else:
+        int_zero_points = deterministic_round_to_unsigned_grid(zero_points / stop_gradient(scales), bits=bits)
+        zero_point_values = int_zero_points.astype(jnp.float32)
+
+    int_scale_weights = _awq_master_weights_to_int_scale(
+        weights,
+        stop_gradient(scales),
+        stop_gradient(int_zero_points),
+        group_size,
+        bits,
+    )
+    int_weights = deterministic_round_to_unsigned_grid(int_scale_weights, bits=bits)
+
+    vector_groups = vector.reshape(vector.shape[0] // group_size, group_size).astype(jnp.float32)
+    int_groups = group_by_last_axis(int_weights, group_size=group_size)
+    int_dot = jnp.sum(int_groups.astype(jnp.float32) * vector_groups[None, :, :], axis=-1)
+    vector_sums = jnp.sum(vector_groups, axis=-1)
+    groups = (int_dot - zero_point_values * vector_sums[None, :]) * scales.astype(jnp.float32)
+    return jnp.sum(groups, axis=-1).astype(vector.dtype)
+
+
+def _use_cute_w4a16_dot(
+    spec: "AWQSpec",
+    packed_weights: Array,
+    vector: Array,
+    forward_pass_config: MatmulConfig,
+    transposed: bool,
+) -> bool:
+    return can_use_cute_w4a16_dot(
+        bits=spec.bits,
+        group_size=spec.group_size,
+        layout=spec.layout,
+        row_count=packed_weights.shape[0],
+        row_multiple=AWQ_ROWS_PER_CTA,
+        vector=vector,
+        forward_pass_config=forward_pass_config,
+        transposed=transposed,
+    )
+
+
 @dataclass(frozen=True)
 class AWQSpec(QuantizedSpec):
     bits: Literal[4, 8]
@@ -327,10 +386,24 @@ class AWQSpec(QuantizedSpec):
             packed_zero_points = with_sharding(packed_zero_points, packed_zero_points_sharding)
 
         if implementation == CompressionImplementation.INFERENCE:
+            if is_dummy_array(packed_weights):
+                weights = dummy_array(
+                    (*packed_weights.shape[:-1], packed_weights.shape[-1] * (8 // self.bits)),
+                    scales.dtype,
+                )
+            else:
+                weights = _awq_unpack_master_weights(
+                    packed_weights,
+                    scales,
+                    packed_zero_points,
+                    self.group_size,
+                    self.bits,
+                )
             return AWQMatrixForInference(
                 spec=self,
                 is_sharded=is_sharded,
                 packed_weights=packed_weights,
+                dense_weights=with_sharding(weights, weight_sharding),
                 scales=scales,
                 packed_zero_points=packed_zero_points,
             )
@@ -493,6 +566,23 @@ class AWQMatrixForTraining(AWQMatrix):
     ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
         zero_points = self.zero_points
+        if (
+            self.spec.layout == Layout.OUTPUT_INPUT
+            and vector.dtype in (jnp.bfloat16, jnp.float16)
+            and forward_pass_config.gradient_estimator == GradientEstimator.DETERMINISTIC_ROUNDING
+            and forward_pass_config.precision == DotAlgorithmPreset.DEFAULT
+            and not transposed
+        ):
+            result = _awq_grouped_training_dot(
+                self.weights.astype(vector.dtype),
+                self.scales.astype(vector.dtype),
+                None if zero_points is None else zero_points.astype(vector.dtype),
+                vector,
+                self.spec.group_size,
+                self.spec.bits,
+            )
+            return reshard_as(result, vector)
+
         if zero_points is not None:
             zero_points = zero_points.astype(vector.dtype)
         dequantized_weights = _awq_quantize(
@@ -565,6 +655,7 @@ class AWQMatrixForTraining(AWQMatrix):
 
 class AWQMatrixForInference(AWQMatrix):
     packed_weights: UInt8[Array, "*components rows packed_cols"]
+    dense_weights: Float[Array, "*components rows cols"]
     scales: Float[Array, "*components rows groups"]
     packed_zero_points: UInt8[Array, "*components rows packed_groups"] | None
 
@@ -575,7 +666,7 @@ class AWQMatrixForInference(AWQMatrix):
 
     @property
     def dtype(self) -> DTypeLike:
-        return self.scales.dtype
+        return self.dense_weights.dtype
 
     @property
     def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]:
@@ -590,6 +681,7 @@ class AWQMatrixForInference(AWQMatrix):
             spec=self.spec,
             is_sharded=self.is_sharded,
             packed_weights=self.packed_weights,
+            dense_weights=self.dense_weights.astype(dtype),
             scales=self.scales.astype(dtype),
             packed_zero_points=self.packed_zero_points,
         )
@@ -641,14 +733,7 @@ class AWQMatrixForInference(AWQMatrix):
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
-        weights = _awq_unpack_master_weights(
-            self.packed_weights,
-            self.scales,
-            self.packed_zero_points,
-            self.spec.group_size,
-            self.spec.bits,
-        )
-        return self.spec.layout.to_output_input(weights)
+        return self.spec.layout.to_output_input(self.dense_weights)
 
     @use_out_sharding((None,))
     def lookup_embedding(
@@ -664,16 +749,7 @@ class AWQMatrixForInference(AWQMatrix):
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
-        packed_zero_points = self.packed_zero_points
-        if packed_zero_points is not None:
-            packed_zero_points = packed_zero_points[index, :]
-        return _awq_unpack_master_weights(
-            self.packed_weights[index, :],
-            self.scales[index, :].astype(dtype),
-            packed_zero_points,
-            self.spec.group_size,
-            self.spec.bits,
-        )
+        return self.dense_weights[index, :].astype(dtype)
 
     def dot(
         self,
@@ -684,13 +760,20 @@ class AWQMatrixForInference(AWQMatrix):
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
-        weights = _awq_unpack_master_weights(
-            self.packed_weights,
-            self.scales.astype(vector.dtype),
-            self.packed_zero_points,
-            self.spec.group_size,
-            self.spec.bits,
-        )
+        if (
+            self.packed_zero_points is not None
+            and _use_cute_w4a16_dot(self.spec, self.packed_weights, vector, forward_pass_config, transposed)
+        ):
+            result = awq_w4a16_inference_dot(
+                vector,
+                self.packed_weights,
+                self.scales.astype(vector.dtype),
+                self.packed_zero_points,
+                self.dense_weights.astype(vector.dtype),
+            )
+            return reshard_as(result, vector)
+
+        weights = self.dense_weights.astype(vector.dtype)
         layout = self.spec.layout
         if transposed:
             layout = layout.transpose()
