@@ -162,11 +162,12 @@ class IncoherenceSigns(eqx.Module):
         *,
         transposed: bool = False,
     ) -> Float[Array, " source_channels"]:
-        if self.input_signs is None:
-            return vector
+        signs = self.input_signs
         if transposed:
-            return hadamard_transform(vector, block_size) * self.input_signs
-        return hadamard_transform(vector * self.input_signs, block_size)
+            signs = self.output_signs
+        if signs is None:
+            return vector
+        return hadamard_transform(vector * signs, block_size)
 
     def output_transform(
         self,
@@ -175,11 +176,12 @@ class IncoherenceSigns(eqx.Module):
         *,
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
-        if self.output_signs is None:
-            return vector
+        signs = self.output_signs
         if transposed:
-            return hadamard_transform(vector * self.output_signs, block_size)
-        return hadamard_transform(vector, block_size) * self.output_signs
+            signs = self.input_signs
+        if signs is None:
+            return vector
+        return hadamard_transform(vector, block_size) * signs
 
 
 @dataclass(frozen=True)
@@ -357,57 +359,38 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
-        if transposed:
-            if self.adapter is not None:
-                raise TypeError("Hybrid transposed matmul does not support adapters.")
-            quantized_vector = vector
-            if self.incoherence_signs is not None:
-                assert self.spec.incoherence_block_size is not None
-                quantized_vector = self.incoherence_signs.output_transform(
-                    vector,
-                    self.spec.incoherence_block_size,
-                    transposed=True,
-                )
-            result = self.quantized.dot(
-                quantized_vector,
-                keychain=keychain,
-                forward_pass_config=forward_pass_config,
-                transposed=True,
-            )
-            if self.incoherence_signs is not None:
-                assert self.spec.incoherence_block_size is not None
-                result = self.incoherence_signs.input_transform(
-                    result,
-                    self.spec.incoherence_block_size,
-                    transposed=True,
-                )
-            return result
+        if transposed and self.adapter is not None:
+            raise TypeError("Hybrid transposed matmul does not support adapters.")
 
-        quantized_vector = vector
-        if self.incoherence_signs is not None:
-            assert self.spec.incoherence_block_size is not None
-            quantized_vector = self.incoherence_signs.input_transform(vector, self.spec.incoherence_block_size)
-
-        adapter = self.adapter
-        if adapter is None:
-            result = self.quantized.dot(
-                quantized_vector,
-                keychain=keychain,
-                forward_pass_config=forward_pass_config,
-            )
+        if self.incoherence_signs is None:
+            transformed_vector = vector
         else:
-            quantized_keychain, adapter_keychain = keychain.split(2)
-            result = self.quantized.dot(
-                quantized_vector,
-                keychain=quantized_keychain,
-                forward_pass_config=forward_pass_config,
+            assert self.spec.incoherence_block_size is not None
+            transformed_vector = self.incoherence_signs.input_transform(
+                vector,
+                self.spec.incoherence_block_size,
+                transposed=transposed,
             )
-            result = result + adapter.dot(
+
+        quantized_keychain, adapter_keychain = keychain.split(2)
+        result = self.quantized.dot(
+            transformed_vector,
+            keychain=quantized_keychain,
+            forward_pass_config=forward_pass_config,
+            transposed=transposed,
+        )
+        if self.adapter is not None:
+            result = result + self.adapter.dot(
                 vector,
                 keychain=adapter_keychain,
                 forward_pass_config=forward_pass_config,
             )
+
         if self.incoherence_signs is not None:
             assert self.spec.incoherence_block_size is not None
-            return self.incoherence_signs.output_transform(result, self.spec.incoherence_block_size)
+            result = self.incoherence_signs.output_transform(
+                result,
+                self.spec.incoherence_block_size,
+                transposed=transposed,
+            )
         return result
