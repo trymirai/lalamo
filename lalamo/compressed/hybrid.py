@@ -11,8 +11,10 @@ from lalamo.compressed.utils.hadamard import hadamard_transform
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
+from lalamo.utils.sharding import use_out_sharding
 from lalamo.weight_matrix import (
     CompressionImplementation,
+    EmbeddingMatrix,
     FullPrecisionMatrix,
     FullPrecisionSpec,
     Layout,
@@ -253,7 +255,7 @@ class HybridSpec(WeightMatrixSpec):
         )
 
 
-class HybridMatrix(WeightMatrix[HybridSpec]):
+class HybridMatrix(EmbeddingMatrix[HybridSpec]):
     quantized: WeightMatrix[WeightMatrixSpec]
     adapter: WeightMatrix[WeightMatrixSpec] | None
     incoherence_signs: IncoherenceSigns | None
@@ -308,6 +310,41 @@ class HybridMatrix(WeightMatrix[HybridSpec]):
             adapter=adapter,
             incoherence_signs=self.incoherence_signs,
         )
+
+    @use_out_sharding((None,))
+    def lookup_embedding(
+        self,
+        index: int | Int[Array, ""],
+        *,
+        dtype: DTypeLike | None = None,
+        keychain: Keychain,
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+    ) -> Float[Array, " out_channels"]:
+        self._raise_if_batched()
+        if self.incoherence_signs is not None and self.incoherence_signs.input_signs is not None:
+            raise ValueError("Hybrid embedding lookup is only supported when input RHT is disabled.")
+        if not isinstance(self.quantized, EmbeddingMatrix):
+            raise TypeError("Hybrid embedding lookup requires an embedding-compatible quantization matrix.")
+        quantized_keychain, adapter_keychain = keychain.split(2)
+        result = self.quantized.lookup_embedding(
+            index,
+            dtype=dtype,
+            keychain=quantized_keychain,
+            forward_pass_config=forward_pass_config,
+        )
+        if self.adapter is not None:
+            if not isinstance(self.adapter, EmbeddingMatrix):
+                raise TypeError("Hybrid embedding lookup requires an embedding-compatible adapter matrix.")
+            result = result + self.adapter.lookup_embedding(
+                index,
+                dtype=dtype,
+                keychain=adapter_keychain,
+                forward_pass_config=forward_pass_config,
+            )
+        if self.incoherence_signs is not None:
+            assert self.spec.incoherence_block_size is not None
+            result = self.incoherence_signs.output_transform(result, self.spec.incoherence_block_size)
+        return result
 
     def dot(
         self,
