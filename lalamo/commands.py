@@ -2,23 +2,27 @@ import dataclasses
 import json
 import shutil
 import tempfile
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
-from itertools import chain
+from itertools import chain, zip_longest
 from pathlib import Path
 
+import jax
+import numpy as np
 import polars as pl
 import requests
 import thefuzz.fuzz
 import thefuzz.process
+from datasets import load_dataset
 from jaxtyping import DTypeLike
 
 from lalamo.common import flatten_parameters, get_default_device_bytes
 from lalamo.data import load_hf_parquet, shuffle_dataset
 from lalamo.data.huggingface_message import HFMessage
 from lalamo.data.lalamo_completions import iter_completions, save_completions
-from lalamo.message_processor import AssistantMessage, Message
+from lalamo.message_processor import AssistantMessage, Message, UserMessage
 from lalamo.model_import import ModelMetadata, ModelSpec, import_model
 from lalamo.model_import.common import (
     DownloadingFileEvent,
@@ -82,6 +86,286 @@ def _suggest_similar_models(query: str, repo_ids: list[str], limit: int = 3, min
     if not similar_repos:
         return ""
     return "\n\nDid you mean one of these?\n" + "\n".join(f"  - {repo}" for repo in similar_repos)
+
+
+class EvalDatasetName(str, Enum):
+    MTBENCH = "mtbench"
+    GSM8K = "gsm8k"
+    HUMANEVAL = "humaneval"
+    MATH500 = "math500"
+    MERGED = "merged"
+
+
+@dataclass(frozen=True)
+class EvalQuestion:
+    id: int
+    category: str
+    prompt: str
+
+
+@dataclass(frozen=True)
+class EvalStats:
+    count: int
+    tokens: int
+    steps: int
+    elapsed_seconds: float
+
+    @property
+    def tokens_per_step(self) -> float:
+        return self.tokens / max(self.steps, 1)
+
+    @property
+    def tokens_per_second(self) -> float:
+        return self.tokens / max(self.elapsed_seconds, 1e-9)
+
+    @property
+    def mean_draft_accepted(self) -> float:
+        return max(self.tokens_per_step - 1.0, 0.0)
+
+    @property
+    def speculation_rate(self) -> float:
+        return max(self.tokens - self.steps, 0) / max(self.tokens, 1)
+
+
+@dataclass(frozen=True)
+class EvalConfig:
+    dataset_name: EvalDatasetName
+    model_path: Path
+    speculator_path: Path | None
+    num_questions: int
+    batch_size: int
+    max_output_length: int
+    padded_length: int
+    seed: int
+    warmup: bool
+    reasoning: bool
+    mtbench_cache_path: Path
+
+
+@dataclass(frozen=True)
+class EvalResults:
+    config: EvalConfig
+    by_category: dict[str, EvalStats]
+    elapsed_seconds: float
+
+    @property
+    def total_count(self) -> int:
+        return sum(stats.count for stats in self.by_category.values())
+
+    @property
+    def tokens(self) -> int:
+        return sum(stats.tokens for stats in self.by_category.values())
+
+    @property
+    def steps(self) -> int:
+        return sum(stats.steps for stats in self.by_category.values())
+
+    @property
+    def tokens_per_step(self) -> float:
+        return self.tokens / max(self.steps, 1)
+
+    @property
+    def tokens_per_second(self) -> float:
+        return self.tokens / max(self.elapsed_seconds, 1e-9)
+
+    @property
+    def mean_draft_accepted(self) -> float:
+        return max(self.tokens_per_step - 1.0, 0.0)
+
+    @property
+    def speculation_rate(self) -> float:
+        return max(self.tokens - self.steps, 0) / max(self.tokens, 1)
+
+
+@dataclass(frozen=True)
+class EvalCounts:
+    count: int = 0
+    tokens: int = 0
+    steps: int = 0
+
+    def add(self, tokens: int, steps: int) -> "EvalCounts":
+        return EvalCounts(
+            count=self.count + 1,
+            tokens=self.tokens + tokens,
+            steps=self.steps + steps,
+        )
+
+
+def load_eval_questions(
+    name: EvalDatasetName,
+    num_questions: int | None,
+    mtbench_cache_path: Path,
+) -> list[EvalQuestion]:
+    def mtbench() -> list[EvalQuestion]:
+        mtbench_url = (
+            "https://raw.githubusercontent.com/lm-sys/FastChat/"
+            "587d5cfa1609a43d192cedb8441cac3c17db105d/fastchat/llm_judge/data/mt_bench/question.jsonl"
+        )
+        if not mtbench_cache_path.exists():
+            mtbench_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            _download_file(mtbench_url, mtbench_cache_path)
+        with mtbench_cache_path.open() as file:
+            rows = [json.loads(line) for line in file]
+        return [
+            EvalQuestion(
+                id=int(row["question_id"]),
+                category=str(row["category"]),
+                prompt=str(row["turns"][0]),
+            )
+            for row in rows
+        ]
+
+    def gsm8k() -> list[EvalQuestion]:
+        return [
+            EvalQuestion(id=idx, category="math", prompt=str(row["question"]))
+            for idx, row in enumerate(load_dataset("openai/gsm8k", "main", split="test"))
+        ]
+
+    def humaneval() -> list[EvalQuestion]:
+        return [
+            EvalQuestion(id=idx, category="code", prompt=str(row["prompt"]))
+            for idx, row in enumerate(load_dataset("openai/openai_humaneval", split="test"))
+        ]
+
+    def math500() -> list[EvalQuestion]:
+        return [
+            EvalQuestion(id=idx, category=str(row["subject"]), prompt=str(row["problem"]))
+            for idx, row in enumerate(load_dataset("HuggingFaceH4/MATH-500", split="test"))
+        ]
+
+    def merged() -> list[EvalQuestion]:
+        sources = (
+            ("gsm8k", gsm8k()),
+            ("mtbench", mtbench()),
+            ("math500", math500()),
+        )
+        groups = (
+            tuple(
+                EvalQuestion(id=question.id, category=f"{source}/{question.category}", prompt=question.prompt)
+                for question in questions
+            )
+            for source, questions in sources
+        )
+        return [
+            EvalQuestion(id=idx, category=question.category, prompt=question.prompt)
+            for idx, question in enumerate(
+                question for row in zip_longest(*groups) for question in row if question is not None
+            )
+        ]
+
+    match name:
+        case EvalDatasetName.MTBENCH:
+            questions = mtbench()
+        case EvalDatasetName.GSM8K:
+            questions = gsm8k()
+        case EvalDatasetName.HUMANEVAL:
+            questions = humaneval()
+        case EvalDatasetName.MATH500:
+            questions = math500()
+        case EvalDatasetName.MERGED:
+            questions = merged()
+
+    return questions if num_questions is None else questions[:num_questions]
+
+
+def eval_padded_length(tokenized: list[list[int]]) -> int:
+    max_prompt_length = max(len(tokens) for tokens in tokenized)
+    lengths = tuple(256 * 2**i for i in range(12))
+    for length in lengths:
+        if max_prompt_length <= length:
+            return length
+    raise ValueError(f"Prompt length {max_prompt_length} exceeds largest supported bucket {lengths[-1]}.")
+
+
+def evaluate_speculator(
+    model_path: Path,
+    dataset_name: EvalDatasetName,
+    speculator_path: Path | None,
+    mtbench_cache_path: Path,
+    num_questions: int | None = None,
+    batch_size: int = 32,
+    max_output_length: int = 4096,
+    seed: int = 0,
+    warmup: bool = True,
+    reasoning: bool = False,
+) -> EvalResults:
+    questions = load_eval_questions(dataset_name, num_questions, mtbench_cache_path)
+    if not questions:
+        raise ValueError("Evaluation dataset is empty.")
+
+    sharding_config = ShardingConfig.build()
+    with use_sharding(sharding_config):
+        model = LanguageModelConfig.load_model(model_path)
+        speculator = load_speculator(speculator_path, model.model) if speculator_path is not None else None
+
+    tokenized = model.message_processor.tokenize_requests(
+        ([UserMessage(question.prompt)] for question in questions),
+        enable_thinking=reasoning,
+    )
+    padded_length = eval_padded_length(tokenized)
+    inference_config = InferenceConfig(
+        max_output_length=max_output_length,
+        padded_length=padded_length,
+        batch_size=batch_size,
+    )
+    keys = jax.random.split(jax.random.key(seed), len(questions))
+    by_category: dict[str, EvalCounts] = {}
+
+    with use_sharding(sharding_config):
+        if warmup:
+            warmup_results = model.generate_tokens_many(
+                tokenized[:1],
+                inference_config=inference_config,
+                speculator=speculator,
+                sharding_config=sharding_config,
+                keys=keys[:1],
+            )
+            for result in warmup_results:
+                jax.device_get(result.tokens_per_step)
+
+        started_at = time.perf_counter()
+        results = model.generate_tokens_many(
+            tokenized,
+            inference_config=inference_config,
+            speculator=speculator,
+            sharding_config=sharding_config,
+            keys=keys,
+        )
+        for question, result in zip(questions, results, strict=True):
+            tokens_per_step = np.asarray(jax.device_get(result.tokens_per_step))
+            num_tokens = int(tokens_per_step.sum())
+            num_steps = int(np.sum(tokens_per_step > 0))
+            by_category[question.category] = by_category.get(question.category, EvalCounts()).add(
+                tokens=num_tokens,
+                steps=num_steps,
+            )
+        elapsed_seconds = time.perf_counter() - started_at
+
+    return EvalResults(
+        config=EvalConfig(
+            dataset_name=dataset_name,
+            model_path=model_path,
+            speculator_path=speculator_path,
+            num_questions=len(questions),
+            batch_size=batch_size,
+            max_output_length=max_output_length,
+            padded_length=padded_length,
+            seed=seed,
+            warmup=warmup,
+            reasoning=reasoning,
+            mtbench_cache_path=mtbench_cache_path,
+        ),
+        by_category={
+            category: EvalStats(
+                count=counts.count,
+                tokens=counts.tokens,
+                steps=counts.steps,
+                elapsed_seconds=elapsed_seconds,
+            )
+            for category, counts in by_category.items()
+        },
+        elapsed_seconds=elapsed_seconds,
+    )
 
 
 def pull(

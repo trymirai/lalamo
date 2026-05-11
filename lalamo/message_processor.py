@@ -175,10 +175,10 @@ class MessageProcessor:
             raise NotImplementedError("Tools are not supported yet.")
         return result
 
-    def render_request(self, messages: Iterable[Message]) -> str:
+    def render_request(self, messages: Iterable[Message], enable_thinking: bool | None = True) -> str:
         # TODO(knyazer): the following is an ugly thing that needs to be fixed
         # as soon as shoji is alive (avoid hardcoding random flags)
-        request_dict = self.request_to_dict(messages, enable_thinking=True)
+        request_dict = self.request_to_dict(messages, enable_thinking=enable_thinking)
         return self.prompt_template.render({**request_dict, "strftime_now": _strftime_now})
 
     def parse_response(self, response: str) -> AssistantMessage:
@@ -196,12 +196,16 @@ class MessageProcessor:
     def tokenize_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False).ids
 
-    def tokenize_request(self, messages: Iterable[Message]) -> list[int]:
-        rendered = self.render_request(messages)
+    def tokenize_request(self, messages: Iterable[Message], enable_thinking: bool | None = True) -> list[int]:
+        rendered = self.render_request(messages, enable_thinking)
         return self.tokenize_text(rendered)
 
-    def tokenize_requests(self, dataset: Iterable[Iterable[Message]]) -> list[list[int]]:
-        return [self.tokenize_request(messages) for messages in dataset]
+    def tokenize_requests(
+        self,
+        dataset: Iterable[Iterable[Message]],
+        enable_thinking: bool | None = True,
+    ) -> list[list[int]]:
+        return [self.tokenize_request(messages, enable_thinking) for messages in dataset]
 
     def detokenize(self, tokens: list[int], *, hide_invalid_utf_chars: bool = False) -> str:
         errors = "ignore" if hide_invalid_utf_chars else "replace"

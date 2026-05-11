@@ -40,6 +40,7 @@ from lalamo.commands import (
     CollectTracesEvent,
     ConversionCallbacks,
     EstimateBatchsizeCallbacks,
+    EvalDatasetName,
     GenerateRepliesCallbacks,
     Precision,
     PullCallbacks,
@@ -50,6 +51,7 @@ from lalamo.commands import (
 from lalamo.commands import collect_traces as _collect_traces
 from lalamo.commands import convert as _convert
 from lalamo.commands import estimate_batchsize as _estimate_batchsize
+from lalamo.commands import evaluate_speculator as _evaluate_speculator
 from lalamo.commands import generate_replies as _generate_replies
 from lalamo.commands import pull as _pull
 from lalamo.commands import trace as _trace
@@ -1130,6 +1132,138 @@ def list_speculator_backends() -> None:
             backend.config_type.__name__,
             "msgpack-tail",
         )
+    console.print(table)
+
+
+@speculator_app.command("eval", help="Evaluate speculative decoding MAL and throughput.")
+def eval_speculator(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    speculator_path: Annotated[
+        Path | None,
+        Option(
+            "--speculator",
+            help="Path to a speculator artifact file.",
+            show_default="none",
+        ),
+    ] = None,
+    dataset_name: Annotated[
+        EvalDatasetName,
+        Option("--dataset", help="Evaluation dataset."),
+    ] = EvalDatasetName.MERGED,
+    num_questions: Annotated[
+        int | None,
+        Option("--num_questions", help="Number of questions to evaluate."),
+    ] = None,
+    batch_size: Annotated[
+        int,
+        Option("--batch_size", help="Batch size used for generation."),
+    ] = 32,
+    max_output_length: Annotated[
+        int,
+        Option("--max_output_length", help="Maximum number of generated tokens per question."),
+    ] = 4096,
+    mtbench_cache_path: Annotated[
+        Path | None,
+        Option(
+            "--mtbench_cache",
+            help="Cache path for MT-Bench questions.",
+            show_default="~/.cache/lalamo/eval/mt_bench_questions.jsonl",
+        ),
+    ] = None,
+    seed: Annotated[
+        int,
+        Option("--seed", help="Sampling seed."),
+    ] = 0,
+    warmup: Annotated[
+        bool,
+        Option("--warmup/--no-warmup", help="Run one warmup generation before measuring throughput."),
+    ] = True,
+    reasoning: Annotated[
+        bool,
+        Option("--reasoning/--no-reasoning", help="Enable model reasoning in rendered prompts."),
+    ] = False,
+) -> None:
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=err_console,
+        transient=True,
+    ) as progress:
+        progress.add_task("📊 Evaluating speculative decoding...")
+        cache_path = mtbench_cache_path or Path.home() / ".cache" / "lalamo" / "eval" / "mt_bench_questions.jsonl"
+        results = _evaluate_speculator(
+            model_path=model_path,
+            dataset_name=dataset_name,
+            speculator_path=speculator_path,
+            mtbench_cache_path=cache_path,
+            num_questions=num_questions,
+            batch_size=batch_size,
+            max_output_length=max_output_length,
+            seed=seed,
+            warmup=warmup,
+            reasoning=reasoning,
+        )
+    label = f"{dataset_name.value}, {speculator_path.name if speculator_path is not None else 'no-speculator'}"
+    config = results.config
+    config_table = Table(
+        title=f"Speculator eval config ({label})",
+        show_header=True,
+        header_style="bold",
+        box=box.ROUNDED,
+    )
+    config_table.add_column("Key")
+    config_table.add_column("Value")
+    config_table.add_row("dataset", config.dataset_name.value)
+    config_table.add_row("model_path", str(config.model_path))
+    config_table.add_row("speculator", str(config.speculator_path) if config.speculator_path is not None else "none")
+    config_table.add_row("questions", str(config.num_questions))
+    config_table.add_row("batch_size", str(config.batch_size))
+    config_table.add_row("max_output_length", str(config.max_output_length))
+    config_table.add_row("padded_length", str(config.padded_length))
+    config_table.add_row("reasoning", str(config.reasoning).lower())
+    config_table.add_row("warmup", str(config.warmup).lower())
+    config_table.add_row("seed", str(config.seed))
+    config_table.add_row("mtbench_cache", str(config.mtbench_cache_path))
+    console.print(config_table)
+
+    table = Table(
+        title=f"Speculator evaluation ({label})",
+        show_header=True,
+        header_style="bold",
+        box=box.ROUNDED,
+    )
+    table.add_column("Category", justify="right")
+    table.add_column("tok/step", justify="right")
+    table.add_column("tok/sec", justify="right")
+    table.add_column("draft_acc", justify="right")
+    table.add_column("spec_rate", justify="right")
+    table.add_column("questions", justify="right")
+
+    for category in sorted(results.by_category):
+        stats = results.by_category[category]
+        table.add_row(
+            category,
+            f"{stats.tokens_per_step:.2f}",
+            f"{stats.tokens_per_second:.2f}",
+            f"{stats.mean_draft_accepted:.2f}",
+            f"{stats.speculation_rate:.2%}",
+            str(stats.count),
+        )
+    table.add_section()
+    table.add_row(
+        "OVERALL",
+        f"{results.tokens_per_step:.2f}",
+        f"{results.tokens_per_second:.2f}",
+        f"{results.mean_draft_accepted:.2f}",
+        f"{results.speculation_rate:.2%}",
+        str(results.total_count),
+    )
     console.print(table)
 
 
