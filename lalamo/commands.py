@@ -31,11 +31,18 @@ from lalamo.model_import.common import (
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.models import GenerationConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
+from lalamo.models.completion_feature_extractor import OnlineCompletionFeatureExtractor
 from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
 from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.safetensors import safe_write
+from lalamo.speculator.common import (
+    Speculator,
+    SpeculatorBackend,
+    SpeculatorTrainingTarget,
+)
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
+from lalamo.speculator.training import SpeculatorTrainingConfig, SpeculatorTrainingEvent, train_speculator
 
 
 @dataclass
@@ -446,82 +453,94 @@ def collect_traces(
 
 @dataclass
 class TrainCallbacks:
-    trace_path: Path
+    backend_name: str
+    model_path: Path
+    train_path: Path
+    eval_path: Path | None
     output_path: Path
-    hashtable_size: int
-    num_logits_per_token: int
-    max_order: int
-    discount: float
-    subsample_size: int | None
+    training_config: SpeculatorTrainingConfig
 
     def started(self) -> None:
         pass
 
-    def training_progress(self, trained_tokens: int) -> None:
+    def loading_model(self) -> None:
+        pass
+
+    def finished_loading_model(self) -> None:
+        pass
+
+    def training_progress(self, event: SpeculatorTrainingEvent) -> None:
         pass
 
     def finished_training(self) -> None:
         pass
 
-    def saving_speculator(self) -> None:
-        pass
 
-    def finished_saving_speculator(self) -> None:
-        pass
-
-
-def train(
-    trace_path: Path,
+def train[ConfigT](
+    backend: type[SpeculatorBackend[ConfigT]],
+    backend_config: ConfigT,
+    model_path: Path,
+    train_path: Path,
     output_path: Path,
-    hashtable_size: int = 65536,
-    num_logits_per_token: int = 8,
-    max_order: int = 4,
-    discount: float = 0.002,
-    subsample_size: int | None = None,
+    eval_path: Path | None = None,
+    device_id: int = 0,
+    training_config: SpeculatorTrainingConfig = SpeculatorTrainingConfig(),  # noqa: B008
     callbacks_type: Callable[
         [
+            str,
             Path,
             Path,
-            int,
-            int,
-            int,
-            float,
-            int | None,
+            Path | None,
+            Path,
+            SpeculatorTrainingConfig,
         ],
         TrainCallbacks,
     ] = TrainCallbacks,
 ) -> None:
     callbacks = callbacks_type(
-        trace_path,
+        backend.name,
+        model_path,
+        train_path,
+        eval_path,
         output_path,
-        hashtable_size,
-        num_logits_per_token,
-        max_order,
-        discount,
-        subsample_size,
+        training_config,
     )
 
     callbacks.started()
 
-    from lalamo.speculator.ngram import NGramSpeculator
-    from lalamo.speculator.utils import train_speculator
+    callbacks.loading_model()
+    model = LanguageModelConfig.load_model(model_path)
+    callbacks.finished_loading_model()
 
-    traces = iter_completions(trace_path)
-    speculator = NGramSpeculator.init(hashtable_size, num_logits_per_token, max_order, discount)
+    trainer = backend.create_trainer(
+        backend_config,
+        output_path,
+        SpeculatorTrainingTarget(vocab_size=model.model.vocab_size),
+    )
+    extractor = OnlineCompletionFeatureExtractor(
+        model=model,
+        device_id=device_id,
+    )
 
-    def progress_callback(event: object) -> None:
-        callbacks.training_progress(event.trained_tokens)
+    if eval_path is not None:
+        eval_completions_path = eval_path
 
-    train_speculator(speculator, traces, subsample_size, progress_callback)
+        def eval_completions() -> Iterable:
+            return iter_completions(eval_completions_path)
 
-    speculator.compress()
+    else:
+        eval_completions = None
+
+    train_speculator(
+        trainer=trainer,
+        extractor=extractor,
+        train_completions=lambda: iter_completions(train_path),
+        eval_completions=eval_completions,
+        config=training_config,
+        progress_callback=callbacks.training_progress,
+    )
+
     callbacks.finished_training()
-
-    callbacks.saving_speculator()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb") as fd:
-        fd.write(speculator.serialize())
-    callbacks.finished_saving_speculator()
 
 
 @dataclass
@@ -569,6 +588,7 @@ def generate_replies(
     max_output_length: int = 8192,
     batch_size: int | None = None,
     generation_config_override: GenerationConfig | None = None,
+    speculator: Speculator | None = None,
     callbacks_type: Callable[
         [
             Path,
@@ -666,6 +686,7 @@ def generate_replies(
                 generation_config=generation_config,
                 inference_config=inference_config,
                 vram_bytes=max_vram,
+                speculator=speculator,
                 batch_sizes_callback=callbacks.batch_sizes_computed,
             ),
         ):

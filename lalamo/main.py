@@ -1,14 +1,15 @@
-import random
 import re
 import shutil
 import sys
+from collections.abc import Callable, Iterable
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from functools import partial
 from importlib.util import find_spec
+from inspect import Parameter, Signature
 from itertools import islice
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, get_type_hints
 
 import jax.profiler
 import requests
@@ -66,6 +67,14 @@ from lalamo.model_registry import ModelRegistry
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
+from lalamo.speculator.common import (
+    ARTIFACT_HEADER,
+    SpeculatorBackend,
+    load_speculator,
+    read_speculator_artifact,
+    speculator_backends,
+)
+from lalamo.speculator.training import SpeculatorTrainingConfig, SpeculatorTrainingEvent
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -142,6 +151,14 @@ def chat(
             help="Maximum number of tokens to generate per reply.",
         ),
     ] = 8192,
+    speculator_path: Annotated[
+        Path | None,
+        Option(
+            "--speculator",
+            help="Path to a speculator artifact file.",
+            show_default="none",
+        ),
+    ] = None,
 ) -> None:
     with Progress(
         SpinnerColumn(),
@@ -151,9 +168,10 @@ def chat(
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
         model = LanguageModelConfig.load_model(model_path)
+        speculator = load_speculator(speculator_path) if speculator_path is not None else None
         progress.remove_task(loading_task)
         warmup_task = progress.add_task("🔥 Warming up compilation cache...")
-        list(model.stream_reply_text([UserMessage("")], max_output_length=1))
+        list(model.stream_reply_text([UserMessage("")], max_output_length=1, speculator=speculator))
         progress.remove_task(warmup_task)
 
     if message is None:
@@ -167,14 +185,16 @@ def chat(
 
             console.print("[red]assistant> [/red]", end="")
             model_response_tokens = []
-            for token in model.stream_reply_text(messages, max_output_length=max_tokens):
+            for token in model.stream_reply_text(messages, max_output_length=max_tokens, speculator=speculator):
                 console.print(token, end="")
                 model_response_tokens.append(token)
             console.print()
             model_response_text = "".join(model_response_tokens)
             messages.append(model.message_processor.parse_response(model_response_text))
     else:
-        for token in model.stream_reply_text([UserMessage(message)], max_output_length=max_tokens):
+        for token in model.stream_reply_text(
+            [UserMessage(message)], max_output_length=max_tokens, speculator=speculator
+        ):
             console.print(token, end="")
         console.print()
 
@@ -777,6 +797,14 @@ def generate_replies(
         int | None,
         Option(help="Fixed batch size to use, skipping automatic estimation."),
     ] = None,
+    speculator_path: Annotated[
+        Path | None,
+        Option(
+            "--speculator",
+            help="Path to a speculator artifact file.",
+            show_default="none",
+        ),
+    ] = None,
 ) -> None:
     if batch_size is not None and vram_gb is not None:
         err_console.print("Cannot use both --batch-size and --vram-gb")
@@ -792,6 +820,8 @@ def generate_replies(
 
         max_vram = mem_bytes
 
+    speculator = load_speculator(speculator_path) if speculator_path is not None else None
+
     _generate_replies(
         model_path=model_path,
         dataset_path=dataset_path,
@@ -799,6 +829,7 @@ def generate_replies(
         max_vram=max_vram,
         max_output_length=max_output_length,
         batch_size=batch_size,
+        speculator=speculator,
         callbacks_type=CliGenerateRepliesCallbacks,
     )
 
@@ -847,7 +878,9 @@ def server(
 
 
 speculator_app = Typer()
+speculator_train_app = Typer(no_args_is_help=True)
 app.add_typer(speculator_app, name="speculator", help="Train a speculator for a model.")
+speculator_app.add_typer(speculator_train_app, name="train", help="Train a registered speculator backend.")
 
 
 @dataclass
@@ -1083,9 +1116,29 @@ def view_traces(
     console.print(table)
 
 
+@speculator_app.command("list", help="List registered speculator backends.")
+def list_speculator_backends() -> None:
+    table = Table(
+        show_header=True,
+        header_style="bold",
+        box=box.ROUNDED,
+    )
+    table.add_column("Name")
+    table.add_column("Train config")
+    table.add_column("Artifact config")
+    for backend in sorted(speculator_backends().values(), key=lambda backend: backend.name):
+        table.add_row(
+            backend.name,
+            backend.config_type.__name__,
+            "msgpack-tail",
+        )
+    console.print(table)
+
+
 @dataclass
 class CliTrainCallbacks(TrainCallbacks):
     stack: ExitStack = field(default_factory=ExitStack)
+    loading_task: TaskID | None = None
     training_task: TaskID | None = None
 
     def started(self) -> None:
@@ -1093,132 +1146,241 @@ class CliTrainCallbacks(TrainCallbacks):
             Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
-                MofNCompleteColumn(),
                 TimeElapsedColumn(),
-                TimeRemainingColumn(),
+                transient=True,
             ),
         )
+
+    def loading_model(self) -> None:
+        self.loading_task = self.progress.add_task("🧠 [cyan]Loading model...[/cyan]", total=None)
+
+    def finished_loading_model(self) -> None:
+        assert self.loading_task is not None
+        self.progress.remove_task(self.loading_task)
         self.training_task = self.progress.add_task(
-            "🔮 [cyan]Training speculator...[/cyan]",
-            total=self.subsample_size,
+            f"🔮 [cyan]Training {self.backend_name} speculator...[/cyan]",
+            total=None,
         )
 
-    def training_progress(self, trained_tokens: int) -> None:
+    def training_progress(self, event: SpeculatorTrainingEvent) -> None:
         assert self.training_task is not None
-        self.progress.update(self.training_task, completed=trained_tokens)
+        loss = "?" if event.loss is None else f"{event.loss:.4f}"
+        progress = event.progress
+        self.progress.update(
+            self.training_task,
+            description=(
+                f"🔮 [cyan]Training {self.backend_name} speculator... "
+                f"epoch={event.epoch} train_tokens={progress.trained_tokens} "
+                f"eval_tokens={progress.evaluated_tokens} loss={loss}[/cyan]"
+            ),
+        )
 
     def finished_training(self) -> None:
         assert self.training_task is not None
         self.progress.update(self.training_task, description="✅ Completed")
-        self.progress.remove_task(self.training_task)
         self.stack.close()
-
-    def saving_speculator(self) -> None:
-        pass
-
-    def finished_saving_speculator(self) -> None:
         console.print(f"💾 Speculator saved to [cyan]{self.output_path}[/cyan]")
 
 
-@speculator_app.command(help="Train a speculator from inference traces")
-def train(
-    trace_path: Annotated[
-        Path,
-        Argument(
-            help="Trace file to train the speculator on",
-            metavar="TRACE_PATH",
+def backend_train_command[ConfigT](
+    backend: type[SpeculatorBackend[ConfigT]],
+    train: Callable[..., None],
+    callbacks_type: type[object],
+) -> Callable[..., None]:
+    config_type = backend.config_type
+    if not is_dataclass(config_type):
+        raise TypeError(f"Speculator config type {config_type.__name__} must be a dataclass.")
+    config_type_fields = fields(config_type)
+    type_hints = get_type_hints(config_type, include_extras=True)
+
+    def command(**values: object) -> None:
+        backend_config = config_type(
+            **{config_field.name: values.pop(config_field.name) for config_field in config_type_fields},
+        )
+        train(
+            backend=backend,
+            backend_config=backend_config,
+            model_path=values["model_path"],
+            train_path=values["train_path"],
+            output_path=values["output_path"],
+            eval_path=values["eval_path"],
+            device_id=values["device_id"],
+            training_config=SpeculatorTrainingConfig(
+                batch_size=values["batch_size"],
+                max_prefetch=values["max_prefetch"],
+                top_k_logits=values["top_k_logits"],
+                epochs=values["epochs"],
+                eval_every_epochs=values["eval_every_epochs"],
+                early_stopping_patience=values["early_stopping_patience"],
+            ),
+            callbacks_type=callbacks_type,
+        )
+
+    parameters = [
+        Parameter(
+            "model_path",
+            kind=Parameter.POSITIONAL_OR_KEYWORD,
+            annotation=Annotated[Path, Argument(help="Path to the model directory.", metavar="MODEL_PATH")],
         ),
-    ],
-    output_path: Annotated[
-        Path,
-        Option(
-            help="File to save the output to",
-            metavar="OUTPUT_PATH",
+        Parameter(
+            "train_path",
+            kind=Parameter.POSITIONAL_OR_KEYWORD,
+            annotation=Annotated[
+                Path,
+                Argument(help="Training completion trace file.", metavar="TRAIN_COMPLETIONS"),
+            ],
         ),
-    ],
-    hashtable_size: Annotated[
-        int,
-        Option(help="Size of ngram hashtable"),
-    ] = 65536,
-    num_logits_per_token: Annotated[
-        int,
-        Option(help="Top K tokens to keep per ngram bucket"),
-    ] = 8,
-    max_order: Annotated[
-        int,
-        Option(help="Maximum n-gram order (backoff from max_order down to 1)"),
-    ] = 4,
-    discount: Annotated[
-        float,
-        Option(help="Kneser-Ney absolute discount parameter"),
-    ] = 0.002,
-    subsample_size: Annotated[
-        int | None,
-        Option(
-            help="Exit early after training the model on this number of tokens",
-            show_default="all",
+        Parameter(
+            "output_path",
+            kind=Parameter.KEYWORD_ONLY,
+            default=...,
+            annotation=Annotated[
+                Path,
+                Option("--output", help="Path to save the speculator artifact file.", metavar="OUTPUT_PATH"),
+            ],
         ),
-    ] = None,
-) -> None:
-    _train(
-        trace_path,
-        output_path,
-        hashtable_size,
-        num_logits_per_token,
-        max_order,
-        discount,
-        subsample_size,
-        CliTrainCallbacks,
+    ]
+    common_parameter_names = {
+        "batch_size",
+        "device_id",
+        "early_stopping_patience",
+        "epochs",
+        "eval_every_epochs",
+        "eval_path",
+        "max_prefetch",
+        "model_path",
+        "output_path",
+        "top_k_logits",
+        "train_path",
+    }
+    for config_field in config_type_fields:
+        if config_field.name in common_parameter_names:
+            raise ValueError(f"Speculator config field {config_field.name!r} conflicts with a common train argument.")
+        if config_field.default is not MISSING:
+            default = config_field.default
+        elif config_field.default_factory is not MISSING:
+            default = Parameter.empty
+        else:
+            default = ...
+        parameters.append(
+            Parameter(
+                config_field.name,
+                kind=Parameter.KEYWORD_ONLY,
+                default=default,
+                annotation=type_hints[config_field.name],
+            ),
+        )
+    parameters.extend(
+        [
+            Parameter(
+                "eval_path",
+                kind=Parameter.KEYWORD_ONLY,
+                default=None,
+                annotation=Annotated[
+                    Path | None,
+                    Option(
+                        "--eval-completions",
+                        help="Evaluation completion trace file.",
+                        show_default="disabled",
+                    ),
+                ],
+            ),
+            Parameter(
+                "batch_size",
+                kind=Parameter.KEYWORD_ONLY,
+                default=8,
+                annotation=Annotated[int, Option("--batch_size", help="Number of completions per training batch.")],
+            ),
+            Parameter(
+                "top_k_logits",
+                kind=Parameter.KEYWORD_ONLY,
+                default=128,
+                annotation=Annotated[
+                    int,
+                    Option("--top_k_logits", help="Number of target logits retained per token."),
+                ],
+            ),
+            Parameter(
+                "epochs",
+                kind=Parameter.KEYWORD_ONLY,
+                default=1,
+                annotation=Annotated[int, Option("--epochs", help="Number of training epochs.")],
+            ),
+            Parameter(
+                "eval_every_epochs",
+                kind=Parameter.KEYWORD_ONLY,
+                default=1,
+                annotation=Annotated[int, Option("--eval_every_epochs", help="Run evaluation every N epochs.")],
+            ),
+            Parameter(
+                "early_stopping_patience",
+                kind=Parameter.KEYWORD_ONLY,
+                default=None,
+                annotation=Annotated[
+                    int | None,
+                    Option("--early_stopping_patience", help="Stop after this many non-improving eval epochs."),
+                ],
+            ),
+            Parameter(
+                "max_prefetch",
+                kind=Parameter.KEYWORD_ONLY,
+                default=2,
+                annotation=Annotated[int, Option("--max_prefetch", help="Number of feature batches to prefetch.")],
+            ),
+            Parameter(
+                "device_id",
+                kind=Parameter.KEYWORD_ONLY,
+                default=0,
+                annotation=Annotated[int, Option("--device_id", help="JAX device id used for feature extraction.")],
+            ),
+        ],
     )
+    command.__name__ = f"train_{backend.name.replace('-', '_')}_speculator"
+    command.__signature__ = Signature(parameters)  # type: ignore[attr-defined]
+    return command
 
 
-@speculator_app.command(help="Run speculator as an autoregressive llm")
-def test(
+def register_train_commands(
+    app: Typer,
+    backends: Iterable[type[SpeculatorBackend[object]]],
+    train: Callable[..., None],
+    callbacks_type: type[object],
+) -> None:
+    for backend in sorted(backends, key=lambda backend: backend.name):
+        app.command(
+            backend.name,
+            help=f"Train {backend.name} speculator from completion traces.",
+        )(backend_train_command(backend, train, callbacks_type))
+
+
+register_train_commands(speculator_train_app, speculator_backends().values(), _train, CliTrainCallbacks)
+
+
+@speculator_app.command(help="Inspect a speculator artifact.")
+def info(
     speculator_path: Annotated[
         Path,
         Argument(
-            help="Path to the speculator file.",
+            help="Path to the speculator artifact file.",
             metavar="SPECULATOR_PATH",
         ),
     ],
-    model_path: Annotated[
-        Path,
-        Argument(
-            help="Path to the model directory for detokenization.",
-            metavar="MODEL_PATH",
-        ),
-    ],
-    seed: Annotated[
-        int | None,
-        Option(help="Set seed for deterministic sampling"),
-    ] = None,
-    num_sequences: Annotated[
-        int,
-        Option(help="Number of sequences to generate"),
-    ] = 8,
 ) -> None:
-    model = LanguageModelConfig.load_model(model_path)
-
-    from lalamo.speculator.ngram import NGramSpeculator
-    from lalamo.speculator.utils import test_speculator
-
-    with open(speculator_path, "rb") as fd:
-        speculator = NGramSpeculator.deserialize(fd.read())
-
+    speculator_kind, fields = read_speculator_artifact(speculator_path)
     table = Table(
-        show_header=False,
-        show_lines=True,
+        show_header=True,
+        header_style="bold",
         box=box.ROUNDED,
     )
-
-    if seed is not None:
-        random.seed(seed)
-
-    for _ in range(num_sequences):
-        sequence = test_speculator(speculator)
-        detokenized = model.message_processor.detokenize(sequence)
-        table.add_row(detokenized)
-
+    table.add_column("Field")
+    table.add_column("Value")
+    table.add_row("format", ARTIFACT_HEADER)
+    table.add_row("speculator_kind", speculator_kind)
+    for index, value in enumerate(fields):
+        if isinstance(value, bytes):
+            table.add_row(f"field[{index}]", f"{len(value)} bytes")
+        else:
+            table.add_row(f"field[{index}]", str(value))
     console.print(table)
 
 

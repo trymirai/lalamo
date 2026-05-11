@@ -70,6 +70,10 @@ dev = [
 [project.scripts]
 lalamo = "lalamo.main:app"
 
+[project.entry-points."lalamo.speculator_backends"]
+ngram = "lalamo.speculator.proposers.ngram"
+mlp = "lalamo.speculator.proposers.mlp"
+
 [build-system]
 requires = ["setuptools>=65.5.0", "wheel"]
 build-backend = "setuptools.build_meta"
