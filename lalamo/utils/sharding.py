@@ -25,6 +25,9 @@ def make_sharding(partition: tuple[ShardingAxis | None, ...] | None) -> NamedSha
         mesh = get_abstract_mesh()
     if mesh.empty:
         return None
+    axes = [axis for axis in partition if axis is not None]
+    if axes and all(mesh.shape[axis] == 1 for axis in axes):
+        return None
     return NamedSharding(mesh, PartitionSpec(*partition))
 
 
