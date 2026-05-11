@@ -1,7 +1,7 @@
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from math import prod
-from typing import Self
+from typing import Self, cast
 
 import jax.numpy as jnp
 from jax import lax, nn, vmap
@@ -21,6 +21,8 @@ __all__ = [
     "NeuCodecGroupNormConfig",
     "NeuCodecISTFTHead",
     "NeuCodecISTFTHeadConfig",
+    "NeuCodecLayerNorm",
+    "NeuCodecLayerNormConfig",
     "NeuCodecLinear",
     "NeuCodecLinearConfig",
     "NeuCodecMLP",
@@ -33,6 +35,10 @@ __all__ = [
     "NeuCodecResnetBlockConfig",
     "NeuCodecTransformerBlock",
     "NeuCodecTransformerBlockConfig",
+    "NeuCodecVocosBackbone",
+    "NeuCodecVocosBackboneConfig",
+    "NeuCodecVocosDecoder",
+    "NeuCodecVocosDecoderConfig",
 ]
 
 
@@ -246,6 +252,65 @@ class NeuCodecISTFTHead(LalamoModule[NeuCodecISTFTHeadConfig]):
         return replace(
             self,
             out=self.out.import_weights(require_tree(weights["out"])),
+        )
+
+
+@dataclass(frozen=True)
+class NeuCodecLayerNormConfig:
+    dim: int
+    precision: DTypeLike
+    eps: float = 1e-6
+
+    def __post_init__(self) -> None:
+        if self.dim <= 0:
+            raise ValueError("NeuCodec LayerNorm dim must be positive.")
+        if self.eps <= 0:
+            raise ValueError("NeuCodec LayerNorm eps must be positive.")
+
+    def empty(self) -> "NeuCodecLayerNorm":
+        return NeuCodecLayerNorm(
+            config=self,
+            weights=jnp.ones((self.dim,), dtype=self.precision),
+            biases=jnp.zeros((self.dim,), dtype=self.precision),
+        )
+
+    def random_init(
+        self,
+        *,
+        key: PRNGKeyArray,  # noqa: ARG002
+    ) -> "NeuCodecLayerNorm":
+        return self.empty()
+
+
+class NeuCodecLayerNorm(LalamoModule[NeuCodecLayerNormConfig]):
+    weights: Float[Array, " dim"]
+    biases: Float[Array, " dim"]
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    def __call__(
+        self,
+        inputs: Float[Array, "*batch dim"],
+    ) -> Float[Array, "*batch dim"]:
+        mean = jnp.mean(inputs, axis=-1, keepdims=True)
+        variance = jnp.mean(jnp.square(inputs - mean), axis=-1, keepdims=True)
+        normalized = (inputs - mean) * lax.rsqrt(variance + self.config.eps)
+        return normalized * self.weights + self.biases
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "weights": self.weights,
+            "biases": self.biases,
+        }
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        assert isinstance(weights, Mapping)
+        return replace(
+            self,
+            weights=require_array(weights["weights"]),
+            biases=require_array(weights["biases"]),
         )
 
 
@@ -839,6 +904,223 @@ class NeuCodecTransformerBlock(LalamoModule[NeuCodecTransformerBlockConfig]):
             att=self.att.import_weights(require_tree(weights["att"])),
             mlp=self.mlp.import_weights(require_tree(weights["mlp"])),
         )
+
+
+@dataclass(frozen=True)
+class NeuCodecVocosBackboneConfig:
+    hidden_dim: int
+    depth: int
+    heads: int
+    rotary_dim: int
+    precision: DTypeLike
+    eps: float = 1e-6
+
+    def __post_init__(self) -> None:
+        if self.hidden_dim <= 0:
+            raise ValueError("NeuCodec VocosBackbone hidden_dim must be positive.")
+        if self.depth < 0:
+            raise ValueError("NeuCodec VocosBackbone depth must be non-negative.")
+        if self.heads <= 0:
+            raise ValueError("NeuCodec VocosBackbone heads must be positive.")
+        NeuCodecConv1dConfig(
+            in_channels=self.hidden_dim,
+            out_channels=self.hidden_dim,
+            kernel_size=7,
+            padding=3,
+            precision=self.precision,
+        )
+        NeuCodecResnetBlockConfig(channels=self.hidden_dim, precision=self.precision)
+        NeuCodecTransformerBlockConfig(
+            dim=self.hidden_dim,
+            num_heads=self.heads,
+            rotary_dim=self.rotary_dim,
+            precision=self.precision,
+            eps=self.eps,
+        )
+        NeuCodecLayerNormConfig(dim=self.hidden_dim, precision=self.precision, eps=self.eps)
+
+    def empty(self) -> "NeuCodecVocosBackbone":
+        resnet_config = NeuCodecResnetBlockConfig(channels=self.hidden_dim, precision=self.precision)
+        transformer_config = NeuCodecTransformerBlockConfig(
+            dim=self.hidden_dim,
+            num_heads=self.heads,
+            rotary_dim=self.rotary_dim,
+            precision=self.precision,
+            eps=self.eps,
+        )
+        return NeuCodecVocosBackbone(
+            config=self,
+            embed=NeuCodecConv1dConfig(
+                in_channels=self.hidden_dim,
+                out_channels=self.hidden_dim,
+                kernel_size=7,
+                padding=3,
+                precision=self.precision,
+            ).empty(),
+            prior_net=tuple(resnet_config.empty() for _ in range(2)),
+            transformers=tuple(transformer_config.empty() for _ in range(self.depth)),
+            post_net=tuple(resnet_config.empty() for _ in range(2)),
+            final_layer_norm=NeuCodecLayerNormConfig(
+                dim=self.hidden_dim,
+                precision=self.precision,
+                eps=self.eps,
+            ).empty(),
+        )
+
+    def random_init(
+        self,
+        *,
+        key: PRNGKeyArray,  # noqa: ARG002
+    ) -> "NeuCodecVocosBackbone":
+        return self.empty()
+
+
+class NeuCodecVocosBackbone(LalamoModule[NeuCodecVocosBackboneConfig]):
+    embed: NeuCodecConv1d
+    prior_net: tuple[NeuCodecResnetBlock, ...]
+    transformers: tuple[NeuCodecTransformerBlock, ...]
+    post_net: tuple[NeuCodecResnetBlock, ...]
+    final_layer_norm: NeuCodecLayerNorm
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    def __call__(
+        self,
+        inputs: Float[Array, "batch tokens hidden_dim"],
+    ) -> Float[Array, "batch tokens hidden_dim"]:
+        hidden_states = self.embed(inputs)
+        for block in self.prior_net:
+            hidden_states = block(hidden_states)
+        for block in self.transformers:
+            hidden_states = block(hidden_states)
+        for block in self.post_net:
+            hidden_states = block(hidden_states)
+        return self.final_layer_norm(hidden_states)
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "embed": self.embed.export_weights(),
+            "prior_net": [block.export_weights() for block in self.prior_net],
+            "transformers": [block.export_weights() for block in self.transformers],
+            "post_net": [block.export_weights() for block in self.post_net],
+            "final_layer_norm": self.final_layer_norm.export_weights(),
+        }
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        assert isinstance(weights, Mapping)
+        prior_net_weights = _require_sequence_weights(require_tree(weights["prior_net"]))
+        transformer_weights = _require_sequence_weights(require_tree(weights["transformers"]))
+        post_net_weights = _require_sequence_weights(require_tree(weights["post_net"]))
+        return replace(
+            self,
+            embed=self.embed.import_weights(require_tree(weights["embed"])),
+            prior_net=tuple(
+                block.import_weights(require_tree(block_weights))
+                for block, block_weights in zip(self.prior_net, prior_net_weights, strict=True)
+            ),
+            transformers=tuple(
+                block.import_weights(require_tree(block_weights))
+                for block, block_weights in zip(self.transformers, transformer_weights, strict=True)
+            ),
+            post_net=tuple(
+                block.import_weights(require_tree(block_weights))
+                for block, block_weights in zip(self.post_net, post_net_weights, strict=True)
+            ),
+            final_layer_norm=self.final_layer_norm.import_weights(require_tree(weights["final_layer_norm"])),
+        )
+
+
+@dataclass(frozen=True)
+class NeuCodecVocosDecoderConfig:
+    hidden_dim: int
+    depth: int
+    heads: int
+    rotary_dim: int
+    hop_length: int
+    precision: DTypeLike
+
+    def __post_init__(self) -> None:
+        if self.hop_length <= 0:
+            raise ValueError("NeuCodec VocosDecoder hop_length must be positive.")
+        NeuCodecVocosBackboneConfig(
+            hidden_dim=self.hidden_dim,
+            depth=self.depth,
+            heads=self.heads,
+            rotary_dim=self.rotary_dim,
+            precision=self.precision,
+        )
+        NeuCodecISTFTHeadConfig(
+            dim=self.hidden_dim,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            precision=self.precision,
+        )
+
+    @property
+    def n_fft(self) -> int:
+        return self.hop_length * 4
+
+    def empty(self) -> "NeuCodecVocosDecoder":
+        return NeuCodecVocosDecoder(
+            config=self,
+            backbone=NeuCodecVocosBackboneConfig(
+                hidden_dim=self.hidden_dim,
+                depth=self.depth,
+                heads=self.heads,
+                rotary_dim=self.rotary_dim,
+                precision=self.precision,
+            ).empty(),
+            head=NeuCodecISTFTHeadConfig(
+                dim=self.hidden_dim,
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                precision=self.precision,
+            ).empty(),
+        )
+
+    def random_init(
+        self,
+        *,
+        key: PRNGKeyArray,  # noqa: ARG002
+    ) -> "NeuCodecVocosDecoder":
+        return self.empty()
+
+
+class NeuCodecVocosDecoder(LalamoModule[NeuCodecVocosDecoderConfig]):
+    backbone: NeuCodecVocosBackbone
+    head: NeuCodecISTFTHead
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    def __call__(
+        self,
+        inputs: Float[Array, "batch tokens hidden_dim"],
+    ) -> Float[Array, "batch channels samples"]:
+        return self.head(self.backbone(inputs))
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "backbone": self.backbone.export_weights(),
+            "head": self.head.export_weights(),
+        }
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        assert isinstance(weights, Mapping)
+        return replace(
+            self,
+            backbone=self.backbone.import_weights(require_tree(weights["backbone"])),
+            head=self.head.import_weights(require_tree(weights["head"])),
+        )
+
+
+def _require_sequence_weights(weights: ParameterTree[Array]) -> Sequence[Array | ParameterTree[Array]]:
+    if not isinstance(weights, Sequence):
+        raise TypeError("NeuCodec weight tree entry must be a sequence.")
+    return cast("Sequence[Array | ParameterTree[Array]]", weights)
 
 
 @dataclass(frozen=True)

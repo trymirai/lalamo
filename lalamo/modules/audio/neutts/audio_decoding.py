@@ -1,74 +1,83 @@
-from dataclasses import dataclass
-from functools import cache
-from typing import Any, Protocol, Self, cast
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from typing import Self
 
-import jax
 import jax.numpy as jnp
-import numpy as np
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree
+from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
+from lalamo.modules.audio.neutts.codec_modules import (
+    NeuCodecLinear,
+    NeuCodecLinearConfig,
+    NeuCodecResidualFSQ,
+    NeuCodecResidualFSQConfig,
+    NeuCodecVocosDecoder,
+    NeuCodecVocosDecoderConfig,
+)
 from lalamo.modules.audio.text_decoder import CodebookCodes
-
-
-class TorchTensorLike(Protocol):
-    def squeeze(self, dim: int) -> Self: ...
-
-    def cpu(self) -> Self: ...
-
-    def numpy(self) -> np.ndarray: ...
-
-
-class NeuCodecLike(Protocol):
-    device: Any
-
-    def eval(self) -> Self: ...
-
-    def to(self, device: str) -> Self: ...
-
-    def encode_code(self, audio_or_path: object) -> TorchTensorLike: ...
-
-    def decode_code(self, codes: object) -> TorchTensorLike: ...
 
 
 @dataclass(frozen=True)
 class NeuCodecAudioDecoderConfig(TTSAudioDecoderConfigBase):
     precision: DTypeLike
-    codec_repo: str = "neuphonic/neucodec"
-    device: str = "cpu"
     samplerate: int = 24_000
+    codec_repo: str | None = None
+    device: str | None = None
+    levels: tuple[int, ...] = (4,) * 8
+    num_quantizers: int = 1
+    quantizer_output_dim: int = 2048
+    hidden_dim: int = 1024
+    depth: int = 12
+    heads: int = 16
+    rotary_dim: int = 64
+    hop_length: int = 480
+
+    @property
+    def quantizer_config(self) -> NeuCodecResidualFSQConfig:
+        return NeuCodecResidualFSQConfig(
+            levels=self.levels,
+            num_quantizers=self.num_quantizers,
+            output_dim=self.quantizer_output_dim,
+            precision=self.precision,
+        )
+
+    @property
+    def fc_post_a_config(self) -> NeuCodecLinearConfig:
+        return NeuCodecLinearConfig(
+            input_dim=self.quantizer_output_dim,
+            output_dim=self.hidden_dim,
+            precision=self.precision,
+        )
+
+    @property
+    def vocos_decoder_config(self) -> NeuCodecVocosDecoderConfig:
+        return NeuCodecVocosDecoderConfig(
+            hidden_dim=self.hidden_dim,
+            depth=self.depth,
+            heads=self.heads,
+            rotary_dim=self.rotary_dim,
+            hop_length=self.hop_length,
+            precision=self.precision,
+        )
 
     def empty(self) -> "NeuCodecAudioDecoder":
-        return NeuCodecAudioDecoder(config=self)
+        return NeuCodecAudioDecoder(
+            config=self,
+            quantizer=self.quantizer_config.empty(),
+            fc_post_a=self.fc_post_a_config.empty(),
+            vocos_decoder=self.vocos_decoder_config.empty(),
+        )
 
     def random_init(self, *, key: PRNGKeyArray) -> "NeuCodecAudioDecoder":  # noqa: ARG002
         return self.empty()
 
 
-@cache
-def _load_neucodec(codec_repo: str, device: str) -> NeuCodecLike:
-    try:
-        from neucodec import DistillNeuCodec, NeuCodec  # type: ignore[unresolved-import]
-    except ImportError as e:
-        raise ImportError(
-            "NeuTTS audio decoding requires the optional neucodec dependency. Install lalamo with the neutts extra.",
-        ) from e
-
-    match codec_repo:
-        case "neuphonic/neucodec":
-            codec = NeuCodec.from_pretrained(codec_repo)
-        case "neuphonic/distill-neucodec":
-            codec = DistillNeuCodec.from_pretrained(codec_repo)
-        case _:
-            raise ValueError(
-                "NeuTTS codec_repo must be 'neuphonic/neucodec' or 'neuphonic/distill-neucodec'.",
-            )
-
-    return cast("NeuCodecLike", codec.eval().to(device))
-
-
 class NeuCodecAudioDecoder(TTSAudioDecoder[NeuCodecAudioDecoderConfig]):
+    quantizer: NeuCodecResidualFSQ
+    fc_post_a: NeuCodecLinear
+    vocos_decoder: NeuCodecVocosDecoder
+
     @property
     def activation_precision(self) -> DTypeLike:
         return self.config.precision
@@ -77,39 +86,40 @@ class NeuCodecAudioDecoder(TTSAudioDecoder[NeuCodecAudioDecoderConfig]):
     def samplerate(self) -> int:
         return self.config.samplerate
 
-    @property
-    def _codec(self) -> NeuCodecLike:
-        return _load_neucodec(self.config.codec_repo, self.config.device)
-
     def export_weights(self) -> ParameterTree[Array]:
-        return {}
+        return {
+            "quantizer": self.quantizer.export_weights(),
+            "fc_post_a": self.fc_post_a.export_weights(),
+            "vocos_decoder": self.vocos_decoder.export_weights(),
+        }
 
     def import_weights(
         self,
-        weights: ParameterTree[Array],  # noqa: ARG002
+        weights: ParameterTree[Array],
     ) -> Self:
-        return self
+        weights = require_mapping(weights)
+        quantizer_weights = weights["quantizer"]
+        fc_post_a_weights = weights["fc_post_a"]
+        vocos_decoder_weights = weights["vocos_decoder"]
+
+        assert isinstance(quantizer_weights, Mapping)
+        assert isinstance(fc_post_a_weights, Mapping)
+        assert isinstance(vocos_decoder_weights, Mapping)
+
+        return replace(
+            self,
+            quantizer=self.quantizer.import_weights(require_tree(quantizer_weights)),
+            fc_post_a=self.fc_post_a.import_weights(require_tree(fc_post_a_weights)),
+            vocos_decoder=self.vocos_decoder.import_weights(require_tree(vocos_decoder_weights)),
+        )
 
     def encode_reference_audio(
         self, audio: Float[Array, " audio_samples"], samplerate: int
     ) -> Int[Array, " speech_tokens"]:
-        try:
-            import torch
-            from torchaudio import transforms as T
-        except ImportError as e:
-            raise ImportError("NeuTTS reference encoding requires torch.") from e
-
-        audio_array = np.array(jax.device_get(audio), dtype=np.float32, copy=True)
-        if audio_array.ndim != 1:
-            raise ValueError("NeuTTS reference audio must be mono.")
-        audio_tensor = torch.as_tensor(audio_array, dtype=torch.float32)[None, None, :]
-        if samplerate != 16_000:
-            audio_tensor = T.Resample(samplerate, 16_000)(audio_tensor)
-
-        codec = self._codec
-        with torch.no_grad():
-            codes = codec.encode_code(audio_or_path=audio_tensor).squeeze(0).squeeze(0)
-        return jnp.asarray(codes.cpu().numpy(), dtype=jnp.int32)
+        raise NotImplementedError(
+            "NeuTTS reference audio encoding requires a native encoder implementation and is not available in the "
+            "native decoder-only path.",
+        )
 
     def _semantic_indices(self, codes: Int[Array, "*shape"] | CodebookCodes) -> Int[Array, "*shape"]:
         if not isinstance(codes, CodebookCodes):
@@ -129,21 +139,11 @@ class NeuCodecAudioDecoder(TTSAudioDecoder[NeuCodecAudioDecoderConfig]):
         self,
         indices: Int[Array, "*shape"] | CodebookCodes,
     ) -> Float[Array, " samples"]:
-        try:
-            import torch
-        except ImportError as e:
-            raise ImportError("NeuTTS audio decoding requires torch.") from e
-
         codes = self._normalize_codes(self._semantic_indices(indices))
-        codec = self._codec
-        with torch.no_grad():
-            code_tensor = torch.as_tensor(
-                np.array(jax.device_get(codes), copy=True),
-                dtype=torch.long,
-                device=codec.device,
-            )
-            reconstructed = codec.decode_code(code_tensor).cpu().numpy()
-        return jnp.asarray(reconstructed[0, 0, :], dtype=self.config.precision)
+        fsq_post_emb = self.quantizer.get_output_from_indices(jnp.transpose(codes, (0, 2, 1)))
+        hidden_states = self.fc_post_a(fsq_post_emb)
+        reconstructed = self.vocos_decoder(hidden_states)
+        return reconstructed[0, 0, :].astype(self.config.precision)
 
     def audio_from_codes(self, indices: Array | CodebookCodes) -> Array:
         return self(indices)

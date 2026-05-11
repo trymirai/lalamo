@@ -5,10 +5,13 @@ from typing import Self
 
 from jaxtyping import Array, DTypeLike
 
+from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.huggingface import load_huggingface_decoder
+from lalamo.model_import.loaders.neutts_codec_loaders import load_neucodec_audio_decoder_from_huggingface
 from lalamo.model_import.model_configs import ForeignTTSConfig
 from lalamo.modules import LalamoModule, TTSConfig, TTSModel, VocoderConfig
 from lalamo.modules.audio.neutts import (
+    NeuCodecAudioDecoder,
     NeuCodecAudioDecoderConfig,
     NeuTTSTextDecoder,
     NeuTTSTextDecoderConfig,
@@ -18,9 +21,9 @@ from .llama import HFLlamaConfig
 
 __all__ = ["HFNeuTTSConfig"]
 
-NEUTTS_CODEC_REPO = "neuphonic/neucodec"
-NEUTTS_CODEC_DEVICE = "cpu"
 DEFAULT_NEUTTS_LANGUAGE_CODE = "en-us"
+NEUTTS_CODEC_REPO = "neuphonic/neucodec"
+NEUTTS_CODEC_CHECKPOINT_FILENAME = "pytorch_model.bin"
 
 
 @dataclass(frozen=True)
@@ -56,8 +59,6 @@ class HFNeuTTSConfig(ForeignTTSConfig):
         )
         audio_decoder_config = NeuCodecAudioDecoderConfig(
             precision=activation_precision,
-            codec_repo=NEUTTS_CODEC_REPO,
-            device=NEUTTS_CODEC_DEVICE,
         )
         return TTSConfig(
             text_decoder_config=text_decoder_config,
@@ -73,9 +74,17 @@ class HFNeuTTSConfig(ForeignTTSConfig):
     ) -> LalamoModule:
         assert isinstance(model, TTSModel)
         assert isinstance(model.text_decoder, NeuTTSTextDecoder)
+        assert isinstance(model.audio_decoder, NeuCodecAudioDecoder)
 
         loaded_decoder = load_huggingface_decoder(model.text_decoder.decoder, weights_dict)
-        return replace(
+        loaded_text_decoder = replace(model.text_decoder, decoder=loaded_decoder)
+        loaded_audio_decoder = load_neucodec_audio_decoder_from_huggingface(
+            model.audio_decoder,
+            repo_id=NEUTTS_CODEC_REPO,
+            filename=NEUTTS_CODEC_CHECKPOINT_FILENAME,
+        )
+        return load_parameters(
+            lambda m: (m.text_decoder, m.audio_decoder),
             model,
-            text_decoder=replace(model.text_decoder, decoder=loaded_decoder),
+            (loaded_text_decoder, loaded_audio_decoder),
         )
