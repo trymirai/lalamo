@@ -54,6 +54,11 @@ type StatusEvent = (
 )
 
 
+def report_status(progress_callback: Callable[[StatusEvent], None] | None, event: StatusEvent) -> None:
+    if progress_callback is not None:
+        progress_callback(event)
+
+
 @contextmanager
 def load_torch_weights(path: Path, *, weights_only: bool = True) -> Generator[WeightShard]:
     import torch  # noqa: PLC0415
@@ -95,14 +100,12 @@ def hf_resolve_file(
     file_spec: FileSpec,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> Path:
-    if progress_callback is not None:
-        progress_callback(DownloadingFileEvent(file_spec))
+    report_status(progress_callback, DownloadingFileEvent(file_spec))
     result = huggingface_hub.hf_hub_download(
         repo_id=file_spec.repo or repo,
         filename=file_spec.filename,
     )
-    if progress_callback is not None:
-        progress_callback(FinishedDownloadingFileEvent(file_spec))
+    report_status(progress_callback, FinishedDownloadingFileEvent(file_spec))
     return Path(result)
 
 
@@ -117,6 +120,14 @@ def hf_resolve_weights(
         for filename in all_files
         if filename.endswith(extension)
     )
+
+
+def load_weight_paths(paths: Sequence[Path], weight_format: WeightFormat) -> tuple[WeightShardContext, ...]:
+    match weight_format:
+        case WeightFormat.SAFETENSORS:
+            return tuple(load_safetensors_weights(path) for path in paths)
+        case WeightFormat.TORCH:
+            return tuple(load_torch_weights(path) for path in paths)
 
 
 @dataclass(frozen=True)
@@ -136,11 +147,7 @@ class HuggingFaceOrigin(Origin):
         progress_callback: Callable[[StatusEvent], None] | None = None,
     ) -> Sequence[WeightShardContext]:
         paths = hf_resolve_weights(self.repo, self.weight_format.value, progress_callback)
-        match self.weight_format:
-            case WeightFormat.SAFETENSORS:
-                return tuple(load_safetensors_weights(path) for path in paths)
-            case WeightFormat.TORCH:
-                return tuple(load_torch_weights(path) for path in paths)
+        return load_weight_paths(paths, self.weight_format)
 
     @property
     def description(self) -> str:
@@ -217,11 +224,7 @@ class LocalOrigin(Origin):
         progress_callback: Callable[[StatusEvent], None] | None = None,  # noqa: ARG002
     ) -> Sequence[WeightShardContext]:
         paths = tuple(Path(self.root) / weight_file for weight_file in self.weight_files)
-        match self.weight_format:
-            case WeightFormat.SAFETENSORS:
-                return tuple(load_safetensors_weights(path) for path in paths)
-            case WeightFormat.TORCH:
-                return tuple(load_torch_weights(path) for path in paths)
+        return load_weight_paths(paths, self.weight_format)
 
     @property
     def description(self) -> str:

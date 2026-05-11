@@ -29,7 +29,7 @@ from lalamo.weight_matrix import CompressionImplementation
 
 from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config, merge_token_ids
 from .huggingface_tokenizer_config import HFTokenizerConfig
-from .model_configs.foreign_config import ForeignConfig
+from .model_configs.foreign_config import ForeignConfig, ForeignLMConfig
 from .model_spec import ClassifierModelSpec, FileSpec, JSONFieldSpec, LanguageModelSpec, ModelSpec, TTSModelSpec
 from .origins import (
     DownloadingFileEvent,
@@ -39,6 +39,7 @@ from .origins import (
     Origin,
     StatusEvent,
     WeightShard,
+    report_status,
 )
 
 __all__ = [
@@ -100,6 +101,33 @@ def _instantiate_tokenizer(
     return tokenizer
 
 
+def _read_text_spec(
+    origin: Origin,
+    text_spec: FileSpec | str | None,
+    progress_callback: Callable[[StatusEvent], None] | None,
+) -> str | None:
+    match text_spec:
+        case FileSpec() as file_spec:
+            return origin.resolve_file(file_spec, progress_callback).read_text()
+        case str() as text:
+            return text
+        case None:
+            return None
+
+
+def _read_chat_template(
+    origin: Origin,
+    template_spec: FileSpec | JSONFieldSpec | str | None,
+    progress_callback: Callable[[StatusEvent], None] | None,
+) -> str | None:
+    match template_spec:
+        case JSONFieldSpec(file_spec, field_name):
+            with origin.resolve_file(file_spec, progress_callback).open() as file:
+                return json.load(file)[field_name]
+        case FileSpec() | str() | None:
+            return _read_text_spec(origin, template_spec, progress_callback)
+
+
 def _import_chat_codec(
     model_spec: LanguageModelSpec | ClassifierModelSpec,
     progress_callback: Callable[[StatusEvent], None] | None = None,
@@ -109,19 +137,9 @@ def _import_chat_codec(
     tokenizer_config = HFTokenizerConfig.from_json(tokenizer_config_file)
 
     if tokenizer_config.chat_template is None:
-        match model_spec.configs.chat_template:
-            case JSONFieldSpec(file_spec, field_name):
-                json_file = origin.resolve_file(file_spec, progress_callback)
-                with open(json_file) as file:
-                    json_dict = json.load(file)
-                prompt_template = json_dict[field_name]
-            case FileSpec(_) as file_spec:
-                chat_template_file = origin.resolve_file(file_spec, progress_callback)
-                prompt_template = chat_template_file.read_text()
-            case str() as template_string:
-                prompt_template = template_string
-            case None:
-                raise ValueError("No chat template specified.")
+        prompt_template = _read_chat_template(origin, model_spec.configs.chat_template, progress_callback)
+        if prompt_template is None:
+            raise ValueError("No chat template specified.")
     else:
         if model_spec.configs.chat_template is not None:
             raise ValueError("Conflicting chat template specifications.")
@@ -152,15 +170,7 @@ def _import_chat_codec(
             eos_token_id: int | list[int] | None = foreign_decoder_json.get("eos_token_id")
             eos_token = token_ids_to_text(tokenizer, eos_token_id)
 
-    system_prompt_text = None
-    match model_spec.configs.system_prompt:
-        case FileSpec(_) as file_spec:
-            system_prompt_file = origin.resolve_file(file_spec, progress_callback)
-            system_prompt_text = system_prompt_file.read_text()
-        case str() as sp:
-            system_prompt_text = sp
-        case None:
-            pass
+    system_prompt_text = _read_text_spec(origin, model_spec.configs.system_prompt, progress_callback)
 
     return (
         tokenizer,
@@ -207,6 +217,10 @@ def _load_foreign_config[ForeignConfigT: ForeignConfig](
     return model_spec.config_type.from_json(config_path)
 
 
+def _dtype_or_default(dtype: DTypeLike | None, foreign_config: ForeignConfig) -> DTypeLike:
+    return foreign_config.default_dtype if dtype is None else dtype
+
+
 def _load_model[ModelT: Model](
     expected_model_type: type[ModelT],
     foreign_config: ForeignConfig,
@@ -218,8 +232,7 @@ def _load_model[ModelT: Model](
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> ModelT:
-    if progress_callback is not None:
-        progress_callback(InitializingModelEvent())
+    report_status(progress_callback, InitializingModelEvent())
 
     model = foreign_config.load(
         config=model_config,
@@ -229,9 +242,27 @@ def _load_model[ModelT: Model](
         implementation=implementation,
     )
     assert isinstance(model, expected_model_type)
-    if progress_callback is not None:
-        progress_callback(FinishedInitializingModelEvent())
+    report_status(progress_callback, FinishedInitializingModelEvent())
     return model
+
+
+def _import_generation_config(
+    model_spec: LanguageModelSpec,
+    foreign_decoder_config: ForeignLMConfig,
+    progress_callback: Callable[[StatusEvent], None] | None,
+) -> GenerationConfig:
+    stop_token_ids = merge_token_ids(foreign_decoder_config.eos_token_ids)
+    match model_spec.configs.generation_config:
+        case GenerationConfig() as generation_config:
+            stop_token_ids = merge_token_ids(generation_config.stop_token_ids, stop_token_ids)
+            return replace(generation_config, stop_token_ids=stop_token_ids)
+        case FileSpec() as file_spec:
+            hf_generation_config_file = model_spec.origin.resolve_file(file_spec, progress_callback)
+            hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)
+            stop_token_ids = merge_token_ids(stop_token_ids, hf_generation_config.eos_token_id)
+            return _policy_from_hf_config(hf_generation_config, stop_token_ids=stop_token_ids)
+        case None:
+            return GenerationConfig(stop_token_ids)
 
 
 def _import_language_model(
@@ -243,25 +274,10 @@ def _import_language_model(
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> LanguageModel:
     foreign_decoder_config = _load_foreign_config(model_spec, progress_callback=progress_callback)
-    if dtype is None:
-        dtype = foreign_decoder_config.default_dtype
+    dtype = _dtype_or_default(dtype, foreign_decoder_config)
 
     tokenizer, token_codec_config = _import_chat_codec(model_spec, progress_callback=progress_callback)
-    stop_token_ids = merge_token_ids(foreign_decoder_config.eos_token_ids)
-
-    if isinstance(model_spec.configs.generation_config, GenerationConfig):
-        candidate_generation_config = model_spec.configs.generation_config
-        stop_token_ids = merge_token_ids(candidate_generation_config.stop_token_ids, stop_token_ids)
-        generation_config = replace(candidate_generation_config, stop_token_ids=stop_token_ids)
-    elif isinstance(model_spec.configs.generation_config, FileSpec):
-        hf_generation_config_file = model_spec.origin.resolve_file(
-            model_spec.configs.generation_config, progress_callback
-        )
-        hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)
-        stop_token_ids = merge_token_ids(stop_token_ids, hf_generation_config.eos_token_id)
-        generation_config = _policy_from_hf_config(hf_generation_config, stop_token_ids=stop_token_ids)
-    else:
-        generation_config = GenerationConfig(stop_token_ids)
+    generation_config = _import_generation_config(model_spec, foreign_decoder_config, progress_callback)
 
     with _load_checkpoint(model_spec, progress_callback) as checkpoint:
         model_config = foreign_decoder_config.to_lalamo_config(
@@ -291,8 +307,7 @@ def _import_classifier(
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> ClassifierModel:
     foreign_classifier_config = _load_foreign_config(model_spec, progress_callback=progress_callback)
-    if dtype is None:
-        dtype = foreign_classifier_config.default_dtype
+    dtype = _dtype_or_default(dtype, foreign_classifier_config)
 
     tokenizer, token_codec_config = _import_chat_codec(model_spec, progress_callback=progress_callback)
     classifier_config = foreign_classifier_config.to_classifier_config(context_length)
@@ -323,8 +338,7 @@ def _import_tts_model(
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> TTSModel:
     foreign_tts_config = _load_foreign_config(model_spec, progress_callback=progress_callback)
-    if dtype is None:
-        dtype = foreign_tts_config.default_dtype
+    dtype = _dtype_or_default(dtype, foreign_tts_config)
     if isinstance(foreign_tts_config, FishAudioConfig):
         assert isinstance(model_spec.configs.tokenizer, FileSpec)
         tokenizer_path = model_spec.origin.resolve_file(model_spec.configs.tokenizer, progress_callback)

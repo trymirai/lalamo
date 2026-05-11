@@ -162,6 +162,18 @@ def load_half_snake(
 # =============================================================================
 
 
+def _load_conv_weight_bias(
+    has_biases: bool,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    is_transposed: bool,
+) -> tuple[Array, Array | None]:
+    if (path / "parametrizations" / "weight" / "original0") in weights_dict:
+        return fuse_parametrized_weight_norm_conv1d(weights_dict, path, is_transposed=is_transposed)
+    return weights_dict[path / "weight"], weights_dict.get(path / "bias") if has_biases else None
+
+
 def load_causal_conv1d(
     module: CausalConv1d,
     weights_dict: Mapping[str, Array],
@@ -189,15 +201,7 @@ def load_causal_conv1d(
     Returns:
         CausalConv1d module with loaded weights.
     """
-    # Check if weights are in parametrized weight_norm format
-    weight_norm_path = path / "parametrizations" / "weight" / "original0"
-    if weight_norm_path in weights_dict:
-        # Fuse weight_norm parameters
-        weight, bias = fuse_parametrized_weight_norm_conv1d(weights_dict, path, is_transposed=False)
-    else:
-        # Weights are already fused
-        weight = weights_dict[path / "weight"]
-        bias = weights_dict.get(path / "bias") if module.biases is not None else None
+    weight, bias = _load_conv_weight_bias(module.biases is not None, weights_dict, path, is_transposed=False)
 
     return load_as_at(
         lambda m: (m.weights, m.biases),
@@ -235,15 +239,7 @@ def load_causal_transpose_conv1d(
     Returns:
         CausalTransposeConv1d module with loaded weights.
     """
-    # Check if weights are in parametrized weight_norm format
-    weight_norm_path = path / "parametrizations" / "weight" / "original0"
-    if weight_norm_path in weights_dict:
-        # Fuse weight_norm parameters
-        weight_pytorch, bias = fuse_parametrized_weight_norm_conv1d(weights_dict, path, is_transposed=True)
-    else:
-        # Weights are already fused
-        weight_pytorch = weights_dict[path / "weight"]
-        bias = weights_dict.get(path / "bias") if module.biases is not None else None
+    weight_pytorch, bias = _load_conv_weight_bias(module.biases is not None, weights_dict, path, is_transposed=True)
 
     # Transform PyTorch weights to JAX format
     weight_jax = transform_pytorch_transpose_conv_weights(
