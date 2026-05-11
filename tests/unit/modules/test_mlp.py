@@ -44,10 +44,16 @@ def _moe_array(shape: tuple[int, ...], *, offset: int = 0) -> jax.Array:
     return (jnp.arange(offset, offset + prod(shape), dtype=jnp.float32).reshape(shape) / 50) - 0.5
 
 
-def _linear(weights: Array, biases: Array | None, output_dims: tuple[int, ...]) -> Linear:
+def _linear(
+    weights: Array,
+    biases: Array | None,
+    output_dims: tuple[int, ...],
+    *,
+    is_sharded: bool = True,
+) -> Linear:
     return Linear(
         config=LinearConfig(),
-        weights=FullPrecisionSpec().compress(weights),
+        weights=FullPrecisionSpec().compress(weights, is_sharded=is_sharded),
         biases=biases,
         output_dims=output_dims,
     )
@@ -58,11 +64,13 @@ def _linear_template(
     biases_shape: tuple[int, ...] | None,
     output_dims: tuple[int, ...],
     bias_partition: tuple[ShardingAxis | None, ...] | None,
+    *,
+    is_sharded: bool = True,
 ) -> Linear:
     bias_sharding = make_sharding(bias_partition)
     return Linear(
         config=LinearConfig(),
-        weights=FullPrecisionSpec().compress(dummy_array(weights_shape, jnp.float32)),
+        weights=FullPrecisionSpec().compress(dummy_array(weights_shape, jnp.float32), is_sharded=is_sharded),
         biases=dummy_array(biases_shape, jnp.float32, bias_sharding) if biases_shape is not None else None,
         output_dims=output_dims,
     )
@@ -93,6 +101,59 @@ def _dense_mlp(config: DenseMLPConfig | None = None) -> DenseMLP:
     )
 
 
+def _expert_mlp(
+    expert_config: DenseMLPConfig,
+    mixture_size: int,
+    *,
+    offset: int,
+    is_sharded: bool,
+) -> DenseMLP:
+    expert_bias_sharding = make_sharding((None, None))
+    return DenseMLP(
+        config=expert_config,
+        up_projection=_linear(
+            _moe_array((mixture_size, 2 * HIDDEN_DIM, MODEL_DIM), offset=offset),
+            jax.device_put(_moe_array((mixture_size, 2 * HIDDEN_DIM), offset=offset + 100), expert_bias_sharding),
+            (HIDDEN_DIM, HIDDEN_DIM),
+            is_sharded=is_sharded,
+        ),
+        down_projection=_linear(
+            _moe_array((mixture_size, MODEL_DIM, HIDDEN_DIM), offset=offset + 200),
+            jax.device_put(_moe_array((mixture_size, MODEL_DIM), offset=offset + 300), expert_bias_sharding),
+            (MODEL_DIM,),
+            is_sharded=is_sharded,
+        ),
+    )
+
+
+def _expert_mlp_template(config: DenseMLPConfig, mixture_size: int, *, is_sharded: bool) -> DenseMLP:
+    if config.has_up_biases:
+        up_biases_shape = (mixture_size, 2 * HIDDEN_DIM)
+    else:
+        up_biases_shape = None
+    if config.has_down_biases:
+        down_biases_shape = (mixture_size, MODEL_DIM)
+    else:
+        down_biases_shape = None
+    return DenseMLP(
+        config=config,
+        up_projection=_linear_template(
+            (mixture_size, 2 * HIDDEN_DIM, MODEL_DIM),
+            up_biases_shape,
+            (HIDDEN_DIM, HIDDEN_DIM),
+            (None, None),
+            is_sharded=is_sharded,
+        ),
+        down_projection=_linear_template(
+            (mixture_size, MODEL_DIM, HIDDEN_DIM),
+            down_biases_shape,
+            (MODEL_DIM,),
+            (None, None),
+            is_sharded=is_sharded,
+        ),
+    )
+
+
 def _moe(
     *,
     num_active_routed_experts: int = 1,
@@ -118,28 +179,18 @@ def _moe(
         expert_hidden_dim=HIDDEN_DIM,
         gate_config=LinearConfig() if has_gate else None,
     )
-    mixture_size = NUM_ROUTED_EXPERTS + num_shared_experts
-    expert_bias_sharding = make_sharding((None, None))
     return MixtureOfExperts(
         config=config,
         router=_linear(
             _moe_array((NUM_ROUTED_EXPERTS, MODEL_DIM)),
             _moe_array((NUM_ROUTED_EXPERTS,), offset=100),
             (NUM_ROUTED_EXPERTS,),
+            is_sharded=False,
         ),
-        experts=DenseMLP(
-            config=expert_config,
-            up_projection=_linear(
-                _moe_array((mixture_size, 2 * HIDDEN_DIM, MODEL_DIM), offset=200),
-                jax.device_put(_moe_array((mixture_size, 2 * HIDDEN_DIM), offset=300), expert_bias_sharding),
-                (HIDDEN_DIM, HIDDEN_DIM),
-            ),
-            down_projection=_linear(
-                _moe_array((mixture_size, MODEL_DIM, HIDDEN_DIM), offset=400),
-                jax.device_put(_moe_array((mixture_size, MODEL_DIM), offset=500), expert_bias_sharding),
-                (MODEL_DIM,),
-            ),
-        ),
+        routed_experts=_expert_mlp(expert_config, NUM_ROUTED_EXPERTS, offset=200, is_sharded=True),
+        shared_experts=_expert_mlp(expert_config, num_shared_experts, offset=700, is_sharded=False)
+        if num_shared_experts > 0
+        else None,
         gate=Linear(
             config=LinearConfig(),
             weights=FullPrecisionMatrix(
@@ -162,17 +213,17 @@ def _routed_only_moe(*, num_active_routed_experts: int = 1) -> MixtureOfExperts:
 def _moe_with_awq_experts(module: MixtureOfExperts) -> MixtureOfExperts:
     spec = AWQSpec(bits=8, group_size=2)
     up_projection = spec.compress(
-        module.experts.up_projection.weights.decompress(),
+        module.routed_experts.up_projection.weights.decompress(),
         implementation=CompressionImplementation.INFERENCE,
     )
     down_projection = spec.compress(
-        module.experts.down_projection.weights.decompress(),
+        module.routed_experts.down_projection.weights.decompress(),
         implementation=CompressionImplementation.INFERENCE,
     )
     return eqx.tree_at(
         lambda value: (
-            value.experts.up_projection.weights,
-            value.experts.down_projection.weights,
+            value.routed_experts.up_projection.weights,
+            value.routed_experts.down_projection.weights,
         ),
         module,
         (up_projection, down_projection),
@@ -180,7 +231,14 @@ def _moe_with_awq_experts(module: MixtureOfExperts) -> MixtureOfExperts:
 
 
 def _moe_template(module: MixtureOfExperts) -> MixtureOfExperts:
-    mixture_size = module.config.mixture_size
+    if module.shared_experts is None:
+        shared_experts = None
+    else:
+        shared_experts = _expert_mlp_template(
+            module.shared_experts.config,
+            module.config.num_shared_experts,
+            is_sharded=False,
+        )
     return MixtureOfExperts(
         config=module.config,
         router=_linear_template(
@@ -188,22 +246,14 @@ def _moe_template(module: MixtureOfExperts) -> MixtureOfExperts:
             (module.config.num_routed_experts,) if module.config.router_has_biases else None,
             (module.config.num_routed_experts,),
             (None,),
+            is_sharded=False,
         ),
-        experts=DenseMLP(
-            config=module.experts.config,
-            up_projection=_linear_template(
-                (mixture_size, 2 * HIDDEN_DIM, MODEL_DIM),
-                (mixture_size, 2 * HIDDEN_DIM) if module.experts.config.has_up_biases else None,
-                (HIDDEN_DIM, HIDDEN_DIM),
-                (None, None),
-            ),
-            down_projection=_linear_template(
-                (mixture_size, MODEL_DIM, HIDDEN_DIM),
-                (mixture_size, MODEL_DIM) if module.experts.config.has_down_biases else None,
-                (MODEL_DIM,),
-                (None, None),
-            ),
+        routed_experts=_expert_mlp_template(
+            module.routed_experts.config,
+            module.config.num_routed_experts,
+            is_sharded=True,
         ),
+        shared_experts=shared_experts,
         gate=None,
     )
 
@@ -235,19 +285,17 @@ def _router_logits_reference(module: MixtureOfExperts, inputs: Array) -> Array:
     return logits
 
 
-def _expert_reference(module: MixtureOfExperts, expert_idx: int, inputs: Array) -> Array:
-    up_weights = jnp.asarray(jax.device_get(module.experts.up_projection.weights.decompress()))[expert_idx]
-    down_weights = jnp.asarray(jax.device_get(module.experts.down_projection.weights.decompress()))[expert_idx]
+def _expert_reference(experts: DenseMLP, expert_idx: int, inputs: Array) -> Array:
+    up_weights = jnp.asarray(jax.device_get(experts.up_projection.weights.decompress()))[expert_idx]
+    down_weights = jnp.asarray(jax.device_get(experts.down_projection.weights.decompress()))[expert_idx]
     up_result = up_weights @ inputs
-    if module.experts.up_projection.biases is not None:
-        up_biases = jnp.asarray(jax.device_get(module.experts.up_projection.biases))
-        up_result = up_result + up_biases[expert_idx]
-    up_projection, gate = jnp.split(up_result, (module.experts.hidden_dim,))
-    hidden = up_projection * module.experts.config.activation(gate)
+    if experts.up_projection.biases is not None:
+        up_result = up_result + jnp.asarray(jax.device_get(experts.up_projection.biases))[expert_idx]
+    up_projection, gate = jnp.split(up_result, (experts.hidden_dim,))
+    hidden = up_projection * experts.config.activation(gate)
     result = down_weights @ hidden
-    if module.experts.down_projection.biases is not None:
-        down_biases = jnp.asarray(jax.device_get(module.experts.down_projection.biases))
-        result = result + down_biases[expert_idx]
+    if experts.down_projection.biases is not None:
+        result = result + jnp.asarray(jax.device_get(experts.down_projection.biases))[expert_idx]
     return result
 
 
@@ -266,10 +314,11 @@ def _routed_moe_token_reference(module: MixtureOfExperts, inputs: Array) -> Arra
     active_weights = jax.nn.softmax(active_logits)
     result = jnp.zeros((module.model_dim,), dtype=inputs.dtype)
     for active_idx, active_weight in zip(jax.device_get(active_indices), active_weights, strict=True):
-        result = result + _expert_reference(module, int(active_idx), inputs) * active_weight
-    shared_weight = _shared_expert_weight_reference(module, inputs)
-    for expert_idx in range(module.config.num_routed_experts, module.config.mixture_size):
-        result = result + _expert_reference(module, expert_idx, inputs) * shared_weight
+        result = result + _expert_reference(module.routed_experts, int(active_idx), inputs) * active_weight
+    if module.shared_experts is not None:
+        shared_weight = _shared_expert_weight_reference(module, inputs)
+        for expert_idx in range(module.config.num_shared_experts):
+            result = result + _expert_reference(module.shared_experts, expert_idx, inputs) * shared_weight
     return result
 
 
@@ -302,6 +351,36 @@ def _assert_close(result: Array, reference: Array) -> None:
 def _assert_named_sharding(sharding: Sharding, mesh: Mesh) -> None:
     assert isinstance(sharding, NamedSharding)
     assert sharding.mesh == mesh
+
+
+def _assert_linear_template_restored(restored: Linear, template: Linear, fake_mesh: Mesh) -> None:
+    assert isinstance(restored.weights, FullPrecisionMatrix)
+    assert isinstance(template.weights, FullPrecisionMatrix)
+    assert restored.weights.weights.sharding == template.weights.weights.sharding
+    _assert_named_sharding(restored.weights.weights.sharding, fake_mesh)
+    if restored.biases is None:
+        assert template.biases is None
+        return
+    assert template.biases is not None
+    assert restored.biases.sharding == template.biases.sharding
+
+
+def _assert_mlp_template_restored(restored: DenseMLP, template: DenseMLP, fake_mesh: Mesh) -> None:
+    _assert_linear_template_restored(restored.up_projection, template.up_projection, fake_mesh)
+    _assert_linear_template_restored(restored.down_projection, template.down_projection, fake_mesh)
+
+
+def _assert_linear_weight_sharding(
+    linear: Linear,
+    partition: tuple[ShardingAxis | None, ...],
+    fake_mesh: Mesh,
+) -> None:
+    sharding = make_sharding(partition)
+    assert sharding is not None
+    assert isinstance(linear.weights, FullPrecisionMatrix)
+    assert linear.weights.weights.sharding == sharding
+    assert linear.weights.is_sharded is (ShardingAxis.EXPERT in partition)
+    _assert_named_sharding(linear.weights.weights.sharding, fake_mesh)
 
 
 def _sharded_vector(values: Array) -> Array:
@@ -428,15 +507,7 @@ def test_dense_mlp_export_load_roundtrips_and_preserves_template_sharding(fake_m
     restored = template.load_exported(original.export())
     result = restored(inputs, keychain=Keychain.init(5))
 
-    assert isinstance(restored.up_projection.weights, FullPrecisionMatrix)
-    assert isinstance(restored.down_projection.weights, FullPrecisionMatrix)
-    assert isinstance(template.up_projection.weights, FullPrecisionMatrix)
-    assert isinstance(template.down_projection.weights, FullPrecisionMatrix)
-    assert restored.up_projection.weights.weights.sharding == template.up_projection.weights.weights.sharding
-    assert restored.down_projection.weights.weights.sharding == template.down_projection.weights.weights.sharding
-    assert restored.up_projection.biases is not None
-    assert template.up_projection.biases is not None
-    assert restored.up_projection.biases.sharding == template.up_projection.biases.sharding
+    _assert_mlp_template_restored(restored, template, fake_mesh)
     _assert_close(result=result, reference=original(inputs, keychain=Keychain.init(6)))
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == make_sharding((ShardingAxis.DATA, None, None))
@@ -470,7 +541,7 @@ def test_softmax_routing_vmapped_call_matches_unbatched() -> None:
     assert_close(result=result.active_expert_weights, reference=reference.active_expert_weights)
 
 
-def test_moe_config_init_replicates_router_weights_without_changing_outputs(fake_mesh: Mesh) -> None:
+def test_moe_config_init_shards_routed_and_replicates_router_and_shared_experts(fake_mesh: Mesh) -> None:
     expert_config = DenseMLPConfig(
         linear_config=LinearConfig(),
         activation=Identity(),
@@ -486,7 +557,7 @@ def test_moe_config_init_replicates_router_weights_without_changing_outputs(fake
         num_routed_experts=NUM_ROUTED_EXPERTS,
         num_active_routed_experts=1,
         router_has_biases=False,
-        num_shared_experts=0,
+        num_shared_experts=1,
         expert_hidden_dim=HIDDEN_DIM,
     )
     module = config.init(
@@ -509,18 +580,12 @@ def test_moe_config_init_replicates_router_weights_without_changing_outputs(fake
         keychain=Keychain.init(27),
     )
 
-    assert isinstance(module.router.weights, FullPrecisionMatrix)
-    assert isinstance(module.experts.up_projection.weights, FullPrecisionMatrix)
-    assert isinstance(module.experts.down_projection.weights, FullPrecisionMatrix)
-    assert module.router.weights.weights.sharding == make_sharding((None, None))
-    assert module.experts.up_projection.weights.weights.sharding == make_sharding((ShardingAxis.EXPERT, None, None))
-    assert module.experts.down_projection.weights.weights.sharding == make_sharding((ShardingAxis.EXPERT, None, None))
-    assert not module.router.weights.is_sharded
-    assert module.experts.up_projection.weights.is_sharded
-    assert module.experts.down_projection.weights.is_sharded
-    _assert_named_sharding(module.router.weights.weights.sharding, fake_mesh)
-    _assert_named_sharding(module.experts.up_projection.weights.weights.sharding, fake_mesh)
-    _assert_named_sharding(module.experts.down_projection.weights.weights.sharding, fake_mesh)
+    assert module.shared_experts is not None
+    _assert_linear_weight_sharding(module.router, (None, None), fake_mesh)
+    for projection in (module.routed_experts.up_projection, module.routed_experts.down_projection):
+        _assert_linear_weight_sharding(projection, (ShardingAxis.EXPERT, None, None), fake_mesh)
+    for projection in (module.shared_experts.up_projection, module.shared_experts.down_projection):
+        _assert_linear_weight_sharding(projection, (None, None, None), fake_mesh)
     _assert_close(result=result, reference=reference)
 
 
@@ -658,33 +723,11 @@ def test_moe_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: M
         keychain=Keychain.init(13),
     )
 
-    assert isinstance(restored.router.weights, FullPrecisionMatrix)
-    assert isinstance(template.router.weights, FullPrecisionMatrix)
-    assert isinstance(restored.experts.up_projection.weights, FullPrecisionMatrix)
-    assert isinstance(template.experts.up_projection.weights, FullPrecisionMatrix)
-    assert isinstance(restored.experts.down_projection.weights, FullPrecisionMatrix)
-    assert isinstance(template.experts.down_projection.weights, FullPrecisionMatrix)
-    assert restored.router.weights.weights.sharding == template.router.weights.weights.sharding
-    assert (
-        restored.experts.up_projection.weights.weights.sharding
-        == template.experts.up_projection.weights.weights.sharding
-    )
-    assert (
-        restored.experts.down_projection.weights.weights.sharding
-        == template.experts.down_projection.weights.weights.sharding
-    )
-    assert restored.router.biases is not None
-    assert template.router.biases is not None
-    assert restored.experts.up_projection.biases is not None
-    assert template.experts.up_projection.biases is not None
-    assert restored.experts.down_projection.biases is not None
-    assert template.experts.down_projection.biases is not None
-    assert restored.router.biases.sharding == template.router.biases.sharding
-    assert restored.experts.up_projection.biases.sharding == template.experts.up_projection.biases.sharding
-    assert restored.experts.down_projection.biases.sharding == template.experts.down_projection.biases.sharding
-    _assert_named_sharding(restored.router.weights.weights.sharding, fake_mesh)
-    _assert_named_sharding(restored.experts.up_projection.weights.weights.sharding, fake_mesh)
-    _assert_named_sharding(restored.experts.down_projection.weights.weights.sharding, fake_mesh)
+    _assert_linear_template_restored(restored.router, template.router, fake_mesh)
+    _assert_mlp_template_restored(restored.routed_experts, template.routed_experts, fake_mesh)
+    assert restored.shared_experts is not None
+    assert template.shared_experts is not None
+    _assert_mlp_template_restored(restored.shared_experts, template.shared_experts, fake_mesh)
     _assert_close(
         result=result,
         reference=original(

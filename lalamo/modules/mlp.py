@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 from jax.lax import DotAlgorithmPreset
 from jax.sharding import NamedSharding, PartitionSpec
-from jaxtyping import Array, Float, Int, Key
+from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
@@ -34,16 +34,16 @@ __all__ = [
 ]
 
 
-def _take_moe_expert_leaf(leaf: object, index: Int[Array, ""]) -> object:
+def _take_moe_expert_leaf(leaf: object, indices: Int[Array, " experts"]) -> object:
     if not isinstance(leaf, jax.Array):
         return leaf
 
     leaf_sharding = sharding_of(leaf)
     if not is_sharded(leaf_sharding):
-        return leaf.at[jnp.expand_dims(index, 0)].get()[0]
+        return leaf.at[indices].get()
 
     output_sharding = NamedSharding(leaf_sharding.mesh, PartitionSpec(None, *tuple(leaf_sharding.spec)[1:]))
-    return leaf.at[jnp.expand_dims(index, 0)].get(out_sharding=output_sharding)[0]
+    return leaf.at[indices].get(out_sharding=output_sharding)
 
 
 @dataclass(frozen=True)
@@ -83,7 +83,14 @@ class MLPForwardPassConfig:
 @dataclass(frozen=True)
 class MLPConfig(LalamoConfig, RegistryABC):
     @abstractmethod
-    def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> "MLPBase": ...
+    def init(
+        self,
+        initializer: Initializer,
+        model_dim: int,
+        hidden_dim: int,
+        *,
+        is_sharded: bool = True,
+    ) -> "MLPBase": ...
 
 
 class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
@@ -115,7 +122,14 @@ class DenseMLPConfig(MLPConfig):
     gate_clipping: tuple[float | None, float | None] | None
     up_clipping: tuple[float | None, float | None] | None
 
-    def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> "DenseMLP":
+    def init(
+        self,
+        initializer: Initializer,
+        model_dim: int,
+        hidden_dim: int,
+        *,
+        is_sharded: bool = True,
+    ) -> "DenseMLP":
         return DenseMLP(
             config=self,
             up_projection=self.linear_config.init(
@@ -123,12 +137,14 @@ class DenseMLPConfig(MLPConfig):
                 model_dim,
                 (hidden_dim, hidden_dim),
                 has_biases=self.has_up_biases,
+                is_sharded=is_sharded,
             ),
             down_projection=self.linear_config.init(
                 initializer,
                 hidden_dim,
                 (model_dim,),
                 has_biases=self.has_down_biases,
+                is_sharded=is_sharded,
             ),
         )
 
@@ -138,6 +154,8 @@ class DenseMLPConfig(MLPConfig):
         mixture_size: int,
         model_dim: int,
         hidden_dim: int,
+        *,
+        is_sharded: bool = True,
     ) -> "DenseMLP":
         return DenseMLP(
             config=self,
@@ -147,6 +165,7 @@ class DenseMLPConfig(MLPConfig):
                 model_dim,
                 (hidden_dim, hidden_dim),
                 has_biases=self.has_up_biases,
+                is_sharded=is_sharded,
             ),
             down_projection=self.linear_config.init_mixture(
                 initializer,
@@ -154,6 +173,7 @@ class DenseMLPConfig(MLPConfig):
                 hidden_dim,
                 (model_dim,),
                 has_biases=self.has_down_biases,
+                is_sharded=is_sharded,
             ),
         )
 
@@ -170,10 +190,6 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
     def hidden_dim(self) -> int:
         return self.down_projection.input_dim
 
-    @property
-    def mixture_size(self) -> int | None:
-        return self.up_projection.mixture_size
-
     @eqx.filter_jit
     def __call__(
         self,
@@ -183,13 +199,10 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        call_unbatched = partial(
-            self.call_unbatched,
-            forward_pass_config=forward_pass_config,
-        )
         return call_vmapped_twice(
-            call_unbatched,
+            self.call_unbatched,
             inputs,
+            forward_pass_config=forward_pass_config,
             keychain=keychain,
             added_sharding_axes=(ShardingAxis.DATA, None),
         )
@@ -202,10 +215,10 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         *,
         keychain: Keychain,
     ) -> Float[Array, " channels"]:
-        if self.mixture_size is not None:
+        if self.up_projection.mixture_size is not None:
             raise ValueError(
                 "Mixtures of linear layers cannot be called directly."
-                " They are intended to be used with methods eqx.filter_vmap or lax.scan instead.",
+                " They are intended to be used with call_vmapped or ragged mixture methods instead.",
             )
         up_keychain, down_keychain = keychain.split()
         up_proj, gate = self.up_projection(
@@ -234,7 +247,7 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         *,
         keychain: Keychain,
     ) -> Float[Array, "tokens channels"]:
-        if self.mixture_size is None:
+        if self.up_projection.mixture_size is None:
             raise ValueError("DenseMLP.call_ragged_mixture() requires a mixture DenseMLP.")
 
         up_keychain, down_keychain = keychain.split()
@@ -259,21 +272,25 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         )
         return result
 
-    def slice_mixture(self, start: int, stop: int) -> Self:
-        if self.mixture_size is None:
-            raise ValueError("DenseMLP.slice_mixture() requires a mixture DenseMLP.")
+    def call_mixture(
+        self,
+        inputs: Float[Array, "tokens channels"],
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> Float[Array, "experts tokens channels"]:
+        if self.up_projection.mixture_size is None:
+            raise ValueError("DenseMLP.call_mixture() requires a mixture DenseMLP.")
 
-        def slice_leaf(leaf: Array) -> Array:
-            if not eqx.is_array(leaf):
-                return leaf
-            if leaf.ndim == 0 or leaf.shape[0] != self.mixture_size:
-                raise ValueError(
-                    "Unexpected expert leaf shape while slicing experts:"
-                    f" expected leading dim {self.mixture_size}, got {leaf.shape}.",
-                )
-            return leaf[start:stop]
-
-        return jax.tree_util.tree_map(slice_leaf, self)
+        return call_vmapped_twice(
+            DenseMLP.call_unbatched,
+            self,
+            inputs,
+            forward_pass_config=forward_pass_config,
+            keychain=keychain,
+            in_axes=((0, None), (None, 0)),
+            added_sharding_axes=(None, ShardingAxis.DATA),
+        )
 
 
 class RoutingMap(eqx.Module):
@@ -315,11 +332,14 @@ class MixtureOfExpertsConfig(MLPConfig):
     expert_hidden_dim: int
     gate_config: LinearConfig | None = None
 
-    @property
-    def mixture_size(self) -> int:
-        return self.num_routed_experts + self.num_shared_experts
-
-    def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> "MixtureOfExperts":  # noqa: ARG002
+    def init(
+        self,
+        initializer: Initializer,
+        model_dim: int,
+        hidden_dim: int,  # noqa: ARG002
+        *,
+        is_sharded: bool = True,  # noqa: ARG002
+    ) -> "MixtureOfExperts":
         router = self.router_config.init(
             initializer,
             model_dim,
@@ -327,12 +347,23 @@ class MixtureOfExpertsConfig(MLPConfig):
             has_biases=self.router_has_biases,
             is_sharded=False,
         )
-        experts = self.expert_config.init_mixture(
+        routed_experts = self.expert_config.init_mixture(
             initializer,
-            self.mixture_size,
+            self.num_routed_experts,
             model_dim,
             self.expert_hidden_dim,
+            is_sharded=True,
         )
+        if self.num_shared_experts == 0:
+            shared_experts = None
+        else:
+            shared_experts = self.expert_config.init_mixture(
+                initializer,
+                self.num_shared_experts,
+                model_dim,
+                self.expert_hidden_dim,
+                is_sharded=False,
+            )
 
         if self.gate_config is not None:
             gate = self.gate_config.init(
@@ -347,23 +378,25 @@ class MixtureOfExpertsConfig(MLPConfig):
         return MixtureOfExperts(
             config=self,
             router=router,
-            experts=experts,
+            routed_experts=routed_experts,
+            shared_experts=shared_experts,
             gate=gate,
         )
 
 
 class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     router: Linear
-    experts: DenseMLP
+    routed_experts: DenseMLP
+    shared_experts: DenseMLP | None
     gate: Linear | None
 
     @property
     def model_dim(self) -> int:
-        return self.experts.model_dim
+        return self.routed_experts.model_dim
 
     @property
     def hidden_dim(self) -> int:
-        return self.experts.hidden_dim
+        return self.routed_experts.hidden_dim
 
     @eqx.filter_jit
     def __call__(
@@ -418,7 +451,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             *,
             keychain: Keychain,
         ) -> Float[Array, " channels"]:
-            router_keychain, shared_keychain, expert_keychain = keychain.split(3)
+            router_keychain, routed_keychain, shared_weight_keychain, shared_keychain = keychain.split(4)
             (router_logits,) = self.router(
                 token_input,
                 keychain=router_keychain,
@@ -429,54 +462,38 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 num_active=self.config.num_active_routed_experts,
             )
 
-            if self.config.num_shared_experts > 0:
-                shared_weight = self._shared_expert_weight(
-                    token_input,
-                    forward_pass_config,
-                    keychain=shared_keychain,
-                )
-                shared_weights = jnp.broadcast_to(shared_weight, (self.config.num_shared_experts,))
-                shared_indices = (
-                    jnp.arange(self.config.num_shared_experts, dtype=routing.active_expert_indices.dtype)
-                    + self.config.num_routed_experts
-                )
-                active_indices = jnp.concatenate([routing.active_expert_indices, shared_indices])
-                active_weights = jnp.concatenate([routing.active_expert_weights, shared_weights])
-            else:
-                active_indices = routing.active_expert_indices
-                active_weights = routing.active_expert_weights
+            active_routed_experts = jax.tree_util.tree_map(
+                partial(_take_moe_expert_leaf, indices=routing.active_expert_indices),
+                self.routed_experts,
+            )
+            routed_outputs = call_vmapped(
+                DenseMLP.call_unbatched,
+                active_routed_experts,
+                token_input,
+                forward_pass_config=forward_pass_config,
+                keychain=routed_keychain,
+                in_axes=(0, None),
+            )
+            routed_result = (routed_outputs * routing.active_expert_weights[:, None]).sum(axis=0)
 
-            num_active = self.config.num_active_routed_experts + self.config.num_shared_experts
-            expert_vmapped_keys = expert_keychain.broadcast((num_active,)).vmapped_keys
-            expert_batch_keys = jax.random.split(expert_keychain.batch_key, num_active)
+            if self.shared_experts is None:
+                return routed_result
 
-            def apply_one(
-                idx: Int[Array, ""],
-                weight: Float[Array, ""],
-                expert_vmapped_key: Key[Array, ""],
-                expert_batch_key: Key[Array, ""],
-            ) -> Float[Array, " channels"]:
-                selected_expert_keychain = Keychain(
-                    vmapped_keys=expert_vmapped_key,
-                    batch_key=expert_batch_key,
-                )
-                selected_expert = jax.tree_util.tree_map(
-                    lambda leaf: _take_moe_expert_leaf(leaf, idx),
-                    self.experts,
-                )
-                return (
-                    selected_expert.call_unbatched(
-                        token_input,
-                        forward_pass_config,
-                        keychain=selected_expert_keychain,
-                    )
-                    * weight
-                )
+            shared_weight = self._shared_expert_weight(
+                token_input,
+                forward_pass_config,
+                keychain=shared_weight_keychain,
+            )
 
-            return call_vmapped(
-                lambda expert_inputs: apply_one(*expert_inputs),
-                (active_indices, active_weights, expert_vmapped_keys, expert_batch_keys),
-            ).sum(axis=0)
+            shared_outputs = call_vmapped(
+                DenseMLP.call_unbatched,
+                self.shared_experts,
+                token_input,
+                forward_pass_config=forward_pass_config,
+                keychain=shared_keychain,
+                in_axes=(0, None),
+            )
+            return routed_result + shared_weight * shared_outputs.sum(axis=0)
 
         return call_vmapped_twice(
             per_token,
@@ -543,8 +560,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             routed_weights,
             jnp.zeros((), dtype=routed_weights.dtype),
         )
-        routed_experts = self.experts.slice_mixture(0, self.config.num_routed_experts)
-        routed_outputs = routed_experts.call_ragged_mixture(
+        routed_outputs = self.routed_experts.call_ragged_mixture(
             routed_inputs,
             routed_expert_indices,
             routed_group_sizes,
@@ -559,64 +575,19 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         routed_expert_result = with_sharding(routed_expert_result, make_sharding((ShardingAxis.DATA, None)))
 
         expert_result = routed_expert_result
-        if self.config.num_shared_experts > 0:
-            shared_experts = self.experts.slice_mixture(self.config.num_routed_experts, self.config.mixture_size)
-            shared_expert_indices = with_sharding(
-                jnp.arange(self.config.num_shared_experts),
-                make_sharding((ShardingAxis.EXPERT,)),
-            )
-            shared_expert_weight = partial(
-                self._shared_expert_weight,
-                forward_pass_config=forward_pass_config,
-            )
+        if self.shared_experts is not None:
             shared_weights = call_vmapped(
-                shared_expert_weight,
+                self._shared_expert_weight,
                 flattened_inputs,
+                forward_pass_config=forward_pass_config,
                 keychain=shared_weight_keychain,
                 added_sharding_axis=ShardingAxis.DATA,
             )
             shared_weights = jnp.where(flattened_padding_mask[:, None], shared_weights, 0.0)
-
-            shared_expert_vmapped_keys = shared_expert_keychain.broadcast(
-                (self.config.num_shared_experts,),
-                sharding_axes=(ShardingAxis.EXPERT,),
-            ).vmapped_keys
-            shared_expert_batch_keys = jax.random.split(
-                shared_expert_keychain.batch_key,
-                self.config.num_shared_experts,
-            )
-            shared_expert_batch_keys = with_sharding(
-                shared_expert_batch_keys,
-                make_sharding((ShardingAxis.EXPERT,)),
-            )
-
-            def run_shared_expert(
-                expert_index: Int[Array, ""],
-                expert_vmapped_key: Key[Array, ""],
-                expert_batch_key: Key[Array, ""],
-            ) -> Float[Array, "tokens channels"]:
-                expert_keychain = Keychain(
-                    vmapped_keys=expert_vmapped_key,
-                    batch_key=expert_batch_key,
-                )
-                expert = jax.tree_util.tree_map(
-                    lambda leaf: _take_moe_expert_leaf(leaf, expert_index),
-                    shared_experts,
-                )
-                return call_vmapped(
-                    partial(
-                        expert.call_unbatched,
-                        forward_pass_config=forward_pass_config,
-                    ),
-                    flattened_inputs,
-                    keychain=expert_keychain,
-                    added_sharding_axis=ShardingAxis.DATA,
-                )
-
-            shared_outputs = call_vmapped(
-                lambda expert_inputs: run_shared_expert(*expert_inputs),
-                (shared_expert_indices, shared_expert_vmapped_keys, shared_expert_batch_keys),
-                added_sharding_axis=ShardingAxis.EXPERT,
+            shared_outputs = self.shared_experts.call_mixture(
+                flattened_inputs,
+                forward_pass_config,
+                keychain=shared_expert_keychain,
             )
             expert_result = routed_expert_result + shared_weights * shared_outputs.sum(axis=0)
 
