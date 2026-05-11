@@ -133,6 +133,7 @@ def _put_on_sharding(matrix: AWQMatrix, sharding: Sharding) -> AWQMatrix:
             zero_points = jax.device_put(zero_points, sharding)
         return AWQMatrixForTraining(
             spec=matrix.spec,
+            is_sharded=matrix.is_sharded,
             weights=jax.device_put(matrix.weights, sharding),
             scales=jax.device_put(matrix.scales, sharding),
             zero_points=zero_points,
@@ -143,6 +144,7 @@ def _put_on_sharding(matrix: AWQMatrix, sharding: Sharding) -> AWQMatrix:
         packed_zero_points = jax.device_put(matrix.packed_zero_points, sharding)
     return AWQMatrixForInference(
         spec=matrix.spec,
+        is_sharded=matrix.is_sharded,
         packed_weights=jax.device_put(matrix.packed_weights, sharding),
         scales=jax.device_put(matrix.scales, sharding),
         packed_zero_points=packed_zero_points,
@@ -426,6 +428,56 @@ def test_awq_from_packed_parameters_overrides_input_sharding(
             assert restored.packed_zero_points is not None
             assert template.packed_zero_points is not None
             assert restored.packed_zero_points.sharding == template.packed_zero_points.sharding
+
+
+def _assert_awq_replicated(matrix: AWQMatrix, fake_mesh: Mesh) -> None:
+    replicated = make_sharding((None, None))
+    assert replicated is not None
+
+    compressed_common.assert_named_sharding(matrix.scales.sharding, fake_mesh)
+    assert matrix.scales.sharding == replicated
+    if isinstance(matrix, AWQMatrixForTraining):
+        assert matrix.weights.sharding == replicated
+        if matrix.zero_points is not None:
+            assert matrix.zero_points.sharding == replicated
+    else:
+        assert isinstance(matrix, AWQMatrixForInference)
+        assert matrix.packed_weights.sharding == replicated
+        if matrix.packed_zero_points is not None:
+            assert matrix.packed_zero_points.sharding == replicated
+    assert not matrix.is_sharded
+
+
+@pytest.mark.parametrize("implementation", list(CompressionImplementation))
+def test_awq_is_sharded_false_is_preserved_through_packed_conversions(
+    fake_mesh: Mesh,
+    implementation: CompressionImplementation,
+) -> None:
+    spec = AWQSpec(bits=4, group_size=2)
+    original = spec.compress(_logical_weights(), implementation=CompressionImplementation.INFERENCE, is_sharded=False)
+    assert isinstance(original, AWQMatrixForInference)
+
+    restored = spec.from_packed_parameters(
+        packed_weights=original.packed_weights,
+        scales=original.scales,
+        packed_zero_points=original.packed_zero_points,
+        implementation=implementation,
+        is_sharded=False,
+    )
+    switched = restored.switch_implementation(
+        CompressionImplementation.INFERENCE
+        if implementation == CompressionImplementation.TRAINING
+        else CompressionImplementation.TRAINING,
+    )
+    full_precision = restored.to_full_precision()
+
+    _assert_awq_replicated(restored, fake_mesh)
+    _assert_awq_replicated(switched, fake_mesh)
+    compressed_common.assert_named_sharding(full_precision.weights.sharding, fake_mesh)
+    assert full_precision.weights.sharding == make_sharding((None, None))
+    assert not full_precision.is_sharded
+    compressed_common.assert_close_arrays(result=restored.decompress(), reference=original.decompress())
+    compressed_common.assert_close_arrays(result=full_precision.decompress(), reference=original.decompress())
 
 
 def test_awq_symmetric_from_packed_parameters_rejects_zero_points() -> None:

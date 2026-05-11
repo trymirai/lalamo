@@ -35,7 +35,7 @@ def is_sharded(sharding: Sharding | None) -> TypeGuard[NamedSharding]:
     return isinstance(sharding, NamedSharding) and not sharding.mesh.empty
 
 
-def sharding_of(array: Array) -> Sharding | None:
+def sharding_of(array: Array | ShapeDtypeStruct) -> Sharding | None:
     try:
         return array.sharding
     except AttributeError:

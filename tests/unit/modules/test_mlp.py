@@ -7,6 +7,7 @@ import pytest
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
+from lalamo.initializer import RandomInitializer
 from lalamo.module import ForwardPassMode, Keychain, ShardingAxis
 from lalamo.modules.activations import Identity, SiLU
 from lalamo.modules.linear import Linear, LinearConfig
@@ -142,6 +143,7 @@ def _moe(
             config=LinearConfig(),
             weights=FullPrecisionMatrix(
                 spec=FullPrecisionSpec(),
+                is_sharded=False,
                 weights=_moe_array((1, MODEL_DIM), offset=600),
             ),
             biases=None,
@@ -447,6 +449,60 @@ def test_softmax_routing_vmapped_call_matches_unbatched() -> None:
 
     assert jnp.array_equal(result.expert_mask, reference.expert_mask)
     assert_close(result=result.expert_weights, reference=reference.expert_weights)
+
+
+def test_moe_config_init_replicates_router_weights_without_changing_outputs(fake_mesh: Mesh) -> None:
+    expert_config = DenseMLPConfig(
+        linear_config=LinearConfig(),
+        activation=Identity(),
+        has_up_biases=False,
+        has_down_biases=False,
+        gate_clipping=None,
+        up_clipping=None,
+    )
+    config = MixtureOfExpertsConfig(
+        expert_config=expert_config,
+        router_config=LinearConfig(),
+        routing_function=SoftmaxRouting(),
+        num_routed_experts=NUM_ROUTED_EXPERTS,
+        num_active_routed_experts=1,
+        router_has_biases=False,
+        num_shared_experts=0,
+        expert_hidden_dim=HIDDEN_DIM,
+    )
+    module = config.init(
+        RandomInitializer(dtype=jnp.float32, key=jax.random.key(21)),
+        model_dim=MODEL_DIM,
+        hidden_dim=HIDDEN_DIM,
+    )
+    sharded_router_weights = FullPrecisionSpec().compress(module.router.weights.decompress())
+    sharded_router_module = eqx.tree_at(lambda m: m.router.weights, module, sharded_router_weights)
+    inputs = _sharded_sequences(jnp.arange(2 * 3 * MODEL_DIM, dtype=jnp.float32).reshape(2, 3, MODEL_DIM) / 10)
+
+    result = module(
+        inputs,
+        forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
+        keychain=Keychain.init(27),
+    )
+    reference = sharded_router_module(
+        inputs,
+        forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
+        keychain=Keychain.init(27),
+    )
+
+    assert isinstance(module.router.weights, FullPrecisionMatrix)
+    assert isinstance(module.experts.up_projection.weights, FullPrecisionMatrix)
+    assert isinstance(module.experts.down_projection.weights, FullPrecisionMatrix)
+    assert module.router.weights.weights.sharding == make_sharding((None, None))
+    assert module.experts.up_projection.weights.weights.sharding == make_sharding((ShardingAxis.EXPERT, None, None))
+    assert module.experts.down_projection.weights.weights.sharding == make_sharding((ShardingAxis.EXPERT, None, None))
+    assert not module.router.weights.is_sharded
+    assert module.experts.up_projection.weights.is_sharded
+    assert module.experts.down_projection.weights.is_sharded
+    _assert_named_sharding(module.router.weights.weights.sharding, fake_mesh)
+    _assert_named_sharding(module.experts.up_projection.weights.weights.sharding, fake_mesh)
+    _assert_named_sharding(module.experts.down_projection.weights.weights.sharding, fake_mesh)
+    _assert_close(result=result, reference=reference)
 
 
 @pytest.mark.parametrize("mode", MOE_MODES)

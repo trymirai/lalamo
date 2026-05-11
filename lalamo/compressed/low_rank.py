@@ -10,7 +10,7 @@ from lalamo.module import Keychain, ParameterNorm, ShardingAxis, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.utils.sharding import use_out_sharding
+from lalamo.utils.sharding import make_sharding, use_out_sharding, with_sharding
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
@@ -39,12 +39,14 @@ class LowRankSpec(WeightMatrixSpec):
         key: Key[Array, ""] | None = None,
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        is_sharded: bool = True,
     ) -> "LowRankMatrix":
         if weights.ndim > 2 and preconditioner is not None:
             compress_component = partial(
                 self.compress,
                 key=key,
                 implementation=implementation,
+                is_sharded=is_sharded,
             )
             return jax.vmap(compress_component, spmd_axis_name=ShardingAxis.EXPERT)(
                 weights,
@@ -75,8 +77,12 @@ class LowRankSpec(WeightMatrixSpec):
             up_projection = solve_triangular(output_factor, up_projection, lower=False)
         if input_factor is not None:
             down_projection = solve_triangular(input_factor, down_projection.T, lower=False).T
+        if not is_sharded:
+            up_projection = with_sharding(up_projection, make_sharding((None,) * up_projection.ndim))
+            down_projection = with_sharding(down_projection, make_sharding((None,) * down_projection.ndim))
         return LowRankMatrix(
             spec=self,
+            is_sharded=is_sharded,
             up_projection=up_projection,
             down_projection=down_projection,
         )
@@ -87,7 +93,7 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
     up_projection: Float[Array, "*components output_channels rank"] = field(norm=ParameterNorm.SPECTRAL)
 
     def to_full_precision(self) -> FullPrecisionMatrix:
-        return FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(self.decompress())
+        return FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(self.decompress(), is_sharded=self.is_sharded)
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -102,6 +108,7 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
     def astype(self, dtype: DTypeLike) -> "LowRankMatrix":
         return LowRankMatrix(
             spec=self.spec,
+            is_sharded=self.is_sharded,
             up_projection=self.up_projection.astype(dtype),
             down_projection=self.down_projection.astype(dtype),
         )
