@@ -550,7 +550,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             speculator,
             keys,
         )
-        batch_size = prompt_token_ids.shape[0]
+        batch_size, _ = prompt_token_ids.shape
         if prompt_lengths_without_padding is None:
             prompt_lengths_without_padding = jnp.full((batch_size,), prompt_token_ids.shape[1], dtype=jnp.int32)
 
