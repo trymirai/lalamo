@@ -1192,10 +1192,13 @@ def eval_speculator(
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
         console=err_console,
         transient=True,
     ) as progress:
-        progress.add_task("📊 Evaluating speculative decoding...")
+        progress_task = progress.add_task("📊 Evaluating speculative decoding...", total=None)
         cache_path = mtbench_cache_path or Path.home() / ".cache" / "lalamo" / "eval" / "mt_bench_questions.jsonl"
         results = _evaluate_speculator(
             model_path=model_path,
@@ -1208,6 +1211,11 @@ def eval_speculator(
             seed=seed,
             warmup=warmup,
             reasoning=reasoning,
+            progress_callback=lambda completed, total: progress.update(
+                progress_task,
+                completed=completed,
+                total=total,
+            ),
         )
     label = f"{dataset_name.value}, {speculator_path.name if speculator_path is not None else 'no-speculator'}"
     config = results.config

@@ -288,10 +288,14 @@ def evaluate_speculator(
     seed: int = 0,
     warmup: bool = True,
     reasoning: bool = False,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> EvalResults:
     questions = load_eval_questions(dataset_name, num_questions, mtbench_cache_path)
     if not questions:
         raise ValueError("Evaluation dataset is empty.")
+    total_questions = len(questions)
+    if progress_callback is not None:
+        progress_callback(0, total_questions)
 
     sharding_config = ShardingConfig.build()
     with use_sharding(sharding_config):
@@ -308,7 +312,7 @@ def evaluate_speculator(
         padded_length=padded_length,
         batch_size=batch_size,
     )
-    keys = jax.random.split(jax.random.key(seed), len(questions))
+    keys = jax.random.split(jax.random.key(seed), total_questions)
     by_category: dict[str, EvalCounts] = {}
 
     with use_sharding(sharding_config):
@@ -331,7 +335,7 @@ def evaluate_speculator(
             sharding_config=sharding_config,
             keys=keys,
         )
-        for question, result in zip(questions, results, strict=True):
+        for completed, (question, result) in enumerate(zip(questions, results, strict=True), start=1):
             tokens_per_step = np.asarray(jax.device_get(result.tokens_per_step))
             num_tokens = int(tokens_per_step.sum())
             num_steps = int(np.sum(tokens_per_step > 0))
@@ -339,6 +343,8 @@ def evaluate_speculator(
                 tokens=num_tokens,
                 steps=num_steps,
             )
+            if progress_callback is not None:
+                progress_callback(completed, total_questions)
         elapsed_seconds = time.perf_counter() - started_at
 
     return EvalResults(
@@ -346,7 +352,7 @@ def evaluate_speculator(
             dataset_name=dataset_name,
             model_path=model_path,
             speculator_path=speculator_path,
-            num_questions=len(questions),
+            num_questions=total_questions,
             batch_size=batch_size,
             max_output_length=max_output_length,
             padded_length=padded_length,
