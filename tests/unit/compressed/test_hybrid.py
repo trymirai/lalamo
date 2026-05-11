@@ -180,7 +180,7 @@ def test_hybrid_incoherence_dot_matches_original_weights() -> None:
     _assert_close(result=result, reference=weights @ vector)
 
 
-def test_hybrid_transposed_dot_is_not_supported() -> None:
+def test_hybrid_transposed_dot_matches_original_weights() -> None:
     weights = _weights()
     matrix = HybridSpec(
         quantization_spec=FullPrecisionSpec(),
@@ -189,7 +189,21 @@ def test_hybrid_transposed_dot_is_not_supported() -> None:
     ).compress(weights, key=jax.random.key(2))
     vector = (jnp.arange(32, dtype=jnp.float32) + 5) / 11
 
-    with pytest.raises(ValueError, match="Transposed matmul is not supported"):
+    result = matrix.dot(vector, keychain=Keychain.init(1), transposed=True)
+
+    _assert_close(result=result, reference=weights.T @ vector)
+
+
+def test_hybrid_transposed_dot_rejects_adapters() -> None:
+    weights = _weights()
+    matrix = HybridSpec(
+        quantization_spec=LowRankSpec(rank=1),
+        adapter_spec=FullPrecisionSpec(),
+        incoherence_block_size=32,
+    ).compress(weights, key=jax.random.key(2))
+    vector = (jnp.arange(32, dtype=jnp.float32) + 5) / 11
+
+    with pytest.raises(TypeError, match="adapters"):
         matrix.dot(vector, keychain=Keychain.init(1), transposed=True)
 
 

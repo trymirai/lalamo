@@ -159,18 +159,26 @@ class IncoherenceSigns(eqx.Module):
         self,
         vector: Float[Array, " source_channels"],
         block_size: Literal[32, 64, 128],
+        *,
+        transposed: bool = False,
     ) -> Float[Array, " source_channels"]:
         if self.input_signs is None:
             return vector
+        if transposed:
+            return hadamard_transform(vector, block_size) * self.input_signs
         return hadamard_transform(vector * self.input_signs, block_size)
 
     def output_transform(
         self,
         vector: Float[Array, " target_channels"],
         block_size: Literal[32, 64, 128],
+        *,
+        transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
         if self.output_signs is None:
             return vector
+        if transposed:
+            return hadamard_transform(vector * self.output_signs, block_size)
         return hadamard_transform(vector, block_size) * self.output_signs
 
 
@@ -328,22 +336,14 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
             raise ValueError("Hybrid embedding lookup is only supported when input RHT is disabled.")
         if not isinstance(self.quantized, EmbeddingMatrix):
             raise TypeError("Hybrid embedding lookup requires an embedding-compatible quantization matrix.")
-        quantized_keychain, adapter_keychain = keychain.split(2)
+        if self.adapter is not None:
+            raise TypeError("Hybrid embedding lookup does not support adapters.")
         result = self.quantized.lookup_embedding(
             index,
             dtype=dtype,
-            keychain=quantized_keychain,
+            keychain=keychain,
             forward_pass_config=forward_pass_config,
         )
-        if self.adapter is not None:
-            if not isinstance(self.adapter, EmbeddingMatrix):
-                raise TypeError("Hybrid embedding lookup requires an embedding-compatible adapter matrix.")
-            result = result + self.adapter.lookup_embedding(
-                index,
-                dtype=dtype,
-                keychain=adapter_keychain,
-                forward_pass_config=forward_pass_config,
-            )
         if self.incoherence_signs is not None:
             assert self.spec.incoherence_block_size is not None
             result = self.incoherence_signs.output_transform(result, self.spec.incoherence_block_size)
@@ -358,20 +358,51 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
         if transposed:
-            raise ValueError("Transposed matmul is not supported for HybridMatrix.")
-        quantized_keychain, adapter_keychain = keychain.split(2)
+            if self.adapter is not None:
+                raise TypeError("Hybrid transposed matmul does not support adapters.")
+            quantized_vector = vector
+            if self.incoherence_signs is not None:
+                assert self.spec.incoherence_block_size is not None
+                quantized_vector = self.incoherence_signs.output_transform(
+                    vector,
+                    self.spec.incoherence_block_size,
+                    transposed=True,
+                )
+            result = self.quantized.dot(
+                quantized_vector,
+                keychain=keychain,
+                forward_pass_config=forward_pass_config,
+                transposed=True,
+            )
+            if self.incoherence_signs is not None:
+                assert self.spec.incoherence_block_size is not None
+                result = self.incoherence_signs.input_transform(
+                    result,
+                    self.spec.incoherence_block_size,
+                    transposed=True,
+                )
+            return result
+
         quantized_vector = vector
         if self.incoherence_signs is not None:
             assert self.spec.incoherence_block_size is not None
             quantized_vector = self.incoherence_signs.input_transform(vector, self.spec.incoherence_block_size)
 
-        result = self.quantized.dot(
-            quantized_vector,
-            keychain=quantized_keychain,
-            forward_pass_config=forward_pass_config,
-        )
-        if self.adapter is not None:
-            result = result + self.adapter.dot(
+        adapter = self.adapter
+        if adapter is None:
+            result = self.quantized.dot(
+                quantized_vector,
+                keychain=keychain,
+                forward_pass_config=forward_pass_config,
+            )
+        else:
+            quantized_keychain, adapter_keychain = keychain.split(2)
+            result = self.quantized.dot(
+                quantized_vector,
+                keychain=quantized_keychain,
+                forward_pass_config=forward_pass_config,
+            )
+            result = result + adapter.dot(
                 vector,
                 keychain=adapter_keychain,
                 forward_pass_config=forward_pass_config,
