@@ -2,12 +2,10 @@ import os
 import re
 from collections.abc import Iterable
 from functools import cache
-from importlib import import_module
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol
 
 import jax.numpy as jnp
-import numpy as np
 import soundfile as sf
 
 from lalamo.audio.tts_message_processor import TTSMessage, VoicePrompt
@@ -18,29 +16,6 @@ SPEECH_TOKEN_PATTERN = re.compile(r"<\|speech_(\d+)\|>")
 
 class _PhonemizerBackend(Protocol):
     def phonemize(self, text: list[str]) -> list[str]: ...
-
-
-class _EspeakWrapper(Protocol):
-    @staticmethod
-    def set_library(path: str) -> None: ...
-
-
-class _EspeakLoader(Protocol):
-    def get_library_path(self) -> Path: ...
-
-    def get_data_path(self) -> Path: ...
-
-
-class _PhonemizerBackendFactory(Protocol):
-    def __call__(
-        self,
-        *,
-        language: str,
-        preserve_punctuation: bool,
-        with_stress: bool,
-        words_mismatch: str,
-        language_switch: str,
-    ) -> _PhonemizerBackend: ...
 
 
 def speech_codes_to_text(speech_codes: Iterable[int]) -> str:
@@ -106,20 +81,19 @@ def require_neutts_message(messages: Iterable[TTSMessage]) -> TTSMessage:
 
 def _configure_bundled_espeak() -> None:
     try:
-        espeakng_loader = cast("_EspeakLoader", import_module("espeakng_loader"))
-        espeak_wrapper_module = import_module("phonemizer.backend.espeak.wrapper")
+        import espeakng_loader  # ty: ignore[unresolved-import]
+        from phonemizer.backend.espeak.wrapper import EspeakWrapper  # ty: ignore[unresolved-import]
     except ImportError:
         return
 
-    wrapper = cast("_EspeakWrapper", espeak_wrapper_module.EspeakWrapper)
-    wrapper.set_library(str(espeakng_loader.get_library_path()))
+    EspeakWrapper.set_library(str(espeakng_loader.get_library_path()))
     os.environ["ESPEAK_DATA_PATH"] = str(espeakng_loader.get_data_path())
 
 
 @cache
 def _get_espeak_backend(language_code: str) -> _PhonemizerBackend:
     try:
-        phonemizer_backend_module = import_module("phonemizer.backend")
+        from phonemizer.backend import EspeakBackend  # ty: ignore[unresolved-import]
     except ImportError as e:
         raise ImportError(
             "NeuTTS phonemization requires the optional phonemizer dependency. Install lalamo with the neutts extra.",
@@ -127,11 +101,7 @@ def _get_espeak_backend(language_code: str) -> _PhonemizerBackend:
 
     try:
         _configure_bundled_espeak()
-        espeak_backend = cast(
-            "_PhonemizerBackendFactory",
-            phonemizer_backend_module.EspeakBackend,
-        )
-        return espeak_backend(
+        return EspeakBackend(
             language=language_code,
             preserve_punctuation=True,
             with_stress=True,
@@ -159,7 +129,7 @@ def load_voice_prompt(reference_audio_path: Path | str | None, reference_text: s
     if not isinstance(reference_text, str) or not reference_text.strip():
         raise ValueError("--ref-text must not be empty.")
     reference_audio, reference_samplerate = sf.read(str(reference_audio_path), dtype="float32", always_2d=False)
-    reference_audio = np.asarray(reference_audio, dtype=np.float32)
+    reference_audio = jnp.asarray(reference_audio, dtype=jnp.float32)
     if reference_audio.ndim != 1:
         raise ValueError("--ref-audio must be mono.")
     return VoicePrompt(

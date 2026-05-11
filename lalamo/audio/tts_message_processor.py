@@ -3,14 +3,14 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import TypedDict
 
-import numpy as np
+from jaxtyping import Array, Float
 from jinja2 import Template
 from tokenizers import Tokenizer
 
 
 @dataclass(frozen=True)
 class VoicePrompt:
-    reference_audio: np.ndarray
+    reference_audio: Float[Array, " audio_samples"]
     reference_samplerate: int
     reference_text: str
 

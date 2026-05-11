@@ -11,8 +11,8 @@ NEUTTS_TTS_CHAT_TEMPLATE = "{% for message in messages %}{{ message.content }}{%
 NEUTTS_TTS_MODELS = [
     ModelSpec(
         vendor="Neuphonic",
-        family="NeuTTS Nano",
-        name="NeuTTS Nano",
+        family="NeuTTS-Nano",
+        name="NeuTTS-Nano",
         size="0.23B",
         quantization=None,
         repo="neuphonic/neutts-nano",

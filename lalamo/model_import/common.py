@@ -30,7 +30,6 @@ from lalamo.models import (
     LanguageModelConfig,
     TTSGenerator,
     TTSGeneratorConfig,
-    tts_generator_type_for_config,
 )
 from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
 from lalamo.modules.common import ShardingConfig, use_sharding
@@ -504,8 +503,7 @@ def _import_tts_model(
         ),
         message_processor_config=message_processor.config,
     )
-    tts_generator_type = tts_generator_type_for_config(tts_generator_config)
-    tts_generator = tts_generator_type(tts_generator_config, tts_model, message_processor)
+    tts_generator = tts_generator_config.init_generator(tts_model, message_processor)
 
     return (tts_generator, tts_generator_config)
 

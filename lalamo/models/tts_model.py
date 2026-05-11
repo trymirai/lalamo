@@ -2,6 +2,7 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import assert_never
 
 import equinox as eqx
 import jax
@@ -34,7 +35,9 @@ from lalamo.modules.audio.fishaudio.fishaudio_consts import (
 )
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
     FishAudioTextDecoder,
+    FishAudioTextDecoderConfig,
 )
+from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoderConfig
 from lalamo.modules.audio.neutts import (
     NeuCodecAudioDecoder,
     NeuTTSTextDecoder,
@@ -56,7 +59,6 @@ __all__ = [
     "TTSGenerationResult",
     "TTSGenerator",
     "TTSGeneratorConfig",
-    "tts_generator_type_for_config",
 ]
 
 
@@ -64,6 +66,21 @@ __all__ = [
 class TTSGeneratorConfig:
     tts_config: TTSConfig
     message_processor_config: TTSMessageProcessorConfig
+
+    def init_generator(
+        self,
+        tts_model: TTSModel,
+        message_processor: TTSMessageProcessor,
+    ) -> "TTSGenerator":
+        match self.tts_config.text_decoder_config:
+            case FishAudioTextDecoderConfig():
+                return FishAudioTTSGenerator(self, tts_model, message_processor)
+            case StubTextDecoderConfig():
+                return TTSGenerator(self, tts_model, message_processor)
+            case NeuTTSTextDecoderConfig():
+                return NeuTTSGenerator(self, tts_model, message_processor)
+            case unknown:
+                assert_never(unknown)
 
 
 @dataclass
@@ -163,9 +180,7 @@ class TTSGenerator(eqx.Module):
             model = config.tts_config.empty().import_weights(weights)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = TTSMessageProcessor(config.message_processor_config, tokenizer)
-        generator_type = tts_generator_type_for_config(config, default_type=cls)
-        return generator_type(
-            config=config,
+        return config.init_generator(
             tts_model=model,
             message_processor=message_processor,
         )
@@ -275,13 +290,3 @@ class NeuTTSGenerator(TTSGenerator):
             audio=np.array(audio_waveform),
             audio_params=self.get_generated_audio_params(),
         )
-
-
-def tts_generator_type_for_config(
-    config: TTSGeneratorConfig,
-    *,
-    default_type: type[TTSGenerator] = TTSGenerator,
-) -> type[TTSGenerator]:
-    if isinstance(config.tts_config.text_decoder_config, NeuTTSTextDecoderConfig):
-        return NeuTTSGenerator
-    return default_type

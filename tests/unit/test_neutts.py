@@ -5,6 +5,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import soundfile as sf
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
 
 from lalamo.audio.neutts import (
     build_neutts_prompt_text,
@@ -12,10 +14,11 @@ from lalamo.audio.neutts import (
     parse_neutts_speech_tokens,
     speech_tokens_to_codebook_codes,
 )
-from lalamo.audio.tts_message_processor import VoicePrompt
+from lalamo.audio.tts_message_processor import TTSMessageProcessor, TTSMessageProcessorConfig, VoicePrompt
 from lalamo.model_import.model_configs.huggingface.neutts import HFNeuTTSConfig
 from lalamo.model_import.model_specs.common import ModelType
 from lalamo.model_registry import ModelRegistry
+from lalamo.models.tts_model import NeuTTSGenerator, TTSGeneratorConfig
 from lalamo.modules.audio.neutts.audio_decoding import NeuCodecAudioDecoder, NeuCodecAudioDecoderConfig
 from lalamo.modules.audio.neutts.text_decoding import NeuTTSTextDecoderConfig
 from lalamo.modules.rope import LinearScalingRoPEConfig
@@ -159,4 +162,29 @@ def test_neutts_nano_is_registered_as_first_class_tts_model() -> None:
 
     assert spec.model_type is ModelType.TTS_MODEL
     assert spec.config_type is HFNeuTTSConfig
-    assert spec.family == "NeuTTS Nano"
+    assert spec.family == "NeuTTS-Nano"
+    assert spec.name == "NeuTTS-Nano"
+
+
+def test_neutts_generator_config_initializes_neutts_generator(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    _write_neutts_config(config_path)
+    config = HFNeuTTSConfig.from_json(config_path)
+    tts_config = config.to_tts_config(
+        context_length=None,
+        activation_precision=jnp.float32,
+        accumulation_precision=jnp.float32,
+    )
+    message_processor_config = TTSMessageProcessorConfig(prompt_template="{{ messages[0].content }}")
+    message_processor = TTSMessageProcessor(
+        message_processor_config,
+        Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]")),
+    )
+    generator_config = TTSGeneratorConfig(
+        tts_config=tts_config,
+        message_processor_config=message_processor_config,
+    )
+
+    generator = generator_config.init_generator(tts_config.empty(), message_processor)
+
+    assert isinstance(generator, NeuTTSGenerator)

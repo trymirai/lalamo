@@ -18,13 +18,14 @@ from .llama import HFLlamaConfig
 
 __all__ = ["HFNeuTTSConfig"]
 
+NEUTTS_CODEC_REPO = "neuphonic/neucodec"
+NEUTTS_CODEC_DEVICE = "cpu"
+DEFAULT_NEUTTS_LANGUAGE_CODE = "en-us"
+
 
 @dataclass(frozen=True)
 class HFNeuTTSConfig(ForeignTTSConfig):
     llama_config: HFLlamaConfig
-    codec_repo: str = "neuphonic/neucodec"
-    codec_device: str = "cpu"
-    language_code: str = "en-us"
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
@@ -51,12 +52,12 @@ class HFNeuTTSConfig(ForeignTTSConfig):
             decoder_config=decoder_config,
             speech_generation_end_token_id=speech_generation_end_token_id,
             max_context_length=decoder_config.transformer_config.context_length,
-            language_code=self.language_code,
+            language_code=DEFAULT_NEUTTS_LANGUAGE_CODE,
         )
         audio_decoder_config = NeuCodecAudioDecoderConfig(
             precision=activation_precision,
-            codec_repo=self.codec_repo,
-            device=self.codec_device,
+            codec_repo=NEUTTS_CODEC_REPO,
+            device=NEUTTS_CODEC_DEVICE,
         )
         return TTSConfig(
             text_decoder_config=text_decoder_config,

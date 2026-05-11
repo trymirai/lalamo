@@ -90,14 +90,16 @@ class NeuCodecAudioDecoder(TTSAudioDecoder[NeuCodecAudioDecoderConfig]):
     ) -> Self:
         return self
 
-    def encode_reference_audio(self, audio: np.ndarray, samplerate: int) -> Int[Array, " speech_tokens"]:
+    def encode_reference_audio(
+        self, audio: Float[Array, " audio_samples"], samplerate: int
+    ) -> Int[Array, " speech_tokens"]:
         try:
             import torch
             from torchaudio import transforms as T
         except ImportError as e:
             raise ImportError("NeuTTS reference encoding requires torch.") from e
 
-        audio_array = np.asarray(audio, dtype=np.float32)
+        audio_array = np.array(jax.device_get(audio), dtype=np.float32, copy=True)
         if audio_array.ndim != 1:
             raise ValueError("NeuTTS reference audio must be mono.")
         audio_tensor = torch.as_tensor(audio_array, dtype=torch.float32)[None, None, :]
@@ -117,19 +119,11 @@ class NeuCodecAudioDecoder(TTSAudioDecoder[NeuCodecAudioDecoderConfig]):
         return codes.semantic
 
     def _normalize_codes(self, indices: Int[Array, "*shape"]) -> Int[Array, "1 1 tokens"]:
-        if indices.ndim == 1:
-            return indices[None, None, :]
-        if indices.ndim == 2:
-            if indices.shape[0] != 1:
-                raise ValueError("NeuCodec expects a single codebook.")
-            return indices[None, :, :]
-        if indices.ndim == 3:
-            if indices.shape[0] != 1:
-                raise ValueError("NeuCodec expects a single batch item.")
-            if indices.shape[1] != 1:
-                raise ValueError("NeuCodec expects a single codebook.")
-            return indices
-        raise ValueError(f"NeuCodec code tensor must have 1, 2, or 3 dimensions; got {indices.shape}.")
+        if indices.ndim not in (1, 2, 3):
+            raise ValueError(f"NeuCodec code tensor must have 1, 2, or 3 dimensions; got {indices.shape}.")
+        if any(dim != 1 for dim in indices.shape[:-1]):
+            raise ValueError("NeuCodec expects a single batch item and a single codebook.")
+        return indices.reshape((1, 1, indices.shape[-1]))
 
     def __call__(
         self,
