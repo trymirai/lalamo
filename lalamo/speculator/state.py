@@ -368,7 +368,6 @@ class LMState(eqx.Module):
         accepted: AcceptedProposal,
         emitted_token_ids: Int[Array, "batch max_slots"],
         *,
-        compact_kv: bool,
         sampling_top_k_ids: Int[Array, "batch max_slots top_k"] | None = None,
         sampling_top_k_logits: Float[Array, "batch max_slots top_k"] | None = None,
         trace_top_k_ids: Int[Array, "batch max_slots top_k"] | None = None,
@@ -377,7 +376,7 @@ class LMState(eqx.Module):
     ) -> "LMState":
         updated_state = decoder_result.updated_state
         assert updated_state is not None, "updated_state should not be None"
-        if compact_kv:
+        if accepted.compact_indices.shape[1] > 1:
             kv_cache = compact_state_layers(
                 updated_state,
                 cache_len=self.kv_cache[0].prefix_lengths(),

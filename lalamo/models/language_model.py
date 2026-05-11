@@ -25,7 +25,7 @@ from lalamo.modules import (
     pad_and_apply_data_sharding,
 )
 from lalamo.sampling import SamplingPolicy, make_policy
-from lalamo.speculator.common import Speculator
+from lalamo.speculator.common import NoSpeculator, Speculator
 from lalamo.speculator.proposal import AcceptedProposal
 from lalamo.speculator.state import LMState, MemoryBuffers, StateRequest
 
@@ -207,7 +207,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
     def state_request_for_generation(
         self,
-        speculator: Speculator | None,
+        speculator: Speculator,
         generation_trace_config: GenerationTraceConfig | None,
         num_top_logits_to_return: int | None,
         max_output_length: int,
@@ -220,7 +220,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             traced_layers_array = jnp.asarray(traced_layers, dtype=jnp.int32)
             trace_top_k = min(generation_trace_config.num_logits_per_token, self.model.vocab_size)
 
-        speculator_request = speculator.state_request if speculator is not None else StateRequest()
+        speculator_request = speculator.state_request
         layer_indices = speculator_request.layer_indices + tuple(
             layer_index for layer_index in traced_layers if layer_index not in speculator_request.layer_indices
         )
@@ -398,6 +398,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         if max_output_length < 1:
             raise ValueError("max_output_length must be at least 1.")
 
+        speculator = speculator if speculator is not None else NoSpeculator()
         state_request, traced_layers, traced_layers_array, trace_top_k = self.state_request_for_generation(
             speculator,
             generation_trace_config,
@@ -421,7 +422,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             initial_sampling_policy,
             per_position_keys[:, 0],
         )
-        initial_state = DecodingState( # todo: delete DecodingState
+        initial_state = DecodingState(
             initial_sampling_policy,
             initial_lm_state,
         )
@@ -447,12 +448,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             lm_state = state.lm_state
             current_output_lengths = output_lengths(lm_state)
             done = is_done(state)
-            proposal = lm_state.create_root_proposal(budget=1) if speculator is None else speculator.draft(lm_state)
+            proposal = speculator.draft(lm_state)
 
-            proposal_inputs = proposal.forward_inputs(
-                lm_state.next_token_position,
-                use_tree_attention=speculator is not None,
-            )
+            proposal_inputs = proposal.forward_inputs(lm_state.next_token_position)
             decoder_outputs = self.model(
                 proposal_inputs.token_ids,
                 proposal_inputs.token_positions,
@@ -472,31 +470,20 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             )
             accepted = proposal.verify(sampled_token_ids)
             emitted_token_ids = accepted.accepted_token_ids
-
-            slots = jnp.arange(proposal.budget, dtype=jnp.int32)[None, :]
-            valid = jnp.logical_and(
-                slots < accepted.num_compact_indices[:, None],
-                slots < (max_output_length - current_output_lengths)[:, None],
+            accepted, write_mask = accepted.truncate(
+                current_output_lengths,
+                max_output_length,
+                done,
+                eos_token_ids,
             )
-            valid = jnp.logical_and(valid, jnp.logical_not(done)[:, None])
-            if eos_token_ids.shape[0] > 0:
-                eos_hits = jnp.logical_and(
-                    valid,
-                    jnp.any(emitted_token_ids[:, :, None] == eos_token_ids[None, None, :], axis=-1),
-                )
-            else:
-                eos_hits = jnp.zeros_like(valid)
-            prior_eos_count = jnp.cumsum(eos_hits.astype(jnp.int32), axis=1) - eos_hits.astype(jnp.int32)
-            write_mask = jnp.logical_and(valid, prior_eos_count == 0)
-            num_emitted = jnp.sum(write_mask, axis=1).astype(jnp.int32)
 
-            emit_sampling_logits = accepted.sampling_logits(processed_tree_logits, lm_state.root_sample_logits)
+            accepted_token_logits = accepted.accepted_token_logits(processed_tree_logits, lm_state.root_sample_logits)
 
             sampling_top_k_ids = None
             sampling_top_k_logits = None
             if num_top_logits_to_return is not None:
                 sampling_top_k_logits, sampling_top_k_ids = jax.lax.top_k(
-                    emit_sampling_logits,
+                    accepted_token_logits,
                     num_top_logits_to_return,
                 )
 
@@ -504,20 +491,18 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             trace_top_k_logits = None
             trace_logsumexp = None
             if generation_trace_config is not None:
-                trace_top_k_logits, trace_top_k_ids = jax.lax.top_k(emit_sampling_logits, trace_top_k)
-                trace_logsumexp = jax.nn.logsumexp(emit_sampling_logits, axis=-1)
+                trace_top_k_logits, trace_top_k_ids = jax.lax.top_k(accepted_token_logits, trace_top_k)
+                trace_logsumexp = jax.nn.logsumexp(accepted_token_logits, axis=-1)
 
             next_sampling_policy = vmap(
                 lambda policy, row_token_ids, row_mask: policy.update_many(row_token_ids, row_mask),
             )(state.sampling_policy, emitted_token_ids, write_mask)
-            accepted = eqx.tree_at(lambda proposal: proposal.num_compact_indices, accepted, num_emitted)
             next_lm_state = lm_state.commit(
                 state_request,
                 decoder_outputs,
                 processed_tree_logits,
                 accepted,
                 emitted_token_ids,
-                compact_kv=speculator is not None,
                 sampling_top_k_ids=sampling_top_k_ids,
                 sampling_top_k_logits=sampling_top_k_logits,
                 trace_top_k_ids=trace_top_k_ids,

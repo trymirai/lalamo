@@ -5,6 +5,7 @@ from lalamo.speculator.state import LMState, MemoryBuffers, RingBuffer, StateReq
 __all__ = [
     "LMState",
     "MemoryBuffers",
+    "NoSpeculator",
     "RingBuffer",
     "Speculator",
     "StateRequest",
@@ -18,3 +19,8 @@ class Speculator(ABC):
 
     @abstractmethod
     def draft(self, state: LMState) -> TrieProposal: ...
+
+
+class NoSpeculator(Speculator):
+    def draft(self, state: LMState) -> TrieProposal:
+        return state.create_root_proposal(budget=1)

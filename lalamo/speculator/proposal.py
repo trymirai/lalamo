@@ -19,19 +19,44 @@ class AcceptedProposal(eqx.Module):
     terminal_node_indices: Int[Array, " batch"]
     bonus_token_ids: Int[Array, " batch"]
 
-    def sampling_logits(
+    def accepted_token_logits(
         self,
         processed_tree_logits: Float[Array, "batch nodes vocabulary"],
         root_sample_logits: Float[Array, "batch vocabulary"],
     ) -> Float[Array, "batch max_slots vocabulary"]:
-        batch_size = self.compact_indices.shape[0]
+        batch_size, _ = self.compact_indices.shape
         batch_indices = jnp.arange(batch_size, dtype=jnp.int32)[:, None]
         parent_logit_indices = jnp.concatenate(
             [jnp.zeros((batch_size, 1), dtype=jnp.int32), self.compact_indices[:, :-1]],
             axis=1,
         )
-        sampling_logits = processed_tree_logits[batch_indices, parent_logit_indices]
-        return sampling_logits.at[:, 0].set(root_sample_logits)
+        token_logits = processed_tree_logits[batch_indices, parent_logit_indices]
+        return token_logits.at[:, 0].set(root_sample_logits)
+
+    def truncate(
+        self,
+        current_output_lengths: Int[Array, " batch"],
+        max_output_length: int,
+        done: Bool[Array, " batch"],
+        eos_token_ids: Int[Array, " eos_tokens"],
+    ) -> tuple["AcceptedProposal", Bool[Array, "batch max_slots"]]:
+        slots = jnp.arange(self.accepted_token_ids.shape[1], dtype=jnp.int32)[None, :]
+        valid = jnp.logical_and(
+            slots < self.num_compact_indices[:, None],
+            slots < (max_output_length - current_output_lengths)[:, None],
+        )
+        valid = jnp.logical_and(valid, jnp.logical_not(done)[:, None])
+        if eos_token_ids.shape[0] > 0:
+            eos_hits = jnp.logical_and(
+                valid,
+                jnp.any(self.accepted_token_ids[:, :, None] == eos_token_ids[None, None, :], axis=-1),
+            )
+        else:
+            eos_hits = jnp.zeros_like(valid)
+        prior_eos_count = jnp.cumsum(eos_hits.astype(jnp.int32), axis=1) - eos_hits.astype(jnp.int32)
+        mask = jnp.logical_and(valid, prior_eos_count == 0)
+        num_compact_indices = jnp.sum(mask, axis=1).astype(jnp.int32)
+        return eqx.tree_at(lambda proposal: proposal.num_compact_indices, self, num_compact_indices), mask
 
 
 class ProposalInputs(eqx.Module):
@@ -137,14 +162,13 @@ class TrieProposal(eqx.Module):
     def forward_inputs(
         self,
         next_token_positions: Int[Array, " batch"],
-        use_tree_attention: bool = True,
     ) -> ProposalInputs:
         token_positions = next_token_positions[:, None] + self.depths
         forward_pass_mode = ForwardPassMode.MULTI_TOKEN
         if self.batch_size == 1 and self.num_nodes == 1:
             forward_pass_mode = ForwardPassMode.SINGLE_TOKEN
         attention_parent_indices = None
-        if use_tree_attention:
+        if self.num_nodes > 1:
             attention_parent_indices = jnp.where(self.node_mask, self.parent_indices, -1)
         return ProposalInputs(
             token_ids=self.token_ids,
@@ -156,6 +180,17 @@ class TrieProposal(eqx.Module):
 
     def verify(self, sampled_token_ids: Int[Array, "batch nodes"]) -> AcceptedProposal:
         batch_indices = jnp.arange(self.batch_size, dtype=jnp.int32)
+        if self.num_nodes == 1:
+            zeros = jnp.zeros((self.batch_size, 1), dtype=jnp.int32)
+            return AcceptedProposal(
+                accepted_token_ids=self.token_ids[:, :1],
+                node_indices=zeros,
+                compact_indices=zeros,
+                num_compact_indices=jnp.ones((self.batch_size,), dtype=jnp.int32),
+                terminal_node_indices=jnp.zeros((self.batch_size,), dtype=jnp.int32),
+                bonus_token_ids=sampled_token_ids[:, 0],
+            )
+
         candidate_node_indices = jnp.arange(self.budget, dtype=jnp.int32)[None, :]
 
         def scan_step(
