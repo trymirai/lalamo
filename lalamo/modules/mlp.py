@@ -535,7 +535,12 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         active_expert_indices = with_sharding(routing_map.active_expert_indices, make_sharding((None, None)))
         active_expert_weights = with_sharding(routing_map.active_expert_weights, make_sharding((None, None)))
         num_active_routed_experts = active_expert_indices.shape[-1]
-        routed_expert_indices = active_expert_indices.ravel()
+        flat_padding = jnp.broadcast_to(
+            flattened_padding_mask[:, None], active_expert_indices.shape,
+        ).ravel()
+        routed_expert_indices = jnp.where(
+            flat_padding, active_expert_indices.ravel(), self.config.num_routed_experts,
+        )
         routed_assignment_indices = jnp.argsort(routed_expert_indices)
         routed_group_sizes = jnp.bincount(
             routed_expert_indices,
@@ -546,20 +551,8 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         routed_weights = active_expert_weights.ravel()[routed_assignment_indices]
         routed_group_sizes = with_sharding(routed_group_sizes, make_sharding((ShardingAxis.EXPERT,)))
 
-        routed_padding_source = with_sharding(flattened_padding_mask, make_sharding((None,)))
         routed_input_source = with_sharding(flattened_inputs, make_sharding((None, None)))
-        routed_padding_mask = routed_padding_source.at[routed_token_indices].get()
-        selected_routed_inputs = routed_input_source.at[routed_token_indices].get()
-        routed_inputs = jnp.where(
-            routed_padding_mask[:, None],
-            selected_routed_inputs,
-            jnp.zeros_like(selected_routed_inputs),
-        )
-        routed_weights = jnp.where(
-            routed_padding_mask,
-            routed_weights,
-            jnp.zeros((), dtype=routed_weights.dtype),
-        )
+        routed_inputs = routed_input_source.at[routed_token_indices].get()
         routed_outputs = self.routed_experts.call_ragged_mixture(
             routed_inputs,
             routed_expert_indices,
