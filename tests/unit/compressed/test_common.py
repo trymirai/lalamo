@@ -97,6 +97,22 @@ def logical_batched_dot_reference(dequantized_weights: jax.Array, vectors: jax.A
     return jnp.einsum("eoi,ei->eo", dequantized_weights, vectors)
 
 
+def logical_ragged_dot_reference(
+    dequantized_weights: jax.Array,
+    vectors: jax.Array,
+    group_sizes: jax.Array,
+) -> jax.Array:
+    dequantized_weights = host_array(dequantized_weights)
+    vectors = host_array(vectors)
+    group_sizes = host_array(group_sizes)
+    expert_indices = jnp.repeat(
+        jnp.arange(dequantized_weights.shape[0]),
+        group_sizes,
+        total_repeat_length=vectors.shape[0],
+    )
+    return jnp.einsum("toi,ti->to", dequantized_weights[expert_indices], vectors)
+
+
 def embedding_sharding() -> NamedSharding:
     sharding = make_sharding((None,))
     assert sharding is not None
@@ -497,6 +513,59 @@ def test_batched_compressed_matrix_dot_requires_vmap_and_matches_expert_referenc
 
     assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == vectors.sharding
+    assert_close_arrays(result=result, reference=reference)
+
+
+@pytest.mark.parametrize("case", COMPRESSED_MATRIX_CASES)
+@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
+@pytest.mark.parametrize("implementation", list(CompressionImplementation))
+def test_batched_compressed_matrix_ragged_dot_matches_reference_and_preserves_input_sharding(
+    fake_mesh: Mesh,
+    case: CompressedMatrixCase,
+    layout: Layout,
+    implementation: CompressionImplementation,
+) -> None:
+    matrix = _compress(
+        case,
+        logical_weights(case, 4),
+        layout=layout,
+        implementation=implementation,
+    )
+    vectors = jax.device_put(
+        jnp.arange(16, dtype=jnp.float32).reshape(4, 4) / 10,
+        make_sharding((ShardingAxis.DATA, None)),
+    )
+    group_sizes = jnp.array([2, 0, 0, 2], dtype=jnp.int32)
+
+    result = matrix.ragged_dot(vectors, group_sizes, keychain=Keychain.init(17))
+    reference = logical_ragged_dot_reference(matrix.decompress(), vectors, group_sizes)
+
+    assert_named_sharding(result.sharding, fake_mesh)
+    assert result.sharding == vectors.sharding
+    assert_close_arrays(result=result, reference=reference)
+
+
+@pytest.mark.parametrize("case", COMPRESSED_MATRIX_CASES)
+@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
+@pytest.mark.parametrize("implementation", list(CompressionImplementation))
+def test_batched_compressed_matrix_ragged_dot_output_dtype_matches_input_dtype(
+    case: CompressedMatrixCase,
+    layout: Layout,
+    implementation: CompressionImplementation,
+) -> None:
+    matrix = _compress(
+        case,
+        logical_weights(case, 2),
+        layout=layout,
+        implementation=implementation,
+    )
+    vectors = jnp.arange(12, dtype=jnp.bfloat16).reshape(3, 4)
+    group_sizes = jnp.array([1, 2], dtype=jnp.int32)
+
+    result = matrix.ragged_dot(vectors, group_sizes, keychain=Keychain.init(18))
+    reference = logical_ragged_dot_reference(matrix.astype(vectors.dtype).decompress(), vectors, group_sizes)
+
+    assert result.dtype == vectors.dtype
     assert_close_arrays(result=result, reference=reference)
 
 

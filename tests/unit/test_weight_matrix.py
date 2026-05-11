@@ -42,6 +42,17 @@ def _assert_close(result: jax.Array, reference: jax.Array) -> None:
     assert_close(result=jnp.asarray(jax.device_get(result)), reference=jnp.asarray(jax.device_get(reference)))
 
 
+def _ragged_dot_reference(matrix: FullPrecisionMatrix, vectors: jax.Array, group_sizes: jax.Array) -> jax.Array:
+    weights = _host_decompressed(matrix)
+    host_group_sizes = jnp.asarray(jax.device_get(group_sizes))
+    expert_indices = jnp.repeat(
+        jnp.arange(weights.shape[0]),
+        host_group_sizes,
+        total_repeat_length=vectors.shape[0],
+    )
+    return jnp.einsum("toi,ti->to", weights[expert_indices], jnp.asarray(jax.device_get(vectors)))
+
+
 def _host_decompressed(matrix: FullPrecisionMatrix) -> jax.Array:
     return jnp.asarray(jax.device_get(matrix.decompress()))
 
@@ -244,6 +255,61 @@ def test_full_precision_dot_output_dtype_matches_input_dtype(fake_mesh: Mesh, la
     assert result.dtype == vector.dtype
     _assert_named_sharding(matrix.weights.sharding, fake_mesh)
     _assert_close(result=result, reference=weights.astype(vector.dtype) @ vector)
+
+
+@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
+def test_batched_full_precision_ragged_dot_matches_reference_and_preserves_input_sharding(
+    fake_mesh: Mesh,
+    layout: Layout,
+) -> None:
+    weights = _logical_weights(4)
+    vectors = jax.device_put(
+        jnp.arange(16, dtype=jnp.float32).reshape(4, 4) / 10,
+        make_sharding((ShardingAxis.DATA, None)),
+    )
+    group_sizes = jnp.array([2, 0, 0, 2], dtype=jnp.int32)
+    matrix = FullPrecisionSpec(layout=layout).compress(weights)
+
+    result = matrix.ragged_dot(vectors, group_sizes, keychain=Keychain.init(16))
+
+    _assert_named_sharding(result.sharding, fake_mesh)
+    assert result.sharding == vectors.sharding
+    _assert_close(result=result, reference=_ragged_dot_reference(matrix, vectors, group_sizes))
+
+
+@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
+def test_batched_full_precision_ragged_dot_under_jit_preserves_input_sharding(
+    fake_mesh: Mesh,
+    layout: Layout,
+) -> None:
+    weights = _logical_weights(2)
+    vectors = jax.device_put(
+        jnp.arange(16, dtype=jnp.float32).reshape(4, 4) / 10,
+        make_sharding((ShardingAxis.DATA, None)),
+    )
+    group_sizes = jnp.array([2, 2], dtype=jnp.int32)
+    matrix = FullPrecisionSpec(layout=layout).compress(weights)
+
+    result = jax.jit(lambda matrix, vectors: matrix.ragged_dot(vectors, group_sizes, keychain=Keychain.init(17)))(
+        matrix,
+        vectors,
+    )
+
+    _assert_named_sharding(result.sharding, fake_mesh)
+    assert result.sharding == vectors.sharding
+    _assert_close(result=result, reference=_ragged_dot_reference(matrix, vectors, group_sizes))
+
+
+@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
+def test_batched_full_precision_ragged_dot_output_dtype_matches_input_dtype(layout: Layout) -> None:
+    matrix = FullPrecisionSpec(layout=layout).compress(_logical_weights(2))
+    vectors = jnp.arange(12, dtype=jnp.bfloat16).reshape(3, 4)
+    group_sizes = jnp.array([1, 2], dtype=jnp.int32)
+
+    result = matrix.ragged_dot(vectors, group_sizes, keychain=Keychain.init(18))
+
+    assert result.dtype == vectors.dtype
+    _assert_close(result=result, reference=_ragged_dot_reference(matrix.astype(vectors.dtype), vectors, group_sizes))
 
 
 def test_full_precision_lookup_embedding_matches_selected_row_and_feature_sharding(fake_mesh: Mesh) -> None:

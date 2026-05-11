@@ -4,13 +4,13 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from jax.scipy.linalg import solve_triangular
-from jaxtyping import Array, DTypeLike, Float, Key
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.module import Keychain, ParameterNorm, ShardingAxis, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.utils.sharding import use_out_sharding
+from lalamo.utils.sharding import reshard_as, use_out_sharding
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
@@ -19,6 +19,7 @@ from lalamo.weight_matrix import (
     MatmulConfig,
     WeightMatrix,
     WeightMatrixSpec,
+    _ragged_dot,
 )
 
 __all__ = [
@@ -129,3 +130,29 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
                 result = up_projection @ (down_projection @ vector)
 
         return result
+
+    def ragged_dot(
+        self,
+        vectors: Float[Array, "tokens input_channels"],
+        group_sizes: Int[Array, " experts"],
+        *,
+        keychain: Keychain,  # noqa: ARG002
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+    ) -> Float[Array, "tokens output_channels"]:
+        self._raise_if_not_batched()
+        down_projection = self.down_projection.astype(vectors.dtype)
+        up_projection = self.up_projection.astype(vectors.dtype)
+
+        hidden = _ragged_dot(
+            vectors,
+            down_projection.swapaxes(-1, -2),
+            group_sizes,
+            precision=forward_pass_config.precision,
+        )
+        result = _ragged_dot(
+            hidden,
+            up_projection.swapaxes(-1, -2),
+            group_sizes,
+            precision=forward_pass_config.precision,
+        )
+        return reshard_as(result, vectors)

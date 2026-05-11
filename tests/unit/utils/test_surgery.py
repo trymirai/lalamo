@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, DTypeLike, Float, Key
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, ShardingAxis
@@ -102,6 +102,16 @@ class SurgeryWeightMatrix(WeightMatrix[SurgeryWeightMatrixSpec]):
         if transposed:
             weights = weights.T
         return weights @ vector
+
+    def ragged_dot(
+        self,
+        vectors: Float[Array, "tokens input_channels"],
+        group_sizes: Int[Array, " experts"],  # noqa: ARG002
+        *,
+        keychain: Keychain,  # noqa: ARG002
+        forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
+    ) -> Float[Array, "tokens output_channels"]:
+        return vectors @ self.weights.swapaxes(-1, -2)
 
 
 class TemplateWeightMatrix(SurgeryWeightMatrix):

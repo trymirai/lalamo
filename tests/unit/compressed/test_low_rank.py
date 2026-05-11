@@ -64,6 +64,18 @@ def _assert_close(result: jax.Array, reference: jax.Array) -> None:
     assert_close(result=jnp.asarray(jax.device_get(result)), reference=jnp.asarray(jax.device_get(reference)))
 
 
+def _ragged_dot_reference(matrix: LowRankMatrix, vectors: jax.Array, group_sizes: jax.Array) -> jax.Array:
+    weights = jnp.asarray(jax.device_get(matrix.decompress()))
+    vectors = jnp.asarray(jax.device_get(vectors))
+    group_sizes = jnp.asarray(jax.device_get(group_sizes))
+    expert_indices = jnp.repeat(
+        jnp.arange(weights.shape[0]),
+        group_sizes,
+        total_repeat_length=vectors.shape[0],
+    )
+    return jnp.einsum("toi,ti->to", weights[expert_indices], vectors)
+
+
 def _unsharded_sharding(ndim: int) -> NamedSharding:
     sharding = make_sharding((None,) * ndim)
     assert sharding is not None
@@ -288,6 +300,21 @@ def test_batched_low_rank_dot_requires_vmap_and_matches_expert_reference(fake_me
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == _unsharded_sharding(2)
     _assert_close(result=result, reference=reference)
+
+
+def test_batched_low_rank_ragged_dot_matches_decompressed_weights_and_keeps_output_unsharded(fake_mesh: Mesh) -> None:
+    matrix = LowRankSpec(rank=2).compress(_logical_weights(3))
+    vectors = jax.device_put(
+        jnp.arange(16, dtype=jnp.float32).reshape(4, 4) / 10,
+        _unsharded_sharding(2),
+    )
+    group_sizes = jnp.array([2, 0, 2], dtype=jnp.int32)
+
+    result = matrix.ragged_dot(vectors, group_sizes, keychain=Keychain.init(9))
+
+    _assert_named_sharding(result.sharding, fake_mesh)
+    assert result.sharding == _unsharded_sharding(2)
+    _assert_close(result=result, reference=_ragged_dot_reference(matrix, vectors, group_sizes))
 
 
 def test_low_rank_dot_under_jit_keeps_output_unsharded(fake_mesh: Mesh) -> None:

@@ -27,6 +27,18 @@ def _assert_close(result: jax.Array, reference: jax.Array) -> None:
     assert_close(result=jnp.asarray(jax.device_get(result)), reference=jnp.asarray(jax.device_get(reference)))
 
 
+def _ragged_dot_reference(matrix: HybridMatrix, vectors: jax.Array, group_sizes: jax.Array) -> jax.Array:
+    weights = jnp.asarray(jax.device_get(matrix.decompress()))
+    vectors = jnp.asarray(jax.device_get(vectors))
+    group_sizes = jnp.asarray(jax.device_get(group_sizes))
+    expert_indices = jnp.repeat(
+        jnp.arange(weights.shape[0]),
+        group_sizes,
+        total_repeat_length=vectors.shape[0],
+    )
+    return jnp.einsum("toi,ti->to", weights[expert_indices], vectors)
+
+
 @dataclass(frozen=True)
 class _PreconditionerRecordingSpec(WeightMatrixSpec):
     calls: list[Preconditioner | None]
@@ -124,6 +136,21 @@ def test_hybrid_incoherence_transposed_dot_matches_original_weights() -> None:
     result = matrix.dot(vector, keychain=Keychain.init(1), transposed=True)
 
     _assert_close(result=result, reference=weights.T @ vector)
+
+
+def test_hybrid_incoherence_ragged_dot_matches_original_weights() -> None:
+    weights = jnp.stack([_weights(), _weights() / 3])
+    matrix = HybridSpec(
+        quantization_spec=FullPrecisionSpec(),
+        adapter_spec=None,
+        incoherence_block_size=32,
+    ).compress(weights, key=jax.random.key(3))
+    vectors = (jnp.arange(3 * 64, dtype=jnp.float32).reshape(3, 64) - 3) / 7
+    group_sizes = jnp.array([1, 2], dtype=jnp.int32)
+
+    result = matrix.ragged_dot(vectors, group_sizes, keychain=Keychain.init(2))
+
+    _assert_close(result=result, reference=_ragged_dot_reference(matrix, vectors, group_sizes))
 
 
 def test_hybrid_adapter_compresses_residual_in_incoherent_basis() -> None:

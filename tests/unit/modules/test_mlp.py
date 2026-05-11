@@ -7,6 +7,7 @@ import pytest
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
+from lalamo.compressed.awq import AWQSpec
 from lalamo.module import ForwardPassMode, Keychain, ShardingAxis
 from lalamo.modules.activations import Identity, SiLU
 from lalamo.modules.linear import Linear, LinearConfig
@@ -21,7 +22,7 @@ from lalamo.modules.mlp import (
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
-from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec
+from lalamo.weight_matrix import CompressionImplementation, FullPrecisionMatrix, FullPrecisionSpec
 from tests.common import assert_close
 
 MODEL_DIM = 4
@@ -154,6 +155,26 @@ def _moe(
 
 def _routed_only_moe(*, num_active_routed_experts: int = 1) -> MixtureOfExperts:
     return _moe(num_active_routed_experts=num_active_routed_experts)
+
+
+def _moe_with_awq_experts(module: MixtureOfExperts) -> MixtureOfExperts:
+    spec = AWQSpec(bits=8, group_size=2)
+    up_projection = spec.compress(
+        module.experts.up_projection.weights.decompress(),
+        implementation=CompressionImplementation.INFERENCE,
+    )
+    down_projection = spec.compress(
+        module.experts.down_projection.weights.decompress(),
+        implementation=CompressionImplementation.INFERENCE,
+    )
+    return eqx.tree_at(
+        lambda value: (
+            value.experts.up_projection.weights,
+            value.experts.down_projection.weights,
+        ),
+        module,
+        (up_projection, down_projection),
+    )
 
 
 def _moe_template(module: MixtureOfExperts) -> MixtureOfExperts:
@@ -425,11 +446,9 @@ def test_softmax_routing_call_unbatched_selects_top_k_and_normalizes_weights() -
 
     result = routing.call_unbatched(logits, num_active=2)
 
-    expected_weights = jnp.zeros_like(logits)
-    expected_weights = expected_weights.at[jnp.array([1, 2])].set(jax.nn.softmax(jnp.array([3.0, 2.0])))
-    assert jnp.array_equal(result.expert_mask, jnp.array([False, True, True]))
-    assert_close(result=result.expert_weights, reference=expected_weights)
-    assert_close(result=jnp.sum(result.expert_weights), reference=jnp.array(1.0, dtype=jnp.float32))
+    assert jnp.array_equal(result.active_expert_indices, jnp.array([1, 2]))
+    assert_close(result=result.active_expert_weights, reference=jax.nn.softmax(jnp.array([3.0, 2.0])))
+    assert_close(result=jnp.sum(result.active_expert_weights), reference=jnp.array(1.0, dtype=jnp.float32))
 
 
 def test_softmax_routing_vmapped_call_matches_unbatched() -> None:
@@ -445,8 +464,8 @@ def test_softmax_routing_vmapped_call_matches_unbatched() -> None:
     result = routing(logits, num_active=2)
     reference = jax.vmap(lambda token_logits: routing.call_unbatched(token_logits, num_active=2))(logits)
 
-    assert jnp.array_equal(result.expert_mask, reference.expert_mask)
-    assert_close(result=result.expert_weights, reference=reference.expert_weights)
+    assert jnp.array_equal(result.active_expert_indices, reference.active_expert_indices)
+    assert_close(result=result.active_expert_weights, reference=reference.active_expert_weights)
 
 
 @pytest.mark.parametrize("mode", MOE_MODES)
@@ -467,6 +486,20 @@ def test_routed_moe_matches_direct_reference(fake_mesh: Mesh, mode: ForwardPassM
         inputs,
         forward_pass_config=MLPForwardPassConfig(mode=mode, moe_chunk_size_ratio=0.5),
         keychain=Keychain.init(7),
+    )
+
+    _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
+
+
+def test_moe_prefill_with_compressed_experts_matches_direct_reference(fake_mesh: Mesh) -> None:
+    assert fake_mesh is not None
+    module = _moe_with_awq_experts(_routed_only_moe(num_active_routed_experts=2))
+    inputs = jnp.arange(2 * 3 * MODEL_DIM, dtype=jnp.float32).reshape(2, 3, MODEL_DIM) / 10
+
+    result = module(
+        inputs,
+        forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
+        keychain=Keychain.init(17),
     )
 
     _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
