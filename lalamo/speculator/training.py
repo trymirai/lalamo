@@ -11,9 +11,7 @@ from annotated_types import Ge
 from lalamo.data.completion_features import FeatureRequest, LalamoCompletionFeatures
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.models.completion_feature_extractor import FeatureQueue, OnlineCompletionFeatureExtractor
-from lalamo.modules.decoder import Decoder
 from lalamo.speculator.common import Speculator
-from lalamo.speculator.proposal import GumbelSampler
 
 __all__ = [
     "SpeculatorBatchResult",
@@ -130,16 +128,12 @@ class SpeculatorTrainer[SpeculatorT: Speculator, StateT](ABC):
     def finish(
         self,
         state: StateT,
-        target_decoder: Decoder,
-        sampler: GumbelSampler,
     ) -> SpeculatorT: ...
 
     @abstractmethod
     def save(
         self,
         state: StateT,
-        target_decoder: Decoder,
-        sampler: GumbelSampler,
         event: SpeculatorTrainingEvent,
     ) -> None: ...
 
@@ -149,8 +143,6 @@ def train_speculator[SpeculatorT: Speculator, StateT](
     extractor: OnlineCompletionFeatureExtractor,
     train_completions: Callable[[], Iterable[LalamoCompletion]],
     eval_completions: Callable[[], Iterable[LalamoCompletion]] | None,
-    target_decoder: Decoder,
-    sampler: GumbelSampler,
     config: SpeculatorTrainingConfig,
     progress_callback: Callable[[SpeculatorTrainingEvent], None] | None = None,
 ) -> SpeculatorT:
@@ -196,7 +188,7 @@ def train_speculator[SpeculatorT: Speculator, StateT](
             best_event = eval_event
             best_loss = eval_event.loss
             bad_eval_count = 0
-            trainer.save(best_state, target_decoder, sampler, best_event)
+            trainer.save(best_state, best_event)
         else:
             bad_eval_count += 1
             if (
@@ -211,9 +203,9 @@ def train_speculator[SpeculatorT: Speculator, StateT](
             epoch=0,
             progress=progress,
         )
-        trainer.save(best_state, target_decoder, sampler, best_event)
+        trainer.save(best_state, best_event)
 
-    return trainer.finish(best_state, target_decoder, sampler)
+    return trainer.finish(best_state)
 
 
 def run_training_epoch[SpeculatorT: Speculator, StateT](

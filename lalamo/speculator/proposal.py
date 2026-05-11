@@ -1,42 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Bool, Float, Int
+from jaxtyping import Array, Bool, Float, Int, Key
 
 from lalamo.modules.common import ForwardPassMode
-from lalamo.modules.decoder import Decoder, DecoderResult
-from lalamo.modules.token_mixers.state.common import State
+from lalamo.sampling import SamplingPolicy
 
-__all__ = ["AcceptedProposal", "GumbelSampler", "TrieProposal"]
-
-
-@dataclass(frozen=True)
-class GumbelSampler:
-    seed: int
-    temperature: float = 1.0
-
-    def sample_logits(
-        self,
-        logits: Float[Array, "batch vocab"],
-        positions: Int[Array, " batch"],
-    ) -> Int[Array, " batch"]:
-        if self.temperature < 1e-5:
-            return jnp.argmax(logits, axis=-1).astype(jnp.int32)
-
-        base_key = jax.random.key(self.seed & 0xFFFFFFFF)
-        keys = jax.vmap(lambda position: jax.random.fold_in(base_key, position))(positions)
-        noise = jax.vmap(
-            lambda key, row_logits: jax.random.gumbel(key, row_logits.shape, dtype=jnp.float32),
-        )(keys, logits)
-        scores = logits.astype(jnp.float32) / self.temperature + noise
-        return jnp.argmax(scores, axis=-1).astype(jnp.int32)
+__all__ = ["AcceptedProposal", "ProposalInputs", "TrieProposal"]
 
 
-@dataclass(frozen=True)
-class AcceptedProposal:
+class AcceptedProposal(eqx.Module):
     accepted_token_ids: Int[Array, "batch max_slots"]
     node_indices: Int[Array, "batch max_slots"]
     compact_indices: Int[Array, "batch max_slots"]
@@ -44,15 +19,36 @@ class AcceptedProposal:
     terminal_node_indices: Int[Array, " batch"]
     bonus_token_ids: Int[Array, " batch"]
 
+    def sampling_logits(
+        self,
+        processed_tree_logits: Float[Array, "batch nodes vocabulary"],
+        root_sample_logits: Float[Array, "batch vocabulary"],
+    ) -> Float[Array, "batch max_slots vocabulary"]:
+        batch_size = self.compact_indices.shape[0]
+        batch_indices = jnp.arange(batch_size, dtype=jnp.int32)[:, None]
+        parent_logit_indices = jnp.concatenate(
+            [jnp.zeros((batch_size, 1), dtype=jnp.int32), self.compact_indices[:, :-1]],
+            axis=1,
+        )
+        sampling_logits = processed_tree_logits[batch_indices, parent_logit_indices]
+        return sampling_logits.at[:, 0].set(root_sample_logits)
 
-@dataclass(frozen=True)
-class TrieProposal:
+
+class ProposalInputs(eqx.Module):
+    token_ids: Int[Array, "batch nodes"]
+    token_positions: Int[Array, "batch nodes"]
+    lengths_without_padding: Int[Array, " batch"]
+    forward_pass_mode: ForwardPassMode = eqx.field(static=True)
+    attention_parent_indices: Int[Array, "batch nodes"] | None = None
+
+
+class TrieProposal(eqx.Module):
     token_ids: Int[Array, "batch nodes"]
     parent_indices: Int[Array, "batch nodes"]
     depths: Int[Array, "batch nodes"]
-    gumbel_positions: Int[Array, "batch nodes"]
+    sample_positions: Int[Array, "batch nodes"]
     node_mask: Bool[Array, "batch nodes"]
-    num_nodes: int
+    num_nodes: int = eqx.field(static=True)
 
     @staticmethod
     def create(
@@ -64,13 +60,13 @@ class TrieProposal:
         token_ids = jnp.zeros((batch_size, budget), dtype=jnp.int32)
         parent_indices = jnp.full((batch_size, budget), -1, dtype=jnp.int32)
         depths = jnp.zeros((batch_size, budget), dtype=jnp.int32)
-        gumbel_positions = jnp.zeros((batch_size, budget), dtype=jnp.int32)
+        sample_positions = jnp.zeros((batch_size, budget), dtype=jnp.int32)
         node_mask = jnp.zeros((batch_size, budget), dtype=jnp.bool)
         return TrieProposal(
             token_ids=token_ids.at[:, 0].set(root_ids),
             parent_indices=parent_indices,
             depths=depths,
-            gumbel_positions=gumbel_positions.at[:, 0].set(root_sample_positions),
+            sample_positions=sample_positions.at[:, 0].set(root_sample_positions),
             node_mask=node_mask.at[:, 0].set(True),
             num_nodes=1,
         )
@@ -97,8 +93,8 @@ class TrieProposal:
                 depths=self.depths.at[batch_indices, node_index].set(
                     self.depths[batch_indices, parent_indices] + 1,
                 ),
-                gumbel_positions=self.gumbel_positions.at[batch_indices, node_index].set(
-                    self.gumbel_positions[batch_indices, parent_indices] + 1,
+                sample_positions=self.sample_positions.at[batch_indices, node_index].set(
+                    self.sample_positions[batch_indices, parent_indices] + 1,
                 ),
                 node_mask=self.node_mask.at[batch_indices, node_index].set(True),
                 num_nodes=node_index + 1,
@@ -106,33 +102,57 @@ class TrieProposal:
             node_index,
         )
 
-    def forward(
+    def sample(
         self,
-        decoder: Decoder,
-        kv_cache: State,
-        next_token_positions: Int[Array, " batch"],
-        sampler: GumbelSampler,
-        return_activation_trace: bool,
-    ) -> tuple[DecoderResult, Int[Array, "batch nodes"]]:
-        token_positions = next_token_positions[:, None] + self.depths
-        decoder_result = decoder(
+        logits: Float[Array, "batch nodes vocabulary"],
+        sampling_policy: SamplingPolicy,
+        output_lengths: Int[Array, " batch"],
+        per_position_keys: Key[Array, "batch positions"],
+    ) -> tuple[Float[Array, "batch nodes vocabulary"], Int[Array, "batch nodes"]]:
+        processed_logits = jax.vmap(
+            lambda policy, row_logits, token_ids, parent_indices, node_mask: policy.process_tree_logits(
+                row_logits.astype(jnp.float32),
+                token_ids,
+                parent_indices,
+                node_mask,
+            ),
+        )(
+            sampling_policy,
+            logits,
             self.token_ids,
-            token_positions,
-            kv_cache,
-            return_updated_state=True,
-            return_activation_trace=return_activation_trace,
-            lengths_without_padding=jnp.full((self.batch_size,), self.num_nodes, dtype=jnp.int32),
-            forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
-            attention_parent_indices=jnp.where(self.node_mask, self.parent_indices, -1),
+            self.parent_indices,
+            self.node_mask,
         )
-        return decoder_result, self.sample(decoder_result.logits, sampler)
+        sample_positions = output_lengths[:, None] + self.depths + 1
+        batch_indices = jnp.arange(self.batch_size, dtype=jnp.int32)[:, None]
+        safe_positions = jnp.clip(sample_positions, 0, per_position_keys.shape[1] - 1)
+        sample_keys = per_position_keys[batch_indices, safe_positions]
+        token_ids = jax.vmap(
+            lambda row_keys, row_logits: jax.vmap(
+                lambda key, row_logit: jax.random.categorical(key, row_logit),
+            )(row_keys, row_logits),
+        )(sample_keys, processed_logits).astype(jnp.int32)
+        return processed_logits, jnp.where(self.node_mask, token_ids, -1)
 
-    def sample(self, logits: Float[Array, "batch nodes vocab"], sampler: GumbelSampler) -> Int[Array, "batch nodes"]:
-        sampled_token_ids = sampler.sample_logits(
-            logits.reshape((-1, logits.shape[-1])),
-            self.gumbel_positions.reshape(-1),
+    def forward_inputs(
+        self,
+        next_token_positions: Int[Array, " batch"],
+        use_tree_attention: bool = True,
+    ) -> ProposalInputs:
+        token_positions = next_token_positions[:, None] + self.depths
+        forward_pass_mode = ForwardPassMode.MULTI_TOKEN
+        if self.batch_size == 1 and self.num_nodes == 1:
+            forward_pass_mode = ForwardPassMode.SINGLE_TOKEN
+        attention_parent_indices = None
+        if use_tree_attention:
+            attention_parent_indices = jnp.where(self.node_mask, self.parent_indices, -1)
+        return ProposalInputs(
+            token_ids=self.token_ids,
+            token_positions=token_positions,
+            lengths_without_padding=jnp.full((self.batch_size,), self.num_nodes, dtype=jnp.int32),
+            forward_pass_mode=forward_pass_mode,
+            attention_parent_indices=attention_parent_indices,
         )
-        return jnp.where(self.node_mask, sampled_token_ids.reshape(self.gumbel_positions.shape), -1)
 
     def verify(self, sampled_token_ids: Int[Array, "batch nodes"]) -> AcceptedProposal:
         batch_indices = jnp.arange(self.batch_size, dtype=jnp.int32)
@@ -141,7 +161,10 @@ class TrieProposal:
         def scan_step(
             carry: tuple[Int[Array, " batch"], Bool[Array, " batch"]],
             _: None,
-        ) -> tuple[tuple[Int[Array, " batch"], Bool[Array, " batch"]], tuple[Int[Array, " batch"], Bool[Array, " batch"]]]:
+        ) -> tuple[
+            tuple[Int[Array, " batch"], Bool[Array, " batch"]],
+            tuple[Int[Array, " batch"], Bool[Array, " batch"]],
+        ]:
             terminal_node_indices, alive = carry
             sampled_at_terminal = sampled_token_ids[batch_indices, terminal_node_indices]
             child_mask = jnp.logical_and(
@@ -175,20 +198,17 @@ class TrieProposal:
             ],
             axis=1,
         )
-        node_mask = jnp.concatenate(
-            [path_mask, jnp.zeros((self.batch_size, 1), dtype=jnp.bool)],
-            axis=1,
-        )
-        accepted_token_ids = jnp.where(
-            node_mask,
-            jnp.take_along_axis(self.token_ids, node_indices, axis=1),
-            -1,
-        )
         compact_indices = jnp.concatenate(
             [jnp.zeros((self.batch_size, 1), dtype=jnp.int32), node_indices[:, :-1]],
             axis=1,
         )
         num_compact_indices = jnp.sum(path_mask, axis=1).astype(jnp.int32) + 1
+        slots = jnp.arange(self.budget, dtype=jnp.int32)[None, :]
+        accepted_token_ids = jnp.where(
+            slots < num_compact_indices[:, None],
+            jnp.take_along_axis(self.token_ids, compact_indices, axis=1),
+            -1,
+        )
         bonus_token_ids = sampled_token_ids[batch_indices, terminal_node_indices]
 
         return AcceptedProposal(

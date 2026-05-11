@@ -7,7 +7,7 @@ from typing import Self
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 __all__ = [
     "BanTokensPolicy",
@@ -35,6 +35,84 @@ class SamplingPolicy(eqx.Module):
 
     def update(self, next_token: Int[Array, ""]) -> Self:  # noqa: ARG002
         return self
+
+    def update_many(self, token_ids: Int[Array, " tokens"], mask: Bool[Array, " tokens"]) -> Self:
+        def step(policy: Self, item: tuple[Int[Array, ""], Bool[Array, ""]]) -> tuple[Self, None]:
+            token_id, should_update = item
+            policy = jax.lax.cond(
+                should_update,
+                lambda p: p.update(token_id),
+                lambda p: p,
+                policy,
+            )
+            return policy, None
+
+        policy, _ = jax.lax.scan(step, self, (token_ids, mask))
+        return policy
+
+    def process_tree_logits(
+        self,
+        logits: Float[Array, "nodes vocabulary"],
+        token_ids: Int[Array, " nodes"],
+        parent_indices: Int[Array, " nodes"],
+        node_mask: Bool[Array, " nodes"],
+    ) -> Float[Array, "nodes vocabulary"]:
+        num_nodes = token_ids.shape[0]
+
+        def broadcast_policy(policy: Self) -> Self:
+            return jax.tree.map(
+                lambda value: jnp.broadcast_to(value, (num_nodes, *value.shape)) if eqx.is_array(value) else value,
+                policy,
+            )
+
+        def take_policy(policies: Self, index: Int[Array, ""]) -> Self:
+            return jax.tree.map(
+                lambda value: value[index] if eqx.is_array(value) and value.shape[0] == num_nodes else value,
+                policies,
+            )
+
+        def set_policy(policies: Self, index: Int[Array, ""], policy: Self) -> Self:
+            return jax.tree.map(
+                lambda values, value: values.at[index].set(value)
+                if eqx.is_array(values) and values.shape[0] == num_nodes
+                else values,
+                policies,
+                policy,
+            )
+
+        def step(
+            carry: tuple[Self, Float[Array, "nodes vocabulary"]],
+            node_index: Int[Array, ""],
+        ) -> tuple[tuple[Self, Float[Array, "nodes vocabulary"]], None]:
+            policies, processed_logits = carry
+            parent_index = parent_indices[node_index]
+            parent_policy = jax.lax.cond(
+                parent_index >= 0,
+                take_policy,
+                lambda *args: self,
+                policies,
+                parent_index,
+            )
+            node_policy = jax.lax.cond(
+                node_mask[node_index],
+                lambda policy: policy.update(token_ids[node_index]),
+                lambda policy: policy,
+                parent_policy,
+            )
+            row_logits = node_policy.process_logits(logits[node_index].astype(jnp.float32))
+            row_logits = jnp.where(node_mask[node_index], row_logits, jnp.zeros_like(row_logits))
+            return (
+                set_policy(policies, node_index, node_policy),
+                processed_logits.at[node_index].set(row_logits),
+            ), None
+
+        initial_logits = jnp.zeros_like(logits, dtype=jnp.float32)
+        (_, processed_logits), _ = jax.lax.scan(
+            step,
+            (broadcast_policy(self), initial_logits),
+            jnp.arange(num_nodes, dtype=jnp.int32),
+        )
+        return processed_logits
 
     def __call__(self, logits: Float[Array, " vocabulary"], *, key: PRNGKeyArray) -> Int[Array, ""]:
         return jax.random.categorical(key, self.process_logits(logits))

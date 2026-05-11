@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 import jax
 
+from lalamo.speculator.common import Speculator
+
 from .common import InferenceConfig
 
 if TYPE_CHECKING:
@@ -23,6 +25,7 @@ _compile_cache: dict[
             InferenceConfig | None,
             ForwardPassConfig | None,
             GenerationTraceConfig | None,
+            int | None,
             Sharding | None,
         ],
         Compiled,
@@ -41,6 +44,7 @@ def compile_generate_tokens(
     *,
     forward_pass_config: ForwardPassConfig | None = None,
     generation_trace_config: GenerationTraceConfig | None = None,
+    speculator: Speculator | None = None,
     prompt_token_ids: Int[Array, "batch length"],
     prompt_lengths_without_padding: Int[Array, " batch"],
     keys: Key[Array, " batch"],
@@ -53,6 +57,7 @@ def compile_generate_tokens(
         inference_config,
         forward_pass_config,
         generation_trace_config,
+        id(speculator) if speculator is not None else None,
         prompt_token_ids.sharding,
     )
     if model_id not in _compile_cache:
@@ -66,6 +71,7 @@ def compile_generate_tokens(
             num_top_logits_to_return=inference_config.num_top_logits_to_return,
             forward_pass_config=forward_pass_config,
             generation_trace_config=generation_trace_config,
+            speculator=speculator,
         )
         _compile_cache[model_id][key] = (
             jax.jit(generate_tokens_fn)
