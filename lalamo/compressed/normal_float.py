@@ -107,21 +107,7 @@ def _normal_float_grouped_indices(
     safe_scales = jnp.where(scales == 0, jnp.ones_like(scales), scales)
     normalized_weights = grouped_weights / safe_scales[..., None]
     thresholds = (codebook[:-1] + codebook[1:]) / 2
-    lower_indices = jnp.zeros_like(normalized_weights, dtype=jnp.int32)
-    upper_indices = jnp.full_like(lower_indices, thresholds.shape[0])
-    for _ in range(thresholds.shape[0].bit_length()):
-        active = lower_indices < upper_indices
-        middle_indices = (lower_indices + upper_indices) // 2
-        threshold_sharding = None
-        index_sharding = sharding_of(middle_indices)
-        if is_sharded(index_sharding):
-            threshold_sharding = index_sharding.spec
-        middle_thresholds = thresholds.at[middle_indices].get(mode="clip", out_sharding=threshold_sharding)
-        go_right = active & (normalized_weights > middle_thresholds)
-        go_left = active & ~go_right
-        lower_indices = jnp.where(go_right, middle_indices + 1, lower_indices)
-        upper_indices = jnp.where(go_left, middle_indices, upper_indices)
-    return lower_indices.astype(jnp.uint8)
+    return jnp.sum(normalized_weights[..., None] > thresholds, axis=-1).astype(jnp.uint8)
 
 
 def _normal_float_indices_to_master_weights(
