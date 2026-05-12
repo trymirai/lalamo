@@ -34,19 +34,27 @@ _LFM20_MODELS = [
         use_cases=tuple(),
     )
     for size, variant, quantization in chain(
-        product(["350M", "700M", "1.2B"], [None], [None, QuantizationMode.UINT4, QuantizationMode.UINT8]),
-        product(["2.6B"], [None, "Exp"], [None]),
-        product(["2.6B"], ["Exp"], [QuantizationMode.UINT4, QuantizationMode.UINT8]),
+        product(["350M", "700M", "1.2B", "2.6B"], [None], [None, QuantizationMode.UINT4, QuantizationMode.UINT8]),
     )
 ]
+
+_LFM25_MODEL_SPECS = (
+    ("LiquidAI", "LFM2.5-350M", "350M", None),
+    ("LiquidAI", "LFM2.5-1.2B-Instruct", "1.2B", None),
+    ("LiquidAI", "LFM2.5-1.2B-Instruct-MLX-4bit", "1.2B", QuantizationMode.UINT4),
+    ("LiquidAI", "LFM2.5-1.2B-Instruct-MLX-8bit", "1.2B", QuantizationMode.UINT8),
+    ("LiquidAI", "LFM2.5-1.2B-Thinking", "1.2B", None),
+    ("mlx-community", "LFM2.5-1.2B-Thinking-4bit", "1.2B", QuantizationMode.UINT4),
+    ("mlx-community", "LFM2.5-1.2B-Thinking-8bit", "1.2B", QuantizationMode.UINT8),
+)
 
 _LFM25_MODELS = [
     ModelSpec(
         vendor="LiquidAI",
         family="LFM2.5",
-        name=_lfm_repo("LFM2.5", size, variant, quantization)[1],
+        name=name,
         size=size,
-        repo="/".join(_lfm_repo("LFM2.5", size, variant, quantization)),
+        repo=f"{repo_owner}/{name}",
         config_type=HFLFM2Config,
         quantization=quantization,
         configs=ConfigMap(
@@ -55,10 +63,7 @@ _LFM25_MODELS = [
         ),
         use_cases=tuple(),
     )
-    for size, variant, quantization in chain(
-        product(["350M"], [None], [None]),
-        product(["1.2B"], ["Instruct"], [None]),
-    )
+    for repo_owner, name, size, quantization in _LFM25_MODEL_SPECS
 ]
 
 LFM2_MODELS = _LFM20_MODELS + _LFM25_MODELS

@@ -7,8 +7,8 @@ __all__ = ["RNJ_MODELS"]
 RNJ_MODELS = [
     ModelSpec(
         vendor="EssentialAI",
-        family="Rnj-1",
-        name="Rnj-1-Instruct",
+        family="rnj-1",
+        name="rnj-1-instruct",
         size="8B",
         quantization=None,
         repo="EssentialAI/rnj-1-instruct",
