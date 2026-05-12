@@ -241,7 +241,7 @@ class NormalFloatSpec(QuantizedSpec):
 
     @property
     def rate(self) -> float:
-        return float(self.bits + 32 / self.group_size)
+        return float(self.bits + 16 / self.group_size)
 
     @property
     def distortion(self) -> float:

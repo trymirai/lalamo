@@ -18,7 +18,7 @@ from tests.common import assert_close_arrays
         (AWQSpec(bits=4, group_size=2), 14.0),
         (AWQSpec(bits=4, group_size=2, is_symmetric=True), 12.0),
         (MLXSpec(bits=4, group_size=2), 20.0),
-        (NormalFloatSpec(bits=4, group_size=2), 20.0),
+        (NormalFloatSpec(bits=4, group_size=2), 12.0),
         (MXFP4Spec(group_size=2), 8.0),
         (E8PSpec(bits=2), 2.0),
         (E8PSpec(bits=3), 3.0),
