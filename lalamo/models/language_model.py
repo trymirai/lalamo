@@ -25,7 +25,7 @@ from lalamo.modules import (
     pad_and_apply_data_sharding,
 )
 from lalamo.sampling import SamplingPolicy, make_policy
-from lalamo.speculator.common import NoSpeculator, Speculator
+from lalamo.speculator.common import NoSpeculator, Speculator, SpeculatorState
 from lalamo.speculator.proposal import AcceptedProposal
 from lalamo.speculator.state import LMState, MemoryBuffers, StateRequest
 
@@ -71,6 +71,7 @@ class PrefillResults(NamedTuple):
 class DecodingState(NamedTuple):
     sampling_policy: SamplingPolicy
     lm_state: LMState
+    speculator_state: SpeculatorState
 
 
 class DecodingSetup(NamedTuple):
@@ -424,9 +425,15 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             initial_sampling_policy,
             per_position_keys[:, 0],
         )
+        initial_speculator_state = speculator.init_state(
+            prompt_token_ids,
+            prompt_lengths_without_padding,
+            max_output_length,
+        )
         initial_state = DecodingState(
             initial_sampling_policy,
             initial_lm_state,
+            initial_speculator_state,
         )
 
         def output_lengths(lm_state: LMState) -> Int[Array, " batch"]:
@@ -450,7 +457,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             lm_state = state.lm_state
             current_output_lengths = output_lengths(lm_state)
             done = is_done(state)
-            proposal = speculator.draft(lm_state)
+            proposal = speculator.draft(lm_state, state.speculator_state)
 
             proposal_inputs = proposal.forward_inputs(lm_state.next_token_position)
             decoder_outputs = self.model(
@@ -511,9 +518,11 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 trace_top_k_logits=trace_top_k_logits,
                 logsumexp=trace_logsumexp,
             )
+            next_speculator_state = speculator.update_state(state.speculator_state, accepted, write_mask)
             next_state = DecodingState(
                 next_sampling_policy,
                 next_lm_state,
+                next_speculator_state,
             )
             return next_state, accepted
 
@@ -644,7 +653,14 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 layer_indices=setup.traced_layers_array,
             )
 
-        return GenerationResults(token_ids, top_k_token_ids, top_k_token_logits, mean_accepted_length, tokens_per_step, trace)
+        return GenerationResults(
+            token_ids,
+            top_k_token_ids,
+            top_k_token_logits,
+            mean_accepted_length,
+            tokens_per_step,
+            trace,
+        )
 
     def _generate_tokens_batch(
         self,

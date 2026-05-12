@@ -19,6 +19,7 @@ from lalamo.modules.decoder import Decoder  # noqa: TC001
 from lalamo.speculator.common import (
     Speculator,
     SpeculatorBackend,
+    SpeculatorState,
     write_speculator_artifact,
 )
 from lalamo.speculator.proposal import TrieProposal  # noqa: TC001
@@ -353,7 +354,8 @@ class NGramSpeculator(Speculator):
     def state_request(self) -> StateRequest:
         return StateRequest(token_id_capacity=max(self.model.max_order - 1, 0))
 
-    def draft(self, state: LMState) -> TrieProposal:
+    def draft(self, state: LMState, speculator_state: SpeculatorState) -> TrieProposal:
+        del speculator_state
         proposal = state.create_root_proposal(budget=self.width * self.depth + 1)
         parent_indices = [0 for _ in range(state.root_bonus_id.shape[0])]
         contexts = self.contexts(state)

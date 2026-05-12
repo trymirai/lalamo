@@ -1,16 +1,18 @@
-from .common import NoSpeculator, Speculator
+from .common import EmptySpeculatorState, NoSpeculator, Speculator, SpeculatorState
 from .proposal import AcceptedProposal, ProposalInputs, TrieProposal
 from .state import LMState, MemoryBuffers, RingBuffer, StateRequest
 
 __all__ = [
     "AcceptedProposal",
     "CollectTracesEvent",
+    "EmptySpeculatorState",
     "LMState",
     "MemoryBuffers",
     "NoSpeculator",
     "ProposalInputs",
     "RingBuffer",
     "Speculator",
+    "SpeculatorState",
     "StateRequest",
     "TrieProposal",
     "inference_collect_traces",

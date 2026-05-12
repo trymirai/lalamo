@@ -19,6 +19,7 @@ from lalamo.modules.decoder import Decoder  # noqa: TC001
 from lalamo.speculator.common import (
     Speculator,
     SpeculatorBackend,
+    SpeculatorState,
     write_speculator_artifact,
 )
 from lalamo.speculator.proposal import TrieProposal  # noqa: TC001
@@ -115,7 +116,8 @@ class MLPSpeculator(Speculator):
     def state_request(self) -> StateRequest:
         return StateRequest(output_norm_capacity=1)
 
-    def draft(self, state: LMState) -> TrieProposal:
+    def draft(self, state: LMState, speculator_state: SpeculatorState) -> TrieProposal:
+        del speculator_state
         output_norm, _ = state.recent_output_norm(1)
         logits = self.model(output_norm[:, -1])
         width = min(self.width, logits.shape[-1])
