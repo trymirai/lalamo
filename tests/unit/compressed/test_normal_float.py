@@ -15,11 +15,11 @@ from lalamo.compressed.normal_float import (
 )
 from lalamo.compressed.utils.packing import pack_uint_to_uint8, packed_last_axis_dim, unpack_uint8_to_uint
 from lalamo.compressed.utils.yaqa import yaqa_round_weights
-from lalamo.module import ShardingAxis
+from lalamo.module import Keychain, ShardingAxis
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
-from lalamo.weight_matrix import CompressionImplementation, Layout
+from lalamo.weight_matrix import CompressionImplementation, GradientEstimator, Layout, MatmulConfig
 from tests.common import assert_close_arrays, assert_named_sharding
 
 type NormalFloatBits = Literal[2, 3, 4, 6, 8]
@@ -78,8 +78,13 @@ def _put_on_sharding(matrix: NormalFloatMatrixForInference, sharding: Sharding) 
     return NormalFloatMatrixForInference(
         spec=matrix.spec,
         is_sharded=matrix.is_sharded,
+        dtype_=matrix.dtype,
         packed_weights=jax.device_put(matrix.packed_weights, sharding),
         scales=jax.device_put(matrix.scales, sharding),
+        global_scales=jax.device_put(matrix.global_scales, make_sharding((None, None))),
+        packed_bias_indices=None
+        if matrix.packed_bias_indices is None
+        else jax.device_put(matrix.packed_bias_indices, sharding),
     )
 
 
@@ -147,6 +152,8 @@ def test_normal_float_grouped_indices_match_dense_nearest_codebook(
     result = _normal_float_grouped_indices(
         weights,
         scales,
+        global_scales=None,
+        biases=None,
         bits=bits,
         group_size=4,
         preserve_zero=preserve_zero,
@@ -173,11 +180,81 @@ def test_normal_float_compress_training_and_inference_match(
     assert isinstance(training, NormalFloatMatrixForTraining)
     assert isinstance(inference, NormalFloatMatrixForInference)
     assert inference.packed_weights.dtype == jnp.uint8
+    assert inference.scales.dtype == jnp.float8_e4m3fn
+    assert inference.global_scales.shape == (*stored_weights.shape[:-2], 1, 1)
+    assert training.bias_indices is None
+    assert inference.packed_bias_indices is None
     assert inference.packed_weights.shape == (
         *stored_weights.shape[:-1],
         packed_last_axis_dim(stored_weights.shape[-1], bits),
     )
     assert_close_arrays(result=training.decompress(), reference=inference.decompress())
+
+
+def test_normal_float_rvq_biases_pack_and_roundtrip() -> None:
+    weights = _logical_weights()
+    spec = NormalFloatSpec(bits=4, group_size=4, bias_bits=4)
+
+    training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
+    inference = spec.compress(weights, implementation=CompressionImplementation.INFERENCE)
+
+    assert isinstance(training, NormalFloatMatrixForTraining)
+    assert isinstance(inference, NormalFloatMatrixForInference)
+    assert training.bias_indices is not None
+    assert inference.packed_bias_indices is not None
+    assert inference.packed_bias_indices.shape[-1] == packed_last_axis_dim(inference.scales.shape[-1], 4)
+    assert_close_arrays(result=training.decompress(), reference=inference.decompress())
+
+
+def test_normal_float_training_keeps_full_precision_master_weights_until_forward_pass() -> None:
+    weights = _logical_weights()
+    spec = NormalFloatSpec(bits=4, group_size=4, bias_bits=4)
+
+    training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
+
+    assert isinstance(training, NormalFloatMatrixForTraining)
+    assert_close_arrays(result=training.weights, reference=weights)
+    assert not bool(jnp.allclose(training.weights, training.decompress()))
+
+
+def test_normal_float_training_dot_supports_stochastic_rounding_and_master_weight_gradients() -> None:
+    weights = _logical_weights()
+    vector = jnp.linspace(-1, 1, weights.shape[-1], dtype=weights.dtype)
+    spec = NormalFloatSpec(bits=4, group_size=4, bias_bits=4)
+    training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
+    assert isinstance(training, NormalFloatMatrixForTraining)
+    forward_pass_config = MatmulConfig.for_training(GradientEstimator.STOCHASTIC_ROUNDING)
+
+    result = training.dot(vector, keychain=Keychain.init(17), forward_pass_config=forward_pass_config)
+
+    def loss(master_weights: jax.Array) -> jax.Array:
+        matrix = NormalFloatMatrixForTraining(
+            spec=training.spec,
+            is_sharded=training.is_sharded,
+            dtype_=training.dtype,
+            weights=master_weights,
+            scales=training.scales,
+            global_scales=training.global_scales,
+            bias_indices=training.bias_indices,
+        )
+        return jnp.sum(matrix.dot(vector, keychain=Keychain.init(17), forward_pass_config=forward_pass_config))
+
+    gradients = jax.grad(loss)(training.weights)
+
+    assert result.shape == (weights.shape[0],)
+    assert bool(jnp.all(jnp.isfinite(gradients)))
+    assert bool(jnp.any(gradients != 0))
+
+
+def test_normal_float_rvq_biases_require_preserve_zero_nf4_and_supported_group_size() -> None:
+    with pytest.raises(ValueError, match="preserve-zero NF4"):
+        NormalFloatSpec(bits=3, group_size=4, bias_bits=4)
+
+    with pytest.raises(ValueError, match="preserve-zero NF4"):
+        NormalFloatSpec(bits=4, group_size=4, bias_bits=4, preserve_zero=False)
+
+    with pytest.raises(ValueError, match="group size 8"):
+        NormalFloatSpec(bits=4, group_size=8, bias_bits=4)
 
 
 def test_normal_float_compress_uses_yaqa_weights_when_preconditioned() -> None:
@@ -218,7 +295,9 @@ def test_normal_float_export_load_roundtrips_and_preserves_template_sharding(fak
     assert isinstance(restored, type(template))
     assert_close_arrays(result=restored.decompress(), reference=original.decompress())
     assert_named_sharding(restored.scales.sharding, fake_mesh)
+    assert_named_sharding(restored.global_scales.sharding, fake_mesh)
     assert restored.scales.sharding == template.scales.sharding
+    assert restored.global_scales.sharding == template.global_scales.sharding
     assert restored.scales.sharding != saved_sharding
     assert isinstance(restored, NormalFloatMatrixForInference)
     assert isinstance(template, NormalFloatMatrixForInference)

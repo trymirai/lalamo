@@ -13,8 +13,15 @@ from .grouping import unsigned_qmax
 __all__ = [
     "deterministic_round_to_unsigned_grid",
     "round_to_unsigned_grid",
+    "round_up_to_e4m3",
     "stochastic_round_to_unsigned_grid",
 ]
+
+_E4M3_LEVELS = (
+    *(mantissa / 512 for mantissa in range(1, 8)),
+    *(2 ** (exponent - 7) * (1 + mantissa / 8) for exponent in range(1, 15) for mantissa in range(8)),
+    *(2 ** (15 - 7) * (1 + mantissa / 8) for mantissa in range(7)),
+)
 
 
 def _mask_straight_through_gradients(
@@ -69,6 +76,14 @@ def deterministic_round_to_unsigned_grid(
     bits: int,
 ) -> Float[Array, "..."]:
     return _deterministic_round_to_unsigned_grid(values, bits)
+
+
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
+def round_up_to_e4m3(values: Float[Array, "..."]) -> Float[Array, "..."]:
+    levels = jnp.array(_E4M3_LEVELS, dtype=jnp.float32)
+    clipped_values = jnp.maximum(values.astype(jnp.float32), jnp.finfo(jnp.float32).tiny)
+    indices = jnp.minimum(jnp.sum(clipped_values[..., None] > levels, axis=-1), levels.size - 1)
+    return jnp.sum((indices[..., None] == jnp.arange(levels.size)).astype(jnp.float32) * levels, axis=-1)
 
 
 def _stochastic_round_to_unsigned_grid_impl(
