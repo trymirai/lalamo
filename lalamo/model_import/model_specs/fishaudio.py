@@ -11,7 +11,7 @@ DIRECT_CHAT_TEMPLATE = """
 FISHAUDIO_TTS_MODELS = [
     ModelSpec(
         vendor="FishAudio",
-        family="openaudio",
+        family="fishaudio-s1",
         name="s1-mini",
         size="0.8B",
         quantization=None,
