@@ -396,7 +396,7 @@ def decode_next_token(
     previous_tokens_length: Int[Array, ""] | None = None,
 ) -> tuple[Int[Array, "batch codebooks"], State | None]:
     batch_size = x.shape[0]
-    assert batch_size == 1, "Batching not supported yet"
+    assert batch_size == 1, "Batch scheduling not supported yet"
     (
         slow_transformer_keychain,
         fast_projection_keychain,

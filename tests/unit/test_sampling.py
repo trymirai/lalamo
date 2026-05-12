@@ -34,11 +34,8 @@ def _with_counts(
         (lambda: SamplingPolicy.init(repetition_penalty=0.0), "repetition_penalty must be positive"),
         (
             lambda: SamplingPolicy.init_batch(
-                temperature=(1.0,),
-                top_k=(0, 1),
-                top_p=(1.0,),
-                min_p=(0.0,),
-                banned_tokens=((),),
+                temperature=(0.5,),
+                top_k=(1, 2),
             ),
             "same length",
         ),

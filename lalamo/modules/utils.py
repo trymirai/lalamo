@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from jax import vmap
 from jaxtyping import Array, Float, PyTree, Shaped
 
-from lalamo.module import Keychain, ShardingAxis
+from lalamo.module import Keychain, KeychainBroadcastMode, ShardingAxis
 
 __all__ = [
     "apply_soft_capping",
@@ -33,6 +33,18 @@ def call_vmapped[ResultT](
     fn: Callable[..., ResultT],
     /,
     *args: PyTree[Shaped[Array, "..."]],
+    in_axes: PyTree[int | None] = 0,
+    out_axes: PyTree[int | None] = 0,
+    added_sharding_axis: ShardingAxis | None = None,
+) -> ResultT: ...
+
+
+@overload
+def call_vmapped[ResultT](
+    fn: Callable[..., ResultT],
+    /,
+    *args: PyTree[Shaped[Array, "..."]],
+    forward_pass_config: object,
     in_axes: PyTree[int | None] = 0,
     out_axes: PyTree[int | None] = 0,
     added_sharding_axis: ShardingAxis | None = None,
@@ -169,6 +181,18 @@ def call_vmapped_twice[ResultT](
     fn: Callable[..., ResultT],
     /,
     *args: PyTree[Shaped[Array, "..."]],
+    forward_pass_config: object,
+    in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
+    out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
+    added_sharding_axes: tuple[ShardingAxis | None, ShardingAxis | None] = (None, None),
+) -> ResultT: ...
+
+
+@overload
+def call_vmapped_twice[ResultT](
+    fn: Callable[..., ResultT],
+    /,
+    *args: PyTree[Shaped[Array, "..."]],
     keychain: Keychain,
     in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
     out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
@@ -222,6 +246,7 @@ def call_vmapped_twice[ResultT](
         mapped_fn = _call_with_keychain(mapped_fn, keychain=keychain)
         keychain = keychain.broadcast(
             _nested_key_shape(args, outer_in_axes, inner_in_axes),
+            mode=KeychainBroadcastMode.SUFFIX,
             sharding_axes=added_sharding_axes,
         )
         vmapped_once = vmap(

@@ -8,7 +8,7 @@ dependencies = [
     "einops>=0.8.0",
     "equinox>=0.11.11",
     "huggingface-hub>=0.27.1",
-    "jax>=0.8.1",
+    "jax>=0.10.0",
     "jaxtyping>=0.2.36",
     "jinja2>=3.1.6",
     "ml-dtypes>=0.5.1",
@@ -19,6 +19,7 @@ dependencies = [
     "rich>=14.0.0",
     "soundfile>=0.13.1",
     "thefuzz>=0.22.1",
+    "tokamax>=0.0.12",
     "tokenizers>=0.21.2",
     "typer>=0.15.1",
     "xxhash>=3.5.0",
@@ -27,12 +28,13 @@ readme = { file = "README.md", content-type = "text/markdown" }
 dynamic = ["version"]
 
 [project.optional-dependencies]
-cpu = ["jax[cpu]>=0.8.1"]
-cuda = ["jax[cuda]>=0.8.1", "nvidia-cutlass-dsl>=4.4; platform_system == 'Linux'"]
-fishaudio = ["torch>=2.8.0", "transformers>=5.2.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
-nanocodec = ["torch>=2.8.0"]
+cpu = ["jax[cpu]>=0.10.0"]
+cuda = ["jax[cuda]>=0.10.0", "nvidia-cutlass-dsl>=4.4; platform_system == 'Linux'"]
+tpu = ["jax[tpu]>=0.10.0"]
 pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
-tpu = ["jax[tpu]>=0.8.1"]
+fishaudio = ["torch>=2.8.0", "transformers>=5.5.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
+nanocodec = ["torch>=2.8.0"]
+server = ["fastapi>=0.135.3", "uvicorn>=0.44.0"]
 
 [dependency-groups]
 dev = [
@@ -61,7 +63,7 @@ dev = [
     "torch>=2.8.0",
     "torchao>=0.7.0",
     "torchaudio>=2.8.0",
-    "transformers>=5.2.0",
+    "transformers>=5.5",
     "twine>=6.1.0",
     "types-pyyaml>=6.0.12.20260408",
     "types-requests>=2.33.0.20260408",

@@ -30,7 +30,7 @@ repos:
       - id: ruff-check
         name: ruff check
         language: system
-        entry: ruff check .
+        entry: ruff check --fix .
         pass_filenames: false
       - id: ruff-format
         name: ruff format

@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh
 
-from lalamo.module import ShardingAxis
+from lalamo.module import Keychain, KeychainBroadcastMode, ShardingAxis
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 from lalamo.utils.sharding import make_sharding
 from tests.common import assert_close_arrays, assert_named_sharding
@@ -37,3 +37,17 @@ def test_call_vmapped_twice_accepts_added_sharding_axes(fake_mesh: Mesh) -> None
     assert_close_arrays(result=result, reference=values + 1)
     assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == values.sharding
+
+
+def test_call_vmapped_twice_broadcasts_outer_keychain_over_inner_axis() -> None:
+    values = jnp.arange(12, dtype=jnp.float32).reshape(1, 3, 4)
+    keychain = Keychain.init(0, shape=(1,))
+
+    result = call_vmapped_twice(
+        lambda _value, *, keychain: jax.random.key_data(keychain.vmapped_keys),
+        values,
+        keychain=keychain,
+    )
+    expected_keychain = keychain.broadcast((1, 3), mode=KeychainBroadcastMode.SUFFIX)
+
+    assert jnp.array_equal(result, jax.random.key_data(expected_keychain.vmapped_keys))

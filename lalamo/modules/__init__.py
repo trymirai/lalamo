@@ -1,4 +1,4 @@
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, KeychainBroadcastMode, LalamoConfig, LalamoModule
 
 from .activations import GELU, Activation, Identity, SiLU
 from .classifier import (
@@ -38,7 +38,13 @@ from .mlp import (
     RoutingFunction,
     SoftmaxRouting,
 )
-from .normalization import Normalization, NormalizationConfig, UpcastMode
+from .normalization import (
+    Normalization,
+    NormalizationConfig,
+    NormalizationForwardPassConfig,
+    NormalizationImplementation,
+    UpcastMode,
+)
 from .rope import (
     LinearScalingRoPEConfig,
     LlamaRoPEConfig,
@@ -115,6 +121,7 @@ __all__ = [
     "Identity",
     "KVCacheLayer",
     "Keychain",
+    "KeychainBroadcastMode",
     "LalamoConfig",
     "LalamoModule",
     "Linear",
@@ -131,6 +138,8 @@ __all__ = [
     "MixtureOfExpertsConfig",
     "Normalization",
     "NormalizationConfig",
+    "NormalizationForwardPassConfig",
+    "NormalizationImplementation",
     "PLELayer",
     "PLELayerConfig",
     "PLEModelConfig",

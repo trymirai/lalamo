@@ -1,7 +1,7 @@
-import os
+# ruff: noqa: E402
+from lalamo.preamble import init_jax
 
-# Must run before importing jax / tensorflow, this hides the XLA optimization logs
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+init_jax()
 
 from lalamo.checkpoint_manager import CheckpointManager
 from lalamo.model_import import ModelSpec

@@ -3,10 +3,11 @@ from math import erfc, exp, log2, pi, sqrt
 
 import jax
 import jax.numpy as jnp
+import pytest
 from jax.lax import DotAlgorithmPreset
 
 from lalamo.compressed.quantized_spec import QuantizedSpec
-from lalamo.compressed.utils.yaqa import yaqa_round_weights
+from lalamo.compressed.utils.yaqa import ConvergenceError, yaqa_round_weights
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.weight_matrix import (
@@ -140,19 +141,16 @@ def test_yaqa_round_weights_with_identity_preconditioner_matches_baseline_roundi
     assert_close(result=result, reference=_round_weights(weights))
 
 
-def test_yaqa_round_weights_single_iteration_returns_rounded_weights_with_expected_shape_and_dtype() -> None:
+def test_yaqa_round_weights_raises_when_iteration_limit_prevents_convergence() -> None:
     weights = _weights()
 
-    result = yaqa_round_weights(
-        weights,
-        Preconditioner.init(input_block=_input_block(), output_block=_output_block()),
-        _RoundSpec(),
-        max_iters=1,
-    )
-
-    assert result.shape == weights.shape
-    assert result.dtype == weights.dtype
-    assert bool(jnp.all(result == _round_weights(result)))
+    with pytest.raises(ConvergenceError, match="failed to converge"):
+        yaqa_round_weights(
+            weights,
+            Preconditioner.init(input_block=_input_block(), output_block=_output_block()),
+            _RoundSpec(),
+            max_iters=1,
+        )
 
 
 def test_yaqa_round_weights_runs_under_vmap_with_batched_preconditioners() -> None:

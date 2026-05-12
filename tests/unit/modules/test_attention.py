@@ -98,17 +98,21 @@ def _assert_close(result: Array, reference: Array) -> None:
     assert_close(result=jnp.asarray(jax.device_get(result)), reference=jnp.asarray(jax.device_get(reference)))
 
 
+def _inputs() -> Array:
+    return jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10
+
+
 def _sharded_sequence(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((None, None)))
+    return jax.device_put(values, make_sharding((None, ShardingAxis.TENSOR)))
 
 
 def _sharded_sequences(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, None)))
+    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, ShardingAxis.TENSOR)))
 
 
-def test_attention_matches_reference_and_keeps_unsharded_features(fake_mesh: Mesh) -> None:
+def test_attention_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
     module = _attention()
-    inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10)
+    inputs = _sharded_sequence(_inputs())
 
     result = module(inputs, positional_embeddings=None, keychain=Keychain.init(0))
 
@@ -120,7 +124,7 @@ def test_attention_matches_reference_and_keeps_unsharded_features(fake_mesh: Mes
 
 def test_attention_returns_dynamic_state_without_tensor_sharding(fake_mesh: Mesh) -> None:
     module = _attention()
-    inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10)
+    inputs = _sharded_sequence(_inputs())
 
     result = module(inputs, positional_embeddings=None, return_updated_state=True, keychain=Keychain.init(1))
 
@@ -141,9 +145,9 @@ def test_attention_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
 
 
-def test_attention_under_jit_matches_reference_and_keeps_unsharded_features(fake_mesh: Mesh) -> None:
+def test_attention_under_jit_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
     module = _attention()
-    inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10)
+    inputs = _sharded_sequence(_inputs())
 
     result = eqx.filter_jit(
         lambda module, values: module(values, positional_embeddings=None, keychain=Keychain.init(2)),
@@ -156,7 +160,7 @@ def test_attention_under_jit_matches_reference_and_keeps_unsharded_features(fake
 
 def test_attention_implementations_match(fake_mesh: Mesh) -> None:
     module = _attention()
-    inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10)
+    inputs = _sharded_sequence(_inputs())
 
     standard = module(
         inputs,
@@ -182,7 +186,7 @@ def test_attention_implementations_match(fake_mesh: Mesh) -> None:
 
 def test_soft_capped_attention_implementations_match(fake_mesh: Mesh) -> None:
     module = _attention(logit_soft_cap=0.5)
-    inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10)
+    inputs = _sharded_sequence(_inputs())
 
     standard = module(
         inputs,
@@ -244,7 +248,7 @@ def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_m
         key_norm=None,
         sinks=None,
     )
-    inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10)
+    inputs = _sharded_sequence(_inputs())
 
     restored = template.load_exported(original.export())
     result = restored(inputs, positional_embeddings=None, keychain=Keychain.init(4))

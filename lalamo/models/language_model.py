@@ -2,6 +2,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import NamedTuple
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
@@ -12,7 +13,14 @@ from tokenizers import Tokenizer
 from lalamo.initializer import Initializer
 from lalamo.model import Model, ModelConfig
 from lalamo.models.chat_codec import AssistantMessage, ChatCodec, ChatCodecConfig, Message
-from lalamo.modules import Decoder, DecoderConfig, DecoderForwardPassConfig, ForwardPassMode, Keychain
+from lalamo.modules import (
+    Decoder,
+    DecoderConfig,
+    DecoderForwardPassConfig,
+    ForwardPassMode,
+    Keychain,
+    KeychainBroadcastMode,
+)
 from lalamo.modules.token_mixer import State
 from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy
@@ -32,6 +40,13 @@ class PrefillResults(NamedTuple):
     last_token_logits: Float[Array, "batch vocabulary"]
     last_token_indices: Int[Array, " batch"]
     state: State
+
+
+class Chunk(eqx.Module):
+    tokens: Int[Array, "num_chunks batch chunk_size"]
+    indices: Int[Array, "num_chunks batch chunk_size"]
+    sequence_ends: Int[Array, "num_chunks batch"]
+    is_last_token_inside: Bool[Array, "num_chunks batch"]
 
 
 class DecodingState(NamedTuple):
@@ -97,7 +112,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
     def default_sampling_policy(self) -> SamplingPolicy:
         return self.config.generation_config.default_policy()
 
-    def _trim_at_eos(self, token_ids: list[int]) -> list[int]:
+    def trim_at_eos(self, token_ids: list[int]) -> list[int]:
         if not self.config.generation_config.stop_token_ids:
             return token_ids
         stop_token_ids = set(self.config.generation_config.stop_token_ids)
@@ -107,12 +122,51 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         )
         return token_ids[:response_length]
 
-    def _prefill(
+    @eqx.filter_jit
+    def _make_attention_chunks(
+        self,
+        token_ids: Int[Array, "batch tokens"],
+        lengths_without_padding: Int[Array, " batch"] | None,
+        chunk_size: int,
+    ) -> Chunk:
+        batch_size, sequence_length = token_ids.shape
+        if lengths_without_padding is None:
+            lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
+
+        chunk_size = min(chunk_size, sequence_length)
+        num_chunks = (sequence_length + chunk_size - 1) // chunk_size
+        padded_length = num_chunks * chunk_size
+
+        tokens = rearrange(
+            jnp.pad(token_ids, ((0, 0), (0, padded_length - sequence_length))),
+            "batch (num_chunks chunk_size) -> num_chunks batch chunk_size",
+            chunk_size=chunk_size,
+        )
+        indices = rearrange(
+            jnp.broadcast_to(jnp.arange(padded_length, dtype=jnp.int32), (batch_size, padded_length)),
+            "batch (num_chunks chunk_size) -> num_chunks batch chunk_size",
+            chunk_size=chunk_size,
+        )
+        chunk_starts = jnp.arange(num_chunks, dtype=jnp.int32) * chunk_size
+        sequence_ends = jnp.clip(lengths_without_padding[None, :] - chunk_starts[:, None], 0, chunk_size)
+        last_token_idx = lengths_without_padding - 1
+
+        return Chunk(
+            tokens=tokens,
+            indices=indices,
+            sequence_ends=sequence_ends,
+            is_last_token_inside=(last_token_idx[None, :] >= chunk_starts[:, None])
+            & (last_token_idx[None, :] < chunk_starts[:, None] + chunk_size),
+        )
+
+    @eqx.filter_jit
+    def prefill_tokens(
         self,
         token_ids: Int[Array, "batch tokens"],
         state_capacity: int,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: DecoderForwardPassConfig | None = None,
+        chunk_size: int = 512,
         *,
         keychain: Keychain,
     ) -> PrefillResults:
@@ -122,35 +176,53 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         if forward_pass_config is None:
             forward_pass_config = DecoderForwardPassConfig.for_inference()
 
-        token_positions = jnp.broadcast_to(
-            jnp.arange(sequence_length, dtype=jnp.int32),
-            (batch_size, sequence_length),
-        )
+        chunks = self._make_attention_chunks(token_ids, lengths_without_padding, chunk_size)
+        num_chunks, _, chunk_size = chunks.tokens.shape
         state_dtype = forward_pass_config.embedding_forward_pass_config.activation_dtype
         state = self.decoder.init_static_state(
             batch_size,
-            state_capacity,
+            max(state_capacity, num_chunks * chunk_size),
             state_dtype,
         )
-        decoder_result = self.decoder(
-            token_ids=token_ids,
-            token_positions=token_positions,
-            state=state,
-            return_updated_state=True,
-            lengths_without_padding=lengths_without_padding,
-            forward_pass_config=forward_pass_config,
-            keychain=keychain,
-        )
-        assert decoder_result.updated_state is not None
+        logits_like = jnp.zeros((batch_size, self.decoder.vocab_size), dtype=jnp.float32)
+        chunk_keychains = jax.tree.map(lambda *nodes: jnp.stack(nodes), *keychain.split(num_chunks))
 
-        last_token_indices = jnp.maximum(lengths_without_padding - 1, 0)
-        last_token_logits = decoder_result.logits[jnp.arange(batch_size), last_token_indices, :]
+        def apply_chunk(
+            state_and_logits: tuple[State, Float[Array, "batch vocabulary"]],
+            chunk_inputs: tuple[Chunk, Keychain],
+        ) -> tuple[tuple[State, Float[Array, "batch vocabulary"]], None]:
+            current_state, previous_logits = state_and_logits
+            chunk, current_chunk_keychain = chunk_inputs
+            decoder_result = self.decoder(
+                token_ids=chunk.tokens,
+                token_positions=chunk.indices,
+                state=current_state,
+                return_updated_state=True,
+                lengths_without_padding=chunk.sequence_ends,
+                forward_pass_config=forward_pass_config,
+                keychain=current_chunk_keychain,
+            )
+            assert decoder_result.updated_state is not None
+
+            chunk_logits = decoder_result.logits[jnp.arange(batch_size), chunk.sequence_ends - 1, :]
+            return (
+                decoder_result.updated_state,
+                jnp.where(chunk.is_last_token_inside[:, None], chunk_logits, previous_logits),
+            ), None
+
+        (state, last_token_logits), _ = jax.lax.scan(
+            apply_chunk,
+            (state, logits_like),
+            (chunks, chunk_keychains),
+        )
+
         return PrefillResults(
-            last_token_logits=last_token_logits.astype(jnp.float32),
-            last_token_indices=last_token_indices,
-            state=decoder_result.updated_state,
+            last_token_logits=last_token_logits,
+            last_token_indices=jnp.maximum(lengths_without_padding - 1, 0),
+            state=state,
         )
 
+    @eqx.filter_jit
     def generate_tokens(
         self,
         prompt_token_ids: Int[Array, "batch prompt_tokens"],
@@ -175,7 +247,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
             sampling_policy = generation_config.default_policy()
-        use_count_penalties = sampling_policy.has_count_penalties()
+        use_count_penalties = sampling_policy.has_count_penalties
         sampling_policy = sampling_policy.broadcast(batch_size)
         if prompt_lengths_without_padding is None:
             prompt_lengths_without_padding = jnp.full((batch_size,), prompt_length, dtype=jnp.int32)
@@ -194,7 +266,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             eos_token_ids = jnp.asarray(self.config.generation_config.stop_token_ids, dtype=jnp.int32)
 
         prefill_keychain, sampling_keychain, decoding_keychain = keychain.split(3)
-        prefill_results = self._prefill(
+        prefill_results = self.prefill_tokens(
             prompt_token_ids,
             prompt_length + max_output_length + 1,
             prompt_lengths_without_padding,
@@ -217,7 +289,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
 
         def loop_iteration(
             state: DecodingState,
-            step_keys: tuple[Key[Array, " batch"], Key[Array, ""]],
+            step_keys: tuple[Key[Array, " batch"], Key[Array, "..."]],
         ) -> tuple[DecodingState, GenerationStepResults]:
             sampling_keys, decoding_key = step_keys
             processed_logits = call_vmapped(
@@ -267,8 +339,14 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 ),
             )
 
-        sampling_keys = sampling_keychain.rolling_broadcast((max_output_length, batch_size)).vmapped_keys
-        decoding_keys = decoding_keychain.rolling_broadcast((max_output_length,)).vmapped_keys
+        sampling_keys = sampling_keychain.rolling_broadcast(
+            (max_output_length, batch_size),
+            mode=KeychainBroadcastMode.SUFFIX,
+        ).vmapped_keys
+        decoding_keys = decoding_keychain.rolling_broadcast(
+            (max_output_length, *decoding_keychain.vmapped_keys.shape),
+            mode=KeychainBroadcastMode.SUFFIX,
+        ).vmapped_keys
         _, generated = jax.lax.scan(loop_iteration, initial_state, (sampling_keys, decoding_keys))
 
         token_ids = rearrange(generated.token_ids, "step batch -> batch step")
@@ -304,7 +382,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             decode_forward_pass_config=decode_forward_pass_config,
             keychain=keychain,
         ).token_ids[0]
-        return self.token_codec.decode_response(self._trim_at_eos(response_ids.tolist()))
+        return self.token_codec.decode_response(self.trim_at_eos(response_ids.tolist()))
 
     def stream_tokens(
         self,
@@ -344,7 +422,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
             sampling_policy = generation_config.default_policy()
-        if sampling_policy.has_count_penalties():
+        if sampling_policy.has_count_penalties:
             sampling_policy = sampling_policy.with_prompt_token_counts(
                 padded_token_ids,
                 jnp.asarray(input_length, dtype=jnp.int32),
@@ -352,7 +430,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             )
 
         prefill_keychain, sampling_keychain, decoding_keychain = keychain.split(3)
-        prefill_results = self._prefill(
+        prefill_results = self.prefill_tokens(
             padded_token_ids[None, :],
             padded_input_length + max_output_length + 1,
             length_without_padding,
