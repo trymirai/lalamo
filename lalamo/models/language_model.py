@@ -457,7 +457,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             lm_state = state.lm_state
             current_output_lengths = output_lengths(lm_state)
             done = is_done(state)
-            proposal = speculator.draft(lm_state, state.speculator_state)
+            proposal, draft_state = speculator.draft(lm_state, state.speculator_state)
 
             proposal_inputs = proposal.forward_inputs(lm_state.next_token_position)
             decoder_outputs = self.model(
@@ -518,7 +518,12 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 trace_top_k_logits=trace_top_k_logits,
                 logsumexp=trace_logsumexp,
             )
-            next_speculator_state = speculator.update_state(state.speculator_state, accepted, write_mask)
+            next_speculator_state = speculator.update_state(
+                state.speculator_state,
+                draft_state,
+                accepted,
+                write_mask,
+            )
             next_state = DecodingState(
                 next_sampling_policy,
                 next_lm_state,

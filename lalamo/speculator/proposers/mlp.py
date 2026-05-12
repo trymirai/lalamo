@@ -17,8 +17,10 @@ from lalamo.data.completion_features import FeatureRequest, LalamoCompletionFeat
 from lalamo.data.lalamo_completions import LalamoCompletion  # noqa: TC001
 from lalamo.modules.decoder import Decoder  # noqa: TC001
 from lalamo.speculator.common import (
+    EmptySpeculatorDraftState,
     Speculator,
     SpeculatorBackend,
+    SpeculatorDraftState,
     SpeculatorState,
     write_speculator_artifact,
 )
@@ -116,7 +118,11 @@ class MLPSpeculator(Speculator):
     def state_request(self) -> StateRequest:
         return StateRequest(output_norm_capacity=1)
 
-    def draft(self, state: LMState, speculator_state: SpeculatorState) -> TrieProposal:
+    def draft(
+        self,
+        state: LMState,
+        speculator_state: SpeculatorState,
+    ) -> tuple[TrieProposal, SpeculatorDraftState]:
         del speculator_state
         output_norm, _ = state.recent_output_norm(1)
         logits = self.model(output_norm[:, -1])
@@ -137,7 +143,7 @@ class MLPSpeculator(Speculator):
                     next_parent_indices = jnp.full(parent_indices.shape, node_index, dtype=jnp.int32)
             parent_indices = next_parent_indices
 
-        return proposal
+        return proposal, EmptySpeculatorDraftState()
 
 
 @dataclass(frozen=True)

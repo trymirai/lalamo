@@ -16,6 +16,7 @@ from lalamo.speculator.state import LMState, MemoryBuffers, RingBuffer, StateReq
 __all__ = [
     "ARTIFACT_HEADER",
     "BACKEND_ENTRY_POINT_GROUP",
+    "EmptySpeculatorDraftState",
     "EmptySpeculatorState",
     "LMState",
     "MemoryBuffers",
@@ -23,6 +24,7 @@ __all__ = [
     "RingBuffer",
     "Speculator",
     "SpeculatorBackend",
+    "SpeculatorDraftState",
     "SpeculatorState",
     "StateRequest",
     "get_speculator_backend",
@@ -41,7 +43,15 @@ class SpeculatorState(eqx.Module):
     pass
 
 
+class SpeculatorDraftState(eqx.Module):
+    pass
+
+
 class EmptySpeculatorState(SpeculatorState):
+    pass
+
+
+class EmptySpeculatorDraftState(SpeculatorDraftState):
     pass
 
 
@@ -60,22 +70,31 @@ class Speculator(ABC):
         return EmptySpeculatorState()
 
     @abstractmethod
-    def draft(self, state: LMState, speculator_state: SpeculatorState) -> TrieProposal: ...
+    def draft(
+        self,
+        state: LMState,
+        speculator_state: SpeculatorState,
+    ) -> tuple[TrieProposal, SpeculatorDraftState]: ...
 
     def update_state(
         self,
         speculator_state: SpeculatorState,
+        draft_state: SpeculatorDraftState,
         accepted: AcceptedProposal,
         write_mask: Bool[Array, "batch max_slots"],
     ) -> SpeculatorState:
-        del accepted, write_mask
+        del draft_state, accepted, write_mask
         return speculator_state
 
 
 class NoSpeculator(Speculator):
-    def draft(self, state: LMState, speculator_state: SpeculatorState) -> TrieProposal:
+    def draft(
+        self,
+        state: LMState,
+        speculator_state: SpeculatorState,
+    ) -> tuple[TrieProposal, SpeculatorDraftState]:
         del speculator_state
-        return state.create_root_proposal(budget=1)
+        return state.create_root_proposal(budget=1), EmptySpeculatorDraftState()
 
 
 class SpeculatorBackend[ConfigT](RegistryABC):

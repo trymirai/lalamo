@@ -17,8 +17,10 @@ from lalamo.data.completion_features import FeatureRequest, LalamoCompletionFeat
 from lalamo.data.lalamo_completions import LalamoCompletion  # noqa: TC001
 from lalamo.modules.decoder import Decoder  # noqa: TC001
 from lalamo.speculator.common import (
+    EmptySpeculatorDraftState,
     Speculator,
     SpeculatorBackend,
+    SpeculatorDraftState,
     SpeculatorState,
     write_speculator_artifact,
 )
@@ -354,7 +356,11 @@ class NGramSpeculator(Speculator):
     def state_request(self) -> StateRequest:
         return StateRequest(token_id_capacity=max(self.model.max_order - 1, 0))
 
-    def draft(self, state: LMState, speculator_state: SpeculatorState) -> TrieProposal:
+    def draft(
+        self,
+        state: LMState,
+        speculator_state: SpeculatorState,
+    ) -> tuple[TrieProposal, SpeculatorDraftState]:
         del speculator_state
         proposal = state.create_root_proposal(budget=self.width * self.depth + 1)
         parent_indices = [0 for _ in range(state.root_bonus_id.shape[0])]
@@ -386,7 +392,7 @@ class NGramSpeculator(Speculator):
                         parent_indices[row_index] = node_index
                         contexts[row_index].append(token_id)
 
-        return proposal
+        return proposal, EmptySpeculatorDraftState()
 
     def contexts(self, state: LMState) -> list[list[int]]:
         root_bonus_ids = [int(token_id) for token_id in state.root_bonus_id.tolist()]
