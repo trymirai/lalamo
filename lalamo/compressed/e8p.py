@@ -189,8 +189,64 @@ def _e8p_codebook(dtype: DTypeLike) -> Float[Array, "codes vector"]:
     return values.astype(dtype)
 
 
+def _e8p_abs_codebook(dtype: DTypeLike) -> Float[Array, "codes vector"]:
+    packed_abs_grid = jnp.array(_E8P_PACKED_ABS_GRID_VALUES, dtype=jnp.uint32)
+    shuffled_indices = jnp.array(_E8P_SHUFFLE_MAP, dtype=jnp.uint32)
+    abs_values = ((packed_abs_grid[..., None] >> (4 * shuffled_indices)) & jnp.uint32(0xF)).astype(jnp.float32)
+    return ((abs_values - 8) * 0.5).astype(dtype)
+
+
 def _e81b_codebook(dtype: DTypeLike) -> Float[Array, "codes vector"]:
     return jnp.array(_E81B_GRID_VALUES, dtype=dtype)
+
+
+def _round_to_e8p_codebook(
+    vectors: Float[Array, "... vector"],
+) -> tuple[Float[Array, "... vector"], UInt16[Array, "..."]]:
+    flat_vectors = vectors.reshape(-1, _E8P_VECTOR_SIZE).astype(jnp.float32)
+    abs_codebook = _e8p_abs_codebook(jnp.float32)
+    abs_codebook_norms = jnp.sum(jnp.square(abs_codebook), axis=-1)
+    shuffled_indices = jnp.array(_E8P_SHUFFLE_MAP, dtype=jnp.uint32)
+
+    vector_sum = jnp.sum(flat_vectors, axis=-1)
+    best_scores = jnp.full_like(vector_sum, -jnp.inf)
+    best_indices = jnp.zeros_like(vector_sum, dtype=jnp.uint16)
+    coordinate_indices = jnp.arange(_E8P_VECTOR_SIZE)
+    chunk_size = 64
+
+    for shift_index, shift_float in enumerate((0.25, -0.25)):
+        shift = jnp.asarray(shift_float, dtype=jnp.float32)
+        shift_score = 2 * shift * vector_sum - _E8P_VECTOR_SIZE * shift * shift
+        for chunk_start in range(0, len(_E8P_PACKED_ABS_GRID_VALUES), chunk_size):
+            chunk_stop = chunk_start + chunk_size
+            abs_values = abs_codebook[chunk_start:chunk_stop]
+            coefficients = 2 * abs_values[None, :, :] * (flat_vectors[:, None, :] - shift)
+            abs_coefficients = jnp.abs(coefficients)
+            negative_signs = coefficients < 0
+            odd_parity = (jnp.sum(negative_signs, axis=-1) % 2).astype(jnp.bool_)
+            flip_indices = jnp.argmin(abs_coefficients, axis=-1)
+            flip_mask = coordinate_indices == flip_indices[..., None]
+            sign_bits = negative_signs ^ (odd_parity[..., None] & flip_mask)
+
+            sign_scores = jnp.sum(abs_coefficients, axis=-1)
+            sign_scores -= jnp.where(odd_parity, 2 * jnp.min(abs_coefficients, axis=-1), 0.0)
+            scores = sign_scores - abs_codebook_norms[chunk_start:chunk_stop][None, :] + shift_score[:, None]
+
+            chunk_offsets = jnp.argmax(scores, axis=-1)
+            chunk_scores = jnp.take_along_axis(scores, chunk_offsets[:, None], axis=-1)[:, 0]
+            chunk_sign_bits = jnp.take_along_axis(sign_bits, chunk_offsets[:, None, None], axis=1)[:, 0, :]
+            sign_masks = jnp.sum(chunk_sign_bits.astype(jnp.uint32) << shuffled_indices[None, :], axis=-1)
+            if shift_index == 1:
+                sign_masks = sign_masks ^ jnp.uint32(1)
+            abs_indices = jnp.asarray(chunk_start, dtype=jnp.uint32) + chunk_offsets.astype(jnp.uint32)
+            chunk_indices = ((abs_indices << jnp.uint32(8)) | sign_masks).astype(jnp.uint16)
+
+            is_better = chunk_scores > best_scores
+            best_scores = jnp.where(is_better, chunk_scores, best_scores)
+            best_indices = jnp.where(is_better, chunk_indices, best_indices)
+
+    flat_values = _codebook_values_by_indices(_e8p_codebook(vectors.dtype), best_indices)
+    return flat_values.reshape(vectors.shape), best_indices.reshape(vectors.shape[:-1])
 
 
 def _round_to_codebook(
@@ -217,7 +273,7 @@ def _codebook_values_by_indices(
     indices = indices.astype(jnp.int32)
     values_sharding = None
     indices_sharding = sharding_of(indices)
-    if indices.ndim > 1 and is_sharded(indices_sharding):
+    if indices.ndim > 0 and is_sharded(indices_sharding):
         values_sharding = PartitionSpec(*tuple(indices_sharding.spec), None)
     return codebook.at[indices].get(out_sharding=values_sharding)
 
@@ -236,8 +292,7 @@ def _e8p_grouped_codes(
         "... (groups vector) -> ... groups vector",
         vector=_E8P_VECTOR_SIZE,
     )
-    e8p_codebook = _e8p_codebook(grouped_weights.dtype)
-    quantized, codes = _round_to_codebook(grouped_weights, e8p_codebook)
+    quantized, codes = _round_to_e8p_codebook(grouped_weights)
     if bits == 2:
         return quantized, codes.astype(jnp.uint16), None
 
@@ -247,7 +302,7 @@ def _e8p_grouped_codes(
         quantized = quantized + residual_quantized / jnp.asarray(residual_scale, dtype=grouped_weights.dtype)
         return quantized, codes.astype(jnp.uint16), residual_codes.astype(jnp.uint8)
 
-    residual_quantized, residual_codes = _round_to_codebook(residual, e8p_codebook)
+    residual_quantized, residual_codes = _round_to_e8p_codebook(residual)
     quantized = quantized + residual_quantized / jnp.asarray(residual_scale, dtype=grouped_weights.dtype)
     return quantized, codes.astype(jnp.uint16), residual_codes.astype(jnp.uint16)
 
