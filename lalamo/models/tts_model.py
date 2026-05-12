@@ -107,6 +107,6 @@ class TTSModel(Model[TTSCodecConfig, TTSModelConfig, TTSCodec]):
         audio_waveform = self.vocoder(audio_features)
 
         return TTSGenerationResult(
-            audio=np.asarray(audio_waveform),
+            audio=np.asarray(audio_waveform, dtype=np.float32),
             audio_params=self.get_generated_audio_params(),
         )

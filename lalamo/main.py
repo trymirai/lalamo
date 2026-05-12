@@ -4,12 +4,14 @@ import sys
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from functools import partial
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Annotated
 
 import jax
 import jax.profiler
 import requests
+import soundfile as sf
 from click import Context as ClickContext
 from click import Parameter as ClickParameter
 from click import ParamType
@@ -26,6 +28,7 @@ from rich.prompt import Confirm
 from rich.table import Table
 from typer import Argument, Exit, Option, Typer
 
+from lalamo.audio.utils import play_mono_audio
 from lalamo.commands import (
     ConversionCallbacks,
     DType,
@@ -38,8 +41,9 @@ from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
-from lalamo.models import LanguageModel
+from lalamo.models import LanguageModel, TTSModel
 from lalamo.models.chat_codec import Message, UserMessage
+from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
 
 SCRIPT_NAME = Path(sys.argv[0]).name
@@ -286,6 +290,89 @@ class CliPullCallbacks(PullCallbacks):
 
         self.stack.close()
         console.print(f"🎉 Model successfully pulled to [cyan]{self.output_dir}[/cyan]!")
+
+
+@app.command(help="Synthesize speech from given text utterance.")
+def tts(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    output_file: Annotated[Path | None, Argument(help="Path to output WAV file with synthesized speech.")] = None,
+    replay: Annotated[
+        bool,
+        Option(
+            help="Render synthesized speech into default audio interface.",
+        ),
+    ] = False,
+    message: Annotated[
+        str | None,
+        Option(
+            help="Message for non-interactive mode.",
+            show_default="None, run interactively",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        Option(
+            help="Overwrite existing output file without prompting. Always enabled with --message.",
+        ),
+    ] = False,
+) -> None:
+    if output_file is None:
+        output_file = Path.cwd() / "generated_speech.wav"
+        console.print(f"Will save output to file {output_file}")
+
+    if replay and find_spec("pyaudio") is None:
+        err_console.print("Failed to import pyaudio package used for audio replay. Run Lalamo without --replay.")
+        raise Exit(1)
+
+    console.print(f"🤖 Loading model from specified path: {model_path}.")
+    model = TTSModel.load(model_path)
+
+    keychain = Keychain.init(0)
+    messages = [message] if message is not None else None
+    overwrite_existing_output = overwrite or message is not None
+    while True:
+        if messages is not None:
+            try:
+                user_text = messages.pop(0)
+            except IndexError:
+                break
+        else:
+            user_text = console.input("[cyan]input text to generate speech> [/cyan]")
+        if user_text == "":
+            continue
+
+        user_message = TTSMessage(content=user_text, speaker_id="speaker:0", style="interleave")
+        keychain, generation_keychain = keychain.split()
+        tts_result = model.generate_speech([user_message], keychain=generation_keychain)
+
+        if replay:
+            play_mono_audio(tts_result.audio, tts_result.audio_params.samplerate)
+
+        if output_file.exists():
+            if overwrite_existing_output:
+                output_file.unlink()
+            else:
+                answer = console.input(
+                    rf"⚠️ Output file [cyan]{output_file}[/cyan] already exists."
+                    r" Do you want to overwrite it? [cyan]\[y/n][/cyan]: ",
+                )
+                while answer.lower() not in ["y", "n", "yes", "no"]:
+                    answer = console.input("Please enter 'y' or 'n': ")
+                if answer.lower() in ["y", "yes"]:
+                    output_file.unlink()
+                else:
+                    console.print("Continue without saving the result")
+                    continue
+
+        sf.write(str(output_file), tts_result.audio, tts_result.audio_params.samplerate)
+        console.print(f"[green] ... saved generated audio to {output_file}[/green]")
+        console.print()
 
 
 @app.command(help="Import and export a model into the local Lalamo format.")

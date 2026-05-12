@@ -27,9 +27,7 @@ def standard_normal_absmax_squared(group_size: int) -> float:
 
     probabilities, weights = _unit_legendre_quadrature()
     total = sum(
-        weight
-        * _STANDARD_NORMAL.inv_cdf((probability + 1) / 2) ** 2
-        * probability ** (group_size - 1)
+        weight * _STANDARD_NORMAL.inv_cdf((probability + 1) / 2) ** 2 * probability ** (group_size - 1)
         for probability, weight in zip(probabilities, weights, strict=True)
     )
     return group_size * total

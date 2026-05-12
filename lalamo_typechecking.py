@@ -78,10 +78,7 @@ def _widen(hint: Any, self_name: str | None) -> Any:
 def typechecker(fn: Any) -> Any:
     self_name = _self_name(fn.__qualname__)
     original_annotations = fn.__annotations__
-    fn.__annotations__ = {
-        name: _widen(annotation, self_name)
-        for name, annotation in original_annotations.items()
-    }
+    fn.__annotations__ = {name: _widen(annotation, self_name) for name, annotation in original_annotations.items()}
     try:
         return _BEARTYPE(fn)
     finally:

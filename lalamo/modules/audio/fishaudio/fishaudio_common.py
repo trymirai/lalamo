@@ -5,17 +5,14 @@ from typing import Any
 
 from lalamo.sampling import SamplingPolicy
 
-from .fishaudio_consts import (
-    DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE,
-    DEFAULT_FISH_AUDIO_SAMPLING_TOP_P,
-    _default_audio_codec_config,
-)
+from .fishaudio_consts import _default_audio_codec_config
 
 
 def default_fishaudio_sampling_policy() -> SamplingPolicy:
     return SamplingPolicy.init(
-        temperature=DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE,
-        top_p=DEFAULT_FISH_AUDIO_SAMPLING_TOP_P,
+        temperature=0.8008,
+        top_p=0.8008,
+        repetition_penalty=1.1016,
     )
 
 
