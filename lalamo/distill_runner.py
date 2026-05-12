@@ -1,12 +1,12 @@
+import importlib
 import json
-import shutil
 import time
-from collections.abc import Callable, MutableMapping, Sequence
+from collections.abc import MutableMapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from itertools import islice
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 import equinox as eqx
 import jax
@@ -18,15 +18,13 @@ from jaxtyping import Array, Key
 
 from lalamo.data import load_hf_parquet, shuffle_dataset
 from lalamo.data.huggingface_message import HFMessage
-from lalamo.data.lalamo_completions import LalamoCompletion
+from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions
 from lalamo.distillation import (
     DistillBatch,
     DistillBatchMetrics,
-    DistillConfig as DistillTrainConfig,
     DistillOptimizerState,
     DistillTrainingState,
     TraceDistillBatch,
-    apply_distill_gradients,
     apply_donated_distill_gradients,
     compute_distill_batch_metrics,
     compute_distill_step_gradients,
@@ -34,8 +32,13 @@ from lalamo.distillation import (
     compute_trace_distill_step_gradients,
     initialize_distill_training_state,
     make_trace_distill_batch,
+    materialize_distill_student,
+)
+from lalamo.distillation import (
+    DistillConfig as DistillTrainConfig,
 )
 from lalamo.model import Model
+from lalamo.models import LanguageModel
 from lalamo.module import Keychain
 from lalamo.modules.decoder import Decoder
 from lalamo.weight_matrix import GradientEstimator
@@ -68,6 +71,7 @@ class OptimizerName(StrEnum):
 
 class WandbRun(Protocol):
     summary: MutableMapping[str, object]
+
     def define_metric(self, name: str, *, step_metric: str | None = None) -> object: ...
     def log(self, data: dict[str, object], *, step: int | None = None) -> object: ...
     def finish(self) -> object: ...
@@ -178,7 +182,7 @@ def _load_tokenized_conversations(
     dataset_path: Path,
     *,
     seed: int,
-    model: Model,
+    model: LanguageModel,
     max_sequence_length: int,
     num_examples: int,
 ) -> list[np.ndarray]:
@@ -190,7 +194,7 @@ def _load_tokenized_conversations(
             raise ValueError(f"{dataset_path} must contain a 'conversation' or 'messages' column")
 
     conversations = dataframe.get_column("conversation").to_list()
-    all_token_ids = model.token_codec.tokenize_requests(
+    all_token_ids = model.token_codec.encode_requests(
         [HFMessage.from_dict(message).as_message() for message in conversation] for conversation in conversations
     )
     return [
@@ -201,8 +205,7 @@ def _load_tokenized_conversations(
 
 
 def _load_traces(dataset_path: Path, *, num_examples: int) -> list[LalamoCompletion]:
-    with dataset_path.open("rb") as trace_fd:
-        return list(islice(LalamoCompletion.deserialize_many(trace_fd), num_examples))
+    return list(islice(iter_completions(dataset_path), num_examples))
 
 
 def _make_batches(
@@ -224,7 +227,7 @@ def _make_batches(
 
 def _load_distill_batches(
     config: DistillConfig,
-    model: Model,
+    model: LanguageModel,
     *,
     batch_size: int,
 ) -> LoadedDistillBatches:
@@ -232,14 +235,25 @@ def _load_distill_batches(
     match config.training_mode:
         case TrainingMode.ONLINE_EXACT:
             tokenized = _load_tokenized_conversations(
-                config.dataset_path, seed=config.seed, model=model,
-                max_sequence_length=config.max_sequence_length, num_examples=requested,
+                config.dataset_path,
+                seed=config.seed,
+                model=model,
+                max_sequence_length=config.max_sequence_length,
+                num_examples=requested,
             )
             if len(tokenized) < requested:
                 raise ValueError(f"Requested {requested} sequences, got {len(tokenized)} from {config.dataset_path}")
             return LoadedDistillBatches(
-                train_batches=_make_batches(tokenized[: config.train_examples], batch_size=batch_size, fixed_sequence_length=config.max_sequence_length),
-                eval_batches=_make_batches(tokenized[config.train_examples : requested], batch_size=batch_size, fixed_sequence_length=config.max_sequence_length),
+                train_batches=_make_batches(
+                    tokenized[: config.train_examples],
+                    batch_size=batch_size,
+                    fixed_sequence_length=config.max_sequence_length,
+                ),
+                eval_batches=_make_batches(
+                    tokenized[config.train_examples : requested],
+                    batch_size=batch_size,
+                    fixed_sequence_length=config.max_sequence_length,
+                ),
             )
         case TrainingMode.TRACE_TOPK:
             traces = _load_traces(config.dataset_path, num_examples=requested)
@@ -248,8 +262,14 @@ def _load_distill_batches(
             train_traces = traces[: config.train_examples]
             eval_traces = traces[config.train_examples : requested]
             return LoadedDistillBatches(
-                train_batches=[make_trace_distill_batch(train_traces[s : s + batch_size], pad_token_id=0) for s in range(0, len(train_traces), batch_size)],
-                eval_batches=[make_trace_distill_batch(eval_traces[s : s + batch_size], pad_token_id=0) for s in range(0, len(eval_traces), batch_size)],
+                train_batches=[
+                    make_trace_distill_batch(train_traces[s : s + batch_size], pad_token_id=0)
+                    for s in range(0, len(train_traces), batch_size)
+                ],
+                eval_batches=[
+                    make_trace_distill_batch(eval_traces[s : s + batch_size], pad_token_id=0)
+                    for s in range(0, len(eval_traces), batch_size)
+                ],
             )
 
 
@@ -276,7 +296,13 @@ def _evaluate_with(
         match training_mode:
             case TrainingMode.ONLINE_EXACT:
                 assert isinstance(batch, DistillBatch)
-                metrics = compute_distill_batch_metrics(student, teacher, batch, distill_config, keychain=batch_keychain)
+                metrics = compute_distill_batch_metrics(
+                    student,
+                    teacher,
+                    batch,
+                    distill_config,
+                    keychain=batch_keychain,
+                )
             case TrainingMode.TRACE_TOPK:
                 assert isinstance(batch, TraceDistillBatch)
                 metrics = compute_trace_distill_batch_metrics(student, batch, distill_config, keychain=batch_keychain)
@@ -313,7 +339,7 @@ def _build_optimizer(
         case OptimizerName.MUON:
             optimizer = optax.contrib.muon(
                 learning_rate=schedule,
-                muon_weight_dimension_numbers=lambda _params: training_state.muon_dimension_numbers,
+                muon_weight_dimension_numbers=cast("Any", training_state.muon_dimension_numbers),
             )
         case OptimizerName.SGD:
             optimizer = optax.sgd(schedule)
@@ -351,7 +377,7 @@ def _load_checkpoint(
     return checkpoint, metadata
 
 
-def _copy_master_weights(master_weights: object) -> object:
+def _copy_master_weights(master_weights: Any) -> Any:  # noqa: ANN401
     return jax.tree.map(
         lambda leaf: leaf + jnp.zeros((), dtype=leaf.dtype) if eqx.is_array(leaf) else leaf,
         master_weights,
@@ -362,7 +388,7 @@ def _copy_master_weights(master_weights: object) -> object:
 def _start_wandb_run(config: DistillConfig) -> WandbRun | None:
     if not config.wandb_project:
         return None
-    import wandb
+    wandb = cast("Any", importlib.import_module("wandb"))
     run = wandb.init(
         entity=config.wandb_entity, project=config.wandb_project,
         name=config.wandb_run_name or config.output_dir.name,
@@ -387,7 +413,6 @@ def _accumulate_train_step(
     train_key: Key[Array, ""],
     *,
     training_mode: TrainingMode,
-    student: Decoder,
     teacher: Decoder,
     distill_config: DistillTrainConfig,
 ) -> tuple[DistillOptimizerState, DistillBatchMetrics, Key[Array, ""]]:
@@ -404,16 +429,27 @@ def _accumulate_train_step(
             case TrainingMode.ONLINE_EXACT:
                 assert isinstance(microbatch, DistillBatch)
                 grads, metrics = compute_distill_step_gradients(
-                    optimizer_state.training_state, student, teacher, microbatch, distill_config, keychain=keychain,
+                    optimizer_state.training_state,
+                    teacher,
+                    microbatch,
+                    distill_config,
+                    keychain=keychain,
                 )
             case TrainingMode.TRACE_TOPK:
                 assert isinstance(microbatch, TraceDistillBatch)
                 grads, metrics = compute_trace_distill_step_gradients(
-                    optimizer_state.training_state, student, microbatch, distill_config, keychain=keychain,
+                    optimizer_state.training_state,
+                    microbatch,
+                    distill_config,
+                    keychain=keychain,
                 )
         valid = metrics.valid_tokens
         weighted = jax.tree.map(lambda g, s=valid: g * s, grads)
-        accumulated_grads = weighted if accumulated_grads is None else jax.tree.map(lambda a, b: a + b, accumulated_grads, weighted)
+        accumulated_grads = (
+            weighted
+            if accumulated_grads is None
+            else jax.tree.map(lambda a, b: a + b, accumulated_grads, weighted)
+        )
         total_loss = total_loss + metrics.loss * valid.astype(jnp.float32)
         total_kl = total_kl + metrics.kl_divergence * valid.astype(jnp.float32)
         total_valid = total_valid + valid
@@ -435,13 +471,10 @@ def _accumulate_train_step(
 # ---------------------------------------------------------------------------
 
 
-def _materialize_evaluable_student(
-    student: Decoder,
-    training_state: DistillTrainingState,
-    compute_dtype: jnp.dtype,
-) -> Decoder:
-    from lalamo.distillation import _materialize_student
-    return _materialize_student(student, training_state, compute_dtype)
+def _load_language_model(path: Path) -> LanguageModel:
+    model = Model.load(path)
+    assert isinstance(model, LanguageModel)
+    return model
 
 
 def distill(
@@ -464,8 +497,8 @@ def distill(
     # Models
     if callbacks is not None:
         callbacks.loading_models()
-    teacher_model = Model.load(config.teacher_path)
-    student_model = Model.load(config.student_path)
+    teacher_model = _load_language_model(config.teacher_path)
+    student_model = _load_language_model(config.student_path)
     if callbacks is not None:
         callbacks.finished_loading_models()
 
@@ -479,7 +512,7 @@ def distill(
     # Training config
     match config.compute_dtype_name:
         case ComputeDTypeName.AUTO:
-            compute_dtype = student_model.decoder.transformer.config.activation_precision
+            compute_dtype = jnp.bfloat16
         case ComputeDTypeName.BFLOAT16:
             compute_dtype = jnp.bfloat16
         case ComputeDTypeName.FLOAT32:
@@ -510,7 +543,7 @@ def distill(
     completed_steps = 0
     best_eval_kl: float | None = None
     best_step: int | None = None
-    best_master_weights: object | None = None
+    best_master_weights: Any | None = None
     evaluations_without_improvement = 0
 
     if config.resume_from is not None:
@@ -528,23 +561,46 @@ def distill(
     # Initial evaluation
     run_start = time.perf_counter()
     eval_keychain = Keychain.init(config.seed + 1000)
-    initial_student = _materialize_evaluable_student(student_model.decoder, optimizer_state.training_state, jnp.dtype(compute_dtype))
+    initial_student = materialize_distill_student(optimizer_state.training_state, jnp.dtype(compute_dtype))
     initial_eval = _evaluate_with(
-        config.training_mode, initial_student, teacher_model.decoder, dataset.eval_batches, distill_config, keychain=eval_keychain,
+        config.training_mode,
+        initial_student,
+        teacher_model.decoder,
+        dataset.eval_batches,
+        distill_config,
+        keychain=eval_keychain,
     )
     if best_eval_kl is None:
         best_eval_kl = initial_eval.kl_divergence
         best_step = completed_steps
 
     if wandb_run is not None:
-        wandb_run.log({"step": completed_steps, "eval_kl_divergence": initial_eval.kl_divergence, "eval_top1_agreement": initial_eval.top1_agreement}, step=completed_steps)
+        wandb_run.log(
+            {
+                "step": completed_steps,
+                "eval_kl_divergence": initial_eval.kl_divergence,
+                "eval_top1_agreement": initial_eval.top1_agreement,
+            },
+            step=completed_steps,
+        )
 
     latest_checkpoint_dir = config.output_dir / "latest-checkpoint"
     best_checkpoint_dir = config.output_dir / "best-checkpoint"
 
     def save_checkpoint(checkpoint_dir: Path, step: int) -> None:
-        _save_checkpoint(checkpoint_dir, ExperimentCheckpoint(optimizer_state=optimizer_state, train_key_data=jax.random.key_data(train_key)),
-            CheckpointMetadata(step=step, best_eval_kl=best_eval_kl, best_step=best_step, evaluations_without_improvement=evaluations_without_improvement))
+        _save_checkpoint(
+            checkpoint_dir,
+            ExperimentCheckpoint(
+                optimizer_state=optimizer_state,
+                train_key_data=jax.random.key_data(train_key),
+            ),
+            CheckpointMetadata(
+                step=step,
+                best_eval_kl=best_eval_kl,
+                best_step=best_step,
+                evaluations_without_improvement=evaluations_without_improvement,
+            ),
+        )
 
     history_path = config.output_dir / "history.jsonl"
     next_micro = completed_steps * config.gradient_accumulation_steps
@@ -566,7 +622,9 @@ def distill(
 
             optimizer_state, train_metrics, train_key = _accumulate_train_step(
                 optimizer_state, optimizer, microbatches, train_key,
-                training_mode=config.training_mode, student=student_model.decoder, teacher=teacher_model.decoder, distill_config=distill_config,
+                training_mode=config.training_mode,
+                teacher=teacher_model.decoder,
+                distill_config=distill_config,
             )
 
             if executed_steps == 0:
@@ -574,8 +632,19 @@ def distill(
 
             eval_metrics: EvaluationMetrics | None = None
             if config.eval_every_steps > 0 and step % config.eval_every_steps == 0:
-                mat_student = _materialize_evaluable_student(student_model.decoder, optimizer_state.training_state, jnp.dtype(compute_dtype))
-                eval_metrics = _evaluate_with(config.training_mode, mat_student, teacher_model.decoder, dataset.eval_batches, distill_config, keychain=Keychain.init(config.seed + step))
+                mat_student = materialize_distill_student(
+                    optimizer_state.training_state,
+                    jnp.dtype(compute_dtype),
+                )
+                eval_metrics = _evaluate_with(
+                    config.training_mode,
+                    mat_student,
+                    teacher_model.decoder,
+                    dataset.eval_batches,
+                    distill_config,
+                    keychain=Keychain.init(config.seed + step),
+                )
+                assert best_eval_kl is not None
                 if eval_metrics.kl_divergence < best_eval_kl:
                     best_eval_kl = eval_metrics.kl_divergence
                     best_step = step
@@ -586,11 +655,16 @@ def distill(
                     evaluations_without_improvement = 0
                 else:
                     evaluations_without_improvement += 1
-                    if config.early_stop_patience > 0 and evaluations_without_improvement >= config.early_stop_patience:
+                    if (
+                        config.early_stop_patience > 0
+                        and evaluations_without_improvement >= config.early_stop_patience
+                    ):
                         stopped_early = True
 
-            entry = {
-                "step": step, "train_loss": float(train_metrics.loss), "train_kl_divergence": float(train_metrics.kl_divergence),
+            entry: dict[str, object] = {
+                "step": step,
+                "train_loss": float(train_metrics.loss),
+                "train_kl_divergence": float(train_metrics.kl_divergence),
                 "valid_tokens": int(train_metrics.valid_tokens),
                 "eval_kl_divergence": None if eval_metrics is None else eval_metrics.kl_divergence,
                 "eval_top1_agreement": None if eval_metrics is None else eval_metrics.top1_agreement,
@@ -604,7 +678,10 @@ def distill(
             if callbacks is not None:
                 callbacks.distillation_progress(step, config.num_steps)
 
-            if config.save_checkpoints and (config.checkpoint_every_steps > 0 and step % config.checkpoint_every_steps == 0 or stopped_early):
+            should_save_checkpoint = (
+                config.checkpoint_every_steps > 0 and step % config.checkpoint_every_steps == 0
+            ) or stopped_early
+            if config.save_checkpoints and should_save_checkpoint:
                 save_checkpoint(latest_checkpoint_dir, step)
             if stopped_early:
                 break
@@ -615,20 +692,39 @@ def distill(
     # Restore best if needed
     if best_step != completed_steps and config.eval_every_steps > 0:
         if config.save_checkpoints and best_checkpoint_dir.exists():
-            best_ckpt, _ = _load_checkpoint(best_checkpoint_dir, ExperimentCheckpoint(optimizer_state=optimizer_state, train_key_data=jax.random.key_data(train_key)))
+            best_ckpt, _ = _load_checkpoint(
+                best_checkpoint_dir,
+                ExperimentCheckpoint(
+                    optimizer_state=optimizer_state,
+                    train_key_data=jax.random.key_data(train_key),
+                ),
+            )
             optimizer_state = best_ckpt.optimizer_state
         elif best_master_weights is not None:
-            optimizer_state = replace(optimizer_state, training_state=replace(optimizer_state.training_state, master_weights=best_master_weights))
+            optimizer_state = replace(
+                optimizer_state,
+                training_state=replace(optimizer_state.training_state, master_weights=best_master_weights),
+            )
 
     # Final evaluation and export
-    final_student = _materialize_evaluable_student(student_model.decoder, optimizer_state.training_state, jnp.dtype(compute_dtype))
-    final_eval = _evaluate_with(config.training_mode, final_student, teacher_model.decoder, dataset.eval_batches, distill_config, keychain=Keychain.init(config.seed + 9999))
+    final_student = materialize_distill_student(optimizer_state.training_state, jnp.dtype(compute_dtype))
+    final_eval = _evaluate_with(
+        config.training_mode,
+        final_student,
+        teacher_model.decoder,
+        dataset.eval_batches,
+        distill_config,
+        keychain=Keychain.init(config.seed + 9999),
+    )
 
     model_output_path = config.output_dir / "student-distilled"
     if callbacks is not None:
         callbacks.saving_model()
-    export_student = _materialize_evaluable_student(student_model.decoder, optimizer_state.training_state, student_model.decoder.transformer.config.activation_precision)
-    updated_model = replace(student_model, model=export_student)
+    export_student = materialize_distill_student(
+        optimizer_state.training_state,
+        jnp.bfloat16,
+    )
+    updated_model = replace(student_model, decoder=export_student)
     updated_model.save(model_output_path)
     if callbacks is not None:
         callbacks.finished_saving_model(model_output_path)
@@ -636,18 +732,29 @@ def distill(
     elapsed = time.perf_counter() - run_start
     measured = max(executed_steps - 1, 0)
     result = DistillResult(
-        config=config, completed_steps=completed_steps,
-        master_dtype=str(jnp.dtype(jnp.float32)), compute_dtype=str(jnp.dtype(compute_dtype)),
-        initial_eval=initial_eval, final_eval=final_eval,
-        best_step=best_step, stopped_early=stopped_early,
-        compilation_seconds=compilation_seconds, elapsed_seconds=elapsed,
+        config=config,
+        completed_steps=completed_steps,
+        master_dtype=str(jnp.dtype(jnp.float32)),
+        compute_dtype=str(jnp.dtype(compute_dtype)),
+        initial_eval=initial_eval,
+        final_eval=final_eval,
+        best_step=best_step,
+        stopped_early=stopped_early,
+        compilation_seconds=compilation_seconds,
+        elapsed_seconds=elapsed,
         seconds_per_step=0.0 if measured == 0 else elapsed / measured,
         output_model_path=str(model_output_path),
     )
     with (config.output_dir / "metrics.json").open("w") as f:
         json.dump(asdict(result), f, indent=4, default=str)
     if wandb_run is not None:
-        wandb_run.summary.update({"best_step": best_step, "final_eval_kl": final_eval.kl_divergence, "elapsed_seconds": elapsed})
+        wandb_run.summary.update(
+            {
+                "best_step": best_step,
+                "final_eval_kl": final_eval.kl_divergence,
+                "elapsed_seconds": elapsed,
+            }
+        )
         wandb_run.finish()
     if callbacks is not None:
         callbacks.finished(result)

@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import replace
+from typing import Any, cast
 
 import equinox as eqx
 import jax
@@ -9,12 +10,12 @@ import optax
 from jax import Array
 from jaxtyping import Bool, DTypeLike, Float, Int
 
-from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.compressed.hybrid import HybridSpec
 from lalamo.compressed.low_rank import LowRankMatrix, LowRankSpec
+from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.module import Keychain, ParameterNorm
-from lalamo.modules.normalization import Normalization
 from lalamo.modules.decoder import Decoder, DecoderForwardPassConfig
+from lalamo.modules.normalization import Normalization
 from lalamo.utils.field_metadata import field_metadata_for_leaf, partition_trainable
 from lalamo.utils.surgery import map_nodes_of_type
 from lalamo.weight_matrix import CompressionImplementation, EmbeddingMatrix, GradientEstimator, WeightMatrix
@@ -32,9 +33,10 @@ __all__ = [
     "compute_distill_step_gradients",
     "compute_trace_distill_batch_metrics",
     "compute_trace_distill_step_gradients",
-    "inject_lora_adapters",
     "initialize_distill_training_state",
+    "inject_lora_adapters",
     "make_trace_distill_batch",
+    "materialize_distill_student",
 ]
 
 
@@ -74,9 +76,9 @@ class TraceDistillBatch(eqx.Module):
 
 
 class DistillTrainingState(eqx.Module):
-    master_weights: eqx.Module
+    master_weights: Any
     frozen: eqx.Module
-    muon_dimension_numbers: eqx.Module
+    muon_dimension_numbers: Any
 
 
 class DistillOptimizerState(eqx.Module):
@@ -102,13 +104,14 @@ def _make_muon_dimension_numbers(module: eqx.Module) -> eqx.Module:
     )
 
 
-def _cast_leaves(tree: eqx.Module, dtype: DTypeLike) -> eqx.Module:
+def _cast_leaves(tree: Any, dtype: DTypeLike) -> Any:  # noqa: ANN401
     return jax.tree.map(
-        lambda leaf: leaf.astype(dtype) if isinstance(leaf, Array) and jnp.issubdtype(leaf.dtype, jnp.floating) else leaf,
+        lambda leaf: leaf.astype(dtype)
+        if isinstance(leaf, Array) and jnp.issubdtype(leaf.dtype, jnp.floating)
+        else leaf,
         tree,
         is_leaf=lambda leaf: leaf is None,
     )
-
 
 
 def inject_lora_adapters(
@@ -142,8 +145,15 @@ def inject_lora_adapters(
 def _lora_trainable_filter(module: eqx.Module, path: tuple[object, ...], leaf: object) -> bool:
     if not isinstance(leaf, Array):
         return False
-    current = module
+    current: object = module
     for key in path:
+        if isinstance(current, (LowRankMatrix, Normalization)):
+            return True
+        if hasattr(key, "idx"):
+            assert isinstance(current, (list, tuple))
+            assert isinstance(key.idx, int)
+            current = current[key.idx]
+            continue
         name = key.name if hasattr(key, "name") else str(key)
         child = getattr(current, name, None)
         if child is None:
@@ -181,12 +191,14 @@ def initialize_distill_training_state(
     )
 
 
-def _materialize_student(
-    student: Decoder,
+def materialize_distill_student(
     training_state: DistillTrainingState,
     compute_dtype: DTypeLike,
 ) -> Decoder:
-    return eqx.combine(_cast_leaves(training_state.master_weights, compute_dtype), training_state.frozen)
+    return cast(
+        "Decoder",
+        eqx.combine(_cast_leaves(training_state.master_weights, compute_dtype), training_state.frozen),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +333,12 @@ def compute_distill_batch_metrics(
         jnp.logical_and(student_top1 == teacher_top1, prediction_mask.astype(bool)),
         dtype=jnp.int32,
     )
-    return DistillBatchMetrics(loss=loss, kl_divergence=kl_divergence, valid_tokens=valid_tokens, top1_matches=top1_matches)
+    return DistillBatchMetrics(
+        loss=loss,
+        kl_divergence=kl_divergence,
+        valid_tokens=valid_tokens,
+        top1_matches=top1_matches,
+    )
 
 
 @eqx.filter_jit
@@ -378,15 +395,17 @@ def compute_trace_distill_batch_metrics(
 @eqx.filter_jit
 def compute_distill_step_gradients(
     training_state: DistillTrainingState,
-    student: Decoder,
     teacher: Decoder,
     batch: DistillBatch,
     config: DistillConfig,
     *,
     keychain: Keychain,
-) -> tuple[eqx.Module, DistillBatchMetrics]:
-    def loss_fn(master_weights: eqx.Module) -> tuple[Float[Array, ""], DistillBatchMetrics]:
-        materialized = _materialize_student(student, replace(training_state, master_weights=master_weights), config.compute_dtype)
+) -> tuple[Any, DistillBatchMetrics]:
+    def loss_fn(master_weights: Any) -> tuple[Float[Array, ""], DistillBatchMetrics]:  # noqa: ANN401
+        materialized = materialize_distill_student(
+            replace(training_state, master_weights=master_weights),
+            config.compute_dtype,
+        )
         metrics = compute_distill_batch_metrics(materialized, teacher, batch, config, keychain=keychain)
         return metrics.loss, metrics
 
@@ -397,14 +416,16 @@ def compute_distill_step_gradients(
 @eqx.filter_jit
 def compute_trace_distill_step_gradients(
     training_state: DistillTrainingState,
-    student: Decoder,
     batch: TraceDistillBatch,
     config: DistillConfig,
     *,
     keychain: Keychain,
-) -> tuple[eqx.Module, DistillBatchMetrics]:
-    def loss_fn(master_weights: eqx.Module) -> tuple[Float[Array, ""], DistillBatchMetrics]:
-        materialized = _materialize_student(student, replace(training_state, master_weights=master_weights), config.compute_dtype)
+) -> tuple[Any, DistillBatchMetrics]:
+    def loss_fn(master_weights: Any) -> tuple[Float[Array, ""], DistillBatchMetrics]:  # noqa: ANN401
+        materialized = materialize_distill_student(
+            replace(training_state, master_weights=master_weights),
+            config.compute_dtype,
+        )
         metrics = compute_trace_distill_batch_metrics(materialized, batch, config, keychain=keychain)
         return metrics.loss, metrics
 
@@ -415,7 +436,7 @@ def compute_trace_distill_step_gradients(
 def apply_distill_gradients(
     optimizer_state: DistillOptimizerState,
     optimizer: optax.GradientTransformation,
-    grads: eqx.Module,
+    grads: Any,  # noqa: ANN401
 ) -> DistillOptimizerState:
     updates, new_opt_state = optimizer.update(
         grads,
@@ -434,6 +455,6 @@ def apply_distill_gradients(
 def apply_donated_distill_gradients(
     optimizer_state: DistillOptimizerState,
     optimizer: optax.GradientTransformation,
-    grads: eqx.Module,
+    grads: Any,  # noqa: ANN401
 ) -> DistillOptimizerState:
     return apply_distill_gradients(optimizer_state, optimizer, grads)

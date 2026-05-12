@@ -1,8 +1,6 @@
 import equinox as eqx
-import jax
 import jax.tree_util as jtu
 from jax import Array
-from jaxtyping import PyTree
 
 from lalamo.module import FieldMetadata, ParameterNorm
 
@@ -20,6 +18,8 @@ def field_metadata_for_leaf(module: eqx.Module, path: tuple[object, ...]) -> Fie
     current: object = module
     for key in path:
         if hasattr(key, "idx"):
+            assert isinstance(current, (list, tuple))
+            assert isinstance(key.idx, int)
             current = current[key.idx]
             continue
         name = key.name if hasattr(key, "name") else str(key)
