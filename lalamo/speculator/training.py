@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from enum import Enum
 from itertools import batched
 from typing import Annotated
 
@@ -20,6 +21,7 @@ __all__ = [
     "SpeculatorTrainingConfig",
     "SpeculatorTrainingContext",
     "SpeculatorTrainingEvent",
+    "SpeculatorTrainingPhase",
     "SpeculatorTrainingProgress",
     "train_speculator",
 ]
@@ -78,10 +80,46 @@ class SpeculatorTrainingProgress:
         )
 
 
+class SpeculatorTrainingPhase(str, Enum):
+    TRAIN = "train"
+    EVAL = "eval"
+
+
+@dataclass(frozen=True)
+class SpeculatorTrainingSchedule:
+    total_epochs: int
+    train_batches_per_epoch: int
+    eval_batches_per_epoch: int
+    total_batches: int
+
+    @classmethod
+    def create(
+        cls,
+        config: SpeculatorTrainingConfig,
+        train_sequences: int,
+        eval_sequences: int,
+    ) -> SpeculatorTrainingSchedule:
+        train_batches_per_epoch = count_batches(train_sequences, config.batch_size)
+        eval_batches_per_epoch = count_batches(eval_sequences, config.batch_size)
+        eval_epochs = config.epochs // config.eval_every_epochs if eval_sequences > 0 else 0
+        return cls(
+            total_epochs=config.epochs,
+            train_batches_per_epoch=train_batches_per_epoch,
+            eval_batches_per_epoch=eval_batches_per_epoch,
+            total_batches=config.epochs * train_batches_per_epoch + eval_epochs * eval_batches_per_epoch,
+        )
+
+
 @dataclass(frozen=True)
 class SpeculatorTrainingEvent:
     epoch: int
     progress: SpeculatorTrainingProgress
+    phase: SpeculatorTrainingPhase = SpeculatorTrainingPhase.TRAIN
+    total_epochs: int = 1
+    batch_index: int = 0
+    total_epoch_batches: int = 0
+    completed_batches: int = 0
+    total_batches: int = 0
     loss: float | None = None
 
 
@@ -148,6 +186,23 @@ def train_speculator[SpeculatorT: Speculator, StateT](
     training_device_id: int = 0,
     progress_callback: Callable[[SpeculatorTrainingEvent], None] | None = None,
 ) -> SpeculatorT:
+    train_sequences = count_completions(train_completions)
+    eval_sequences = count_completions(eval_completions) if eval_completions is not None else 0
+    schedule = SpeculatorTrainingSchedule.create(config, train_sequences, eval_sequences)
+    progress = SpeculatorTrainingProgress.create()
+    last_event: SpeculatorTrainingEvent | None = SpeculatorTrainingEvent(
+        epoch=1,
+        progress=progress,
+        phase=SpeculatorTrainingPhase.TRAIN,
+        total_epochs=schedule.total_epochs,
+        batch_index=0,
+        total_epoch_batches=schedule.train_batches_per_epoch,
+        completed_batches=0,
+        total_batches=schedule.total_batches,
+    )
+    if progress_callback is not None:
+        progress_callback(last_event)
+
     training_device = jax_device(training_device_id)
     with jax.default_device(training_device):
         state = trainer.init_state()
@@ -155,8 +210,6 @@ def train_speculator[SpeculatorT: Speculator, StateT](
     best_event: SpeculatorTrainingEvent | None = None
     best_loss: float | None = None
     bad_eval_count = 0
-    last_event: SpeculatorTrainingEvent | None = None
-    progress = SpeculatorTrainingProgress.create()
 
     for epoch in range(1, config.epochs + 1):
         state, progress, last_event = run_training_epoch(
@@ -169,6 +222,7 @@ def train_speculator[SpeculatorT: Speculator, StateT](
             progress,
             training_device,
             training_device_id,
+            schedule,
             progress_callback,
         )
 
@@ -185,6 +239,7 @@ def train_speculator[SpeculatorT: Speculator, StateT](
             progress,
             training_device,
             training_device_id,
+            schedule,
             progress_callback,
         )
         if eval_event is None or eval_event.loss is None:
@@ -207,10 +262,8 @@ def train_speculator[SpeculatorT: Speculator, StateT](
 
     if best_event is None:
         best_state = state
-        best_event = last_event or SpeculatorTrainingEvent(
-            epoch=0,
-            progress=progress,
-        )
+        assert last_event is not None
+        best_event = last_event
         trainer.save(best_state, best_event)
 
     return trainer.finish(best_state)
@@ -226,6 +279,7 @@ def run_training_epoch[SpeculatorT: Speculator, StateT](
     progress: SpeculatorTrainingProgress,
     training_device: jax.Device,
     training_device_id: int,
+    schedule: SpeculatorTrainingSchedule,
     progress_callback: Callable[[SpeculatorTrainingEvent], None] | None,
 ) -> tuple[StateT, SpeculatorTrainingProgress, SpeculatorTrainingEvent | None]:
     last_event = None
@@ -239,7 +293,7 @@ def run_training_epoch[SpeculatorT: Speculator, StateT](
         target_device_id=training_device_id,
     )
 
-    for features in feature_queue.iter_features(requests):
+    for batch_index, features in enumerate(feature_queue.iter_features(requests), start=1):
         context = SpeculatorTrainingContext(
             epoch=epoch,
             step=progress.trained_steps + 1,
@@ -251,6 +305,12 @@ def run_training_epoch[SpeculatorT: Speculator, StateT](
         last_event = SpeculatorTrainingEvent(
             epoch=epoch,
             progress=progress,
+            phase=SpeculatorTrainingPhase.TRAIN,
+            total_epochs=schedule.total_epochs,
+            batch_index=batch_index,
+            total_epoch_batches=schedule.train_batches_per_epoch,
+            completed_batches=progress.trained_steps + progress.evaluated_steps,
+            total_batches=schedule.total_batches,
             loss=result.loss,
         )
         if progress_callback is not None:
@@ -269,6 +329,7 @@ def run_evaluation_epoch[SpeculatorT: Speculator, StateT](
     progress: SpeculatorTrainingProgress,
     training_device: jax.Device,
     training_device_id: int,
+    schedule: SpeculatorTrainingSchedule,
     progress_callback: Callable[[SpeculatorTrainingEvent], None] | None,
 ) -> tuple[SpeculatorTrainingProgress, SpeculatorTrainingEvent | None]:
     total_loss = 0.0
@@ -284,7 +345,7 @@ def run_evaluation_epoch[SpeculatorT: Speculator, StateT](
         target_device_id=training_device_id,
     )
 
-    for features in feature_queue.iter_features(requests):
+    for batch_index, features in enumerate(feature_queue.iter_features(requests), start=1):
         context = SpeculatorTrainingContext(
             epoch=epoch,
             step=progress.evaluated_steps + 1,
@@ -300,6 +361,12 @@ def run_evaluation_epoch[SpeculatorT: Speculator, StateT](
         last_event = SpeculatorTrainingEvent(
             epoch=epoch,
             progress=progress,
+            phase=SpeculatorTrainingPhase.EVAL,
+            total_epochs=schedule.total_epochs,
+            batch_index=batch_index,
+            total_epoch_batches=schedule.eval_batches_per_epoch,
+            completed_batches=progress.trained_steps + progress.evaluated_steps,
+            total_batches=schedule.total_batches,
             loss=total_loss / total_loss_weight if total_loss_weight > 0.0 else None,
         )
         if progress_callback is not None:
@@ -310,3 +377,11 @@ def run_evaluation_epoch[SpeculatorT: Speculator, StateT](
 
 def count_feature_tokens(features: LalamoCompletionFeatures) -> tuple[int, int]:
     return features.completion_batch.target_mask.shape[0], int(features.completion_batch.target_mask.sum())
+
+
+def count_completions(completions: Callable[[], Iterable[LalamoCompletion]]) -> int:
+    return sum(1 for _ in completions())
+
+
+def count_batches(num_sequences: int, batch_size: int) -> int:
+    return (num_sequences + batch_size - 1) // batch_size

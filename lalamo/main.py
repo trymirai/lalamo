@@ -1286,7 +1286,9 @@ class CliTrainCallbacks(TrainCallbacks):
             Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
+                MofNCompleteColumn(),
                 TimeElapsedColumn(),
+                TimeRemainingColumn(),
                 transient=True,
             ),
         )
@@ -1306,11 +1308,16 @@ class CliTrainCallbacks(TrainCallbacks):
         assert self.training_task is not None
         loss = "?" if event.loss is None else f"{event.loss:.4f}"
         progress = event.progress
+        phase = event.phase.value
         self.progress.update(
             self.training_task,
+            completed=event.batch_index,
+            total=event.total_epoch_batches or None,
             description=(
                 f"🔮 [cyan]Training {self.backend_name} speculator... "
-                f"epoch={event.epoch} train_tokens={progress.trained_tokens} "
+                f"epoch={event.epoch}/{event.total_epochs} "
+                f"{phase}_batch={event.batch_index}/{event.total_epoch_batches} "
+                f"train_tokens={progress.trained_tokens} "
                 f"eval_tokens={progress.evaluated_tokens} loss={loss}[/cyan]"
             ),
         )
