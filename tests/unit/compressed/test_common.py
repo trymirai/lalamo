@@ -9,7 +9,10 @@ import pytest
 from jax.sharding import Mesh, NamedSharding
 
 from lalamo.compressed.awq import AWQSpec
+from lalamo.compressed.e8p import E8PSpec
 from lalamo.compressed.mlx import MLXSpec
+from lalamo.compressed.mxfp4 import MXFP4Spec
+from lalamo.compressed.normal_float import NormalFloatSpec
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import (
@@ -42,14 +45,36 @@ def _mlx_spec(bits: Bits, group_size: int, layout: Layout) -> WeightMatrixSpec:
     return MLXSpec(bits=bits, group_size=group_size, layout=layout)
 
 
+def _normal_float_spec(bits: Bits, group_size: int, layout: Layout) -> WeightMatrixSpec:
+    return NormalFloatSpec(bits=bits, group_size=group_size, layout=layout)
+
+
+def _mxfp4_spec(bits: Bits, group_size: int, layout: Layout) -> WeightMatrixSpec:
+    if bits != 4:
+        raise ValueError(f"MXFP4 only supports 4-bit weights, got {bits}")
+    return MXFP4Spec(group_size=group_size, layout=layout)
+
+
+def _e8p_spec(bits: Bits, group_size: int, layout: Layout) -> WeightMatrixSpec:  # noqa: ARG001
+    if bits != 4:
+        raise ValueError(f"E8P shared tests only use the 4-bit variant, got {bits}")
+    return E8PSpec(bits=bits, layout=layout)
+
+
 COMPRESSED_MATRIX_CASES = (
     pytest.param(CompressedMatrixCase("awq", _awq_spec, weight_offset=7, weight_divisor=8), id="awq"),
     pytest.param(CompressedMatrixCase("mlx", _mlx_spec, weight_offset=3, weight_divisor=5), id="mlx"),
+    pytest.param(
+        CompressedMatrixCase("normal_float", _normal_float_spec, weight_offset=5, weight_divisor=6),
+        id="normal-float",
+    ),
+    pytest.param(CompressedMatrixCase("mxfp4", _mxfp4_spec, weight_offset=4, weight_divisor=4), id="mxfp4"),
+    pytest.param(CompressedMatrixCase("e8p", _e8p_spec, weight_offset=11, weight_divisor=9), id="e8p"),
 )
 
 
 def logical_weights(case: CompressedMatrixCase, *leading_dims: int) -> jax.Array:
-    shape = (*leading_dims, 4, 4)
+    shape = (*leading_dims, 8, 8)
     return (jnp.arange(prod(shape), dtype=jnp.float32).reshape(shape) - case.weight_offset) / case.weight_divisor
 
 
@@ -69,7 +94,7 @@ def host_decompressed(matrix: EmbeddingMatrix[WeightMatrixSpec]) -> jax.Array:
 
 def host_embedding_table(matrix: EmbeddingMatrix[WeightMatrixSpec]) -> jax.Array:
     match matrix.spec:
-        case AWQSpec() | MLXSpec() | FullPrecisionSpec() as spec:
+        case AWQSpec() | E8PSpec() | MLXSpec() | NormalFloatSpec() | MXFP4Spec() | FullPrecisionSpec() as spec:
             return host_array(spec.layout.from_output_input(matrix.decompress()))
     raise TypeError(f"Unsupported matrix spec type: {type(matrix.spec).__name__}")
 
@@ -125,7 +150,7 @@ def test_compressed_matrix_training_and_inference_outputs_match_reference_and_pr
     layout: Layout,
 ) -> None:
     training, inference = _compress_pair(case, layout)
-    vector = jax.device_put(jnp.arange(4, dtype=jnp.float32), make_sharding((ShardingAxis.DATA,)))
+    vector = jax.device_put(jnp.arange(8, dtype=jnp.float32), make_sharding((ShardingAxis.DATA,)))
     reference = logical_dot_reference(training.decompress(), vector)
 
     training_result = training.dot(vector, keychain=Keychain.init(0))
