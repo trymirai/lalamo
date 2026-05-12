@@ -80,21 +80,21 @@ def _permute_for_rope_rotate_half(
         # For 1D vectors: swap interleaved pairs to grouped halves
         return rearrange(weight, "(half_dim pair) -> (pair half_dim)", pair=2)
 
-    out_features, _ = weight.shape
-    assert out_features == num_heads * head_dim, (
-        f"Output features {out_features} must equal num_heads * head_dim = {num_heads * head_dim}"
+    out_channels, _ = weight.shape
+    assert out_channels == num_heads * head_dim, (
+        f"Output channels {out_channels} must equal num_heads * head_dim = {num_heads * head_dim}"
     )
     # For 2D matrices: swap interleaved pairs to grouped halves within each head
     return rearrange(
         weight,
-        "(heads half_dim pair) in_features -> (heads pair half_dim) in_features",
+        "(heads half_dim pair) in_channels -> (heads pair half_dim) in_channels",
         heads=num_heads,
         pair=2,
     )
 
 
 def _permute_qkv_for_rope_rotate_half(
-    qkv_weight: Float[Array, "q_dim+k_dim+v_dim in_features"],
+    qkv_weight: Float[Array, "qkv_channels in_channels"],
     num_heads: int,
     num_groups: int,
     head_dim: int,
@@ -105,7 +105,7 @@ def _permute_qkv_for_rope_rotate_half(
     Only Q and K need permutation (they use RoPE). V is unchanged.
 
     Args:
-        qkv_weight: Fused QKV weight of shape (q_dim + k_dim + v_dim, in_features)
+        qkv_weight: Fused QKV weight of shape (q_dim + k_dim + v_dim, in_channels)
                     where q_dim = num_heads * head_dim, k_dim = v_dim = num_groups * head_dim
         num_heads: Number of query heads.
         num_groups: Number of key/value heads (groups for GQA).
@@ -146,24 +146,9 @@ def load_linear_and_fuse_scaling(
     sublayers_to_fuse: list[str] | None = None,
     scaling_to_fuse: Array | None = None,
 ) -> Linear:
-    """Load linear layer directly or fuse several sum-matrices into one linear layer.
-    Additionally fuse final result with scaling weights that would follow after the layer.
-    Args:
-        module: target linear module into which weights will be loaded
-        weights_dict: mapping with weights
-        path: path to linear layer within the given weights mapping
-        sublayers_to_fuse: optional list of names of matrices that we want to fuse into single linear layer
-        scaling_to_fuze: optional array of scales we want to fuse into given linear module
-
-    Returns:
-        Linear layer with weights loaded into it
-    """
     assert isinstance(module, Linear)
     if not module.has_biases:
-        if sublayers_to_fuse:
-            paths_to_check = [path / proj / "bias" for proj in sublayers_to_fuse]
-        else:
-            paths_to_check = path / "bias"
+        paths_to_check = [path / proj / "bias" for proj in sublayers_to_fuse] if sublayers_to_fuse else [path / "bias"]
         for p in paths_to_check:
             if p in weights_dict:
                 raise ValueError(f"Bias tensor found at {p} but module does not support it.")
@@ -187,6 +172,18 @@ def load_linear_and_fuse_scaling(
     return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, bias))
 
 
+def _load_rope_norm(
+    module: Normalization | None,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+) -> Normalization | None:
+    if module is None:
+        return None
+    norm = load_rmsnorm(module, weights_dict, path)
+    permuted_scales = _permute_for_rope_rotate_half(norm.scales, 1, norm.scales.shape[0])
+    return load_as_at(lambda m: (m.scales,), norm, (permuted_scales,), allow_dtype_cast=True)
+
+
 def load_transformer_block(
     module: Transformer,
     weights_dict: Mapping[str, Array],
@@ -197,7 +194,7 @@ def load_transformer_block(
         attn_module: Attention,
         weights_dict: Mapping[str, Array],
         path: ParameterPath,
-        scaling_to_fuze: Array | None = None,
+        scaling_to_fuse: Array | None = None,
     ) -> Attention:
         qkv_projection = load_linear_and_fuse_scaling(
             attn_module.qkv_projection,
@@ -222,40 +219,11 @@ def load_transformer_block(
             attn_module.out_projection,
             weights_dict,
             path / "wo",
-            scaling_to_fuse=scaling_to_fuze,
+            scaling_to_fuse=scaling_to_fuse,
         )
 
-        if attn_module.query_norm is not None:
-            query_norm = load_rmsnorm(attn_module.query_norm, weights_dict, path / "q_norm")
-            permuted_scales = _permute_for_rope_rotate_half(
-                query_norm.scales,
-                1,
-                query_norm.scales.shape[0],
-            )
-            query_norm = load_as_at(
-                lambda m: (m.scales,),
-                query_norm,
-                (permuted_scales,),
-                allow_dtype_cast=True,
-            )
-        else:
-            query_norm = None
-
-        if attn_module.key_norm is not None:
-            key_norm = load_rmsnorm(attn_module.key_norm, weights_dict, path / "k_norm")
-            permuted_scales = _permute_for_rope_rotate_half(
-                key_norm.scales,
-                1,
-                key_norm.scales.shape[0],
-            )
-            key_norm = load_as_at(
-                lambda m: (m.scales,),
-                key_norm,
-                (permuted_scales,),
-                allow_dtype_cast=True,
-            )
-        else:
-            key_norm = None
+        query_norm = _load_rope_norm(attn_module.query_norm, weights_dict, path / "q_norm")
+        key_norm = _load_rope_norm(attn_module.key_norm, weights_dict, path / "k_norm")
 
         return load_as_at(
             lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm),
@@ -271,7 +239,7 @@ def load_transformer_block(
         up_proj_key: str,
         gate_proj_key: str,
         down_proj_key: str,
-        scaling_to_fuze: Array | None = None,
+        scaling_to_fuse: Array | None = None,
     ) -> MLPBase:
         assert isinstance(module, DenseMLP)
         dense_module: DenseMLP = module
@@ -286,7 +254,7 @@ def load_transformer_block(
             dense_module.down_projection,
             weights_dict,
             path / down_proj_key,
-            scaling_to_fuse=scaling_to_fuze,
+            scaling_to_fuse=scaling_to_fuse,
         )
         return load_as_at(
             _dense_mlp_projections,
@@ -319,7 +287,7 @@ def load_transformer_block(
             attn_module=module.mixer,
             weights_dict=weights_dict,
             path=path / "attention",
-            scaling_to_fuze=layer_scale_weights,
+            scaling_to_fuse=layer_scale_weights,
         )
 
         assert isinstance(module.pre_mlp_norm, Normalization)
@@ -340,7 +308,7 @@ def load_transformer_block(
             up_proj_key="w3",
             gate_proj_key="w1",
             down_proj_key="w2",
-            scaling_to_fuze=layer_scale_weights,
+            scaling_to_fuse=layer_scale_weights,
         )
 
         return load_as_at(
@@ -400,14 +368,8 @@ def load_fish_audio_text_decoding_modules(
     base_path = ParameterPath()
     output_linear_name = "output" if not fast else "fast_output"
     output_linear = load_linear_and_fuse_scaling(output, weights_dict, base_path / output_linear_name)
-    output = load_as_at(
-        lambda m: (m,),
-        output,
-        (output_linear,),
-        allow_dtype_cast=True,
-    )
 
-    return (transformer, output)
+    return (transformer, output_linear)
 
 
 def load_vector_quantize(
@@ -534,30 +496,17 @@ def load_convnext_block(
         allow_dtype_cast=True,
     )
 
-    # Load pointwise conv 1 (Linear layer)
-    # PyTorch Linear weight is (out_features, in_features)
-    pwconv1_weight = weights_dict[path / "pwconv1" / "weight"]
-    pwconv1_bias = weights_dict[path / "pwconv1" / "bias"]
-    base1 = load_full_precision(module.pointwise_conv_step1.weights, pwconv1_weight)
-    pointwise_conv_step1 = eqx.tree_at(
-        lambda m: (m.weights, m.biases),
+    pointwise_conv_step1 = load_linear_and_fuse_scaling(
         module.pointwise_conv_step1,
-        (base1, pwconv1_bias),
+        weights_dict,
+        path / "pwconv1",
     )
 
-    # Load pointwise conv 2 (Linear layer), fusing layer scaling if present
-    pwconv2_weight = weights_dict[path / "pwconv2" / "weight"]
-    pwconv2_bias = weights_dict[path / "pwconv2" / "bias"]
-    layer_scale_path = path / "gamma"
-    if layer_scale_path in weights_dict:
-        layer_scale = weights_dict[layer_scale_path]
-        pwconv2_weight = pwconv2_weight * layer_scale[:, None]
-        pwconv2_bias = pwconv2_bias * layer_scale
-    base2 = load_full_precision(module.pointwise_conv_step2.weights, pwconv2_weight)
-    pointwise_conv_step2 = eqx.tree_at(
-        lambda m: (m.weights, m.biases),
+    pointwise_conv_step2 = load_linear_and_fuse_scaling(
         module.pointwise_conv_step2,
-        (base2, pwconv2_bias),
+        weights_dict,
+        path / "pwconv2",
+        scaling_to_fuse=weights_dict.get(path / "gamma"),
     )
 
     return load_as_at(

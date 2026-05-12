@@ -78,17 +78,17 @@ def _tokenizer() -> Tokenizer:
 
 
 def _model() -> ExampleModel:
-    config = ExampleModelConfig(token_codec_config=ExampleTokenCodecConfig(), width=3)
+    config = ExampleModelConfig(token_codec_config=ExampleTokenCodecConfig(), width=4)
     return ExampleModel(
         config=config,
         token_codec=config.token_codec_config.init(_tokenizer()),
-        dense_weight=jnp.arange(3, dtype=jnp.float32),
-        sharded_weight=jnp.arange(9, dtype=jnp.float32).reshape(3, 3),
+        dense_weight=jnp.arange(4, dtype=jnp.float32),
+        sharded_weight=jnp.arange(16, dtype=jnp.float32).reshape(4, 4),
     )
 
 
-def _single_device_tensor_mesh() -> Mesh:
-    return Mesh(np.array(jax.devices()[:1]), (ShardingAxis.TENSOR,))
+def _tensor_mesh() -> Mesh:
+    return Mesh(np.array(jax.devices()[:2]), (ShardingAxis.TENSOR,))
 
 
 def _save_model(tmp_path: Path, model: ExampleModel) -> CheckpointManager:
@@ -101,7 +101,7 @@ def test_checkpoint_restore_roundtrips_config_tokenizer_and_arrays(tmp_path: Pat
     model = _model()
     manager = _save_model(tmp_path, model)
 
-    with jax.set_mesh(_single_device_tensor_mesh()):
+    with jax.set_mesh(_tensor_mesh()):
         restored = manager.restore(ExampleBaseModelConfig, "example", dtype=jnp.float32)
 
     assert restored.config == model.config
@@ -114,7 +114,7 @@ def test_checkpoint_restore_casts_arrays_to_requested_dtype(tmp_path: Path) -> N
     model = _model()
     manager = _save_model(tmp_path, model)
 
-    with jax.set_mesh(_single_device_tensor_mesh()):
+    with jax.set_mesh(_tensor_mesh()):
         restored = manager.restore(ExampleBaseModelConfig, "example", dtype=jnp.bfloat16)
 
     assert restored.dense_weight.dtype == jnp.bfloat16
@@ -128,7 +128,7 @@ def test_checkpoint_restore_uses_template_sharding_not_saved_sharding(tmp_path: 
     saved_sharding = model.sharded_weight.sharding
     manager = _save_model(tmp_path, model)
 
-    with jax.set_mesh(_single_device_tensor_mesh()):
+    with jax.set_mesh(_tensor_mesh()):
         expected_sharding = make_sharding((ShardingAxis.TENSOR, None))
         restored = manager.restore(ExampleBaseModelConfig, "example", dtype=jnp.float32)
 

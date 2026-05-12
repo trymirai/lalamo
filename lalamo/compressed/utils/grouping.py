@@ -18,8 +18,8 @@ __all__ = [
 
 
 class MinMax(NamedTuple):
-    min: Float[Array, "... out_channels in_channels"]
-    max: Float[Array, "... out_channels in_channels"]
+    min: Float[Array, "... rows groups"]
+    max: Float[Array, "... rows groups"]
 
 
 def grouped_last_axis_shape(shape: tuple[int, ...], *, group_size: int) -> tuple[int, ...]:
@@ -30,10 +30,10 @@ def grouped_last_axis_shape(shape: tuple[int, ...], *, group_size: int) -> tuple
 
 
 def group_by_last_axis(
-    weights: Float[Array, "... out_channels in_channels"],
+    weights: Float[Array, "... rows cols"],
     *,
     group_size: int,
-) -> Float[Array, "... out_channels groups group_channels"]:
+) -> Float[Array, "... rows groups group_channels"]:
     grouped_last_axis_shape(weights.shape, group_size=group_size)
     return rearrange(
         weights,
@@ -56,7 +56,7 @@ def unsigned_qmax(bits: int) -> int:
     return (2**bits) - 1
 
 
-def min_max_within_groups(weights: Float[Array, "... out_channels groups group_channels"]) -> MinMax:
+def min_max_within_groups(weights: Float[Array, "... rows groups group_channels"]) -> MinMax:
     return MinMax(
         min=jnp.min(weights, axis=-1),
         max=jnp.max(weights, axis=-1),

@@ -309,7 +309,7 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
         embed_id: Int[Array, " tokens"],
         *,
         keychain: Keychain,
-    ) -> Float[Array, "tokens code_size"]:
+    ) -> Float[Array, "tokens channels"]:
         embed_keychain, out_keychain = keychain.split()
         z_p = call_vmapped(
             self.codebook.embed,
@@ -381,7 +381,7 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
         codes: Int[Array, "n_codebooks tokens"],
         *,
         keychain: Keychain,
-    ) -> Float[Array, "tokens code_size"]:
+    ) -> Float[Array, "tokens channels"]:
         num_input_codebooks, _ = codes.shape
         selected_quantizers = self.quantizers[:num_input_codebooks]
         first_quantizer, *remaining_quantizers = selected_quantizers
@@ -408,7 +408,7 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
         codes: Int[Array, "batch n_codebooks tokens"],
         *,
         keychain: Keychain,
-    ) -> Float[Array, "batch tokens code_size"]:
+    ) -> Float[Array, "batch tokens channels"]:
         return call_vmapped(self.from_codes, codes, keychain=keychain)
 
 

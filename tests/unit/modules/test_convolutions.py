@@ -3,6 +3,7 @@ from math import prod
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from einops import einsum
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
@@ -60,14 +61,14 @@ def _assert_close(result: Array, reference: Array) -> None:
 
 
 def _sharded_sequence(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((None, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((None, None)))
 
 
 def _sharded_sequences(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, None)))
 
 
-def test_separable_causal_conv_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_separable_causal_conv_matches_reference_and_keeps_unsharded_features(fake_mesh: Mesh) -> None:
     module = _conv()
     inputs = _sharded_sequence(jnp.arange(5 * CHANNELS, dtype=jnp.float32).reshape(5, CHANNELS) / 10)
 
@@ -140,7 +141,50 @@ def test_separable_causal_conv_step_output_dtype_matches_token_dtype() -> None:
     assert step_output.dtype == token.dtype
 
 
-def test_separable_causal_conv_under_jit_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_separable_causal_conv_weight_gradient_matches_reference() -> None:
+    module = _conv()
+    inputs = jnp.arange(5 * CHANNELS, dtype=jnp.float32).reshape(5, CHANNELS) / 10
+
+    def loss(module: SeparableCausalConv) -> Array:
+        return jnp.sum(module(inputs).outputs)
+
+    result = eqx.filter_grad(loss)(module)
+    history = jnp.concatenate((jnp.zeros((KERNEL_SIZE - 1, CHANNELS), dtype=inputs.dtype), inputs), axis=0)
+    windows = jnp.stack([history[token_index : token_index + KERNEL_SIZE] for token_index in range(inputs.shape[0])])
+    reference_weights = einsum(windows, "suffix_tokens kernel channels -> channels kernel")
+    reference_biases = jnp.full((CHANNELS,), inputs.shape[0], dtype=inputs.dtype)
+
+    assert result.biases is not None
+    _assert_close(result=result.weights, reference=reference_weights)
+    _assert_close(result=result.biases, reference=reference_biases)
+
+
+def test_separable_causal_conv_input_gradient_matches_reference() -> None:
+    module = _conv()
+    inputs = jnp.arange(5 * CHANNELS, dtype=jnp.float32).reshape(5, CHANNELS) / 10
+
+    def loss(inputs: Array) -> Array:
+        return jnp.sum(module(inputs).outputs)
+
+    result = jax.grad(loss)(inputs)
+    output_gradients = jnp.ones_like(result)
+    padded_output_gradients = jnp.pad(output_gradients, ((KERNEL_SIZE - 1, KERNEL_SIZE - 1), (0, 0)))
+    output_gradient_windows = jnp.stack(
+        [
+            padded_output_gradients[token_index : token_index + KERNEL_SIZE]
+            for token_index in range(inputs.shape[0] + KERNEL_SIZE - 1)
+        ],
+    )
+    context_gradient = einsum(
+        output_gradient_windows,
+        jnp.flip(module.weights, axis=-1),
+        "context_tokens kernel channels, channels kernel -> context_tokens channels",
+    )
+
+    _assert_close(result=result, reference=context_gradient[KERNEL_SIZE - 1 :])
+
+
+def test_separable_causal_conv_under_jit_matches_reference_and_keeps_unsharded_features(fake_mesh: Mesh) -> None:
     module = _conv()
     inputs = _sharded_sequence(jnp.arange(5 * CHANNELS, dtype=jnp.float32).reshape(5, CHANNELS) / 10)
 
@@ -165,10 +209,28 @@ def test_separable_causal_conv_vmapped_over_inputs_matches_reference_and_keeps_d
     assert result.outputs.sharding == make_sharding((ShardingAxis.DATA, None, None))
 
 
-def test_separable_causal_conv_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
+def test_separable_causal_conv_vmapped_gradient_under_explicit_mesh(fake_mesh: Mesh) -> None:
+    module = _conv()
+    inputs = _sharded_sequences(jnp.arange(2 * 5 * CHANNELS, dtype=jnp.float32).reshape(2, 5, CHANNELS) / 10)
+
+    def loss(module: SeparableCausalConv, inputs: Array) -> Array:
+        return jnp.sum(module(inputs).outputs)
+
+    result = jax.vmap(eqx.filter_grad(loss), in_axes=(None, 0))(module, inputs)
+
+    assert result.weights.shape == (2, CHANNELS, KERNEL_SIZE)
+    assert result.biases is not None
+    assert result.biases.shape == (2, CHANNELS)
+    _assert_named_sharding(result.weights.sharding, fake_mesh)
+    _assert_named_sharding(result.biases.sharding, fake_mesh)
+    assert result.weights.sharding == make_sharding((ShardingAxis.DATA, None, None))
+    assert result.biases.sharding == make_sharding((ShardingAxis.DATA, None))
+
+
+def test_separable_causal_conv_export_load_roundtrips_with_replicated_parameters(fake_mesh: Mesh) -> None:
     original = _conv()
-    weight_sharding = make_sharding((ShardingAxis.DATA, None))
-    bias_sharding = make_sharding((ShardingAxis.DATA,))
+    weight_sharding = make_sharding((None, None))
+    bias_sharding = make_sharding((None,))
     template = SeparableCausalConv(
         config=original.config,
         weights=dummy_array(original.weights.shape, original.weights.dtype, weight_sharding),
@@ -181,10 +243,10 @@ def test_separable_causal_conv_export_load_roundtrips_and_preserves_template_sha
     restored = template.load_exported(original.export())
     result = restored(inputs)
 
-    assert restored.weights.sharding == template.weights.sharding
+    assert restored.weights.sharding == make_sharding((None, None))
     assert restored.biases is not None
     assert template.biases is not None
-    assert restored.biases.sharding == template.biases.sharding
+    assert restored.biases.sharding == make_sharding((None,))
     _assert_named_sharding(restored.weights.sharding, fake_mesh)
     _assert_named_sharding(restored.biases.sharding, fake_mesh)
     _assert_close(result=result.outputs, reference=original(inputs).outputs)

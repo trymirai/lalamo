@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from functools import partial
-from typing import Final, Protocol, overload
+from typing import Final, Protocol, overload, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -23,6 +23,7 @@ class _Unspecified:
 _UNSPECIFIED: Final = _Unspecified()
 
 
+@runtime_checkable
 class VmappableWithKeychain[*ArgT, ResultT](Protocol):
     def __call__(self, *args: *ArgT, keychain: Keychain) -> ResultT: ...
 
@@ -278,7 +279,7 @@ def call_vmapped_twice[ResultT](
 
 
 def apply_soft_capping(
-    values: Float[Array, "*"],
+    values: Float[Array, "..."],
     soft_cap: float,
-) -> Float[Array, "dst_tokens src_tokens"]:
+) -> Float[Array, "..."]:
     return jax.nn.tanh(values / soft_cap) * soft_cap

@@ -8,7 +8,7 @@ from lalamo.module import Keychain
 from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.weight_matrix import GradientEstimator
 
-from .utils import unsigned_qmax
+from .grouping import unsigned_qmax
 
 __all__ = [
     "deterministic_round_to_unsigned_grid",

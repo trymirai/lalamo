@@ -1,9 +1,9 @@
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 import jax
 from jax import numpy as jnp
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, ShardingAxis
@@ -23,9 +23,19 @@ from lalamo.sampling import SamplingPolicy
 
 @dataclass
 class FishAudioTextDecoderResult:
-    token_codes: Float[Array, "batch codes"]
+    token_codes: Int[Array, "batch codebooks"]
     hidden_states: Array | None
     state: State | None
+
+
+class DecodeUtteranceLoopState(NamedTuple):
+    slow_state: State | None
+    current_codes: Int[Array, "batch codebooks"]
+    loop_keychain: Keychain
+    generated_count: Int[Array, ""]
+    seq: Int[Array, "codebooks max_seq_len"]
+    previous_tokens: Int[Array, "codebooks max_seq_len"]
+    is_finished: Bool[Array, ""]
 
 
 @dataclass(frozen=True)
@@ -295,49 +305,70 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         if first_codes[0, 0] == self.config.im_end_token_id:
             return seq[1:, prompt_length : prompt_length + 1]
 
-        cur_token = first_codes
-        generated_count = 1
-        for i in range(1, max_new_tokens):
-            cur_token_expanded = cur_token.reshape(batch_size, codebook_dim, 1)
+        window_size = min(self.config.repeat_window_size, max_seq_len)
 
-            # Get windowed previous tokens for repetition penalty
-            win_size = self.config.repeat_window_size
-            if i < win_size:
-                window = previous_tokens[:, :win_size]
-            else:
-                window = previous_tokens[:, i - win_size : i]
-
-            loop_keychain, decode_keychain = loop_keychain.split()
+        def decode_next_step(loop_state: DecodeUtteranceLoopState) -> DecodeUtteranceLoopState:
+            loop_keychain, decode_keychain = loop_state.loop_keychain.split()
+            cur_token_expanded = loop_state.current_codes.reshape(batch_size, codebook_dim, 1)
+            window_start = jnp.maximum(loop_state.generated_count - window_size, 0)
+            window = jax.lax.dynamic_slice(
+                loop_state.previous_tokens,
+                (0, window_start),
+                (codebook_dim, window_size),
+            )
             embeddings = self.embed(
                 cur_token_expanded,
                 forward_pass_config=forward_pass_config,
                 keychain=embed_keychain,
             )
 
-            input_pos = jnp.array([[prompt_length + i - 1]])
-
             next_codes, state_slow = decode_next_token(
                 model=self,
                 x=embeddings,
-                state_slow=state_slow,
-                input_pos=input_pos,
+                state_slow=loop_state.slow_state,
+                input_pos=(prompt_length + loop_state.generated_count - 1)[None, None],
                 sampling_policy=sampling_policy,
                 forward_pass_config=forward_pass_config,
                 keychain=decode_keychain,
                 previous_tokens=window,
             )
 
-            seq = seq.at[:, prompt_length + i].set(next_codes[0])
-            previous_tokens = previous_tokens.at[:, i].set(next_codes[0])
-            generated_count += 1
+            return DecodeUtteranceLoopState(
+                slow_state=state_slow,
+                current_codes=next_codes,
+                loop_keychain=loop_keychain,
+                generated_count=loop_state.generated_count + 1,
+                seq=loop_state.seq.at[:, prompt_length + loop_state.generated_count].set(next_codes[0]),
+                previous_tokens=loop_state.previous_tokens.at[:, loop_state.generated_count].set(next_codes[0]),
+                is_finished=next_codes[0, 0] == self.config.im_end_token_id,
+            )
 
-            if next_codes[0, 0] == self.config.im_end_token_id:
-                break
+        def scan_step(
+            loop_state: DecodeUtteranceLoopState,
+            _: None,
+        ) -> tuple[DecodeUtteranceLoopState, None]:
+            next_loop_state = jax.lax.cond(loop_state.is_finished, lambda state: state, decode_next_step, loop_state)
+            return next_loop_state, None
 
-            cur_token = next_codes
+        initial_loop_state = DecodeUtteranceLoopState(
+            slow_state=state_slow,
+            current_codes=first_codes,
+            loop_keychain=loop_keychain,
+            generated_count=jnp.int32(1),
+            seq=seq,
+            previous_tokens=previous_tokens,
+            is_finished=first_codes[0, 0] == self.config.im_end_token_id,
+        )
+        final_loop_state, _ = jax.lax.scan(
+            scan_step,
+            initial_loop_state,
+            xs=None,
+            length=max_new_tokens - 1,
+        )
 
         # Extract codebook codes (exclude text token row and prompt, exclude last token which is end token)
-        codes = seq[1:, prompt_length : prompt_length + generated_count - 1]
+        generated_count = int(final_loop_state.generated_count)
+        codes = final_loop_state.seq[1:, prompt_length : prompt_length + generated_count - 1]
         assert jnp.all(codes >= 0), "Negative code found"
 
         return codes
@@ -353,7 +384,7 @@ def decode_next_token(
     keychain: Keychain,
     forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
     previous_tokens: Array | None = None,  # noqa: ARG001, reserved for future when repetition penalty is done
-) -> tuple[Int[Array, "batch codes"], State | None]:
+) -> tuple[Int[Array, "batch codebooks"], State | None]:
     batch_size = x.shape[0]
     assert batch_size == 1, "Batch scheduling not supported yet"
     (

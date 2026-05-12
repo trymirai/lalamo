@@ -81,23 +81,43 @@ class SamplingPolicy(eqx.Module):
             if banned_tokens is None
             else tuple(_pad_banned_tokens(()) if row is None else _pad_banned_tokens(row) for row in banned_tokens)
         )
-        policy = cls(
-            temperature=canonicalize(temperature, default=1.0, dtype=jnp.float32),
-            top_k=canonicalize(top_k, default=0, dtype=jnp.int32),
-            top_p=canonicalize(top_p, default=1.0, dtype=jnp.float32),
-            min_p=canonicalize(min_p, default=0.0, dtype=jnp.float32),
-            banned_tokens=(
-                None
-                if padded_banned_tokens is None or all(row == _pad_banned_tokens(()) for row in padded_banned_tokens)
-                else jnp.asarray(padded_banned_tokens, dtype=jnp.int32)
+        temperature = canonicalize(temperature, default=1.0, dtype=jnp.float32)
+        top_k = canonicalize(top_k, default=0, dtype=jnp.int32)
+        top_p = canonicalize(top_p, default=1.0, dtype=jnp.float32)
+        min_p = canonicalize(min_p, default=0.0, dtype=jnp.float32)
+        banned_tokens_array = (
+            None
+            if padded_banned_tokens is None or all(row == _pad_banned_tokens(()) for row in padded_banned_tokens)
+            else jnp.asarray(padded_banned_tokens, dtype=jnp.int32)
+        )
+        repetition_penalty = canonicalize(repetition_penalty, default=1.0, dtype=jnp.float32)
+        presence_penalty = canonicalize(presence_penalty, default=0.0, dtype=jnp.float32)
+        frequency_penalty = canonicalize(frequency_penalty, default=0.0, dtype=jnp.float32)
+        _raise_if_different_batch_sizes(
+            *jax.tree.leaves(
+                (
+                    temperature,
+                    top_k,
+                    top_p,
+                    min_p,
+                    banned_tokens_array,
+                    repetition_penalty,
+                    presence_penalty,
+                    frequency_penalty,
+                ),
             ),
-            repetition_penalty=canonicalize(repetition_penalty, default=1.0, dtype=jnp.float32),
-            presence_penalty=canonicalize(presence_penalty, default=0.0, dtype=jnp.float32),
-            frequency_penalty=canonicalize(frequency_penalty, default=0.0, dtype=jnp.float32),
+        )
+        return cls(
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            min_p=min_p,
+            banned_tokens=banned_tokens_array,
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
             token_counts=None,
         )
-        _raise_if_different_batch_sizes(*jax.tree.leaves(policy))
-        return policy
 
     @property
     def has_count_penalties(self) -> bool:

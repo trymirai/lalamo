@@ -29,7 +29,7 @@ def _generate_single(
 ) -> str:
     return model.reply(
         [UserMessage(prompt)],
-        generation_config=GenerationConfig(temperature=0),
+        generation_config=GenerationConfig(temperature=0.0),
         max_output_length=max_tokens,
         keychain=Keychain.init(0),
     ).response

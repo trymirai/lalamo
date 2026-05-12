@@ -86,7 +86,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
     num_levels_buffer: Int[Array, " dim"]
     dim_base_index: Int[Array, " dim"]
 
-    def _compress(self, inputs: Float[Array, "batch dim seq"]) -> Float[Array, "batch dim seq"]:
+    def _compress(self, inputs: Float[Array, "batch dim timesteps"]) -> Float[Array, "batch dim timesteps"]:
         """Apply tanh compression to map continuous values to quantization range.
 
         The compression ensures values are bounded within the quantization levels.
@@ -111,12 +111,12 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
             output_scale[None, :, None] * jnp.tanh(inputs + input_shift[None, :, None]) - output_offset[None, :, None]
         )
 
-    def _round_ste(self, inputs: Float[Array, "batch dim seq"]) -> Float[Array, "batch dim seq"]:
+    def _round_ste(self, inputs: Float[Array, "batch dim timesteps"]) -> Float[Array, "batch dim timesteps"]:
         """Round to nearest integer with straight-through estimator."""
         rounded = jnp.round(inputs)
         return inputs + jax.lax.stop_gradient(rounded - inputs)
 
-    def _inputs_to_codes(self, inputs: Float[Array, "batch dim seq"]) -> Float[Array, "batch dim seq"]:
+    def _inputs_to_codes(self, inputs: Float[Array, "batch dim timesteps"]) -> Float[Array, "batch dim timesteps"]:
         """Convert continuous inputs to quantized codes normalized to [-1, 1].
 
         Steps:
@@ -130,7 +130,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         scale = (self.num_levels_buffer // 2).astype(codes.dtype)
         return codes / scale[None, :, None]
 
-    def _codes_to_nonnegative(self, codes: Float[Array, "batch dim seq"]) -> Float[Array, "batch dim seq"]:
+    def _codes_to_nonnegative(self, codes: Float[Array, "batch dim timesteps"]) -> Float[Array, "batch dim timesteps"]:
         """Convert codes centered around zero to nonnegative integer indices."""
         scale = (self.num_levels_buffer // 2).astype(codes.dtype)
         offset = scale
@@ -142,7 +142,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         offset = scale
         return (codes_nonneg - offset) / scale
 
-    def _codes_to_indices(self, codes: Float[Array, "batch dim seq"]) -> Int[Array, "batch seq"]:
+    def _codes_to_indices(self, codes: Float[Array, "batch dim timesteps"]) -> Int[Array, "batch timesteps"]:
         """Convert per-dimension code vectors to single indices.
 
         Uses the dim_base_index to compute: sum(code_d * base_d) for d in dimensions
@@ -152,7 +152,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         indices = jnp.sum(nonneg * self.dim_base_index[None, :, None].astype(nonneg.dtype), axis=1)
         return indices.astype(jnp.int32)
 
-    def _indices_to_codes(self, index: Int[Array, " 1"]) -> Float[Array, " dim"]:
+    def _indices_to_codes(self, index: Int[Array, ""]) -> Float[Array, " dim"]:
         """Convert single indices to per-dimension code vectors.
         Reverses the indexing: code_d = (index // base_d) % levels_d
         """
@@ -162,8 +162,8 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
 
     def encode(
         self,
-        inputs: Float[Array, "batch dim seq"],
-    ) -> Int[Array, "batch seq"]:
+        inputs: Float[Array, "batch dim timesteps"],
+    ) -> Int[Array, "batch timesteps"]:
         """Encode continuous inputs to discrete indices."""
         codes = self._inputs_to_codes(inputs)
         # Add codebook dimension for compatibility with RVQ API
@@ -171,15 +171,15 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
 
     def decode(
         self,
-        indices: Int[Array, " seq"],
-    ) -> Float[Array, "seq dim"]:
+        indices: Int[Array, " timesteps"],
+    ) -> Float[Array, "timesteps dim"]:
         """Decode discrete indices back to continuous code vectors."""
         return call_vmapped(self._indices_to_codes, indices)
 
     def __call__(
         self,
-        inputs: Float[Array, "batch seq"],
-    ) -> Float[Array, "batch seq dim"]:
+        inputs: Int[Array, "batch timesteps"],
+    ) -> Float[Array, "batch timesteps dim"]:
         """
         Forward pass: dequantize batch of input indices vectors to continuous representation.
         """
@@ -226,8 +226,8 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
 
     def encode(
         self,
-        inputs: Float[Array, "batch channels seq"],
-    ) -> Int[Array, "num_groups batch seq"]:
+        inputs: Float[Array, "batch channels timesteps"],
+    ) -> Int[Array, "num_groups batch timesteps"]:
         """Encode inputs to indices for each group."""
         # Split input along channel dimension into groups
         inputs_grouped = jnp.split(inputs, self.config.num_groups, axis=1)
@@ -242,23 +242,23 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
 
     def decode(
         self,
-        indices: Int[Array, "batch seq num_groups"],
-    ) -> Float[Array, "batch seq channels"]:
+        indices: Int[Array, "batch timesteps num_groups"],
+    ) -> Float[Array, "batch timesteps channels"]:
         """Decode batch of indices vectors back to continuous representation."""
         # # Split indices along group dimension
         indices_grouped = jnp.split(indices, self.config.num_groups, axis=2)
 
         dequantized_list = []
         for idx_group, quantizer in zip(indices_grouped, self.quantizers, strict=True):
-            deq = quantizer(idx_group)
+            deq = quantizer(jnp.squeeze(idx_group, axis=2))
             dequantized_list.append(deq)
 
         return jnp.concatenate(dequantized_list, axis=2)
 
     def __call__(
         self,
-        inputs: Float[Array, "batch seq num_groups"],
-    ) -> Float[Array, "batch seq channels"]:
+        inputs: Int[Array, "batch timesteps num_groups"],
+    ) -> Float[Array, "batch timesteps channels"]:
         return self.decode(inputs)
 
 

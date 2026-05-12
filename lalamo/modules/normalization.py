@@ -9,7 +9,7 @@ from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
-from lalamo.utils.sharding import use_out_sharding
+from lalamo.utils.sharding import make_sharding, with_sharding
 
 __all__ = [
     "Normalization",
@@ -75,7 +75,6 @@ class Normalization(LalamoModule[NormalizationConfig]):
         return result
 
     @eqx.filter_jit
-    @use_out_sharding((None,))
     def __call__(
         self,
         inputs: Float[Array, " channels"],
@@ -83,10 +82,13 @@ class Normalization(LalamoModule[NormalizationConfig]):
         accumulation_precision: DTypeLike | None = None,
     ) -> Float[Array, " channels"]:
         accumulation_precision = accumulation_precision or forward_pass_config.accumulation_precision or inputs.dtype
-        upcasted_inputs = inputs.astype(accumulation_precision)
+        upcasted_inputs = with_sharding(inputs.astype(accumulation_precision), make_sharding((None,)))
 
         scale_dtype = accumulation_precision if self.config.upcast_mode == UpcastMode.FULL_LAYER else inputs.dtype
-        scales = self.scales.astype(scale_dtype)
+        scales = with_sharding(self.scales.astype(scale_dtype), make_sharding((None,)))
+        biases = None
+        if self.biases is not None:
+            biases = with_sharding(self.biases.astype(scale_dtype), make_sharding((None,)))
 
         match forward_pass_config.implementation:
             case NormalizationImplementation.STANDARD:
@@ -105,16 +107,17 @@ class Normalization(LalamoModule[NormalizationConfig]):
 
                 result = normalized_x * scales
 
-                if self.biases is not None:
-                    result += self.biases.astype(result.dtype)
-                return result.astype(inputs.dtype)
+                if biases is not None:
+                    result += biases
+                return with_sharding(result.astype(inputs.dtype), make_sharding((None,)))
 
             case NormalizationImplementation.TOKAMAX:
-                return tokamax.layer_norm(
+                result = tokamax.layer_norm(
                     upcasted_inputs,
                     scale=scales,
-                    offset=self.biases,
+                    offset=biases,
                     epsilon=self.config.epsilon,
                     scale_offset=self.config.scale_offset if self.config.scale_offset is not None else 0.0,
                     subtract_mean=self.config.subtract_mean,
                 ).astype(inputs.dtype)
+                return with_sharding(result, make_sharding((None,)))

@@ -6,20 +6,20 @@ from enum import StrEnum
 from typing import ClassVar, Generic, Literal, Self, TypeVar, cast, overload
 
 import equinox as eqx
-import jax.numpy as jnp
 from cattrs import GenConverter
-from jax import ShapeDtypeStruct, device_put
+from jax import ShapeDtypeStruct
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.exportable import Exportable, ExportResults
 from lalamo.module import Keychain, ParameterNorm, ShardingAxis, field
+from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array, supports_dummy_arrays
 from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.registry_abc import RegistryABC, make_registry_abc_converter
-from lalamo.utils.sharding import make_sharding, reshard_as, use_out_sharding
+from lalamo.utils.sharding import make_sharding, reshard_as, use_out_sharding, with_sharding
 
 __all__ = [
     "CompressionImplementation",
@@ -28,63 +28,9 @@ __all__ = [
     "GradientEstimator",
     "Layout",
     "MatmulConfig",
-    "Preconditioner",
     "WeightMatrix",
     "WeightMatrixSpec",
 ]
-
-
-@eqx.filter_jit
-def sym_to_tril(sym_matrix: Float[Array, "n n"]) -> Float[Array, " n*(n+1)//2"]:
-    tril_indices = jnp.tril_indices_from(sym_matrix)
-    return sym_matrix[tril_indices]
-
-
-@eqx.filter_jit
-def tril_to_sym(tril_vector: Float[Array, " n*(n+1)//2"]) -> Float[Array, "n n"]:
-    (numel,) = tril_vector.shape
-    num_rows = int(math.sqrt(8 * numel + 1) - 1) // 2
-    result = jnp.empty((num_rows, num_rows), dtype=tril_vector.dtype)
-    tril_rows, tril_cols = jnp.tril_indices_from(result)
-    result = result.at[tril_rows, tril_cols].set(tril_vector)
-    return result.at[tril_cols, tril_rows].set(tril_vector)
-
-
-class Preconditioner(eqx.Module):
-    input_block_tril: Float[Array, " input_channels*(input_channels+1)//2"] | None
-    output_block_tril: Float[Array, " output_channels*(output_channels+1)//2"] | None
-
-    @property
-    def input_block(self) -> Float[Array, "input_channels input_channels"] | None:
-        if self.input_block_tril is None:
-            return None
-        return tril_to_sym(self.input_block_tril)
-
-    @property
-    def output_block(
-        self,
-    ) -> Float[Array, "output_channels output_channels"] | None:
-        if self.output_block_tril is None:
-            return None
-        return tril_to_sym(self.output_block_tril)
-
-    @classmethod
-    def init(
-        cls,
-        input_block: Float[Array, "input_channels input_channels"] | None = None,
-        output_block: Float[Array, "output_channels output_channels"] | None = None,
-    ) -> Self:
-        return cls(
-            input_block_tril=sym_to_tril(input_block) if input_block is not None else None,
-            output_block_tril=sym_to_tril(output_block) if output_block is not None else None,
-        )
-
-    @classmethod
-    def identity(cls) -> Self:
-        return cls(
-            input_block_tril=None,
-            output_block_tril=None,
-        )
 
 
 class GradientEstimator(StrEnum):
@@ -136,6 +82,8 @@ class WeightMatrixSpec(RegistryABC):
     def to_json(self) -> JSON:
         return self._converter.unstructure(self)
 
+    @supports_dummy_arrays()
+    @abstractmethod
     def compress(
         self,
         weights: Float[Array, "*components out_channels in_channels"],
@@ -143,6 +91,7 @@ class WeightMatrixSpec(RegistryABC):
         key: Key[Array, ""] | None = None,
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        is_sharded: bool = True,
     ) -> "WeightMatrix": ...
 
 
@@ -151,6 +100,7 @@ WeightMatrixSpecT_co = TypeVar("WeightMatrixSpecT_co", bound=WeightMatrixSpec, c
 
 class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpecT_co]):  # noqa: UP046
     spec: WeightMatrixSpecT_co = field(static=True)
+    is_sharded: bool = field(static=True)
 
     def _raise_if_batched(self) -> None:
         if self.ndim != 2:
@@ -170,6 +120,10 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
         return len(self.shape)
 
     @property
+    def numel(self) -> int:
+        return math.prod(self.shape)
+
+    @property
     @abstractmethod
     def dtype(self) -> DTypeLike: ...
 
@@ -180,7 +134,7 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
     def to_full_precision(self) -> "FullPrecisionMatrix": ...
 
     @abstractmethod
-    def decompress(self) -> Float[Array, "... out_channels in_channels"]: ...
+    def decompress(self) -> Float[Array, "*components out_channels in_channels"]: ...
 
     @overload
     def dot(
@@ -190,7 +144,7 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: Literal[False] = False,
-    ) -> Float[Array, "... out_channels"]: ...
+    ) -> Float[Array, " out_channels"]: ...
 
     @overload
     def dot(
@@ -200,17 +154,17 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: Literal[True],
-    ) -> Float[Array, "... in_channels"]: ...
+    ) -> Float[Array, " in_channels"]: ...
 
     @abstractmethod
     def dot(
         self,
-        vector: Float[Array, " channels"],
+        vector: Float[Array, " source_channels"],
         *,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
-    ) -> Float[Array, "... channels"]: ...
+    ) -> Float[Array, " target_channels"]: ...
 
     def export(self) -> ExportResults:
         arrays, metadata = super().export()
@@ -244,14 +198,16 @@ class EmbeddingMatrix(WeightMatrix[WeightMatrixSpecT_co]):
         keychain: Keychain,
         dtype: DTypeLike | None = None,
         forward_pass_config: MatmulConfig = MatmulConfig(),
-    ) -> Float[Array, "... out_channels"]: ...
+    ) -> Float[Array, " out_channels"]: ...
 
 
 class Layout(StrEnum):
     OUTPUT_INPUT = "output_input"
     INPUT_OUTPUT = "input_output"
 
-    def weight_partition(self, num_leading_dims: int) -> tuple[ShardingAxis | None, ...]:
+    def weight_partition(self, num_leading_dims: int, *, is_sharded: bool = True) -> tuple[ShardingAxis | None, ...]:
+        if not is_sharded:
+            return (None,) * (num_leading_dims + 2)
         if num_leading_dims > 0:
             return (ShardingAxis.EXPERT,) * num_leading_dims + (None, None)
         if self == Layout.INPUT_OUTPUT:
@@ -268,31 +224,56 @@ class Layout(StrEnum):
     @supports_dummy_arrays()
     def from_output_input(
         self,
-        weights: Float[Array, "... out_channels in_channels"],
-    ) -> Float[Array, "... rows cols"]:
-        sharding = make_sharding(self.weight_partition(weights.ndim - 2))
+        weights: Float[Array, "*components out_channels in_channels"],
+        *,
+        is_sharded: bool = True,
+    ) -> Float[Array, "*components rows cols"]:
+        sharding = make_sharding(self.weight_partition(weights.ndim - 2, is_sharded=is_sharded))
         if self == Layout.INPUT_OUTPUT:
             weights = weights.swapaxes(-1, -2)
-        return device_put(weights, sharding)
+        return with_sharding(weights, sharding)
 
     @supports_dummy_arrays()
     def to_output_input(
         self,
-        weights: Float[Array, "... rows cols"],
-    ) -> Float[Array, "... out_channels in_channels"]:
+        weights: Float[Array, "*components rows cols"],
+    ) -> Float[Array, "*components out_channels in_channels"]:
         @use_out_sharding((None, None))
-        def convert(weights: Float[Array, "... rows cols"]) -> Float[Array, "... out_channels in_channels"]:
+        def convert(
+            weights: Float[Array, "*components rows cols"],
+        ) -> Float[Array, "*components out_channels in_channels"]:
             if self == Layout.INPUT_OUTPUT:
                 return weights.swapaxes(-1, -2)
             return weights
 
         return convert(weights)
 
+    @overload
+    def matmul(
+        self: "Literal[Layout.OUTPUT_INPUT]",
+        weights: Float[Array, "out_channels in_channels"],
+        vector: Float[Array, " in_channels"],
+    ) -> Float[Array, " out_channels"]: ...
+
+    @overload
+    def matmul(
+        self: "Literal[Layout.INPUT_OUTPUT]",
+        weights: Float[Array, "in_channels out_channels"],
+        vector: Float[Array, " in_channels"],
+    ) -> Float[Array, " out_channels"]: ...
+
+    @overload
+    def matmul(
+        self: "Layout",
+        weights: Float[Array, "rows cols"],
+        vector: Float[Array, " source_channels"],
+    ) -> Float[Array, " target_channels"]: ...
+
     def matmul(
         self,
-        weights: Float[Array, "row cols"],
-        vector: Float[Array, " in_channels"],
-    ) -> Float[Array, " out_channels"]:
+        weights: Float[Array, "rows cols"],
+        vector: Float[Array, " source_channels"],
+    ) -> Float[Array, " target_channels"]:
         if self == Layout.INPUT_OUTPUT:
             return vector @ weights
         return weights @ vector
@@ -309,20 +290,22 @@ class FullPrecisionSpec(WeightMatrixSpec):
 
     def compress(
         self,
-        weights: Float[Array, "... out_channels in_channels"],
+        weights: Float[Array, "*components out_channels in_channels"],
         *,
         key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,  # noqa: ARG002
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
+        is_sharded: bool = True,
     ) -> "FullPrecisionMatrix":
         return FullPrecisionMatrix(
             spec=self,
-            weights=self.layout.from_output_input(weights),
+            is_sharded=is_sharded,
+            weights=self.layout.from_output_input(weights, is_sharded=is_sharded),
         )
 
 
 class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
-    weights: Float[Array, "... m n"] = field(norm=ParameterNorm.SPECTRAL)
+    weights: Float[Array, "*components m n"] = field(norm=ParameterNorm.SPECTRAL)
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -333,12 +316,12 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         return self.weights.dtype
 
     def astype(self, dtype: DTypeLike) -> "FullPrecisionMatrix":
-        return FullPrecisionMatrix(spec=self.spec, weights=self.weights.astype(dtype))
+        return FullPrecisionMatrix(spec=self.spec, is_sharded=self.is_sharded, weights=self.weights.astype(dtype))
 
     def to_full_precision(self) -> "FullPrecisionMatrix":
         return self
 
-    def decompress(self) -> Float[Array, "... out_channels in_channels"]:
+    def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
         return self.spec.layout.to_output_input(self.weights)
 
     @use_out_sharding((None,))
@@ -349,7 +332,7 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         dtype: DTypeLike | None = None,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
-    ) -> Float[Array, "... out_channels"]:
+    ) -> Float[Array, " out_channels"]:
         self._raise_if_batched()
         if self.spec.layout == Layout.INPUT_OUTPUT:
             result = self.weights[index, :]
@@ -366,7 +349,7 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: Literal[False] = False,
-    ) -> Float[Array, "... out_channels"]: ...
+    ) -> Float[Array, " out_channels"]: ...
 
     @overload
     def dot(
@@ -376,16 +359,16 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: Literal[True],
-    ) -> Float[Array, "... in_channels"]: ...
+    ) -> Float[Array, " in_channels"]: ...
 
     def dot(
         self,
-        vector: Float[Array, " channels"],
+        vector: Float[Array, " source_channels"],
         *,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
-    ) -> Float[Array, "... channels"]:
+    ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
         weights = self.weights.astype(vector.dtype)
         layout = self.spec.layout
@@ -403,17 +386,19 @@ class ShapeDtypeSpec(WeightMatrixSpec):
 
     def compress(
         self,
-        weights: Float[Array, "... out_channels in_channels"],
+        weights: Float[Array, "*components out_channels in_channels"],
         *,
         key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,  # noqa: ARG002
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
+        is_sharded: bool = True,
     ) -> "ShapeDtypeMatrix":
         if not isinstance(weights, ShapeDtypeStruct):
             raise TypeError("Can only compress ShapeDtypeStructs to ShapeDtypeMatrices")
         *mixture_dims, output_dim, input_dim = weights.shape
         return ShapeDtypeMatrix(
             spec=self,
+            is_sharded=is_sharded,
             mixture_dims=tuple(mixture_dims),
             input_dim=input_dim,
             output_dim=output_dim,
@@ -438,13 +423,14 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
     def astype(self, dtype: DTypeLike) -> "ShapeDtypeMatrix":
         return ShapeDtypeMatrix(
             spec=self.spec,
+            is_sharded=self.is_sharded,
             mixture_dims=self.mixture_dims,
             input_dim=self.input_dim,
             output_dim=self.output_dim,
             dtype_=dtype,
         )
 
-    def decompress(self) -> Float[Array, "... out_channels in_channels"]:
+    def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
         return dummy_array(
             shape=(*self.mixture_dims, self.output_dim, self.input_dim),
             dtype=self.dtype_,
@@ -463,7 +449,7 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
         # You call this an ugly hack, I call this an elegant solution to a difficult problem (@norpadon).
         saved_spec = expored_data.metadata[prefix / "spec"]
         loaded_spec = WeightMatrixSpec.from_json(saved_spec)
-        dummy_layer = loaded_spec.compress(self.decompress())
+        dummy_layer = loaded_spec.compress(self.decompress(), is_sharded=self.is_sharded)
         result = dummy_layer.load_exported(expored_data, allow_dtype_cast=allow_dtype_cast, prefix=prefix)
         return cast("Self", result)
 
@@ -477,17 +463,17 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
         dtype: DTypeLike | None = None,  # noqa: ARG002
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
-    ) -> Float[Array, "... out_channels"]:
+    ) -> Float[Array, " out_channels"]:
         raise TypeError("Cannot perform embedding lookup on ShapeDtypeMatrix")
 
     def dot(
         self,
-        vector: Float[Array, " channels"],  # noqa: ARG002
+        vector: Float[Array, " source_channels"],  # noqa: ARG002
         *,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
         transposed: bool = False,  # noqa: ARG002
-    ) -> Float[Array, "... channels"]:
+    ) -> Float[Array, " target_channels"]:
         raise TypeError("Cannot perform matmul on ShapeDtypeMatrix")
 
     def export(self) -> ExportResults:

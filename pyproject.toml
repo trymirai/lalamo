@@ -29,7 +29,7 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 cpu = ["jax[cpu]>=0.10.0"]
-cuda = ["jax[cuda]>=0.10.0"]
+cuda = ["jax[cuda]>=0.10.0", "nvidia-cutlass-dsl>=4.4; platform_system == 'Linux'"]
 tpu = ["jax[tpu]>=0.10.0"]
 pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
 fishaudio = ["torch>=2.8.0", "transformers>=5.5.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
@@ -107,8 +107,7 @@ cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="
 fish-speech = { git="https://github.com/trymirai/fish-speech.git", tag="c6dd030" }
 
 [tool.pytest.ini_options]
-# Disable jaxtyping for now because of its internal bug.
-# addopts = "--jaxtyping-packages=lalamo,beartype.beartype"
+addopts = "--jaxtyping-packages=lalamo,lalamo_typechecking.typechecker"
 # addopts = ["--dist=loadgroup"]
 # log_cli = true
 # log_cli_level = "INFO"
@@ -123,6 +122,7 @@ JAX_DEBUG_NANS = "True"
 JAX_DEBUG_KEY_REUSE = "False"
 JAX_TRACEBACK_FILTERING = "off"
 TORCH_COMPILE_DISABLE = "1"
+XLA_FLAGS = "--xla_gpu_deterministic_ops=true"
 
 [tool.ruff]
 target-version = "py312"
@@ -177,6 +177,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"lalamo_typechecking.py" = ["ANN401"]
 "tests/tts/fishaudio/fishaudio_thin_wrapper.py" = ["ALL"]
 "tests/tts/nanocodec/nanocodec_torch_stuff.py" = ["ALL"]
 
@@ -198,6 +199,10 @@ project-includes = ["./"]
 ignore-missing-imports = [
     "cartesia_mlx",
     "cartesia_mlx.*",
+    "cuda",
+    "cuda.*",
+    "cutlass",
+    "cutlass.*",
     "mlx",
     "mlx.*",
     "mlx_lm.*",

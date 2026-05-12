@@ -4,6 +4,7 @@ from enum import Enum, StrEnum
 from typing import NamedTuple, Self
 
 import equinox as eqx
+import jax
 from jax import numpy as jnp
 from jax.lax import DotAlgorithmPreset
 from jax.tree_util import register_pytree_node_class
@@ -75,8 +76,12 @@ class MixerForwardPassConfig:
 
     @classmethod
     def for_inference(cls, precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT) -> Self:
+        if jax.default_backend() == "cpu":
+            attention_implementation = AttentionImplementation.STANDARD
+        else:
+            attention_implementation = AttentionImplementation.CUDNN
         return cls(
-            attention_implementation=AttentionImplementation.CUDNN,
+            attention_implementation=attention_implementation,
             matmul_config=MatmulConfig.for_inference(precision),
             normalization_forward_pass_config=NormalizationForwardPassConfig.for_inference(),
         )

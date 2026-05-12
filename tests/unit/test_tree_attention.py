@@ -99,7 +99,6 @@ def decoder() -> Decoder:
 
 
 def test_tree_ancestor_mask_chain() -> None:
-    """Linear chain: each node should attend to itself and all ancestors."""
     parent_indices = jnp.array([-1, 0, 1, 2], dtype=jnp.int32)
     mask = tree_ancestor_mask(parent_indices)
 
@@ -116,7 +115,6 @@ def test_tree_ancestor_mask_chain() -> None:
 
 
 def test_tree_ancestor_mask_fork() -> None:
-    """Forked tree: siblings must not see each other."""
     parent_indices = jnp.array([-1, 0, 0], dtype=jnp.int32)
     mask = tree_ancestor_mask(parent_indices)
 
@@ -132,7 +130,6 @@ def test_tree_ancestor_mask_fork() -> None:
 
 
 def test_build_tree_attention_mask_prefix_plus_draft() -> None:
-    """Draft nodes attend to all prefix tokens plus their own ancestor chain."""
     parent_indices = jnp.array([-1, 0, 0], dtype=jnp.int32)
     mask = build_tree_attention_mask(
         total_capacity=5,
@@ -153,7 +150,6 @@ def test_build_tree_attention_mask_prefix_plus_draft() -> None:
 
 
 def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
-    """Tree attention on a linear chain should match sequential single-token decode."""
     prefix_token_ids = jnp.array([[1, 2, 3]], dtype=jnp.int32)
     prefix_positions = jnp.array([[0, 1, 2]], dtype=jnp.int32)
     chain_token_ids = jnp.array([4, 5, 6], dtype=jnp.int32)
@@ -190,7 +186,6 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
         state = step_result.updated_state
         sequential_logits.append(step_result.logits[0, -1])
 
-    # Tree attention: chain is also a tree (each node has single ancestor)
     tree_result = decoder(
         chain_token_ids[None, :],
         jnp.array([[3, 4, 5]], dtype=jnp.int32),
@@ -208,7 +203,6 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
 
 
 def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
-    """Sibling draft tokens must not see each other in tree attention."""
     prefix_token_ids = jnp.array([[1, 2]], dtype=jnp.int32)
     prefix_positions = jnp.array([[0, 1]], dtype=jnp.int32)
 
@@ -221,7 +215,6 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
     )
     assert prefix_result.updated_state is not None
 
-    # Compute sibling A alone
     state_a = prefix_result.updated_state
     result_a = decoder(
         jnp.array([[10]], dtype=jnp.int32),
@@ -232,7 +225,6 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
     )
     logits_a = result_a.logits[0, 0]
 
-    # Compute sibling B alone
     state_b = prefix_result.updated_state
     result_b = decoder(
         jnp.array([[20]], dtype=jnp.int32),
@@ -243,7 +235,6 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
     )
     logits_b = result_b.logits[0, 0]
 
-    # Tree attention: both siblings in same batch, parent_indices=[-1, -1]
     tree_result = decoder(
         jnp.array([[10, 20]], dtype=jnp.int32),
         jnp.array([[2, 2]], dtype=jnp.int32),
@@ -266,7 +257,6 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
 
 
 def test_tree_attention_mask_static_matches_dynamic() -> None:
-    """Static and dynamic KV caches should produce identical tree masks."""
     prefix_length = 3
     draft_length = 3
 
