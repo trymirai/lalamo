@@ -54,23 +54,26 @@ __all__ = [
     "NormalFloatSpec",
 ]
 
-type NormalFloatBits = Literal[2, 3, 4, 6, 8]
-type NormalFloatBiasBits = Literal[0, 4]
-
 
 def _normal_float_scale_values(
     scales: Array,
-    global_scales: Float[Array, "..."] | None,
+    global_scales: Float[Array, "..."],
     dtype: DTypeLike,
 ) -> Float[Array, "... groups"]:
     scale_values = scales.astype(dtype)
-    if global_scales is None:
-        return scale_values
-
     global_scale_values = global_scales.astype(dtype)
     while global_scale_values.ndim > scale_values.ndim:
         global_scale_values = jnp.squeeze(global_scale_values, axis=-1)
     return scale_values * global_scale_values
+
+
+def _normal_float_values_at(
+    indices: Array,
+    values: Float[Array, " levels"],
+    dtype: DTypeLike,
+) -> Float[Array, "..."]:
+    levels = jnp.arange(values.shape[0], dtype=jnp.int32)
+    return jnp.sum((indices[..., None].astype(jnp.int32) == levels).astype(dtype) * values, axis=-1)
 
 
 def _normal_float_rvq_bias_table(group_size: int, dtype: DTypeLike) -> Float[Array, " bias_levels"]:
@@ -128,7 +131,7 @@ def _normal_float_grouped_indices(
     weights: Float[Array, "... cols"],
     scales: Array,
     *,
-    global_scales: Float[Array, "..."] | None,
+    global_scales: Float[Array, "..."],
     biases: Float[Array, "... groups"] | None,
     bits: int,
     group_size: int,
@@ -139,8 +142,7 @@ def _normal_float_grouped_indices(
     codebook = _normal_float_codebook(bits, preserve_zero, weights.dtype)
     grouped_weights = rearrange(weights, "... (groups group_size) -> ... groups group_size", group_size=group_size)
     scales = _normal_float_scale_values(scales, global_scales, weights.dtype)
-    safe_scales = jnp.where(scales == 0, jnp.ones_like(scales), scales)
-    normalized_weights = grouped_weights / safe_scales[..., None]
+    normalized_weights = grouped_weights / scales[..., None]
     if biases is not None:
         normalized_weights = normalized_weights + biases[..., None]
 
@@ -149,9 +151,8 @@ def _normal_float_grouped_indices(
             raise ValueError("Stochastic NormalFloat rounding requires a keychain.")
         lower_indices = jnp.clip(jnp.sum(normalized_weights[..., None] > codebook, axis=-1) - 1, 0, codebook.size - 1)
         upper_indices = jnp.minimum(lower_indices + 1, codebook.size - 1)
-        levels = jnp.arange(codebook.size, dtype=jnp.int32)
-        lower_values = jnp.sum((lower_indices[..., None] == levels).astype(weights.dtype) * codebook, axis=-1)
-        upper_values = jnp.sum((upper_indices[..., None] == levels).astype(weights.dtype) * codebook, axis=-1)
+        lower_values = _normal_float_values_at(lower_indices, codebook, weights.dtype)
+        upper_values = _normal_float_values_at(upper_indices, codebook, weights.dtype)
         upper_probability = jnp.clip(
             (normalized_weights - lower_values)
             / jnp.maximum(upper_values - lower_values, jnp.finfo(weights.dtype).eps),
@@ -172,7 +173,7 @@ def _normal_float_indices_to_master_weights(
     indices: UInt8[Array, "... cols"],
     scales: Array,
     *,
-    global_scales: Float[Array, "..."] | None,
+    global_scales: Float[Array, "..."],
     biases: Float[Array, "... groups"] | None,
     bits: int,
     group_size: int,
@@ -186,8 +187,7 @@ def _normal_float_indices_to_master_weights(
         group_size=group_size,
     )
     if scales.ndim == 1:
-        levels = jnp.arange(2**bits, dtype=jnp.int32)
-        grouped_values = jnp.sum((grouped_indices[..., None] == levels).astype(dtype) * codebook, axis=-1)
+        grouped_values = _normal_float_values_at(grouped_indices, codebook, dtype)
     else:
         scales_sharding = sharding_of(scales)
         values_sharding = None
@@ -205,7 +205,7 @@ def _normal_float_grouped_bias_indices(
     weights: Float[Array, "... cols"],
     scales: Array,
     *,
-    global_scales: Float[Array, "..."] | None,
+    global_scales: Float[Array, "..."],
     bits: int,
     group_size: int,
     preserve_zero: bool,
@@ -214,14 +214,12 @@ def _normal_float_grouped_bias_indices(
     bias_table = _normal_float_rvq_bias_table(group_size, weights.dtype)
     grouped_weights = rearrange(weights, "... (groups group_size) -> ... groups group_size", group_size=group_size)
     scale_values = _normal_float_scale_values(scales, global_scales, weights.dtype)
-    safe_scales = jnp.where(scale_values == 0, jnp.ones_like(scale_values), scale_values)
-    normalized_weights = grouped_weights / safe_scales[..., None]
+    normalized_weights = grouped_weights / scale_values[..., None]
     candidate_biases = bias_table.reshape((1,) * (normalized_weights.ndim - 1) + (bias_table.shape[0], 1))
     thresholds = (codebook[:-1] + codebook[1:]) / 2
     shifted_weights = normalized_weights[..., None, :] + candidate_biases
     indices = jnp.sum(shifted_weights[..., None] > thresholds, axis=-1).astype(jnp.int32)
-    levels = jnp.arange(2**bits, dtype=jnp.int32)
-    code_values = jnp.sum((indices[..., None] == levels).astype(weights.dtype) * codebook, axis=-1)
+    code_values = _normal_float_values_at(indices, codebook, weights.dtype)
     residuals = code_values - candidate_biases - normalized_weights[..., None, :]
     return jnp.argmin(jnp.mean(residuals * residuals, axis=-1), axis=-1).astype(jnp.uint8)
 
@@ -236,8 +234,7 @@ def _normal_float_bias_values_from_indices(
         return None
 
     bias_table = _normal_float_rvq_bias_table(group_size, dtype)
-    levels = jnp.arange(bias_table.shape[0], dtype=jnp.int32)
-    return jnp.sum((bias_indices[..., None].astype(jnp.int32) == levels).astype(dtype) * bias_table, axis=-1)
+    return _normal_float_values_at(bias_indices, bias_table, dtype)
 
 
 def _normal_float_pack_bias_indices(
@@ -266,7 +263,7 @@ def _normal_float_quantize(
     weights: Float[Array, "... cols"],
     scales: Array,
     *,
-    global_scales: Float[Array, "..."] | None,
+    global_scales: Float[Array, "..."],
     bias_indices: UInt8[Array, "... groups"] | None,
     bits: int,
     group_size: int,
@@ -278,7 +275,7 @@ def _normal_float_quantize(
     grouped_indices = _normal_float_grouped_indices(
         weights,
         stop_gradient(scales),
-        global_scales=stop_gradient(global_scales) if global_scales is not None else None,
+        global_scales=stop_gradient(global_scales),
         biases=stop_gradient(biases) if biases is not None else None,
         bits=bits,
         group_size=group_size,
@@ -305,7 +302,7 @@ def _normal_float_pack_master_weights(
     weights: Float[Array, "*components rows cols"],
     scales: Array,
     *,
-    global_scales: Float[Array, "*components one_row one_group"] | None,
+    global_scales: Float[Array, "*components one_row one_group"],
     bias_indices: UInt8[Array, "*components rows groups"] | None,
     bits: int,
     group_size: int,
@@ -329,7 +326,7 @@ def _normal_float_unpack_master_weights(
     packed_weights: UInt8[Array, "... packed_cols"],
     scales: Array,
     *,
-    global_scales: Float[Array, "..."] | None,
+    global_scales: Float[Array, "..."],
     bias_indices: UInt8[Array, "... groups"] | None,
     dtype: DTypeLike,
     bits: int,
@@ -356,9 +353,9 @@ def _normal_float_unpack_master_weights(
 
 @dataclass(frozen=True)
 class NormalFloatSpec(QuantizedSpec):
-    bits: NormalFloatBits
+    bits: Literal[2, 3, 4, 6, 8]
     group_size: int
-    bias_bits: NormalFloatBiasBits = 0
+    bias_bits: Literal[0, 4] = 0
     preserve_zero: bool = True
     layout: Layout = Layout.OUTPUT_INPUT
 
@@ -454,14 +451,12 @@ class NormalFloatSpec(QuantizedSpec):
         *,
         packed_weights: UInt8[Array, "*components rows packed_cols"],
         scales: Array,
-        global_scales: Float[Array, "*components one_row one_group"] | None = None,
+        global_scales: Float[Array, "*components one_row one_group"],
         packed_bias_indices: UInt8[Array, "*components rows packed_groups"] | None = None,
         dtype: DTypeLike = jnp.float32,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         is_sharded: bool = True,
     ) -> "NormalFloatMatrix":
-        if global_scales is None:
-            raise ValueError("NormalFloat E4M3 scales require global scales")
         if self.bias_bits and packed_bias_indices is None:
             raise ValueError("NormalFloat RVQ biases require packed bias indices")
 
@@ -526,15 +521,66 @@ class NormalFloatMatrix(EmbeddingMatrix[NormalFloatSpec]):
     def _packed_bias_indices(self) -> UInt8[Array, "*components rows packed_groups"] | None: ...
 
     def export(self) -> ExportResults:
+        packed_bias_indices = self._packed_bias_indices
         arrays = {
             "weights": self._packed_quantized_weights,
             "scales": self.scales,
             "global_scales": self.global_scales,
         }
-        if self._packed_bias_indices is not None:
-            arrays["bias_indices"] = self._packed_bias_indices
+        if packed_bias_indices is not None:
+            arrays["bias_indices"] = packed_bias_indices
 
         return ExportResults(arrays=arrays, metadata={"spec": self.spec.to_json()})
+
+    def _load_exported(
+        self,
+        expored_data: ExportResults,
+        allow_dtype_cast: bool,
+        *,
+        prefix: ParameterPath | None,
+        implementation: CompressionImplementation,
+    ) -> "NormalFloatMatrix":
+        if prefix is None:
+            prefix = ParameterPath()
+        loaded_spec = WeightMatrixSpec.from_json(expored_data.metadata[prefix / "spec"])
+        if loaded_spec != self.spec:
+            raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
+
+        packed_bias_indices = None
+        if self.spec.bias_bits:
+            packed_bias_indices = load_as(
+                self._packed_bias_indices,
+                expored_data.arrays[prefix / "bias_indices"],
+                allow_dtype_cast=False,
+            )
+        return self.spec.from_packed_parameters(
+            packed_weights=load_as(
+                self._packed_quantized_weights,
+                expored_data.arrays[prefix / "weights"],
+                allow_dtype_cast=False,
+            ),
+            scales=load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast=False),
+            global_scales=load_as(
+                self.global_scales,
+                expored_data.arrays[prefix / "global_scales"],
+                allow_dtype_cast=allow_dtype_cast,
+            ),
+            packed_bias_indices=packed_bias_indices,
+            dtype=self.dtype,
+            implementation=implementation,
+            is_sharded=self.is_sharded,
+        )
+
+    def _from_current_packed_parameters(self, implementation: CompressionImplementation) -> "NormalFloatMatrix":
+        return self.spec.from_packed_parameters(
+            packed_weights=self._packed_quantized_weights,
+            scales=self.scales,
+            global_scales=self.global_scales,
+            packed_bias_indices=self._packed_bias_indices,
+            dtype=self.dtype,
+            implementation=implementation,
+            is_sharded=self.is_sharded,
+        )
 
     @abstractmethod
     def load_exported(
@@ -665,53 +711,17 @@ class NormalFloatMatrixForTraining(NormalFloatMatrix):
         *,
         prefix: ParameterPath | None = None,
     ) -> NormalFloatMatrix:
-        if prefix is None:
-            prefix = ParameterPath()
-        saved_spec = expored_data.metadata[prefix / "spec"]
-        loaded_spec = WeightMatrixSpec.from_json(saved_spec)
-        if loaded_spec != self.spec:
-            raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
-
-        packed_weights = load_as(
-            self._packed_quantized_weights,
-            expored_data.arrays[prefix / "weights"],
-            allow_dtype_cast=False,
-        )
-        scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast=False)
-        global_scales = load_as(
-            self.global_scales,
-            expored_data.arrays[prefix / "global_scales"],
-            allow_dtype_cast=allow_dtype_cast,
-        )
-        packed_bias_indices = None
-        if self.spec.bias_bits:
-            packed_bias_indices = load_as(
-                self._packed_bias_indices,
-                expored_data.arrays[prefix / "bias_indices"],
-                allow_dtype_cast=False,
-            )
-        return self.spec.from_packed_parameters(
-            packed_weights=packed_weights,
-            scales=scales,
-            global_scales=global_scales,
-            packed_bias_indices=packed_bias_indices,
-            dtype=self.dtype,
+        return self._load_exported(
+            expored_data,
+            allow_dtype_cast,
+            prefix=prefix,
             implementation=CompressionImplementation.TRAINING,
-            is_sharded=self.is_sharded,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> NormalFloatMatrix:
         if implementation == CompressionImplementation.TRAINING:
             return self
-        return self.spec.from_packed_parameters(
-            packed_weights=self._packed_quantized_weights,
-            scales=self.scales,
-            global_scales=self.global_scales,
-            packed_bias_indices=self._packed_bias_indices,
-            dtype=self.dtype,
-            implementation=CompressionImplementation.INFERENCE,
-            is_sharded=self.is_sharded,
-        )
+        return self._from_current_packed_parameters(CompressionImplementation.INFERENCE)
 
 
 class NormalFloatMatrixForInference(NormalFloatMatrix):
@@ -827,50 +837,14 @@ class NormalFloatMatrixForInference(NormalFloatMatrix):
         *,
         prefix: ParameterPath | None = None,
     ) -> NormalFloatMatrix:
-        if prefix is None:
-            prefix = ParameterPath()
-        saved_spec = expored_data.metadata[prefix / "spec"]
-        loaded_spec = WeightMatrixSpec.from_json(saved_spec)
-        if loaded_spec != self.spec:
-            raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
-
-        packed_weights = load_as(
-            self.packed_weights,
-            expored_data.arrays[prefix / "weights"],
-            allow_dtype_cast=False,
-        )
-        scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast=False)
-        global_scales = load_as(
-            self.global_scales,
-            expored_data.arrays[prefix / "global_scales"],
-            allow_dtype_cast=allow_dtype_cast,
-        )
-        packed_bias_indices = None
-        if self.spec.bias_bits:
-            packed_bias_indices = load_as(
-                self.packed_bias_indices,
-                expored_data.arrays[prefix / "bias_indices"],
-                allow_dtype_cast=False,
-            )
-        return self.spec.from_packed_parameters(
-            packed_weights=packed_weights,
-            scales=scales,
-            global_scales=global_scales,
-            packed_bias_indices=packed_bias_indices,
-            dtype=self.dtype,
+        return self._load_exported(
+            expored_data,
+            allow_dtype_cast,
+            prefix=prefix,
             implementation=CompressionImplementation.INFERENCE,
-            is_sharded=self.is_sharded,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> NormalFloatMatrix:
         if implementation == CompressionImplementation.INFERENCE:
             return self
-        return self.spec.from_packed_parameters(
-            packed_weights=self.packed_weights,
-            scales=self.scales,
-            global_scales=self.global_scales,
-            packed_bias_indices=self.packed_bias_indices,
-            dtype=self.dtype,
-            implementation=CompressionImplementation.TRAINING,
-            is_sharded=self.is_sharded,
-        )
+        return self._from_current_packed_parameters(CompressionImplementation.TRAINING)

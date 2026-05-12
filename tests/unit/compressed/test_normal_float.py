@@ -22,8 +22,6 @@ from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import CompressionImplementation, GradientEstimator, Layout, MatmulConfig
 from tests.common import assert_close_arrays, assert_named_sharding
 
-type NormalFloatBits = Literal[2, 3, 4, 6, 8]
-
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
 
@@ -89,7 +87,7 @@ def _put_on_sharding(matrix: NormalFloatMatrixForInference, sharding: Sharding) 
 
 
 @pytest.mark.parametrize("bits", [2, 3, 4, 6, 8])
-def test_normal_float_pack_uint_roundtrips_dense_bit_widths(bits: NormalFloatBits) -> None:
+def test_normal_float_pack_uint_roundtrips_dense_bit_widths(bits: Literal[2, 3, 4, 6, 8]) -> None:
     values = (jnp.arange(17, dtype=jnp.uint8) % (2**bits)).reshape(1, 17)
 
     packed = pack_uint_to_uint8(values, bits)
@@ -128,7 +126,7 @@ def test_normal_float_nf4_codebook_matches_canonical_preserve_zero_values() -> N
 
 
 @pytest.mark.parametrize("bits", [2, 3, 4, 6, 8])
-def test_normal_float_symmetric_codebook_does_not_preserve_zero(bits: NormalFloatBits) -> None:
+def test_normal_float_symmetric_codebook_does_not_preserve_zero(bits: Literal[2, 3, 4, 6, 8]) -> None:
     codebook = _normal_float_codebook(bits, preserve_zero=False, dtype=jnp.float32)
 
     assert not bool(jnp.any(codebook == 0))
@@ -138,7 +136,7 @@ def test_normal_float_symmetric_codebook_does_not_preserve_zero(bits: NormalFloa
 @pytest.mark.parametrize("bits", [2, 3, 4, 6, 8])
 @pytest.mark.parametrize("preserve_zero", [False, True])
 def test_normal_float_grouped_indices_match_dense_nearest_codebook(
-    bits: NormalFloatBits,
+    bits: Literal[2, 3, 4, 6, 8],
     preserve_zero: bool,
 ) -> None:
     weights = jnp.linspace(-2, 2, 32, dtype=jnp.float32).reshape(2, 16)
@@ -152,7 +150,7 @@ def test_normal_float_grouped_indices_match_dense_nearest_codebook(
     result = _normal_float_grouped_indices(
         weights,
         scales,
-        global_scales=None,
+        global_scales=jnp.ones((*scales.shape[:-1], 1), dtype=scales.dtype),
         biases=None,
         bits=bits,
         group_size=4,
@@ -167,7 +165,7 @@ def test_normal_float_grouped_indices_match_dense_nearest_codebook(
 @pytest.mark.parametrize("preserve_zero", [False, True])
 def test_normal_float_compress_training_and_inference_match(
     layout: Layout,
-    bits: NormalFloatBits,
+    bits: Literal[2, 3, 4, 6, 8],
     preserve_zero: bool,
 ) -> None:
     weights = _logical_weights()
