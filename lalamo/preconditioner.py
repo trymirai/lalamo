@@ -6,8 +6,8 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
+import numpy as np
 import orbax.checkpoint as ocp
-from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, Float, PyTree
 
 __all__ = [
@@ -113,8 +113,8 @@ class PreconditionerDict(dict[PytreePath, Preconditioner]):
         paths = tuple(self)
 
         def unshard_leaf(leaf: object) -> object:
-            if isinstance(leaf, jax.Array) and isinstance(leaf.sharding, NamedSharding):
-                return jax.device_put(leaf, NamedSharding(leaf.sharding.mesh, PartitionSpec(*((None,) * leaf.ndim))))
+            if isinstance(leaf, jax.Array):
+                return np.asarray(jax.device_get(leaf))
             return leaf
 
         unsharded_preconditioners = jtu.tree_map(unshard_leaf, tuple(self.values()))
@@ -131,7 +131,7 @@ class PreconditionerDict(dict[PytreePath, Preconditioner]):
         directory = Path(directory).resolve()
         checkpointer = ocp.StandardCheckpointer()
         paths = checkpointer.metadata(directory).custom_metadata["paths"]
-        restored = checkpointer.restore(directory)
+        restored = jtu.tree_map(jnp.asarray, checkpointer.restore(directory))
         return cls(
             {
                 tuple(path): Preconditioner(
