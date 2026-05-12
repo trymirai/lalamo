@@ -11,6 +11,7 @@ from lalamo.compressed.normal_float import (
     NormalFloatMatrixForTraining,
     NormalFloatSpec,
     _normal_float_codebook,
+    _normal_float_grouped_indices,
 )
 from lalamo.compressed.utils.packing import pack_uint_to_uint8, packed_last_axis_dim, unpack_uint8_to_uint
 from lalamo.compressed.utils.yaqa import yaqa_round_weights
@@ -127,6 +128,31 @@ def test_normal_float_symmetric_codebook_does_not_preserve_zero(bits: NormalFloa
 
     assert not bool(jnp.any(codebook == 0))
     assert_close_arrays(result=codebook, reference=-jnp.flip(codebook))
+
+
+@pytest.mark.parametrize("bits", [2, 3, 4, 6, 8])
+@pytest.mark.parametrize("preserve_zero", [False, True])
+def test_normal_float_grouped_indices_match_dense_nearest_codebook(
+    bits: NormalFloatBits,
+    preserve_zero: bool,
+) -> None:
+    weights = jnp.linspace(-2, 2, 32, dtype=jnp.float32).reshape(2, 16)
+    scales = jnp.array([[0.5, 1.25, 2.0, 0.25], [1.0, 0.75, 1.5, 2.5]], dtype=jnp.float32)
+    codebook = _normal_float_codebook(bits, preserve_zero=preserve_zero, dtype=jnp.float32)
+    grouped_weights = weights.reshape(2, 4, 4)
+    normalized_weights = grouped_weights / scales[..., None]
+    dense_distances = jnp.abs(normalized_weights[..., None] - codebook)
+    expected = jnp.argmin(dense_distances, axis=-1).astype(jnp.uint8)
+
+    result = _normal_float_grouped_indices(
+        weights,
+        scales,
+        bits=bits,
+        group_size=4,
+        preserve_zero=preserve_zero,
+    )
+
+    assert jnp.array_equal(result, expected)
 
 
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
