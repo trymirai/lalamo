@@ -37,6 +37,7 @@ __all__ = [
     "inject_lora_adapters",
     "make_trace_distill_batch",
     "materialize_distill_student",
+    "partition_scale_trainable",
 ]
 
 
@@ -172,18 +173,52 @@ def partition_lora_trainable(module: eqx.Module) -> tuple[eqx.Module, eqx.Module
     return eqx.partition(module, filter_spec)
 
 
+def _is_weight_matrix_scale(module: eqx.Module, path: tuple[object, ...], leaf: object) -> bool:
+    if not isinstance(leaf, Array) or not jnp.issubdtype(leaf.dtype, jnp.floating):
+        return False
+    current: object = module
+    for key in path:
+        name = key.name if hasattr(key, "name") else str(key)
+        if name == "scales":
+            return isinstance(current, WeightMatrix)
+        if hasattr(key, "idx"):
+            assert isinstance(current, (list, tuple))
+            assert isinstance(key.idx, int)
+            current = current[key.idx]
+            continue
+        current = getattr(current, name)
+    return False
+
+
+def partition_scale_trainable(module: eqx.Module) -> tuple[eqx.Module, eqx.Module]:
+    leaves_with_paths, treedef = jtu.tree_flatten_with_path(module)
+    filter_spec = treedef.unflatten(
+        _is_weight_matrix_scale(module, path, leaf) for path, leaf in leaves_with_paths
+    )
+    return eqx.partition(module, filter_spec)
+
+
 def initialize_distill_training_state(
     module: eqx.Module,
     config: DistillConfig,
     *,
     lora: bool = False,
+    scales_only: bool = False,
 ) -> DistillTrainingState:
-    module = map_nodes_of_type(
-        WeightMatrix,
-        lambda wm: wm.switch_implementation(CompressionImplementation.TRAINING),
-        module,
-    )
-    trainable, frozen = partition_lora_trainable(module) if lora else partition_trainable(module)
+    if lora and scales_only:
+        raise ValueError("lora and scales_only training modes are mutually exclusive")
+    if not scales_only:
+        module = map_nodes_of_type(
+            WeightMatrix,
+            lambda wm: wm.switch_implementation(CompressionImplementation.TRAINING),
+            module,
+        )
+    if scales_only:
+        trainable, frozen = partition_scale_trainable(module)
+    elif lora:
+        trainable, frozen = partition_lora_trainable(module)
+    else:
+        trainable, frozen = partition_trainable(module)
     return DistillTrainingState(
         master_weights=_cast_leaves(trainable, config.master_dtype),
         frozen=frozen,

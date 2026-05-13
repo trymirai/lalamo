@@ -125,6 +125,7 @@ class DistillConfig:
     gradient_accumulation_steps: int = 1
     optimizer_name: OptimizerName = OptimizerName.MUON
     lora_rank: int | None = None
+    train_scales_only: bool = False
     gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING
     teacher_argmax_ce_weight: float = 0.0
     hidden_state_mse_weight: float = 0.0
@@ -494,6 +495,8 @@ def distill(
     # Models
     if callbacks is not None:
         callbacks.loading_models()
+    if config.lora_rank is not None and config.train_scales_only:
+        raise ValueError("lora_rank and train_scales_only are mutually exclusive")
     teacher_model = _load_language_model(config.teacher_path)
     student_model = _load_language_model(config.student_path)
     if config.lora_rank is not None:
@@ -538,6 +541,7 @@ def distill(
         student_model.decoder,
         distill_config,
         lora=config.lora_rank is not None,
+        scales_only=config.train_scales_only,
     )
     optimizer = _build_optimizer(
         config.optimizer_name, config.learning_rate,
