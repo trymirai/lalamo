@@ -23,7 +23,6 @@ from lalamo.distillation import (
     DistillBatch,
     DistillBatchMetrics,
     DistillOptimizerState,
-    DistillTrainingState,
     TraceDistillBatch,
     apply_donated_distill_gradients,
     compute_distill_batch_metrics,
@@ -31,6 +30,7 @@ from lalamo.distillation import (
     compute_trace_distill_batch_metrics,
     compute_trace_distill_step_gradients,
     initialize_distill_training_state,
+    inject_lora_adapters,
     make_trace_distill_batch,
     materialize_distill_student,
 )
@@ -124,6 +124,7 @@ class DistillConfig:
     gradient_clip_norm: float | None = None
     gradient_accumulation_steps: int = 1
     optimizer_name: OptimizerName = OptimizerName.MUON
+    lora_rank: int | None = None
     gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING
     teacher_argmax_ce_weight: float = 0.0
     hidden_state_mse_weight: float = 0.0
@@ -327,7 +328,6 @@ def _evaluate_with(
 def _build_optimizer(
     name: OptimizerName,
     learning_rate: float,
-    training_state: DistillTrainingState,
     *,
     warmup_steps: int,
     gradient_clip_norm: float | None,
@@ -337,10 +337,7 @@ def _build_optimizer(
         case OptimizerName.ADAMW:
             optimizer = optax.adamw(schedule)
         case OptimizerName.MUON:
-            optimizer = optax.contrib.muon(
-                learning_rate=schedule,
-                muon_weight_dimension_numbers=cast("Any", training_state.muon_dimension_numbers),
-            )
+            optimizer = optax.contrib.muon(learning_rate=schedule)
         case OptimizerName.SGD:
             optimizer = optax.sgd(schedule)
         case _:
@@ -499,6 +496,15 @@ def distill(
         callbacks.loading_models()
     teacher_model = _load_language_model(config.teacher_path)
     student_model = _load_language_model(config.student_path)
+    if config.lora_rank is not None:
+        student_model = replace(
+            student_model,
+            decoder=inject_lora_adapters(
+                student_model.decoder,
+                config.lora_rank,
+                key=jax.random.key(config.seed),
+            ),
+        )
     if callbacks is not None:
         callbacks.finished_loading_models()
 
@@ -528,9 +534,13 @@ def distill(
         hidden_state_mse_weight=config.hidden_state_mse_weight,
         hard_token_weight=config.hard_token_weight,
     )
-    training_state = initialize_distill_training_state(student_model.decoder, distill_config)
+    training_state = initialize_distill_training_state(
+        student_model.decoder,
+        distill_config,
+        lora=config.lora_rank is not None,
+    )
     optimizer = _build_optimizer(
-        config.optimizer_name, config.learning_rate, training_state,
+        config.optimizer_name, config.learning_rate,
         warmup_steps=config.warmup_steps, gradient_clip_norm=config.gradient_clip_norm,
     )
     optimizer_state = DistillOptimizerState(
