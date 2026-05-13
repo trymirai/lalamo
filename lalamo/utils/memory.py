@@ -5,7 +5,7 @@ import jax
 
 __all__ = [
     "get_available_bytes_on_default_device",
-    "get_usable_bytes_from_abailable_bytes",
+    "get_usable_bytes_from_available_bytes",
 ]
 
 
@@ -30,5 +30,5 @@ def get_available_bytes_on_default_device() -> int | None:
     return memory_stats["bytes_limit"] - (500 * 1000 * 1000)
 
 
-def get_usable_bytes_from_abailable_bytes(abailable_bytes: int) -> int:
-    return int(abailable_bytes * 0.95)
+def get_usable_bytes_from_available_bytes(available_bytes: int) -> int:
+    return int(available_bytes * 0.95)

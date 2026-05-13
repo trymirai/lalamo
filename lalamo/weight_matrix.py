@@ -116,6 +116,10 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
     def shape(self) -> tuple[int, ...]: ...
 
     @property
+    def logical_shape(self) -> tuple[int, ...]:
+        return self.shape
+
+    @property
     def ndim(self) -> int:
         return len(self.shape)
 
@@ -175,18 +179,18 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
 
     def load_exported(
         self,
-        expored_data: ExportResults,
+        exported_data: ExportResults,
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> Self:
         if prefix is None:
             prefix = ParameterPath()
-        saved_spec = expored_data.metadata[prefix / "spec"]
+        saved_spec = exported_data.metadata[prefix / "spec"]
         loaded_spec = WeightMatrixSpec.from_json(saved_spec)
         if loaded_spec != self.spec:
             raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
-        return super().load_exported(expored_data, allow_dtype_cast=allow_dtype_cast, prefix=prefix)
+        return super().load_exported(exported_data, allow_dtype_cast=allow_dtype_cast, prefix=prefix)
 
 
 class EmbeddingMatrix(WeightMatrix[WeightMatrixSpecT_co]):
@@ -220,6 +224,12 @@ class Layout(StrEnum):
         if self == Layout.INPUT_OUTPUT:
             return (*leading_dims, input_dim, output_dim)
         return (*leading_dims, output_dim, input_dim)
+
+    def logical_shape(self, shape: tuple[int, ...]) -> tuple[int, ...]:
+        if self == Layout.INPUT_OUTPUT:
+            *leading_dims, input_dim, output_dim = shape
+            return (*leading_dims, output_dim, input_dim)
+        return shape
 
     @supports_dummy_arrays()
     def from_output_input(
@@ -310,6 +320,10 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
     @property
     def shape(self) -> tuple[int, ...]:
         return self.weights.shape
+
+    @property
+    def logical_shape(self) -> tuple[int, ...]:
+        return self.spec.layout.logical_shape(self.shape)
 
     @property
     def dtype(self) -> DTypeLike:
@@ -417,6 +431,10 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
         return self.spec.layout.weight_shape(self.mixture_dims, self.output_dim, self.input_dim)
 
     @property
+    def logical_shape(self) -> tuple[int, ...]:
+        return (*self.mixture_dims, self.output_dim, self.input_dim)
+
+    @property
     def dtype(self) -> DTypeLike:
         return self.dtype_
 
@@ -438,7 +456,7 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
 
     def load_exported(
         self,
-        expored_data: ExportResults,
+        exported_data: ExportResults,
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
@@ -447,10 +465,10 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
             prefix = ParameterPath()
 
         # You call this an ugly hack, I call this an elegant solution to a difficult problem (@norpadon).
-        saved_spec = expored_data.metadata[prefix / "spec"]
+        saved_spec = exported_data.metadata[prefix / "spec"]
         loaded_spec = WeightMatrixSpec.from_json(saved_spec)
         dummy_layer = loaded_spec.compress(self.decompress(), is_sharded=self.is_sharded)
-        result = dummy_layer.load_exported(expored_data, allow_dtype_cast=allow_dtype_cast, prefix=prefix)
+        result = dummy_layer.load_exported(exported_data, allow_dtype_cast=allow_dtype_cast, prefix=prefix)
         return cast("Self", result)
 
     def to_full_precision(self) -> "FullPrecisionMatrix":

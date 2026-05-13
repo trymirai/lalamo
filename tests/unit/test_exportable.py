@@ -37,16 +37,16 @@ class CustomLeaf(Exportable, eqx.Module):
 
     def load_exported(
         self,
-        expored_data: ExportResults,
+        exported_data: ExportResults,
         allow_dtype_cast: bool = False,  # noqa: ARG002
         *,
         prefix: ParameterPath | None = None,
     ) -> Self:
         if prefix is None:
             prefix = ParameterPath()
-        scale = expored_data.metadata[prefix / "scale"]
+        scale = exported_data.metadata[prefix / "scale"]
         assert isinstance(scale, float)
-        return type(self)(value=expored_data.arrays[prefix / "scaled"] / scale, scale=scale)
+        return type(self)(value=exported_data.arrays[prefix / "scaled"] / scale, scale=scale)
 
 
 class CustomContainer(Exportable, eqx.Module):

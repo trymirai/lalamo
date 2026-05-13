@@ -362,6 +362,10 @@ class AWQMatrix(EmbeddingMatrix[AWQSpec]):
     scales: Float[Array, "*components rows groups"] = field(norm=ParameterNorm.L_INF)
 
     @property
+    def logical_shape(self) -> tuple[int, ...]:
+        return self.spec.layout.logical_shape(self.shape)
+
+    @property
     @abstractmethod
     def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]: ...
 
@@ -386,7 +390,7 @@ class AWQMatrix(EmbeddingMatrix[AWQSpec]):
     @abstractmethod
     def load_exported(
         self,
-        expored_data: ExportResults,
+        exported_data: ExportResults,
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
@@ -518,29 +522,29 @@ class AWQMatrixForTraining(AWQMatrix):
 
     def load_exported(
         self,
-        expored_data: ExportResults,
+        exported_data: ExportResults,
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> AWQMatrix:
         if prefix is None:
             prefix = ParameterPath()
-        saved_spec = expored_data.metadata[prefix / "spec"]
+        saved_spec = exported_data.metadata[prefix / "spec"]
         loaded_spec = WeightMatrixSpec.from_json(saved_spec)
         if loaded_spec != self.spec:
             raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
 
         packed_weights = load_as(
             self._packed_quantized_weights,
-            expored_data.arrays[prefix / "weights"],
+            exported_data.arrays[prefix / "weights"],
             allow_dtype_cast=False,
         )
-        scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast=allow_dtype_cast)
+        scales = load_as(self.scales, exported_data.arrays[prefix / "scales"], allow_dtype_cast=allow_dtype_cast)
         packed_zero_points = self._packed_quantized_zero_points
         if packed_zero_points is not None:
             packed_zero_points = load_as(
                 packed_zero_points,
-                expored_data.arrays[prefix / "zero_points"],
+                exported_data.arrays[prefix / "zero_points"],
                 allow_dtype_cast=False,
             )
         return self.spec.from_packed_parameters(
@@ -596,29 +600,29 @@ class AWQMatrixForInference(AWQMatrix):
 
     def load_exported(
         self,
-        expored_data: ExportResults,
+        exported_data: ExportResults,
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> AWQMatrix:
         if prefix is None:
             prefix = ParameterPath()
-        saved_spec = expored_data.metadata[prefix / "spec"]
+        saved_spec = exported_data.metadata[prefix / "spec"]
         loaded_spec = WeightMatrixSpec.from_json(saved_spec)
         if loaded_spec != self.spec:
             raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
 
         packed_weights = load_as(
             self.packed_weights,
-            expored_data.arrays[prefix / "weights"],
+            exported_data.arrays[prefix / "weights"],
             allow_dtype_cast=False,
         )
-        scales = load_as(self.scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast=allow_dtype_cast)
+        scales = load_as(self.scales, exported_data.arrays[prefix / "scales"], allow_dtype_cast=allow_dtype_cast)
         packed_zero_points = self._packed_quantized_zero_points
         if packed_zero_points is not None:
             packed_zero_points = load_as(
                 packed_zero_points,
-                expored_data.arrays[prefix / "zero_points"],
+                exported_data.arrays[prefix / "zero_points"],
                 allow_dtype_cast=False,
             )
         return self.spec.from_packed_parameters(

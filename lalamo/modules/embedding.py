@@ -165,12 +165,12 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
 
     @property
     def model_dim(self) -> int:
-        _, model_dim = self.embedding.shape
+        model_dim, _ = self.embedding.logical_shape
         return model_dim
 
     @property
     def vocab_size(self) -> int:
-        vocab_size, _ = self.embedding.shape
+        _, vocab_size = self.embedding.logical_shape
         return vocab_size
 
     def _readout_logits(
@@ -219,10 +219,10 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
 
     @property
     def model_dim(self) -> int:
-        _, model_dim = self.input_embedding.shape
+        model_dim, _ = self.input_embedding.logical_shape
         return model_dim
 
     @property
     def vocab_size(self) -> int:
-        vocab_size, _ = self.input_embedding.shape
+        _, vocab_size = self.input_embedding.logical_shape
         return vocab_size
