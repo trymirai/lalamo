@@ -286,14 +286,14 @@ def _evaluate_with(
     batches: Sequence[DistillBatchLike],
     distill_config: DistillTrainConfig,
     *,
-    keychain: Keychain,
+    seed: int,
 ) -> EvaluationMetrics:
     total_kl = 0.0
     total_valid_tokens = 0
     total_matches = 0
 
     for i, batch in enumerate(batches):
-        batch_keychain = Keychain.init(keychain.batch_key.item() + i)
+        batch_keychain = Keychain.init(seed + i)
         match training_mode:
             case TrainingMode.ONLINE_EXACT:
                 assert isinstance(batch, DistillBatch)
@@ -570,7 +570,6 @@ def distill(
 
     # Initial evaluation
     run_start = time.perf_counter()
-    eval_keychain = Keychain.init(config.seed + 1000)
     initial_student = materialize_distill_student(optimizer_state.training_state, jnp.dtype(compute_dtype))
     initial_eval = _evaluate_with(
         config.training_mode,
@@ -578,7 +577,7 @@ def distill(
         teacher_model.decoder,
         dataset.eval_batches,
         distill_config,
-        keychain=eval_keychain,
+        seed=config.seed + 1000,
     )
     if best_eval_kl is None:
         best_eval_kl = initial_eval.kl_divergence
@@ -652,7 +651,7 @@ def distill(
                     teacher_model.decoder,
                     dataset.eval_batches,
                     distill_config,
-                    keychain=Keychain.init(config.seed + step),
+                    seed=config.seed + step,
                 )
                 assert best_eval_kl is not None
                 if eval_metrics.kl_divergence < best_eval_kl:
@@ -724,7 +723,7 @@ def distill(
         teacher_model.decoder,
         dataset.eval_batches,
         distill_config,
-        keychain=Keychain.init(config.seed + 9999),
+        seed=config.seed + 9999,
     )
 
     model_output_path = config.output_dir / "student-distilled"
