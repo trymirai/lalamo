@@ -254,7 +254,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         *,
         keychain: Keychain,
         forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
-    ) -> Int[Array, "num_codebooks tokens"]:
+    ) -> Int[Array, "num_codebooks generated_tokens"]:
         """
         Generate semantic tokens for a full utterance given text tokens in an autoregressive
         generation loop. Processing text tokens through the slow transformer and generating
@@ -475,7 +475,7 @@ def decode_next_token(
 
     def loop_iteration(
         iteration_state: tuple[State | None, Array, Any],
-        loop_input: tuple[jnp.int32, Array],
+        loop_input: tuple[Int[Array, ""], Array],
     ) -> tuple[tuple[State | None, Array, Any], None]:
         index, sample_vmapped_key = loop_input
         transformer_state, logits, codebooks = iteration_state

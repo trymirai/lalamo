@@ -67,7 +67,7 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
     n_local_heads = config["n_head"] if config["n_local_heads"] == -1 else config["n_local_heads"]
 
     global_rope_config = UnscaledRoPEConfig(
-        base=config["rope_base"],
+        base=float(config["rope_base"]),
         max_sequence_length=config["block_size"],
         head_dim=config["head_dim"],
     )
@@ -144,17 +144,14 @@ def instantiate_dac_config_from_fishaudio_config(
     fish_quantizer_config = fish_dac_config["quantizer"]
 
     input_dim = fish_quantizer_config["input_dim"]
-    downsample_factor = fish_quantizer_config["downsample_factor"]
+    downsample_factor = tuple(fish_quantizer_config["downsample_factor"])
     post_module_config_dict = fish_quantizer_config["post_module"]
     encoder_dim = fish_dac_config["encoder_dim"]
-    encoder_rates = fish_dac_config["encoder_rates"]
+    encoder_rates = tuple(fish_dac_config["encoder_rates"])
     decoder_dim = fish_dac_config["decoder_dim"]
-    decoder_rates = fish_dac_config["decoder_rates"]
-    fish_quantizer_config = fish_dac_config["quantizer"]
-    input_dim = fish_quantizer_config["input_dim"]
+    decoder_rates = tuple(fish_dac_config["decoder_rates"])
     n_codebooks = fish_quantizer_config["n_codebooks"]
     codebook_dim = fish_quantizer_config["codebook_dim"]
-    downsample_factor = fish_quantizer_config["downsample_factor"]
     codebook_size = fish_quantizer_config["codebook_size"]
     semantic_codebook_size = fish_quantizer_config["semantic_codebook_size"]
 
@@ -254,7 +251,7 @@ class FishAudioConfig(ForeignTTSConfig):
     fast_n_head: int
     fast_n_local_heads: int
     head_dim: int
-    initializer_range: int
+    initializer_range: float
     intermediate_size: int
     max_seq_len: int
     model_type: str
@@ -289,7 +286,7 @@ class FishAudioConfig(ForeignTTSConfig):
         attention_qk_norm = self.fast_attention_qk_norm if fast_module else self.attention_qk_norm
 
         global_rope_config = UnscaledRoPEConfig(
-            base=self.rope_base,
+            base=float(self.rope_base),
             max_sequence_length=self.max_seq_len,
             head_dim=head_dim,
         )
