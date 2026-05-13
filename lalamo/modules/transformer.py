@@ -226,16 +226,20 @@ class Transformer(LalamoModule[TransformerConfig]):
         return dict(
             layers=[layer.export_weights() for layer in self.layers],
             output_norm=self.output_norm.export_weights(),
+            ropes=[rope.export_weights() for rope in self.ropes],
         )
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = require_mapping(weights)
         assert isinstance(weights["layers"], Sequence)
+        assert isinstance(weights["ropes"], Sequence)
         layers = [
             layer.import_weights(require_tree(lw)) for layer, lw in zip(self.layers, weights["layers"], strict=True)
         ]
+        ropes = [rope.import_weights(require_tree(rw)) for rope, rw in zip(self.ropes, weights["ropes"], strict=True)]
         return replace(
             self,
             layers=tuple(layers),
             output_norm=self.output_norm.import_weights(require_tree(weights["output_norm"])),
+            ropes=tuple(ropes),
         )
