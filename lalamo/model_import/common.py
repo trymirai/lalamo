@@ -4,6 +4,7 @@ from collections import ChainMap
 from collections.abc import Callable, Generator, Mapping, MutableMapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import NamedTuple, cast
 
 from jaxtyping import Array, DTypeLike
@@ -394,10 +395,30 @@ def import_model(
     to_full_precision: bool = False,
 ) -> ImportResults:
     if isinstance(model_spec, str):
-        try:
-            model_spec = ModelRegistry.build().repo_to_model[model_spec]
-        except KeyError as e:
-            raise ValueError(f"Unknown model: {model_spec}") from e
+        registry_model_spec = ModelRegistry.build().repo_to_model.get(model_spec)
+        if registry_model_spec is not None:
+            model_spec = registry_model_spec
+        else:
+            model_path = Path(model_spec)
+            if not model_path.exists():
+                raise ValueError(f"Unknown model and local path does not exist: {model_spec}")
+
+            if dtype is None:
+                model = Model.load(model_path)
+            else:
+                model = Model.load(model_path, dtype=dtype)
+
+            model_metadata = ModelMetadata(
+                toolchain_version=importlib.metadata.version("lalamo"),
+                vendor="local",
+                family="unknown",
+                name=model_path.name,
+                size="unknown",
+                origin=str(model_path.resolve()),
+                model_config=model.config,
+                grammar_start_tokens=(),
+            )
+            return ImportResults(model, model_metadata)
 
     match model_spec:
         case LanguageModelSpec():

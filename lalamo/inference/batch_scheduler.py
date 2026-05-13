@@ -695,10 +695,11 @@ class BatchScheduler(ABC):
             batch_size_per_bucket = dict.fromkeys(sequences_per_bucket, batch_scheduler_config.batch_size)
         else:
             assert vram_bytes is not None
+            first_token_of_the_first_sequence = tokenized[0][0]
 
             def memory_probe(batch_size: int, padded_length: int) -> None:
                 iterator = self.generate_tokens_many(
-                    [tokenized[0]] * batch_size,
+                    [[first_token_of_the_first_sequence]] * batch_size,
                     generation_config=generation_config,
                     batch_scheduler_config=replace(
                         batch_scheduler_config,
