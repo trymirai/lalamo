@@ -37,7 +37,6 @@ __all__ = [
     "inject_lora_adapters",
     "make_trace_distill_batch",
     "materialize_distill_student",
-    "partition_scale_trainable",
 ]
 
 
@@ -80,6 +79,7 @@ class DistillTrainingState(eqx.Module):
     master_weights: Any
     frozen: eqx.Module
     muon_dimension_numbers: Any
+    trains_scale_deltas: bool = eqx.field(static=True)
 
 
 class DistillOptimizerState(eqx.Module):
@@ -190,12 +190,25 @@ def _is_weight_matrix_scale(module: eqx.Module, path: tuple[object, ...], leaf: 
     return False
 
 
-def partition_scale_trainable(module: eqx.Module) -> tuple[eqx.Module, eqx.Module]:
+def _make_scale_delta_tree(module: eqx.Module) -> eqx.Module:
     leaves_with_paths, treedef = jtu.tree_flatten_with_path(module)
-    filter_spec = treedef.unflatten(
-        _is_weight_matrix_scale(module, path, leaf) for path, leaf in leaves_with_paths
+    return treedef.unflatten(
+        jnp.zeros_like(leaf, dtype=jnp.float32)
+        if _is_weight_matrix_scale(module, path, leaf)
+        else None
+        for path, leaf in leaves_with_paths
     )
-    return eqx.partition(module, filter_spec)
+
+
+def _apply_scale_deltas(module: eqx.Module, deltas: eqx.Module) -> eqx.Module:
+    def apply_delta(base: object, delta: object) -> object:
+        if delta is None:
+            return base
+        assert isinstance(base, Array)
+        assert isinstance(delta, Array)
+        return base * jnp.exp(delta.astype(base.dtype))
+
+    return jax.tree.map(apply_delta, module, deltas, is_leaf=lambda leaf: leaf is None)
 
 
 def initialize_distill_training_state(
@@ -214,7 +227,8 @@ def initialize_distill_training_state(
             module,
         )
     if scales_only:
-        trainable, frozen = partition_scale_trainable(module)
+        trainable = _make_scale_delta_tree(module)
+        frozen = module
     elif lora:
         trainable, frozen = partition_lora_trainable(module)
     else:
@@ -223,6 +237,7 @@ def initialize_distill_training_state(
         master_weights=_cast_leaves(trainable, config.master_dtype),
         frozen=frozen,
         muon_dimension_numbers=_make_muon_dimension_numbers(module),
+        trains_scale_deltas=scales_only,
     )
 
 
@@ -230,6 +245,14 @@ def materialize_distill_student(
     training_state: DistillTrainingState,
     compute_dtype: DTypeLike,
 ) -> Decoder:
+    if training_state.trains_scale_deltas:
+        return cast(
+            "Decoder",
+            _apply_scale_deltas(
+                _cast_leaves(training_state.frozen, compute_dtype),
+                _cast_leaves(training_state.master_weights, compute_dtype),
+            ),
+        )
     return cast(
         "Decoder",
         eqx.combine(_cast_leaves(training_state.master_weights, compute_dtype), training_state.frozen),
