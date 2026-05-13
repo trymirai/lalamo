@@ -33,7 +33,7 @@ from lalamo.speculator import (
     SpeculatorTrainingEvent,
 )
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
     "AssistantMessage",
