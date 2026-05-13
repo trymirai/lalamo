@@ -1,10 +1,5 @@
 from lalamo.model_import.model_configs import HFMistralConfig
-from lalamo.model_import.model_spec import (
-    ConfigMap,
-    FileSpec,
-    JSONFieldSpec,
-    LanguageModelSpec,
-)
+from lalamo.model_import.model_spec import ConfigMap, FileSpec, JSONFieldSpec, LanguageModelSpec
 from lalamo.model_import.origins import HuggingFaceOrigin
 
 __all__ = ["MISTRAL_MODELS"]
@@ -17,7 +12,7 @@ CODESTRAL = [
         family="Codestral",
         name="Codestral-22B-v0.1",
         size="22B",
-        origin=HuggingFaceOrigin(repo="mistral-community/Codestral-22B-v0.1"),
+        origin=HuggingFaceOrigin(repo="mistralai/Codestral-22B-v0.1"),
         config_type=HFMistralConfig,
         configs=ConfigMap(
             tokenizer_config=FileSpec(repo=CODESTRAL_TOKENIZER_REPO, filename="tokenizer_config.json"),

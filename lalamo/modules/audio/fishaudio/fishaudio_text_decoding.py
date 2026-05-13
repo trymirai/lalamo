@@ -538,6 +538,8 @@ def _sample_with_previous_tokens(
 ) -> Int[Array, ""]:
     if previous_tokens is None:
         return sampling_policy(logits, keychain=keychain)
+    if sampling_policy.repetition_penalty is None:
+        return sampling_policy(logits, keychain=keychain)
 
     previous_tokens_length = (
         previous_tokens_length

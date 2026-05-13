@@ -31,29 +31,34 @@ _LFM20_MODELS = [
         ),
     )
     for size, variant, quantization_bits in chain(
-        product(["350M", "700M", "1.2B"], [None], [None, 4, 8]),
-        product(["2.6B"], [None, "Exp"], [None]),
-        product(["2.6B"], ["Exp"], [4, 8]),
+        product(["350M", "700M", "1.2B", "2.6B"], [None], [None, 4, 8]),
     )
 ]
+
+_LFM25_MODEL_SPECS = (
+    ("LiquidAI", "LFM2.5-350M", "350M", None),
+    ("LiquidAI", "LFM2.5-1.2B-Instruct", "1.2B", None),
+    ("LiquidAI", "LFM2.5-1.2B-Instruct-MLX-4bit", "1.2B", 4),
+    ("LiquidAI", "LFM2.5-1.2B-Instruct-MLX-8bit", "1.2B", 8),
+    ("LiquidAI", "LFM2.5-1.2B-Thinking", "1.2B", None),
+    ("mlx-community", "LFM2.5-1.2B-Thinking-4bit", "1.2B", 4),
+    ("mlx-community", "LFM2.5-1.2B-Thinking-8bit", "1.2B", 8),
+)
 
 _LFM25_MODELS = [
     LanguageModelSpec(
         vendor="LiquidAI",
         family="LFM2.5",
-        name=_lfm_repo("LFM2.5", size, variant, quantization_bits)[1],
+        name=name,
         size=size,
-        origin=HuggingFaceOrigin(repo="/".join(_lfm_repo("LFM2.5", size, variant, quantization_bits))),
+        origin=HuggingFaceOrigin(repo=f"{repo_owner}/{name}"),
         config_type=HFLFM2Config,
         configs=ConfigMap(
             generation_config=GenerationConfig(temperature=0.1, top_k=50, top_p=0.1),  # , repetition_penalty=1.05
             chat_template=FileSpec("chat_template.jinja"),
         ),
     )
-    for size, variant, quantization_bits in chain(
-        product(["350M"], [None], [None]),
-        product(["1.2B"], ["Instruct"], [None]),
-    )
+    for repo_owner, name, size, _quantization_bits in _LFM25_MODEL_SPECS
 ]
 
 LFM2_MODELS = _LFM20_MODELS + _LFM25_MODELS

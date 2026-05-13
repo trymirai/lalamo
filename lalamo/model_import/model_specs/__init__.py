@@ -20,10 +20,8 @@ from .llamba import LLAMBA_MODELS
 from .mirai import MIRAI_CLASSIFIER_MODELS
 from .mistral import MISTRAL_MODELS
 from .nanbeige import NANBEIGE_MODELS
-from .nanocodec import NANOCODEC_TTS_MODELS
 from .polaris import POLARIS_MODELS
 from .qwen import QWEN_MODELS
-from .reka import REKA_MODELS
 
 __all__ = [
     "ALL_MODEL_LISTS",
@@ -36,7 +34,7 @@ __all__ = [
     "TTSModelSpec",
 ]
 
-TTS_MODELS = FISHAUDIO_TTS_MODELS + NANOCODEC_TTS_MODELS
+TTS_MODELS = FISHAUDIO_TTS_MODELS
 
 ALL_MODEL_LISTS = [
     LFM2_MODELS,
@@ -49,7 +47,6 @@ ALL_MODEL_LISTS = [
     MISTRAL_MODELS,
     POLARIS_MODELS,
     QWEN_MODELS,
-    REKA_MODELS,
     MIRAI_CLASSIFIER_MODELS,
     NANBEIGE_MODELS,
     RNJ_MODELS,

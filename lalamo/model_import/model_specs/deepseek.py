@@ -10,9 +10,17 @@ DEEPSEEK_MODELS = [
     LanguageModelSpec(
         vendor="DeepSeek",
         family="R1-Distill-Qwen",
-        name="R1-Distill-Qwen-1.5B",
+        name="DeepSeek-R1-Distill-Qwen-1.5B",
         size="1.5B",
         origin=HuggingFaceOrigin(repo="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"),
+        config_type=HFQwen2Config,
+    ),
+    LanguageModelSpec(
+        vendor="DeepSeek",
+        family="R1-Distill-Qwen",
+        name="DeepSeek-R1-Distill-Qwen-1.5B-AWQ",
+        size="1.5B",
+        origin=HuggingFaceOrigin(repo="trymirai/DeepSeek-R1-Distill-Qwen-1.5B-AWQ"),
         config_type=HFQwen2Config,
     ),
 ]

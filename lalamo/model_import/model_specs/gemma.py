@@ -1,30 +1,17 @@
 from lalamo.model_import.model_configs import (
-    HFGemma2Config,
     HFGemma3Config,
     HFGemma3TextConfig,
-    HFGemma4Config,
 )
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.origins import HuggingFaceOrigin
 
 __all__ = ["GEMMA_MODELS"]
 
-GEMMA2 = [
-    LanguageModelSpec(
-        vendor="Google",
-        family="Gemma-2",
-        name="Gemma-2-2B-Instruct",
-        size="2B",
-        origin=HuggingFaceOrigin(repo="google/gemma-2-2b-it"),
-        config_type=HFGemma2Config,
-    ),
-]
-
 GEMMA3 = [
     LanguageModelSpec(
         vendor="Google",
         family="Gemma-3",
-        name="Gemma-3-1B-Instruct",
+        name="gemma-3-1b-it",
         size="1B",
         origin=HuggingFaceOrigin(repo="google/gemma-3-1b-it"),
         config_type=HFGemma3TextConfig,
@@ -32,7 +19,7 @@ GEMMA3 = [
     LanguageModelSpec(
         vendor="Google",
         family="Gemma-3",
-        name="Gemma-3-1B-Instruct-4bit",
+        name="gemma-3-1b-it-4bit",
         size="1B",
         origin=HuggingFaceOrigin(repo="mlx-community/gemma-3-1b-it-4bit"),
         config_type=HFGemma3TextConfig,
@@ -41,7 +28,7 @@ GEMMA3 = [
     LanguageModelSpec(
         vendor="Google",
         family="Gemma-3",
-        name="Gemma-3-1B-Instruct-8bit",
+        name="gemma-3-1b-it-8bit",
         size="1B",
         origin=HuggingFaceOrigin(repo="mlx-community/gemma-3-1b-it-8bit"),
         config_type=HFGemma3TextConfig,
@@ -50,7 +37,7 @@ GEMMA3 = [
     LanguageModelSpec(
         vendor="Google",
         family="Gemma-3",
-        name="Gemma-3-4B-Instruct",
+        name="gemma-3-4b-it",
         size="4B",
         origin=HuggingFaceOrigin(repo="google/gemma-3-4b-it"),
         config_type=HFGemma3Config,
@@ -58,7 +45,7 @@ GEMMA3 = [
     LanguageModelSpec(
         vendor="Google",
         family="Gemma-3",
-        name="Gemma-3-4B-Instruct-4bit",
+        name="gemma-3-4b-it-4bit",
         size="4B",
         origin=HuggingFaceOrigin(repo="mlx-community/gemma-3-4b-it-4bit"),
         config_type=HFGemma3Config,
@@ -67,7 +54,7 @@ GEMMA3 = [
     LanguageModelSpec(
         vendor="Google",
         family="Gemma-3",
-        name="Gemma-3-4B-Instruct-8bit",
+        name="gemma-3-4b-it-8bit",
         size="4B",
         origin=HuggingFaceOrigin(repo="mlx-community/gemma-3-4b-it-8bit"),
         config_type=HFGemma3Config,
@@ -76,7 +63,7 @@ GEMMA3 = [
     LanguageModelSpec(
         vendor="Google",
         family="Gemma-3",
-        name="Gemma-3-27B-Instruct",
+        name="gemma-3-27b-it",
         size="27B",
         origin=HuggingFaceOrigin(repo="google/gemma-3-27b-it"),
         config_type=HFGemma3Config,
@@ -84,7 +71,7 @@ GEMMA3 = [
     LanguageModelSpec(
         vendor="Google",
         family="Gemma-3",
-        name="Gemma-3-27B-Instruct-4bit",
+        name="gemma-3-27b-it-4bit",
         size="27B",
         origin=HuggingFaceOrigin(repo="mlx-community/gemma-3-27b-it-4bit"),
         config_type=HFGemma3Config,
@@ -93,7 +80,7 @@ GEMMA3 = [
     LanguageModelSpec(
         vendor="Google",
         family="Gemma-3",
-        name="Gemma-3-27B-Instruct-8bit",
+        name="gemma-3-27b-it-8bit",
         size="27B",
         origin=HuggingFaceOrigin(repo="mlx-community/gemma-3-27b-it-8bit"),
         config_type=HFGemma3Config,
@@ -114,43 +101,4 @@ GEMMA3 = [
     ),
 ]
 
-
-GEMMA4 = [
-    LanguageModelSpec(
-        vendor="Google",
-        family="Gemma-4",
-        name="Gemma-4-E2B",
-        size="5B",
-        origin=HuggingFaceOrigin(repo="google/gemma-4-E2B"),
-        config_type=HFGemma4Config,
-        configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
-    ),
-    LanguageModelSpec(
-        vendor="Google",
-        family="Gemma-4",
-        name="Gemma-4-E2B-Instruct",
-        size="5B",
-        origin=HuggingFaceOrigin(repo="google/gemma-4-E2B-it"),
-        config_type=HFGemma4Config,
-        configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
-    ),
-    LanguageModelSpec(
-        vendor="Google",
-        family="Gemma-4",
-        name="Gemma-4-E4B",
-        size="8B",
-        origin=HuggingFaceOrigin(repo="google/gemma-4-E4B"),
-        config_type=HFGemma4Config,
-        configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
-    ),
-    LanguageModelSpec(
-        vendor="Google",
-        family="Gemma-4",
-        name="Gemma-4-E4B-Instruct",
-        size="8B",
-        origin=HuggingFaceOrigin(repo="google/gemma-4-E4B-it"),
-        config_type=HFGemma4Config,
-        configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
-    ),
-]
-GEMMA_MODELS = GEMMA2 + GEMMA3 + GEMMA4
+GEMMA_MODELS = GEMMA3

@@ -11,7 +11,7 @@ DIRECT_CHAT_TEMPLATE = """
 FISHAUDIO_TTS_MODELS = [
     TTSModelSpec(
         vendor="FishAudio",
-        family="openaudio",
+        family="fishaudio-s1",
         name="s1-mini",
         size="0.8B",
         origin=HuggingFaceOrigin(repo="fishaudio/s1-mini", weight_format=WeightFormat.TORCH),

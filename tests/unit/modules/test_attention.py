@@ -3,6 +3,7 @@ from math import prod
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import pytest
 from einops import rearrange
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
@@ -10,6 +11,7 @@ from jaxtyping import Array
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPassConfig
+from lalamo.modules.token_mixers import attention as attention_module
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.dummy_array import dummy_array
@@ -208,6 +210,53 @@ def test_soft_capped_attention_implementations_match(fake_mesh: Mesh) -> None:
 
     _assert_close(result=stable_reduction.outputs, reference=standard.outputs)
     _assert_named_sharding(stable_reduction.outputs.sharding, fake_mesh)
+
+
+def test_cudnn_attention_falls_back_to_tokamax_for_unsupported_head_dim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queries = jnp.ones((1, 1, 256), dtype=jnp.float32)
+    keys = jnp.ones((1, 1, 256), dtype=jnp.float32)
+    values = jnp.ones((1, 1, 256), dtype=jnp.float32)
+    fallback_output = jnp.full_like(queries, 3.0)
+    calls: list[None] = []
+
+    def fake_dot_product_attention(
+        queries: Array,
+        keys: Array,
+        values: Array,
+        *,
+        bias: Array | None,
+        mask: Array | None,
+        scale: float | None,
+        logits_soft_cap: float | None,
+    ) -> Array:
+        assert queries.shape == keys.shape == values.shape
+        assert bias is None
+        assert mask is None
+        assert scale is None
+        assert logits_soft_cap is None
+        calls.append(None)
+        return fallback_output
+
+    monkeypatch.setattr(attention_module.tokamax, "dot_product_attention", fake_dot_product_attention)
+
+    with pytest.warns(RuntimeWarning, match="Falling back to Tokamax attention"):
+        result = attention_module._attention_kernel(  # noqa: SLF001
+            queries,
+            keys,
+            values,
+            bias=None,
+            mask=None,
+            scale=None,
+            logit_soft_cap=None,
+            forward_pass_config=MixerForwardPassConfig(
+                attention_implementation=AttentionImplementation.CUDNN,
+            ),
+        )
+
+    assert calls == [None]
+    assert_close(result=result, reference=fallback_output)
 
 
 def test_attention_vmapped_over_inputs_matches_reference_and_keeps_data_sharding(fake_mesh: Mesh) -> None:

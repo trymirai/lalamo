@@ -1,8 +1,6 @@
 from lalamo.model_import.model_configs import (
-    HFBonsaiConfig,
     HFQwen2Config,
     HFQwen3Config,
-    HFQwen3NextConfig,
     HFQwen35Config,
 )
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
@@ -11,56 +9,25 @@ from lalamo.model_import.origins import HuggingFaceOrigin
 __all__ = ["QWEN_MODELS"]
 
 
-QWEN25 = [
-    LanguageModelSpec(
+def _qwen3_mlx_model_spec(
+    *,
+    name: str,
+    size: str,
+    base_repo: str,
+) -> LanguageModelSpec:
+    return LanguageModelSpec(
         vendor="Alibaba",
-        family="Qwen2.5",
-        name="Qwen2.5-0.5B-Instruct",
-        size="0.5B",
-        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-0.5B-Instruct"),
-        config_type=HFQwen2Config,
-    ),
-    LanguageModelSpec(
-        vendor="Alibaba",
-        family="Qwen2.5",
-        name="Qwen2.5-1.5B-Instruct",
-        size="1.5B",
-        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-1.5B-Instruct"),
-        config_type=HFQwen2Config,
-    ),
-    LanguageModelSpec(
-        vendor="Alibaba",
-        family="Qwen2.5",
-        name="Qwen2.5-3B-Instruct",
-        size="3B",
-        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-3B-Instruct"),
-        config_type=HFQwen2Config,
-    ),
-    LanguageModelSpec(
-        vendor="Alibaba",
-        family="Qwen2.5",
-        name="Qwen2.5-7B-Instruct",
-        size="7B",
-        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-7B-Instruct"),
-        config_type=HFQwen2Config,
-    ),
-    LanguageModelSpec(
-        vendor="Alibaba",
-        family="Qwen2.5",
-        name="Qwen2.5-14B-Instruct",
-        size="14B",
-        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-14B-Instruct"),
-        config_type=HFQwen2Config,
-    ),
-    LanguageModelSpec(
-        vendor="Alibaba",
-        family="Qwen2.5",
-        name="Qwen2.5-32B-Instruct",
-        size="32B",
-        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-32B-Instruct"),
-        config_type=HFQwen2Config,
-    ),
-]
+        family="Qwen3",
+        name=name,
+        size=size,
+        origin=HuggingFaceOrigin(repo=f"Qwen/{name}"),
+        config_type=HFQwen3Config,
+        configs=ConfigMap(
+            tokenizer=FileSpec("tokenizer.json", base_repo),
+            tokenizer_config=FileSpec("tokenizer_config.json", base_repo),
+            generation_config=FileSpec("generation_config.json", base_repo),
+        ),
+    )
 
 
 QWEN25_CODER = [
@@ -91,6 +58,14 @@ QWEN25_CODER = [
     LanguageModelSpec(
         vendor="Alibaba",
         family="Qwen2.5-Coder",
+        name="Qwen2.5-Coder-3B-Instruct-AWQ",
+        size="3B",
+        origin=HuggingFaceOrigin(repo="trymirai/Qwen2.5-Coder-3B-Instruct-AWQ"),
+        config_type=HFQwen2Config,
+    ),
+    LanguageModelSpec(
+        vendor="Alibaba",
+        family="Qwen2.5-Coder",
         name="Qwen2.5-Coder-7B-Instruct",
         size="7B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-Coder-7B-Instruct"),
@@ -99,17 +74,17 @@ QWEN25_CODER = [
     LanguageModelSpec(
         vendor="Alibaba",
         family="Qwen2.5-Coder",
-        name="Qwen2.5-Coder-14B-Instruct",
-        size="14B",
-        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-Coder-14B-Instruct"),
+        name="Qwen2.5-Coder-7B-Instruct-AWQ",
+        size="7B",
+        origin=HuggingFaceOrigin(repo="trymirai/Qwen2.5-Coder-7B-Instruct-AWQ"),
         config_type=HFQwen2Config,
     ),
     LanguageModelSpec(
         vendor="Alibaba",
         family="Qwen2.5-Coder",
-        name="Qwen2.5-Coder-32B-Instruct",
-        size="32B",
-        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-Coder-32B-Instruct"),
+        name="Qwen2.5-Coder-14B-Instruct",
+        size="14B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-Coder-14B-Instruct"),
         config_type=HFQwen2Config,
     ),
     LanguageModelSpec(
@@ -132,18 +107,15 @@ QWEN3 = [
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3-0.6B"),
         config_type=HFQwen3Config,
     ),
-    LanguageModelSpec(
-        vendor="Alibaba",
-        family="Qwen3",
+    _qwen3_mlx_model_spec(
         name="Qwen3-0.6B-MLX-4bit",
         size="0.6B",
-        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-0.6B-MLX-4bit"),
-        config_type=HFQwen3Config,
-        configs=ConfigMap(
-            tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3-0.6B"),
-            tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3-0.6B"),
-            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3-0.6B"),
-        ),
+        base_repo="Qwen/Qwen3-0.6B",
+    ),
+    _qwen3_mlx_model_spec(
+        name="Qwen3-0.6B-MLX-8bit",
+        size="0.6B",
+        base_repo="Qwen/Qwen3-0.6B",
     ),
     LanguageModelSpec(
         vendor="Alibaba",
@@ -152,6 +124,16 @@ QWEN3 = [
         size="1.7B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3-1.7B"),
         config_type=HFQwen3Config,
+    ),
+    _qwen3_mlx_model_spec(
+        name="Qwen3-1.7B-MLX-4bit",
+        size="1.7B",
+        base_repo="Qwen/Qwen3-1.7B",
+    ),
+    _qwen3_mlx_model_spec(
+        name="Qwen3-1.7B-MLX-8bit",
+        size="1.7B",
+        base_repo="Qwen/Qwen3-1.7B",
     ),
     LanguageModelSpec(
         vendor="Alibaba",
@@ -172,15 +154,28 @@ QWEN3 = [
     LanguageModelSpec(
         vendor="Alibaba",
         family="Qwen3",
+        name="Qwen3-4B-Instruct",
+        size="4B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-4B-Instruct-2507"),
+        config_type=HFQwen3Config,
+    ),
+    _qwen3_mlx_model_spec(
         name="Qwen3-4B-MLX-4bit",
         size="4B",
-        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-4B-MLX-4bit"),
+        base_repo="Qwen/Qwen3-4B",
+    ),
+    _qwen3_mlx_model_spec(
+        name="Qwen3-4B-MLX-8bit",
+        size="4B",
+        base_repo="Qwen/Qwen3-4B",
+    ),
+    LanguageModelSpec(
+        vendor="Alibaba",
+        family="Qwen3",
+        name="Qwen3-4B-Thinking",
+        size="4B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-4B-Thinking-2507"),
         config_type=HFQwen3Config,
-        configs=ConfigMap(
-            tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3-4B"),
-            tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3-4B"),
-            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3-4B"),
-        ),
     ),
     LanguageModelSpec(
         vendor="Alibaba",
@@ -198,18 +193,15 @@ QWEN3 = [
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3-8B-AWQ"),
         config_type=HFQwen3Config,
     ),
-    LanguageModelSpec(
-        vendor="Alibaba",
-        family="Qwen3",
+    _qwen3_mlx_model_spec(
         name="Qwen3-8B-MLX-4bit",
         size="8B",
-        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-8B-MLX-4bit"),
-        config_type=HFQwen3Config,
-        configs=ConfigMap(
-            tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3-8B"),
-            tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3-8B"),
-            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3-8B"),
-        ),
+        base_repo="Qwen/Qwen3-8B",
+    ),
+    _qwen3_mlx_model_spec(
+        name="Qwen3-8B-MLX-8bit",
+        size="8B",
+        base_repo="Qwen/Qwen3-8B",
     ),
     LanguageModelSpec(
         vendor="Alibaba",
@@ -227,6 +219,16 @@ QWEN3 = [
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3-14B-AWQ"),
         config_type=HFQwen3Config,
     ),
+    _qwen3_mlx_model_spec(
+        name="Qwen3-14B-MLX-4bit",
+        size="14B",
+        base_repo="Qwen/Qwen3-14B",
+    ),
+    _qwen3_mlx_model_spec(
+        name="Qwen3-14B-MLX-8bit",
+        size="14B",
+        base_repo="Qwen/Qwen3-14B",
+    ),
     LanguageModelSpec(
         vendor="Alibaba",
         family="Qwen3",
@@ -243,18 +245,18 @@ QWEN3 = [
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3-32B-AWQ"),
         config_type=HFQwen3Config,
     ),
-]
-
-QWEN3_NEXT = [
-    LanguageModelSpec(
-        vendor="Alibaba",
-        family="Qwen3-Next",
-        name="Qwen3-Next-80B-A3B-Instruct",
-        size="80B",
-        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-Next-80B-A3B-Instruct"),
-        config_type=HFQwen3NextConfig,
+    _qwen3_mlx_model_spec(
+        name="Qwen3-32B-MLX-4bit",
+        size="32B",
+        base_repo="Qwen/Qwen3-32B",
+    ),
+    _qwen3_mlx_model_spec(
+        name="Qwen3-32B-MLX-8bit",
+        size="32B",
+        base_repo="Qwen/Qwen3-32B",
     ),
 ]
+
 
 QWEN35 = [
     LanguageModelSpec(
@@ -439,50 +441,7 @@ QWEN35 = [
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
         ),
     ),
-    LanguageModelSpec(
-        vendor="Alibaba",
-        family="Qwen3.5",
-        name="Qwen3.5-35B-A3B",
-        size="35B",
-        origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-35B-A3B"),
-        config_type=HFQwen35Config,
-    ),
 ]
 
-QWEN36 = [
-    LanguageModelSpec(
-        vendor="Alibaba",
-        family="Qwen3.6",
-        name="Qwen3.6-35B-A3B",
-        size="35B",
-        origin=HuggingFaceOrigin(repo="Qwen/Qwen3.6-35B-A3B"),
-        config_type=HFQwen35Config,
-    ),
-]
 
-QWEN3_PARD = [
-    LanguageModelSpec(
-        vendor="AMD",
-        family="PARD",
-        name="PARD-Qwen3-0.6B",
-        size="0.6B",
-        origin=HuggingFaceOrigin(repo="amd/PARD-Qwen3-0.6B"),
-        config_type=HFQwen3Config,
-    ),
-]
-
-BONSAI = [
-    LanguageModelSpec(
-        vendor="PrismML",
-        family="Bonsai",
-        name="Bonsai-4B-mlx-1bit",
-        size="4B",
-        origin=HuggingFaceOrigin(repo="prism-ml/Bonsai-4B-mlx-1bit"),
-        config_type=HFBonsaiConfig,
-        configs=ConfigMap(
-            chat_template=FileSpec("chat_template.jinja"),
-        ),
-    ),
-]
-
-QWEN_MODELS = QWEN25 + QWEN25_CODER + QWEN3 + QWEN3_NEXT + QWEN35 + QWEN36 + QWEN3_PARD + BONSAI
+QWEN_MODELS = QWEN25_CODER + QWEN3 + QWEN35

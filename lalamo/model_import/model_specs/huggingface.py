@@ -15,6 +15,14 @@ HUGGINGFACE_MODELS = [
     ),
     LanguageModelSpec(
         vendor="HuggingFace",
+        family="SmolLM2",
+        name="SmolLM2-1.7B-Instruct-AWQ",
+        size="1.7B",
+        origin=HuggingFaceOrigin(repo="trymirai/SmolLM2-1.7B-Instruct-AWQ"),
+        config_type=HFLlamaConfig,
+    ),
+    LanguageModelSpec(
+        vendor="HuggingFace",
         family="SmolLM3",
         name="SmolLM3-3B",
         size="3B",

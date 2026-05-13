@@ -1,3 +1,4 @@
+import warnings
 from dataclasses import dataclass
 
 import equinox as eqx
@@ -248,6 +249,19 @@ def _attention_kernel(
     logit_soft_cap: float | None,
     forward_pass_config: MixerForwardPassConfig,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
+    def tokamax_attention() -> Float[Array, "dst_tokens heads head_channels"]:
+        if bias is not None and logit_soft_cap is not None:
+            raise RuntimeError("Tokamax attention does not support logit soft-capping with additive bias.")
+        return tokamax.dot_product_attention(
+            queries,
+            keys,
+            values,
+            bias=bias,
+            mask=mask,
+            scale=scale,
+            logits_soft_cap=logit_soft_cap,
+        ).astype(queries.dtype)
+
     match forward_pass_config.attention_implementation:
         case AttentionImplementation.STANDARD:
             return _soft_capped_attention_kernel(
@@ -260,6 +274,15 @@ def _attention_kernel(
                 logit_soft_cap=logit_soft_cap,
             )
         case AttentionImplementation.CUDNN:
+            head_dim = queries.shape[-1]
+            if head_dim > 128 or head_dim % 8 != 0:
+                warnings.warn(
+                    "cuDNN attention requires head_dim <= 128 and divisible by 8; "
+                    f"got head_dim={head_dim}. Falling back to Tokamax attention.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                return tokamax_attention()
             if logit_soft_cap is not None:
                 raise RuntimeError("cuDNN attention does not support logit soft-capping.")
             if mask is not None:
@@ -274,17 +297,7 @@ def _attention_kernel(
                 implementation="cudnn",
             )
         case AttentionImplementation.TOKAMAX:
-            if bias is not None and logit_soft_cap is not None:
-                raise RuntimeError("Tokamax attention does not support logit soft-capping with additive bias.")
-            return tokamax.dot_product_attention(
-                queries,
-                keys,
-                values,
-                bias=bias,
-                mask=mask,
-                scale=scale,
-                logits_soft_cap=logit_soft_cap,
-            ).astype(queries.dtype)
+            return tokamax_attention()
         case AttentionImplementation.STABLE_REDUCTION:
             return _stable_reduction_attention_kernel(
                 queries,
