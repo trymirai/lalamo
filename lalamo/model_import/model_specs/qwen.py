@@ -1,5 +1,4 @@
 from lalamo.model_import.model_configs import (
-    HFBonsaiConfig,
     HFQwen2Config,
     HFQwen3Config,
     HFQwen35Config,
@@ -514,20 +513,4 @@ QWEN36 = [
 ]
 
 
-BONSAI = [
-    ModelSpec(
-        vendor="PrismML",
-        family="Bonsai",
-        name="Bonsai-4B-mlx-1bit",
-        size="4B",
-        quantization=QuantizationMode.UINT1,
-        repo="prism-ml/Bonsai-4B-mlx-1bit",
-        config_type=HFBonsaiConfig,
-        configs=ConfigMap(
-            chat_template=FileSpec("chat_template.jinja"),
-        ),
-    ),
-]
-
-
-QWEN_MODELS = QWEN25_CODER + QWEN3 + QWEN35 + QWEN36 + BONSAI
+QWEN_MODELS = QWEN25_CODER + QWEN3 + QWEN35 + QWEN36

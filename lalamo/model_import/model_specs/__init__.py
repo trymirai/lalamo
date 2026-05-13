@@ -1,3 +1,4 @@
+from .bonsai import BONSAI_MODELS
 from .common import FileSpec, ModelSpec, ModelType, UseCase
 from .deepseek import DEEPSEEK_MODELS
 from .essential_ai import RNJ_MODELS
@@ -41,5 +42,6 @@ ALL_MODEL_LISTS = [
     MIRAI_CLASSIFIER_MODELS,
     NANBEIGE_MODELS,
     RNJ_MODELS,
+    BONSAI_MODELS,
     TTS_MODELS,
 ]
