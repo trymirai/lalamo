@@ -421,7 +421,7 @@ def _accumulate_train_step(
 
     for microbatch in microbatches:
         train_key, step_key = jax.random.split(train_key)
-        keychain = Keychain.init(int(step_key[0]))
+        keychain = Keychain.init(int(jax.random.key_data(step_key)[0]))
         match training_mode:
             case TrainingMode.ONLINE_EXACT:
                 assert isinstance(microbatch, DistillBatch)
