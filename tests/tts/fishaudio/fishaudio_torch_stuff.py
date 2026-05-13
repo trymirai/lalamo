@@ -128,7 +128,7 @@ class ConfigMapping:
         config: BaseModelArgs,
     ) -> tuple[TransformerConfig, LinearConfig]:
         global_rope_config = UnscaledRoPEConfig(
-            base=config.rope_base,
+            base=float(config.rope_base),
             max_sequence_length=config.max_seq_len,
             head_dim=config.head_dim,
         )

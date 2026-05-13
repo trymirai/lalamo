@@ -20,10 +20,11 @@ from omegaconf import DictConfig
 from torch._tensor import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from lalamo.initializer import Initializer
 from lalamo.module import Keychain
-from lalamo.modules.audio.audio_decoder import TTSAudioDecoder
+from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfig
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
-from lalamo.modules.audio.text_decoder import TTSTextDecoder
+from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfig
 from lalamo.sampling import SamplingPolicy
 from lalamo.utils.torch_interop import jax_to_torch, torch_to_jax
 from tests.tts.fishaudio.fishaudio_sampling import (
@@ -356,8 +357,11 @@ def load_fish_audio_audio_decoder(chkpt_path: Path, device: str = "cpu") -> "Fis
 
 
 @dataclass(frozen=True)
-class FishAudioAudioDecoderConfig_Foreign:
+class FishAudioAudioDecoderConfig_Foreign(TTSAudioDecoderConfig):
     dac_config: DictConfig
+
+    def init(self, initializer: Initializer) -> "FishAudioAudioDecoder_Foreign":  # noqa: ARG002
+        raise NotImplementedError("FishAudio native audio decoder must be loaded from checkpoint.")
 
 
 class FishAudioAudioDecoder_Foreign(TTSAudioDecoder):
@@ -393,8 +397,11 @@ class FishAudioAudioDecoder_Foreign(TTSAudioDecoder):
 
 
 @dataclass(frozen=True)
-class FishAudioTextDecoderConfig_Foreign:
+class FishAudioTextDecoderConfig_Foreign(TTSTextDecoderConfig):
     fish_config: DualARModelArgs
+
+    def init(self, initializer: Initializer) -> "FishAudioTextDecoder_Foreign":  # noqa: ARG002
+        raise NotImplementedError("FishAudio native text decoder must be loaded from checkpoint.")
 
     @classmethod
     def from_config_file(cls, path_to_config: str | Path) -> "FishAudioTextDecoderConfig_Foreign":

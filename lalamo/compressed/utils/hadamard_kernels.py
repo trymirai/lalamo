@@ -1,3 +1,4 @@
+# pyrefly: ignore-errors
 from math import sqrt
 from typing import Literal
 

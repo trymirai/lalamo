@@ -72,7 +72,7 @@ def test_continuous_vs_fixed_fuzz(
     tokenized = [fuzz_language_model.token_codec.encode_request(prompt) for prompt in prompts]
 
     generation_config = GenerationConfig(
-        temperature=0,
+        temperature=0.0,
         frequency_penalty=0.5,
         stop_token_ids=fuzz_language_model.config.generation_config.stop_token_ids,
     )

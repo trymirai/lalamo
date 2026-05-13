@@ -89,9 +89,9 @@ class HFQwen35Config(HuggingFaceLMConfig):
             )
         is_mlx = isinstance(quantization, MLXQuantizationConfig)
 
-        partial_rotary_factor = self.rope_parameters["partial_rotary_factor"]
+        partial_rotary_factor = float(self.rope_parameters["partial_rotary_factor"])
         rope_config = UnscaledRoPEConfig(
-            base=self.rope_parameters["rope_theta"],
+            base=float(self.rope_parameters["rope_theta"]),
             max_sequence_length=context_length or self.max_position_embeddings,
             head_dim=int(self.head_dim * partial_rotary_factor),
         )
@@ -113,8 +113,6 @@ class HFQwen35Config(HuggingFaceLMConfig):
         )
 
         linear_config = LinearConfig()
-
-        partial_rotary_factor = self.rope_parameters["partial_rotary_factor"]
 
         if self.is_moe:
             assert self.num_experts is not None

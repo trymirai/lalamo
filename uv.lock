@@ -2047,6 +2047,7 @@ wheels = [
 name = "lalamo"
 source = { editable = "." }
 dependencies = [
+    { name = "beartype" },
     { name = "cattrs", extra = ["msgpack"] },
     { name = "click" },
     { name = "einops" },
@@ -2136,6 +2137,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "beartype", specifier = ">=0.22.9" },
     { name = "blobfile", marker = "extra == 'fishaudio'", specifier = ">=3.1.0" },
     { name = "cattrs", extras = ["msgpack"], specifier = ">=24.1.2" },
     { name = "click", specifier = ">=8.1.8" },

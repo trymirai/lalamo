@@ -3,6 +3,7 @@ name = "lalamo"
 description = "JAX library for optimization and export of models for use with the UZU inference engine."
 requires-python = ">=3.12, <4"
 dependencies = [
+    "beartype>=0.22.9",
     "cattrs[msgpack]>=24.1.2",
     "click>=8.1.8",
     "einops>=0.8.0",
