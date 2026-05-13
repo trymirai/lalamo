@@ -33,6 +33,19 @@ def _qwen3_mlx_model_spec(
     )
 
 
+QWEN25 = [
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen2.5",
+        name="Qwen2.5-0.5B-Instruct",
+        size="0.5B",
+        quantization=None,
+        repo="Qwen/Qwen2.5-0.5B-Instruct",
+        config_type=HFQwen2Config,
+    ),
+]
+
+
 QWEN25_CODER = [
     ModelSpec(
         vendor="Alibaba",
@@ -483,4 +496,4 @@ QWEN35 = [
 ]
 
 
-QWEN_MODELS = QWEN25_CODER + QWEN3 + QWEN35
+QWEN_MODELS = QWEN25 + QWEN25_CODER + QWEN3 + QWEN35
