@@ -1353,6 +1353,8 @@ def backend_train_command[ConfigT](
             eval_path=values["eval_path"],
             feature_device_id=values["feature_device_id"],
             training_device_id=values["training_device_id"],
+            prompt_padding_multiple=values["prompt_padding_multiple"],
+            generation_padding_multiple=values["generation_padding_multiple"],
             training_config=SpeculatorTrainingConfig(
                 batch_size=values["batch_size"],
                 max_prefetch=values["max_prefetch"],
@@ -1395,9 +1397,11 @@ def backend_train_command[ConfigT](
         "eval_every_epochs",
         "eval_path",
         "feature_device_id",
+        "generation_padding_multiple",
         "max_prefetch",
         "model_path",
         "output_path",
+        "prompt_padding_multiple",
         "top_k_logits",
         "training_device_id",
         "train_path",
@@ -1475,6 +1479,24 @@ def backend_train_command[ConfigT](
                 kind=Parameter.KEYWORD_ONLY,
                 default=2,
                 annotation=Annotated[int, Option("--max_prefetch", help="Number of feature batches to prefetch.")],
+            ),
+            Parameter(
+                "prompt_padding_multiple",
+                kind=Parameter.KEYWORD_ONLY,
+                default=128,
+                annotation=Annotated[
+                    int,
+                    Option("--prompt_padding_multiple", help="Padding multiple for prompt feature tensors."),
+                ],
+            ),
+            Parameter(
+                "generation_padding_multiple",
+                kind=Parameter.KEYWORD_ONLY,
+                default=512,
+                annotation=Annotated[
+                    int,
+                    Option("--generation_padding_multiple", help="Padding multiple for generation feature tensors."),
+                ],
             ),
             Parameter(
                 "feature_device_id",

@@ -774,6 +774,8 @@ def train[ConfigT](
     eval_path: Path | None = None,
     feature_device_id: int = 0,
     training_device_id: int = 0,
+    prompt_padding_multiple: int = 128,
+    generation_padding_multiple: int = 512,
     training_config: SpeculatorTrainingConfig = SpeculatorTrainingConfig(),  # noqa: B008
     callbacks_type: Callable[
         [
@@ -810,6 +812,8 @@ def train[ConfigT](
     extractor = OnlineCompletionFeatureExtractor(
         model=model,
         device_id=feature_device_id,
+        prompt_padding_multiple=prompt_padding_multiple,
+        generation_padding_multiple=generation_padding_multiple,
     )
 
     if eval_path is not None:
