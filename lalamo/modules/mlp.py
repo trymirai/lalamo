@@ -10,13 +10,13 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from jax.lax import DotAlgorithmPreset
-from jax.sharding import NamedSharding, PartitionSpec, reshard
+from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, Bool, Float, Int, Key
 
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, KeychainBroadcastMode, LalamoConfig, LalamoModule, ShardingAxis
 from lalamo.utils.registry_abc import RegistryABC
-from lalamo.utils.sharding import is_sharded, sharding_of, use_out_sharding
+from lalamo.utils.sharding import is_sharded, make_sharding, sharding_of, use_out_sharding, with_sharding
 from lalamo.weight_matrix import GradientEstimator, MatmulConfig
 
 from .activations import Activation
@@ -403,7 +403,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        inputs = reshard(inputs, PartitionSpec(ShardingAxis.DATA, None, None))
+        inputs = with_sharding(inputs, make_sharding((ShardingAxis.DATA, None, None)))
 
         def per_token(
             token_input: Float[Array, " channels"],
@@ -485,7 +485,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        inputs = reshard(inputs, PartitionSpec(ShardingAxis.DATA, None, None))
+        inputs = with_sharding(inputs, make_sharding((ShardingAxis.DATA, None, None)))
         batch_size, sequence_length, _ = inputs.shape
         num_tokens = batch_size * sequence_length
         if lengths_without_padding is None:
@@ -519,17 +519,17 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             routing_map.expert_mask & flattened_padding_mask[:, None],
             "tokens experts -> experts tokens",
         )
-        token_mask = reshard(token_mask, PartitionSpec(ShardingAxis.EXPERT, None))
+        token_mask = with_sharding(token_mask, make_sharding((ShardingAxis.EXPERT, None)))
         expert_weights: Float[Array, "experts tokens"] = rearrange(
             routing_map.expert_weights,
             "tokens experts -> experts tokens",
         )
         expert_weights = jnp.where(token_mask, expert_weights, 0.0)
-        expert_weights = reshard(expert_weights, PartitionSpec(ShardingAxis.EXPERT, None))
+        expert_weights = with_sharding(expert_weights, make_sharding((ShardingAxis.EXPERT, None)))
         routed_experts = self.experts.slice_mixture(0, self.config.num_routed_experts)
-        routed_expert_indices = reshard(
+        routed_expert_indices = with_sharding(
             jnp.arange(self.config.num_routed_experts),
-            PartitionSpec(ShardingAxis.EXPERT),
+            make_sharding((ShardingAxis.EXPERT,)),
         )
 
         chunk_size = math.ceil(num_tokens * forward_pass_config.moe_chunk_size_ratio)
@@ -575,7 +575,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                     current_chunk_keychain.batch_key,
                     self.config.num_routed_experts,
                 )
-                expert_batch_keys = reshard(expert_batch_keys, PartitionSpec(ShardingAxis.EXPERT))
+                expert_batch_keys = with_sharding(expert_batch_keys, make_sharding((ShardingAxis.EXPERT,)))
 
                 def run_expert(
                     expert_index: Int[Array, ""],
@@ -622,7 +622,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         routed_accumulator = jnp.zeros(
             flattened_inputs.shape,
             dtype=flattened_inputs.dtype,
-            out_sharding=PartitionSpec(ShardingAxis.DATA, None),
+            out_sharding=make_sharding((ShardingAxis.DATA, None)),
         )
         routed_expert_result, _ = jax.lax.scan(
             loop_iteration,
@@ -633,9 +633,9 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         expert_result = routed_expert_result
         if self.config.num_shared_experts > 0:
             shared_experts = self.experts.slice_mixture(self.config.num_routed_experts, self.config.mixture_size)
-            shared_expert_indices = reshard(
+            shared_expert_indices = with_sharding(
                 jnp.arange(self.config.num_shared_experts),
-                PartitionSpec(ShardingAxis.EXPERT),
+                make_sharding((ShardingAxis.EXPERT,)),
             )
             shared_expert_weight = partial(
                 self._shared_expert_weight,
@@ -657,7 +657,10 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 shared_expert_keychain.batch_key,
                 self.config.num_shared_experts,
             )
-            shared_expert_batch_keys = reshard(shared_expert_batch_keys, PartitionSpec(ShardingAxis.EXPERT))
+            shared_expert_batch_keys = with_sharding(
+                shared_expert_batch_keys,
+                make_sharding((ShardingAxis.EXPERT,)),
+            )
 
             def run_shared_expert(
                 expert_index: Int[Array, ""],

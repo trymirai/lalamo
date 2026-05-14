@@ -46,10 +46,10 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
     rope_scaling: BonsaiYarnRopeScalingConfig
     tie_word_embeddings: bool
     use_sliding_window: bool
-    torch_dtype: Literal["bfloat16", "float16", "float32"]
     vocab_size: int
     head_dim: int
 
+    torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
     quantization: QuantizationConfigType = None
 
     def to_decoder_config(

@@ -123,7 +123,7 @@ def _mlx_unpack_master_weights(
 
 @dataclass(frozen=True)
 class MLXSpec(QuantizedSpec):
-    bits: Literal[4, 8]
+    bits: Literal[1, 4, 8]
     group_size: int
     layout: Layout = Layout.OUTPUT_INPUT
 
