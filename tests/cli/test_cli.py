@@ -85,6 +85,8 @@ def test_chat_non_interactive(
             CAPITAL_PROMPT,
             "--max-tokens",
             "64",
+            "--temperature",
+            "0",
         ),
     )
     assert "london" in output.lower(), f"Expected 'london' in {output!r}"

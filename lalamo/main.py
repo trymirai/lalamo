@@ -2,7 +2,7 @@ import re
 import shutil
 import sys
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from importlib.util import find_spec
 from pathlib import Path
@@ -41,7 +41,7 @@ from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
-from lalamo.models import LanguageModel, TTSModel
+from lalamo.models import GenerationConfig, LanguageModel, TTSModel
 from lalamo.models.chat_codec import Message, UserMessage
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
@@ -122,7 +122,15 @@ def chat(
             help="Maximum number of tokens to generate per reply.",
         ),
     ] = 8192,
+    temperature: Annotated[
+        float | None,
+        Option(
+            help="Sampling temperature. Use 0 for greedy decoding.",
+            show_default="model default",
+        ),
+    ] = None,
 ) -> None:
+    generation_config: GenerationConfig | None = None
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -131,11 +139,14 @@ def chat(
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
         model = LanguageModel.load(model_path)
+        if temperature is not None:
+            generation_config = replace(model.config.generation_config, temperature=temperature)
         progress.remove_task(loading_task)
         warmup_task = progress.add_task("🔥 Warming up compilation cache...")
         warmup_tokens = iter(
             model.stream_reply_text(
                 [UserMessage("")],
+                generation_config=generation_config,
                 max_output_length=max_tokens,
                 keychain=Keychain.init(0),
             ),
@@ -159,6 +170,7 @@ def chat(
             response_text_parts = []
             for token in model.stream_reply_text(
                 messages,
+                generation_config=generation_config,
                 max_output_length=max_tokens,
                 keychain=Keychain.init(turn_index + 1),
             ):
@@ -170,6 +182,7 @@ def chat(
 
     for token in model.stream_reply_text(
         [UserMessage(message)],
+        generation_config=generation_config,
         max_output_length=max_tokens,
         keychain=Keychain.init(1),
     ):
