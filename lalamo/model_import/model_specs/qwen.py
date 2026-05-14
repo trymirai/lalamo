@@ -441,7 +441,34 @@ QWEN35 = [
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
         ),
     ),
+    LanguageModelSpec(
+        vendor="Alibaba",
+        family="Qwen3.5",
+        name="Qwen3.5-35B-A3B",
+        size="35B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-35B-A3B"),
+        config_type=HFQwen35Config,
+    ),
+]
+
+QWEN36 = [
+    LanguageModelSpec(
+        vendor="Alibaba",
+        family="Qwen3.6",
+        name="Qwen3.6-27B",
+        size="27B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3.6-27B"),
+        config_type=HFQwen35Config,
+    ),
+    LanguageModelSpec(
+        vendor="Alibaba",
+        family="Qwen3.6",
+        name="Qwen3.6-35B-A3B",
+        size="35B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3.6-35B-A3B"),
+        config_type=HFQwen35Config,
+    ),
 ]
 
 
-QWEN_MODELS = QWEN25_CODER + QWEN3 + QWEN35
+QWEN_MODELS = QWEN25_CODER + QWEN3 + QWEN35 + QWEN36

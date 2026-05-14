@@ -912,12 +912,15 @@ class ContinuousBatchScheduler(BatchScheduler):
 
         prefills, partially_prefilled_batch = prefills.request(len(empty_lines), decoder.language_model)
 
-        jitted_fill_lines = jitted_fill_lines.lower(state, partially_prefilled_batch).compile()
+        jitted_fill_lines = jitted_fill_lines.lower(  # type: ignore[missing-attribute]
+            state,
+            partially_prefilled_batch,
+        ).compile()
         state = jitted_fill_lines(state, partially_prefilled_batch)
         del partially_prefilled_batch
 
         prefills, state = prefills.fill(decoder, state, jitted_fill_lines)
-        jitted_decode = jitted_decode.lower(state).compile()
+        jitted_decode = jitted_decode.lower(state).compile()  # type: ignore[missing-attribute]
 
         # the loop is kept compile-free or basically compile free, the jitted_blah functions are guaranteed
         # to not recompile

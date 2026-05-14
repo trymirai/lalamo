@@ -8,6 +8,7 @@ from lalamo.model_import.model_spec import (
     TTSModelSpec,
 )
 
+from .bonsai import BONSAI_MODELS
 from .deepseek import DEEPSEEK_MODELS
 from .essential_ai import RNJ_MODELS
 from .fishaudio import FISHAUDIO_TTS_MODELS
@@ -50,5 +51,6 @@ ALL_MODEL_LISTS = [
     MIRAI_CLASSIFIER_MODELS,
     NANBEIGE_MODELS,
     RNJ_MODELS,
+    BONSAI_MODELS,
     TTS_MODELS,
 ]
