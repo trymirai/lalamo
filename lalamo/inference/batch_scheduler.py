@@ -39,6 +39,7 @@ type TokenSequence = list[int] | np.ndarray | jnp.ndarray
 
 PROMPT_SIZE_BUCKETS: tuple[int, ...] = tuple(256 * 4**i for i in range(8))
 MIN_BATCHES_PER_BUCKET: int = 10
+MAX_BOUNDARY_BATCH_PADDING_FRACTION: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -721,6 +722,15 @@ class BatchScheduler(ABC):
 
         buckets = merge_small_buckets(sequences_per_bucket, batch_size_per_bucket, min_batches=MIN_BATCHES_PER_BUCKET)
         assert sum(len(bucket) for bucket in buckets.values()) == len(tokenized)
+        capped_batch_size_per_bucket: dict[int, int] = {}
+        for padded_length, bucket in buckets.items():
+            batch_size = batch_size_per_bucket[padded_length]
+            for candidate in range(min(batch_size, len(bucket)), 0, -1):
+                num_slots = ((len(bucket) + candidate - 1) // candidate) * candidate
+                if (num_slots - len(bucket)) / len(bucket) <= MAX_BOUNDARY_BATCH_PADDING_FRACTION:
+                    break
+            capped_batch_size_per_bucket[padded_length] = candidate
+        batch_size_per_bucket = capped_batch_size_per_bucket
 
         if batch_sizes_callback is not None:
             batch_sizes = tuple(
@@ -733,7 +743,7 @@ class BatchScheduler(ABC):
             )
             batch_sizes_callback(BatchSizesComputedEvent(batch_sizes=batch_sizes))
 
-        for padded_length in sorted(buckets, reverse=True):
+        for padded_length in sorted(buckets):
             sequence_ids, sequence_tokenized = zip(*buckets[padded_length], strict=True)
             sequence_ids = list(sequence_ids)
             bucket_batch_size = batch_size_per_bucket[padded_length]
@@ -898,10 +908,20 @@ class ContinuousBatchScheduler(BatchScheduler):
         jitted_decode = eqx.filter_jit(decoder.decode_block, donate="all")
         jitted_fill_lines = eqx.filter_jit(decoder.fill_lines, donate="all")
 
-        while True:
-            if not prefills.exhausted:
-                prefills, state = prefills.fill(decoder, state, jitted_fill_lines)
+        empty_lines = state.empty_lines()
 
+        prefills, partially_prefilled_batch = prefills.request(len(empty_lines), decoder.language_model)
+
+        jitted_fill_lines = jitted_fill_lines.lower(state, partially_prefilled_batch).compile()
+        state = jitted_fill_lines(state, partially_prefilled_batch)
+        del partially_prefilled_batch
+
+        prefills, state = prefills.fill(decoder, state, jitted_fill_lines)
+        jitted_decode = jitted_decode.lower(state).compile()
+
+        # the loop is kept compile-free or basically compile free, the jitted_blah functions are guaranteed
+        # to not recompile
+        while True:
             state, completed_mask = jitted_decode(state)
             yield from state.extract_completed_sequences(completed_mask)
 
@@ -910,3 +930,6 @@ class ContinuousBatchScheduler(BatchScheduler):
 
             if fast_peak_memory:
                 break
+
+            if not prefills.exhausted:
+                prefills, state = prefills.fill(decoder, state, jitted_fill_lines)
