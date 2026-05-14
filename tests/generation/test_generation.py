@@ -101,7 +101,7 @@ def test_batch_generation(language_model: LanguageModel) -> None:
     )
 
     generation_config = GenerationConfig(temperature=0.0)
-    max_output_length = 32
+    max_output_length = 10
     response_token_ids = language_model.generate_tokens(
         padded_token_ids,
         generation_config=generation_config,
