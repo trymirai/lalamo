@@ -341,11 +341,11 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
 
         sampling_keys = sampling_keychain.rolling_broadcast(
             (max_output_length, batch_size),
-            mode=KeychainBroadcastMode.SUFFIX,
+            mode=KeychainBroadcastMode.PREFIX,
         ).vmapped_keys
         decoding_keys = decoding_keychain.rolling_broadcast(
             (max_output_length, *decoding_keychain.vmapped_keys.shape),
-            mode=KeychainBroadcastMode.SUFFIX,
+            mode=KeychainBroadcastMode.PREFIX,
         ).vmapped_keys
         _, generated = jax.lax.scan(loop_iteration, initial_state, (sampling_keys, decoding_keys))
 

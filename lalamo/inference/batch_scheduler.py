@@ -559,7 +559,7 @@ class BlockContinuousDecoder(eqx.Module):
             token_positions=next_token_indices[:, None],
             state=decode_state.state,
             return_updated_state=True,
-            forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.MULTI_TOKEN),
+            forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
             keychain=Keychain(vmapped_keys=decoder_keys, batch_key=self.decoding_batch_key),
         )
         assert decoder_result.updated_state is not None
@@ -692,7 +692,12 @@ class BatchScheduler(ABC):
         tokenized = [self.model.token_codec.encode_request(message) for message in messages]
 
         if batch_scheduler_config.batch_size is not None:
-            sequences_per_bucket = bucket_by_length(tokenized)
+            if batch_scheduler_config.padded_length is None:
+                sequences_per_bucket = bucket_by_length(tokenized)
+            else:
+                sequences_per_bucket = {
+                    batch_scheduler_config.padded_length: list(enumerate(tokenized)),
+                }
             batch_size_per_bucket = dict.fromkeys(sequences_per_bucket, batch_scheduler_config.batch_size)
         else:
             assert vram_bytes is not None

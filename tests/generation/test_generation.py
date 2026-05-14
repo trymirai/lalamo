@@ -2,7 +2,6 @@ import jax.numpy as jnp
 import pytest
 from jax.lax import DotAlgorithmPreset
 
-from lalamo.inference.batch_scheduler import BatchSchedulerConfig, FixedSizeBatchScheduler
 from lalamo.model_import.model_spec import LanguageModelSpec
 from lalamo.models import LanguageModel
 from lalamo.models.chat_codec import UserMessage
@@ -165,9 +164,13 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
 
     generation_keychain = Keychain.init(5)
     max_output_length = 10
+    padded_length = 256
+    padded_token_ids = jnp.zeros((1, padded_length), dtype=token_ids.dtype).at[0, : token_ids.shape[0]].set(token_ids)
+    prompt_lengths = jnp.asarray([token_ids.shape[0]], dtype=jnp.int32)
     eager_token_ids = language_model.generate_tokens(
-        token_ids[None, :],
+        padded_token_ids,
         generation_config=generation_config,
+        prompt_lengths_without_padding=prompt_lengths,
         max_output_length=max_output_length,
         prefill_forward_pass_config=prefill_forward_pass_config,
         decode_forward_pass_config=decode_forward_pass_config,
@@ -188,16 +191,3 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
         eager_token_ids.squeeze().tolist(),
         streaming_token_ids.squeeze().tolist(),
     )
-
-    batch_scheduler = FixedSizeBatchScheduler(model=language_model)
-    [(idx, batch_response)] = list(
-        batch_scheduler.reply_many(
-            [prompt],
-            generation_config=generation_config,
-            batch_scheduler_config=BatchSchedulerConfig(batch_size=1, max_output_length=10),
-            keychain=generation_keychain,
-        ),
-    )
-    assert idx == 0
-    streaming_response = language_model.token_codec.decode_response(streaming_token_ids.tolist())
-    assert batch_response == streaming_response

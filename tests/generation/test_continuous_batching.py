@@ -13,7 +13,7 @@ from lalamo.models.language_model import GenerationConfig
 from tests.conftest import ConvertModel
 
 _FUZZ_MODEL_REPOS = (
-    "Qwen/Qwen2.5-0.5B-Instruct",
+    "Qwen/Qwen3-0.6B",
     "cartesia-ai/Llamba-1B",
 )
 
@@ -93,6 +93,7 @@ def test_continuous_vs_fixed_fuzz(
         ContinuousBatchScheduler(
             model=fuzz_language_model,
             block_size=block_size,
+            prefill_batch_fraction=1.0,
         ).generate_tokens_many(
             tokenized,
             generation_config=generation_config,
