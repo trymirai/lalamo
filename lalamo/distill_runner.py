@@ -190,7 +190,7 @@ def _load_tokenized_conversations(
             raise ValueError(f"{dataset_path} must contain a 'conversation' or 'messages' column")
 
     conversations = dataframe.get_column("conversation").to_list()
-    all_token_ids = model.token_codec.tokenize_requests(
+    all_token_ids = model.token_codec.encode_requests(
         [HFMessage.from_dict(message).as_message() for message in conversation] for conversation in conversations
     )
     return [
@@ -265,14 +265,14 @@ def _evaluate_with(
     batches: Sequence[DistillBatchLike],
     distill_config: DistillTrainConfig,
     *,
-    keychain: Keychain,
+    seed: int,
 ) -> EvaluationMetrics:
     total_kl = 0.0
     total_valid_tokens = 0
     total_matches = 0
 
     for i, batch in enumerate(batches):
-        batch_keychain = Keychain.init(keychain.batch_key.item() + i)
+        batch_keychain = Keychain.init(seed + i)
         match training_mode:
             case TrainingMode.ONLINE_EXACT:
                 assert isinstance(batch, DistillBatch)
@@ -399,7 +399,7 @@ def _accumulate_train_step(
 
     for microbatch in microbatches:
         train_key, step_key = jax.random.split(train_key)
-        keychain = Keychain.init(int(step_key[0]))
+        keychain = Keychain.init(int(jax.random.key_data(step_key)[0]))
         match training_mode:
             case TrainingMode.ONLINE_EXACT:
                 assert isinstance(microbatch, DistillBatch)
@@ -479,7 +479,7 @@ def distill(
     # Training config
     match config.compute_dtype_name:
         case ComputeDTypeName.AUTO:
-            compute_dtype = student_model.decoder.transformer.config.activation_precision
+            compute_dtype = jnp.bfloat16
         case ComputeDTypeName.BFLOAT16:
             compute_dtype = jnp.bfloat16
         case ComputeDTypeName.FLOAT32:
@@ -527,10 +527,10 @@ def distill(
 
     # Initial evaluation
     run_start = time.perf_counter()
-    eval_keychain = Keychain.init(config.seed + 1000)
+    eval_seed = config.seed + 1000
     initial_student = _materialize_evaluable_student(student_model.decoder, optimizer_state.training_state, jnp.dtype(compute_dtype))
     initial_eval = _evaluate_with(
-        config.training_mode, initial_student, teacher_model.decoder, dataset.eval_batches, distill_config, keychain=eval_keychain,
+        config.training_mode, initial_student, teacher_model.decoder, dataset.eval_batches, distill_config, seed=eval_seed,
     )
     if best_eval_kl is None:
         best_eval_kl = initial_eval.kl_divergence
@@ -575,7 +575,7 @@ def distill(
             eval_metrics: EvaluationMetrics | None = None
             if config.eval_every_steps > 0 and step % config.eval_every_steps == 0:
                 mat_student = _materialize_evaluable_student(student_model.decoder, optimizer_state.training_state, jnp.dtype(compute_dtype))
-                eval_metrics = _evaluate_with(config.training_mode, mat_student, teacher_model.decoder, dataset.eval_batches, distill_config, keychain=Keychain.init(config.seed + step))
+                eval_metrics = _evaluate_with(config.training_mode, mat_student, teacher_model.decoder, dataset.eval_batches, distill_config, seed=eval_seed)
                 if eval_metrics.kl_divergence < best_eval_kl:
                     best_eval_kl = eval_metrics.kl_divergence
                     best_step = step
@@ -622,13 +622,13 @@ def distill(
 
     # Final evaluation and export
     final_student = _materialize_evaluable_student(student_model.decoder, optimizer_state.training_state, jnp.dtype(compute_dtype))
-    final_eval = _evaluate_with(config.training_mode, final_student, teacher_model.decoder, dataset.eval_batches, distill_config, keychain=Keychain.init(config.seed + 9999))
+    final_eval = _evaluate_with(config.training_mode, final_student, teacher_model.decoder, dataset.eval_batches, distill_config, seed=eval_seed)
 
     model_output_path = config.output_dir / "student-distilled"
     if callbacks is not None:
         callbacks.saving_model()
-    export_student = _materialize_evaluable_student(student_model.decoder, optimizer_state.training_state, student_model.decoder.transformer.config.activation_precision)
-    updated_model = replace(student_model, model=export_student)
+    export_student = _materialize_evaluable_student(student_model.decoder, optimizer_state.training_state, jnp.dtype(compute_dtype))
+    updated_model = replace(student_model, decoder=export_student)
     updated_model.save(model_output_path)
     if callbacks is not None:
         callbacks.finished_saving_model(model_output_path)
