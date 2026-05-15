@@ -11,7 +11,10 @@ from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
+from lalamo.utils.dummy_array import (
+    preserve_first_input_sharding,
+    supports_dummy_arrays,
+)
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import (
@@ -318,6 +321,11 @@ def _quantile_master_weights_to_quantized_weights(
     keychain: Keychain | None = None,
     gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
 ) -> Float[Array, "... cols"]:
+    bias_keychain = keychain
+    weight_keychain = keychain
+    if master_biases is not None and keychain is not None:
+        bias_keychain, weight_keychain = keychain.split()
+
     if master_biases is not None:
         assert bias_bits is not None
         bias_table = _quantile_bias_lut(
@@ -329,8 +337,8 @@ def _quantile_master_weights_to_quantized_weights(
         master_biases = round_to_sorted_lut_table(
             master_biases,
             bias_table,
-            keychain=None,
-            gradient_estimator=GradientEstimator.DETERMINISTIC_ROUNDING,
+            keychain=bias_keychain,
+            gradient_estimator=gradient_estimator,
         )
 
     safe_scale_values = jnp.where(scale_values == 0, 1, scale_values)
@@ -342,7 +350,7 @@ def _quantile_master_weights_to_quantized_weights(
     grouped_values = round_to_sorted_lut_table(
         normalized_weights,
         _quantile_codebook(bits, group_size, master_weights.dtype),
-        keychain=keychain,
+        keychain=weight_keychain,
         gradient_estimator=gradient_estimator,
     )
     if master_biases is not None:
@@ -576,7 +584,9 @@ class QuantileSpec(QuantizedSpec):
 class QuantileMatrix(EmbeddingMatrix[QuantileSpec]):
     @property
     @abstractmethod
-    def _packed_weight_indices(self) -> UInt8[Array, "*components rows packed_cols"]: ...
+    def _packed_weight_indices(
+        self,
+    ) -> UInt8[Array, "*components rows packed_cols"]: ...
 
     @property
     @abstractmethod
@@ -584,7 +594,9 @@ class QuantileMatrix(EmbeddingMatrix[QuantileSpec]):
 
     @property
     @abstractmethod
-    def _packed_bias_indices(self) -> UInt8[Array, "*components rows packed_groups"] | None: ...
+    def _packed_bias_indices(
+        self,
+    ) -> UInt8[Array, "*components rows packed_groups"] | None: ...
 
     @abstractmethod
     def _weights_for_forward(
@@ -633,7 +645,11 @@ class QuantileMatrix(EmbeddingMatrix[QuantileSpec]):
                 expored_data.arrays[prefix / "weights"],
                 allow_dtype_cast=False,
             ),
-            packed_scales=load_as(self._packed_scales, expored_data.arrays[prefix / "scales"], allow_dtype_cast=False),
+            packed_scales=load_as(
+                self._packed_scales,
+                expored_data.arrays[prefix / "scales"],
+                allow_dtype_cast=False,
+            ),
             packed_bias_indices=packed_bias_indices,
             dtype=self.dtype,
             implementation=implementation,
@@ -730,7 +746,9 @@ class QuantileMatrixForTraining(QuantileMatrix):
         return pack_e4m3_scales(self.master_scales)
 
     @property
-    def _packed_bias_indices(self) -> UInt8[Array, "*components rows packed_groups"] | None:
+    def _packed_bias_indices(
+        self,
+    ) -> UInt8[Array, "*components rows packed_groups"] | None:
         return _quantile_master_biases_to_packed_bias_indices(
             self.master_biases,
             bits=self.spec.bits,
@@ -824,7 +842,9 @@ class QuantileMatrixForInference(QuantileMatrix):
         return self.packed_scales
 
     @property
-    def _packed_bias_indices(self) -> UInt8[Array, "*components rows packed_groups"] | None:
+    def _packed_bias_indices(
+        self,
+    ) -> UInt8[Array, "*components rows packed_groups"] | None:
         return self.packed_bias_indices
 
     @property

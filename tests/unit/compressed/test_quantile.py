@@ -10,10 +10,13 @@ from lalamo.compressed.quantile import (
     QuantileMatrixForInference,
     QuantileMatrixForTraining,
     QuantileSpec,
+    _quantile_bias_lut,
     _quantile_codebook,
     _quantile_master_weights_to_grouped_weight_indices,
+    _quantile_master_weights_to_quantized_weights,
 )
 from lalamo.compressed.utils.packing import pack_uint_to_uint8, packed_last_axis_dim, unpack_uint8_to_uint
+from lalamo.compressed.utils.rounding import round_to_sorted_lut_table
 from lalamo.compressed.utils.yaqa import yaqa_round_weights
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.preconditioner import Preconditioner
@@ -231,6 +234,56 @@ def test_quantile_training_dot_supports_stochastic_rounding_and_master_weight_gr
     for gradient in gradients:
         assert bool(jnp.all(jnp.isfinite(gradient)))
         assert bool(jnp.any(gradient != 0))
+
+
+def test_quantile_forward_uses_selected_estimator_for_master_biases() -> None:
+    bits = 4
+    bias_bits = 2
+    group_size = 4
+    bias_table = _quantile_bias_lut(group_size=group_size, bias_bits=bias_bits, bits=bits, dtype=jnp.float32)
+    lower_bias = bias_table[1]
+    upper_bias = bias_table[2]
+    master_biases = (lower_bias + 0.51 * (upper_bias - lower_bias))[None, None]
+    keychain = Keychain.init(0)
+    bias_keychain, _weight_keychain = keychain.split()
+    deterministic_biases = round_to_sorted_lut_table(
+        master_biases,
+        bias_table,
+        keychain=None,
+        gradient_estimator=GradientEstimator.DETERMINISTIC_ROUNDING,
+    )
+    stochastic_biases = round_to_sorted_lut_table(
+        master_biases,
+        bias_table,
+        keychain=bias_keychain,
+        gradient_estimator=GradientEstimator.STOCHASTIC_ROUNDING,
+    )
+    assert not bool(jnp.all(deterministic_biases == stochastic_biases))
+
+    master_weights = jnp.zeros((1, group_size), dtype=jnp.float32)
+    scale_values = jnp.ones((1, 1), dtype=jnp.float32)
+    stochastic_result = _quantile_master_weights_to_quantized_weights(
+        master_weights,
+        scale_values,
+        master_biases=master_biases,
+        bits=bits,
+        bias_bits=bias_bits,
+        group_size=group_size,
+        keychain=keychain,
+        gradient_estimator=GradientEstimator.STOCHASTIC_ROUNDING,
+    )
+    deterministic_bias_result = _quantile_master_weights_to_quantized_weights(
+        master_weights,
+        scale_values,
+        master_biases=deterministic_biases,
+        bits=bits,
+        bias_bits=bias_bits,
+        group_size=group_size,
+        keychain=keychain,
+        gradient_estimator=GradientEstimator.STOCHASTIC_ROUNDING,
+    )
+
+    assert not bool(jnp.allclose(stochastic_result, deterministic_bias_result))
 
 
 def test_quantile_compress_uses_yaqa_weights_when_preconditioned() -> None:
