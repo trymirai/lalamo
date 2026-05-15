@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from dataclasses import dataclass
-from functools import cache, cached_property
+from functools import cached_property
 from typing import Literal
 
 import jax
@@ -46,144 +46,11 @@ from .utils.rounding import (
 from .utils.yaqa import yaqa_round_weights
 
 __all__ = [
-    "QuantileMatrix",
-    "QuantileMatrixForInference",
-    "QuantileMatrixForTraining",
-    "QuantileSpec",
+    "LloydMaxMatrix",
+    "LloydMaxMatrixForInference",
+    "LloydMaxMatrixForTraining",
+    "LloydMaxSpec",
 ]
-
-
-def _sample_values_to_lloyd_lut_values(
-    values: Float[Array, " samples"],
-    weights: Float[Array, " samples"],
-    *,
-    num_levels: int,
-    steps: int,
-    initial_centers: Float[Array, " levels"] | None = None,
-) -> Float[Array, " levels"]:
-    if initial_centers is None:
-        sorted_indices = jnp.argsort(values)
-        sorted_values = values[sorted_indices]
-        sorted_weights = weights[sorted_indices]
-        cumulative_weights = jnp.cumsum(sorted_weights)
-        total_weight = cumulative_weights[-1]
-        center_weight_targets = (jnp.arange(num_levels) + 0.5) * total_weight / num_levels
-        center_indices = jnp.searchsorted(cumulative_weights, center_weight_targets, side="left", method="compare_all")
-        center_indices = jnp.minimum(center_indices, values.size - 1)
-        centers = sorted_values[center_indices]
-    else:
-        centers = initial_centers
-    for _ in range(steps):
-        thresholds = (centers[:-1] + centers[1:]) / 2
-        assignments = jnp.searchsorted(thresholds, values, side="left", method="compare_all")
-        weight_sums = jnp.bincount(assignments, weights=weights, length=num_levels)
-        value_sums = jnp.bincount(assignments, weights=weights * values, length=num_levels)
-        safe_weight_sums = jnp.maximum(weight_sums, jnp.finfo(values.dtype).tiny)
-        centers = jnp.where(weight_sums > 0, value_sums / safe_weight_sums, centers)
-        centers = jnp.sort(centers)
-    return centers
-
-
-def _unbiased_codebook_values(
-    bits: int,
-    normalized_weights: Float[Array, "groups group_size"],
-    scale_values: Float[Array, "groups 1"],
-) -> Float[Array, " levels"]:
-    num_levels = 2**bits
-    flat_normalized_weights = normalized_weights.reshape(-1)
-    unweighted_centers = _sample_values_to_lloyd_lut_values(
-        flat_normalized_weights,
-        jnp.ones_like(flat_normalized_weights),
-        num_levels=num_levels,
-        steps=32,
-    )
-    half_levels = num_levels // 2
-    negative_centers = unweighted_centers[:half_levels]
-    positive_centers = unweighted_centers[half_levels:]
-    initial_positive_values = (jnp.flip(jnp.abs(negative_centers)) + positive_centers) / 2
-    initial_positive_values = jnp.sort(initial_positive_values)
-    weights = jnp.broadcast_to(jnp.square(scale_values), normalized_weights.shape)
-    positive_values = _sample_values_to_lloyd_lut_values(
-        jnp.abs(flat_normalized_weights),
-        weights.reshape(-1),
-        num_levels=half_levels,
-        steps=32,
-        initial_centers=initial_positive_values,
-    )
-    return jnp.concatenate([-jnp.flip(positive_values), positive_values])
-
-
-def _weighted_bias_costs(
-    normalized_weights: Float[Array, "groups group_size"],
-    scale_values: Float[Array, "groups 1"],
-    codebook: Float[Array, " levels"],
-    bias_candidates: Float[Array, " candidates"],
-    chunk_size: int,
-) -> Float[Array, " groups candidates"]:
-    block_weights = jnp.square(scale_values[:, 0])
-    weighted_mse_chunks = []
-    for candidate_start in range(0, bias_candidates.size, chunk_size):
-        candidate_stop = candidate_start + chunk_size
-        candidate_biases = bias_candidates[candidate_start:candidate_stop]
-        shifted_weights = normalized_weights[:, None, :] + candidate_biases[None, :, None]
-        shifted_weight_indices = round_to_sorted_lut_table_indices(
-            shifted_weights,
-            codebook,
-            gradient_estimator=GradientEstimator.DETERMINISTIC_ROUNDING,
-        )
-        code_values = lut_values_at(shifted_weight_indices, codebook)
-        residuals = code_values - candidate_biases[None, :, None] - normalized_weights[:, None, :]
-        block_mse = jnp.mean(residuals * residuals, axis=-1)
-        weighted_mse_chunks.append(block_mse * block_weights[:, None])
-    return jnp.concatenate(weighted_mse_chunks, axis=-1)
-
-
-def _update_codebook(
-    normalized_weights: Float[Array, "groups group_size"],
-    scale_values: Float[Array, "groups 1"],
-    biases: Float[Array, " groups"],
-    codebook: Float[Array, " levels"],
-) -> Float[Array, " levels"]:
-    shifted_weights = normalized_weights + biases[:, None]
-    weight_indices = round_to_sorted_lut_table_indices(
-        shifted_weights,
-        codebook,
-        gradient_estimator=GradientEstimator.DETERMINISTIC_ROUNDING,
-    ).astype(jnp.int32)
-    (num_levels,) = codebook.shape
-    half_levels = num_levels // 2
-    pair_indices = jnp.where(
-        weight_indices < half_levels, half_levels - 1 - weight_indices, weight_indices - half_levels
-    )
-    signs = jnp.where(weight_indices < half_levels, -1, 1).astype(shifted_weights.dtype)
-    weights = jnp.broadcast_to(jnp.square(scale_values), normalized_weights.shape)
-    pair_weights = jnp.bincount(pair_indices.reshape(-1), weights=weights.reshape(-1), length=half_levels)
-    pair_sums = jnp.bincount(
-        pair_indices.reshape(-1),
-        weights=(weights * signs * shifted_weights).reshape(-1),
-        length=half_levels,
-    )
-    safe_pair_weights = jnp.maximum(pair_weights, jnp.finfo(codebook.dtype).tiny)
-    positive_values = pair_sums / safe_pair_weights
-    positive_values = jnp.where(pair_weights > 0, positive_values, codebook[half_levels:])
-    positive_values = jnp.maximum(positive_values, jnp.finfo(codebook.dtype).tiny)
-    positive_values = jnp.sort(positive_values)
-    return jnp.concatenate([-jnp.flip(positive_values), positive_values])
-
-
-def _update_bias_indices(
-    weighted_bias_costs: Float[Array, " groups candidates"],
-    center_indices: Int[Array, " bias_levels"],
-) -> Int[Array, " bias_levels"]:
-    (num_bias_levels,) = center_indices.shape
-    center_costs = weighted_bias_costs[:, center_indices]
-    assignments = jnp.argmin(center_costs, axis=-1)
-    assignment_counts = jnp.bincount(assignments, length=num_bias_levels)
-    assignment_weights = jax.nn.one_hot(assignments, num_bias_levels, dtype=weighted_bias_costs.dtype)
-    candidate_costs = assignment_weights.T @ weighted_bias_costs
-    updated_center_indices = jnp.argmin(candidate_costs, axis=-1)
-    center_indices = jnp.where(assignment_counts > 0, updated_center_indices, center_indices)
-    return jnp.sort(center_indices)
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
@@ -195,73 +62,14 @@ def _master_weights_to_master_scales(
     return jnp.max(jnp.abs(grouped_weights), axis=-1)
 
 
-@cache
-def _lut_values(
-    bits: int,
-    group_size: int,
-    bias_bits: int | None,
-) -> tuple[tuple[float, ...], tuple[float, ...] | None]:
-    sample_groups = 32_768
-    key = jax.random.PRNGKey(0)
-    samples = jax.random.normal(key, (sample_groups, group_size), dtype=jnp.float32)
-    absmax = jnp.max(jnp.abs(samples), axis=-1, keepdims=True)
-    scale_values = pack_e4m3_scales(absmax).astype(samples.dtype)
-    safe_scale_values = jnp.where(scale_values == 0, 1, scale_values)
-    normalized_weights = samples / safe_scale_values
-    codebook = _unbiased_codebook_values(bits, normalized_weights, scale_values)
-    if bias_bits is None:
-        codebook_values = tuple(float(value) for value in jax.device_get(codebook))
-        return codebook_values, None
-
-    num_bias_levels = 2**bias_bits
-    bias_candidates = jnp.linspace(-1, 1, 512, dtype=jnp.float32)
-    bias_candidate_chunk_size = 64
-    weighted_bias_costs = _weighted_bias_costs(
-        normalized_weights,
-        scale_values,
-        codebook,
-        bias_candidates,
-        bias_candidate_chunk_size,
-    )
-    best_bias_indices = jnp.argmin(weighted_bias_costs, axis=-1)
-    best_biases = bias_candidates[best_bias_indices]
-    centers = _sample_values_to_lloyd_lut_values(
-        best_biases,
-        jnp.square(scale_values[:, 0]),
-        num_levels=num_bias_levels,
-        steps=16,
-    )
-    candidate_thresholds = (bias_candidates[:-1] + bias_candidates[1:]) / 2
-    center_indices = jnp.searchsorted(candidate_thresholds, centers, side="right", method="compare_all")
-    center_indices = jnp.minimum(center_indices, bias_candidates.size - 1)
-
-    for _ in range(8):
-        bias_table = bias_candidates[center_indices]
-        center_costs = weighted_bias_costs[:, center_indices]
-        assigned_bias_indices = jnp.argmin(center_costs, axis=-1)
-        biases = lut_values_at(assigned_bias_indices.astype(jnp.uint8), bias_table)
-        codebook = _update_codebook(normalized_weights, scale_values, biases, codebook)
-        weighted_bias_costs = _weighted_bias_costs(
-            normalized_weights,
-            scale_values,
-            codebook,
-            bias_candidates,
-            bias_candidate_chunk_size,
-        )
-        center_indices = _update_bias_indices(weighted_bias_costs, center_indices)
-
-    codebook_values = tuple(float(value) for value in jax.device_get(codebook))
-    bias_values = tuple(float(value) for value in jax.device_get(bias_candidates[center_indices]))
-    return codebook_values, bias_values
-
-
 def _codebook_values(
     bits: int,
     group_size: int,
     bias_bits: int | None,
 ) -> tuple[float, ...]:
-    codebook_values, _ = _lut_values(bits, group_size, bias_bits)
-    return codebook_values
+    from .data.lloyd_max import codebook_values  # noqa: PLC0415
+
+    return codebook_values(bits=bits, group_size=group_size, bias_bits=bias_bits)
 
 
 def _codebook(
@@ -278,9 +86,9 @@ def _bias_lut_values(
     bias_bits: int,
     bits: int,
 ) -> tuple[float, ...]:
-    _, bias_values = _lut_values(bits, group_size, bias_bits)
-    assert bias_values is not None
-    return bias_values
+    from .data.lloyd_max import bias_lut_values  # noqa: PLC0415
+
+    return bias_lut_values(bits=bits, group_size=group_size, bias_bits=bias_bits)
 
 
 def _bias_lut(
@@ -524,7 +332,7 @@ def _master_weights_to_packed_weight_indices(
 
 
 @dataclass(frozen=True)
-class QuantileSpec(QuantizedSpec):
+class LloydMaxSpec(QuantizedSpec):
     bits: Literal[2, 3, 4, 6, 8]
     group_size: int
     bias_bits: Literal[2, 3, 4, 6, 8] | None = None
@@ -585,7 +393,7 @@ class QuantileSpec(QuantizedSpec):
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         is_sharded: bool = True,
-    ) -> "QuantileMatrix":
+    ) -> "LloydMaxMatrix":
         if preconditioner is not None:
             weights = yaqa_round_weights(weights, preconditioner, self, is_sharded=is_sharded)
 
@@ -606,7 +414,7 @@ class QuantileSpec(QuantizedSpec):
                 group_size=self.group_size,
             )
         if implementation == CompressionImplementation.TRAINING:
-            return QuantileMatrixForTraining(
+            return LloydMaxMatrixForTraining(
                 spec=self,
                 is_sharded=is_sharded,
                 master_weights=stored_weights,
@@ -646,9 +454,9 @@ class QuantileSpec(QuantizedSpec):
         dtype: DTypeLike = jnp.float32,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         is_sharded: bool = True,
-    ) -> "QuantileMatrix":
+    ) -> "LloydMaxMatrix":
         if self.bias_bits is not None and packed_bias_indices is None:
-            raise ValueError("Quantile biases require packed bias indices")
+            raise ValueError("LloydMax biases require packed bias indices")
 
         weight_partition = self.layout.weight_partition(packed_scales.ndim - 2, is_sharded=is_sharded)
         parameter_sharding = make_sharding((*weight_partition[:-1], None))
@@ -658,7 +466,7 @@ class QuantileSpec(QuantizedSpec):
             packed_bias_indices = with_sharding(packed_bias_indices, parameter_sharding)
 
         if implementation == CompressionImplementation.INFERENCE:
-            return QuantileMatrixForInference(
+            return LloydMaxMatrixForInference(
                 spec=self,
                 is_sharded=is_sharded,
                 dtype_=jnp.dtype(dtype),
@@ -698,7 +506,7 @@ class QuantileSpec(QuantizedSpec):
             bias_bits=self.bias_bits,
             group_size=self.group_size,
         )
-        return QuantileMatrixForTraining(
+        return LloydMaxMatrixForTraining(
             spec=self,
             is_sharded=is_sharded,
             master_weights=with_sharding(weights, make_sharding(weight_partition)),
@@ -707,7 +515,7 @@ class QuantileSpec(QuantizedSpec):
         )
 
 
-class QuantileMatrix(EmbeddingMatrix[QuantileSpec]):
+class LloydMaxMatrix(EmbeddingMatrix[LloydMaxSpec]):
     @property
     @abstractmethod
     def _packed_weight_indices(
@@ -751,7 +559,7 @@ class QuantileMatrix(EmbeddingMatrix[QuantileSpec]):
         *,
         implementation: CompressionImplementation,
         prefix: ParameterPath | None = None,
-    ) -> "QuantileMatrix":
+    ) -> "LloydMaxMatrix":
         if prefix is None:
             prefix = ParameterPath()
         loaded_spec = WeightMatrixSpec.from_json(expored_data.metadata[prefix / "spec"])
@@ -782,7 +590,7 @@ class QuantileMatrix(EmbeddingMatrix[QuantileSpec]):
             is_sharded=self.is_sharded,
         )
 
-    def _from_packed_parameters(self, implementation: CompressionImplementation) -> "QuantileMatrix":
+    def _from_packed_parameters(self, implementation: CompressionImplementation) -> "LloydMaxMatrix":
         return self.spec.from_packed_parameters(
             packed_weight_indices=self._packed_weight_indices,
             packed_scales=self._packed_scales,
@@ -799,10 +607,10 @@ class QuantileMatrix(EmbeddingMatrix[QuantileSpec]):
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
-    ) -> "QuantileMatrix": ...
+    ) -> "LloydMaxMatrix": ...
 
     @abstractmethod
-    def switch_implementation(self, implementation: CompressionImplementation) -> "QuantileMatrix": ...
+    def switch_implementation(self, implementation: CompressionImplementation) -> "LloydMaxMatrix": ...
 
     def to_full_precision(self) -> FullPrecisionMatrix:
         return FullPrecisionSpec(layout=self.spec.layout).compress(self.decompress(), is_sharded=self.is_sharded)
@@ -843,7 +651,7 @@ class QuantileMatrix(EmbeddingMatrix[QuantileSpec]):
             return reshard_as(layout.matmul(weights, vector), vector)
 
 
-class QuantileMatrixForTraining(QuantileMatrix):
+class LloydMaxMatrixForTraining(LloydMaxMatrix):
     master_weights: Float[Array, "*components rows cols"] = field(norm=ParameterNorm.SPECTRAL)
     master_scales: Float[Array, "*components rows groups"] = field(norm=ParameterNorm.L_INF)
     master_biases: Float[Array, "*components rows groups"] | None = field(norm=ParameterNorm.L_INF, default=None)
@@ -882,11 +690,11 @@ class QuantileMatrixForTraining(QuantileMatrix):
             group_size=self.spec.group_size,
         )
 
-    def astype(self, dtype: DTypeLike) -> "QuantileMatrixForTraining":
+    def astype(self, dtype: DTypeLike) -> "LloydMaxMatrixForTraining":
         master_biases = self.master_biases
         if master_biases is not None:
             master_biases = master_biases.astype(dtype)
-        return QuantileMatrixForTraining(
+        return LloydMaxMatrixForTraining(
             spec=self.spec,
             is_sharded=self.is_sharded,
             master_weights=self.master_weights.astype(dtype),
@@ -900,7 +708,7 @@ class QuantileMatrixForTraining(QuantileMatrix):
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
-    ) -> QuantileMatrix:
+    ) -> LloydMaxMatrix:
         return self._load_exported(
             expored_data,
             allow_dtype_cast=allow_dtype_cast,
@@ -908,7 +716,7 @@ class QuantileMatrixForTraining(QuantileMatrix):
             prefix=prefix,
         )
 
-    def switch_implementation(self, implementation: CompressionImplementation) -> QuantileMatrix:
+    def switch_implementation(self, implementation: CompressionImplementation) -> LloydMaxMatrix:
         if implementation == CompressionImplementation.TRAINING:
             return self
         return self._from_packed_parameters(implementation)
@@ -944,7 +752,7 @@ class QuantileMatrixForTraining(QuantileMatrix):
         )
 
 
-class QuantileMatrixForInference(QuantileMatrix):
+class LloydMaxMatrixForInference(LloydMaxMatrix):
     dtype_: DTypeLike = field(static=True)
     packed_weight_indices: UInt8[Array, "*components rows packed_cols"]
     packed_scales: Float[Array, "*components rows groups"]
@@ -992,8 +800,8 @@ class QuantileMatrixForInference(QuantileMatrix):
             dtype=self.dtype,
         )
 
-    def astype(self, dtype: DTypeLike) -> "QuantileMatrixForInference":
-        return QuantileMatrixForInference(
+    def astype(self, dtype: DTypeLike) -> "LloydMaxMatrixForInference":
+        return LloydMaxMatrixForInference(
             spec=self.spec,
             is_sharded=self.is_sharded,
             dtype_=jnp.dtype(dtype),
@@ -1008,7 +816,7 @@ class QuantileMatrixForInference(QuantileMatrix):
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
-    ) -> QuantileMatrix:
+    ) -> LloydMaxMatrix:
         return self._load_exported(
             expored_data,
             allow_dtype_cast=allow_dtype_cast,
@@ -1016,7 +824,7 @@ class QuantileMatrixForInference(QuantileMatrix):
             prefix=prefix,
         )
 
-    def switch_implementation(self, implementation: CompressionImplementation) -> QuantileMatrix:
+    def switch_implementation(self, implementation: CompressionImplementation) -> LloydMaxMatrix:
         if implementation == CompressionImplementation.INFERENCE:
             return self
         return self._from_packed_parameters(implementation)

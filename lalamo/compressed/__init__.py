@@ -10,11 +10,11 @@ from .microfloat import (
     MicrofloatSpec,
 )
 from .mlx import MLXMatrix, MLXMatrixForInference, MLXMatrixForTraining, MLXSpec
-from .quantile import (
-    QuantileMatrix,
-    QuantileMatrixForInference,
-    QuantileMatrixForTraining,
-    QuantileSpec,
+from .lloyd_max import (
+    LloydMaxMatrix,
+    LloydMaxMatrixForInference,
+    LloydMaxMatrixForTraining,
+    LloydMaxSpec,
 )
 from .quantized_spec import QuantizedSpec
 
@@ -40,9 +40,9 @@ __all__ = [
     "MicrofloatMatrixForTraining",
     "MicrofloatScaleMode",
     "MicrofloatSpec",
-    "QuantileMatrix",
-    "QuantileMatrixForInference",
-    "QuantileMatrixForTraining",
-    "QuantileSpec",
+    "LloydMaxMatrix",
+    "LloydMaxMatrixForInference",
+    "LloydMaxMatrixForTraining",
+    "LloydMaxSpec",
     "QuantizedSpec",
 ]

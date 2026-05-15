@@ -6,10 +6,10 @@ import jax.numpy as jnp
 import pytest
 from jax.sharding import Mesh, Sharding
 
-from lalamo.compressed.quantile import (
-    QuantileMatrixForInference,
-    QuantileMatrixForTraining,
-    QuantileSpec,
+from lalamo.compressed.lloyd_max import (
+    LloydMaxMatrixForInference,
+    LloydMaxMatrixForTraining,
+    LloydMaxSpec,
     _bias_lut,
     _codebook,
     _master_weights_to_grouped_weight_indices,
@@ -75,11 +75,11 @@ def _stored_weights(layout: Layout, weights: jax.Array) -> jax.Array:
     return weights
 
 
-def _put_on_sharding(matrix: QuantileMatrixForInference, sharding: Sharding) -> QuantileMatrixForInference:
+def _put_on_sharding(matrix: LloydMaxMatrixForInference, sharding: Sharding) -> LloydMaxMatrixForInference:
     packed_bias_indices = None
     if matrix.packed_bias_indices is not None:
         packed_bias_indices = jax.device_put(matrix.packed_bias_indices, sharding)
-    return QuantileMatrixForInference(
+    return LloydMaxMatrixForInference(
         spec=matrix.spec,
         is_sharded=matrix.is_sharded,
         dtype_=matrix.dtype,
@@ -90,7 +90,7 @@ def _put_on_sharding(matrix: QuantileMatrixForInference, sharding: Sharding) -> 
 
 
 @pytest.mark.parametrize("bits", [2, 3, 4, 6, 8])
-def test_quantile_pack_uint_roundtrips_dense_bit_widths(bits: int) -> None:
+def test_lloyd_max_pack_uint_roundtrips_dense_bit_widths(bits: int) -> None:
     values = (jnp.arange(17, dtype=jnp.uint8) % (2**bits)).reshape(1, 17)
     *_, cols = values.shape
 
@@ -118,7 +118,7 @@ def test_codebook_depends_on_group_size() -> None:
 
 
 @pytest.mark.parametrize("bits", [2, 3, 4, 6, 8])
-def test_quantile_grouped_weight_indices_match_dense_nearest_codebook(
+def test_lloyd_max_grouped_weight_indices_match_dense_nearest_codebook(
     bits: int,
 ) -> None:
     weights = jnp.linspace(-2, 2, 32, dtype=jnp.float32).reshape(2, 16)
@@ -142,19 +142,19 @@ def test_quantile_grouped_weight_indices_match_dense_nearest_codebook(
 
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
 @pytest.mark.parametrize("bits", [2, 3, 4, 6, 8])
-def test_quantile_compress_training_and_inference_match(
+def test_lloyd_max_compress_training_and_inference_match(
     layout: Layout,
     bits: Literal[2, 3, 4, 6, 8],
 ) -> None:
     weights = _logical_weights()
-    spec = QuantileSpec(bits=bits, group_size=4, layout=layout)
+    spec = LloydMaxSpec(bits=bits, group_size=4, layout=layout)
     stored_weights = _stored_weights(layout, weights)
 
     training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
     inference = spec.compress(weights, implementation=CompressionImplementation.INFERENCE)
 
-    assert isinstance(training, QuantileMatrixForTraining)
-    assert isinstance(inference, QuantileMatrixForInference)
+    assert isinstance(training, LloydMaxMatrixForTraining)
+    assert isinstance(inference, LloydMaxMatrixForInference)
     assert inference.packed_weight_indices.dtype == jnp.uint8
     assert training.master_scales.dtype == weights.dtype
     assert inference.packed_scales.dtype == jnp.float8_e4m3fn
@@ -169,15 +169,15 @@ def test_quantile_compress_training_and_inference_match(
 
 
 @pytest.mark.parametrize("bias_bits", [2, 3, 4, 6, 8])
-def test_quantile_biases_pack_and_roundtrip(bias_bits: Literal[2, 3, 4, 6, 8]) -> None:
+def test_lloyd_max_biases_pack_and_roundtrip(bias_bits: Literal[2, 3, 4, 6, 8]) -> None:
     weights = _logical_weights()
-    spec = QuantileSpec(bits=4, group_size=4, bias_bits=bias_bits)
+    spec = LloydMaxSpec(bits=4, group_size=4, bias_bits=bias_bits)
 
     training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
     inference = spec.compress(weights, implementation=CompressionImplementation.INFERENCE)
 
-    assert isinstance(training, QuantileMatrixForTraining)
-    assert isinstance(inference, QuantileMatrixForInference)
+    assert isinstance(training, LloydMaxMatrixForTraining)
+    assert isinstance(inference, LloydMaxMatrixForInference)
     assert training.master_biases is not None
     assert inference.packed_bias_indices is not None
     *_, packed_bias_groups = inference.packed_bias_indices.shape
@@ -186,24 +186,24 @@ def test_quantile_biases_pack_and_roundtrip(bias_bits: Literal[2, 3, 4, 6, 8]) -
     assert_close_arrays(result=training.decompress(), reference=inference.decompress())
 
 
-def test_quantile_training_keeps_full_precision_master_weights_until_forward_pass() -> None:
+def test_lloyd_max_training_keeps_full_precision_master_weights_until_forward_pass() -> None:
     weights = _logical_weights()
-    spec = QuantileSpec(bits=4, group_size=4, bias_bits=4)
+    spec = LloydMaxSpec(bits=4, group_size=4, bias_bits=4)
 
     training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
 
-    assert isinstance(training, QuantileMatrixForTraining)
+    assert isinstance(training, LloydMaxMatrixForTraining)
     assert_close_arrays(result=training.master_weights, reference=weights)
     assert not bool(jnp.allclose(training.master_weights, training.decompress()))
 
 
-def test_quantile_training_dot_supports_stochastic_rounding_and_master_weight_gradients() -> None:
+def test_lloyd_max_training_dot_supports_stochastic_rounding_and_master_weight_gradients() -> None:
     weights = _logical_weights()
     out_channels, in_channels = weights.shape
     vector = jnp.linspace(-1, 1, in_channels, dtype=weights.dtype)
-    spec = QuantileSpec(bits=4, group_size=4, bias_bits=4)
+    spec = LloydMaxSpec(bits=4, group_size=4, bias_bits=4)
     training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
-    assert isinstance(training, QuantileMatrixForTraining)
+    assert isinstance(training, LloydMaxMatrixForTraining)
     forward_pass_config = MatmulConfig.for_training(GradientEstimator.STOCHASTIC_ROUNDING)
 
     result = training.dot(vector, keychain=Keychain.init(17), forward_pass_config=forward_pass_config)
@@ -215,7 +215,7 @@ def test_quantile_training_dot_supports_stochastic_rounding_and_master_weight_gr
         scales: jax.Array,
         biases: jax.Array,
     ) -> jax.Array:
-        matrix = QuantileMatrixForTraining(
+        matrix = LloydMaxMatrixForTraining(
             spec=training.spec,
             is_sharded=training.is_sharded,
             master_weights=master_weights,
@@ -236,7 +236,7 @@ def test_quantile_training_dot_supports_stochastic_rounding_and_master_weight_gr
         assert bool(jnp.any(gradient != 0))
 
 
-def test_quantile_forward_uses_selected_estimator_for_master_biases() -> None:
+def test_lloyd_max_forward_uses_selected_estimator_for_master_biases() -> None:
     bits = 4
     bias_bits = 2
     group_size = 4
@@ -286,10 +286,10 @@ def test_quantile_forward_uses_selected_estimator_for_master_biases() -> None:
     assert not bool(jnp.allclose(stochastic_result, deterministic_bias_result))
 
 
-def test_quantile_compress_uses_yaqa_weights_when_preconditioned() -> None:
+def test_lloyd_max_compress_uses_yaqa_weights_when_preconditioned() -> None:
     weights = _preconditioned_weights()
     preconditioner = Preconditioner.init(input_block=_input_block(), output_block=_output_block())
-    spec = QuantileSpec(bits=4, group_size=4)
+    spec = LloydMaxSpec(bits=4, group_size=4)
 
     yaqa_weights = yaqa_round_weights(weights, preconditioner, spec)
     preconditioned = spec.compress(weights, preconditioner=preconditioner)
@@ -298,20 +298,20 @@ def test_quantile_compress_uses_yaqa_weights_when_preconditioned() -> None:
     assert_close_arrays(result=preconditioned.decompress(), reference=expected.decompress())
 
 
-def test_quantile_compress_rejects_group_size_that_does_not_divide_stored_last_axis() -> None:
+def test_lloyd_max_compress_rejects_group_size_that_does_not_divide_stored_last_axis() -> None:
     weights = jnp.ones((4, 5), dtype=jnp.float32)
 
     with pytest.raises(ValueError, match="divisible"):
-        QuantileSpec(bits=4, group_size=2).compress(weights)
+        LloydMaxSpec(bits=4, group_size=2).compress(weights)
 
 
-def test_quantile_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
+def test_lloyd_max_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     weights = _logical_weights()
-    spec = QuantileSpec(bits=3, group_size=4, layout=Layout.INPUT_OUTPUT)
+    spec = LloydMaxSpec(bits=3, group_size=4, layout=Layout.INPUT_OUTPUT)
     saved_sharding = make_sharding((ShardingAxis.TENSOR, None))
     assert saved_sharding is not None
     original = spec.compress(weights, implementation=CompressionImplementation.INFERENCE)
-    assert isinstance(original, QuantileMatrixForInference)
+    assert isinstance(original, LloydMaxMatrixForInference)
     original = _put_on_sharding(original, saved_sharding)
     template = spec.compress(
         dummy_array(weights.shape, weights.dtype),
@@ -322,8 +322,8 @@ def test_quantile_export_load_roundtrips_and_preserves_template_sharding(fake_me
 
     assert restored.spec == spec
     assert isinstance(restored, type(template))
-    assert isinstance(restored, QuantileMatrixForInference)
-    assert isinstance(template, QuantileMatrixForInference)
+    assert isinstance(restored, LloydMaxMatrixForInference)
+    assert isinstance(template, LloydMaxMatrixForInference)
     assert_close_arrays(result=restored.decompress(), reference=original.decompress())
     assert_named_sharding(restored.packed_scales.sharding, fake_mesh)
     assert restored.packed_scales.sharding == template.packed_scales.sharding

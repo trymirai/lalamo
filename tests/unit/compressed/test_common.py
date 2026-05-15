@@ -10,9 +10,9 @@ from jax.sharding import Mesh, NamedSharding
 
 from lalamo.compressed.e8p import E8PSpec
 from lalamo.compressed.int import IntSpec
+from lalamo.compressed.lloyd_max import LloydMaxSpec
 from lalamo.compressed.microfloat import MicrofloatSpec
 from lalamo.compressed.mlx import MLXSpec
-from lalamo.compressed.quantile import QuantileSpec
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import (
@@ -43,8 +43,8 @@ def _mlx_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> WeightMat
     return MLXSpec(bits=bits, group_size=group_size, layout=layout)
 
 
-def _quantile_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> WeightMatrixSpec:
-    return QuantileSpec(bits=bits, group_size=group_size, layout=layout)
+def _lloyd_max_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> WeightMatrixSpec:
+    return LloydMaxSpec(bits=bits, group_size=group_size, layout=layout)
 
 
 def _microfloat_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> WeightMatrixSpec:
@@ -63,8 +63,8 @@ COMPRESSED_MATRIX_CASES = (
     pytest.param(CompressedMatrixCase("int", _int_spec, weight_offset=7, weight_divisor=8), id="int"),
     pytest.param(CompressedMatrixCase("mlx", _mlx_spec, weight_offset=3, weight_divisor=5), id="mlx"),
     pytest.param(
-        CompressedMatrixCase("quantile", _quantile_spec, weight_offset=5, weight_divisor=6),
-        id="quantile",
+        CompressedMatrixCase("lloyd_max", _lloyd_max_spec, weight_offset=5, weight_divisor=6),
+        id="lloyd_max",
     ),
     pytest.param(
         CompressedMatrixCase("microfloat", _microfloat_spec, weight_offset=4, weight_divisor=4),
@@ -95,7 +95,7 @@ def host_decompressed(matrix: EmbeddingMatrix[WeightMatrixSpec]) -> jax.Array:
 
 def host_embedding_table(matrix: EmbeddingMatrix[WeightMatrixSpec]) -> jax.Array:
     match matrix.spec:
-        case IntSpec() | E8PSpec() | MLXSpec() | QuantileSpec() | MicrofloatSpec() | FullPrecisionSpec() as spec:
+        case IntSpec() | E8PSpec() | MLXSpec() | LloydMaxSpec() | MicrofloatSpec() | FullPrecisionSpec() as spec:
             return host_array(spec.layout.from_output_input(matrix.decompress()))
     raise TypeError(f"Unsupported matrix spec type: {type(matrix.spec).__name__}")
 
