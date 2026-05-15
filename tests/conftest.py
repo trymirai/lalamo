@@ -34,6 +34,7 @@ from tests.model_test_tiers import TIER_BY_REPO, ModelSize, ModelTier, model_siz
 jax.config.update("jax_default_matmul_precision", "default")
 
 FAST_MARKER = pytest.mark.fast
+SLOW_MARKER_NAME = "slow"
 SKIP_REQUIRES_JAX_GPU_MARKER = pytest.mark.skip(reason="requires a JAX GPU device")
 JAX_CUDA_BACKEND = "cuda"
 
@@ -68,7 +69,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     has_jax_gpu_device = _has_jax_gpu_device()
 
     for item in items:
-        if "/unit/" in str(item.fspath):
+        if "/unit/" in str(item.fspath) and item.get_closest_marker(SLOW_MARKER_NAME) is None:
             item.add_marker(FAST_MARKER)
         if item.get_closest_marker("gpu") is not None and not has_jax_gpu_device:
             item.add_marker(SKIP_REQUIRES_JAX_GPU_MARKER)

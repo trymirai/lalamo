@@ -71,6 +71,7 @@ dev = [
 
 [project.scripts]
 lalamo = "lalamo.main:app"
+estimate_distortion = "lalamo.compressed.data.estimate_distortion:main"
 
 [build-system]
 requires = ["setuptools>=65.5.0", "wheel"]
@@ -117,6 +118,7 @@ addopts = "--jaxtyping-packages=lalamo,lalamo_typechecking.typechecker"
 markers = [
     "fast: quick smoke tests",
     "gpu: requires a JAX GPU device",
+    "slow: expensive tests excluded from the fast path",
 ]
 
 [tool.pytest_env]

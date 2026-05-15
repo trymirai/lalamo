@@ -69,6 +69,7 @@ def test_microfloat_rate_matches_compressed_array_byte_count(
         E8PSpec(bits=4),
     ],
 )
+@pytest.mark.slow
 def test_quantized_spec_distortion_matches_monte_carlo_quantization_error(spec: QuantizedSpec) -> None:
     weights = jax.random.normal(jax.random.key(2), (512, 512), dtype=jnp.float32)
     compressed = spec.compress(weights, implementation=CompressionImplementation.TRAINING, is_sharded=False)
@@ -79,6 +80,7 @@ def test_quantized_spec_distortion_matches_monte_carlo_quantization_error(spec: 
 
 @pytest.mark.parametrize("scale_mode", list(MicrofloatScaleMode))
 @pytest.mark.parametrize("group_size", [16, 32, 64, 128])
+@pytest.mark.slow
 def test_microfloat_distortion_matches_inference_quantization_error(
     scale_mode: MicrofloatScaleMode,
     group_size: int,

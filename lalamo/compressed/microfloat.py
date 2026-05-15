@@ -4,7 +4,6 @@ from enum import StrEnum
 from functools import cached_property
 from typing import Literal, NamedTuple, Self
 
-import jax
 import jax.numpy as jnp
 from jax.lax import stop_gradient
 from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
@@ -28,6 +27,7 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
+from .data.distortion import distortion_estimate
 from .quantized_spec import QuantizedSpec
 from .utils.grouping import group_by_last_axis
 from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
@@ -215,23 +215,12 @@ class MicrofloatSpec(QuantizedSpec):
 
     @cached_property
     def distortion(self) -> float:
-        sample_groups = 32_768
-        key = jax.random.PRNGKey(0)
-        weights = jax.random.normal(key, (sample_groups, self.group_size), dtype=jnp.float32)
-        parameters = MicrofloatParameters.from_weights(weights, self.group_size, self.scale_mode)
-        scale_values = _master_scales_to_scale_values(
-            parameters.scales,
-            self.scale_mode,
-            weights.dtype,
-        )
-        scale_values = scale_values * parameters.global_scale.astype(weights.dtype)
-        quantized_weights = _master_weights_to_quantized_weights(
-            weights,
-            scale_values,
+        return distortion_estimate(
+            format_name="microfloat",
+            bits=self.bits,
             group_size=self.group_size,
+            scale_mode=self.scale_mode.value,
         )
-        distortion = jnp.mean(jnp.square(weights - quantized_weights))
-        return float(jax.device_get(distortion))
 
     def compress(
         self,

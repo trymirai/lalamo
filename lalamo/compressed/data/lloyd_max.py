@@ -2,7 +2,7 @@ import csv
 from functools import cache
 from importlib.resources import files
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -21,7 +21,24 @@ DEFAULT_BITS = (2, 3, 4, 6, 8)
 DEFAULT_GROUP_SIZES = (2, 4, 16, 32, 64, 128)
 DEFAULT_BIAS_BITS = (2, 3, 4, 6, 8)
 
-_LutKey = tuple[int, int, int | None]
+
+class _LutKey(NamedTuple):
+    bits: int
+    group_size: int
+    bias_bits: int | None
+
+
+class _IndexedValue(NamedTuple):
+    index: int
+    value: float
+
+
+class _LutRow(NamedTuple):
+    bits: int
+    group_size: int
+    bias_bits: int | None
+    index: int
+    value: float
 
 
 def _parse_bias_bits(value: str) -> int | None:
@@ -39,19 +56,21 @@ def _format_bias_bits(value: int | None) -> str:
 @cache
 def _csv_values(filename: str) -> dict[_LutKey, tuple[float, ...]]:
     resource = files("lalamo.compressed.data").joinpath(filename)
-    rows_by_key: dict[_LutKey, list[tuple[int, float]]] = {}
+    rows_by_key: dict[_LutKey, list[_IndexedValue]] = {}
     with resource.open("r", encoding="utf-8") as file:
         reader = csv.DictReader(file)
         for row in reader:
-            key = (
-                int(row["bits"]),
-                int(row["group_size"]),
-                _parse_bias_bits(row["bias_bits"]),
+            key = _LutKey(
+                bits=int(row["bits"]),
+                group_size=int(row["group_size"]),
+                bias_bits=_parse_bias_bits(row["bias_bits"]),
             )
-            rows_by_key.setdefault(key, []).append((int(row["index"]), float(row["value"])))
+            rows_by_key.setdefault(key, []).append(_IndexedValue(index=int(row["index"]), value=float(row["value"])))
 
     return {
-        key: tuple(value for _index, value in sorted(rows, key=lambda indexed_value: indexed_value[0]))
+        key: tuple(
+            indexed_value.value for indexed_value in sorted(rows, key=lambda indexed_value: indexed_value.index)
+        )
         for key, rows in rows_by_key.items()
     }
 
@@ -62,7 +81,7 @@ def codebook_values(
     group_size: int,
     bias_bits: int | None,
 ) -> tuple[float, ...]:
-    key = (bits, group_size, bias_bits)
+    key = _LutKey(bits=bits, group_size=group_size, bias_bits=bias_bits)
     values = _csv_values(CODEBOOK_CSV)
     if key not in values:
         raise ValueError(f"LloydMax codebook table is not available for {key=}")
@@ -75,7 +94,7 @@ def bias_lut_values(
     group_size: int,
     bias_bits: int,
 ) -> tuple[float, ...]:
-    key = (bits, group_size, bias_bits)
+    key = _LutKey(bits=bits, group_size=group_size, bias_bits=bias_bits)
     values = _csv_values(BIAS_LUT_CSV)
     if key not in values:
         raise ValueError(f"LloydMax bias table is not available for {key=}")
@@ -297,13 +316,21 @@ def _compute_lut_values(
 
 def _write_values(
     path: Path,
-    rows: list[tuple[int, int, int | None, int, float]],
+    rows: list[_LutRow],
 ) -> None:
     with path.open("w", encoding="utf-8", newline="") as file:
         writer = csv.writer(file, lineterminator="\n")
         writer.writerow(("bits", "group_size", "bias_bits", "index", "value"))
-        for bits, group_size, bias_bits, index, value in rows:
-            writer.writerow((bits, group_size, _format_bias_bits(bias_bits), index, f"{value:.17g}"))
+        for row in rows:
+            writer.writerow(
+                (
+                    row.bits,
+                    row.group_size,
+                    _format_bias_bits(row.bias_bits),
+                    row.index,
+                    f"{row.value:.17g}",
+                )
+            )
 
 
 def _generate_tables(
@@ -313,21 +340,28 @@ def _generate_tables(
     bias_bits_values: tuple[int, ...],
     output_dir: Path,
 ) -> None:
-    codebook_rows: list[tuple[int, int, int | None, int, float]] = []
-    bias_rows: list[tuple[int, int, int | None, int, float]] = []
+    codebook_rows: list[_LutRow] = []
+    bias_rows: list[_LutRow] = []
     for group_size in group_sizes:
         for bits in bits_values:
             typer.echo(f"Generating LloydMax table: bits={bits}, group_size={group_size}, bias_bits=None")
             codebook, _bias_lut = _compute_lut_values(bits, group_size, None)
-            codebook_rows.extend((bits, group_size, None, index, value) for index, value in enumerate(codebook))
+            codebook_rows.extend(
+                _LutRow(bits=bits, group_size=group_size, bias_bits=None, index=index, value=value)
+                for index, value in enumerate(codebook)
+            )
             for bias_bits in bias_bits_values:
                 typer.echo(f"Generating LloydMax table: bits={bits}, group_size={group_size}, bias_bits={bias_bits}")
                 codebook, bias_lut = _compute_lut_values(bits, group_size, bias_bits)
                 assert bias_lut is not None
                 codebook_rows.extend(
-                    (bits, group_size, bias_bits, index, value) for index, value in enumerate(codebook)
+                    _LutRow(bits=bits, group_size=group_size, bias_bits=bias_bits, index=index, value=value)
+                    for index, value in enumerate(codebook)
                 )
-                bias_rows.extend((bits, group_size, bias_bits, index, value) for index, value in enumerate(bias_lut))
+                bias_rows.extend(
+                    _LutRow(bits=bits, group_size=group_size, bias_bits=bias_bits, index=index, value=value)
+                    for index, value in enumerate(bias_lut)
+                )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_values(output_dir / CODEBOOK_CSV, codebook_rows)

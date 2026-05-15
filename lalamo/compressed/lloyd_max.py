@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Literal
 
-import jax
 import jax.numpy as jnp
 from jax.lax import stop_gradient
 from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
@@ -34,6 +33,8 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
+from .data.distortion import distortion_estimate
+from .data.lloyd_max import bias_lut_values, codebook_values
 from .quantized_spec import QuantizedSpec
 from .utils.grouping import group_by_last_axis
 from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
@@ -62,33 +63,14 @@ def _master_weights_to_master_scales(
     return jnp.max(jnp.abs(grouped_weights), axis=-1)
 
 
-def _codebook_values(
-    bits: int,
-    group_size: int,
-    bias_bits: int | None,
-) -> tuple[float, ...]:
-    from .data.lloyd_max import codebook_values  # noqa: PLC0415
-
-    return codebook_values(bits=bits, group_size=group_size, bias_bits=bias_bits)
-
-
 def _codebook(
     bits: int,
     group_size: int,
     dtype: DTypeLike,
     bias_bits: int | None = None,
 ) -> Float[Array, " levels"]:
-    return jnp.array(_codebook_values(bits, group_size, bias_bits), dtype=dtype)
-
-
-def _bias_lut_values(
-    group_size: int,
-    bias_bits: int,
-    bits: int,
-) -> tuple[float, ...]:
-    from .data.lloyd_max import bias_lut_values  # noqa: PLC0415
-
-    return bias_lut_values(bits=bits, group_size=group_size, bias_bits=bias_bits)
+    values = codebook_values(bits=bits, group_size=group_size, bias_bits=bias_bits)
+    return jnp.array(values, dtype=dtype)
 
 
 def _bias_lut(
@@ -98,7 +80,8 @@ def _bias_lut(
     bits: int,
     dtype: DTypeLike,
 ) -> Float[Array, " levels"]:
-    return jnp.array(_bias_lut_values(group_size, bias_bits, bits), dtype=dtype)
+    values = bias_lut_values(bits=bits, group_size=group_size, bias_bits=bias_bits)
+    return jnp.array(values, dtype=dtype)
 
 
 def _master_weights_to_grouped_weight_indices(
@@ -359,31 +342,12 @@ class LloydMaxSpec(QuantizedSpec):
 
     @cached_property
     def distortion(self) -> float:
-        sample_groups = 32_768
-        key = jax.random.PRNGKey(0)
-        weights = jax.random.normal(key, (sample_groups, self.group_size), dtype=jnp.float32)
-        master_scales = _master_weights_to_master_scales(weights, group_size=self.group_size)
-        scale_values = pack_e4m3_scales(master_scales).astype(weights.dtype)
-        master_biases = None
-        if self.bias_bits is not None:
-            master_biases = _master_weights_to_master_biases(
-                weights,
-                scale_values,
-                bits=self.bits,
-                bias_bits=self.bias_bits,
-                group_size=self.group_size,
-            )
-
-        quantized_weights = _master_weights_to_quantized_weights(
-            weights,
-            scale_values,
-            master_biases=master_biases,
+        return distortion_estimate(
+            format_name="lloyd_max",
             bits=self.bits,
             bias_bits=self.bias_bits,
             group_size=self.group_size,
         )
-        distortion = jnp.mean(jnp.square(weights - quantized_weights))
-        return float(jax.device_get(distortion))
 
     def compress(
         self,

@@ -35,6 +35,7 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
+from .data.distortion import distortion_estimate
 from .quantized_spec import QuantizedSpec
 from .utils.yaqa import yaqa_round_weights
 
@@ -470,18 +471,16 @@ class E8PSpec(QuantizedSpec):
 
     @cached_property
     def distortion(self) -> float:
-        sample_groups = 32_768
-        key = jax.random.PRNGKey(0)
-        weights = jax.random.normal(key, (sample_groups, _E8P_VECTOR_SIZE), dtype=jnp.float32)
-        parameters = E8PParameters.from_weights(weights, scale_normalization=self.scale_normalization_value)
-        quantized_weights = _quantize(
-            weights,
-            parameters.scale,
+        residual_scale = None
+        if self.bits != 2:
+            residual_scale = self.residual_scale
+        return distortion_estimate(
+            format_name="e8p",
             bits=self.bits,
-            residual_scale=self.residual_scale_value,
+            group_size=_E8P_VECTOR_SIZE,
+            scale_normalization=self.scale_normalization,
+            residual_scale=residual_scale,
         )
-        distortion = jnp.mean(jnp.square(weights - quantized_weights))
-        return float(jax.device_get(distortion))
 
     @property
     def scale_normalization_value(self) -> float:
