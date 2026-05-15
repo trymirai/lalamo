@@ -6,7 +6,15 @@ from lalamo.model_import.model_configs import (
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.origins import HuggingFaceOrigin
 
-__all__ = ["QWEN_MODELS"]
+__all__ = ["QWEN_MODELS", "QWEN_THINKING_PARSER_REGEX"]
+
+# Captures Qwen-style `<think>...</think>` blocks. When `</think>` is absent
+# (truncated/unfinished generation), the entire response is treated as
+# chain-of-thought with an empty visible response.
+QWEN_THINKING_PARSER_REGEX = (
+    r"(?s)^\s*(?:<think>\s*)?(?P<chain_of_thought>.*?)\s*"
+    r"(?:</think>\s*(?P<response>.*?))?\s*$"
+)
 
 
 def _qwen3_mlx_model_spec(
@@ -176,6 +184,7 @@ QWEN3 = [
         size="4B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3-4B-Thinking-2507"),
         config_type=HFQwen3Config,
+        output_parser_regex=QWEN_THINKING_PARSER_REGEX,
     ),
     LanguageModelSpec(
         vendor="Alibaba",
