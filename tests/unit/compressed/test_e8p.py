@@ -10,10 +10,10 @@ from lalamo.compressed.e8p import (
     E8PMatrixForInference,
     E8PMatrixForTraining,
     E8PSpec,
-    _e8p_codebook,
+    _codebook,
     _e81b_codebook,
     _round_to_codebook,
-    _round_to_e8p_codebook,
+    _round_to_dense_codebook,
 )
 from lalamo.compressed.utils.yaqa import yaqa_round_weights
 from lalamo.module import Keychain, ShardingAxis
@@ -78,12 +78,12 @@ def _put_on_sharding(matrix: E8PMatrixForInference, sharding: Sharding) -> E8PMa
 
 
 def test_e8p_codebooks_have_expected_sizes() -> None:
-    assert _e8p_codebook(jnp.float32).shape == (2**16, 8)
+    assert _codebook(jnp.float32).shape == (2**16, 8)
     assert _e81b_codebook(jnp.float32).shape == (2**8, 8)
 
 
 def test_e8p_codebook_entries_live_on_quarter_grid() -> None:
-    codebook = _e8p_codebook(jnp.float32)
+    codebook = _codebook(jnp.float32)
 
     assert bool(jnp.all(jnp.round(codebook * 4) == codebook * 4))
 
@@ -91,8 +91,8 @@ def test_e8p_codebook_entries_live_on_quarter_grid() -> None:
 def test_e8p_codebook_rounding_matches_dense_search() -> None:
     vectors = jax.random.normal(jax.random.key(0), (3, 5, 8))
 
-    dense_values, _dense_codes = _round_to_codebook(vectors, _e8p_codebook(vectors.dtype))
-    values, _codes = _round_to_e8p_codebook(vectors)
+    dense_values, _dense_codes = _round_to_dense_codebook(vectors, _codebook(vectors.dtype))
+    values, _codes = _round_to_codebook(vectors)
 
     assert_close_arrays(result=values, reference=dense_values)
 

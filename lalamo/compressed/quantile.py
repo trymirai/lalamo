@@ -84,7 +84,7 @@ def _sample_values_to_lloyd_lut_values(
     return centers
 
 
-def _quantile_unbiased_codebook_values(
+def _unbiased_codebook_values(
     bits: int,
     normalized_weights: Float[Array, "groups group_size"],
     scale_values: Float[Array, "groups 1"],
@@ -113,7 +113,7 @@ def _quantile_unbiased_codebook_values(
     return jnp.concatenate([-jnp.flip(positive_values), positive_values])
 
 
-def _quantile_weighted_bias_costs(
+def _weighted_bias_costs(
     normalized_weights: Float[Array, "groups group_size"],
     scale_values: Float[Array, "groups 1"],
     codebook: Float[Array, " levels"],
@@ -138,7 +138,7 @@ def _quantile_weighted_bias_costs(
     return jnp.concatenate(weighted_mse_chunks, axis=-1)
 
 
-def _quantile_update_codebook(
+def _update_codebook(
     normalized_weights: Float[Array, "groups group_size"],
     scale_values: Float[Array, "groups 1"],
     biases: Float[Array, " groups"],
@@ -171,7 +171,7 @@ def _quantile_update_codebook(
     return jnp.concatenate([-jnp.flip(positive_values), positive_values])
 
 
-def _quantile_update_bias_indices(
+def _update_bias_indices(
     weighted_bias_costs: Float[Array, " groups candidates"],
     center_indices: Int[Array, " bias_levels"],
 ) -> Int[Array, " bias_levels"]:
@@ -187,7 +187,7 @@ def _quantile_update_bias_indices(
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _quantile_master_weights_to_master_scales(
+def _master_weights_to_master_scales(
     master_weights: Float[Array, "... cols"],
     group_size: int,
 ) -> Float[Array, "... groups"]:
@@ -196,7 +196,7 @@ def _quantile_master_weights_to_master_scales(
 
 
 @cache
-def _quantile_lut_values(
+def _lut_values(
     bits: int,
     group_size: int,
     bias_bits: int | None,
@@ -208,7 +208,7 @@ def _quantile_lut_values(
     scale_values = pack_e4m3_scales(absmax).astype(samples.dtype)
     safe_scale_values = jnp.where(scale_values == 0, 1, scale_values)
     normalized_weights = samples / safe_scale_values
-    codebook = _quantile_unbiased_codebook_values(bits, normalized_weights, scale_values)
+    codebook = _unbiased_codebook_values(bits, normalized_weights, scale_values)
     if bias_bits is None:
         codebook_values = tuple(float(value) for value in jax.device_get(codebook))
         return codebook_values, None
@@ -216,7 +216,7 @@ def _quantile_lut_values(
     num_bias_levels = 2**bias_bits
     bias_candidates = jnp.linspace(-1, 1, 512, dtype=jnp.float32)
     bias_candidate_chunk_size = 64
-    weighted_bias_costs = _quantile_weighted_bias_costs(
+    weighted_bias_costs = _weighted_bias_costs(
         normalized_weights,
         scale_values,
         codebook,
@@ -240,60 +240,60 @@ def _quantile_lut_values(
         center_costs = weighted_bias_costs[:, center_indices]
         assigned_bias_indices = jnp.argmin(center_costs, axis=-1)
         biases = lut_values_at(assigned_bias_indices.astype(jnp.uint8), bias_table)
-        codebook = _quantile_update_codebook(normalized_weights, scale_values, biases, codebook)
-        weighted_bias_costs = _quantile_weighted_bias_costs(
+        codebook = _update_codebook(normalized_weights, scale_values, biases, codebook)
+        weighted_bias_costs = _weighted_bias_costs(
             normalized_weights,
             scale_values,
             codebook,
             bias_candidates,
             bias_candidate_chunk_size,
         )
-        center_indices = _quantile_update_bias_indices(weighted_bias_costs, center_indices)
+        center_indices = _update_bias_indices(weighted_bias_costs, center_indices)
 
     codebook_values = tuple(float(value) for value in jax.device_get(codebook))
     bias_values = tuple(float(value) for value in jax.device_get(bias_candidates[center_indices]))
     return codebook_values, bias_values
 
 
-def _quantile_codebook_values(
+def _codebook_values(
     bits: int,
     group_size: int,
     bias_bits: int | None,
 ) -> tuple[float, ...]:
-    codebook_values, _ = _quantile_lut_values(bits, group_size, bias_bits)
+    codebook_values, _ = _lut_values(bits, group_size, bias_bits)
     return codebook_values
 
 
-def _quantile_codebook(
+def _codebook(
     bits: int,
     group_size: int,
     dtype: DTypeLike,
     bias_bits: int | None = None,
 ) -> Float[Array, " levels"]:
-    return jnp.array(_quantile_codebook_values(bits, group_size, bias_bits), dtype=dtype)
+    return jnp.array(_codebook_values(bits, group_size, bias_bits), dtype=dtype)
 
 
-def _quantile_bias_lut_values(
+def _bias_lut_values(
     group_size: int,
     bias_bits: int,
     bits: int,
 ) -> tuple[float, ...]:
-    _, bias_values = _quantile_lut_values(bits, group_size, bias_bits)
+    _, bias_values = _lut_values(bits, group_size, bias_bits)
     assert bias_values is not None
     return bias_values
 
 
-def _quantile_bias_lut(
+def _bias_lut(
     *,
     group_size: int,
     bias_bits: int,
     bits: int,
     dtype: DTypeLike,
 ) -> Float[Array, " levels"]:
-    return jnp.array(_quantile_bias_lut_values(group_size, bias_bits, bits), dtype=dtype)
+    return jnp.array(_bias_lut_values(group_size, bias_bits, bits), dtype=dtype)
 
 
-def _quantile_master_weights_to_grouped_weight_indices(
+def _master_weights_to_grouped_weight_indices(
     master_weights: Float[Array, "... cols"],
     scale_values: Float[Array, "... groups"],
     *,
@@ -304,7 +304,7 @@ def _quantile_master_weights_to_grouped_weight_indices(
     keychain: Keychain | None = None,
     gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
 ) -> UInt8[Array, "... groups group_size"]:
-    codebook = _quantile_codebook(bits, group_size, master_weights.dtype, bias_bits=bias_bits)
+    codebook = _codebook(bits, group_size, master_weights.dtype, bias_bits=bias_bits)
     safe_scale_values = jnp.where(scale_values == 0, 1, scale_values)
     grouped_weights = group_by_last_axis(master_weights, group_size=group_size)
     normalized_weights = grouped_weights / safe_scale_values.astype(master_weights.dtype)[..., None]
@@ -319,7 +319,7 @@ def _quantile_master_weights_to_grouped_weight_indices(
     )
 
 
-def _quantile_unpacked_weight_indices_to_master_weights(
+def _unpacked_weight_indices_to_master_weights(
     unpacked_weight_indices: UInt8[Array, "... cols"],
     scale_values: Float[Array, "... groups"],
     *,
@@ -329,7 +329,7 @@ def _quantile_unpacked_weight_indices_to_master_weights(
     group_size: int,
     dtype: DTypeLike,
 ) -> Float[Array, "... cols"]:
-    codebook = _quantile_codebook(bits, group_size, dtype, bias_bits=bias_bits)
+    codebook = _codebook(bits, group_size, dtype, bias_bits=bias_bits)
     *leading_dims, cols = unpacked_weight_indices.shape
     groups = cols // group_size
     grouped_weight_indices = unpacked_weight_indices.reshape(*leading_dims, groups, group_size)
@@ -342,7 +342,7 @@ def _quantile_unpacked_weight_indices_to_master_weights(
     return grouped_master_weights.reshape(*leading_dims, groups * group_width)
 
 
-def _quantile_master_weights_to_master_biases(
+def _master_weights_to_master_biases(
     master_weights: Float[Array, "... cols"],
     scale_values: Float[Array, "... groups"],
     *,
@@ -350,8 +350,8 @@ def _quantile_master_weights_to_master_biases(
     bias_bits: int,
     group_size: int,
 ) -> Float[Array, "... groups"]:
-    codebook = _quantile_codebook(bits, group_size, dtype=master_weights.dtype, bias_bits=bias_bits)
-    bias_table = _quantile_bias_lut(
+    codebook = _codebook(bits, group_size, dtype=master_weights.dtype, bias_bits=bias_bits)
+    bias_table = _bias_lut(
         group_size=group_size,
         bias_bits=bias_bits,
         bits=bits,
@@ -375,7 +375,7 @@ def _quantile_master_weights_to_master_biases(
     return lut_values_at(bias_indices, bias_table)
 
 
-def _quantile_bias_indices_to_master_biases(
+def _bias_indices_to_master_biases(
     bias_indices: UInt8[Array, "... groups"],
     *,
     bits: int,
@@ -383,7 +383,7 @@ def _quantile_bias_indices_to_master_biases(
     group_size: int,
     dtype: DTypeLike,
 ) -> Float[Array, "... groups"]:
-    bias_table = _quantile_bias_lut(
+    bias_table = _bias_lut(
         group_size=group_size,
         bias_bits=bias_bits,
         bits=bits,
@@ -392,14 +392,14 @@ def _quantile_bias_indices_to_master_biases(
     return lut_values_at(bias_indices, bias_table)
 
 
-def _quantile_master_biases_to_bias_indices(
+def _master_biases_to_bias_indices(
     master_biases: Float[Array, "... groups"],
     *,
     bits: int,
     bias_bits: int,
     group_size: int,
 ) -> UInt8[Array, "... groups"]:
-    bias_table = _quantile_bias_lut(
+    bias_table = _bias_lut(
         group_size=group_size,
         bias_bits=bias_bits,
         bits=bits,
@@ -413,7 +413,7 @@ def _quantile_master_biases_to_bias_indices(
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _quantile_master_biases_to_packed_bias_indices(
+def _master_biases_to_packed_bias_indices(
     master_biases: Float[Array, "*components rows groups"] | None,
     *,
     bits: int,
@@ -423,7 +423,7 @@ def _quantile_master_biases_to_packed_bias_indices(
     if master_biases is None:
         return None
     assert bias_bits is not None
-    bias_indices = _quantile_master_biases_to_bias_indices(
+    bias_indices = _master_biases_to_bias_indices(
         master_biases,
         bits=bits,
         bias_bits=bias_bits,
@@ -433,7 +433,7 @@ def _quantile_master_biases_to_packed_bias_indices(
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _quantile_master_weights_to_quantized_weights(
+def _master_weights_to_quantized_weights(
     master_weights: Float[Array, "... cols"],
     scale_values: Float[Array, "... groups"],
     *,
@@ -451,7 +451,7 @@ def _quantile_master_weights_to_quantized_weights(
 
     if master_biases is not None:
         assert bias_bits is not None
-        bias_table = _quantile_bias_lut(
+        bias_table = _bias_lut(
             group_size=group_size,
             bias_bits=bias_bits,
             bits=bits,
@@ -472,7 +472,7 @@ def _quantile_master_weights_to_quantized_weights(
 
     grouped_values = round_to_sorted_lut_table(
         normalized_weights,
-        _quantile_codebook(bits, group_size, master_weights.dtype, bias_bits=bias_bits),
+        _codebook(bits, group_size, master_weights.dtype, bias_bits=bias_bits),
         keychain=weight_keychain,
         gradient_estimator=gradient_estimator,
     )
@@ -485,7 +485,7 @@ def _quantile_master_weights_to_quantized_weights(
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _quantile_master_weights_to_packed_weight_indices(
+def _master_weights_to_packed_weight_indices(
     master_weights: Float[Array, "*components rows cols"],
     master_scales: Float[Array, "*components rows groups"],
     *,
@@ -497,20 +497,20 @@ def _quantile_master_weights_to_packed_weight_indices(
     packed_scales = pack_e4m3_scales(master_scales)
     if master_biases is not None:
         assert bias_bits is not None
-        bias_indices = _quantile_master_biases_to_bias_indices(
+        bias_indices = _master_biases_to_bias_indices(
             master_biases,
             bits=bits,
             bias_bits=bias_bits,
             group_size=group_size,
         )
-        master_biases = _quantile_bias_indices_to_master_biases(
+        master_biases = _bias_indices_to_master_biases(
             bias_indices,
             bits=bits,
             bias_bits=bias_bits,
             group_size=group_size,
             dtype=master_weights.dtype,
         )
-    grouped_weight_indices = _quantile_master_weights_to_grouped_weight_indices(
+    grouped_weight_indices = _master_weights_to_grouped_weight_indices(
         master_weights,
         packed_scales.astype(master_weights.dtype),
         master_biases=master_biases,
@@ -554,11 +554,11 @@ class QuantileSpec(QuantizedSpec):
         sample_groups = 32_768
         key = jax.random.PRNGKey(0)
         weights = jax.random.normal(key, (sample_groups, self.group_size), dtype=jnp.float32)
-        master_scales = _quantile_master_weights_to_master_scales(weights, group_size=self.group_size)
+        master_scales = _master_weights_to_master_scales(weights, group_size=self.group_size)
         scale_values = pack_e4m3_scales(master_scales).astype(weights.dtype)
         master_biases = None
         if self.bias_bits is not None:
-            master_biases = _quantile_master_weights_to_master_biases(
+            master_biases = _master_weights_to_master_biases(
                 weights,
                 scale_values,
                 bits=self.bits,
@@ -566,7 +566,7 @@ class QuantileSpec(QuantizedSpec):
                 group_size=self.group_size,
             )
 
-        quantized_weights = _quantile_master_weights_to_quantized_weights(
+        quantized_weights = _master_weights_to_quantized_weights(
             weights,
             scale_values,
             master_biases=master_biases,
@@ -590,7 +590,7 @@ class QuantileSpec(QuantizedSpec):
             weights = yaqa_round_weights(weights, preconditioner, self, is_sharded=is_sharded)
 
         stored_weights = self.layout.from_output_input(weights, is_sharded=is_sharded)
-        master_scales = _quantile_master_weights_to_master_scales(stored_weights, group_size=self.group_size)
+        master_scales = _master_weights_to_master_scales(stored_weights, group_size=self.group_size)
         weight_partition = self.layout.weight_partition(master_scales.ndim - 2, is_sharded=is_sharded)
         parameter_sharding = make_sharding((*weight_partition[:-1], None))
         master_scales = with_sharding(master_scales, parameter_sharding)
@@ -598,7 +598,7 @@ class QuantileSpec(QuantizedSpec):
         master_biases = None
         if self.bias_bits is not None:
             scale_values = packed_scales.astype(stored_weights.dtype)
-            master_biases = _quantile_master_weights_to_master_biases(
+            master_biases = _master_weights_to_master_biases(
                 stored_weights,
                 scale_values,
                 bits=self.bits,
@@ -614,7 +614,7 @@ class QuantileSpec(QuantizedSpec):
                 master_biases=master_biases,
             )
 
-        packed_weight_indices = _quantile_master_weights_to_packed_weight_indices(
+        packed_weight_indices = _master_weights_to_packed_weight_indices(
             stored_weights,
             master_scales,
             master_biases=master_biases,
@@ -622,7 +622,7 @@ class QuantileSpec(QuantizedSpec):
             bias_bits=self.bias_bits,
             group_size=self.group_size,
         )
-        packed_bias_indices = _quantile_master_biases_to_packed_bias_indices(
+        packed_bias_indices = _master_biases_to_packed_bias_indices(
             master_biases,
             bits=self.bits,
             bias_bits=self.bias_bits,
@@ -677,7 +677,7 @@ class QuantileSpec(QuantizedSpec):
                 bits=self.bias_bits,
                 unpacked_last_axis_dim=groups,
             )
-            master_biases = _quantile_bias_indices_to_master_biases(
+            master_biases = _bias_indices_to_master_biases(
                 bias_indices,
                 bits=self.bits,
                 bias_bits=self.bias_bits,
@@ -689,7 +689,7 @@ class QuantileSpec(QuantizedSpec):
             bits=self.bits,
             unpacked_last_axis_dim=groups * self.group_size,
         )
-        weights = _quantile_unpacked_weight_indices_to_master_weights(
+        weights = _unpacked_weight_indices_to_master_weights(
             unpacked_weight_indices,
             packed_scales.astype(dtype),
             master_biases=master_biases,
@@ -858,7 +858,7 @@ class QuantileMatrixForTraining(QuantileMatrix):
 
     @property
     def _packed_weight_indices(self) -> UInt8[Array, "*components rows packed_cols"]:
-        return _quantile_master_weights_to_packed_weight_indices(
+        return _master_weights_to_packed_weight_indices(
             self.master_weights,
             self.master_scales,
             master_biases=self.master_biases,
@@ -875,7 +875,7 @@ class QuantileMatrixForTraining(QuantileMatrix):
     def _packed_bias_indices(
         self,
     ) -> UInt8[Array, "*components rows packed_groups"] | None:
-        return _quantile_master_biases_to_packed_bias_indices(
+        return _master_biases_to_packed_bias_indices(
             self.master_biases,
             bits=self.spec.bits,
             bias_bits=self.spec.bias_bits,
@@ -932,7 +932,7 @@ class QuantileMatrixForTraining(QuantileMatrix):
         scale_values = pack_e4m3_scales(scales).astype(scales.dtype)
         if master_biases is not None:
             master_biases = master_biases.astype(dtype)
-        return _quantile_master_weights_to_quantized_weights(
+        return _master_weights_to_quantized_weights(
             weights.astype(dtype),
             scale_values,
             master_biases=master_biases,
@@ -984,7 +984,7 @@ class QuantileMatrixForInference(QuantileMatrix):
             bits=self.spec.bias_bits,
             unpacked_last_axis_dim=groups,
         )
-        return _quantile_bias_indices_to_master_biases(
+        return _bias_indices_to_master_biases(
             bias_indices,
             bits=self.spec.bits,
             bias_bits=self.spec.bias_bits,
@@ -1042,7 +1042,7 @@ class QuantileMatrixForInference(QuantileMatrix):
             bits=self.spec.bits,
             unpacked_last_axis_dim=groups * self.spec.group_size,
         )
-        return _quantile_unpacked_weight_indices_to_master_weights(
+        return _unpacked_weight_indices_to_master_weights(
             unpacked_weight_indices,
             packed_scales.astype(dtype),
             master_biases=master_biases,

@@ -91,7 +91,7 @@ _E8P_NORM12_DOUBLED = (
 )
 
 
-def _e8p_abs_grid_values() -> tuple[tuple[float, ...], ...]:
+def _abs_grid_values() -> tuple[tuple[float, ...], ...]:
     base_values = (0.5, 1.5, 2.5, 3.5)
     d8_abs = tuple(
         values
@@ -102,9 +102,9 @@ def _e8p_abs_grid_values() -> tuple[tuple[float, ...], ...]:
     return (*d8_abs, *norm12)
 
 
-def _e8p_packed_abs_grid_values() -> tuple[int, ...]:
+def _packed_abs_grid_values() -> tuple[int, ...]:
     result = []
-    for values in _e8p_abs_grid_values():
+    for values in _abs_grid_values():
         doubled_shifted = [int(2 * value + 8) for value in values]
         shuffled = [doubled_shifted[index] for index in (0, 2, 4, 6, 1, 3, 5, 7)]
         if sum(values) % 2 == 1:
@@ -141,7 +141,7 @@ def _e81b_grid_values() -> tuple[tuple[float, ...], ...]:
     return (*zero, *integer_roots, *half_roots, *norm4_roots)
 
 
-_E8P_PACKED_ABS_GRID_VALUES = _e8p_packed_abs_grid_values()
+_E8P_PACKED_ABS_GRID_VALUES = _packed_abs_grid_values()
 _E81B_GRID_VALUES = _e81b_grid_values()
 
 
@@ -168,7 +168,7 @@ def _scale_broadcast(
     return scale.reshape(*scale.shape, *((1,) * (ndim - scale.ndim)))
 
 
-def _e8p_codebook(dtype: DTypeLike) -> Float[Array, "codes vector"]:
+def _codebook(dtype: DTypeLike) -> Float[Array, "codes vector"]:
     packed_abs_grid = jnp.array(_E8P_PACKED_ABS_GRID_VALUES, dtype=jnp.uint32)
     code_indices = jnp.arange(_E8P_CODEBOOK_SIZE, dtype=jnp.uint32)
     sign_masks = code_indices & jnp.uint32(0xFF)
@@ -187,7 +187,7 @@ def _e8p_codebook(dtype: DTypeLike) -> Float[Array, "codes vector"]:
     return values.astype(dtype)
 
 
-def _e8p_abs_codebook(dtype: DTypeLike) -> Float[Array, "codes vector"]:
+def _abs_codebook(dtype: DTypeLike) -> Float[Array, "codes vector"]:
     packed_abs_grid = jnp.array(_E8P_PACKED_ABS_GRID_VALUES, dtype=jnp.uint32)
     shuffled_indices = jnp.array(_E8P_SHUFFLE_MAP, dtype=jnp.uint32)
     abs_values = ((packed_abs_grid[..., None] >> (4 * shuffled_indices)) & jnp.uint32(0xF)).astype(jnp.float32)
@@ -198,11 +198,11 @@ def _e81b_codebook(dtype: DTypeLike) -> Float[Array, "codes vector"]:
     return jnp.array(_E81B_GRID_VALUES, dtype=dtype)
 
 
-def _round_to_e8p_codebook(
+def _round_to_codebook(
     vectors: Float[Array, "... vector"],
 ) -> tuple[Float[Array, "... vector"], UInt16[Array, "..."]]:
     flat_vectors = vectors.reshape(-1, _E8P_VECTOR_SIZE).astype(jnp.float32)
-    abs_codebook = _e8p_abs_codebook(jnp.float32)
+    abs_codebook = _abs_codebook(jnp.float32)
     abs_codebook_norms = jnp.sum(jnp.square(abs_codebook), axis=-1)
     shuffled_indices = jnp.array(_E8P_SHUFFLE_MAP, dtype=jnp.uint32)
 
@@ -243,11 +243,11 @@ def _round_to_e8p_codebook(
             best_scores = jnp.where(is_better, chunk_scores, best_scores)
             best_indices = jnp.where(is_better, chunk_indices, best_indices)
 
-    flat_values = _codebook_values_by_indices(_e8p_codebook(vectors.dtype), best_indices)
+    flat_values = _codebook_values_by_indices(_codebook(vectors.dtype), best_indices)
     return flat_values.reshape(vectors.shape), best_indices.reshape(vectors.shape[:-1])
 
 
-def _round_to_codebook(
+def _round_to_dense_codebook(
     vectors: Float[Array, "... vector"],
     codebook: Float[Array, "codes vector"],
 ) -> tuple[Float[Array, "... vector"], Int[Array, "..."]]:
@@ -276,7 +276,7 @@ def _codebook_values_by_indices(
     return codebook.at[indices].get(out_sharding=values_sharding)
 
 
-def _e8p_grouped_codes(
+def _weights_to_grouped_codes(
     weights: Float[Array, "... cols"],
     scale: Float[Array, "*components"],
     *,
@@ -290,22 +290,22 @@ def _e8p_grouped_codes(
         "... (groups vector) -> ... groups vector",
         vector=_E8P_VECTOR_SIZE,
     )
-    quantized, codes = _round_to_e8p_codebook(grouped_weights)
+    quantized, codes = _round_to_codebook(grouped_weights)
     if bits == 2:
         return quantized, codes.astype(jnp.uint16), None
 
     residual = (grouped_weights - quantized) * jnp.asarray(residual_scale, dtype=grouped_weights.dtype)
     if bits == 3:
-        residual_quantized, residual_codes = _round_to_codebook(residual, _e81b_codebook(grouped_weights.dtype))
+        residual_quantized, residual_codes = _round_to_dense_codebook(residual, _e81b_codebook(grouped_weights.dtype))
         quantized = quantized + residual_quantized / jnp.asarray(residual_scale, dtype=grouped_weights.dtype)
         return quantized, codes.astype(jnp.uint16), residual_codes.astype(jnp.uint8)
 
-    residual_quantized, residual_codes = _round_to_e8p_codebook(residual)
+    residual_quantized, residual_codes = _round_to_codebook(residual)
     quantized = quantized + residual_quantized / jnp.asarray(residual_scale, dtype=grouped_weights.dtype)
     return quantized, codes.astype(jnp.uint16), residual_codes.astype(jnp.uint16)
 
 
-def _e8p_indices_to_master_weights(
+def _codes_to_master_weights(
     codes: UInt16[Array, "... groups"],
     residual_codes: Array | None,
     scale: Float[Array, "*components"],
@@ -314,7 +314,7 @@ def _e8p_indices_to_master_weights(
     dtype: DTypeLike,
     residual_scale: float,
 ) -> Float[Array, "... cols"]:
-    e8p_codebook = _e8p_codebook(dtype)
+    e8p_codebook = _codebook(dtype)
     grouped_weights = _codebook_values_by_indices(e8p_codebook, codes)
     if bits == 3:
         if residual_codes is None:
@@ -331,14 +331,14 @@ def _e8p_indices_to_master_weights(
     return rearrange(scaled_weights, "... groups vector -> ... (groups vector)")
 
 
-def _e8p_quantized_weights_and_normalized_values(
+def _quantized_weights_and_normalized_values(
     weights: Float[Array, "... cols"],
     scale: Float[Array, "*components"],
     *,
     bits: int,
     residual_scale: float,
 ) -> tuple[Float[Array, "... cols"], Float[Array, "... cols"]]:
-    grouped_weights, _codes, _residual_codes = _e8p_grouped_codes(
+    grouped_weights, _codes, _residual_codes = _weights_to_grouped_codes(
         weights,
         stop_gradient(scale),
         bits=bits,
@@ -350,13 +350,13 @@ def _e8p_quantized_weights_and_normalized_values(
 
 
 @partial(jax.custom_vjp, nondiff_argnums=(2, 3))
-def _e8p_quantize_with_vjp(
+def _quantize_with_vjp(
     weights: Float[Array, "... cols"],
     scale: Float[Array, "*components"],
     bits: int,
     residual_scale: float,
 ) -> Float[Array, "... cols"]:
-    quantized_weights, _normalized_values = _e8p_quantized_weights_and_normalized_values(
+    quantized_weights, _normalized_values = _quantized_weights_and_normalized_values(
         weights,
         scale,
         bits=bits,
@@ -365,13 +365,13 @@ def _e8p_quantize_with_vjp(
     return quantized_weights
 
 
-def _e8p_quantize_with_vjp_fwd(
+def _quantize_with_vjp_fwd(
     weights: Float[Array, "... cols"],
     scale: Float[Array, "*components"],
     bits: int,
     residual_scale: float,
 ) -> tuple[Float[Array, "... cols"], tuple[Float[Array, "... cols"], Float[Array, "*components"]]]:
-    quantized_weights, normalized_values = _e8p_quantized_weights_and_normalized_values(
+    quantized_weights, normalized_values = _quantized_weights_and_normalized_values(
         weights,
         scale,
         bits=bits,
@@ -380,7 +380,7 @@ def _e8p_quantize_with_vjp_fwd(
     return quantized_weights, (normalized_values, scale)
 
 
-def _e8p_quantize_with_vjp_bwd(
+def _quantize_with_vjp_bwd(
     bits: int,  # noqa: ARG001
     residual_scale: float,  # noqa: ARG001
     residuals: tuple[Float[Array, "... cols"], Float[Array, "*components"]],
@@ -392,32 +392,32 @@ def _e8p_quantize_with_vjp_bwd(
     return gradients, scale_gradients
 
 
-_e8p_quantize_with_vjp.defvjp(
-    _e8p_quantize_with_vjp_fwd,
-    _e8p_quantize_with_vjp_bwd,
+_quantize_with_vjp.defvjp(
+    _quantize_with_vjp_fwd,
+    _quantize_with_vjp_bwd,
 )
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _e8p_quantize(
+def _quantize(
     weights: Float[Array, "... cols"],
     scale: Float[Array, "*components"],
     *,
     bits: int,
     residual_scale: float,
 ) -> Float[Array, "... cols"]:
-    return _e8p_quantize_with_vjp(weights, scale, bits, residual_scale)
+    return _quantize_with_vjp(weights, scale, bits, residual_scale)
 
 
 @supports_dummy_arrays()
-def _e8p_pack_master_weights(
+def _master_weights_to_codes(
     weights: Float[Array, "*components rows cols"],
     scale: Float[Array, "*components"],
     *,
     bits: int,
     residual_scale: float,
 ) -> tuple[UInt16[Array, "*components rows groups"], Array | None]:
-    _quantized, codes, residual_codes = _e8p_grouped_codes(
+    _quantized, codes, residual_codes = _weights_to_grouped_codes(
         weights,
         scale,
         bits=bits,
@@ -426,7 +426,7 @@ def _e8p_pack_master_weights(
     return codes, residual_codes
 
 
-def _e8p_unpack_master_weights(
+def _codes_to_weights(
     codes: UInt16[Array, "... groups"],
     residual_codes: Array | None,
     scale: Float[Array, "*components"],
@@ -435,7 +435,7 @@ def _e8p_unpack_master_weights(
     dtype: DTypeLike,
     residual_scale: float,
 ) -> Float[Array, "... cols"]:
-    return _e8p_indices_to_master_weights(
+    return _codes_to_master_weights(
         codes,
         residual_codes,
         scale,
@@ -474,7 +474,7 @@ class E8PSpec(QuantizedSpec):
         key = jax.random.PRNGKey(0)
         weights = jax.random.normal(key, (sample_groups, _E8P_VECTOR_SIZE), dtype=jnp.float32)
         parameters = E8PParameters.from_weights(weights, scale_normalization=self.scale_normalization_value)
-        quantized_weights = _e8p_quantize(
+        quantized_weights = _quantize(
             weights,
             parameters.scale,
             bits=self.bits,
@@ -521,7 +521,7 @@ class E8PSpec(QuantizedSpec):
                 scale=scale,
             )
 
-        codes, residual_codes = _e8p_pack_master_weights(
+        codes, residual_codes = _master_weights_to_codes(
             stored_weights,
             scale,
             bits=self.bits,
@@ -569,7 +569,7 @@ class E8PSpec(QuantizedSpec):
                 scale=scale,
             )
 
-        weights = _e8p_unpack_master_weights(
+        weights = _codes_to_weights(
             codes,
             residual_codes,
             scale,
@@ -638,7 +638,7 @@ class E8PMatrixForTraining(E8PMatrix):
 
     @property
     def _codes(self) -> UInt16[Array, "*components rows groups"]:
-        codes, _residual_codes = _e8p_pack_master_weights(
+        codes, _residual_codes = _master_weights_to_codes(
             self.master_weights,
             self.scale,
             bits=self.spec.bits,
@@ -648,7 +648,7 @@ class E8PMatrixForTraining(E8PMatrix):
 
     @property
     def _residual_codes(self) -> Array | None:
-        _codes, residual_codes = _e8p_pack_master_weights(
+        _codes, residual_codes = _master_weights_to_codes(
             self.master_weights,
             self.scale,
             bits=self.spec.bits,
@@ -665,7 +665,7 @@ class E8PMatrixForTraining(E8PMatrix):
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
-        weights = _e8p_quantize(
+        weights = _quantize(
             self.master_weights,
             self.scale,
             bits=self.spec.bits,
@@ -686,7 +686,7 @@ class E8PMatrixForTraining(E8PMatrix):
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
-        return _e8p_quantize(
+        return _quantize(
             self.master_weights[index, :].astype(dtype),
             self.scale.astype(dtype),
             bits=self.spec.bits,
@@ -702,7 +702,7 @@ class E8PMatrixForTraining(E8PMatrix):
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
-        weights = _e8p_quantize(
+        weights = _quantize(
             self.master_weights.astype(vector.dtype),
             self.scale.astype(vector.dtype),
             bits=self.spec.bits,
@@ -797,7 +797,7 @@ class E8PMatrixForInference(E8PMatrix):
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
-        weights = _e8p_unpack_master_weights(
+        weights = _codes_to_weights(
             self.codes,
             self.residual_codes,
             self.scale,
@@ -823,7 +823,7 @@ class E8PMatrixForInference(E8PMatrix):
         residual_codes = self.residual_codes
         if residual_codes is not None:
             residual_codes = residual_codes[index, :]
-        return _e8p_unpack_master_weights(
+        return _codes_to_weights(
             self.codes[index, :],
             residual_codes,
             self.scale.astype(dtype),
@@ -841,7 +841,7 @@ class E8PMatrixForInference(E8PMatrix):
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
-        weights = _e8p_unpack_master_weights(
+        weights = _codes_to_weights(
             self.codes,
             self.residual_codes,
             self.scale.astype(vector.dtype),

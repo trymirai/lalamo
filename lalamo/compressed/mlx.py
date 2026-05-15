@@ -64,7 +64,7 @@ class MLXAffineParameters(NamedTuple):
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _mlx_master_weights_to_int_scale(
+def _master_weights_to_int_scale_weights(
     weights: Float[Array, "... cols"],
     scales: Float[Array, "... groups"],
     biases: Float[Array, "... groups"],
@@ -76,7 +76,7 @@ def _mlx_master_weights_to_int_scale(
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _mlx_quantize(
+def _quantize(
     weights: Float[Array, "... cols"],
     scales: Float[Array, "... groups"],
     biases: Float[Array, "... groups"],
@@ -91,14 +91,14 @@ def _mlx_quantize(
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _mlx_pack_master_weights(
+def _master_weights_to_packed_weights(
     weights: Float[Array, "*components rows cols"],
     scales: Float[Array, "*components rows groups"],
     biases: Float[Array, "*components rows groups"],
     group_size: int,
     bits: int,
 ) -> UInt8[Array, "*components rows packed_cols"]:
-    int_scale_weights = _mlx_master_weights_to_int_scale(
+    int_scale_weights = _master_weights_to_int_scale_weights(
         weights,
         scales,
         biases,
@@ -108,7 +108,7 @@ def _mlx_pack_master_weights(
     return pack_uint_to_uint8(rounded_weights.astype(jnp.uint8), bits)
 
 
-def _mlx_unpack_master_weights(
+def _packed_weights_to_master_weights(
     packed_weights: UInt8[Array, "... packed_cols"],
     scales: Float[Array, "... groups"],
     biases: Float[Array, "... groups"],
@@ -176,7 +176,7 @@ class MLXSpec(QuantizedSpec):
                 biases=affine_parameters.biases,
             )
         else:
-            packed_int_weights = _mlx_pack_master_weights(
+            packed_int_weights = _master_weights_to_packed_weights(
                 stored_weights,
                 affine_parameters.scales,
                 affine_parameters.biases,
@@ -216,7 +216,7 @@ class MLXSpec(QuantizedSpec):
                 biases=biases,
             )
 
-        weights = _mlx_unpack_master_weights(
+        weights = _packed_weights_to_master_weights(
             packed_weights,
             scales,
             biases,
@@ -279,7 +279,7 @@ class MLXMatrixForTraining(MLXMatrix):
 
     @property
     def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]:
-        return _mlx_pack_master_weights(
+        return _master_weights_to_packed_weights(
             self.master_weights,
             self.scales,
             self.biases,
@@ -297,7 +297,7 @@ class MLXMatrixForTraining(MLXMatrix):
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
-        weights = _mlx_quantize(
+        weights = _quantize(
             self.master_weights,
             self.scales,
             self.biases,
@@ -319,7 +319,7 @@ class MLXMatrixForTraining(MLXMatrix):
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
-        return _mlx_quantize(
+        return _quantize(
             self.master_weights[index, :].astype(dtype),
             self.scales[index, :].astype(dtype),
             self.biases[index, :].astype(dtype),
@@ -341,7 +341,7 @@ class MLXMatrixForTraining(MLXMatrix):
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
-        dequantized_weights = _mlx_quantize(
+        dequantized_weights = _quantize(
             self.master_weights.astype(vector.dtype),
             self.scales.astype(vector.dtype),
             self.biases.astype(vector.dtype),
@@ -486,7 +486,7 @@ class MLXMatrixForInference(MLXMatrix):
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
-        weights = _mlx_unpack_master_weights(
+        weights = _packed_weights_to_master_weights(
             self.packed_weights,
             self.scales,
             self.biases,
@@ -508,7 +508,7 @@ class MLXMatrixForInference(MLXMatrix):
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
-        return _mlx_unpack_master_weights(
+        return _packed_weights_to_master_weights(
             self.packed_weights[index, :],
             self.scales[index, :].astype(dtype),
             self.biases[index, :].astype(dtype),
@@ -525,7 +525,7 @@ class MLXMatrixForInference(MLXMatrix):
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
-        weights = _mlx_unpack_master_weights(
+        weights = _packed_weights_to_master_weights(
             self.packed_weights,
             self.scales.astype(vector.dtype),
             self.biases.astype(vector.dtype),

@@ -55,7 +55,7 @@ class MicrofloatScaleMode(StrEnum):
     NVFP4 = "nvfp4"
 
 
-def _microfloat_codebook(dtype: DTypeLike) -> Float[Array, " levels"]:
+def _codebook(dtype: DTypeLike) -> Float[Array, " levels"]:
     positive_values = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
     negative_values = tuple(-value for value in positive_values)
     return jnp.array(positive_values + negative_values, dtype=dtype)
@@ -89,7 +89,7 @@ class MicrofloatParameters(NamedTuple):
         )
 
 
-def _microfloat_pack_scales(
+def _pack_scales(
     master_scales: Float[Array, "... groups"],
     scale_mode: MicrofloatScaleMode,
 ) -> UInt8[Array, "... groups"] | Float[Array, "... groups"]:
@@ -98,7 +98,7 @@ def _microfloat_pack_scales(
     return pack_e4m3_scales(master_scales)
 
 
-def _microfloat_unpack_scales(
+def _unpack_scales(
     packed_scales: UInt8[Array, "... groups"] | Float[Array, "... groups"],
     scale_mode: MicrofloatScaleMode,
     dtype: DTypeLike,
@@ -108,7 +108,7 @@ def _microfloat_unpack_scales(
     return packed_scales.astype(dtype)
 
 
-def _microfloat_master_scales_to_scale_values(
+def _master_scales_to_scale_values(
     master_scales: Float[Array, "... groups"],
     scale_mode: MicrofloatScaleMode,
     dtype: DTypeLike,
@@ -120,7 +120,7 @@ def _microfloat_master_scales_to_scale_values(
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _microfloat_master_weights_to_quantized_weights(
+def _master_weights_to_quantized_weights(
     master_weights: Float[Array, "... cols"],
     scale_values: Float[Array, "... groups"],
     *,
@@ -143,7 +143,7 @@ def _microfloat_master_weights_to_quantized_weights(
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _microfloat_master_weights_to_packed_weights(
+def _master_weights_to_packed_weights(
     master_weights: Float[Array, "*components rows cols"],
     master_scales: Float[Array, "*components rows groups"],
     *,
@@ -151,12 +151,12 @@ def _microfloat_master_weights_to_packed_weights(
     group_size: int,
     scale_mode: MicrofloatScaleMode,
 ) -> UInt8[Array, "*components rows packed_cols"]:
-    packed_scales = _microfloat_pack_scales(master_scales, scale_mode)
+    packed_scales = _pack_scales(master_scales, scale_mode)
     scale_values = (
-        _microfloat_unpack_scales(packed_scales, scale_mode, master_weights.dtype)
+        _unpack_scales(packed_scales, scale_mode, master_weights.dtype)
         * global_scale.astype(master_weights.dtype)[..., None, None]
     )
-    codebook = _microfloat_codebook(master_weights.dtype)
+    codebook = _codebook(master_weights.dtype)
     safe_scale_values = jnp.where(scale_values == 0, 1, scale_values)
     normalized_weights = group_by_last_axis(master_weights, group_size=group_size) / safe_scale_values[..., None]
     quantized_values = round_to_minifloat(
@@ -171,7 +171,7 @@ def _microfloat_master_weights_to_packed_weights(
     return pack_uint_to_uint8(unpacked_indices, 4)
 
 
-def _microfloat_packed_weights_to_master_weights(
+def _packed_weights_to_master_weights(
     packed_weights: UInt8[Array, "... packed_cols"],
     packed_scales: UInt8[Array, "... groups"] | Float[Array, "... groups"],
     *,
@@ -180,11 +180,11 @@ def _microfloat_packed_weights_to_master_weights(
     group_size: int,
     scale_mode: MicrofloatScaleMode,
 ) -> Float[Array, "... cols"]:
-    scale_values = _microfloat_unpack_scales(packed_scales, scale_mode, dtype) * global_scale.astype(dtype)
+    scale_values = _unpack_scales(packed_scales, scale_mode, dtype) * global_scale.astype(dtype)
     *leading_dims, groups = packed_scales.shape
     indices = unpack_uint8_to_uint(packed_weights, bits=4, unpacked_last_axis_dim=groups * group_size)
     grouped_indices = indices.reshape(*leading_dims, groups, group_size)
-    grouped_values = lut_values_at(grouped_indices, _microfloat_codebook(dtype))
+    grouped_values = lut_values_at(grouped_indices, _codebook(dtype))
     grouped_weights = grouped_values * scale_values[..., None]
     *leading_dims, groups, group_width = grouped_weights.shape
     return grouped_weights.reshape(*leading_dims, groups * group_width)
@@ -219,13 +219,13 @@ class MicrofloatSpec(QuantizedSpec):
         key = jax.random.PRNGKey(0)
         weights = jax.random.normal(key, (sample_groups, self.group_size), dtype=jnp.float32)
         parameters = MicrofloatParameters.from_weights(weights, self.group_size, self.scale_mode)
-        scale_values = _microfloat_master_scales_to_scale_values(
+        scale_values = _master_scales_to_scale_values(
             parameters.scales,
             self.scale_mode,
             weights.dtype,
         )
         scale_values = scale_values * parameters.global_scale.astype(weights.dtype)
-        quantized_weights = _microfloat_master_weights_to_quantized_weights(
+        quantized_weights = _master_weights_to_quantized_weights(
             weights,
             scale_values,
             group_size=self.group_size,
@@ -261,14 +261,14 @@ class MicrofloatSpec(QuantizedSpec):
             )
 
         return self.from_packed_parameters(
-            packed_weights=_microfloat_master_weights_to_packed_weights(
+            packed_weights=_master_weights_to_packed_weights(
                 stored_weights,
                 master_scales,
                 global_scale=global_scale,
                 group_size=self.group_size,
                 scale_mode=self.scale_mode,
             ),
-            packed_scales=_microfloat_pack_scales(master_scales, self.scale_mode),
+            packed_scales=_pack_scales(master_scales, self.scale_mode),
             global_scale=global_scale,
             dtype=stored_weights.dtype,
             implementation=CompressionImplementation.INFERENCE,
@@ -301,7 +301,7 @@ class MicrofloatSpec(QuantizedSpec):
                 global_scale=global_scale,
             )
 
-        weights = _microfloat_packed_weights_to_master_weights(
+        weights = _packed_weights_to_master_weights(
             packed_weights,
             packed_scales,
             global_scale=global_scale[..., None, None],
@@ -313,9 +313,7 @@ class MicrofloatSpec(QuantizedSpec):
             spec=self,
             is_sharded=is_sharded,
             master_weights=with_sharding(weights, make_sharding(weight_partition)),
-            master_scales=with_sharding(
-                _microfloat_unpack_scales(packed_scales, self.scale_mode, dtype), parameter_sharding
-            ),
+            master_scales=with_sharding(_unpack_scales(packed_scales, self.scale_mode, dtype), parameter_sharding),
             global_scale=global_scale,
         )
 
@@ -453,7 +451,7 @@ class MicrofloatMatrixForTraining(MicrofloatMatrix):
 
     @property
     def _packed_weights(self) -> UInt8[Array, "*components rows packed_cols"]:
-        return _microfloat_master_weights_to_packed_weights(
+        return _master_weights_to_packed_weights(
             self.master_weights,
             self.master_scales,
             global_scale=self.global_scale,
@@ -463,7 +461,7 @@ class MicrofloatMatrixForTraining(MicrofloatMatrix):
 
     @property
     def _packed_scales(self) -> UInt8[Array, "*components rows groups"] | Float[Array, "*components rows groups"]:
-        return _microfloat_pack_scales(self.master_scales, self.spec.scale_mode)
+        return _pack_scales(self.master_scales, self.spec.scale_mode)
 
     def astype(self, dtype: DTypeLike) -> "MicrofloatMatrixForTraining":
         return MicrofloatMatrixForTraining(
@@ -508,13 +506,13 @@ class MicrofloatMatrixForTraining(MicrofloatMatrix):
             scales = scales[index, :]
             global_scale = self.global_scale
         scales = scales.astype(dtype)
-        scale_values = _microfloat_master_scales_to_scale_values(
+        scale_values = _master_scales_to_scale_values(
             scales,
             self.spec.scale_mode,
             dtype,
         )
         scale_values = scale_values * global_scale.astype(dtype)
-        return _microfloat_master_weights_to_quantized_weights(
+        return _master_weights_to_quantized_weights(
             weights.astype(dtype),
             scale_values,
             group_size=self.spec.group_size,
@@ -588,7 +586,7 @@ class MicrofloatMatrixForInference(MicrofloatMatrix):
             packed_weights = packed_weights[index, :]
             packed_scales = packed_scales[index, :]
             global_scale = self.global_scale
-        return _microfloat_packed_weights_to_master_weights(
+        return _packed_weights_to_master_weights(
             packed_weights,
             packed_scales,
             global_scale=global_scale,

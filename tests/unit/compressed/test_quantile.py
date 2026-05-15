@@ -10,10 +10,10 @@ from lalamo.compressed.quantile import (
     QuantileMatrixForInference,
     QuantileMatrixForTraining,
     QuantileSpec,
-    _quantile_bias_lut,
-    _quantile_codebook,
-    _quantile_master_weights_to_grouped_weight_indices,
-    _quantile_master_weights_to_quantized_weights,
+    _bias_lut,
+    _codebook,
+    _master_weights_to_grouped_weight_indices,
+    _master_weights_to_quantized_weights,
 )
 from lalamo.compressed.utils.packing import pack_uint_to_uint8, packed_last_axis_dim, unpack_uint8_to_uint
 from lalamo.compressed.utils.rounding import round_to_sorted_lut_table
@@ -103,16 +103,16 @@ def test_quantile_pack_uint_roundtrips_dense_bit_widths(bits: int) -> None:
 
 
 @pytest.mark.parametrize("bits", [2, 3, 4, 6, 8])
-def test_quantile_codebook_is_symmetric_without_exact_zero(bits: int) -> None:
-    codebook = _quantile_codebook(bits, group_size=4, dtype=jnp.float32)
+def test_codebook_is_symmetric_without_exact_zero(bits: int) -> None:
+    codebook = _codebook(bits, group_size=4, dtype=jnp.float32)
 
     assert not bool(jnp.any(codebook == 0))
     assert_close_arrays(result=codebook, reference=-jnp.flip(codebook))
 
 
-def test_quantile_codebook_depends_on_group_size() -> None:
-    group_4_codebook = _quantile_codebook(bits=4, group_size=4, dtype=jnp.float32)
-    group_32_codebook = _quantile_codebook(bits=4, group_size=32, dtype=jnp.float32)
+def test_codebook_depends_on_group_size() -> None:
+    group_4_codebook = _codebook(bits=4, group_size=4, dtype=jnp.float32)
+    group_32_codebook = _codebook(bits=4, group_size=32, dtype=jnp.float32)
 
     assert not bool(jnp.allclose(group_4_codebook, group_32_codebook))
 
@@ -123,13 +123,13 @@ def test_quantile_grouped_weight_indices_match_dense_nearest_codebook(
 ) -> None:
     weights = jnp.linspace(-2, 2, 32, dtype=jnp.float32).reshape(2, 16)
     scales = jnp.array([[0.5, 1.25, 2.0, 0.25], [1.0, 0.75, 1.5, 2.5]], dtype=jnp.float32)
-    codebook = _quantile_codebook(bits, group_size=4, dtype=jnp.float32)
+    codebook = _codebook(bits, group_size=4, dtype=jnp.float32)
     grouped_weights = weights.reshape(2, 4, 4)
     normalized_weights = grouped_weights / scales[..., None]
     dense_distances = jnp.abs(normalized_weights[..., None] - codebook)
     expected = jnp.argmin(dense_distances, axis=-1).astype(jnp.uint8)
 
-    result = _quantile_master_weights_to_grouped_weight_indices(
+    result = _master_weights_to_grouped_weight_indices(
         weights,
         scales,
         master_biases=None,
@@ -240,7 +240,7 @@ def test_quantile_forward_uses_selected_estimator_for_master_biases() -> None:
     bits = 4
     bias_bits = 2
     group_size = 4
-    bias_table = _quantile_bias_lut(group_size=group_size, bias_bits=bias_bits, bits=bits, dtype=jnp.float32)
+    bias_table = _bias_lut(group_size=group_size, bias_bits=bias_bits, bits=bits, dtype=jnp.float32)
     lower_bias = bias_table[1]
     upper_bias = bias_table[2]
     master_biases = (lower_bias + 0.51 * (upper_bias - lower_bias))[None, None]
@@ -262,7 +262,7 @@ def test_quantile_forward_uses_selected_estimator_for_master_biases() -> None:
 
     master_weights = jnp.zeros((1, group_size), dtype=jnp.float32)
     scale_values = jnp.ones((1, 1), dtype=jnp.float32)
-    stochastic_result = _quantile_master_weights_to_quantized_weights(
+    stochastic_result = _master_weights_to_quantized_weights(
         master_weights,
         scale_values,
         master_biases=master_biases,
@@ -272,7 +272,7 @@ def test_quantile_forward_uses_selected_estimator_for_master_biases() -> None:
         keychain=keychain,
         gradient_estimator=GradientEstimator.STOCHASTIC_ROUNDING,
     )
-    deterministic_bias_result = _quantile_master_weights_to_quantized_weights(
+    deterministic_bias_result = _master_weights_to_quantized_weights(
         master_weights,
         scale_values,
         master_biases=deterministic_biases,

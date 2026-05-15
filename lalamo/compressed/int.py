@@ -85,7 +85,7 @@ class IntAffineParameters(NamedTuple):
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _int_master_weights_to_int_scale(
+def _master_weights_to_int_scale_weights(
     weights: Float[Array, "... cols"],
     scales: Float[Array, "... groups"],
     int_scale_zero_points: Float[Array, "... groups"] | None,
@@ -103,7 +103,7 @@ def _int_master_weights_to_int_scale(
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _int_scale_weights_to_master(
+def _integer_scaled_weights_to_master_weights(
     int_scale_weights: Float[Array, "... cols"],
     scales: Float[Array, "... groups"],
     int_scale_zero_points: Float[Array, "... groups"] | None,
@@ -125,7 +125,7 @@ def _int_scale_weights_to_master(
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _int_quantize(
+def _quantize(
     weights: Float[Array, "... cols"],
     scales: Float[Array, "... groups"],
     zero_points: Float[Array, "... groups"] | None,
@@ -138,7 +138,7 @@ def _int_quantize(
     else:
         int_scale_zero_points = round_fn(zero_points / stop_gradient(scales))
 
-    int_scale_weights = _int_master_weights_to_int_scale(
+    int_scale_weights = _master_weights_to_int_scale_weights(
         weights,
         stop_gradient(scales),
         stop_gradient(int_scale_zero_points),
@@ -146,11 +146,11 @@ def _int_quantize(
         bits,
     )
     int_weights = round_fn(int_scale_weights)
-    return _int_scale_weights_to_master(int_weights, scales, int_scale_zero_points, group_size, bits)
+    return _integer_scaled_weights_to_master_weights(int_weights, scales, int_scale_zero_points, group_size, bits)
 
 
 @supports_dummy_arrays()
-def _int_pack_master_zero_points(
+def _master_zero_points_to_packed_zero_points(
     zero_points: Float[Array, "*components rows groups"] | None,
     scales: Float[Array, "*components rows groups"],
     bits: int,
@@ -163,7 +163,7 @@ def _int_pack_master_zero_points(
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _int_pack_master_weights(
+def _master_weights_to_packed_weights(
     weights: Float[Array, "*components rows cols"],
     scales: Float[Array, "*components rows groups"],
     zero_points: Float[Array, "*components rows groups"] | None,
@@ -174,7 +174,7 @@ def _int_pack_master_weights(
         int_scale_zero_points = None
     else:
         int_scale_zero_points = deterministic_round_to_unsigned_grid(zero_points / scales, bits=bits)
-    int_scale_weights = _int_master_weights_to_int_scale(
+    int_scale_weights = _master_weights_to_int_scale_weights(
         weights,
         scales,
         int_scale_zero_points,
@@ -185,7 +185,7 @@ def _int_pack_master_weights(
     return pack_uint_to_uint8(int_weights, bits)
 
 
-def _int_unpack_master_zero_points(
+def _packed_zero_points_to_master_zero_points(
     packed_zero_points: UInt8[Array, "*components rows packed_groups"] | None,
     scales: Float[Array, "*components rows groups"],
     bits: int,
@@ -197,7 +197,7 @@ def _int_unpack_master_zero_points(
     return int_scale_zero_points.astype(scales.dtype) * scales
 
 
-def _int_unpack_master_weights(
+def _packed_weights_to_master_weights(
     packed_weights: UInt8[Array, "... packed_cols"],
     scales: Float[Array, "... groups"],
     packed_zero_points: UInt8[Array, "... packed_groups"] | None,
@@ -210,7 +210,7 @@ def _int_unpack_master_weights(
     else:
         int_scale_zero_points = unpack_uint8_to_uint(packed_zero_points, bits=bits, dtype=scales.dtype)
 
-    return _int_scale_weights_to_master(int_weights, scales, int_scale_zero_points, group_size, bits)
+    return _integer_scaled_weights_to_master_weights(int_weights, scales, int_scale_zero_points, group_size, bits)
 
 
 @dataclass(frozen=True)
@@ -278,14 +278,14 @@ class IntSpec(QuantizedSpec):
                 master_zero_points=affine_parameters.zero_points,
             )
         else:
-            packed_weights = _int_pack_master_weights(
+            packed_weights = _master_weights_to_packed_weights(
                 stored_weights,
                 affine_parameters.scales,
                 affine_parameters.zero_points,
                 self.group_size,
                 self.bits,
             )
-            packed_zero_points = _int_pack_master_zero_points(
+            packed_zero_points = _master_zero_points_to_packed_zero_points(
                 affine_parameters.zero_points,
                 affine_parameters.scales,
                 self.bits,
@@ -333,14 +333,14 @@ class IntSpec(QuantizedSpec):
                 packed_zero_points=packed_zero_points,
             )
 
-        weights = _int_unpack_master_weights(
+        weights = _packed_weights_to_master_weights(
             packed_weights,
             scales,
             packed_zero_points,
             self.group_size,
             self.bits,
         )
-        zero_points = _int_unpack_master_zero_points(
+        zero_points = _packed_zero_points_to_master_zero_points(
             packed_zero_points,
             scales,
             self.bits,
@@ -411,7 +411,7 @@ class IntMatrixForTraining(IntMatrix):
 
     @property
     def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]:
-        return _int_pack_master_weights(
+        return _master_weights_to_packed_weights(
             self.master_weights,
             self.scales,
             self.master_zero_points,
@@ -421,7 +421,7 @@ class IntMatrixForTraining(IntMatrix):
 
     @property
     def _packed_quantized_zero_points(self) -> UInt8[Array, "*components rows packed_groups"] | None:
-        return _int_pack_master_zero_points(
+        return _master_zero_points_to_packed_zero_points(
             self.master_zero_points,
             self.scales,
             self.spec.bits,
@@ -440,7 +440,7 @@ class IntMatrixForTraining(IntMatrix):
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
-        weights = _int_quantize(
+        weights = _quantize(
             self.master_weights,
             self.scales,
             self.master_zero_points,
@@ -466,7 +466,7 @@ class IntMatrixForTraining(IntMatrix):
         zero_points = self.master_zero_points
         if zero_points is not None:
             zero_points = zero_points[index, :].astype(dtype)
-        return _int_quantize(
+        return _quantize(
             self.master_weights[index, :].astype(dtype),
             self.scales[index, :].astype(dtype),
             zero_points,
@@ -492,7 +492,7 @@ class IntMatrixForTraining(IntMatrix):
         zero_points = self.master_zero_points
         if zero_points is not None:
             zero_points = zero_points.astype(vector.dtype)
-        dequantized_weights = _int_quantize(
+        dequantized_weights = _quantize(
             self.master_weights.astype(vector.dtype),
             self.scales.astype(vector.dtype),
             zero_points,
@@ -646,7 +646,7 @@ class IntMatrixForInference(IntMatrix):
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
-        weights = _int_unpack_master_weights(
+        weights = _packed_weights_to_master_weights(
             self.packed_weights,
             self.scales,
             self.packed_zero_points,
@@ -671,7 +671,7 @@ class IntMatrixForInference(IntMatrix):
         packed_zero_points = self.packed_zero_points
         if packed_zero_points is not None:
             packed_zero_points = packed_zero_points[index, :]
-        return _int_unpack_master_weights(
+        return _packed_weights_to_master_weights(
             self.packed_weights[index, :],
             self.scales[index, :].astype(dtype),
             packed_zero_points,
@@ -688,7 +688,7 @@ class IntMatrixForInference(IntMatrix):
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
-        weights = _int_unpack_master_weights(
+        weights = _packed_weights_to_master_weights(
             self.packed_weights,
             self.scales.astype(vector.dtype),
             self.packed_zero_points,
