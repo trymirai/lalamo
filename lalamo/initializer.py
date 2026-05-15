@@ -134,7 +134,7 @@ class EmptyInitializer(Initializer):
     def embedding_matrix(self, vocabulary_size: int, model_dim: int) -> ShapeDtypeMatrix:
         return ShapeDtypeMatrix(
             spec=ShapeDtypeSpec(layout=Layout.INPUT_OUTPUT),
-            is_sharded=True,
+            is_sharded=False,
             mixture_dims=(),
             input_dim=vocabulary_size,
             output_dim=model_dim,
@@ -192,5 +192,5 @@ class RandomInitializer(Initializer):
 
     def embedding_matrix(self, vocabulary_size: int, model_dim: int) -> FullPrecisionMatrix:
         std = 1.0 / math.sqrt(model_dim)
-        weights = self.normal(std, (model_dim, vocabulary_size))
-        return FullPrecisionSpec(Layout.INPUT_OUTPUT).compress(weights)
+        weights = self.normal(std, (model_dim, vocabulary_size), partition=(None, None))
+        return FullPrecisionSpec(Layout.INPUT_OUTPUT).compress(weights, is_sharded=False)

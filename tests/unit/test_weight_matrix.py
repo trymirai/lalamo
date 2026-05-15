@@ -54,6 +54,7 @@ def test_full_precision_export_load_roundtrips_weights_spec_and_template_shardin
 
     restored = skeleton.load_exported(original.export())
 
+    assert isinstance(restored, FullPrecisionMatrix)
     assert_named_sharding(skeleton.weights.sharding, fake_mesh)
     assert original.export().metadata["spec"] == spec.to_json()
     assert restored.spec == spec
@@ -79,7 +80,7 @@ def test_full_precision_dot_matches_logical_matmul_and_preserves_input_sharding(
 
 
 def test_full_precision_lookup_embedding_matches_selected_row_and_feature_sharding(fake_mesh: Mesh) -> None:
-    matrix = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(_logical_weights())
+    matrix = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(_logical_weights(), is_sharded=False)
     token_index = 2
 
     result = matrix.lookup_embedding(token_index, keychain=Keychain.init(5))

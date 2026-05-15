@@ -1,8 +1,10 @@
 from abc import abstractmethod
 from dataclasses import dataclass
+from functools import cached_property, partial
 from itertools import product
 from typing import Literal, NamedTuple, Self
 
+import jax
 import jax.numpy as jnp
 from einops import rearrange
 from jax.lax import stop_gradient
@@ -20,7 +22,6 @@ from lalamo.utils.sharding import (
     make_sharding,
     reshard_as,
     sharding_of,
-    use_out_sharding,
     with_sharding,
 )
 from lalamo.utils.surgery import load_as
@@ -35,7 +36,6 @@ from lalamo.weight_matrix import (
 )
 
 from .quantized_spec import QuantizedSpec
-from .utils.gaussian_order_statistics import standard_normal_absmax_squared
 from .utils.yaqa import yaqa_round_weights
 
 __all__ = [
@@ -44,8 +44,6 @@ __all__ = [
     "E8PMatrixForTraining",
     "E8PSpec",
 ]
-
-type E8PBits = Literal[2, 3, 4]
 
 _E8P_VECTOR_SIZE = 8
 _E8P_CODEBOOK_SIZE = 1 << 16
@@ -333,6 +331,73 @@ def _e8p_indices_to_master_weights(
     return rearrange(scaled_weights, "... groups vector -> ... (groups vector)")
 
 
+def _e8p_quantized_weights_and_normalized_values(
+    weights: Float[Array, "... cols"],
+    scale: Float[Array, "*components"],
+    *,
+    bits: int,
+    residual_scale: float,
+) -> tuple[Float[Array, "... cols"], Float[Array, "... cols"]]:
+    grouped_weights, _codes, _residual_codes = _e8p_grouped_codes(
+        weights,
+        stop_gradient(scale),
+        bits=bits,
+        residual_scale=residual_scale,
+    )
+    normalized_values = rearrange(grouped_weights, "... groups vector -> ... (groups vector)")
+    quantized_weights = normalized_values * _scale_broadcast(scale, weights.ndim)
+    return quantized_weights, normalized_values
+
+
+@partial(jax.custom_vjp, nondiff_argnums=(2, 3))
+def _e8p_quantize_with_vjp(
+    weights: Float[Array, "... cols"],
+    scale: Float[Array, "*components"],
+    bits: int,
+    residual_scale: float,
+) -> Float[Array, "... cols"]:
+    quantized_weights, _normalized_values = _e8p_quantized_weights_and_normalized_values(
+        weights,
+        scale,
+        bits=bits,
+        residual_scale=residual_scale,
+    )
+    return quantized_weights
+
+
+def _e8p_quantize_with_vjp_fwd(
+    weights: Float[Array, "... cols"],
+    scale: Float[Array, "*components"],
+    bits: int,
+    residual_scale: float,
+) -> tuple[Float[Array, "... cols"], tuple[Float[Array, "... cols"], Float[Array, "*components"]]]:
+    quantized_weights, normalized_values = _e8p_quantized_weights_and_normalized_values(
+        weights,
+        scale,
+        bits=bits,
+        residual_scale=residual_scale,
+    )
+    return quantized_weights, (normalized_values, scale)
+
+
+def _e8p_quantize_with_vjp_bwd(
+    bits: int,  # noqa: ARG001
+    residual_scale: float,  # noqa: ARG001
+    residuals: tuple[Float[Array, "... cols"], Float[Array, "*components"]],
+    gradients: Float[Array, "... cols"],
+) -> tuple[Float[Array, "... cols"], Float[Array, "*components"]]:
+    normalized_values, scale = residuals
+    scale_axes = tuple(range(scale.ndim, gradients.ndim))
+    scale_gradients = jnp.sum(gradients * normalized_values, axis=scale_axes)
+    return gradients, scale_gradients
+
+
+_e8p_quantize_with_vjp.defvjp(
+    _e8p_quantize_with_vjp_fwd,
+    _e8p_quantize_with_vjp_bwd,
+)
+
+
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
 def _e8p_quantize(
     weights: Float[Array, "... cols"],
@@ -341,15 +406,7 @@ def _e8p_quantize(
     bits: int,
     residual_scale: float,
 ) -> Float[Array, "... cols"]:
-    grouped_weights, _codes, _residual_codes = _e8p_grouped_codes(
-        weights,
-        stop_gradient(scale),
-        bits=bits,
-        residual_scale=residual_scale,
-    )
-    quantized_weights = rearrange(grouped_weights, "... groups vector -> ... (groups vector)")
-    quantized_weights = quantized_weights * _scale_broadcast(scale, weights.ndim)
-    return quantized_weights + weights - stop_gradient(weights)
+    return _e8p_quantize_with_vjp(weights, scale, bits, residual_scale)
 
 
 @supports_dummy_arrays()
@@ -390,7 +447,7 @@ def _e8p_unpack_master_weights(
 
 @dataclass(frozen=True)
 class E8PSpec(QuantizedSpec):
-    bits: E8PBits = 2
+    bits: Literal[2, 3, 4] = 2
     layout: Layout = Layout.OUTPUT_INPUT
     scale_normalization: float | None = None
     residual_scale: float | None = None
@@ -411,9 +468,20 @@ class E8PSpec(QuantizedSpec):
     def rate(self) -> float:
         return float(self.bits)
 
-    @property
+    @cached_property
     def distortion(self) -> float:
-        return standard_normal_absmax_squared(_E8P_VECTOR_SIZE) / (12 * (2**self.bits - 1) ** 2)
+        sample_groups = 32_768
+        key = jax.random.PRNGKey(0)
+        weights = jax.random.normal(key, (sample_groups, _E8P_VECTOR_SIZE), dtype=jnp.float32)
+        parameters = E8PParameters.from_weights(weights, scale_normalization=self.scale_normalization_value)
+        quantized_weights = _e8p_quantize(
+            weights,
+            parameters.scale,
+            bits=self.bits,
+            residual_scale=self.residual_scale_value,
+        )
+        distortion = jnp.mean(jnp.square(weights - quantized_weights))
+        return float(jax.device_get(distortion))
 
     @property
     def scale_normalization_value(self) -> float:
@@ -449,7 +517,7 @@ class E8PSpec(QuantizedSpec):
             return E8PMatrixForTraining(
                 spec=self,
                 is_sharded=is_sharded,
-                weights=stored_weights,
+                master_weights=stored_weights,
                 scale=scale,
             )
 
@@ -512,7 +580,7 @@ class E8PSpec(QuantizedSpec):
         return E8PMatrixForTraining(
             spec=self,
             is_sharded=is_sharded,
-            weights=with_sharding(weights, weight_sharding),
+            master_weights=with_sharding(weights, weight_sharding),
             scale=scale,
         )
 
@@ -558,20 +626,20 @@ class E8PMatrix(EmbeddingMatrix[E8PSpec]):
 
 
 class E8PMatrixForTraining(E8PMatrix):
-    weights: Float[Array, "*components rows cols"] = field(norm=ParameterNorm.SPECTRAL)
+    master_weights: Float[Array, "*components rows cols"] = field(norm=ParameterNorm.SPECTRAL)
 
     @property
     def shape(self) -> tuple[int, ...]:
-        return self.weights.shape
+        return self.master_weights.shape
 
     @property
     def dtype(self) -> DTypeLike:
-        return self.weights.dtype
+        return self.master_weights.dtype
 
     @property
     def _codes(self) -> UInt16[Array, "*components rows groups"]:
         codes, _residual_codes = _e8p_pack_master_weights(
-            self.weights,
+            self.master_weights,
             self.scale,
             bits=self.spec.bits,
             residual_scale=self.spec.residual_scale_value,
@@ -581,7 +649,7 @@ class E8PMatrixForTraining(E8PMatrix):
     @property
     def _residual_codes(self) -> Array | None:
         _codes, residual_codes = _e8p_pack_master_weights(
-            self.weights,
+            self.master_weights,
             self.scale,
             bits=self.spec.bits,
             residual_scale=self.spec.residual_scale_value,
@@ -592,20 +660,19 @@ class E8PMatrixForTraining(E8PMatrix):
         return E8PMatrixForTraining(
             spec=self.spec,
             is_sharded=self.is_sharded,
-            weights=self.weights.astype(dtype),
+            master_weights=self.master_weights.astype(dtype),
             scale=self.scale.astype(dtype),
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
         weights = _e8p_quantize(
-            self.weights,
+            self.master_weights,
             self.scale,
             bits=self.spec.bits,
             residual_scale=self.spec.residual_scale_value,
         )
         return self.spec.layout.to_output_input(weights)
 
-    @use_out_sharding((None,))
     def lookup_embedding(
         self,
         index: int | Int[Array, ""],
@@ -620,7 +687,7 @@ class E8PMatrixForTraining(E8PMatrix):
         if dtype is None:
             dtype = self.dtype
         return _e8p_quantize(
-            self.weights[index, :].astype(dtype),
+            self.master_weights[index, :].astype(dtype),
             self.scale.astype(dtype),
             bits=self.spec.bits,
             residual_scale=self.spec.residual_scale_value,
@@ -636,7 +703,7 @@ class E8PMatrixForTraining(E8PMatrix):
     ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
         weights = _e8p_quantize(
-            self.weights.astype(vector.dtype),
+            self.master_weights.astype(vector.dtype),
             self.scale.astype(vector.dtype),
             bits=self.spec.bits,
             residual_scale=self.spec.residual_scale_value,
@@ -673,7 +740,11 @@ class E8PMatrixForTraining(E8PMatrix):
         return self.spec.from_packed_parameters(
             codes=load_as(self._codes, expored_data.arrays[prefix / "weights"], allow_dtype_cast=False),
             residual_codes=residual_codes,
-            scale=load_as(self.scale, expored_data.arrays[prefix / "scale"], allow_dtype_cast=allow_dtype_cast),
+            scale=load_as(
+                self.scale,
+                expored_data.arrays[prefix / "scale"],
+                allow_dtype_cast=allow_dtype_cast,
+            ),
             dtype=self.dtype,
             implementation=CompressionImplementation.TRAINING,
             is_sharded=self.is_sharded,
@@ -736,7 +807,6 @@ class E8PMatrixForInference(E8PMatrix):
         )
         return self.spec.layout.to_output_input(weights)
 
-    @use_out_sharding((None,))
     def lookup_embedding(
         self,
         index: int | Int[Array, ""],
@@ -811,7 +881,11 @@ class E8PMatrixForInference(E8PMatrix):
         return self.spec.from_packed_parameters(
             codes=load_as(self.codes, expored_data.arrays[prefix / "weights"], allow_dtype_cast=False),
             residual_codes=residual_codes,
-            scale=load_as(self.scale, expored_data.arrays[prefix / "scale"], allow_dtype_cast=allow_dtype_cast),
+            scale=load_as(
+                self.scale,
+                expored_data.arrays[prefix / "scale"],
+                allow_dtype_cast=allow_dtype_cast,
+            ),
             dtype=self.dtype,
             implementation=CompressionImplementation.INFERENCE,
             is_sharded=self.is_sharded,

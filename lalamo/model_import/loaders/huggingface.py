@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array
 
-from lalamo.compressed import AWQMatrix, AWQSpec, MLXMatrix, MLXSpec
+from lalamo.compressed import IntMatrix, IntSpec, MLXMatrix, MLXSpec
 from lalamo.compressed.utils.packing import pack_uint_to_uint8
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.decoder import Decoder
@@ -63,7 +63,7 @@ def _supported_quantization_bits(bits: int) -> Literal[4, 8]:
 
 
 def _reverse_uint4_order(array: Array, reverse_order: Array) -> Array:
-    """Reverses the AWQ packing order to get the logical order of channels for INT4."""
+    """Reverses the AutoAWQ packing order to get the logical order of channels for INT4."""
     pack_factor = 32 // 4
     *_, last_dim = array.shape
     if last_dim % pack_factor != 0:
@@ -233,9 +233,9 @@ def _load_awq_array(
     layout: Layout,
     implementation: CompressionImplementation,
     is_sharded: bool,
-) -> AWQMatrix:
+) -> IntMatrix:
     packed_qweights, packed_qzeros, scales = _fuse_awq_weights(weights_dict, path, sublayers_to_fuse)
-    # AWQ HF layout: qweight [in_channels, out_packed], scales [num_groups, out_channels]
+    # AutoAWQ HF layout: qweight [in_channels, out_packed], scales [num_groups, out_channels]
     out_channels = scales.shape[1]
     num_groups = scales.shape[0]
     pack_factor = out_channels // packed_qweights.shape[1]
@@ -257,7 +257,7 @@ def _load_awq_array(
     if unpacked_zeros is not None:
         zero_point_values = unpacked_zeros.T.astype(template.dtype)
 
-    spec = AWQSpec(
+    spec = IntSpec(
         bits=_supported_quantization_bits(bits),
         group_size=group_size,
         is_symmetric=zero_point_values is None,
@@ -1125,7 +1125,7 @@ def _load_input_embedding_matrix(
         expected_grouped_channels=matrix.output_dim if hasattr(matrix, "output_dim") else matrix.shape[-1],
         full_precision_weights=lambda: jnp.matrix_transpose(weights_dict[path / "weight"]),
         implementation=implementation,
-        is_sharded=matrix.is_sharded,
+        is_sharded=False,
     )
 
 

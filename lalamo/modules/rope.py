@@ -26,7 +26,7 @@ from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule, field
 from lalamo.utils.registry_abc import RegistryABC
-from lalamo.utils.sharding import use_out_sharding
+from lalamo.utils.sharding import make_sharding
 
 __all__ = [
     "LinearScalingRoPEConfig",
@@ -143,11 +143,10 @@ class RoPE(LalamoModule[RoPEConfig]):
         return result
 
     @eqx.filter_jit
-    @use_out_sharding((None, None))
     def __call__(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
         return PositionalEmbeddings(
-            cosines=self.cosines[timesteps],
-            sines=self.sines[timesteps],
+            cosines=self.cosines.at[timesteps].get(out_sharding=make_sharding((None, None))),
+            sines=self.sines.at[timesteps].get(out_sharding=make_sharding((None, None))),
         )
 
 

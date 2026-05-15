@@ -10,7 +10,7 @@ from lalamo.module import Keychain, ParameterNorm, ShardingAxis, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.utils.sharding import make_sharding, use_out_sharding, with_sharding
+from lalamo.utils.sharding import make_sharding, with_sharding
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
@@ -113,7 +113,6 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
             down_projection=self.down_projection.astype(dtype),
         )
 
-    @use_out_sharding((None, None))
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
         return self.up_projection @ self.down_projection
 

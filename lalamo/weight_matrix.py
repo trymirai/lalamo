@@ -19,7 +19,7 @@ from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.registry_abc import RegistryABC, make_registry_abc_converter
-from lalamo.utils.sharding import make_sharding, reshard_as, use_out_sharding, with_sharding
+from lalamo.utils.sharding import make_sharding, reshard_as, with_sharding
 
 __all__ = [
     "CompressionImplementation",
@@ -111,6 +111,25 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
     def switch_implementation(self, implementation: CompressionImplementation) -> Self:  # noqa: ARG002
         return self
 
+    def switch_sharding(self, is_sharded: bool) -> Self:
+        if is_sharded == self.is_sharded:
+            return self
+        weights = self.decompress()
+        result = self.spec.compress(
+            weights,
+            implementation=CompressionImplementation.INFERENCE,
+            is_sharded=is_sharded,
+        )
+        if isinstance(result, type(self)):
+            return result
+        result = self.spec.compress(
+            weights,
+            implementation=CompressionImplementation.TRAINING,
+            is_sharded=is_sharded,
+        )
+        assert isinstance(result, type(self))
+        return result
+
     @property
     @abstractmethod
     def shape(self) -> tuple[int, ...]: ...
@@ -179,7 +198,7 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
-    ) -> Self:
+    ) -> "WeightMatrix":
         if prefix is None:
             prefix = ParameterPath()
         saved_spec = expored_data.metadata[prefix / "spec"]
@@ -238,15 +257,9 @@ class Layout(StrEnum):
         self,
         weights: Float[Array, "*components rows cols"],
     ) -> Float[Array, "*components out_channels in_channels"]:
-        @use_out_sharding((None, None))
-        def convert(
-            weights: Float[Array, "*components rows cols"],
-        ) -> Float[Array, "*components out_channels in_channels"]:
-            if self == Layout.INPUT_OUTPUT:
-                return weights.swapaxes(-1, -2)
-            return weights
-
-        return convert(weights)
+        if self == Layout.INPUT_OUTPUT:
+            return weights.swapaxes(-1, -2)
+        return weights
 
     @overload
     def matmul(
@@ -324,7 +337,6 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
         return self.spec.layout.to_output_input(self.weights)
 
-    @use_out_sharding((None,))
     def lookup_embedding(
         self,
         index: int | Int[Array, ""],
@@ -442,7 +454,7 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
-    ) -> Self:
+    ) -> WeightMatrix:
         if prefix is None:
             prefix = ParameterPath()
 

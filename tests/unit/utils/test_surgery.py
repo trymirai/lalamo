@@ -4,6 +4,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
+from jax.sharding import Mesh, NamedSharding
 from jaxtyping import DTypeLike, PyTree
 
 from lalamo.utils.surgery import (
@@ -72,6 +73,19 @@ def test_load_as_treats_weight_matrices_as_leaf_nodes() -> None:
     result = load_as(template, value)
 
     assert result["matrix"] is value["matrix"]
+
+
+def test_load_as_switches_weight_matrix_sharding_to_template(fake_mesh: Mesh) -> None:
+    template = FullPrecisionSpec().compress(jnp.zeros((2, 3), dtype=jnp.float32))
+    value = FullPrecisionSpec().compress(jnp.ones((2, 3), dtype=jnp.float32), is_sharded=False)
+
+    result = load_as(template, value)
+
+    assert result.is_sharded == template.is_sharded
+    assert result.weights.sharding == template.weights.sharding
+    assert isinstance(result.weights.sharding, NamedSharding)
+    assert result.weights.sharding.mesh == fake_mesh
+    assert jnp.all(result.weights == 1)
 
 
 def test_load_as_casts_weight_matrix_dtype_when_allowed() -> None:

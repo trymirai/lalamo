@@ -1,8 +1,7 @@
-from collections.abc import Callable
 from typing import TypeGuard
 
 from jax import Array, ShapeDtypeStruct, reshard, typeof
-from jax.sharding import NamedSharding, PartitionSpec, Sharding, auto_axes, get_abstract_mesh, get_mesh
+from jax.sharding import NamedSharding, PartitionSpec, Sharding, get_abstract_mesh, get_mesh
 
 from lalamo.module import ShardingAxis
 
@@ -11,7 +10,6 @@ __all__ = [
     "make_sharding",
     "reshard_as",
     "sharding_of",
-    "use_out_sharding",
     "with_sharding",
 ]
 
@@ -54,9 +52,3 @@ def with_sharding(array: Array, sharding: Sharding | None) -> Array:
 
 def reshard_as(array: Array, reference: Array) -> Array:
     return with_sharding(array, sharding_of(reference))
-
-
-def use_out_sharding[**Params, ResultT](
-    sharding: tuple[ShardingAxis | None, ...],
-) -> Callable[[Callable[Params, ResultT]], Callable[Params, ResultT]]:
-    return auto_axes(out_sharding=PartitionSpec(*sharding))

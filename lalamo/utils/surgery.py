@@ -96,9 +96,10 @@ def _check_leaf_compatible(
 
 def _load_leaf_as_template(template_leaf: PyTree, value_leaf: PyTree) -> PyTree:
     if isinstance(template_leaf, WeightMatrix) and isinstance(value_leaf, WeightMatrix):
-        if template_leaf.dtype == value_leaf.dtype:
-            return value_leaf
-        return value_leaf.astype(template_leaf.dtype)
+        loaded_value = value_leaf
+        if template_leaf.dtype != value_leaf.dtype:
+            loaded_value = loaded_value.astype(template_leaf.dtype)
+        return loaded_value.switch_sharding(template_leaf.is_sharded)
     if _is_array_like(template_leaf) and _is_array_like(value_leaf):
         loaded_value = value_leaf
         if template_leaf.dtype != value_leaf.dtype:

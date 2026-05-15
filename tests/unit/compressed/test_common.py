@@ -1,18 +1,18 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from math import prod
-from typing import Literal, cast
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
 import pytest
 from jax.sharding import Mesh, NamedSharding
 
-from lalamo.compressed.awq import AWQSpec
 from lalamo.compressed.e8p import E8PSpec
+from lalamo.compressed.int import IntSpec
+from lalamo.compressed.microfloat import MicrofloatSpec
 from lalamo.compressed.mlx import MLXSpec
-from lalamo.compressed.mxfp4 import MXFP4Spec
-from lalamo.compressed.normal_float import NormalFloatSpec
+from lalamo.compressed.quantile import QuantileSpec
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import (
@@ -24,51 +24,52 @@ from lalamo.weight_matrix import (
 )
 from tests.common import assert_close_arrays, assert_named_sharding
 
-type Bits = Literal[4, 8]
-
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
 
 @dataclass(frozen=True)
 class CompressedMatrixCase:
     name: str
-    make_spec: Callable[[Bits, int, Layout], WeightMatrixSpec]
+    make_spec: Callable[[Literal[4, 8], int, Layout], WeightMatrixSpec]
     weight_offset: float
     weight_divisor: float
 
 
-def _awq_spec(bits: Bits, group_size: int, layout: Layout) -> WeightMatrixSpec:
-    return AWQSpec(bits=bits, group_size=group_size, layout=layout)
+def _int_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> WeightMatrixSpec:
+    return IntSpec(bits=bits, group_size=group_size, layout=layout)
 
 
-def _mlx_spec(bits: Bits, group_size: int, layout: Layout) -> WeightMatrixSpec:
+def _mlx_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> WeightMatrixSpec:
     return MLXSpec(bits=bits, group_size=group_size, layout=layout)
 
 
-def _normal_float_spec(bits: Bits, group_size: int, layout: Layout) -> WeightMatrixSpec:
-    return NormalFloatSpec(bits=bits, group_size=group_size, layout=layout)
+def _quantile_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> WeightMatrixSpec:
+    return QuantileSpec(bits=bits, group_size=group_size, layout=layout)
 
 
-def _mxfp4_spec(bits: Bits, group_size: int, layout: Layout) -> WeightMatrixSpec:
+def _microfloat_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> WeightMatrixSpec:
     if bits != 4:
-        raise ValueError(f"MXFP4 only supports 4-bit weights, got {bits}")
-    return MXFP4Spec(group_size=group_size, layout=layout)
+        raise ValueError(f"Microfloat only supports 4-bit weights, got {bits}")
+    return MicrofloatSpec(group_size=group_size, layout=layout)
 
 
-def _e8p_spec(bits: Bits, group_size: int, layout: Layout) -> WeightMatrixSpec:  # noqa: ARG001
+def _e8p_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> WeightMatrixSpec:  # noqa: ARG001
     if bits != 4:
         raise ValueError(f"E8P shared tests only use the 4-bit variant, got {bits}")
     return E8PSpec(bits=bits, layout=layout)
 
 
 COMPRESSED_MATRIX_CASES = (
-    pytest.param(CompressedMatrixCase("awq", _awq_spec, weight_offset=7, weight_divisor=8), id="awq"),
+    pytest.param(CompressedMatrixCase("int", _int_spec, weight_offset=7, weight_divisor=8), id="int"),
     pytest.param(CompressedMatrixCase("mlx", _mlx_spec, weight_offset=3, weight_divisor=5), id="mlx"),
     pytest.param(
-        CompressedMatrixCase("normal_float", _normal_float_spec, weight_offset=5, weight_divisor=6),
-        id="normal-float",
+        CompressedMatrixCase("quantile", _quantile_spec, weight_offset=5, weight_divisor=6),
+        id="quantile",
     ),
-    pytest.param(CompressedMatrixCase("mxfp4", _mxfp4_spec, weight_offset=4, weight_divisor=4), id="mxfp4"),
+    pytest.param(
+        CompressedMatrixCase("microfloat", _microfloat_spec, weight_offset=4, weight_divisor=4),
+        id="microfloat",
+    ),
     pytest.param(CompressedMatrixCase("e8p", _e8p_spec, weight_offset=11, weight_divisor=9), id="e8p"),
 )
 
@@ -94,7 +95,7 @@ def host_decompressed(matrix: EmbeddingMatrix[WeightMatrixSpec]) -> jax.Array:
 
 def host_embedding_table(matrix: EmbeddingMatrix[WeightMatrixSpec]) -> jax.Array:
     match matrix.spec:
-        case AWQSpec() | E8PSpec() | MLXSpec() | NormalFloatSpec() | MXFP4Spec() | FullPrecisionSpec() as spec:
+        case IntSpec() | E8PSpec() | MLXSpec() | QuantileSpec() | MicrofloatSpec() | FullPrecisionSpec() as spec:
             return host_array(spec.layout.from_output_input(matrix.decompress()))
     raise TypeError(f"Unsupported matrix spec type: {type(matrix.spec).__name__}")
 
@@ -117,9 +118,15 @@ def _compress(
     *,
     layout: Layout,
     implementation: CompressionImplementation,
+    is_sharded: bool = True,
 ) -> EmbeddingMatrix[WeightMatrixSpec]:
-    matrix = case.make_spec(4, 2, layout).compress(weights, implementation=implementation)
-    return cast("EmbeddingMatrix[WeightMatrixSpec]", matrix)
+    matrix = case.make_spec(4, 2, layout).compress(
+        weights,
+        implementation=implementation,
+        is_sharded=is_sharded,
+    )
+    assert isinstance(matrix, EmbeddingMatrix)
+    return matrix
 
 
 def _compress_pair(
@@ -178,6 +185,7 @@ def test_compressed_matrix_lookup_embedding_matches_selected_row_and_feature_sha
         logical_weights(case),
         layout=Layout.INPUT_OUTPUT,
         implementation=implementation,
+        is_sharded=False,
     )
     token_index = 2
 

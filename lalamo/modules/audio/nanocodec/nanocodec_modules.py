@@ -42,6 +42,30 @@ __all__ = [
 ]
 
 
+@jax.custom_vjp
+def _round_with_identity_gradients(inputs: Float[Array, "..."]) -> Float[Array, "..."]:
+    return jnp.round(inputs)
+
+
+def _round_with_identity_gradients_fwd(
+    inputs: Float[Array, "..."],
+) -> tuple[Float[Array, "..."], None]:
+    return jnp.round(inputs), None
+
+
+def _round_with_identity_gradients_bwd(
+    residuals: None,  # noqa: ARG001
+    gradients: Float[Array, "..."],
+) -> tuple[Float[Array, "..."]]:
+    return (gradients,)
+
+
+_round_with_identity_gradients.defvjp(
+    _round_with_identity_gradients_fwd,
+    _round_with_identity_gradients_bwd,
+)
+
+
 @dataclass(frozen=True)
 class FiniteScalarQuantizerConfig(LalamoConfig):
     num_levels: tuple[int, ...]
@@ -113,8 +137,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
 
     def _round_ste(self, inputs: Float[Array, "batch dim timesteps"]) -> Float[Array, "batch dim timesteps"]:
         """Round to nearest integer with straight-through estimator."""
-        rounded = jnp.round(inputs)
-        return inputs + jax.lax.stop_gradient(rounded - inputs)
+        return _round_with_identity_gradients(inputs)
 
     def _inputs_to_codes(self, inputs: Float[Array, "batch dim timesteps"]) -> Float[Array, "batch dim timesteps"]:
         """Convert continuous inputs to quantized codes normalized to [-1, 1].

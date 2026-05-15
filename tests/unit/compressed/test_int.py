@@ -6,15 +6,13 @@ import jax.numpy as jnp
 import pytest
 from jax.sharding import Mesh, Sharding
 
-from lalamo.compressed.awq import AWQMatrixForInference, AWQMatrixForTraining, AWQSpec
+from lalamo.compressed.int import IntMatrixForInference, IntMatrixForTraining, IntSpec
 from lalamo.compressed.utils.yaqa import yaqa_round_weights
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import CompressionImplementation, Layout
 from tests.unit.compressed import test_common as compressed_common
-
-type Bits = Literal[4, 8]
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
@@ -66,7 +64,7 @@ def _stored_weights(layout: Layout, weights: jax.Array) -> jax.Array:
     return weights
 
 
-def _manual_awq_affine_parameters(
+def _manual_int_affine_parameters(
     stored_weights: jax.Array,
     *,
     bits: int,
@@ -95,7 +93,7 @@ def _round_unsigned(values: jax.Array, *, bits: int) -> jax.Array:
     return jnp.round(jnp.clip(values, 0, (2**bits) - 1))
 
 
-def _manual_awq_dequantize(
+def _manual_int_dequantize(
     stored_weights: jax.Array,
     scales: jax.Array,
     zero_points: jax.Array | None,
@@ -116,11 +114,11 @@ def _manual_awq_dequantize(
     return (int_weights - expanded_int_scale_zero_points) * expanded_scales
 
 
-def _put_on_sharding(matrix: AWQMatrixForInference, sharding: Sharding) -> AWQMatrixForInference:
+def _put_on_sharding(matrix: IntMatrixForInference, sharding: Sharding) -> IntMatrixForInference:
     packed_zero_points = None
     if matrix.packed_zero_points is not None:
         packed_zero_points = jax.device_put(matrix.packed_zero_points, sharding)
-    return AWQMatrixForInference(
+    return IntMatrixForInference(
         spec=matrix.spec,
         is_sharded=matrix.is_sharded,
         packed_weights=jax.device_put(matrix.packed_weights, sharding),
@@ -132,21 +130,21 @@ def _put_on_sharding(matrix: AWQMatrixForInference, sharding: Sharding) -> AWQMa
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
 @pytest.mark.parametrize("bits", [4, 8])
 @pytest.mark.parametrize("is_symmetric", [False, True])
-def test_awq_compress_and_decompress_match_manual_quantization(
+def test_int_compress_and_decompress_match_manual_quantization(
     layout: Layout,
-    bits: Bits,
+    bits: Literal[4, 8],
     is_symmetric: bool,
 ) -> None:
     weights = _logical_weights()
-    spec = AWQSpec(bits=bits, group_size=2, is_symmetric=is_symmetric, layout=layout)
+    spec = IntSpec(bits=bits, group_size=2, is_symmetric=is_symmetric, layout=layout)
     stored_weights = _stored_weights(layout, weights)
-    expected_scales, expected_zero_points = _manual_awq_affine_parameters(
+    expected_scales, expected_zero_points = _manual_int_affine_parameters(
         stored_weights,
         bits=bits,
         group_size=2,
         is_symmetric=is_symmetric,
     )
-    expected_decompressed = _manual_awq_dequantize(
+    expected_decompressed = _manual_int_dequantize(
         stored_weights,
         expected_scales,
         expected_zero_points,
@@ -158,33 +156,33 @@ def test_awq_compress_and_decompress_match_manual_quantization(
     training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
     inference = spec.compress(weights, implementation=CompressionImplementation.INFERENCE)
 
-    assert isinstance(training, AWQMatrixForTraining)
-    assert isinstance(inference, AWQMatrixForInference)
+    assert isinstance(training, IntMatrixForTraining)
+    assert isinstance(inference, IntMatrixForInference)
     assert inference.packed_weights.dtype == jnp.uint8
     assert inference.packed_weights.shape == compressed_common.expected_packed_shape(stored_weights.shape, bits)
     compressed_common.assert_close_arrays(result=training.scales, reference=expected_scales)
     compressed_common.assert_close_arrays(result=inference.scales, reference=expected_scales)
     if is_symmetric:
-        assert training.zero_points is None
+        assert training.master_zero_points is None
         assert inference.packed_zero_points is None
     else:
         assert expected_zero_points is not None
-        assert training.zero_points is not None
+        assert training.master_zero_points is not None
         assert inference.packed_zero_points is not None
         assert inference.packed_zero_points.dtype == jnp.uint8
         assert inference.packed_zero_points.shape == compressed_common.expected_packed_shape(
             expected_scales.shape,
             bits,
         )
-        compressed_common.assert_close_arrays(result=training.zero_points, reference=expected_zero_points)
+        compressed_common.assert_close_arrays(result=training.master_zero_points, reference=expected_zero_points)
     compressed_common.assert_close_arrays(result=training.decompress(), reference=expected_decompressed)
     compressed_common.assert_close_arrays(result=inference.decompress(), reference=expected_decompressed)
 
 
-def test_awq_compress_uses_yaqa_weights_when_preconditioned() -> None:
+def test_int_compress_uses_yaqa_weights_when_preconditioned() -> None:
     weights = _preconditioned_weights()
     preconditioner = Preconditioner.init(input_block=_input_block(), output_block=_output_block())
-    spec = AWQSpec(bits=4, group_size=2)
+    spec = IntSpec(bits=4, group_size=2)
 
     yaqa_weights = yaqa_round_weights(weights, preconditioner, spec)
     preconditioned = spec.compress(weights, preconditioner=preconditioner)
@@ -193,22 +191,22 @@ def test_awq_compress_uses_yaqa_weights_when_preconditioned() -> None:
     compressed_common.assert_close_arrays(result=preconditioned.decompress(), reference=expected.decompress())
 
 
-def test_awq_compress_rejects_group_size_that_does_not_divide_stored_last_axis() -> None:
+def test_int_compress_rejects_group_size_that_does_not_divide_stored_last_axis() -> None:
     weights = jnp.ones((4, 5), dtype=jnp.float32)
 
     with pytest.raises(ValueError, match="divisible"):
-        AWQSpec(bits=4, group_size=2).compress(weights)
+        IntSpec(bits=4, group_size=2).compress(weights)
 
 
-def test_awq_export_load_roundtrips_and_preserves_template_sharding(
+def test_int_export_load_roundtrips_and_preserves_template_sharding(
     fake_mesh: Mesh,
 ) -> None:
     weights = _logical_weights()
-    spec = AWQSpec(bits=4, group_size=2, layout=Layout.INPUT_OUTPUT)
+    spec = IntSpec(bits=4, group_size=2, layout=Layout.INPUT_OUTPUT)
     saved_sharding = make_sharding((None, None))
     assert saved_sharding is not None
     original = spec.compress(weights, implementation=CompressionImplementation.INFERENCE)
-    assert isinstance(original, AWQMatrixForInference)
+    assert isinstance(original, IntMatrixForInference)
     original = _put_on_sharding(original, saved_sharding)
     template = spec.compress(
         dummy_array(weights.shape, weights.dtype),
@@ -223,21 +221,21 @@ def test_awq_export_load_roundtrips_and_preserves_template_sharding(
     compressed_common.assert_named_sharding(restored.scales.sharding, fake_mesh)
     assert restored.scales.sharding == template.scales.sharding
     assert restored.scales.sharding != saved_sharding
-    assert isinstance(restored, AWQMatrixForInference)
-    assert isinstance(template, AWQMatrixForInference)
+    assert isinstance(restored, IntMatrixForInference)
+    assert isinstance(template, IntMatrixForInference)
     assert restored.packed_weights.sharding == template.packed_weights.sharding
     assert restored.packed_zero_points is not None
     assert template.packed_zero_points is not None
     assert restored.packed_zero_points.sharding == template.packed_zero_points.sharding
 
 
-def test_awq_symmetric_from_packed_parameters_rejects_zero_points() -> None:
-    original = AWQSpec(bits=4, group_size=2, layout=Layout.INPUT_OUTPUT).compress(
+def test_int_symmetric_from_packed_parameters_rejects_zero_points() -> None:
+    original = IntSpec(bits=4, group_size=2, layout=Layout.INPUT_OUTPUT).compress(
         _logical_weights(),
         implementation=CompressionImplementation.INFERENCE,
     )
-    spec = AWQSpec(bits=4, group_size=2, is_symmetric=True, layout=Layout.INPUT_OUTPUT)
-    assert isinstance(original, AWQMatrixForInference)
+    spec = IntSpec(bits=4, group_size=2, is_symmetric=True, layout=Layout.INPUT_OUTPUT)
+    assert isinstance(original, IntMatrixForInference)
     assert original.packed_zero_points is not None
 
     with pytest.raises(ValueError, match="must not include packed zero points"):

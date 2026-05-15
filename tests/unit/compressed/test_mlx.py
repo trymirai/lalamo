@@ -15,8 +15,6 @@ from lalamo.weight_matrix import CompressionImplementation, Layout
 from tests.common import assert_close_arrays, assert_named_sharding
 from tests.unit.compressed import test_common as compressed_common
 
-type Bits = Literal[4, 8]
-
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
 
@@ -107,7 +105,10 @@ def _put_on_sharding(matrix: MLXMatrixForInference, sharding: Sharding) -> MLXMa
 
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
 @pytest.mark.parametrize("bits", [4, 8])
-def test_mlx_compress_and_decompress_match_manual_min_max_quantization(layout: Layout, bits: Bits) -> None:
+def test_mlx_compress_and_decompress_match_manual_min_max_quantization(
+    layout: Layout,
+    bits: Literal[4, 8],
+) -> None:
     weights = _logical_weights()
     spec = MLXSpec(bits=bits, group_size=2, layout=layout)
     stored_weights = _stored_weights(layout, weights)

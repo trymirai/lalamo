@@ -23,8 +23,6 @@ from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import CompressionImplementation, Layout
 from tests.common import assert_close_arrays, assert_named_sharding
 
-type E8PBits = Literal[2, 3, 4]
-
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
 
@@ -101,7 +99,7 @@ def test_e8p_codebook_rounding_matches_dense_search() -> None:
 
 @pytest.mark.parametrize("bits", [2, 3, 4])
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
-def test_e8p_compress_training_and_inference_match(bits: E8PBits, layout: Layout) -> None:
+def test_e8p_compress_training_and_inference_match(bits: Literal[2, 3, 4], layout: Layout) -> None:
     weights = _logical_weights()
     spec = E8PSpec(bits=bits, layout=layout)
     stored_weights = _stored_weights(layout, weights)
@@ -144,7 +142,10 @@ def test_e8p_compress_rejects_stored_last_axis_that_is_not_eight_aligned() -> No
 
 
 @pytest.mark.parametrize("bits", [2, 3, 4])
-def test_e8p_export_load_roundtrips_and_preserves_template_sharding(bits: E8PBits, fake_mesh: Mesh) -> None:
+def test_e8p_export_load_roundtrips_and_preserves_template_sharding(
+    bits: Literal[2, 3, 4],
+    fake_mesh: Mesh,
+) -> None:
     weights = _logical_weights()
     spec = E8PSpec(bits=bits, layout=Layout.INPUT_OUTPUT)
     saved_sharding = make_sharding((ShardingAxis.TENSOR, None))

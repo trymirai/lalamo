@@ -117,24 +117,82 @@ def _yaqa_round_weights(
 
         return adjustment
 
+    def objective(
+        quantized_weights: Float[Array, "output_channels input_channels"],
+    ) -> Float[Array, ""]:
+        residual = weights - quantized_weights
+        weighted_residual = residual
+
+        with use_dot_algorithm_preset(DotAlgorithmPreset.F32_F32_F32):
+            if input_block is not None:
+                weighted_residual = weighted_residual @ input_block
+            if output_block is not None:
+                weighted_residual = output_block @ weighted_residual
+
+        return jnp.sum(weighted_residual * residual)
+
     def should_continue(
-        state: tuple[Int[Array, ""], Float[Array, "output_channels input_channels"], Float[Array, ""]],
+        state: tuple[
+            Int[Array, ""],
+            Float[Array, "output_channels input_channels"],
+            Float[Array, "output_channels input_channels"],
+            Float[Array, "output_channels input_channels"],
+            Float[Array, ""],
+            Float[Array, ""],
+            Float[Array, ""],
+        ],
     ) -> Bool[Array, ""]:
-        iteration, _last_weights, diff = state
-        return (iteration < max_iters) & (diff >= atol)
+        iteration, _previous_weights, _last_weights, _best_weights, _best_objective, diff, cycle_diff = state
+        return (iteration < max_iters) & (diff >= atol) & (cycle_diff >= atol)
 
     def loop_body(
-        state: tuple[Int[Array, ""], Float[Array, "output_channels input_channels"], Float[Array, ""]],
-    ) -> tuple[Int[Array, ""], Float[Array, "output_channels input_channels"], Float[Array, ""]]:
-        iteration, last_weights, _diff = state
+        state: tuple[
+            Int[Array, ""],
+            Float[Array, "output_channels input_channels"],
+            Float[Array, "output_channels input_channels"],
+            Float[Array, "output_channels input_channels"],
+            Float[Array, ""],
+            Float[Array, ""],
+            Float[Array, ""],
+        ],
+    ) -> tuple[
+        Int[Array, ""],
+        Float[Array, "output_channels input_channels"],
+        Float[Array, "output_channels input_channels"],
+        Float[Array, "output_channels input_channels"],
+        Float[Array, ""],
+        Float[Array, ""],
+        Float[Array, ""],
+    ]:
+        iteration, previous_weights, last_weights, best_weights, best_objective, _diff, _cycle_diff = state
         adjustment = calculate_adjustment(last_weights)
         new_weights = round_weights(weights + adjustment)
+        new_objective = objective(new_weights)
         new_diff = jnp.max(jnp.abs(new_weights - last_weights))
-        return iteration + 1, new_weights, new_diff
+        new_cycle_diff = jnp.max(jnp.abs(new_weights - previous_weights))
+        is_best = new_objective < best_objective
+        return (
+            iteration + 1,
+            last_weights,
+            new_weights,
+            jnp.where(is_best, new_weights, best_weights),
+            jnp.minimum(new_objective, best_objective),
+            new_diff,
+            new_cycle_diff,
+        )
 
-    _iteration, result, diff = jax.lax.while_loop(
+    initial_weights = round_weights(weights)
+    _iteration, _previous_weights, result, best_weights, _best_objective, diff, cycle_diff = jax.lax.while_loop(
         should_continue,
         loop_body,
-        (jnp.array(0), round_weights(weights), jnp.inf),
+        (
+            jnp.array(0),
+            initial_weights,
+            initial_weights,
+            initial_weights,
+            objective(initial_weights),
+            jnp.inf,
+            jnp.inf,
+        ),
     )
-    return result, diff < atol
+    return jnp.where(diff < atol, result, best_weights), (diff < atol) | (cycle_diff < atol)

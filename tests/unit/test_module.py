@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import pytest
 from jax.sharding import Mesh, NamedSharding
 
-from lalamo.compressed.awq import AWQMatrixForInference, AWQMatrixForTraining, AWQSpec
+from lalamo.compressed.int import IntMatrixForInference, IntMatrixForTraining, IntSpec
 from lalamo.module import (
     Keychain,
     KeychainBroadcastMode,
@@ -223,7 +223,7 @@ class NestedModule(LalamoModule[ExampleConfig]):
 
 def _matrix_module() -> MatrixModule:
     weights = jnp.arange(16, dtype=jnp.float32).reshape(4, 4) / 8
-    matrix = AWQSpec(bits=4, group_size=2).compress(weights, implementation=CompressionImplementation.TRAINING)
+    matrix = IntSpec(bits=4, group_size=2).compress(weights, implementation=CompressionImplementation.TRAINING)
     return MatrixModule(
         config=ExampleConfig(width=4, dtype=jnp.dtype(jnp.float32)),
         matrix=matrix,
@@ -236,7 +236,7 @@ def test_lalamo_module_astype_casts_weight_matrices_and_array_parameters(fake_me
 
     result = module.astype(jnp.bfloat16)
 
-    assert isinstance(module.matrix, AWQMatrixForTraining)
+    assert isinstance(module.matrix, IntMatrixForTraining)
     assert isinstance(module.matrix.scales.sharding, NamedSharding)
     assert module.matrix.scales.sharding.mesh == fake_mesh
     assert result.matrix.dtype == jnp.bfloat16
@@ -267,8 +267,8 @@ def test_lalamo_module_switch_implementation_recurses_into_nested_weight_matrice
 
     result = module.switch_implementation(CompressionImplementation.INFERENCE)
 
-    assert isinstance(module.inner.matrix, AWQMatrixForTraining)
-    assert isinstance(result.inner.matrix, AWQMatrixForInference)
+    assert isinstance(module.inner.matrix, IntMatrixForTraining)
+    assert isinstance(result.inner.matrix, IntMatrixForInference)
     assert isinstance(result.inner.matrix.scales.sharding, NamedSharding)
     assert result.inner.matrix.scales.sharding.mesh == fake_mesh
 

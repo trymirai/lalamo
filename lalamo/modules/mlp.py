@@ -16,7 +16,7 @@ from jaxtyping import Array, Bool, Float, Int, Key
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, KeychainBroadcastMode, LalamoConfig, LalamoModule, ShardingAxis
 from lalamo.utils.registry_abc import RegistryABC
-from lalamo.utils.sharding import is_sharded, sharding_of, use_out_sharding
+from lalamo.utils.sharding import is_sharded, make_sharding, sharding_of
 from lalamo.weight_matrix import GradientEstimator, MatmulConfig
 
 from .activations import Activation
@@ -39,15 +39,17 @@ __all__ = [
 _SENTINEL = 2**31 - 1
 
 
-@use_out_sharding((None, None))
 def _take_moe_chunk_inputs(
     flattened_inputs: Float[Array, "tokens channels"],
     indices: Int[Array, " tokens_per_chunk"],
 ) -> Float[Array, "tokens_per_chunk channels"]:
-    return flattened_inputs.at[indices].get(mode="fill", fill_value=0.0)
+    return flattened_inputs.at[indices].get(
+        mode="fill",
+        fill_value=0.0,
+        out_sharding=make_sharding((None, None)),
+    )
 
 
-@use_out_sharding((ShardingAxis.DATA, None))
 def _add_moe_expert_outputs(
     accumulator: Float[Array, "tokens channels"],
     token_indices: Int[Array, "experts tokens_per_chunk"],
@@ -56,6 +58,7 @@ def _add_moe_expert_outputs(
     return accumulator.at[token_indices].add(
         expert_outputs,
         mode="drop",
+        out_sharding=make_sharding((ShardingAxis.DATA, None)),
     )
 
 
@@ -622,7 +625,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         routed_accumulator = jnp.zeros(
             flattened_inputs.shape,
             dtype=flattened_inputs.dtype,
-            out_sharding=PartitionSpec(ShardingAxis.DATA, None),
+            out_sharding=make_sharding((ShardingAxis.DATA, None)),
         )
         routed_expert_result, _ = jax.lax.scan(
             loop_iteration,

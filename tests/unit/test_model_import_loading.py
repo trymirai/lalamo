@@ -9,7 +9,7 @@ from jaxtyping import Array, DTypeLike
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 
-from lalamo.compressed.awq import AWQMatrixForInference, AWQMatrixForTraining, AWQSpec
+from lalamo.compressed.int import IntMatrixForInference, IntMatrixForTraining, IntSpec
 from lalamo.compressed.mlx import MLXMatrixForInference, MLXMatrixForTraining
 from lalamo.initializer import EmptyInitializer, Initializer
 from lalamo.model import Model, ModelConfig
@@ -56,7 +56,7 @@ def _mlx_weights(path: ParameterPath) -> Mapping[str, Array]:
     }
 
 
-def _awq_weights(path: ParameterPath) -> Mapping[str, Array]:
+def _int_weights(path: ParameterPath) -> Mapping[str, Array]:
     unpacked_weights = jnp.arange(16, dtype=jnp.int32).reshape(4, 4)
     unpacked_zero_points = jnp.zeros((2, 4), dtype=jnp.int32)
     return {
@@ -66,7 +66,7 @@ def _awq_weights(path: ParameterPath) -> Mapping[str, Array]:
     }
 
 
-def _symmetric_awq_weights(path: ParameterPath) -> Mapping[str, Array]:
+def _symmetric_int_weights(path: ParameterPath) -> Mapping[str, Array]:
     unpacked_weights = jnp.arange(16, dtype=jnp.int32).reshape(4, 4) + 128
     return {
         path / "qweight": _pack_int32(unpacked_weights, bits=8),
@@ -79,15 +79,15 @@ def _symmetric_awq_weights(path: ParameterPath) -> Mapping[str, Array]:
     [
         (_mlx_weights, CompressionImplementation.INFERENCE, MLXMatrixForInference),
         (_mlx_weights, CompressionImplementation.TRAINING, MLXMatrixForTraining),
-        (_awq_weights, CompressionImplementation.INFERENCE, AWQMatrixForInference),
-        (_awq_weights, CompressionImplementation.TRAINING, AWQMatrixForTraining),
+        (_int_weights, CompressionImplementation.INFERENCE, IntMatrixForInference),
+        (_int_weights, CompressionImplementation.TRAINING, IntMatrixForTraining),
     ],
 )
 @pytest.mark.parametrize("template_layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
 def test_load_linear_quantized_checkpoint_uses_requested_dtype_and_implementation(
     weights_factory: Callable[[ParameterPath], Mapping[str, Array]],
     implementation: CompressionImplementation,
-    expected_type: type[MLXMatrixForInference | MLXMatrixForTraining | AWQMatrixForInference | AWQMatrixForTraining],
+    expected_type: type[MLXMatrixForInference | MLXMatrixForTraining | IntMatrixForInference | IntMatrixForTraining],
     template_layout: Layout,
 ) -> None:
     path = ParameterPath("layer")
@@ -104,17 +104,17 @@ def test_load_linear_quantized_checkpoint_uses_requested_dtype_and_implementatio
     assert loaded.weights.dtype == jnp.bfloat16
 
 
-def test_load_linear_symmetric_awq_without_qzeros_uses_symmetric_spec() -> None:
+def test_load_linear_symmetric_int_without_qzeros_uses_symmetric_spec() -> None:
     path = ParameterPath("layer")
 
     loaded = load_linear(
         _linear_template(jnp.bfloat16),
-        _symmetric_awq_weights(path),
+        _symmetric_int_weights(path),
         path,
         implementation=CompressionImplementation.INFERENCE,
     )
 
-    assert isinstance(loaded.weights, AWQMatrixForInference)
+    assert isinstance(loaded.weights, IntMatrixForInference)
     assert loaded.weights.spec.is_symmetric
     assert loaded.weights.packed_zero_points is None
 
@@ -168,7 +168,7 @@ class TinyForeignConfig(ForeignConfig[TinyModelConfig]):
             token_codec=model.token_codec,
             module=TinyModule(
                 config=model.module.config,
-                matrix=AWQSpec(bits=4, group_size=2).compress(
+                matrix=IntSpec(bits=4, group_size=2).compress(
                     weights_dict["matrix"].astype(model.module.matrix.dtype),
                     implementation=implementation,
                 ),
@@ -200,7 +200,7 @@ def test_foreign_config_load_initializes_model_with_requested_dtype_and_implemen
 
     assert isinstance(loaded, TinyModel)
     assert loaded.token_codec.tokenizer is tokenizer
-    assert isinstance(loaded.module.matrix, AWQMatrixForTraining)
+    assert isinstance(loaded.module.matrix, IntMatrixForTraining)
     assert loaded.module.matrix.dtype == jnp.bfloat16
 
 
@@ -223,7 +223,7 @@ def test_model_export_load_uses_saved_weight_matrix_spec_with_shape_dtype_templa
         token_codec=config.token_codec_config.init(tokenizer),
         module=TinyModule(
             config=TinyConfig(),
-            matrix=AWQSpec(bits=8, group_size=2).compress(jnp.arange(16, dtype=jnp.float32).reshape(4, 4)),
+            matrix=IntSpec(bits=8, group_size=2).compress(jnp.arange(16, dtype=jnp.float32).reshape(4, 4)),
         ),
     )
 
@@ -231,7 +231,7 @@ def test_model_export_load_uses_saved_weight_matrix_spec_with_shape_dtype_templa
     restored = TinyModel.load(tmp_path)
     restored_float32 = TinyModel.load(tmp_path, dtype=jnp.float32)
 
-    assert isinstance(restored.module.matrix, AWQMatrixForInference)
+    assert isinstance(restored.module.matrix, IntMatrixForInference)
     assert restored.module.matrix.spec == original.module.matrix.spec
     assert restored.module.matrix.dtype == jnp.bfloat16
     assert restored_float32.module.matrix.dtype == jnp.float32

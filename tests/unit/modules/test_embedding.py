@@ -41,7 +41,10 @@ def _weights(*, offset: int = 0) -> jax.Array:
 
 
 def _input_embedding_matrix(*, offset: int = 0) -> FullPrecisionMatrix:
-    return FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(jnp.matrix_transpose(_weights(offset=offset)))
+    return FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(
+        jnp.matrix_transpose(_weights(offset=offset)),
+        is_sharded=False,
+    )
 
 
 def _output_embedding_matrix(*, offset: int = 100) -> FullPrecisionMatrix:
