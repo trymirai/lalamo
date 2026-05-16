@@ -751,7 +751,7 @@ class BatchScheduler(ABC):
             )
             batch_sizes_callback(BatchSizesComputedEvent(batch_sizes=batch_sizes))
 
-        for padded_length in sorted(buckets):
+        for padded_length in sorted(buckets, reverse=True):
             sequence_ids, sequence_tokenized = zip(*buckets[padded_length], strict=True)
             sequence_ids = list(sequence_ids)
             bucket_batch_size = batch_size_per_bucket[padded_length]
