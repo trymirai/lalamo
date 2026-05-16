@@ -19,7 +19,7 @@ from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.registry_abc import RegistryABC, make_registry_abc_converter
-from lalamo.utils.sharding import make_sharding, reshard_as, with_sharding
+from lalamo.utils.sharding import lookup_sharded_indices, make_sharding, reshard_as, with_sharding
 
 __all__ = [
     "CompressionImplementation",
@@ -212,12 +212,12 @@ class EmbeddingMatrix(WeightMatrix[WeightMatrixSpecT_co]):
     @abstractmethod
     def lookup_embedding(
         self,
-        index: int | Int[Array, ""],
+        index: int | Int[Array, "*batch"],
         *,
         keychain: Keychain,
         dtype: DTypeLike | None = None,
         forward_pass_config: MatmulConfig = MatmulConfig(),
-    ) -> Float[Array, " out_channels"]: ...
+    ) -> Float[Array, "*batch out_channels"]: ...
 
 
 class Layout(StrEnum):
@@ -339,15 +339,15 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
 
     def lookup_embedding(
         self,
-        index: int | Int[Array, ""],
+        index: int | Int[Array, "*batch"],
         *,
         dtype: DTypeLike | None = None,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
-    ) -> Float[Array, " out_channels"]:
+    ) -> Float[Array, "*batch out_channels"]:
         self._raise_if_batched()
         if self.spec.layout == Layout.INPUT_OUTPUT:
-            result = self.weights[index, :]
+            result = lookup_sharded_indices(self.weights, index)
             if dtype is not None:
                 return result.astype(dtype)
             return result
@@ -470,12 +470,12 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
 
     def lookup_embedding(
         self,
-        index: int | Int[Array, ""],  # noqa: ARG002
+        index: int | Int[Array, "*batch"],  # noqa: ARG002
         *,
         dtype: DTypeLike | None = None,  # noqa: ARG002
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
-    ) -> Float[Array, " out_channels"]:
+    ) -> Float[Array, "*batch out_channels"]:
         raise TypeError("Cannot perform embedding lookup on ShapeDtypeMatrix")
 
     def dot(

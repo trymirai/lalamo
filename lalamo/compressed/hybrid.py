@@ -156,11 +156,11 @@ class IncoherenceSigns(eqx.Module):
 
     def input_transform(
         self,
-        vector: Float[Array, " source_channels"],
+        vector: Float[Array, "*batch source_channels"],
         block_size: Literal[32, 64, 128],
         *,
         transposed: bool = False,
-    ) -> Float[Array, " source_channels"]:
+    ) -> Float[Array, "*batch source_channels"]:
         signs = self.input_signs
         if transposed:
             signs = self.output_signs
@@ -170,11 +170,11 @@ class IncoherenceSigns(eqx.Module):
 
     def output_transform(
         self,
-        vector: Float[Array, " target_channels"],
+        vector: Float[Array, "*batch target_channels"],
         block_size: Literal[32, 64, 128],
         *,
         transposed: bool = False,
-    ) -> Float[Array, " target_channels"]:
+    ) -> Float[Array, "*batch target_channels"]:
         signs = self.output_signs
         if transposed:
             signs = self.input_signs
@@ -325,12 +325,12 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
 
     def lookup_embedding(
         self,
-        index: int | Int[Array, ""],
+        index: int | Int[Array, "*batch"],
         *,
         dtype: DTypeLike | None = None,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
-    ) -> Float[Array, " out_channels"]:
+    ) -> Float[Array, "*batch out_channels"]:
         self._raise_if_batched()
         if self.incoherence_signs is not None and self.incoherence_signs.input_signs is not None:
             raise ValueError("Hybrid embedding lookup is only supported when input RHT is disabled.")

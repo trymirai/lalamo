@@ -2,11 +2,13 @@ from typing import TypeGuard
 
 from jax import Array, ShapeDtypeStruct, reshard, typeof
 from jax.sharding import NamedSharding, PartitionSpec, Sharding, get_abstract_mesh, get_mesh
+from jaxtyping import Int, Shaped
 
 from lalamo.module import ShardingAxis
 
 __all__ = [
     "is_sharded",
+    "lookup_sharded_indices",
     "make_sharding",
     "reshard_as",
     "sharding_of",
@@ -52,3 +54,15 @@ def with_sharding(array: Array, sharding: Sharding | None) -> Array:
 
 def reshard_as(array: Array, reference: Array) -> Array:
     return with_sharding(array, sharding_of(reference))
+
+
+def lookup_sharded_indices(
+    array: Shaped[Array, "rows cols"],
+    indices: int | Int[Array, "*batch"],
+) -> Shaped[Array, "*batch cols"]:
+    out_sharding = None
+    if not isinstance(indices, int):
+        index_sharding = sharding_of(indices)
+        if is_sharded(index_sharding):
+            out_sharding = NamedSharding(index_sharding.mesh, PartitionSpec(*index_sharding.spec, None))
+    return array.at[indices, :].get(out_sharding=out_sharding)

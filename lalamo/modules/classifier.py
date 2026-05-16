@@ -227,12 +227,10 @@ class Classifier(LalamoModule[ClassifierConfig]):
         keychain: Keychain,
     ) -> ClassifierResult:
         embedding_keychain, transformer_keychain, prediction_head_keychain = keychain.split(3)
-        inner_features = call_vmapped_twice(
-            self.embedding.embed,
+        inner_features = self.embedding.embed(
             token_ids,
             forward_pass_config=forward_pass_config.embedding_forward_pass_config,
             keychain=embedding_keychain,
-            added_sharding_axes=(ShardingAxis.DATA, None),
         )
         normalized_embeddings = call_vmapped_twice(
             self.embedding_norm,

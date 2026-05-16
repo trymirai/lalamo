@@ -14,7 +14,7 @@ from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.utils.sharding import make_sharding, reshard_as, with_sharding
+from lalamo.utils.sharding import lookup_sharded_indices, make_sharding, reshard_as, with_sharding
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -308,21 +308,21 @@ class MLXMatrixForTraining(MLXMatrix):
 
     def lookup_embedding(
         self,
-        index: int | Int[Array, ""],
+        index: int | Int[Array, "*batch"],
         *,
         dtype: DTypeLike | None = None,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
-    ) -> Float[Array, " out_channels"]:
+    ) -> Float[Array, "*batch out_channels"]:
         self._raise_if_batched()
         if self.spec.layout != Layout.INPUT_OUTPUT:
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
         return _quantize(
-            self.master_weights[index, :].astype(dtype),
-            self.scales[index, :].astype(dtype),
-            self.biases[index, :].astype(dtype),
+            lookup_sharded_indices(self.master_weights, index).astype(dtype),
+            lookup_sharded_indices(self.scales, index).astype(dtype),
+            lookup_sharded_indices(self.biases, index).astype(dtype),
             group_size=self.spec.group_size,
             round_fn=partial(
                 round_to_unsigned_grid,
@@ -497,21 +497,21 @@ class MLXMatrixForInference(MLXMatrix):
 
     def lookup_embedding(
         self,
-        index: int | Int[Array, ""],
+        index: int | Int[Array, "*batch"],
         *,
         dtype: DTypeLike | None = None,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
-    ) -> Float[Array, " out_channels"]:
+    ) -> Float[Array, "*batch out_channels"]:
         self._raise_if_batched()
         if self.spec.layout != Layout.INPUT_OUTPUT:
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
         return _packed_weights_to_master_weights(
-            self.packed_weights[index, :],
-            self.scales[index, :].astype(dtype),
-            self.biases[index, :].astype(dtype),
+            lookup_sharded_indices(self.packed_weights, index),
+            lookup_sharded_indices(self.scales, index).astype(dtype),
+            lookup_sharded_indices(self.biases, index).astype(dtype),
             self.spec.group_size,
             self.spec.bits,
         )

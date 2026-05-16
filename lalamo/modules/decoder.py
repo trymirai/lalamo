@@ -12,7 +12,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
-from lalamo.utils.sharding import reshard_as
+from lalamo.utils.sharding import lookup_sharded_indices, reshard_as
 from lalamo.weight_matrix import GradientEstimator
 
 from .embedding import EmbeddingBase, EmbeddingConfig, EmbeddingForwardPassConfig
@@ -121,7 +121,7 @@ class PerLayerEmbedding(LalamoModule[PLEModelConfig]):
         keychain: Keychain,
     ) -> tuple[Float[Array, "batch suffix_tokens ple_dim"], ...]:
         config = self.config
-        token_ple = self.token_embedding[token_ids] * config.ple_embed_scale
+        token_ple = lookup_sharded_indices(self.token_embedding, token_ids) * config.ple_embed_scale
         token_ple = rearrange(
             token_ple,
             "batch tokens (layers ple_dim) -> batch tokens layers ple_dim",
@@ -224,12 +224,10 @@ class Decoder(LalamoModule[DecoderConfig]):
             )
         token_positions = reshard_as(token_positions, token_ids)
         embedding_keychain, ple_keychain, transformer_keychain, readout_keychain = keychain.split(4)
-        inner_features = call_vmapped_twice(
-            self.embedding.embed,
+        inner_features = self.embedding.embed(
             token_ids,
             forward_pass_config=forward_pass_config.embedding_forward_pass_config,
             keychain=embedding_keychain,
-            added_sharding_axes=(ShardingAxis.DATA, None),
         )
 
         if self.per_layer_embedding is not None:

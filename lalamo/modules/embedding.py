@@ -106,11 +106,11 @@ class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
     @eqx.filter_jit
     def embed(
         self,
-        x: int | Int[Array, ""],
+        x: int | Int[Array, "*tokens"],
         *,
         keychain: Keychain,
         forward_pass_config: EmbeddingForwardPassConfig = EmbeddingForwardPassConfig(),
-    ) -> Float[Array, " channels"]:
+    ) -> Float[Array, "*tokens channels"]:
         result = self.embedding_matrix.lookup_embedding(
             x,
             dtype=forward_pass_config.activation_dtype,

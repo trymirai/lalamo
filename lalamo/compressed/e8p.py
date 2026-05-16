@@ -19,6 +19,7 @@ from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import (
     is_sharded,
+    lookup_sharded_indices,
     make_sharding,
     reshard_as,
     sharding_of,
@@ -674,19 +675,19 @@ class E8PMatrixForTraining(E8PMatrix):
 
     def lookup_embedding(
         self,
-        index: int | Int[Array, ""],
+        index: int | Int[Array, "*batch"],
         *,
         dtype: DTypeLike | None = None,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
-    ) -> Float[Array, " out_channels"]:
+    ) -> Float[Array, "*batch out_channels"]:
         self._raise_if_batched()
         if self.spec.layout != Layout.INPUT_OUTPUT:
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
         return _quantize(
-            self.master_weights[index, :].astype(dtype),
+            lookup_sharded_indices(self.master_weights, index).astype(dtype),
             self.scale.astype(dtype),
             bits=self.spec.bits,
             residual_scale=self.spec.residual_scale_value,
@@ -808,12 +809,12 @@ class E8PMatrixForInference(E8PMatrix):
 
     def lookup_embedding(
         self,
-        index: int | Int[Array, ""],
+        index: int | Int[Array, "*batch"],
         *,
         dtype: DTypeLike | None = None,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
-    ) -> Float[Array, " out_channels"]:
+    ) -> Float[Array, "*batch out_channels"]:
         self._raise_if_batched()
         if self.spec.layout != Layout.INPUT_OUTPUT:
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
@@ -821,9 +822,9 @@ class E8PMatrixForInference(E8PMatrix):
             dtype = self.dtype
         residual_codes = self.residual_codes
         if residual_codes is not None:
-            residual_codes = residual_codes[index, :]
+            residual_codes = lookup_sharded_indices(residual_codes, index)
         return _codes_to_weights(
-            self.codes[index, :],
+            lookup_sharded_indices(self.codes, index),
             residual_codes,
             self.scale.astype(dtype),
             bits=self.spec.bits,

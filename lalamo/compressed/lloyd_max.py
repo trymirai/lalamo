@@ -17,6 +17,7 @@ from lalamo.utils.dummy_array import (
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import (
+    lookup_sharded_indices,
     make_sharding,
     reshard_as,
     with_sharding,
@@ -539,7 +540,7 @@ class LloydMaxMatrix(EmbeddingMatrix[LloydMaxSpec]):
         dtype: DTypeLike,
         keychain: Keychain | None,
         forward_pass_config: MatmulConfig,
-        index: int | Int[Array, ""] | None = None,
+        index: int | Int[Array, "*batch"] | None = None,
     ) -> Float[Array, "... cols"]: ...
 
     def export(self) -> ExportResults:
@@ -622,12 +623,12 @@ class LloydMaxMatrix(EmbeddingMatrix[LloydMaxSpec]):
 
     def lookup_embedding(
         self,
-        index: int | Int[Array, ""],
+        index: int | Int[Array, "*batch"],
         *,
         dtype: DTypeLike | None = None,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
-    ) -> Float[Array, " out_channels"]:
+    ) -> Float[Array, "*batch out_channels"]:
         self._raise_if_batched()
         if self.spec.layout != Layout.INPUT_OUTPUT:
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
@@ -727,16 +728,16 @@ class LloydMaxMatrixForTraining(LloydMaxMatrix):
         dtype: DTypeLike,
         keychain: Keychain | None,
         forward_pass_config: MatmulConfig,
-        index: int | Int[Array, ""] | None = None,
+        index: int | Int[Array, "*batch"] | None = None,
     ) -> Float[Array, "... cols"]:
         weights = self.master_weights
         scales = self.master_scales
         master_biases = self.master_biases
         if index is not None:
-            weights = weights[index, :]
-            scales = scales[index, :]
+            weights = lookup_sharded_indices(weights, index)
+            scales = lookup_sharded_indices(scales, index)
             if master_biases is not None:
-                master_biases = master_biases[index, :]
+                master_biases = lookup_sharded_indices(master_biases, index)
         scales = scales.astype(dtype)
         scale_values = pack_e4m3_scales(scales).astype(scales.dtype)
         if master_biases is not None:
@@ -816,16 +817,16 @@ class LloydMaxMatrixForInference(LloydMaxMatrix):
         dtype: DTypeLike,
         keychain: Keychain | None,  # noqa: ARG002
         forward_pass_config: MatmulConfig,  # noqa: ARG002
-        index: int | Int[Array, ""] | None = None,
+        index: int | Int[Array, "*batch"] | None = None,
     ) -> Float[Array, "... cols"]:
         packed_weight_indices = self.packed_weight_indices
         packed_scales = self.packed_scales
         packed_bias_indices = self.packed_bias_indices
         if index is not None:
-            packed_weight_indices = packed_weight_indices[index, :]
-            packed_scales = packed_scales[index, :]
+            packed_weight_indices = lookup_sharded_indices(packed_weight_indices, index)
+            packed_scales = lookup_sharded_indices(packed_scales, index)
             if packed_bias_indices is not None:
-                packed_bias_indices = packed_bias_indices[index, :]
+                packed_bias_indices = lookup_sharded_indices(packed_bias_indices, index)
         *_, groups = packed_scales.shape
         if packed_bias_indices is None:
             master_biases = None
