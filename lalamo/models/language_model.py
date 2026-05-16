@@ -80,17 +80,19 @@ class GenerationConfig:
     repetition_penalty: float | None = None
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
+    suffix_repetition_length: int | None = None
 
     def default_policy(self) -> SamplingPolicy:
         return SamplingPolicy.init(
-            self.temperature,
-            self.top_k,
-            self.top_p,
-            self.min_p,
-            self.banned_tokens,
-            self.repetition_penalty,
-            self.presence_penalty,
-            self.frequency_penalty,
+            temperature=self.temperature,
+            top_k=self.top_k,
+            top_p=self.top_p,
+            min_p=self.min_p,
+            banned_tokens=self.banned_tokens,
+            repetition_penalty=self.repetition_penalty,
+            presence_penalty=self.presence_penalty,
+            frequency_penalty=self.frequency_penalty,
+            suffix_repetition_length=self.suffix_repetition_length,
         )
 
 

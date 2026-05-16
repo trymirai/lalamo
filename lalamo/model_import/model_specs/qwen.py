@@ -477,6 +477,7 @@ QWEN36 = [
         size="27B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.6-27B"),
         config_type=HFQwen35Config,
+        output_parser_regex=QWEN_THINKING_OUTPUT_PARSER_REGEX,
     ),
     LanguageModelSpec(
         vendor="Alibaba",
@@ -485,6 +486,7 @@ QWEN36 = [
         size="35B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.6-35B-A3B"),
         config_type=HFQwen35Config,
+        output_parser_regex=QWEN_THINKING_OUTPUT_PARSER_REGEX,
     ),
 ]
 

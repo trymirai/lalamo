@@ -37,6 +37,7 @@ class RequestBody:
     generation_config: GenerationConfig | None = None
     dtype: Literal["bfloat16", "float32"] = "bfloat16"
     seed: int | None = None
+    enable_thinking: bool = True
 
     def shares_batch_params(self, other: Self) -> bool:
         return (
@@ -45,6 +46,7 @@ class RequestBody:
             and self.generation_config == other.generation_config
             and self.dtype == other.dtype
             and (self.seed is None) == (other.seed is None)
+            and self.enable_thinking == other.enable_thinking
         )
 
 
@@ -173,6 +175,7 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
             max_output_length=reference.max_completion_tokens,
             batch_size=None,
         ),
+        enable_thinking=reference.enable_thinking,
         keychain=keychain,
         vram_bytes=app.state.vram_bytes,
     ):

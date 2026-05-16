@@ -152,20 +152,20 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
             raise NotImplementedError("Tools are not supported yet.")
         return result
 
-    def render_request(self, messages: Iterable[Message]) -> str:
+    def render_request(self, messages: Iterable[Message], *, enable_thinking: bool = True) -> str:
         # TODO(knyazer): the following is an ugly thing that needs to be fixed
         # as soon as shoji is alive (avoid hardcoding random flags)
-        request_dict = self.request_to_dict(messages, enable_thinking=True)
+        request_dict = self.request_to_dict(messages, enable_thinking=enable_thinking)
         return self.prompt_template.render({**request_dict, "strftime_now": _strftime_now})
 
-    def encode_request(self, request: Iterable[Message]) -> list[int]:
-        return self.encode_text(self.render_request(request))
+    def encode_request(self, request: Iterable[Message], *, enable_thinking: bool = True) -> list[int]:
+        return self.encode_text(self.render_request(request, enable_thinking=enable_thinking))
 
     def encode_requests(self, requests: Iterable[Iterable[Message]]) -> list[list[int]]:
         return [self.encode_request(request) for request in requests]
 
-    def parse_response(self, response: str) -> AssistantMessage:
-        if self.output_parser_regex is None:
+    def parse_response(self, response: str, *, expect_thinking: bool = True) -> AssistantMessage:
+        if self.output_parser_regex is None or not expect_thinking:
             return AssistantMessage(chain_of_thought=None, response=response)
         match = self.output_parser_regex.match(response)
         if match is None:
@@ -191,8 +191,8 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
             else:
                 yield self.tokenizer.decode(list(group), skip_special_tokens=False).encode("utf-8")
 
-    def decode_response(self, response: list[int]) -> AssistantMessage:
-        return self.parse_response(self.decode_tokens(response))
+    def decode_response(self, response: list[int], *, expect_thinking: bool = True) -> AssistantMessage:
+        return self.parse_response(self.decode_tokens(response), expect_thinking=expect_thinking)
 
     def __post_init__(self) -> None:
         if self.output_parser_regex is not None:

@@ -27,6 +27,7 @@ class SamplingPolicy(eqx.Module):
     presence_penalty: Float[Array, "*batch"] | None = None
     frequency_penalty: Float[Array, "*batch"] | None = None
     token_counts: Int[Array, "*batch vocabulary"] | None = None
+    token_history: Int[Array, "*batch suffix"] | None = None
 
     @classmethod
     def init(
@@ -39,6 +40,7 @@ class SamplingPolicy(eqx.Module):
         repetition_penalty: float | None = None,
         presence_penalty: float | None = None,
         frequency_penalty: float | None = None,
+        suffix_repetition_length: int | None = None,
     ) -> "SamplingPolicy":
         banned_tokens = () if banned_tokens is None else tuple(banned_tokens)
         repetition_penalty = 1.0 if repetition_penalty is None else repetition_penalty
@@ -62,6 +64,11 @@ class SamplingPolicy(eqx.Module):
             presence_penalty=None if presence_penalty == 0.0 else jnp.asarray(presence_penalty, dtype=jnp.float32),
             frequency_penalty=None if frequency_penalty == 0.0 else jnp.asarray(frequency_penalty, dtype=jnp.float32),
             token_counts=None,
+            token_history=(
+                None
+                if suffix_repetition_length is None or suffix_repetition_length <= 0
+                else jnp.full(suffix_repetition_length, _SENTINEL, dtype=jnp.int32)
+            ),
         )
 
     @classmethod
@@ -76,48 +83,29 @@ class SamplingPolicy(eqx.Module):
         presence_penalty: Iterable[float | None] | None = None,
         frequency_penalty: Iterable[float | None] | None = None,
     ) -> "SamplingPolicy":
+        empty_banned_tokens = _pad_banned_tokens(())
         padded_banned_tokens = (
             None
             if banned_tokens is None
-            else tuple(_pad_banned_tokens(()) if row is None else _pad_banned_tokens(row) for row in banned_tokens)
+            else tuple(empty_banned_tokens if row is None else _pad_banned_tokens(row) for row in banned_tokens)
         )
-        temperature = canonicalize(temperature, default=1.0, dtype=jnp.float32)
-        top_k = canonicalize(top_k, default=0, dtype=jnp.int32)
-        top_p = canonicalize(top_p, default=1.0, dtype=jnp.float32)
-        min_p = canonicalize(min_p, default=0.0, dtype=jnp.float32)
         banned_tokens_array = (
             None
-            if padded_banned_tokens is None or all(row == _pad_banned_tokens(()) for row in padded_banned_tokens)
+            if padded_banned_tokens is None or all(row == empty_banned_tokens for row in padded_banned_tokens)
             else jnp.asarray(padded_banned_tokens, dtype=jnp.int32)
         )
-        repetition_penalty = canonicalize(repetition_penalty, default=1.0, dtype=jnp.float32)
-        presence_penalty = canonicalize(presence_penalty, default=0.0, dtype=jnp.float32)
-        frequency_penalty = canonicalize(frequency_penalty, default=0.0, dtype=jnp.float32)
-        _raise_if_different_batch_sizes(
-            *jax.tree.leaves(
-                (
-                    temperature,
-                    top_k,
-                    top_p,
-                    min_p,
-                    banned_tokens_array,
-                    repetition_penalty,
-                    presence_penalty,
-                    frequency_penalty,
-                ),
-            ),
-        )
-        return cls(
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-            min_p=min_p,
-            banned_tokens=banned_tokens_array,
-            repetition_penalty=repetition_penalty,
-            presence_penalty=presence_penalty,
-            frequency_penalty=frequency_penalty,
-            token_counts=None,
-        )
+        arrays = {
+            "temperature": _optional_array(temperature, default=1.0, dtype=jnp.float32),
+            "top_k": _optional_array(top_k, default=0, dtype=jnp.int32),
+            "top_p": _optional_array(top_p, default=1.0, dtype=jnp.float32),
+            "min_p": _optional_array(min_p, default=0.0, dtype=jnp.float32),
+            "banned_tokens": banned_tokens_array,
+            "repetition_penalty": _optional_array(repetition_penalty, default=1.0, dtype=jnp.float32),
+            "presence_penalty": _optional_array(presence_penalty, default=0.0, dtype=jnp.float32),
+            "frequency_penalty": _optional_array(frequency_penalty, default=0.0, dtype=jnp.float32),
+        }
+        _raise_if_different_batch_sizes(*jax.tree.leaves(arrays))
+        return cls(token_counts=None, token_history=None, **arrays)
 
     @property
     def has_count_penalties(self) -> bool:
@@ -133,15 +121,33 @@ class SamplingPolicy(eqx.Module):
         prompt_length: Int[Array, ""],
         vocabulary_size: int,
     ) -> "SamplingPolicy":
+        positions = jnp.arange(prompt_token_ids.shape[0], dtype=jnp.int32)
         token_ids = jnp.clip(prompt_token_ids, 0, vocabulary_size - 1)
-        token_mask = (jnp.arange(prompt_token_ids.shape[0], dtype=jnp.int32) < prompt_length) & (
-            (prompt_token_ids >= 0) & (prompt_token_ids < vocabulary_size)
+        in_vocabulary = (prompt_token_ids >= 0) & (prompt_token_ids < vocabulary_size)
+        token_mask = (positions < prompt_length) & in_vocabulary
+        if self.token_history is None:
+            return replace(self, token_counts=_count_tokens(token_ids, token_mask, vocabulary_size))
+
+        window_size = self.token_history.shape[0]
+        history_source = prompt_length - window_size + jnp.arange(window_size, dtype=jnp.int32)
+        history = jnp.where(
+            history_source >= 0,
+            token_ids[jnp.clip(history_source, 0, prompt_token_ids.shape[0] - 1)],
+            _SENTINEL,
         )
-        token_counts = jnp.zeros(vocabulary_size, dtype=jnp.int32).at[token_ids].add(token_mask.astype(jnp.int32))
-        return replace(self, token_counts=token_counts)
+        suffix_mask = token_mask & (positions >= prompt_length - window_size)
+        return replace(
+            self,
+            token_counts=_count_tokens(token_ids, suffix_mask, vocabulary_size),
+            token_history=history,
+        )
 
     def with_empty_token_counts(self, vocabulary_size: int) -> "SamplingPolicy":
-        return replace(self, token_counts=jnp.zeros(vocabulary_size, dtype=jnp.int32))
+        return replace(
+            self,
+            token_counts=jnp.zeros(vocabulary_size, dtype=jnp.int32),
+            token_history=None if self.token_history is None else jnp.full_like(self.token_history, _SENTINEL),
+        )
 
     def with_next_token_count(
         self,
@@ -150,10 +156,25 @@ class SamplingPolicy(eqx.Module):
     ) -> "SamplingPolicy":
         if self.token_counts is None:
             return self
-        in_vocabulary = (token_id >= 0) & (token_id < self.token_counts.shape[0])
-        token_id = jnp.clip(token_id, 0, self.token_counts.shape[0] - 1)
-        count = (jnp.asarray(should_count) & in_vocabulary).astype(jnp.int32)
-        return replace(self, token_counts=self.token_counts.at[token_id].add(count))
+        vocabulary_size = self.token_counts.shape[0]
+        in_vocabulary = (token_id >= 0) & (token_id < vocabulary_size)
+        safe_token_id = jnp.clip(token_id, 0, vocabulary_size - 1)
+        should_add = jnp.asarray(should_count) & in_vocabulary
+        count = should_add.astype(jnp.int32)
+
+        if self.token_history is None:
+            return replace(self, token_counts=self.token_counts.at[safe_token_id].add(count))
+
+        oldest_id = self.token_history[0]
+        safe_oldest_id = jnp.clip(oldest_id, 0, vocabulary_size - 1)
+        remove_count = (should_add & (oldest_id >= 0)).astype(jnp.int32)
+        token_counts = self.token_counts.at[safe_token_id].add(count).at[safe_oldest_id].add(-remove_count)
+        shifted_history = jnp.concatenate([self.token_history[1:], safe_token_id[None]])
+        return replace(
+            self,
+            token_counts=token_counts,
+            token_history=jnp.where(should_add, shifted_history, self.token_history),
+        )
 
     def broadcast(self, batch_size: int) -> "SamplingPolicy":
         def broadcast_leaf(leaf: object) -> object:
@@ -188,7 +209,7 @@ class SamplingPolicy(eqx.Module):
             self.presence_penalty,
             self.frequency_penalty,
         )
-        vector_fields: tuple[SamplingLeaf | None, ...] = (self.banned_tokens, self.token_counts)
+        vector_fields: tuple[SamplingLeaf | None, ...] = (self.banned_tokens, self.token_counts, self.token_history)
         if any(field is not None and field.ndim != 0 for field in scalar_fields) or any(
             field is not None and field.ndim != 1 for field in vector_fields
         ):
@@ -279,26 +300,18 @@ class SamplingPolicy(eqx.Module):
         return jnp.where(self.min_p == 0.0, logits, filtered_logits)
 
 
-def _raise_if_different_batch_sizes(*arrays: SamplingLeaf) -> None:
-    if not arrays:
-        return
-    first_size = arrays[0].shape[0]
-    if any(array.shape[0] != first_size for array in arrays):
-        raise ValueError("init_batch iterable arguments must have the same length.")
-
-
-def canonicalize[T](
-    values: Iterable[T | None] | None,
-    *,
-    default: T,
-    dtype: DTypeLike,
-) -> SamplingLeaf | None:
+def _optional_array[T](values: Iterable[T | None] | None, *, default: T, dtype: DTypeLike) -> SamplingLeaf | None:
     if values is None:
         return None
     values = tuple(default if value is None else value for value in values)
     if all(value == default for value in values):
         return None
     return jnp.asarray(values, dtype=dtype)
+
+
+def _raise_if_different_batch_sizes(*arrays: SamplingLeaf) -> None:
+    if arrays and any(array.shape[0] != arrays[0].shape[0] for array in arrays):
+        raise ValueError("init_batch iterable arguments must have the same length.")
 
 
 def _pad_banned_tokens(banned_tokens: Iterable[int]) -> tuple[int, ...]:
@@ -308,3 +321,11 @@ def _pad_banned_tokens(banned_tokens: Iterable[int]) -> tuple[int, ...]:
     if any(token < 0 for token in tokens):
         raise ValueError(f"Banned tokens must be non-negative token ids. {_SENTINEL} is reserved as a sentinel.")
     return tokens + (_SENTINEL,) * (_MAX_BANNED_TOKENS - len(tokens))
+
+
+def _count_tokens(
+    token_ids: Int[Array, " tokens"],
+    token_mask: Bool[Array, " tokens"],
+    vocabulary_size: int,
+) -> Int[Array, " vocabulary"]:
+    return jnp.zeros(vocabulary_size, dtype=jnp.int32).at[token_ids].add(token_mask.astype(jnp.int32))
