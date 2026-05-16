@@ -53,6 +53,8 @@ __all__ = [
     "LloydMaxSpec",
 ]
 
+_MAX_BIAS_SEARCH_ELEMENTS_PER_CHUNK = 8_388_608
+
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
 def _master_weights_to_master_scales(
@@ -133,6 +135,24 @@ def _unpacked_weight_indices_to_master_weights(
     return grouped_master_weights.reshape(*leading_dims, groups * group_width)
 
 
+def _bias_costs_for_candidate_biases(
+    normalized_weights: Float[Array, "... groups group_size"],
+    codebook: Float[Array, " levels"],
+    candidate_biases: Float[Array, " bias_levels"],
+) -> Float[Array, "... groups bias_levels"]:
+    candidate_bias_shape = (1,) * (normalized_weights.ndim - 1) + (candidate_biases.size, 1)
+    candidate_biases = candidate_biases.reshape(candidate_bias_shape)
+    shifted_weights = normalized_weights[..., None, :] + candidate_biases
+    shifted_weight_indices = round_to_sorted_lut_table_indices(
+        shifted_weights,
+        codebook,
+        gradient_estimator=GradientEstimator.DETERMINISTIC_ROUNDING,
+    )
+    code_values = lut_values_at(shifted_weight_indices, codebook)
+    residuals = code_values - candidate_biases - normalized_weights[..., None, :]
+    return jnp.mean(residuals * residuals, axis=-1)
+
+
 def _master_weights_to_master_biases(
     master_weights: Float[Array, "... cols"],
     scale_values: Float[Array, "... groups"],
@@ -152,17 +172,31 @@ def _master_weights_to_master_biases(
     grouped_weights = group_by_last_axis(master_weights, group_size=group_size)
     normalized_weights = grouped_weights / safe_scale_values.astype(master_weights.dtype)[..., None]
     (bias_levels,) = bias_table.shape
-    candidate_bias_shape = (1,) * (normalized_weights.ndim - 1) + (bias_levels, 1)
-    candidate_biases = bias_table.reshape(candidate_bias_shape)
-    shifted_weights = normalized_weights[..., None, :] + candidate_biases
-    shifted_weight_indices = round_to_sorted_lut_table_indices(
-        shifted_weights,
-        codebook,
-        gradient_estimator=GradientEstimator.DETERMINISTIC_ROUNDING,
+
+    chunk_size = max(
+        1,
+        min(
+            bias_levels,
+            _MAX_BIAS_SEARCH_ELEMENTS_PER_CHUNK // normalized_weights.size,
+        ),
     )
-    code_values = lut_values_at(shifted_weight_indices, codebook)
-    residuals = code_values - candidate_biases - normalized_weights[..., None, :]
-    bias_indices = jnp.argmin(jnp.mean(residuals * residuals, axis=-1), axis=-1)
+    grouped_weight_template = normalized_weights[..., 0]
+    best_bias_costs = reshard_as(
+        jnp.full(normalized_weights.shape[:-1], jnp.inf, dtype=normalized_weights.dtype),
+        grouped_weight_template,
+    )
+    bias_indices = reshard_as(jnp.zeros(normalized_weights.shape[:-1], dtype=jnp.int32), grouped_weight_template)
+    for candidate_start in range(0, bias_levels, chunk_size):
+        bias_costs = _bias_costs_for_candidate_biases(
+            normalized_weights,
+            codebook,
+            bias_table[candidate_start : candidate_start + chunk_size],
+        )
+        chunk_bias_indices = jnp.argmin(bias_costs, axis=-1)
+        chunk_bias_costs = jnp.min(bias_costs, axis=-1)
+        is_better = chunk_bias_costs < best_bias_costs
+        bias_indices = jnp.where(is_better, candidate_start + chunk_bias_indices, bias_indices)
+        best_bias_costs = jnp.where(is_better, chunk_bias_costs, best_bias_costs)
     return lut_values_at(bias_indices, bias_table)
 
 
@@ -419,8 +453,11 @@ class LloydMaxSpec(QuantizedSpec):
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         is_sharded: bool = True,
     ) -> "LloydMaxMatrix":
-        if self.bias_bits is not None and packed_bias_indices is None:
-            raise ValueError("LloydMax biases require packed bias indices")
+        if self.bias_bits is None:
+            if packed_bias_indices is not None:
+                raise ValueError("Bias-free LloydMax parameters must not include packed bias indices.")
+        elif packed_bias_indices is None:
+            raise ValueError("LloydMax biases require packed bias indices.")
 
         weight_partition = self.layout.weight_partition(packed_scales.ndim - 2, is_sharded=is_sharded)
         parameter_sharding = make_sharding((*weight_partition[:-1], None))
@@ -745,25 +782,6 @@ class LloydMaxMatrixForInference(LloydMaxMatrix):
     ) -> UInt8[Array, "*components rows packed_groups"] | None:
         return self.packed_bias_indices
 
-    @property
-    def _master_biases(self) -> Float[Array, "*components rows groups"] | None:
-        if self.packed_bias_indices is None:
-            return None
-        assert self.spec.bias_bits is not None
-        *_, groups = self.packed_scales.shape
-        bias_indices = unpack_uint8_to_uint(
-            self.packed_bias_indices,
-            bits=self.spec.bias_bits,
-            unpacked_last_axis_dim=groups,
-        )
-        return _bias_indices_to_master_biases(
-            bias_indices,
-            bits=self.spec.bits,
-            bias_bits=self.spec.bias_bits,
-            group_size=self.spec.group_size,
-            dtype=self.dtype,
-        )
-
     def astype(self, dtype: DTypeLike) -> "LloydMaxMatrixForInference":
         return LloydMaxMatrixForInference(
             spec=self.spec,
@@ -800,15 +818,31 @@ class LloydMaxMatrixForInference(LloydMaxMatrix):
         forward_pass_config: MatmulConfig,  # noqa: ARG002
         index: int | Int[Array, ""] | None = None,
     ) -> Float[Array, "... cols"]:
-        master_biases = self._master_biases
         packed_weight_indices = self.packed_weight_indices
         packed_scales = self.packed_scales
+        packed_bias_indices = self.packed_bias_indices
         if index is not None:
             packed_weight_indices = packed_weight_indices[index, :]
             packed_scales = packed_scales[index, :]
-            if master_biases is not None:
-                master_biases = master_biases[index, :]
+            if packed_bias_indices is not None:
+                packed_bias_indices = packed_bias_indices[index, :]
         *_, groups = packed_scales.shape
+        if packed_bias_indices is None:
+            master_biases = None
+        else:
+            assert self.spec.bias_bits is not None
+            bias_indices = unpack_uint8_to_uint(
+                packed_bias_indices,
+                bits=self.spec.bias_bits,
+                unpacked_last_axis_dim=groups,
+            )
+            master_biases = _bias_indices_to_master_biases(
+                bias_indices,
+                bits=self.spec.bits,
+                bias_bits=self.spec.bias_bits,
+                group_size=self.spec.group_size,
+                dtype=dtype,
+            )
         unpacked_weight_indices = unpack_uint8_to_uint(
             packed_weight_indices,
             bits=self.spec.bits,

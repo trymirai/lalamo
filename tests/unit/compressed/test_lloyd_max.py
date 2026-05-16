@@ -5,14 +5,18 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jax.sharding import Mesh, Sharding
+from jaxtyping import DTypeLike
 
+from lalamo.compressed.data.lloyd_max import _initial_bias_center_indices
 from lalamo.compressed.lloyd_max import (
     LloydMaxMatrixForInference,
     LloydMaxMatrixForTraining,
     LloydMaxSpec,
+    _bias_indices_to_master_biases,
     _bias_lut,
     _codebook,
     _master_weights_to_grouped_weight_indices,
+    _master_weights_to_master_biases,
     _master_weights_to_quantized_weights,
 )
 from lalamo.compressed.utils.packing import pack_uint_to_uint8, packed_last_axis_dim, unpack_uint8_to_uint
@@ -186,6 +190,41 @@ def test_lloyd_max_biases_pack_and_roundtrip(bias_bits: Literal[2, 3, 4, 6, 8]) 
     assert_close_arrays(result=training.decompress(), reference=inference.decompress())
 
 
+@pytest.mark.parametrize(
+    ("bits", "bias_bits", "group_size"),
+    [
+        (4, 8, 128),
+        (6, 6, 32),
+        (8, 8, 32),
+    ],
+)
+def test_lloyd_max_bias_lut_uses_all_codes(
+    bits: Literal[4, 6, 8],
+    bias_bits: Literal[6, 8],
+    group_size: Literal[32, 128],
+) -> None:
+    bias_table = _bias_lut(group_size=group_size, bias_bits=bias_bits, bits=bits, dtype=jnp.float32)
+
+    assert jnp.unique(bias_table).size == bias_table.size
+
+
+def test_lloyd_max_bias_lut_initialization_is_symmetric() -> None:
+    best_biases = jnp.array([-0.9, -0.4, -0.2, -0.05, 0.01, 0.08, 0.7, 0.95], dtype=jnp.float32)
+    scale_weights = jnp.array([1.0, 0.5, 1.3, 0.7, 0.2, 1.1, 0.9, 0.4], dtype=jnp.float32)
+    bias_candidates = jnp.linspace(-1, 1, 512, dtype=jnp.float32)
+
+    center_indices = _initial_bias_center_indices(
+        best_biases,
+        scale_weights,
+        bias_candidates,
+        num_bias_levels=8,
+    )
+    bias_table = bias_candidates[center_indices]
+
+    assert_close_arrays(result=bias_table, reference=-jnp.flip(bias_table))
+    assert jnp.unique(bias_table).size == bias_table.size
+
+
 def test_lloyd_max_training_keeps_full_precision_master_weights_until_forward_pass() -> None:
     weights = _logical_weights()
     spec = LloydMaxSpec(bits=4, group_size=4, bias_bits=4)
@@ -195,6 +234,79 @@ def test_lloyd_max_training_keeps_full_precision_master_weights_until_forward_pa
     assert isinstance(training, LloydMaxMatrixForTraining)
     assert_close_arrays(result=training.master_weights, reference=weights)
     assert not bool(jnp.allclose(training.master_weights, training.decompress()))
+
+
+def test_lloyd_max_biased_inference_uses_requested_forward_dtype() -> None:
+    weights = _logical_weights()
+    vector = jnp.linspace(-1, 1, weights.shape[-1], dtype=jnp.bfloat16)
+    matrix = LloydMaxSpec(bits=4, group_size=4, bias_bits=4).compress(
+        weights,
+        implementation=CompressionImplementation.INFERENCE,
+        is_sharded=False,
+    )
+
+    result = matrix.dot(vector, keychain=Keychain.init(17))
+
+    assert result.dtype == jnp.bfloat16
+
+    embedding_matrix = LloydMaxSpec(
+        bits=4,
+        group_size=4,
+        bias_bits=4,
+        layout=Layout.INPUT_OUTPUT,
+    ).compress(
+        weights,
+        implementation=CompressionImplementation.INFERENCE,
+        is_sharded=False,
+    )
+
+    embedding = embedding_matrix.lookup_embedding(0, dtype=jnp.bfloat16, keychain=Keychain.init(18))
+
+    assert embedding.dtype == jnp.bfloat16
+
+
+def test_lloyd_max_biased_lookup_unpacks_only_selected_bias_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    weights = _logical_weights()
+    matrix = LloydMaxSpec(
+        bits=4,
+        group_size=4,
+        bias_bits=4,
+        layout=Layout.INPUT_OUTPUT,
+    ).compress(
+        weights,
+        implementation=CompressionImplementation.INFERENCE,
+        is_sharded=False,
+    )
+    assert isinstance(matrix, LloydMaxMatrixForInference)
+    unpacked_bias_shapes = []
+
+    def record_unpacked_bias_shape(
+        bias_indices: jax.Array,
+        *,
+        bits: int,
+        bias_bits: int,
+        group_size: int,
+        dtype: DTypeLike,
+    ) -> jax.Array:
+        unpacked_bias_shapes.append(bias_indices.shape)
+        return _bias_indices_to_master_biases(
+            bias_indices,
+            bits=bits,
+            bias_bits=bias_bits,
+            group_size=group_size,
+            dtype=dtype,
+        )
+
+    monkeypatch.setattr(
+        "lalamo.compressed.lloyd_max._bias_indices_to_master_biases",
+        record_unpacked_bias_shape,
+    )
+
+    matrix.lookup_embedding(0, keychain=Keychain.init(19))
+
+    assert unpacked_bias_shapes == [(matrix.packed_scales.shape[-1],)]
 
 
 def test_lloyd_max_training_dot_supports_stochastic_rounding_and_master_weight_gradients() -> None:
@@ -284,6 +396,54 @@ def test_lloyd_max_forward_uses_selected_estimator_for_master_biases() -> None:
     )
 
     assert not bool(jnp.allclose(stochastic_result, deterministic_bias_result))
+
+
+def test_lloyd_max_bias_search_chunking_matches_full_candidate_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    weights = _logical_weights()
+    scale_values = jnp.array(
+        [[0.5, 1.25], [2.0, 0.25], [1.0, 0.75], [1.5, 2.5]],
+        dtype=weights.dtype,
+    )
+    full_result = _master_weights_to_master_biases(
+        weights,
+        scale_values,
+        bits=4,
+        bias_bits=4,
+        group_size=4,
+    )
+    monkeypatch.setattr("lalamo.compressed.lloyd_max._MAX_BIAS_SEARCH_ELEMENTS_PER_CHUNK", 1)
+
+    chunked_result = _master_weights_to_master_biases(
+        weights,
+        scale_values,
+        bits=4,
+        bias_bits=4,
+        group_size=4,
+    )
+
+    assert_close_arrays(result=chunked_result, reference=full_result)
+
+
+def test_lloyd_max_from_packed_parameters_rejects_bias_indices_without_bias_bits() -> None:
+    weights = _logical_weights()
+    biased_matrix = LloydMaxSpec(bits=4, group_size=4, bias_bits=4).compress(
+        weights,
+        implementation=CompressionImplementation.INFERENCE,
+        is_sharded=False,
+    )
+    assert isinstance(biased_matrix, LloydMaxMatrixForInference)
+
+    with pytest.raises(ValueError, match="must not include packed bias indices"):
+        LloydMaxSpec(bits=4, group_size=4).from_packed_parameters(
+            packed_weight_indices=biased_matrix.packed_weight_indices,
+            packed_scales=biased_matrix.packed_scales,
+            packed_bias_indices=biased_matrix.packed_bias_indices,
+            dtype=weights.dtype,
+            implementation=CompressionImplementation.INFERENCE,
+            is_sharded=False,
+        )
 
 
 def test_lloyd_max_compress_uses_yaqa_weights_when_preconditioned() -> None:

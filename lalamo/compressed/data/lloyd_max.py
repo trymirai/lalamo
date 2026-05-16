@@ -41,6 +41,12 @@ class _LutRow(NamedTuple):
     value: float
 
 
+class _BiasedLutState(NamedTuple):
+    codebook: Float[Array, " levels"]
+    center_indices: Int[Array, " bias_levels"]
+    objective: Float[Array, ""]
+
+
 def _parse_bias_bits(value: str) -> int | None:
     if value == "":
         return None
@@ -191,6 +197,86 @@ def _weighted_bias_costs(
     return jnp.concatenate(weighted_mse_chunks, axis=-1)
 
 
+def _strictly_increasing_indices(
+    indices: Int[Array, " levels"],
+    *,
+    min_value: int,
+    max_value: int,
+) -> Int[Array, " levels"]:
+    host_indices = [int(index) for index in jax.device_get(indices)]
+    adjusted_indices = []
+    for offset, index in enumerate(host_indices):
+        remaining_indices = len(host_indices) - offset - 1
+        lower_bound = min_value + offset
+        if adjusted_indices:
+            lower_bound = max(lower_bound, adjusted_indices[-1] + 1)
+        upper_bound = max_value - remaining_indices
+        adjusted_indices.append(min(max(index, lower_bound), upper_bound))
+    return jnp.array(adjusted_indices, dtype=indices.dtype)
+
+
+def _symmetric_center_indices(
+    positive_center_indices: Int[Array, " half_levels"],
+    num_candidates: int,
+) -> Int[Array, " levels"]:
+    positive_center_indices = _strictly_increasing_indices(
+        jnp.sort(positive_center_indices),
+        min_value=num_candidates // 2,
+        max_value=num_candidates - 1,
+    )
+    negative_center_indices = num_candidates - 1 - jnp.flip(positive_center_indices)
+    return jnp.concatenate([negative_center_indices, positive_center_indices])
+
+
+def _center_indices_from_values(
+    centers: Float[Array, " levels"],
+    bias_candidates: Float[Array, " candidates"],
+) -> Int[Array, " levels"]:
+    candidate_thresholds = (bias_candidates[:-1] + bias_candidates[1:]) / 2
+    center_indices = jnp.searchsorted(
+        candidate_thresholds,
+        centers,
+        side="right",
+        method="compare_all",
+    )
+    return _strictly_increasing_indices(
+        jnp.sort(center_indices),
+        min_value=0,
+        max_value=bias_candidates.size - 1,
+    )
+
+
+def _initial_bias_center_indices(
+    best_biases: Float[Array, " groups"],
+    scale_values: Float[Array, " groups"],
+    bias_candidates: Float[Array, " candidates"],
+    num_bias_levels: int,
+) -> Int[Array, " bias_levels"]:
+    positive_centers = _sample_values_to_lloyd_lut_values(
+        jnp.abs(best_biases),
+        scale_values,
+        num_levels=num_bias_levels // 2,
+        steps=16,
+    )
+    positive_center_indices = _center_indices_from_values(positive_centers, bias_candidates)
+    return _symmetric_center_indices(positive_center_indices, bias_candidates.size)
+
+
+def _signed_bias_center_indices(
+    best_biases: Float[Array, " groups"],
+    scale_values: Float[Array, " groups"],
+    bias_candidates: Float[Array, " candidates"],
+    num_bias_levels: int,
+) -> Int[Array, " bias_levels"]:
+    centers = _sample_values_to_lloyd_lut_values(
+        best_biases,
+        scale_values,
+        num_levels=num_bias_levels,
+        steps=16,
+    )
+    return _center_indices_from_values(centers, bias_candidates)
+
+
 def _update_codebook(
     normalized_weights: Float[Array, "groups group_size"],
     scale_values: Float[Array, "groups 1"],
@@ -234,7 +320,40 @@ def _update_bias_indices(
     candidate_costs = assignment_weights.T @ weighted_bias_costs
     updated_center_indices = jnp.argmin(candidate_costs, axis=-1)
     center_indices = jnp.where(assignment_counts > 0, updated_center_indices, center_indices)
-    return jnp.sort(center_indices)
+    return _strictly_increasing_indices(
+        jnp.sort(center_indices),
+        min_value=0,
+        max_value=weighted_bias_costs.shape[-1] - 1,
+    )
+
+
+def _refine_biased_lut_state(
+    normalized_weights: Float[Array, "groups group_size"],
+    scale_values: Float[Array, "groups 1"],
+    codebook: Float[Array, " levels"],
+    bias_candidates: Float[Array, " candidates"],
+    weighted_bias_costs: Float[Array, " groups candidates"],
+    center_indices: Int[Array, " bias_levels"],
+    *,
+    bias_candidate_chunk_size: int,
+    steps: int,
+) -> _BiasedLutState:
+    for _ in range(steps):
+        bias_table = bias_candidates[center_indices]
+        center_costs = weighted_bias_costs[:, center_indices]
+        assigned_bias_indices = jnp.argmin(center_costs, axis=-1)
+        biases = lut_values_at(assigned_bias_indices.astype(jnp.uint8), bias_table)
+        codebook = _update_codebook(normalized_weights, scale_values, biases, codebook)
+        weighted_bias_costs = _weighted_bias_costs(
+            normalized_weights,
+            scale_values,
+            codebook,
+            bias_candidates,
+            bias_candidate_chunk_size,
+        )
+        center_indices = _update_bias_indices(weighted_bias_costs, center_indices)
+    objective = jnp.sum(jnp.min(weighted_bias_costs[:, center_indices], axis=-1))
+    return _BiasedLutState(codebook=codebook, center_indices=center_indices, objective=objective)
 
 
 @cache
@@ -284,33 +403,38 @@ def _compute_lut_values(
     )
     best_bias_indices = jnp.argmin(weighted_bias_costs, axis=-1)
     best_biases = bias_candidates[best_bias_indices]
-    centers = _sample_values_to_lloyd_lut_values(
-        best_biases,
-        jnp.square(scale_values[:, 0]),
-        num_levels=num_bias_levels,
-        steps=16,
+    scale_weights = jnp.square(scale_values[:, 0])
+    initial_center_indices = (
+        _initial_bias_center_indices(
+            best_biases,
+            scale_weights,
+            bias_candidates,
+            num_bias_levels,
+        ),
+        _signed_bias_center_indices(
+            best_biases,
+            scale_weights,
+            bias_candidates,
+            num_bias_levels,
+        ),
     )
-    candidate_thresholds = (bias_candidates[:-1] + bias_candidates[1:]) / 2
-    center_indices = jnp.searchsorted(candidate_thresholds, centers, side="right", method="compare_all")
-    center_indices = jnp.minimum(center_indices, bias_candidates.size - 1)
-
-    for _ in range(8):
-        bias_table = bias_candidates[center_indices]
-        center_costs = weighted_bias_costs[:, center_indices]
-        assigned_bias_indices = jnp.argmin(center_costs, axis=-1)
-        biases = lut_values_at(assigned_bias_indices.astype(jnp.uint8), bias_table)
-        codebook = _update_codebook(normalized_weights, scale_values, biases, codebook)
-        weighted_bias_costs = _weighted_bias_costs(
+    states = tuple(
+        _refine_biased_lut_state(
             normalized_weights,
             scale_values,
             codebook,
             bias_candidates,
-            bias_candidate_chunk_size,
+            weighted_bias_costs,
+            center_indices,
+            bias_candidate_chunk_size=bias_candidate_chunk_size,
+            steps=8,
         )
-        center_indices = _update_bias_indices(weighted_bias_costs, center_indices)
+        for center_indices in initial_center_indices
+    )
+    best_state = min(states, key=lambda state: float(jax.device_get(state.objective)))
 
-    codebook_values = tuple(float(value) for value in jax.device_get(codebook))
-    bias_values = tuple(float(value) for value in jax.device_get(bias_candidates[center_indices]))
+    codebook_values = tuple(float(value) for value in jax.device_get(best_state.codebook))
+    bias_values = tuple(float(value) for value in jax.device_get(bias_candidates[best_state.center_indices]))
     return codebook_values, bias_values
 
 
