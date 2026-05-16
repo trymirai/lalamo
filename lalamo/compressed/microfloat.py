@@ -14,7 +14,7 @@ from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.utils.sharding import lookup_sharded_indices, make_sharding, reshard_as, with_sharding
+from lalamo.utils.sharding import lookup_sharded_indices, make_sharding, with_sharding
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -421,9 +421,7 @@ class MicrofloatMatrix(EmbeddingMatrix[MicrofloatSpec]):
         if transposed:
             layout = layout.transpose()
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            return reshard_as(
-                layout.matmul(self._weights_for_forward(vector.dtype, keychain, forward_pass_config), vector), vector
-            )
+            return layout.matmul(self._weights_for_forward(vector.dtype, keychain, forward_pass_config), vector)
 
 
 class MicrofloatMatrixForTraining(MicrofloatMatrix):

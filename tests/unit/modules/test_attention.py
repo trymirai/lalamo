@@ -110,7 +110,7 @@ def _sharded_sequences(values: Array) -> Array:
     return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, ShardingAxis.TENSOR)))
 
 
-def test_attention_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_attention_matches_reference_and_preserves_tensor_sharding(fake_mesh: Mesh) -> None:
     module = _attention()
     inputs = _sharded_sequence(_inputs())
 
@@ -118,11 +118,11 @@ def test_attention_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) 
 
     _assert_close(result=result.outputs, reference=_reference(module, inputs))
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
-    assert result.outputs.sharding == make_sharding((None, None))
+    assert result.outputs.sharding == make_sharding((None, ShardingAxis.TENSOR))
     assert result.state is None
 
 
-def test_attention_returns_dynamic_state_without_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_attention_returns_dynamic_state_with_tensor_sharding(fake_mesh: Mesh) -> None:
     module = _attention()
     inputs = _sharded_sequence(_inputs())
 
@@ -131,8 +131,8 @@ def test_attention_returns_dynamic_state_without_tensor_sharding(fake_mesh: Mesh
     assert result.state is not None
     _assert_named_sharding(result.state.keys.sharding, fake_mesh)
     _assert_named_sharding(result.state.values.sharding, fake_mesh)
-    assert result.state.keys.sharding == make_sharding((None, None, None))
-    assert result.state.values.sharding == make_sharding((None, None, None))
+    assert result.state.keys.sharding == make_sharding((None, ShardingAxis.TENSOR, None))
+    assert result.state.values.sharding == make_sharding((None, ShardingAxis.TENSOR, None))
 
 
 def test_attention_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
@@ -145,7 +145,7 @@ def test_attention_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
 
 
-def test_attention_under_jit_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_attention_under_jit_matches_reference_and_preserves_tensor_sharding(fake_mesh: Mesh) -> None:
     module = _attention()
     inputs = _sharded_sequence(_inputs())
 
@@ -155,7 +155,7 @@ def test_attention_under_jit_matches_reference_and_drops_tensor_sharding(fake_me
 
     _assert_close(result=result.outputs, reference=_reference(module, inputs))
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
-    assert result.outputs.sharding == make_sharding((None, None))
+    assert result.outputs.sharding == make_sharding((None, ShardingAxis.TENSOR))
 
 
 def test_attention_implementations_match(fake_mesh: Mesh) -> None:
@@ -224,7 +224,7 @@ def test_attention_vmapped_over_inputs_matches_reference_and_keeps_data_sharding
 
     _assert_close(result=result.outputs, reference=reference)
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
-    assert result.outputs.sharding == make_sharding((ShardingAxis.DATA, None, None))
+    assert result.outputs.sharding == make_sharding((ShardingAxis.DATA, None, ShardingAxis.TENSOR))
 
 
 def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
@@ -264,4 +264,4 @@ def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_m
         reference=original(inputs, positional_embeddings=None, keychain=Keychain.init(5)).outputs,
     )
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
-    assert result.outputs.sharding == make_sharding((None, None))
+    assert result.outputs.sharding == make_sharding((None, ShardingAxis.TENSOR))

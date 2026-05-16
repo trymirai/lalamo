@@ -8,7 +8,7 @@ from typing import ClassVar, Generic, Literal, Self, TypeVar, cast, overload
 import equinox as eqx
 from cattrs import GenConverter
 from jax import ShapeDtypeStruct
-from jax.lax import DotAlgorithmPreset
+from jax.lax import DotAlgorithmPreset, dot_general
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.exportable import Exportable, ExportResults
@@ -19,7 +19,7 @@ from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.registry_abc import RegistryABC, make_registry_abc_converter
-from lalamo.utils.sharding import lookup_sharded_indices, make_sharding, reshard_as, with_sharding
+from lalamo.utils.sharding import lookup_sharded_indices, make_sharding, sharding_of, with_sharding
 
 __all__ = [
     "CompressionImplementation",
@@ -288,8 +288,18 @@ class Layout(StrEnum):
         vector: Float[Array, " source_channels"],
     ) -> Float[Array, " target_channels"]:
         if self == Layout.INPUT_OUTPUT:
-            return vector @ weights
-        return weights @ vector
+            return dot_general(
+                vector,
+                weights,
+                dimension_numbers=(((0,), (0,)), ((), ())),
+                out_sharding=sharding_of(vector),
+            )
+        return dot_general(
+            weights,
+            vector,
+            dimension_numbers=(((1,), (0,)), ((), ())),
+            out_sharding=sharding_of(vector),
+        )
 
     def transpose(self) -> "Layout":
         if self == Layout.INPUT_OUTPUT:
@@ -387,9 +397,7 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         if transposed:
             layout = layout.transpose()
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            result = layout.matmul(weights, vector)
-
-        return reshard_as(result, vector)
+            return layout.matmul(weights, vector)
 
 
 @dataclass(frozen=True)

@@ -19,7 +19,6 @@ from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import (
     lookup_sharded_indices,
     make_sharding,
-    reshard_as,
     with_sharding,
 )
 from lalamo.utils.surgery import load_as
@@ -182,11 +181,8 @@ def _master_weights_to_master_biases(
         ),
     )
     grouped_weight_template = normalized_weights[..., 0]
-    best_bias_costs = reshard_as(
-        jnp.full(normalized_weights.shape[:-1], jnp.inf, dtype=normalized_weights.dtype),
-        grouped_weight_template,
-    )
-    bias_indices = reshard_as(jnp.zeros(normalized_weights.shape[:-1], dtype=jnp.int32), grouped_weight_template)
+    best_bias_costs = jnp.full_like(grouped_weight_template, jnp.inf)
+    bias_indices = jnp.zeros_like(grouped_weight_template, dtype=jnp.int32)
     for candidate_start in range(0, bias_levels, chunk_size):
         bias_costs = _bias_costs_for_candidate_biases(
             normalized_weights,
@@ -650,7 +646,7 @@ class LloydMaxMatrix(EmbeddingMatrix[LloydMaxSpec]):
         if transposed:
             layout = layout.transpose()
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            return reshard_as(layout.matmul(weights, vector), vector)
+            return layout.matmul(weights, vector)
 
 
 class LloydMaxMatrixForTraining(LloydMaxMatrix):

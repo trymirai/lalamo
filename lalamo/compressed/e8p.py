@@ -21,7 +21,6 @@ from lalamo.utils.sharding import (
     is_sharded,
     lookup_sharded_indices,
     make_sharding,
-    reshard_as,
     sharding_of,
     with_sharding,
 )
@@ -686,8 +685,9 @@ class E8PMatrixForTraining(E8PMatrix):
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
+        weights = lookup_sharded_indices(self.master_weights, index).astype(dtype)
         return _quantize(
-            lookup_sharded_indices(self.master_weights, index).astype(dtype),
+            weights,
             self.scale.astype(dtype),
             bits=self.spec.bits,
             residual_scale=self.spec.residual_scale_value,
@@ -712,9 +712,7 @@ class E8PMatrixForTraining(E8PMatrix):
         if transposed:
             layout = layout.transpose()
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            result = layout.matmul(weights, vector)
-
-        return reshard_as(result, vector)
+            return layout.matmul(weights, vector)
 
     def load_exported(
         self,
@@ -823,8 +821,9 @@ class E8PMatrixForInference(E8PMatrix):
         residual_codes = self.residual_codes
         if residual_codes is not None:
             residual_codes = lookup_sharded_indices(residual_codes, index)
+        codes = lookup_sharded_indices(self.codes, index)
         return _codes_to_weights(
-            lookup_sharded_indices(self.codes, index),
+            codes,
             residual_codes,
             self.scale.astype(dtype),
             bits=self.spec.bits,
@@ -853,9 +852,7 @@ class E8PMatrixForInference(E8PMatrix):
         if transposed:
             layout = layout.transpose()
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            result = layout.matmul(weights, vector)
-
-        return reshard_as(result, vector)
+            return layout.matmul(weights, vector)
 
     def load_exported(
         self,

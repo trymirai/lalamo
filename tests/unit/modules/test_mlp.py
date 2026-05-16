@@ -6,7 +6,7 @@ import pytest
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
-from lalamo.module import ForwardPassMode, Keychain
+from lalamo.module import ForwardPassMode, Keychain, ShardingAxis
 from lalamo.modules.activations import Identity, SiLU
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.mlp import (
@@ -213,6 +213,14 @@ def _sharded_vector(values: Array) -> Array:
     return jax.device_put(values, make_sharding((None,)))
 
 
+def _sharded_tokens(values: Array) -> Array:
+    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, ShardingAxis.TENSOR)))
+
+
+def _sharded_lengths(values: Array) -> Array:
+    return jax.device_put(values, make_sharding((ShardingAxis.DATA,)))
+
+
 def _moe_sequence_length(mode: ForwardPassMode) -> int:
     if mode == ForwardPassMode.SINGLE_TOKEN:
         return 1
@@ -248,7 +256,7 @@ def test_softmax_routing_call_unbatched_selects_top_k_and_normalizes_weights() -
 def test_routed_moe_matches_direct_reference(mode: ForwardPassMode) -> None:
     module = _moe(num_active_routed_experts=2)
     sequence_length = _moe_sequence_length(mode)
-    inputs = (
+    inputs = _sharded_tokens(
         jnp.arange(2 * sequence_length * MODEL_DIM, dtype=jnp.float32).reshape(
             2,
             sequence_length,
@@ -269,8 +277,8 @@ def test_routed_moe_matches_direct_reference(mode: ForwardPassMode) -> None:
 @pytest.mark.usefixtures("fake_mesh")
 def test_moe_prefill_with_shared_experts_and_padding_matches_direct_reference() -> None:
     module = _moe(num_active_routed_experts=2, num_shared_experts=2)
-    inputs = jnp.arange(2 * 3 * MODEL_DIM, dtype=jnp.float32).reshape(2, 3, MODEL_DIM) / 10
-    lengths_without_padding = jnp.array([3, 1], dtype=jnp.int32)
+    inputs = _sharded_tokens(jnp.arange(2 * 3 * MODEL_DIM, dtype=jnp.float32).reshape(2, 3, MODEL_DIM) / 10)
+    lengths_without_padding = _sharded_lengths(jnp.array([3, 1], dtype=jnp.int32))
 
     result = module(
         inputs,

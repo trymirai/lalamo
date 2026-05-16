@@ -77,7 +77,7 @@ def _sharded_batched_inputs(values: Array) -> Array:
     return jax.device_put(values, make_sharding((ShardingAxis.DATA, ShardingAxis.TENSOR)))
 
 
-def test_normalization_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_normalization_matches_reference_and_preserves_tensor_sharding(fake_mesh: Mesh) -> None:
     module = _normalization()
     inputs = _sharded_input(jnp.array([1.0, -2.0, 3.0, -4.0], dtype=jnp.float32))
 
@@ -85,7 +85,7 @@ def test_normalization_matches_reference_and_drops_tensor_sharding(fake_mesh: Me
 
     _assert_close(result=result, reference=_reference(module, inputs))
     _assert_named_sharding(result.sharding, fake_mesh)
-    assert result.sharding == make_sharding((None,))
+    assert result.sharding == make_sharding((ShardingAxis.TENSOR,))
 
 
 def test_normalization_without_mean_offset_or_biases_matches_reference(fake_mesh: Mesh) -> None:
@@ -96,7 +96,7 @@ def test_normalization_without_mean_offset_or_biases_matches_reference(fake_mesh
 
     _assert_close(result=result, reference=_reference(module, inputs))
     _assert_named_sharding(result.sharding, fake_mesh)
-    assert result.sharding == make_sharding((None,))
+    assert result.sharding == make_sharding((ShardingAxis.TENSOR,))
 
 
 def test_normalization_full_layer_upcast_matches_reference_and_returns_input_dtype(fake_mesh: Mesh) -> None:
@@ -108,7 +108,7 @@ def test_normalization_full_layer_upcast_matches_reference_and_returns_input_dty
     assert result.dtype == inputs.dtype
     _assert_close(result=result, reference=_reference(module, inputs))
     _assert_named_sharding(result.sharding, fake_mesh)
-    assert result.sharding == make_sharding((None,))
+    assert result.sharding == make_sharding((ShardingAxis.TENSOR,))
 
 
 def test_normalization_only_normalization_upcast_returns_input_dtype(fake_mesh: Mesh) -> None:
@@ -120,10 +120,10 @@ def test_normalization_only_normalization_upcast_returns_input_dtype(fake_mesh: 
     assert result.dtype == inputs.dtype
     _assert_close(result=result, reference=_reference(module, inputs))
     _assert_named_sharding(result.sharding, fake_mesh)
-    assert result.sharding == make_sharding((None,))
+    assert result.sharding == make_sharding((ShardingAxis.TENSOR,))
 
 
-def test_normalization_under_jit_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_normalization_under_jit_matches_reference_and_preserves_tensor_sharding(fake_mesh: Mesh) -> None:
     module = _normalization()
     inputs = _sharded_input(jnp.array([1.0, -2.0, 3.0, -4.0], dtype=jnp.float32))
 
@@ -131,7 +131,7 @@ def test_normalization_under_jit_matches_reference_and_drops_tensor_sharding(fak
 
     _assert_close(result=result, reference=_reference(module, inputs))
     _assert_named_sharding(result.sharding, fake_mesh)
-    assert result.sharding == make_sharding((None,))
+    assert result.sharding == make_sharding((ShardingAxis.TENSOR,))
 
 
 def test_normalization_vmapped_over_inputs_matches_reference_and_keeps_data_sharding(fake_mesh: Mesh) -> None:
@@ -151,12 +151,12 @@ def test_normalization_vmapped_over_inputs_matches_reference_and_keeps_data_shar
 
     _assert_close(result=result, reference=reference)
     _assert_named_sharding(result.sharding, fake_mesh)
-    assert result.sharding == make_sharding((ShardingAxis.DATA, None))
+    assert result.sharding == make_sharding((ShardingAxis.DATA, ShardingAxis.TENSOR))
 
 
 def test_normalization_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _normalization()
-    parameter_sharding = make_sharding((ShardingAxis.DATA,))
+    parameter_sharding = make_sharding((ShardingAxis.TENSOR,))
     template = Normalization(
         config=original.config,
         scales=dummy_array(original.scales.shape, original.scales.dtype, parameter_sharding),
@@ -177,4 +177,4 @@ def test_normalization_export_load_roundtrips_and_preserves_template_sharding(fa
     assert restored.biases.sharding == template.biases.sharding
     _assert_close(result=result, reference=original(inputs))
     _assert_named_sharding(result.sharding, fake_mesh)
-    assert result.sharding == make_sharding((None,))
+    assert result.sharding == make_sharding((ShardingAxis.TENSOR,))

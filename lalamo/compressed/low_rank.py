@@ -3,6 +3,7 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+from jax.lax import dot_general
 from jax.scipy.linalg import solve_triangular
 from jaxtyping import Array, DTypeLike, Float, Key
 
@@ -10,7 +11,7 @@ from lalamo.module import Keychain, ParameterNorm, ShardingAxis, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.utils.sharding import make_sharding, with_sharding
+from lalamo.utils.sharding import make_sharding, sharding_of, with_sharding
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
@@ -130,8 +131,28 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
 
         with use_dot_algorithm_preset(forward_pass_config.precision):
             if transposed:
-                result = down_projection.T @ (up_projection.T @ vector)
+                rank_features = dot_general(
+                    up_projection,
+                    vector,
+                    dimension_numbers=(((0,), (0,)), ((), ())),
+                )
+                result = dot_general(
+                    down_projection,
+                    rank_features,
+                    dimension_numbers=(((0,), (0,)), ((), ())),
+                    out_sharding=sharding_of(vector),
+                )
             else:
-                result = up_projection @ (down_projection @ vector)
+                rank_features = dot_general(
+                    down_projection,
+                    vector,
+                    dimension_numbers=(((1,), (0,)), ((), ())),
+                )
+                result = dot_general(
+                    up_projection,
+                    rank_features,
+                    dimension_numbers=(((1,), (0,)), ((), ())),
+                    out_sharding=sharding_of(vector),
+                )
 
         return result

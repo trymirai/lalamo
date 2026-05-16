@@ -14,7 +14,7 @@ from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.utils.sharding import lookup_sharded_indices, make_sharding, reshard_as, with_sharding
+from lalamo.utils.sharding import lookup_sharded_indices, make_sharding, with_sharding
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -319,8 +319,9 @@ class MLXMatrixForTraining(MLXMatrix):
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
+        weights = lookup_sharded_indices(self.master_weights, index).astype(dtype)
         return _quantize(
-            lookup_sharded_indices(self.master_weights, index).astype(dtype),
+            weights,
             lookup_sharded_indices(self.scales, index).astype(dtype),
             lookup_sharded_indices(self.biases, index).astype(dtype),
             group_size=self.spec.group_size,
@@ -357,9 +358,7 @@ class MLXMatrixForTraining(MLXMatrix):
         if transposed:
             layout = layout.transpose()
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            result = layout.matmul(dequantized_weights, vector)
-
-        return reshard_as(result, vector)
+            return layout.matmul(dequantized_weights, vector)
 
     def load_exported(
         self,
@@ -508,8 +507,9 @@ class MLXMatrixForInference(MLXMatrix):
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
+        packed_weights = lookup_sharded_indices(self.packed_weights, index)
         return _packed_weights_to_master_weights(
-            lookup_sharded_indices(self.packed_weights, index),
+            packed_weights,
             lookup_sharded_indices(self.scales, index).astype(dtype),
             lookup_sharded_indices(self.biases, index).astype(dtype),
             self.spec.group_size,
@@ -536,6 +536,4 @@ class MLXMatrixForInference(MLXMatrix):
         if transposed:
             layout = layout.transpose()
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            result = layout.matmul(weights, vector)
-
-        return reshard_as(result, vector)
+            return layout.matmul(weights, vector)

@@ -12,7 +12,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
-from lalamo.utils.sharding import lookup_sharded_indices, reshard_as
+from lalamo.utils.sharding import lookup_sharded_indices
 from lalamo.weight_matrix import GradientEstimator
 
 from .embedding import EmbeddingBase, EmbeddingConfig, EmbeddingForwardPassConfig
@@ -222,7 +222,6 @@ class Decoder(LalamoModule[DecoderConfig]):
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
             )
-        token_positions = reshard_as(token_positions, token_ids)
         embedding_keychain, ple_keychain, transformer_keychain, readout_keychain = keychain.split(4)
         inner_features = self.embedding.embed(
             token_ids,

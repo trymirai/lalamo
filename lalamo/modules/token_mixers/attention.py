@@ -26,7 +26,6 @@ from lalamo.modules.token_mixer import (
     TokenMixerResult,
 )
 from lalamo.modules.utils import apply_soft_capping, call_vmapped, call_vmapped_twice
-from lalamo.utils.sharding import make_sharding, with_sharding
 
 from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 
@@ -481,10 +480,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             groups=self.config.num_groups,
             head_channels=self.config.head_dim,
         )
-        queries = with_sharding(queries, make_sharding((None, None, None)))
-        keys = with_sharding(keys, make_sharding((None, None, None)))
-        values = with_sharding(values, make_sharding((None, None, None)))
-
         if self.query_norm is not None:
             queries = call_vmapped_twice(
                 self.query_norm,
@@ -548,14 +543,12 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         )
         if gate is not None:
             attention_output = attention_output * jax.nn.sigmoid(gate)
-        attention_output = with_sharding(attention_output, make_sharding((None, None)))
         (result,) = call_vmapped(
             self.out_projection,
             attention_output,
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=out_keychain,
         )
-        result = with_sharding(result, make_sharding((None, None)))
 
         if not return_updated_state:
             updated_state = None

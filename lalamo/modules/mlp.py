@@ -406,8 +406,6 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        inputs = reshard(inputs, PartitionSpec(ShardingAxis.DATA, None, None))
-
         def per_token(
             token_input: Float[Array, " channels"],
             *,
@@ -419,6 +417,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 keychain=router_keychain,
                 forward_pass_config=forward_pass_config.matmul_config,
             )
+            router_logits = reshard(router_logits, PartitionSpec(None))
             routing = self.config.routing_function.call_unbatched(
                 router_logits,
                 num_active=self.config.num_active_routed_experts,
@@ -488,7 +487,6 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        inputs = reshard(inputs, PartitionSpec(ShardingAxis.DATA, None, None))
         batch_size, sequence_length, _ = inputs.shape
         num_tokens = batch_size * sequence_length
         if lengths_without_padding is None:
@@ -516,6 +514,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             keychain=flatten_token_keychain(router_keychain),
             added_sharding_axis=ShardingAxis.DATA,
         )
+        router_logits = reshard(router_logits, PartitionSpec(ShardingAxis.DATA, None))
         routing_map = self.config.routing_function(router_logits, self.config.num_active_routed_experts)
 
         token_mask: Bool[Array, "experts tokens"] = rearrange(
