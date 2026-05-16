@@ -29,9 +29,13 @@ def yaqa_round_weights(
     spec: QuantizedSpec,
     *,
     is_sharded: bool = True,
-    max_iters: int = 2048,
+    max_iters: int | None = None,
     atol: float = 1e-7,
 ) -> Float[Array, "*components output_channels input_channels"]:
+    output_dim, input_dim = weights.shape[-2:]
+    if max_iters is None:
+        max_iters = 2 * (input_dim + output_dim)
+
     result, has_converged = _yaqa_round_weights(
         weights,
         preconditioner,
