@@ -143,34 +143,57 @@ def estimate_batchsize_for_memory_budget(
 ) -> int:
     batch_size = max(1, starting_batchsize)
     last_successful_batch_size: int | None = None
+    remaining_steps = num_steps
 
-    for _ in range(num_steps):
+    while True:
         try:
             peak_bytes_in_use = _measure_peak_bytes_in_use(functools.partial(fn, batch_size))
         except (JaxRuntimeError, ValueError) as error:
             if not _is_oom_error(error):
                 raise
+
+            next_batch_size = max(1, batch_size // 2)
+            if next_batch_size == batch_size:
+                if last_successful_batch_size is not None:
+                    return last_successful_batch_size
+                raise
+
             if last_successful_batch_size is not None:
-                return last_successful_batch_size
+                next_batch_size = max(last_successful_batch_size, next_batch_size)
 
             warnings.warn(
-                f"OOM while estimating batch size at {batch_size}. Sticking with {batch_size // 2}.",
+                f"OOM while estimating batch size at {batch_size}. Retrying with {next_batch_size}.",
                 RuntimeWarning,
                 stacklevel=2,
             )
-            return max(1, batch_size // 2)
+            batch_size = next_batch_size
+            continue
 
         last_successful_batch_size = batch_size
         estimated_batch_size = max(1, int(batch_size * memory_budget / peak_bytes_in_use))
         if estimated_batch_size <= batch_size:
             return estimated_batch_size
-        batch_size = estimated_batch_size
+        if remaining_steps <= 0:
+            return batch_size
 
-    return batch_size
+        batch_size = estimated_batch_size
+        remaining_steps -= 1
 
 
 def _usable_bytes_from_available_bytes(available_bytes: int) -> int:
     return int(available_bytes * 0.98)
+
+
+def _memory_budget_for_auto_batching(available_bytes: int) -> int:
+    stats = _get_device_memory_stats()
+    capped_bytes = min(available_bytes, stats.bytes_limit)
+    if capped_bytes < available_bytes:
+        warnings.warn(
+            f"Clamping automatic batch-size memory budget from {available_bytes} to device limit {stats.bytes_limit}.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return _usable_bytes_from_available_bytes(capped_bytes)
 
 
 def _assert_sorted(values: list[int]) -> None:
@@ -724,7 +747,7 @@ class BatchScheduler(ABC):
             sequences_per_bucket, batch_size_per_bucket = bucket_sequences(
                 tokenized,
                 memory_probe,
-                max_vram=_usable_bytes_from_available_bytes(vram_bytes),
+                max_vram=_memory_budget_for_auto_batching(vram_bytes),
                 min_batches_per_bucket=MIN_BATCHES_PER_BUCKET,
             )
 
@@ -930,8 +953,6 @@ class ContinuousBatchScheduler(BatchScheduler):
         prefills, state = prefills.fill(decoder, state, jitted_fill_lines)
         jitted_decode = jitted_decode.lower(state).compile()  # type: ignore[missing-attribute]
 
-        # the loop is kept compile-free or basically compile free, the jitted_blah functions are guaranteed
-        # to not recompile
         while True:
             state, completed_mask = jitted_decode(state)
             yield from state.extract_completed_sequences(completed_mask)
