@@ -39,7 +39,7 @@ from .utils.grouping import (
 )
 from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from .utils.rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
-from .utils.yaqa import yaqa_round_weights
+from .utils.yaqa import yaqa_round_fixpoint
 
 __all__ = [
     "IntMatrix",
@@ -92,7 +92,8 @@ def _master_weights_to_int_scale_weights(
     group_size: int,
     bits: int,
 ) -> Float[Array, "... cols"]:
-    grouped_weights = weights.reshape(*weights.shape[:-1], weights.shape[-1] // group_size, group_size)
+    *leading_dims, num_cols = weights.shape
+    grouped_weights = weights.reshape(*leading_dims, num_cols // group_size, group_size)
     if int_scale_zero_points is None:
         int_scale_zero_points = 2 ** (bits - 1)
     else:
@@ -110,9 +111,10 @@ def _integer_scaled_weights_to_master_weights(
     group_size: int,
     bits: int,
 ) -> Float[Array, "... cols"]:
+    *leading_dims, num_cols = int_scale_weights.shape
     grouped_int_scale_weights = int_scale_weights.reshape(
-        *int_scale_weights.shape[:-1],
-        int_scale_weights.shape[-1] // group_size,
+        *leading_dims,
+        num_cols // group_size,
         group_size,
     )
     if int_scale_zero_points is None:
@@ -193,7 +195,13 @@ def _packed_zero_points_to_master_zero_points(
     if packed_zero_points is None:
         return None
 
-    int_scale_zero_points = unpack_uint8_to_uint(packed_zero_points, bits=bits, dtype=scales.dtype)
+    *_, num_groups = scales.shape
+    int_scale_zero_points = unpack_uint8_to_uint(
+        packed_zero_points,
+        bits=bits,
+        dtype=scales.dtype,
+        unpacked_last_axis_dim=num_groups,
+    )
     return int_scale_zero_points.astype(scales.dtype) * scales
 
 
@@ -208,7 +216,13 @@ def _packed_weights_to_master_weights(
     if packed_zero_points is None:
         int_scale_zero_points = None
     else:
-        int_scale_zero_points = unpack_uint8_to_uint(packed_zero_points, bits=bits, dtype=scales.dtype)
+        *_, num_groups = scales.shape
+        int_scale_zero_points = unpack_uint8_to_uint(
+            packed_zero_points,
+            bits=bits,
+            dtype=scales.dtype,
+            unpacked_last_axis_dim=num_groups,
+        )
 
     return _integer_scaled_weights_to_master_weights(int_weights, scales, int_scale_zero_points, group_size, bits)
 
@@ -260,7 +274,7 @@ class IntSpec(QuantizedSpec):
         is_sharded: bool = True,
     ) -> "IntMatrix":
         if preconditioner is not None:
-            weights = yaqa_round_weights(weights, preconditioner, self, is_sharded=is_sharded)
+            weights = yaqa_round_fixpoint(weights, preconditioner, self, is_sharded=is_sharded)
 
         stored_weights = self.layout.from_output_input(weights, is_sharded=is_sharded)
         affine_parameters = IntAffineParameters.from_weights(

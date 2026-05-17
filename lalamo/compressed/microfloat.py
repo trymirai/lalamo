@@ -39,7 +39,7 @@ from .utils.rounding import (
     pack_e8m0_scales,
     round_to_minifloat,
 )
-from .utils.yaqa import yaqa_round_weights
+from .utils.yaqa import yaqa_round_fixpoint
 
 __all__ = [
     "MicrofloatMatrix",
@@ -232,7 +232,7 @@ class MicrofloatSpec(QuantizedSpec):
         is_sharded: bool = True,
     ) -> "MicrofloatMatrix":
         if preconditioner is not None:
-            weights = yaqa_round_weights(weights, preconditioner, self, is_sharded=is_sharded)
+            weights = yaqa_round_fixpoint(weights, preconditioner, self, is_sharded=is_sharded)
 
         stored_weights = self.layout.from_output_input(weights, is_sharded=is_sharded)
         parameters = MicrofloatParameters.from_weights(stored_weights, self.group_size, self.scale_mode)

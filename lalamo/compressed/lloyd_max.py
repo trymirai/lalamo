@@ -44,7 +44,7 @@ from .utils.rounding import (
     round_to_sorted_lut_table,
     round_to_sorted_lut_table_indices,
 )
-from .utils.yaqa import yaqa_round_weights
+from .utils.yaqa import yaqa_round_blockwise
 
 __all__ = [
     "LloydMaxMatrix",
@@ -390,7 +390,7 @@ class LloydMaxSpec(QuantizedSpec):
         is_sharded: bool = True,
     ) -> "LloydMaxMatrix":
         if preconditioner is not None:
-            weights = yaqa_round_weights(weights, preconditioner, self, is_sharded=is_sharded)
+            weights = yaqa_round_blockwise(weights, preconditioner, self, is_sharded=is_sharded)
 
         stored_weights = self.layout.from_output_input(weights, is_sharded=is_sharded)
         master_scales = _master_weights_to_master_scales(stored_weights, group_size=self.group_size)

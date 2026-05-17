@@ -15,7 +15,8 @@ from .block_ldl import block_ldl
 
 __all__ = [
     "ConvergenceError",
-    "yaqa_round_weights",
+    "yaqa_round_blockwise",
+    "yaqa_round_fixpoint",
 ]
 
 
@@ -23,7 +24,7 @@ class ConvergenceError(RuntimeError):
     pass
 
 
-def yaqa_round_weights(
+def yaqa_round_fixpoint(
     weights: Float[Array, "*components output_channels input_channels"],
     preconditioner: Preconditioner,
     spec: QuantizedSpec,
@@ -32,11 +33,11 @@ def yaqa_round_weights(
     max_iters: int | None = None,
     atol: float = 1e-7,
 ) -> Float[Array, "*components output_channels input_channels"]:
-    output_dim, input_dim = weights.shape[-2:]
+    *_, output_dim, input_dim = weights.shape
     if max_iters is None:
         max_iters = 2 * (input_dim + output_dim)
 
-    result, has_converged = _yaqa_round_weights(
+    result, has_converged = _yaqa_round_fixpoint(
         weights,
         preconditioner,
         spec,
@@ -50,7 +51,8 @@ def yaqa_round_weights(
     return result
 
 
-def _yaqa_round_weights(
+@partial(jax.jit, static_argnames=("spec", "is_sharded", "max_iters", "atol"))
+def _yaqa_round_fixpoint(
     weights: Float[Array, "*components output_channels input_channels"],
     preconditioner: Preconditioner,
     spec: QuantizedSpec,
@@ -62,7 +64,7 @@ def _yaqa_round_weights(
     if weights.ndim > 2:
         return jax.vmap(
             partial(
-                _yaqa_round_weights,
+                _yaqa_round_fixpoint,
                 spec=spec,
                 is_sharded=is_sharded,
                 max_iters=max_iters,
@@ -80,7 +82,7 @@ def _yaqa_round_weights(
     if input_block is None and output_block is None:
         return spec.compress(
             weights,
-            implementation=CompressionImplementation.TRAINING,
+            implementation=CompressionImplementation.INFERENCE,
             is_sharded=is_sharded,
         ).decompress(), jnp.ones((), dtype=jnp.bool_)
 
@@ -101,7 +103,7 @@ def _yaqa_round_weights(
     ) -> Float[Array, "output_channels input_channels"]:
         return spec.compress(
             candidate_weights,
-            implementation=CompressionImplementation.TRAINING,
+            implementation=CompressionImplementation.INFERENCE,
             is_sharded=is_sharded,
         ).decompress()
 
@@ -200,3 +202,142 @@ def _yaqa_round_weights(
         ),
     )
     return jnp.where(diff < atol, result, best_weights), (diff < atol) | (cycle_diff < atol)
+
+
+def yaqa_round_blockwise(
+    weights: Float[Array, "*components output_channels input_channels"],
+    preconditioner: Preconditioner,
+    spec: QuantizedSpec,
+    *,
+    is_sharded: bool = True,
+) -> Float[Array, "*components output_channels input_channels"]:
+    if weights.ndim > 2:
+        return jax.vmap(
+            partial(
+                yaqa_round_blockwise,
+                spec=spec,
+                is_sharded=is_sharded,
+            ),
+            in_axes=(0, 0),
+            spmd_axis_name=ShardingAxis.EXPERT,
+        )(weights, preconditioner)
+
+    return _yaqa_round_blockwise_2d(weights, preconditioner, spec)
+
+
+@partial(jax.jit, static_argnames=("spec",))
+def _yaqa_round_blockwise_2d(
+    weights: Float[Array, "output_channels input_channels"],
+    preconditioner: Preconditioner,
+    spec: QuantizedSpec,
+) -> Float[Array, "output_channels input_channels"]:
+    weights = weights.astype(jnp.float32)
+    output_dim, input_dim = weights.shape
+    if output_dim % spec.output_block_size != 0:
+        raise ValueError(f"output_dim={output_dim} must be divisible by output_block_size={spec.output_block_size}")
+    if input_dim % spec.input_block_size != 0:
+        raise ValueError(f"input_dim={input_dim} must be divisible by input_block_size={spec.input_block_size}")
+
+    input_block = preconditioner.input_block
+    output_block = preconditioner.output_block
+    if input_block is None:
+        input_feedback = None
+    else:
+        input_feedback = block_ldl(input_block, spec.input_block_size).tril
+        input_feedback = input_feedback - jnp.identity(input_dim, dtype=input_feedback.dtype)
+
+    if output_block is None:
+        output_feedback = None
+    else:
+        output_feedback = block_ldl(output_block, spec.output_block_size).tril.T
+        output_feedback = output_feedback - jnp.identity(output_dim, dtype=output_feedback.dtype)
+
+    quantized_weights = jnp.zeros_like(weights)
+    num_output_blocks = output_dim // spec.output_block_size
+    num_input_blocks = input_dim // spec.input_block_size
+
+    block_indices = jnp.arange(min(num_output_blocks, num_input_blocks))
+    num_anti_diagonals = num_output_blocks + num_input_blocks - 1
+
+    def quantize_anti_diagonal(
+        step: Int[Array, ""],
+        quantized_weights: Float[Array, "output_channels input_channels"],
+    ) -> Float[Array, "output_channels input_channels"]:
+        anti_diagonal = num_anti_diagonals - step - 1
+        residual = weights - quantized_weights
+        first_output_block = jnp.maximum(0, anti_diagonal - num_input_blocks + 1)
+        first_input_block = anti_diagonal - first_output_block
+        blocks_on_anti_diagonal = jnp.minimum(
+            num_output_blocks - first_output_block,
+            first_input_block + 1,
+        )
+
+        def target_block(block_index: Int[Array, ""]) -> Float[Array, "output_block_size input_block_size"]:
+            output_block = jnp.minimum(first_output_block + block_index, num_output_blocks - 1)
+            input_block = jnp.maximum(first_input_block - block_index, 0)
+            output_start = output_block * spec.output_block_size
+            input_start = input_block * spec.input_block_size
+            target = jax.lax.dynamic_slice(
+                weights,
+                (output_start, input_start),
+                (spec.output_block_size, spec.input_block_size),
+            )
+
+            with use_dot_algorithm_preset(DotAlgorithmPreset.F32_F32_F32):
+                if input_feedback is not None:
+                    residual_output_block = jax.lax.dynamic_slice(
+                        residual,
+                        (output_start, 0),
+                        (spec.output_block_size, input_dim),
+                    )
+                    input_feedback_block = jax.lax.dynamic_slice(
+                        input_feedback,
+                        (0, input_start),
+                        (input_dim, spec.input_block_size),
+                    )
+                    target += residual_output_block @ input_feedback_block
+                if output_feedback is not None:
+                    output_feedback_block = jax.lax.dynamic_slice(
+                        output_feedback,
+                        (output_start, 0),
+                        (spec.output_block_size, output_dim),
+                    )
+                    residual_input_block = jax.lax.dynamic_slice(
+                        residual,
+                        (0, input_start),
+                        (output_dim, spec.input_block_size),
+                    )
+                    target += output_feedback_block @ residual_input_block
+                if input_feedback is not None and output_feedback is not None:
+                    output_feedback_block = jax.lax.dynamic_slice(
+                        output_feedback,
+                        (output_start, 0),
+                        (spec.output_block_size, output_dim),
+                    )
+                    input_feedback_block = jax.lax.dynamic_slice(
+                        input_feedback,
+                        (0, input_start),
+                        (input_dim, spec.input_block_size),
+                    )
+                    target += output_feedback_block @ residual @ input_feedback_block
+
+            return target
+
+        rounded_blocks = spec.quantize_block(jax.vmap(target_block)(block_indices))
+
+        def update_block(
+            block_index: Int[Array, ""],
+            quantized_weights: Float[Array, "output_channels input_channels"],
+        ) -> Float[Array, "output_channels input_channels"]:
+            output_block = jnp.minimum(first_output_block + block_index, num_output_blocks - 1)
+            input_block = jnp.maximum(first_input_block - block_index, 0)
+            updated_weights = jax.lax.dynamic_update_slice(
+                quantized_weights,
+                rounded_blocks[block_index],
+                (output_block * spec.output_block_size, input_block * spec.input_block_size),
+            )
+            return jnp.where(block_index < blocks_on_anti_diagonal, updated_weights, quantized_weights)
+
+        return jax.lax.fori_loop(0, len(block_indices), update_block, quantized_weights)
+
+    return jax.lax.fori_loop(0, num_anti_diagonals, quantize_anti_diagonal, quantized_weights)

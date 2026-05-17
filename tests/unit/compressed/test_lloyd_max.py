@@ -21,7 +21,7 @@ from lalamo.compressed.lloyd_max import (
 )
 from lalamo.compressed.utils.packing import pack_uint_to_uint8, packed_last_axis_dim, unpack_uint8_to_uint
 from lalamo.compressed.utils.rounding import round_to_sorted_lut_table
-from lalamo.compressed.utils.yaqa import yaqa_round_weights
+from lalamo.compressed.utils.yaqa import yaqa_round_blockwise
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
@@ -451,11 +451,37 @@ def test_lloyd_max_compress_uses_yaqa_weights_when_preconditioned() -> None:
     preconditioner = Preconditioner.init(input_block=_input_block(), output_block=_output_block())
     spec = LloydMaxSpec(bits=4, group_size=4)
 
-    yaqa_weights = yaqa_round_weights(weights, preconditioner, spec)
+    yaqa_weights = yaqa_round_blockwise(weights, preconditioner, spec)
     preconditioned = spec.compress(weights, preconditioner=preconditioner)
     expected = spec.compress(yaqa_weights)
 
     assert_close_arrays(result=preconditioned.decompress(), reference=expected.decompress())
+
+
+def test_lloyd_max_compress_uses_blockwise_yaqa_for_mixture_layers() -> None:
+    weights = jnp.stack([_preconditioned_weights(), _preconditioned_weights() * 0.5])
+    input_blocks = jnp.stack([_input_block(), _input_block() * 1.2])
+    output_blocks = jnp.stack([_output_block(), _output_block() * 1.1])
+    preconditioner = Preconditioner.init(input_block=input_blocks, output_block=output_blocks)
+    spec = LloydMaxSpec(bits=4, group_size=4)
+
+    result = spec.compress(weights, preconditioner=preconditioner, is_sharded=False).decompress()
+    reference = jnp.stack(
+        [
+            spec.compress(
+                weights[0],
+                preconditioner=Preconditioner.init(input_block=input_blocks[0], output_block=output_blocks[0]),
+                is_sharded=False,
+            ).decompress(),
+            spec.compress(
+                weights[1],
+                preconditioner=Preconditioner.init(input_block=input_blocks[1], output_block=output_blocks[1]),
+                is_sharded=False,
+            ).decompress(),
+        ],
+    )
+
+    assert_close_arrays(result=result, reference=reference)
 
 
 def test_lloyd_max_compress_rejects_group_size_that_does_not_divide_stored_last_axis() -> None:

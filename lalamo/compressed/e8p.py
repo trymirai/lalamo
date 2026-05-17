@@ -37,7 +37,7 @@ from lalamo.weight_matrix import (
 
 from .data.distortion import distortion_estimate
 from .quantized_spec import QuantizedSpec
-from .utils.yaqa import yaqa_round_weights
+from .utils.yaqa import yaqa_round_fixpoint
 
 __all__ = [
     "E8PMatrix",
@@ -506,7 +506,7 @@ class E8PSpec(QuantizedSpec):
         is_sharded: bool = True,
     ) -> "E8PMatrix":
         if preconditioner is not None:
-            weights = yaqa_round_weights(weights, preconditioner, self, is_sharded=is_sharded)
+            weights = yaqa_round_fixpoint(weights, preconditioner, self, is_sharded=is_sharded)
 
         stored_weights = self.layout.from_output_input(weights, is_sharded=is_sharded)
         parameters = E8PParameters.from_weights(stored_weights, scale_normalization=self.scale_normalization_value)

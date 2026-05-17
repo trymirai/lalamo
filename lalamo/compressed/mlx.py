@@ -36,7 +36,7 @@ from .utils.grouping import (
 )
 from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from .utils.rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
-from .utils.yaqa import yaqa_round_weights
+from .utils.yaqa import yaqa_round_fixpoint
 
 __all__ = [
     "MLXMatrix",
@@ -159,7 +159,7 @@ class MLXSpec(QuantizedSpec):
         is_sharded: bool = True,
     ) -> "MLXMatrix":
         if preconditioner is not None:
-            weights = yaqa_round_weights(weights, preconditioner, self, is_sharded=is_sharded)
+            weights = yaqa_round_fixpoint(weights, preconditioner, self, is_sharded=is_sharded)
 
         stored_weights = self.layout.from_output_input(weights, is_sharded=is_sharded)
         affine_parameters = MLXAffineParameters.from_weights(

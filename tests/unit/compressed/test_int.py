@@ -7,7 +7,7 @@ import pytest
 from jax.sharding import Mesh, Sharding
 
 from lalamo.compressed.int import IntMatrixForInference, IntMatrixForTraining, IntSpec
-from lalamo.compressed.utils.yaqa import yaqa_round_weights
+from lalamo.compressed.utils.yaqa import yaqa_round_fixpoint
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import make_sharding
@@ -184,7 +184,7 @@ def test_int_compress_uses_yaqa_weights_when_preconditioned() -> None:
     preconditioner = Preconditioner.init(input_block=_input_block(), output_block=_output_block())
     spec = IntSpec(bits=4, group_size=2)
 
-    yaqa_weights = yaqa_round_weights(weights, preconditioner, spec)
+    yaqa_weights = yaqa_round_fixpoint(weights, preconditioner, spec)
     preconditioned = spec.compress(weights, preconditioner=preconditioner)
     expected = spec.compress(yaqa_weights)
 

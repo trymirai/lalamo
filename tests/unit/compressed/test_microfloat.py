@@ -13,7 +13,7 @@ from lalamo.compressed.microfloat import (
     MicrofloatSpec,
 )
 from lalamo.compressed.utils.packing import pack_uint_to_uint8
-from lalamo.compressed.utils.yaqa import yaqa_round_weights
+from lalamo.compressed.utils.yaqa import yaqa_round_fixpoint
 from lalamo.model_import.loaders.utils import decode_mxfp4
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.preconditioner import Preconditioner
@@ -199,7 +199,7 @@ def test_microfloat_compress_uses_yaqa_weights_when_preconditioned() -> None:
     preconditioner = Preconditioner.init(input_block=_input_block(), output_block=_output_block())
     spec = MicrofloatSpec(group_size=4)
 
-    yaqa_weights = yaqa_round_weights(weights, preconditioner, spec)
+    yaqa_weights = yaqa_round_fixpoint(weights, preconditioner, spec)
     preconditioned = spec.compress(weights, preconditioner=preconditioner)
     expected = spec.compress(yaqa_weights)
 

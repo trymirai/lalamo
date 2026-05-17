@@ -7,7 +7,7 @@ import pytest
 from jax.lax import DotAlgorithmPreset
 
 from lalamo.compressed.quantized_spec import QuantizedSpec
-from lalamo.compressed.utils.yaqa import ConvergenceError, yaqa_round_weights
+from lalamo.compressed.utils.yaqa import ConvergenceError, yaqa_round_blockwise, yaqa_round_fixpoint
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.weight_matrix import (
@@ -59,6 +59,76 @@ class _RoundSpec(QuantizedSpec):
         return 1 - 4 * density + 2 * tail_probability
 
 
+@dataclass(frozen=True)
+class _BlockMeanSpec(QuantizedSpec):
+    def compress(
+        self,
+        weights: jax.Array,
+        *,
+        key: jax.Array | None = None,  # noqa: ARG002
+        preconditioner: Preconditioner | None = None,  # noqa: ARG002
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        is_sharded: bool = True,
+    ) -> FullPrecisionMatrix:
+        block_mean = jnp.mean(weights, axis=(-2, -1), keepdims=True)
+        return FullPrecisionSpec().compress(
+            jnp.broadcast_to(block_mean, weights.shape),
+            implementation=implementation,
+            is_sharded=is_sharded,
+        )
+
+    @property
+    def input_block_size(self) -> int:
+        return 2
+
+    @property
+    def output_block_size(self) -> int:
+        return 2
+
+    @property
+    def rate(self) -> float:
+        return 1
+
+    @property
+    def distortion(self) -> float:
+        return 1
+
+
+@dataclass(frozen=True)
+class _ImplementationSensitiveSpec(QuantizedSpec):
+    def compress(
+        self,
+        weights: jax.Array,
+        *,
+        key: jax.Array | None = None,  # noqa: ARG002
+        preconditioner: Preconditioner | None = None,  # noqa: ARG002
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        is_sharded: bool = True,
+    ) -> FullPrecisionMatrix:
+        value = 1 if implementation == CompressionImplementation.INFERENCE else -1
+        return FullPrecisionSpec().compress(
+            jnp.full_like(weights, value),
+            implementation=implementation,
+            is_sharded=is_sharded,
+        )
+
+    @property
+    def input_block_size(self) -> int:
+        return 2
+
+    @property
+    def output_block_size(self) -> int:
+        return 2
+
+    @property
+    def rate(self) -> float:
+        return 1
+
+    @property
+    def distortion(self) -> float:
+        return 1
+
+
 def _weights() -> jax.Array:
     return 1.2 * jax.random.normal(jax.random.key(0), (64, 64), dtype=jnp.float32)
 
@@ -96,7 +166,7 @@ def _quadratic_objective(
 
 def _assert_yaqa_reduces_quadratic_objective(weights: jax.Array, preconditioner: Preconditioner) -> None:
     baseline_weights = _round_weights(weights)
-    yaqa_weights = yaqa_round_weights(
+    yaqa_weights = yaqa_round_fixpoint(
         weights,
         preconditioner,
         _RoundSpec(),
@@ -108,31 +178,31 @@ def _assert_yaqa_reduces_quadratic_objective(weights: jax.Array, preconditioner:
     assert yaqa_objective < baseline_objective
 
 
-def test_yaqa_round_weights_reduces_input_preconditioned_quadratic_objective() -> None:
+def test_yaqa_round_fixpoint_reduces_input_preconditioned_quadratic_objective() -> None:
     _assert_yaqa_reduces_quadratic_objective(
         _weights(),
         Preconditioner.init(input_block=_input_block()),
     )
 
 
-def test_yaqa_round_weights_reduces_output_preconditioned_quadratic_objective() -> None:
+def test_yaqa_round_fixpoint_reduces_output_preconditioned_quadratic_objective() -> None:
     _assert_yaqa_reduces_quadratic_objective(
         _weights(),
         Preconditioner.init(output_block=_output_block()),
     )
 
 
-def test_yaqa_round_weights_reduces_two_sided_preconditioned_quadratic_objective() -> None:
+def test_yaqa_round_fixpoint_reduces_two_sided_preconditioned_quadratic_objective() -> None:
     _assert_yaqa_reduces_quadratic_objective(
         _weights(),
         Preconditioner.init(input_block=_input_block(), output_block=_output_block()),
     )
 
 
-def test_yaqa_round_weights_with_identity_preconditioner_matches_baseline_rounding() -> None:
+def test_yaqa_round_fixpoint_with_identity_preconditioner_matches_baseline_rounding() -> None:
     weights = _weights()
 
-    result = yaqa_round_weights(
+    result = yaqa_round_fixpoint(
         weights,
         Preconditioner.identity(),
         _RoundSpec(),
@@ -141,11 +211,11 @@ def test_yaqa_round_weights_with_identity_preconditioner_matches_baseline_roundi
     assert_close(result=result, reference=_round_weights(weights))
 
 
-def test_yaqa_round_weights_raises_when_iteration_limit_prevents_convergence() -> None:
+def test_yaqa_round_fixpoint_raises_when_iteration_limit_prevents_convergence() -> None:
     weights = _weights()
 
     with pytest.raises(ConvergenceError, match="failed to converge"):
-        yaqa_round_weights(
+        yaqa_round_fixpoint(
             weights,
             Preconditioner.init(input_block=_input_block(), output_block=_output_block()),
             _RoundSpec(),
@@ -153,22 +223,85 @@ def test_yaqa_round_weights_raises_when_iteration_limit_prevents_convergence() -
         )
 
 
-def test_yaqa_round_weights_runs_under_vmap_with_batched_preconditioners() -> None:
+def test_yaqa_round_fixpoint_runs_under_vmap_with_batched_preconditioners() -> None:
     weights = jnp.stack([_weights(), _weights() * 0.5])
     input_blocks = jnp.stack([_input_block(), _positive_definite_block(23)])
     output_blocks = jnp.stack([_output_block(), _positive_definite_block(29)])
     preconditioner = Preconditioner.init(input_block=input_blocks, output_block=output_blocks)
     spec = _RoundSpec()
 
-    result = yaqa_round_weights(weights, preconditioner, spec)
+    result = yaqa_round_fixpoint(weights, preconditioner, spec)
     reference = jnp.stack(
         [
-            yaqa_round_weights(
+            yaqa_round_fixpoint(
                 weights[0],
                 Preconditioner.init(input_block=input_blocks[0], output_block=output_blocks[0]),
                 spec,
             ),
-            yaqa_round_weights(
+            yaqa_round_fixpoint(
+                weights[1],
+                Preconditioner.init(input_block=input_blocks[1], output_block=output_blocks[1]),
+                spec,
+            ),
+        ],
+    )
+
+    assert_close(result=result, reference=reference)
+
+
+def test_yaqa_round_fixpoint_uses_inference_compression() -> None:
+    weights = jnp.zeros((4, 4), dtype=jnp.float32)
+
+    result = yaqa_round_fixpoint(weights, Preconditioner.identity(), _ImplementationSensitiveSpec())
+
+    assert_close(result=result, reference=jnp.ones_like(weights))
+
+
+def test_yaqa_round_blockwise_quantizes_each_block_separately() -> None:
+    weights = jnp.arange(16, dtype=jnp.float32).reshape(4, 4)
+    block_means = jnp.mean(weights.reshape(2, 2, 2, 2), axis=(1, 3), keepdims=True)
+    expected = jnp.broadcast_to(block_means, (2, 2, 2, 2)).reshape(4, 4)
+
+    result = yaqa_round_blockwise(weights, Preconditioner.identity(), _BlockMeanSpec())
+
+    assert_close(result=result, reference=expected)
+
+
+def test_yaqa_round_blockwise_uses_inference_compression() -> None:
+    weights = jnp.zeros((4, 4), dtype=jnp.float32)
+
+    result = yaqa_round_blockwise(weights, Preconditioner.identity(), _ImplementationSensitiveSpec())
+
+    assert_close(result=result, reference=jnp.ones_like(weights))
+
+
+def test_yaqa_round_blockwise_matches_fixpoint_for_two_sided_preconditioner() -> None:
+    weights = _weights()
+    preconditioner = Preconditioner.init(input_block=_input_block(), output_block=_output_block())
+    spec = _RoundSpec()
+
+    result = yaqa_round_blockwise(weights, preconditioner, spec)
+    reference = yaqa_round_fixpoint(weights, preconditioner, spec)
+
+    assert_close(result=result, reference=reference)
+
+
+def test_yaqa_round_blockwise_runs_under_vmap_with_batched_preconditioners() -> None:
+    weights = jnp.stack([_weights(), _weights() * 0.5])
+    input_blocks = jnp.stack([_input_block(), _positive_definite_block(23)])
+    output_blocks = jnp.stack([_output_block(), _positive_definite_block(29)])
+    preconditioner = Preconditioner.init(input_block=input_blocks, output_block=output_blocks)
+    spec = _RoundSpec()
+
+    result = yaqa_round_blockwise(weights, preconditioner, spec)
+    reference = jnp.stack(
+        [
+            yaqa_round_blockwise(
+                weights[0],
+                Preconditioner.init(input_block=input_blocks[0], output_block=output_blocks[0]),
+                spec,
+            ),
+            yaqa_round_blockwise(
                 weights[1],
                 Preconditioner.init(input_block=input_blocks[1], output_block=output_blocks[1]),
                 spec,

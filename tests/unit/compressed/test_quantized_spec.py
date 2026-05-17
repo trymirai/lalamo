@@ -111,7 +111,7 @@ def test_microfloat_distortion_matches_inference_quantization_error(
         E8PSpec(bits=4, layout=Layout.OUTPUT_INPUT),
     ],
 )
-def test_quantized_spec_quantize_block_matches_training_compression(spec: QuantizedSpec) -> None:
+def test_quantized_spec_quantize_block_matches_inference_compression(spec: QuantizedSpec) -> None:
     block_shape = (spec.output_block_size, spec.input_block_size)
     weights = (
         jnp.arange(spec.output_block_size * spec.input_block_size, dtype=jnp.float32).reshape(block_shape) - 3
@@ -119,7 +119,31 @@ def test_quantized_spec_quantize_block_matches_training_compression(spec: Quanti
 
     expected = spec.compress(
         weights,
-        implementation=CompressionImplementation.TRAINING,
+        implementation=CompressionImplementation.INFERENCE,
+        is_sharded=False,
+    ).decompress()
+
+    assert_close_arrays(result=spec.quantize_block(weights), reference=expected)
+
+
+def test_quantized_spec_quantize_block_supports_batched_blocks() -> None:
+    spec = IntSpec(bits=4, group_size=4)
+    weights = jnp.stack(
+        [
+            jnp.linspace(-1, 1, spec.input_block_size, dtype=jnp.float32).reshape(
+                spec.output_block_size,
+                spec.input_block_size,
+            ),
+            jnp.linspace(1, -1, spec.input_block_size, dtype=jnp.float32).reshape(
+                spec.output_block_size,
+                spec.input_block_size,
+            ),
+        ],
+    )
+
+    expected = spec.compress(
+        weights,
+        implementation=CompressionImplementation.INFERENCE,
         is_sharded=False,
     ).decompress()
 

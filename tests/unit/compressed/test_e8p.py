@@ -15,7 +15,7 @@ from lalamo.compressed.e8p import (
     _round_to_codebook,
     _round_to_dense_codebook,
 )
-from lalamo.compressed.utils.yaqa import yaqa_round_weights
+from lalamo.compressed.utils.yaqa import yaqa_round_fixpoint
 from lalamo.module import Keychain, ShardingAxis
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
@@ -127,7 +127,7 @@ def test_e8p_compress_uses_yaqa_weights_when_preconditioned() -> None:
     preconditioner = Preconditioner.init(input_block=_input_block(), output_block=_output_block())
     spec = E8PSpec(bits=2)
 
-    yaqa_weights = yaqa_round_weights(weights, preconditioner, spec)
+    yaqa_weights = yaqa_round_fixpoint(weights, preconditioner, spec)
     preconditioned = spec.compress(weights, preconditioner=preconditioner)
     expected = spec.compress(yaqa_weights)
 

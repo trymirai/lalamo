@@ -22,12 +22,14 @@ class QuantizedSpec(WeightMatrixSpec):
 
     def quantize_block(
         self,
-        weights: Float[Array, "out_block_channels in_block_channels"],
-    ) -> Float[Array, "out_block_channels in_block_channels"]:
+        weights: Float[Array, "*blocks out_block_channels in_block_channels"],
+    ) -> Float[Array, "*blocks out_block_channels in_block_channels"]:
         expected_shape = (self.output_block_size, self.input_block_size)
-        if weights.shape != expected_shape:
-            raise ValueError(f"Expected quantization block shape {expected_shape}, got {weights.shape}")
-        compressed = self.compress(weights, implementation=CompressionImplementation.TRAINING, is_sharded=False)
+        *_, output_block_size, input_block_size = weights.shape
+        actual_shape = (output_block_size, input_block_size)
+        if actual_shape != expected_shape:
+            raise ValueError(f"Expected quantization block shape {expected_shape}, got {actual_shape}")
+        compressed = self.compress(weights, implementation=CompressionImplementation.INFERENCE, is_sharded=False)
         return compressed.decompress()
 
     @property
