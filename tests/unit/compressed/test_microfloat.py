@@ -15,12 +15,13 @@ from lalamo.compressed.microfloat import (
 from lalamo.compressed.utils.packing import pack_uint_to_uint8
 from lalamo.compressed.utils.yaqa import yaqa_round_fixpoint
 from lalamo.model_import.loaders.utils import decode_mxfp4
-from lalamo.module import Keychain, ShardingAxis
+from lalamo.module import Keychain, LogicalAxis
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.utils.sharding import make_sharding
+from lalamo.utils.sharding import is_sharded
 from lalamo.weight_matrix import CompressionImplementation, Layout
-from tests.common import assert_close_arrays, assert_named_sharding
+from tests.common import assert_close_arrays
+from tests.helpers import make_sharding, make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
@@ -75,7 +76,7 @@ def _stored_weights(layout: Layout, weights: jax.Array) -> jax.Array:
 def _put_on_sharding(matrix: MicrofloatMatrixForInference, sharding: Sharding) -> MicrofloatMatrixForInference:
     return MicrofloatMatrixForInference(
         spec=matrix.spec,
-        is_sharded=matrix.is_sharded,
+        sharding_config=matrix.sharding_config,
         dtype_=matrix.dtype,
         packed_weights=jax.device_put(matrix.packed_weights, sharding),
         packed_scales=jax.device_put(matrix.packed_scales, sharding),
@@ -84,8 +85,12 @@ def _put_on_sharding(matrix: MicrofloatMatrixForInference, sharding: Sharding) -
 
 
 def test_microfloat_from_packed_parameters_decodes_fp4_values_in_gpt_oss_nibble_order() -> None:
-    codes = jnp.arange(16, dtype=jnp.uint8).reshape(1, 16)
-    packed_weights = pack_uint_to_uint8(codes, bits=4)
+    sharding_config = make_test_sharding_config().replicated_with_same_mesh()
+    codes = jax.device_put(
+        jnp.arange(16, dtype=jnp.uint8).reshape(1, 16),
+        sharding_config.resolve_sharding((None, None)),
+    )
+    packed_weights = pack_uint_to_uint8(codes, bits=4, sharding_config=sharding_config)
     scale_exponents = jnp.array([[127]], dtype=jnp.uint8)
     spec = MicrofloatSpec(group_size=16)
     expected = jnp.array(
@@ -100,7 +105,7 @@ def test_microfloat_from_packed_parameters_decodes_fp4_values_in_gpt_oss_nibble_
         packed_scales=scale_exponents,
         global_scale=jnp.array(1, dtype=jnp.float32),
         dtype=jnp.float32,
-        is_sharded=False,
+        sharding_config=sharding_config,
     )
 
     assert isinstance(matrix, MicrofloatMatrixForInference)
@@ -116,7 +121,7 @@ def test_microfloat_from_packed_parameters_matches_existing_decode_mxfp4_helper(
         packed_scales=scale_exponents,
         global_scale=jnp.array(1, dtype=jnp.float32),
         dtype=jnp.float32,
-        is_sharded=False,
+        sharding_config=make_test_sharding_config().replicated_with_same_mesh(),
     )
     expected = decode_mxfp4(blocks, scale_exponents, dtype=jnp.float32, flatten=False)
     expected = rearrange(expected, "rows groups group_size -> rows (groups group_size)")
@@ -128,8 +133,16 @@ def test_microfloat_compress_uses_e8m0_power_of_two_scale_exponents() -> None:
     weights = jnp.array([[0.0, 3.0, -6.0, 10.0]], dtype=jnp.float32)
     spec = MicrofloatSpec(group_size=4)
 
-    matrix = spec.compress(weights, implementation=CompressionImplementation.TRAINING, is_sharded=False)
-    inference = spec.compress(weights, implementation=CompressionImplementation.INFERENCE, is_sharded=False)
+    matrix = spec.compress(
+        weights,
+        implementation=CompressionImplementation.TRAINING,
+        sharding_config=make_test_sharding_config().replicated_with_same_mesh(),
+    )
+    inference = spec.compress(
+        weights,
+        implementation=CompressionImplementation.INFERENCE,
+        sharding_config=make_test_sharding_config().replicated_with_same_mesh(),
+    )
 
     assert isinstance(matrix, MicrofloatMatrixForTraining)
     assert isinstance(inference, MicrofloatMatrixForInference)
@@ -147,8 +160,12 @@ def test_microfloat_compress_training_and_inference_match(
     spec = MicrofloatSpec(group_size=4, scale_mode=scale_mode, layout=layout)
     stored_weights = _stored_weights(layout, weights)
 
-    training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
-    inference = spec.compress(weights, implementation=CompressionImplementation.INFERENCE)
+    training = spec.compress(
+        weights, implementation=CompressionImplementation.TRAINING, sharding_config=make_test_sharding_config()
+    )
+    inference = spec.compress(
+        weights, implementation=CompressionImplementation.INFERENCE, sharding_config=make_test_sharding_config()
+    )
 
     assert isinstance(training, MicrofloatMatrixForTraining)
     assert isinstance(inference, MicrofloatMatrixForInference)
@@ -167,7 +184,9 @@ def test_microfloat_training_dot_has_ste_gradients(scale_mode: MicrofloatScaleMo
     weights = _logical_weights()
     vector = jnp.linspace(-1, 1, weights.shape[-1], dtype=weights.dtype)
     spec = MicrofloatSpec(group_size=4, scale_mode=scale_mode)
-    training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
+    training = spec.compress(
+        weights, implementation=CompressionImplementation.TRAINING, sharding_config=make_test_sharding_config()
+    )
     assert isinstance(training, MicrofloatMatrixForTraining)
 
     def loss(
@@ -177,12 +196,12 @@ def test_microfloat_training_dot_has_ste_gradients(scale_mode: MicrofloatScaleMo
     ) -> jax.Array:
         matrix = MicrofloatMatrixForTraining(
             spec=training.spec,
-            is_sharded=training.is_sharded,
+            sharding_config=training.sharding_config,
             master_weights=master_weights,
             master_scales=scales,
             global_scale=global_scale,
         )
-        return jnp.sum(matrix.dot(vector, keychain=Keychain.init(17)))
+        return jnp.sum(matrix.dot(vector, keychain=Keychain.init(17, sharding_config=make_test_sharding_config())))
 
     weight_gradients, scale_gradients, global_scale_gradients = jax.grad(loss, argnums=(0, 1, 2))(
         training.master_weights,
@@ -199,9 +218,14 @@ def test_microfloat_compress_uses_yaqa_weights_when_preconditioned() -> None:
     preconditioner = Preconditioner.init(input_block=_input_block(), output_block=_output_block())
     spec = MicrofloatSpec(group_size=4)
 
-    yaqa_weights = yaqa_round_fixpoint(weights, preconditioner, spec)
-    preconditioned = spec.compress(weights, preconditioner=preconditioner)
-    expected = spec.compress(yaqa_weights)
+    yaqa_weights = yaqa_round_fixpoint(
+        weights,
+        preconditioner,
+        spec,
+        sharding_config=make_test_sharding_config(),
+    )
+    preconditioned = spec.compress(weights, preconditioner=preconditioner, sharding_config=make_test_sharding_config())
+    expected = spec.compress(yaqa_weights, sharding_config=make_test_sharding_config())
 
     assert_close_arrays(result=preconditioned.decompress(), reference=expected.decompress())
 
@@ -210,20 +234,24 @@ def test_microfloat_compress_rejects_group_size_that_does_not_divide_stored_last
     weights = jnp.ones((4, 5), dtype=jnp.float32)
 
     with pytest.raises(ValueError, match="divisible"):
-        MicrofloatSpec(group_size=2).compress(weights)
+        MicrofloatSpec(group_size=2).compress(weights, sharding_config=make_test_sharding_config())
 
 
 def test_microfloat_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     weights = _logical_weights()
     spec = MicrofloatSpec(group_size=4, layout=Layout.INPUT_OUTPUT)
-    saved_sharding = make_sharding((ShardingAxis.TENSOR, None))
+    saved_sharding = make_sharding((LogicalAxis.MATRIX, None))
     assert saved_sharding is not None
-    original = spec.compress(weights, implementation=CompressionImplementation.INFERENCE)
+    original = spec.compress(
+        weights, implementation=CompressionImplementation.INFERENCE, sharding_config=make_test_sharding_config()
+    )
     assert isinstance(original, MicrofloatMatrixForInference)
+    reference = original.decompress()
     original = _put_on_sharding(original, saved_sharding)
     template = spec.compress(
-        dummy_array(weights.shape, weights.dtype),
+        dummy_array(weights.shape, weights.dtype, make_sharding((None, None))),
         implementation=CompressionImplementation.INFERENCE,
+        sharding_config=make_test_sharding_config(),
     )
 
     restored = template.load_exported(original.export())
@@ -232,8 +260,8 @@ def test_microfloat_export_load_roundtrips_and_preserves_template_sharding(fake_
     assert isinstance(restored, type(template))
     assert isinstance(restored, MicrofloatMatrixForInference)
     assert isinstance(template, MicrofloatMatrixForInference)
-    assert_close_arrays(result=restored.decompress(), reference=original.decompress())
-    assert_named_sharding(restored.packed_scales.sharding, fake_mesh)
-    assert restored.packed_scales.sharding == template.packed_scales.sharding
+    assert_close_arrays(result=restored.decompress(), reference=reference)
+    del fake_mesh
+    assert not is_sharded(restored.packed_scales.sharding)
     assert restored.packed_scales.sharding != saved_sharding
-    assert restored.packed_weights.sharding == template.packed_weights.sharding
+    assert not is_sharded(restored.packed_weights.sharding)

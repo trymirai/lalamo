@@ -46,6 +46,7 @@ from lalamo.models.chat_codec import Message, UserMessage
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
 from lalamo.utils.memory import get_available_bytes_on_default_device
+from lalamo.utils.sharding import ShardingConfig
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -130,14 +131,14 @@ def chat(
         transient=True,
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
-        model = LanguageModel.load(model_path)
+        model = LanguageModel.load(model_path, ShardingConfig.replicated())
         progress.remove_task(loading_task)
         warmup_task = progress.add_task("🔥 Warming up compilation cache...")
         warmup_tokens = iter(
             model.stream_reply_text(
                 [UserMessage("")],
                 max_output_length=max_tokens,
-                keychain=Keychain.init(0),
+                keychain=Keychain.init(0, sharding_config=model.sharding_config),
             ),
         )
         for _ in range(2):
@@ -160,7 +161,7 @@ def chat(
             for token in model.stream_reply_text(
                 messages,
                 max_output_length=max_tokens,
-                keychain=Keychain.init(turn_index + 1),
+                keychain=Keychain.init(turn_index + 1, sharding_config=model.sharding_config),
             ):
                 console.print(token, end="")
                 response_text_parts.append(token)
@@ -171,7 +172,7 @@ def chat(
     for token in model.stream_reply_text(
         [UserMessage(message)],
         max_output_length=max_tokens,
-        keychain=Keychain.init(1),
+        keychain=Keychain.init(1, sharding_config=model.sharding_config),
     ):
         console.print(token, end="")
     console.print()
@@ -332,9 +333,9 @@ def tts(
         raise Exit(1)
 
     console.print(f"🤖 Loading model from specified path: {model_path}.")
-    model = TTSModel.load(model_path)
+    model = TTSModel.load(model_path, ShardingConfig.replicated())
 
-    keychain = Keychain.init(0)
+    keychain = Keychain.init(0, sharding_config=model.sharding_config)
     messages = [message] if message is not None else None
     overwrite_existing_output = overwrite or message is not None
     while True:

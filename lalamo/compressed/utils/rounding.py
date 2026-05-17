@@ -2,11 +2,12 @@ from functools import cache, partial
 
 import jax
 import jax.numpy as jnp
+from jax.sharding import NamedSharding
 from jaxtyping import Array, DTypeLike, Float, Int, UInt8
 
 from lalamo.module import Keychain
 from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
-from lalamo.utils.sharding import is_sharded, sharding_of
+from lalamo.utils.sharding import sharding_of, with_sharding
 from lalamo.weight_matrix import GradientEstimator
 
 from .grouping import unsigned_qmax
@@ -89,11 +90,9 @@ def lut_values_at(
     indices: Int[Array, "..."] | UInt8[Array, "..."],
     table: Float[Array, " levels"],
 ) -> Float[Array, "..."]:
-    indices = indices.astype(jnp.int32)
-    indices_sharding = sharding_of(indices)
-    if is_sharded(indices_sharding):
-        return table.at[indices].get(out_sharding=indices_sharding)
-    return table.at[indices].get()
+    index_sharding = sharding_of(indices)
+    indices = with_sharding(indices.astype(jnp.int32), index_sharding)
+    return table.at[indices].get(out_sharding=index_sharding)
 
 
 def _deterministic_round_to_sorted_lut_table_indices(
@@ -101,7 +100,8 @@ def _deterministic_round_to_sorted_lut_table_indices(
     table: Float[Array, " levels"],
 ) -> UInt8[Array, "..."]:
     thresholds = (table[:-1] + table[1:]).astype(values.dtype) / 2
-    return jnp.searchsorted(thresholds, values, side="left", method="compare_all").astype(jnp.uint8)
+    indices = jnp.searchsorted(thresholds, values, side="left", method="compare_all").astype(jnp.uint8)
+    return with_sharding(indices, sharding_of(values))
 
 
 def _stochastic_round_to_sorted_lut_table_indices(
@@ -109,9 +109,12 @@ def _stochastic_round_to_sorted_lut_table_indices(
     table: Float[Array, " levels"],
     keychain: Keychain,
 ) -> UInt8[Array, "..."]:
+    value_sharding = sharding_of(values)
     table = table.astype(values.dtype)
     upper_indices = jnp.clip(jnp.searchsorted(table, values, side="left", method="compare_all"), 1, table.size - 1)
     lower_indices = upper_indices - 1
+    upper_indices = with_sharding(upper_indices, value_sharding)
+    lower_indices = with_sharding(lower_indices, value_sharding)
     lower_values = lut_values_at(lower_indices, table)
     upper_values = lut_values_at(upper_indices, table)
     upper_probability = jnp.clip(
@@ -119,7 +122,13 @@ def _stochastic_round_to_sorted_lut_table_indices(
         0,
         1,
     )
-    samples = jax.random.uniform(keychain.batch_key, values.shape, dtype=values.dtype)
+    samples = jax.random.uniform(
+        keychain.batch_key,
+        values.shape,
+        dtype=values.dtype,
+        out_sharding=value_sharding,
+    )
+    upper_probability = with_sharding(upper_probability, value_sharding)
     return jnp.where(samples < upper_probability, upper_indices, lower_indices).astype(jnp.uint8)
 
 
@@ -159,7 +168,10 @@ def _deterministic_round_to_sorted_lut_table_impl(
     values: Float[Array, "..."],
     table: Float[Array, " levels"],
 ) -> Float[Array, "..."]:
-    return lut_values_at(_deterministic_round_to_sorted_lut_table_indices(values, table), table)
+    return lut_values_at(
+        _deterministic_round_to_sorted_lut_table_indices(values, table),
+        table,
+    )
 
 
 @jax.custom_vjp
@@ -205,10 +217,13 @@ def _stochastic_round_to_sorted_lut_table_impl(
     table: Float[Array, " levels"],
     rounding_keychain: Keychain,
 ) -> Float[Array, "..."]:
-    return lut_values_at(_stochastic_round_to_sorted_lut_table_indices(values, table, rounding_keychain), table)
+    return lut_values_at(
+        _stochastic_round_to_sorted_lut_table_indices(values, table, rounding_keychain),
+        table,
+    )
 
 
-@jax.custom_vjp
+@partial(jax.custom_vjp, nondiff_argnums=(2,))
 def _stochastic_round_to_sorted_lut_table(
     values: Float[Array, "..."],
     table: Float[Array, " levels"],
@@ -227,11 +242,12 @@ def _stochastic_round_to_sorted_lut_table_fwd(
 
 
 def _stochastic_round_to_sorted_lut_table_bwd(
+    rounding_keychain: Keychain,  # noqa: ARG001
     residuals: tuple[Float[Array, "..."], Float[Array, " levels"]],
     gradients: Float[Array, "..."],
-) -> tuple[Float[Array, "..."], None, None]:
+) -> tuple[Float[Array, "..."], None]:
     values, table = residuals
-    return _mask_sorted_lut_table_gradients(values, gradients, table), None, None
+    return _mask_sorted_lut_table_gradients(values, gradients, table), None
 
 
 _stochastic_round_to_sorted_lut_table.defvjp(
@@ -321,7 +337,10 @@ def deterministic_round_to_minifloat(
     *,
     dtype: DTypeLike,
 ) -> Float[Array, "..."]:
-    return deterministic_round_to_sorted_lut_table(values, _minifloat_lut(dtype, values.dtype))
+    return deterministic_round_to_sorted_lut_table(
+        values,
+        _minifloat_lut(dtype, values.dtype),
+    )
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
@@ -331,7 +350,11 @@ def stochastic_round_to_minifloat(
     dtype: DTypeLike,
     keychain: Keychain,
 ) -> Float[Array, "..."]:
-    return stochastic_round_to_sorted_lut_table(values, _minifloat_lut(dtype, values.dtype), keychain=keychain)
+    return stochastic_round_to_sorted_lut_table(
+        values,
+        _minifloat_lut(dtype, values.dtype),
+        keychain=keychain,
+    )
 
 
 def round_to_minifloat(
@@ -353,12 +376,27 @@ def round_to_minifloat(
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def pack_e4m3_scales(values: Float[Array, "..."]) -> Float[Array, "..."]:
-    return deterministic_round_to_minifloat(values, dtype=jnp.float8_e4m3fn).astype(jnp.float8_e4m3fn)
+def pack_e4m3_scales(
+    values: Float[Array, "..."],
+    *,
+    out_sharding: NamedSharding | None = None,
+) -> Float[Array, "..."]:
+    if out_sharding is not None:
+        values = with_sharding(values, out_sharding)
+    return deterministic_round_to_minifloat(
+        values,
+        dtype=jnp.float8_e4m3fn,
+    ).astype(jnp.float8_e4m3fn)
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def pack_e8m0_scales(values: Float[Array, "..."]) -> UInt8[Array, "..."]:
+def pack_e8m0_scales(
+    values: Float[Array, "..."],
+    *,
+    out_sharding: NamedSharding | None = None,
+) -> UInt8[Array, "..."]:
+    if out_sharding is not None:
+        values = with_sharding(values, out_sharding)
     values = jnp.maximum(values.astype(jnp.float32), jnp.float32(2.0**-127))
     rounded_values = deterministic_round_to_minifloat(values, dtype=jnp.float8_e8m0fnu)
     exponents = jnp.clip(jnp.round(jnp.log2(rounded_values)).astype(jnp.int32), -_E8M0_BIAS, _E8M0_BIAS)
@@ -379,12 +417,18 @@ def _stochastic_round_to_unsigned_grid_impl(
     bits: int,
     keychain: Keychain,
 ) -> Float[Array, "..."]:
+    out_sharding = sharding_of(values)
     clipped_values = jnp.clip(values, 0, unsigned_qmax(bits))
+    clipped_values = with_sharding(clipped_values, out_sharding)
     lower_bins = jnp.floor(clipped_values)
     upper_probability = clipped_values - lower_bins
-    upper_samples = (
-        jax.random.uniform(keychain.batch_key, clipped_values.shape, dtype=clipped_values.dtype) < upper_probability
+    samples = jax.random.uniform(
+        keychain.batch_key,
+        clipped_values.shape,
+        dtype=clipped_values.dtype,
+        out_sharding=out_sharding,
     )
+    upper_samples = samples < upper_probability
     return lower_bins + upper_samples.astype(clipped_values.dtype)
 
 

@@ -23,6 +23,7 @@ from lalamo.inference.batch_scheduler import BatchSchedulerConfig, ContinuousBat
 from lalamo.model_import.common import import_model
 from lalamo.models import GenerationConfig, LanguageModel
 from lalamo.module import Keychain
+from lalamo.utils.sharding import ShardingConfig
 
 BatchStatus = Literal["in_progress", "completed", "failed"]
 
@@ -149,7 +150,11 @@ def validate_requests(
 def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
     reference, *_ = requests
 
-    model = import_model(reference.model, dtype=jnp.dtype(reference.dtype)).model
+    model = import_model(
+        reference.model,
+        sharding_config=ShardingConfig.replicated(),
+        dtype=jnp.dtype(reference.dtype),
+    ).model
     if not isinstance(model, LanguageModel):
         raise RuntimeError(f"Expected a language model, got {type(model).__name__}")  # noqa: TRY004
 
@@ -161,7 +166,7 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
     else:
         batch_key, split_key = jax.random.split(jax.random.key(random.getrandbits(32)))
         keys = jax.random.split(split_key, len(requests))
-    keychain = Keychain(vmapped_keys=keys, batch_key=batch_key)
+    keychain = Keychain(vmapped_keys=keys, batch_key=batch_key, sharding_config=model.sharding_config)
 
     sequence_ids = [request.sequence_id for request in requests]
     batch_scheduler = ContinuousBatchScheduler(model=model)

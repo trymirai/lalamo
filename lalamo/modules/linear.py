@@ -29,6 +29,7 @@ class LinearConfig(LalamoConfig):
         total_output_dim = sum(output_dims)
         return Linear(
             config=self,
+            sharding_config=initializer.sharding_config,
             weights=initializer.weight_matrix(total_output_dim, input_dim, is_sharded=is_sharded),
             biases=initializer.zeros((total_output_dim,)) if has_biases else None,
             output_dims=output_dims,
@@ -51,6 +52,7 @@ class LinearConfig(LalamoConfig):
             biases = None
         return Linear(
             config=self,
+            sharding_config=initializer.sharding_config,
             weights=initializer.weight_matrix(total_output_dim, input_dim, mixture_size, is_sharded=is_sharded),
             biases=biases,
             output_dims=output_dims,

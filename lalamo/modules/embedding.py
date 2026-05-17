@@ -149,7 +149,11 @@ class TiedEmbeddingConfig(EmbeddingConfig):
         vocab_size: int,
     ) -> "TiedEmbedding":
         embedding = initializer.embedding_matrix(vocab_size, model_dim)
-        return TiedEmbedding(config=self, embedding=embedding)
+        return TiedEmbedding(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            embedding=embedding,
+        )
 
 
 class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
@@ -200,6 +204,7 @@ class UntiedEmbeddingConfig(EmbeddingConfig):
         output_embedding = initializer.weight_matrix(vocab_size, model_dim)
         return UntiedEmbedding(
             config=self,
+            sharding_config=initializer.sharding_config,
             input_embedding=input_embedding,
             output_embedding=output_embedding,
         )

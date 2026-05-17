@@ -7,13 +7,12 @@ import jax.numpy as jnp
 import typer
 
 from lalamo.compressed.data.distortion import DISTORTION_CSV, DistortionKey
-from lalamo.compressed.e8p import E8PSpec
 from lalamo.compressed.lloyd_max import LloydMaxSpec
 from lalamo.compressed.microfloat import MicrofloatScaleMode, MicrofloatSpec
 from lalamo.compressed.quantized_spec import QuantizedSpec
+from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import CompressionImplementation
 
-DEFAULT_E8P_BITS = (2, 3, 4)
 DEFAULT_LLOYD_MAX_BITS = (2, 3, 4, 6, 8)
 DEFAULT_GROUP_SIZES = (2, 4, 16, 32, 64, 128)
 DEFAULT_BIAS_BITS = (2, 3, 4, 6, 8)
@@ -40,8 +39,7 @@ def _format_optional_float(value: float | None) -> str:
 
 
 def _default_configs() -> tuple[DistortionKey, ...]:
-    configs = [DistortionKey(format_name="e8p", bits=bits, group_size=8) for bits in DEFAULT_E8P_BITS]
-    configs.extend(
+    configs = [
         DistortionKey(
             format_name="microfloat",
             bits=4,
@@ -50,7 +48,7 @@ def _default_configs() -> tuple[DistortionKey, ...]:
         )
         for group_size in DEFAULT_GROUP_SIZES
         for scale_mode in DEFAULT_MICROFLOAT_SCALE_MODES
-    )
+    ]
     configs.extend(
         DistortionKey(
             format_name="lloyd_max",
@@ -66,13 +64,6 @@ def _default_configs() -> tuple[DistortionKey, ...]:
 
 
 def _spec_from_key(key: DistortionKey) -> QuantizedSpec:
-    if key.format_name == "e8p":
-        return E8PSpec(
-            bits=cast("Literal[2, 3, 4]", key.bits),
-            scale_normalization=key.scale_normalization,
-            residual_scale=key.residual_scale,
-        )
-
     if key.format_name == "microfloat":
         return MicrofloatSpec(group_size=key.group_size, scale_mode=MicrofloatScaleMode(key.scale_mode))
 
@@ -88,6 +79,7 @@ def _spec_from_key(key: DistortionKey) -> QuantizedSpec:
 
 def _estimate_distortion(key: DistortionKey, sample_groups: int) -> float:
     spec = _spec_from_key(key)
+    sharding_config = ShardingConfig.replicated()
     chunk_size = sample_groups
     if key.format_name == "lloyd_max" and key.bias_bits is not None:
         bias_levels = 2**key.bias_bits
@@ -101,7 +93,11 @@ def _estimate_distortion(key: DistortionKey, sample_groups: int) -> float:
         current_chunk_size = min(chunk_size, sample_groups - chunk_start)
         chunk_key = jax.random.fold_in(random_key, chunk_start)
         weights = jax.random.normal(chunk_key, (current_chunk_size, key.group_size), dtype=jnp.float32)
-        compressed = spec.compress(weights, implementation=CompressionImplementation.TRAINING, is_sharded=False)
+        compressed = spec.compress(
+            weights,
+            implementation=CompressionImplementation.TRAINING,
+            sharding_config=sharding_config,
+        )
         squared_errors = jnp.square(weights - compressed.decompress())
         squared_error_sum += float(jax.device_get(jnp.sum(squared_errors)))
         value_count += weights.size

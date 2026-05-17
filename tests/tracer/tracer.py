@@ -29,6 +29,7 @@ from lalamo.modules.decoder import (
     DecoderResult,
 )
 from lalamo.utils.memory import get_available_bytes_on_default_device
+from lalamo.utils.sharding import ShardingConfig
 from tests.common import assert_close, checkify_forward
 from tests.helpers import si, unsi
 
@@ -459,13 +460,15 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
         import_dtype = None
         if test_spec.dtype is not None:
             import_dtype = test_spec.dtype.jax_dtype
+        sharding_config = ShardingConfig.replicated()
         imported_model = import_model(
             test_spec.model_repo,
+            sharding_config=sharding_config,
             context_length=test_spec.num_tokens * test_spec.token_stride,
             dtype=import_dtype,
         )
         model = imported_model.model
-        keychain = Keychain.init(0)
+        keychain = Keychain.init(0, sharding_config=sharding_config)
         with jax.disable_jit():
             if isinstance(model, LanguageModel):
                 forward_pass_config = DecoderForwardPassConfig.for_tracer_tests()

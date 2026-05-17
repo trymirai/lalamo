@@ -26,7 +26,12 @@ class ClassifierModelConfig(ModelConfig[ChatCodecConfig]):
     def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "ClassifierModel":
         classifier = self.classifier_config.init(initializer)
         token_codec = self.token_codec_config.init(tokenizer)
-        return ClassifierModel(self, token_codec, classifier)
+        return ClassifierModel(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            token_codec=token_codec,
+            classifier=classifier,
+        )
 
 
 class ClassifierModel(Model[ChatCodecConfig, ClassifierModelConfig, ChatCodec]):

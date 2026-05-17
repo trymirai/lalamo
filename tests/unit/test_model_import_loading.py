@@ -21,6 +21,7 @@ from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.weight_matrix import CompressionImplementation, FullPrecisionSpec, Layout, WeightMatrix
+from tests.helpers import make_sharding, make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
@@ -35,7 +36,7 @@ def _pack_int32(values: Array, bits: int) -> Array:
 
 def _linear_template(dtype: DTypeLike, layout: Layout = Layout.OUTPUT_INPUT) -> Linear:
     result = LinearConfig().init(
-        initializer=EmptyInitializer(dtype=dtype),
+        initializer=EmptyInitializer(dtype=dtype, sharding_config=make_test_sharding_config()),
         input_dim=4,
         output_dims=(4,),
         has_biases=False,
@@ -43,7 +44,10 @@ def _linear_template(dtype: DTypeLike, layout: Layout = Layout.OUTPUT_INPUT) -> 
     if layout == Layout.OUTPUT_INPUT:
         return result
 
-    weights = FullPrecisionSpec(layout=layout).compress(dummy_array((4, 4), dtype))
+    weights = FullPrecisionSpec(layout=layout).compress(
+        dummy_array((4, 4), dtype, make_sharding((None, None))),
+        sharding_config=make_test_sharding_config(),
+    )
     return eqx.tree_at(lambda module: module.weights, result, weights)
 
 
@@ -124,6 +128,7 @@ class TinyConfig(LalamoConfig):
     def init(self, initializer: Initializer) -> "TinyModule":
         return TinyModule(
             config=self,
+            sharding_config=make_test_sharding_config(),
             matrix=initializer.weight_matrix(output_dim=4, input_dim=4),
         )
 
@@ -139,6 +144,7 @@ class TinyModelConfig(ModelConfig[ChatCodecConfig]):
     def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "TinyModel":
         return TinyModel(
             config=self,
+            sharding_config=make_test_sharding_config(),
             token_codec=self.token_codec_config.init(tokenizer),
             module=self.module_config.init(initializer),
         )
@@ -165,12 +171,15 @@ class TinyForeignConfig(ForeignConfig[TinyModelConfig]):
         assert isinstance(model, TinyModel)
         return TinyModel(
             config=model.config,
+            sharding_config=make_test_sharding_config(),
             token_codec=model.token_codec,
             module=TinyModule(
                 config=model.module.config,
+                sharding_config=make_test_sharding_config(),
                 matrix=IntSpec(bits=4, group_size=2).compress(
                     weights_dict["matrix"].astype(model.module.matrix.dtype),
                     implementation=implementation,
+                    sharding_config=make_test_sharding_config(),
                 ),
             ),
         )
@@ -196,6 +205,7 @@ def test_foreign_config_load_initializes_model_with_requested_dtype_and_implemen
         dtype=jnp.bfloat16,
         weights_dict={"matrix": jnp.arange(16, dtype=jnp.float32).reshape(4, 4)},
         implementation=CompressionImplementation.TRAINING,
+        sharding_config=make_test_sharding_config(),
     )
 
     assert isinstance(loaded, TinyModel)
@@ -220,16 +230,25 @@ def test_model_export_load_uses_saved_weight_matrix_spec_with_shape_dtype_templa
     )
     original = TinyModel(
         config=config,
+        sharding_config=make_test_sharding_config(),
         token_codec=config.token_codec_config.init(tokenizer),
         module=TinyModule(
             config=TinyConfig(),
-            matrix=IntSpec(bits=8, group_size=2).compress(jnp.arange(16, dtype=jnp.float32).reshape(4, 4)),
+            sharding_config=make_test_sharding_config(),
+            matrix=IntSpec(bits=8, group_size=2).compress(
+                jnp.arange(16, dtype=jnp.float32).reshape(4, 4),
+                sharding_config=make_test_sharding_config(),
+            ),
         ),
     )
 
     original.save(tmp_path)
-    restored = TinyModel.load(tmp_path)
-    restored_float32 = TinyModel.load(tmp_path, dtype=jnp.float32)
+    restored = TinyModel.load(tmp_path, sharding_config=make_test_sharding_config())
+    restored_float32 = TinyModel.load(
+        tmp_path,
+        dtype=jnp.float32,
+        sharding_config=make_test_sharding_config(),
+    )
 
     assert isinstance(restored.module.matrix, IntMatrixForInference)
     assert restored.module.matrix.spec == original.module.matrix.spec

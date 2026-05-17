@@ -158,6 +158,7 @@ class Mamba2Config(TokenMixerConfig):
 
         return Mamba2(
             config=self,
+            sharding_config=initializer.sharding_config,
             in_projection=in_projection,
             conv=conv,
             out_projection=out_projection,

@@ -1,7 +1,4 @@
 format,bits,group_size,bias_bits,scale_mode,scale_normalization,residual_scale,distortion
-e8p,2,8,,,,,0.090773582458496094
-e8p,3,8,,,,,0.02930963970720768
-e8p,4,8,,,,,0.009500402957201004
 microfloat,4,2,,mxfp4,,,0.011163790710270405
 microfloat,4,2,,nvfp4,,,0.0027703028172254562
 microfloat,4,4,,mxfp4,,,0.011626781895756721

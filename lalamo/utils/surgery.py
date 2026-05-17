@@ -8,7 +8,6 @@ from jax import Array, ShapeDtypeStruct
 from jaxtyping import DTypeLike, PyTree
 
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.utils.sharding import reshard_as
 from lalamo.weight_matrix import WeightMatrix
 
 __all__ = [
@@ -37,7 +36,9 @@ def _path_name(path: tuple[object, ...]) -> str:
 
 def _astype_array_like(value: Array, dtype: DTypeLike) -> Array:
     if isinstance(value, ShapeDtypeStruct):
-        return dummy_array(value.shape, dtype, value.sharding)
+        sharding = value.sharding
+        assert sharding is not None
+        return dummy_array(value.shape, dtype, sharding)
     return value.astype(dtype)
 
 
@@ -99,12 +100,16 @@ def _load_leaf_as_template(template_leaf: PyTree, value_leaf: PyTree) -> PyTree:
         loaded_value = value_leaf
         if template_leaf.dtype != value_leaf.dtype:
             loaded_value = loaded_value.astype(template_leaf.dtype)
-        return loaded_value.switch_sharding(template_leaf.is_sharded)
+        return loaded_value.switch_sharding_config(template_leaf.sharding_config)
     if _is_array_like(template_leaf) and _is_array_like(value_leaf):
         loaded_value = value_leaf
         if template_leaf.dtype != value_leaf.dtype:
             loaded_value = _astype_array_like(value_leaf, template_leaf.dtype)
-        return reshard_as(loaded_value, template_leaf)
+        template_sharding = template_leaf.sharding
+        assert template_sharding is not None
+        if isinstance(loaded_value, ShapeDtypeStruct):
+            return dummy_array(loaded_value.shape, loaded_value.dtype, template_sharding)
+        return jax.device_put(loaded_value, template_sharding)
     return value_leaf
 
 

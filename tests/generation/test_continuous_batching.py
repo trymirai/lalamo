@@ -11,6 +11,7 @@ from lalamo.models import LanguageModel
 from lalamo.models.chat_codec import UserMessage
 from lalamo.models.language_model import GenerationConfig
 from tests.conftest import ConvertModel
+from tests.helpers import make_test_sharding_config
 
 _FUZZ_MODEL_REPOS = (
     "Qwen/Qwen2.5-0.5B-Instruct",
@@ -32,7 +33,7 @@ _FUZZ_PROMPTS = (
 @pytest.fixture(scope="module", params=_FUZZ_MODEL_REPOS, ids=_FUZZ_MODEL_REPOS)
 def fuzz_language_model(request: pytest.FixtureRequest, _convert_model_session: ConvertModel) -> LanguageModel:
     model_dir = _convert_model_session(request.param, cached=True)
-    model = LanguageModel.load(model_dir)
+    model = LanguageModel.load(model_dir, sharding_config=make_test_sharding_config())
     assert isinstance(model, LanguageModel)
     return model
 
@@ -52,10 +53,10 @@ def fuzz_language_model(request: pytest.FixtureRequest, _convert_model_session: 
         (4, 3, 2, 1, 8, 64),
         # (block > max_output)               block clamps to max_output
         (5, 2, 2, 64, 6, 56),
-        # (sequential, misaligned)           batch_size=1, 11%4=3
-        (6, 5, 1, 4, 11, 40),
-        # (multi-block, misaligned)          13%4=1, minimal tail
-        (7, 8, 3, 4, 13, 80),
+        # (small batches, misaligned)        batch_size=2, 11%4=3
+        (6, 5, 2, 4, 11, 40),
+        # (multi-block, misaligned)          batch_size=4, 13%4=1, minimal tail
+        (7, 8, 4, 4, 13, 80),
     ],
 )
 def test_continuous_vs_fixed_fuzz(

@@ -211,7 +211,10 @@ def load_transformer_block(
             num_groups=attn_module.config.num_groups,
             head_dim=attn_module.config.head_dim,
         )
-        new_weights = qkv_projection.weights.spec.compress(permuted_qkv_weights)
+        new_weights = qkv_projection.weights.spec.compress(
+            permuted_qkv_weights,
+            sharding_config=qkv_projection.weights.sharding_config,
+        )
         qkv_projection = eqx.tree_at(lambda m: (m.weights,), qkv_projection, (new_weights,))
         assert isinstance(qkv_projection, Linear)
 
@@ -825,6 +828,7 @@ def load_descript_audio_codec(dac_module: DescriptAudioCodec, state_dict: Mappin
 
     return DescriptAudioCodec(
         config=dac_module.config,
+        sharding_config=dac_module.sharding_config,
         quantizer=loaded_quantizer,
         decoder=loaded_decoder,
     )

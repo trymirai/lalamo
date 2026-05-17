@@ -11,7 +11,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, LogicalAxis
 from lalamo.utils.sharding import lookup_sharded_indices
 from lalamo.weight_matrix import GradientEstimator
 
@@ -132,7 +132,7 @@ class PerLayerEmbedding(LalamoModule[PLEModelConfig]):
             self.model_projection,
             inner_features,
             keychain=keychain,
-            added_sharding_axes=(ShardingAxis.DATA, None),
+            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
         model_ple = model_ple * config.model_projection_scale
         model_ple = rearrange(
@@ -167,6 +167,7 @@ class DecoderConfig(LalamoConfig):
             total_ple_dim = config.num_layers * config.ple_dim
             per_layer_embedding = PerLayerEmbedding(
                 config=config,
+                sharding_config=initializer.sharding_config,
                 token_embedding=initializer.normal(
                     1 / math.sqrt(config.ple_dim),
                     (config.ple_vocab_size, total_ple_dim),
@@ -184,6 +185,7 @@ class DecoderConfig(LalamoConfig):
 
         return Decoder(
             config=self,
+            sharding_config=initializer.sharding_config,
             embedding=embedding,
             transformer=transformer,
             per_layer_embedding=per_layer_embedding,
@@ -253,7 +255,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             transformer_result.outputs,
             forward_pass_config=forward_pass_config.embedding_forward_pass_config,
             keychain=readout_keychain,
-            added_sharding_axes=(ShardingAxis.DATA, None),
+            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
 
         if return_activation_trace:

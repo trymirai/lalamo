@@ -15,8 +15,8 @@ from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dum
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import (
+    ShardingConfig,
     lookup_sharded_indices,
-    make_sharding,
     with_sharding,
 )
 from lalamo.utils.surgery import load_as
@@ -156,12 +156,14 @@ def _master_zero_points_to_packed_zero_points(
     zero_points: Float[Array, "*components rows groups"] | None,
     scales: Float[Array, "*components rows groups"],
     bits: int,
+    *,
+    sharding_config: ShardingConfig,
 ) -> UInt8[Array, "*components rows packed_groups"] | None:
     if zero_points is None:
         return None
 
     int_scale_zero_points = deterministic_round_to_unsigned_grid(zero_points / scales, bits=bits)
-    return pack_uint_to_uint8(int_scale_zero_points, bits)
+    return pack_uint_to_uint8(int_scale_zero_points, bits, sharding_config=sharding_config)
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
@@ -171,6 +173,8 @@ def _master_weights_to_packed_weights(
     zero_points: Float[Array, "*components rows groups"] | None,
     group_size: int,
     bits: int,
+    *,
+    sharding_config: ShardingConfig,
 ) -> UInt8[Array, "*components rows packed_cols"]:
     if zero_points is None:
         int_scale_zero_points = None
@@ -184,7 +188,7 @@ def _master_weights_to_packed_weights(
         bits,
     )
     int_weights = deterministic_round_to_unsigned_grid(int_scale_weights, bits=bits)
-    return pack_uint_to_uint8(int_weights, bits)
+    return pack_uint_to_uint8(int_weights, bits, sharding_config=sharding_config)
 
 
 def _packed_zero_points_to_master_zero_points(
@@ -212,7 +216,12 @@ def _packed_weights_to_master_weights(
     group_size: int,
     bits: int,
 ) -> Float[Array, "... cols"]:
-    int_weights = unpack_uint8_to_uint(packed_weights, bits=bits, dtype=scales.dtype)
+    int_weights = unpack_uint8_to_uint(
+        packed_weights,
+        bits=bits,
+        dtype=scales.dtype,
+        unpacked_last_axis_dim=scales.shape[-1] * group_size,
+    )
     if packed_zero_points is None:
         int_scale_zero_points = None
     else:
@@ -271,12 +280,22 @@ class IntSpec(QuantizedSpec):
         key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-        is_sharded: bool = True,
+        sharding_config: ShardingConfig,
     ) -> "IntMatrix":
         if preconditioner is not None:
-            weights = yaqa_round_fixpoint(weights, preconditioner, self, is_sharded=is_sharded)
+            weights = yaqa_round_fixpoint(
+                weights,
+                preconditioner,
+                self,
+                sharding_config=sharding_config,
+            )
 
-        stored_weights = self.layout.from_output_input(weights, is_sharded=is_sharded)
+        weight_partition = self.layout.weight_partition(weights.ndim - 2)
+        weight_sharding = sharding_config.resolve_sharding(weight_partition)
+        stored_weights = self.layout.from_output_input(
+            weights,
+            sharding=weight_sharding,
+        )
         affine_parameters = IntAffineParameters.from_weights(
             stored_weights,
             bits=self.bits,
@@ -286,7 +305,7 @@ class IntSpec(QuantizedSpec):
         if implementation == CompressionImplementation.TRAINING:
             result = IntMatrixForTraining(
                 spec=self,
-                is_sharded=is_sharded,
+                sharding_config=sharding_config,
                 master_weights=stored_weights,
                 scales=affine_parameters.scales,
                 master_zero_points=affine_parameters.zero_points,
@@ -298,18 +317,20 @@ class IntSpec(QuantizedSpec):
                 affine_parameters.zero_points,
                 self.group_size,
                 self.bits,
+                sharding_config=sharding_config,
             )
             packed_zero_points = _master_zero_points_to_packed_zero_points(
                 affine_parameters.zero_points,
                 affine_parameters.scales,
                 self.bits,
+                sharding_config=sharding_config,
             )
             result = self.from_packed_parameters(
                 packed_weights=packed_weights,
                 scales=affine_parameters.scales,
                 packed_zero_points=packed_zero_points,
                 implementation=CompressionImplementation.INFERENCE,
-                is_sharded=is_sharded,
+                sharding_config=sharding_config,
             )
 
         return result
@@ -321,7 +342,7 @@ class IntSpec(QuantizedSpec):
         scales: Float[Array, "*components rows groups"],
         packed_zero_points: UInt8[Array, "*components rows packed_groups"] | None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-        is_sharded: bool = True,
+        sharding_config: ShardingConfig,
     ) -> "IntMatrix":
         if self.is_symmetric:
             if packed_zero_points is not None:
@@ -329,19 +350,20 @@ class IntSpec(QuantizedSpec):
         elif packed_zero_points is None:
             raise ValueError("Asymmetric Int parameters require packed zero points.")
 
-        weight_partition = self.layout.weight_partition(scales.ndim - 2, is_sharded=is_sharded)
-        weight_sharding = make_sharding(weight_partition)
+        weight_partition = self.layout.weight_partition(scales.ndim - 2)
+        *scale_axes, _grouped_axis = weight_partition
+        weight_sharding = sharding_config.resolve_sharding(weight_partition)
+        packed_zero_points_sharding = sharding_config.resolve_sharding((*scale_axes, None))
 
         packed_weights = with_sharding(packed_weights, weight_sharding)
         scales = with_sharding(scales, weight_sharding)
         if packed_zero_points is not None:
-            packed_zero_points_sharding = make_sharding((*weight_partition[:-1], None))
             packed_zero_points = with_sharding(packed_zero_points, packed_zero_points_sharding)
 
         if implementation == CompressionImplementation.INFERENCE:
             return IntMatrixForInference(
                 spec=self,
-                is_sharded=is_sharded,
+                sharding_config=sharding_config,
                 packed_weights=packed_weights,
                 scales=scales,
                 packed_zero_points=packed_zero_points,
@@ -363,7 +385,7 @@ class IntSpec(QuantizedSpec):
             zero_points = with_sharding(zero_points, weight_sharding)
         return IntMatrixForTraining(
             spec=self,
-            is_sharded=is_sharded,
+            sharding_config=sharding_config,
             master_weights=with_sharding(weights, weight_sharding),
             scales=scales,
             master_zero_points=zero_points,
@@ -408,7 +430,10 @@ class IntMatrix(EmbeddingMatrix[IntSpec]):
     def switch_implementation(self, implementation: CompressionImplementation) -> "IntMatrix": ...
 
     def to_full_precision(self) -> FullPrecisionMatrix:
-        return FullPrecisionSpec(layout=self.spec.layout).compress(self.decompress(), is_sharded=self.is_sharded)
+        return FullPrecisionSpec(layout=self.spec.layout).compress(
+            self.decompress(),
+            sharding_config=self.sharding_config,
+        )
 
 
 class IntMatrixForTraining(IntMatrix):
@@ -431,6 +456,7 @@ class IntMatrixForTraining(IntMatrix):
             self.master_zero_points,
             self.spec.group_size,
             self.spec.bits,
+            sharding_config=self.sharding_config,
         )
 
     @property
@@ -439,6 +465,7 @@ class IntMatrixForTraining(IntMatrix):
             self.master_zero_points,
             self.scales,
             self.spec.bits,
+            sharding_config=self.sharding_config,
         )
 
     def astype(self, dtype: DTypeLike) -> "IntMatrixForTraining":
@@ -447,7 +474,7 @@ class IntMatrixForTraining(IntMatrix):
             zero_points = zero_points.astype(dtype)
         return IntMatrixForTraining(
             spec=self.spec,
-            is_sharded=self.is_sharded,
+            sharding_config=self.sharding_config,
             master_weights=self.master_weights.astype(dtype),
             scales=self.scales.astype(dtype),
             master_zero_points=zero_points,
@@ -466,7 +493,7 @@ class IntMatrixForTraining(IntMatrix):
 
     def lookup_embedding(
         self,
-        index: int | Int[Array, "*batch"],
+        row_index: int | Int[Array, "*batch"],
         *,
         dtype: DTypeLike | None = None,
         keychain: Keychain,
@@ -479,11 +506,11 @@ class IntMatrixForTraining(IntMatrix):
             dtype = self.dtype
         zero_points = self.master_zero_points
         if zero_points is not None:
-            zero_points = lookup_sharded_indices(zero_points, index).astype(dtype)
-        weights = lookup_sharded_indices(self.master_weights, index).astype(dtype)
+            zero_points = lookup_sharded_indices(zero_points, row_index).astype(dtype)
+        weights = lookup_sharded_indices(self.master_weights, row_index).astype(dtype)
         return _quantize(
             weights,
-            lookup_sharded_indices(self.scales, index).astype(dtype),
+            lookup_sharded_indices(self.scales, row_index).astype(dtype),
             zero_points,
             group_size=self.spec.group_size,
             bits=self.spec.bits,
@@ -562,7 +589,7 @@ class IntMatrixForTraining(IntMatrix):
             scales=scales,
             packed_zero_points=packed_zero_points,
             implementation=CompressionImplementation.TRAINING,
-            is_sharded=self.is_sharded,
+            sharding_config=self.sharding_config,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> IntMatrix:
@@ -573,7 +600,7 @@ class IntMatrixForTraining(IntMatrix):
             scales=self.scales,
             packed_zero_points=self._packed_quantized_zero_points,
             implementation=CompressionImplementation.INFERENCE,
-            is_sharded=self.is_sharded,
+            sharding_config=self.sharding_config,
         )
 
 
@@ -602,7 +629,7 @@ class IntMatrixForInference(IntMatrix):
     def astype(self, dtype: DTypeLike) -> "IntMatrixForInference":
         return IntMatrixForInference(
             spec=self.spec,
-            is_sharded=self.is_sharded,
+            sharding_config=self.sharding_config,
             packed_weights=self.packed_weights,
             scales=self.scales.astype(dtype),
             packed_zero_points=self.packed_zero_points,
@@ -639,12 +666,12 @@ class IntMatrixForInference(IntMatrix):
                 expored_data.arrays[prefix / "zero_points"],
                 allow_dtype_cast=False,
             )
-        return self.spec.from_packed_parameters(
+        return IntMatrixForInference(
+            spec=self.spec,
+            sharding_config=self.sharding_config,
             packed_weights=packed_weights,
             scales=scales,
             packed_zero_points=packed_zero_points,
-            implementation=CompressionImplementation.INFERENCE,
-            is_sharded=self.is_sharded,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> IntMatrix:
@@ -655,7 +682,7 @@ class IntMatrixForInference(IntMatrix):
             scales=self.scales,
             packed_zero_points=self.packed_zero_points,
             implementation=CompressionImplementation.TRAINING,
-            is_sharded=self.is_sharded,
+            sharding_config=self.sharding_config,
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
@@ -670,7 +697,7 @@ class IntMatrixForInference(IntMatrix):
 
     def lookup_embedding(
         self,
-        index: int | Int[Array, "*batch"],
+        row_index: int | Int[Array, "*batch"],
         *,
         dtype: DTypeLike | None = None,
         keychain: Keychain,  # noqa: ARG002
@@ -683,11 +710,11 @@ class IntMatrixForInference(IntMatrix):
             dtype = self.dtype
         packed_zero_points = self.packed_zero_points
         if packed_zero_points is not None:
-            packed_zero_points = lookup_sharded_indices(packed_zero_points, index)
-        packed_weights = lookup_sharded_indices(self.packed_weights, index)
+            packed_zero_points = lookup_sharded_indices(packed_zero_points, row_index)
+        packed_weights = lookup_sharded_indices(self.packed_weights, row_index)
         return _packed_weights_to_master_weights(
             packed_weights,
-            lookup_sharded_indices(self.scales, index).astype(dtype),
+            lookup_sharded_indices(self.scales, row_index).astype(dtype),
             packed_zero_points,
             self.spec.group_size,
             self.spec.bits,

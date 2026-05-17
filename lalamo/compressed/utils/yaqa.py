@@ -6,9 +6,9 @@ from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.compressed.quantized_spec import QuantizedSpec
-from lalamo.module import ShardingAxis
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.precision import use_dot_algorithm_preset
+from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 from lalamo.weight_matrix import CompressionImplementation
 
 from .block_ldl import block_ldl
@@ -29,7 +29,7 @@ def yaqa_round_fixpoint(
     preconditioner: Preconditioner,
     spec: QuantizedSpec,
     *,
-    is_sharded: bool = True,
+    sharding_config: ShardingConfig,
     max_iters: int | None = None,
     atol: float = 1e-7,
 ) -> Float[Array, "*components output_channels input_channels"]:
@@ -41,37 +41,37 @@ def yaqa_round_fixpoint(
         weights,
         preconditioner,
         spec,
-        is_sharded=is_sharded,
+        sharding_config=sharding_config,
         max_iters=max_iters,
         atol=atol,
     )
     if not bool(jax.device_get(jnp.all(has_converged))):
         raise ConvergenceError(f"YAQA failed to converge in {max_iters} iterations.")
 
-    return result
+    return result.astype(weights.dtype)
 
 
-@partial(jax.jit, static_argnames=("spec", "is_sharded", "max_iters", "atol"))
 def _yaqa_round_fixpoint(
     weights: Float[Array, "*components output_channels input_channels"],
     preconditioner: Preconditioner,
     spec: QuantizedSpec,
     *,
-    is_sharded: bool,
+    sharding_config: ShardingConfig,
     max_iters: int,
     atol: float,
 ) -> tuple[Float[Array, "*components output_channels input_channels"], Bool[Array, "*components"]]:
     if weights.ndim > 2:
+        spmd_axis_name = sharding_config.resolve_axis(LogicalAxis.MIXTURE)
         return jax.vmap(
             partial(
                 _yaqa_round_fixpoint,
                 spec=spec,
-                is_sharded=is_sharded,
+                sharding_config=sharding_config,
                 max_iters=max_iters,
                 atol=atol,
             ),
             in_axes=(0, 0),
-            spmd_axis_name=ShardingAxis.EXPERT,
+            spmd_axis_name=spmd_axis_name,
         )(weights, preconditioner)
 
     weights = weights.astype(jnp.float32)
@@ -83,7 +83,7 @@ def _yaqa_round_fixpoint(
         return spec.compress(
             weights,
             implementation=CompressionImplementation.INFERENCE,
-            is_sharded=is_sharded,
+            sharding_config=sharding_config.replicated_with_same_mesh(),
         ).decompress(), jnp.ones((), dtype=jnp.bool_)
 
     if input_block is None:
@@ -104,7 +104,7 @@ def _yaqa_round_fixpoint(
         return spec.compress(
             candidate_weights,
             implementation=CompressionImplementation.INFERENCE,
-            is_sharded=is_sharded,
+            sharding_config=sharding_config.replicated_with_same_mesh(),
         ).decompress()
 
     def calculate_adjustment(
@@ -209,27 +209,31 @@ def yaqa_round_blockwise(
     preconditioner: Preconditioner,
     spec: QuantizedSpec,
     *,
-    is_sharded: bool = True,
+    sharding_config: ShardingConfig,
 ) -> Float[Array, "*components output_channels input_channels"]:
     if weights.ndim > 2:
-        return jax.vmap(
+        spmd_axis_name = sharding_config.resolve_axis(LogicalAxis.MIXTURE)
+        result = jax.vmap(
             partial(
                 yaqa_round_blockwise,
                 spec=spec,
-                is_sharded=is_sharded,
+                sharding_config=sharding_config,
             ),
             in_axes=(0, 0),
-            spmd_axis_name=ShardingAxis.EXPERT,
+            spmd_axis_name=spmd_axis_name,
         )(weights, preconditioner)
+    else:
+        result = _yaqa_round_blockwise_2d(weights, preconditioner, spec, sharding_config=sharding_config)
 
-    return _yaqa_round_blockwise_2d(weights, preconditioner, spec)
+    return result.astype(weights.dtype)
 
 
-@partial(jax.jit, static_argnames=("spec",))
 def _yaqa_round_blockwise_2d(
     weights: Float[Array, "output_channels input_channels"],
     preconditioner: Preconditioner,
     spec: QuantizedSpec,
+    *,
+    sharding_config: ShardingConfig,
 ) -> Float[Array, "output_channels input_channels"]:
     weights = weights.astype(jnp.float32)
     output_dim, input_dim = weights.shape
@@ -323,7 +327,10 @@ def _yaqa_round_blockwise_2d(
 
             return target
 
-        rounded_blocks = spec.quantize_block(jax.vmap(target_block)(block_indices))
+        rounded_blocks = spec.quantize_block(
+            jax.vmap(target_block)(block_indices),
+            sharding_config=sharding_config,
+        )
 
         def update_block(
             block_index: Int[Array, ""],

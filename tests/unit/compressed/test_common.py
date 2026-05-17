@@ -8,13 +8,11 @@ import jax.numpy as jnp
 import pytest
 from jax.sharding import Mesh, NamedSharding
 
-from lalamo.compressed.e8p import E8PSpec
 from lalamo.compressed.int import IntSpec
 from lalamo.compressed.lloyd_max import LloydMaxSpec
 from lalamo.compressed.microfloat import MicrofloatSpec
 from lalamo.compressed.mlx import MLXSpec
-from lalamo.module import Keychain, ShardingAxis
-from lalamo.utils.sharding import make_sharding
+from lalamo.module import Keychain, LogicalAxis
 from lalamo.weight_matrix import (
     CompressionImplementation,
     EmbeddingMatrix,
@@ -23,6 +21,7 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 from tests.common import assert_close_arrays, assert_named_sharding
+from tests.helpers import make_sharding, make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
@@ -53,12 +52,6 @@ def _microfloat_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> We
     return MicrofloatSpec(group_size=group_size, layout=layout)
 
 
-def _e8p_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> WeightMatrixSpec:  # noqa: ARG001
-    if bits != 4:
-        raise ValueError(f"E8P shared tests only use the 4-bit variant, got {bits}")
-    return E8PSpec(bits=bits, layout=layout)
-
-
 COMPRESSED_MATRIX_CASES = (
     pytest.param(CompressedMatrixCase("int", _int_spec, weight_offset=7, weight_divisor=8), id="int"),
     pytest.param(CompressedMatrixCase("mlx", _mlx_spec, weight_offset=3, weight_divisor=5), id="mlx"),
@@ -70,7 +63,6 @@ COMPRESSED_MATRIX_CASES = (
         CompressedMatrixCase("microfloat", _microfloat_spec, weight_offset=4, weight_divisor=4),
         id="microfloat",
     ),
-    pytest.param(CompressedMatrixCase("e8p", _e8p_spec, weight_offset=11, weight_divisor=9), id="e8p"),
 )
 
 
@@ -95,8 +87,10 @@ def host_decompressed(matrix: EmbeddingMatrix[WeightMatrixSpec]) -> jax.Array:
 
 def host_embedding_table(matrix: EmbeddingMatrix[WeightMatrixSpec]) -> jax.Array:
     match matrix.spec:
-        case IntSpec() | E8PSpec() | MLXSpec() | LloydMaxSpec() | MicrofloatSpec() | FullPrecisionSpec() as spec:
-            return host_array(spec.layout.from_output_input(matrix.decompress()))
+        case IntSpec() | MLXSpec() | LloydMaxSpec() | MicrofloatSpec() | FullPrecisionSpec() as spec:
+            weights = matrix.decompress()
+            sharding = matrix.sharding_config.resolve_sharding(spec.layout.weight_partition(weights.ndim - 2))
+            return host_array(spec.layout.from_output_input(weights, sharding=sharding))
     raise TypeError(f"Unsupported matrix spec type: {type(matrix.spec).__name__}")
 
 
@@ -120,10 +114,14 @@ def _compress(
     implementation: CompressionImplementation,
     is_sharded: bool = True,
 ) -> EmbeddingMatrix[WeightMatrixSpec]:
+    if is_sharded:
+        sharding_config = make_test_sharding_config()
+    else:
+        sharding_config = make_test_sharding_config().replicated_with_same_mesh()
     matrix = case.make_spec(4, 2, layout).compress(
         weights,
         implementation=implementation,
-        is_sharded=is_sharded,
+        sharding_config=sharding_config,
     )
     assert isinstance(matrix, EmbeddingMatrix)
     return matrix
@@ -157,11 +155,11 @@ def test_compressed_matrix_training_and_inference_outputs_match_reference_and_pr
     layout: Layout,
 ) -> None:
     training, inference = _compress_pair(case, layout)
-    vector = jax.device_put(jnp.arange(8, dtype=jnp.float32), make_sharding((ShardingAxis.DATA,)))
+    vector = jax.device_put(jnp.arange(8, dtype=jnp.float32), make_sharding((LogicalAxis.BATCH,)))
     reference = logical_dot_reference(training.decompress(), vector)
 
-    training_result = training.dot(vector, keychain=Keychain.init(0))
-    inference_result = inference.dot(vector, keychain=Keychain.init(1))
+    training_result = training.dot(vector, keychain=Keychain.init(0, sharding_config=make_test_sharding_config()))
+    inference_result = inference.dot(vector, keychain=Keychain.init(1, sharding_config=make_test_sharding_config()))
 
     assert_close_arrays(result=training.decompress(), reference=inference.decompress())
     assert_close_arrays(result=training_result, reference=reference)
@@ -189,7 +187,9 @@ def test_compressed_matrix_lookup_embedding_matches_selected_row_and_feature_sha
     )
     token_index = 2
 
-    result = matrix.lookup_embedding(token_index, keychain=Keychain.init(4))
+    result = matrix.lookup_embedding(
+        token_index, keychain=Keychain.init(4, sharding_config=make_test_sharding_config())
+    )
 
     assert_close_arrays(result=result, reference=host_embedding_table(matrix)[token_index, :])
     assert_named_sharding(result.sharding, fake_mesh)

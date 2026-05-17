@@ -24,9 +24,10 @@ class StubTextDecoderConfig(TTSTextDecoderConfig):
     num_codebooks: int
     codebook_size: int
 
-    def init(self, initializer: Initializer) -> "StubTextDecoder":  # noqa: ARG002
+    def init(self, initializer: Initializer) -> "StubTextDecoder":
         return StubTextDecoder(
             config=self,
+            sharding_config=initializer.sharding_config,
             seed=123,
         )
 

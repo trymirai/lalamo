@@ -13,6 +13,7 @@ from tokenizers import Tokenizer
 from lalamo.initializer import Initializer
 from lalamo.model import Model, ModelConfig
 from lalamo.models.chat_codec import AssistantMessage, ChatCodec, ChatCodecConfig, Message
+from lalamo.module import LogicalAxis
 from lalamo.modules import (
     Decoder,
     DecoderConfig,
@@ -102,7 +103,12 @@ class LanguageModelConfig(ModelConfig[ChatCodecConfig]):
     def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "LanguageModel":
         decoder = self.decoder_config.init(initializer)
         token_codec = self.token_codec_config.init(tokenizer)
-        return LanguageModel(self, token_codec, decoder)
+        return LanguageModel(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            token_codec=token_codec,
+            decoder=decoder,
+        )
 
 
 class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
@@ -130,33 +136,45 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         chunk_size: int,
     ) -> Chunk:
         batch_size, sequence_length = token_ids.shape
+        batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
         if lengths_without_padding is None:
-            lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
+            lengths_without_padding = jax.device_put(
+                jnp.full((batch_size,), sequence_length, dtype=jnp.int32),
+                self.sharding_config.make_sharding((batch_axis,)),
+            )
 
         chunk_size = min(chunk_size, sequence_length)
         num_chunks = (sequence_length + chunk_size - 1) // chunk_size
         padded_length = num_chunks * chunk_size
+        chunk_token_sharding = self.sharding_config.make_sharding((None, batch_axis, None))
+        chunk_vector_sharding = self.sharding_config.make_sharding((None, batch_axis))
 
         tokens = rearrange(
             jnp.pad(token_ids, ((0, 0), (0, padded_length - sequence_length))),
             "batch (num_chunks chunk_size) -> num_chunks batch chunk_size",
             chunk_size=chunk_size,
         )
+        tokens = jax.device_put(tokens, chunk_token_sharding)
         indices = rearrange(
             jnp.broadcast_to(jnp.arange(padded_length, dtype=jnp.int32), (batch_size, padded_length)),
             "batch (num_chunks chunk_size) -> num_chunks batch chunk_size",
             chunk_size=chunk_size,
         )
+        indices = jax.device_put(indices, chunk_token_sharding)
         chunk_starts = jnp.arange(num_chunks, dtype=jnp.int32) * chunk_size
         sequence_ends = jnp.clip(lengths_without_padding[None, :] - chunk_starts[:, None], 0, chunk_size)
+        sequence_ends = jax.device_put(sequence_ends, chunk_vector_sharding)
         last_token_idx = lengths_without_padding - 1
+        is_last_token_inside = (last_token_idx[None, :] >= chunk_starts[:, None]) & (
+            last_token_idx[None, :] < chunk_starts[:, None] + chunk_size
+        )
+        is_last_token_inside = jax.device_put(is_last_token_inside, chunk_vector_sharding)
 
         return Chunk(
             tokens=tokens,
             indices=indices,
             sequence_ends=sequence_ends,
-            is_last_token_inside=(last_token_idx[None, :] >= chunk_starts[:, None])
-            & (last_token_idx[None, :] < chunk_starts[:, None] + chunk_size),
+            is_last_token_inside=is_last_token_inside,
         )
 
     @eqx.filter_jit
@@ -171,8 +189,13 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         keychain: Keychain,
     ) -> PrefillResults:
         batch_size, sequence_length = token_ids.shape
+        batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
+        batch_vector_sharding = self.sharding_config.make_sharding((batch_axis,))
         if lengths_without_padding is None:
-            lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
+            lengths_without_padding = jax.device_put(
+                jnp.full((batch_size,), sequence_length, dtype=jnp.int32),
+                batch_vector_sharding,
+            )
         if forward_pass_config is None:
             forward_pass_config = DecoderForwardPassConfig.for_inference()
 
@@ -184,7 +207,12 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             max(state_capacity, num_chunks * chunk_size),
             state_dtype,
         )
-        logits_like = jnp.zeros((batch_size, self.decoder.vocab_size), dtype=jnp.float32)
+        logits_like = jax.device_put(
+            jnp.zeros((batch_size, self.decoder.vocab_size), dtype=jnp.float32),
+            self.sharding_config.make_sharding((batch_axis, None)),
+        )
+        logits_sharding = self.sharding_config.make_sharding((batch_axis, None))
+        batch_indices = jax.device_put(jnp.arange(batch_size), batch_vector_sharding)
         chunk_keychains = jax.tree.map(lambda *nodes: jnp.stack(nodes), *keychain.split(num_chunks))
 
         def apply_chunk(
@@ -204,7 +232,9 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             )
             assert decoder_result.updated_state is not None
 
-            chunk_logits = decoder_result.logits[jnp.arange(batch_size), chunk.sequence_ends - 1, :]
+            chunk_logits = decoder_result.logits.at[batch_indices, chunk.sequence_ends - 1, :].get(
+                out_sharding=logits_sharding,
+            )
             return (
                 decoder_result.updated_state,
                 jnp.where(chunk.is_last_token_inside[:, None], chunk_logits, previous_logits),
@@ -244,13 +274,28 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             decode_forward_pass_config = DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN)
 
         batch_size, prompt_length = prompt_token_ids.shape
+        batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
+        batch_vector_sharding = self.sharding_config.make_sharding((batch_axis,))
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
             sampling_policy = generation_config.default_policy()
         use_count_penalties = sampling_policy.has_count_penalties
         sampling_policy = sampling_policy.broadcast(batch_size)
+
+        def shard_sampling_leaf(leaf: object) -> object:
+            if not isinstance(leaf, jax.Array):
+                return leaf
+            leaf_sharding = self.sharding_config.make_sharding(
+                (batch_axis, *((None,) * (leaf.ndim - 1))),
+            )
+            return jax.device_put(leaf, leaf_sharding)
+
+        sampling_policy = jax.tree.map(shard_sampling_leaf, sampling_policy)
         if prompt_lengths_without_padding is None:
-            prompt_lengths_without_padding = jnp.full((batch_size,), prompt_length, dtype=jnp.int32)
+            prompt_lengths_without_padding = jax.device_put(
+                jnp.full((batch_size,), prompt_length, dtype=jnp.int32),
+                batch_vector_sharding,
+            )
         if use_count_penalties:
             sampling_policy = call_vmapped(
                 lambda policy, prompt_token_ids, prompt_length: policy.with_prompt_token_counts(
@@ -263,7 +308,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 prompt_lengths_without_padding,
             )
         if eos_token_ids is None:
-            eos_token_ids = jnp.asarray(self.config.generation_config.stop_token_ids, dtype=jnp.int32)
+            eos_token_ids = jax.device_put(
+                jnp.asarray(self.config.generation_config.stop_token_ids, dtype=jnp.int32),
+                self.sharding_config.make_sharding((None,)),
+            )
 
         prefill_keychain, sampling_keychain, decoding_keychain = keychain.split(3)
         prefill_results = self.prefill_tokens(
@@ -277,9 +325,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             last_token_logits=prefill_results.last_token_logits,
             last_token_indices=prefill_results.last_token_indices,
             state=prefill_results.state,
-            stop_flags=jnp.zeros(batch_size, dtype=jnp.bool_),
+            stop_flags=jax.device_put(jnp.zeros(batch_size, dtype=jnp.bool_), batch_vector_sharding),
             sampling_policy=sampling_policy,
         )
+        stopped_token_ids = jax.device_put(jnp.zeros(batch_size, dtype=jnp.int32), batch_vector_sharding)
 
         def sample_token(
             logits: Float[Array, " vocabulary"],
@@ -298,7 +347,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 state.last_token_logits.astype(jnp.float32),
             )
             next_token_ids = call_vmapped(sample_token, processed_logits, sampling_keys)
-            next_token_ids = jnp.where(state.stop_flags, jnp.zeros(batch_size, dtype=jnp.int32), next_token_ids)
+            next_token_ids = jnp.where(state.stop_flags, stopped_token_ids, next_token_ids)
             next_sampling_policy = call_vmapped(
                 lambda policy, token_id, should_count: policy.with_next_token_count(token_id, should_count),
                 state.sampling_policy,
@@ -320,7 +369,11 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 state=state.state,
                 return_updated_state=True,
                 forward_pass_config=decode_forward_pass_config,
-                keychain=Keychain(vmapped_keys=decoding_key, batch_key=decoding_keychain.batch_key),
+                keychain=Keychain(
+                    vmapped_keys=decoding_key,
+                    batch_key=decoding_keychain.batch_key,
+                    sharding_config=decoding_keychain.sharding_config,
+                ),
             )
             assert decoder_result.updated_state is not None
 
@@ -343,6 +396,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             (max_output_length, batch_size),
             mode=KeychainBroadcastMode.SUFFIX,
         ).vmapped_keys
+        sampling_keys = jax.device_put(
+            sampling_keys,
+            self.sharding_config.make_sharding((None, batch_axis)),
+        )
         decoding_keys = decoding_keychain.rolling_broadcast(
             (max_output_length, *decoding_keychain.vmapped_keys.shape),
             mode=KeychainBroadcastMode.SUFFIX,
@@ -373,7 +430,11 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         *,
         keychain: Keychain,
     ) -> AssistantMessage:
-        token_ids = jnp.asarray(self.token_codec.encode_request(messages), dtype=jnp.int32)[None, :]
+        batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
+        token_ids = jax.device_put(
+            jnp.asarray(self.token_codec.encode_request(messages), dtype=jnp.int32)[None, :],
+            self.sharding_config.make_sharding((batch_axis, None)),
+        )
         response_ids = self.generate_tokens(
             token_ids,
             generation_config=generation_config,
@@ -417,7 +478,15 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
 
         padded_token_ids = jnp.zeros((padded_input_length,), dtype=prompt_token_ids.dtype)
         padded_token_ids = padded_token_ids.at[:input_length].set(prompt_token_ids)
-        length_without_padding = jnp.asarray([input_length], dtype=jnp.int32)
+        batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
+        batched_token_ids = jax.device_put(
+            padded_token_ids[None, :],
+            self.sharding_config.make_sharding((batch_axis, None)),
+        )
+        length_without_padding = jax.device_put(
+            jnp.asarray([input_length], dtype=jnp.int32),
+            self.sharding_config.make_sharding((batch_axis,)),
+        )
 
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
@@ -431,7 +500,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
 
         prefill_keychain, sampling_keychain, decoding_keychain = keychain.split(3)
         prefill_results = self.prefill_tokens(
-            padded_token_ids[None, :],
+            batched_token_ids,
             padded_input_length + max_output_length + 1,
             length_without_padding,
             prefill_forward_pass_config,
@@ -459,7 +528,11 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 state=state,
                 return_updated_state=True,
                 forward_pass_config=decode_forward_pass_config,
-                keychain=Keychain(vmapped_keys=decoding_key, batch_key=decoding_keychain.batch_key),
+                keychain=Keychain(
+                    vmapped_keys=decoding_key,
+                    batch_key=decoding_keychain.batch_key,
+                    sharding_config=decoding_keychain.sharding_config,
+                ),
             )
             assert decoder_result.updated_state is not None
 

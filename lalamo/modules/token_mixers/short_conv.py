@@ -83,6 +83,7 @@ class ShortConvConfig(TokenMixerConfig):
         )
         return ShortConv(
             config=self,
+            sharding_config=initializer.sharding_config,
             in_projection=in_projection,
             conv=conv,
             out_projection=out_projection,

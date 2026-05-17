@@ -7,11 +7,11 @@ from jax.lax import dot_general
 from jax.scipy.linalg import solve_triangular
 from jaxtyping import Array, DTypeLike, Float, Key
 
-from lalamo.module import Keychain, ParameterNorm, ShardingAxis, field
+from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.utils.sharding import make_sharding, sharding_of, with_sharding
+from lalamo.utils.sharding import LogicalAxis, ShardingConfig, sharding_of
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
@@ -40,16 +40,17 @@ class LowRankSpec(WeightMatrixSpec):
         key: Key[Array, ""] | None = None,
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-        is_sharded: bool = True,
+        sharding_config: ShardingConfig,
     ) -> "LowRankMatrix":
         if weights.ndim > 2 and preconditioner is not None:
             compress_component = partial(
                 self.compress,
                 key=key,
                 implementation=implementation,
-                is_sharded=is_sharded,
+                sharding_config=sharding_config,
             )
-            return jax.vmap(compress_component, spmd_axis_name=ShardingAxis.EXPERT)(
+            spmd_axis_name = sharding_config.resolve_axis(LogicalAxis.MIXTURE)
+            return jax.vmap(compress_component, spmd_axis_name=spmd_axis_name)(
                 weights,
                 preconditioner=preconditioner,
             )
@@ -66,6 +67,8 @@ class LowRankSpec(WeightMatrixSpec):
                 input_factor = jnp.linalg.cholesky(input_block, upper=True)
                 weights = weights @ input_factor.T
 
+        svd_sharding = sharding_config.make_sharding((None,) * weights.ndim)
+        weights = jax.device_put(weights, svd_sharding)
         u, singular_values, vh = jnp.linalg.svd(weights, full_matrices=False)
         *_, svd_rank = singular_values.shape
         truncated_rank = min(self.rank, svd_rank)
@@ -78,14 +81,18 @@ class LowRankSpec(WeightMatrixSpec):
             up_projection = solve_triangular(output_factor, up_projection, lower=False)
         if input_factor is not None:
             down_projection = solve_triangular(input_factor, down_projection.T, lower=False).T
-        if not is_sharded:
-            up_projection = with_sharding(up_projection, make_sharding((None,) * up_projection.ndim))
-            down_projection = with_sharding(down_projection, make_sharding((None,) * down_projection.ndim))
+        leading_dims = weights.ndim - 2
+        up_projection_sharding = sharding_config.resolve_sharding(
+            Layout.OUTPUT_INPUT.weight_partition(leading_dims),
+        )
+        down_projection_sharding = sharding_config.resolve_sharding(
+            (LogicalAxis.MIXTURE,) * leading_dims + (None, None),
+        )
         return LowRankMatrix(
             spec=self,
-            is_sharded=is_sharded,
-            up_projection=up_projection,
-            down_projection=down_projection,
+            sharding_config=sharding_config,
+            up_projection=jax.device_put(up_projection, up_projection_sharding),
+            down_projection=jax.device_put(down_projection, down_projection_sharding),
         )
 
 
@@ -94,7 +101,10 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
     up_projection: Float[Array, "*components output_channels rank"] = field(norm=ParameterNorm.SPECTRAL)
 
     def to_full_precision(self) -> FullPrecisionMatrix:
-        return FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(self.decompress(), is_sharded=self.is_sharded)
+        return FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(
+            self.decompress(),
+            sharding_config=self.sharding_config,
+        )
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -109,7 +119,7 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
     def astype(self, dtype: DTypeLike) -> "LowRankMatrix":
         return LowRankMatrix(
             spec=self.spec,
-            is_sharded=self.is_sharded,
+            sharding_config=self.sharding_config,
             up_projection=self.up_projection.astype(dtype),
             down_projection=self.down_projection.astype(dtype),
         )
@@ -128,6 +138,7 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
         self._raise_if_batched()
         up_projection = self.up_projection.astype(vector.dtype)
         down_projection = self.down_projection.astype(vector.dtype)
+        out_sharding = sharding_of(vector)
 
         with use_dot_algorithm_preset(forward_pass_config.precision):
             if transposed:
@@ -140,7 +151,7 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
                     down_projection,
                     rank_features,
                     dimension_numbers=(((0,), (0,)), ((), ())),
-                    out_sharding=sharding_of(vector),
+                    out_sharding=out_sharding,
                 )
             else:
                 rank_features = dot_general(
@@ -152,7 +163,7 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
                     up_projection,
                     rank_features,
                     dimension_numbers=(((1,), (0,)), ((), ())),
-                    out_sharding=sharding_of(vector),
+                    out_sharding=out_sharding,
                 )
 
         return result

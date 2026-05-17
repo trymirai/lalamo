@@ -10,6 +10,7 @@ from lalamo.models.chat_codec import UserMessage
 from lalamo.models.language_model import GenerationConfig
 from lalamo.module import Keychain
 from tests.conftest import ConvertModel, filter_specs, load_converted_model, mark_by_size
+from tests.helpers import make_test_sharding_config
 from tests.model_test_tiers import ModelTier
 
 from .common import DEFAULT_JUDGE_MODEL, TASK_PROMPT, judge
@@ -31,7 +32,7 @@ def _generate_single(
         [UserMessage(prompt)],
         generation_config=GenerationConfig(temperature=0.0),
         max_output_length=max_tokens,
-        keychain=Keychain.init(0),
+        keychain=Keychain.init(0, sharding_config=model.sharding_config),
     ).response
 
 
@@ -52,7 +53,7 @@ def test_model_coherent_and_stops(
     assert api_key is not None
     judge_model = os.getenv("COHERENCE_JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
 
-    model = load_converted_model(converted_model_path)
+    model = load_converted_model(converted_model_path, make_test_sharding_config())
     assert isinstance(model, LanguageModel)
 
     start_time = time.monotonic()

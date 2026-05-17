@@ -22,6 +22,7 @@ from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.modules.classifier import ClassifierConfig
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.utils.registry_abc import RegistryABC
+from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import CompressionImplementation
 
 __all__ = ["ForeignClassifierConfig", "ForeignConfig", "ForeignLMConfig", "ForeignTTSConfig"]
@@ -60,8 +61,12 @@ class ForeignConfig[ConfigT: ModelConfig](RegistryABC):
         weights_dict: Mapping[str, Array],
         *,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        sharding_config: ShardingConfig,
     ) -> Model:
-        model = config.init(tokenizer=tokenizer, initializer=EmptyInitializer(dtype=dtype))
+        model = config.init(
+            tokenizer=tokenizer,
+            initializer=EmptyInitializer(dtype=dtype, sharding_config=sharding_config),
+        )
         return self._load_weights(model=model, weights_dict=weights_dict, implementation=implementation)
 
 

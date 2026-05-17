@@ -10,12 +10,12 @@ import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 from cattrs import GenConverter
-from jax.sharding import reshard
 from jaxtyping import Array, DTypeLike, Key
 
 from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.json import JSON
 from lalamo.utils.registry_abc import make_registry_abc_converter
+from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 
 from .exportable import Exportable
 
@@ -29,7 +29,8 @@ __all__ = [
     "KeychainBroadcastMode",
     "LalamoConfig",
     "LalamoModule",
-    "ShardingAxis",
+    "LogicalAxis",
+    "ShardingConfig",
     "field",
 ]
 
@@ -37,12 +38,6 @@ __all__ = [
 class ForwardPassMode(StrEnum):
     MULTI_TOKEN = "multi_token"
     SINGLE_TOKEN = "single_token"
-
-
-class ShardingAxis(StrEnum):
-    DATA = "data"
-    TENSOR = "tensor"
-    EXPERT = "expert"
 
 
 class KeychainBroadcastMode(StrEnum):
@@ -109,20 +104,26 @@ def _broadcast_prefix_and_suffix(
 class Keychain(eqx.Module):
     vmapped_keys: Key[Array, "..."]
     batch_key: Key[Array, ""]
+    sharding_config: ShardingConfig = eqx.field(static=True)
 
     @classmethod
-    def init(cls, seed: int, shape: tuple[int, ...] = ()) -> Self:
+    def init(cls, seed: int, *, sharding_config: ShardingConfig, shape: tuple[int, ...] = ()) -> Self:
         vmapped_keys, batch_key = jax.random.split(jax.random.key(seed))
         if shape:
             vmapped_keys = jnp.reshape(jax.random.split(vmapped_keys, prod(shape)), shape)
-        return cls(vmapped_keys=vmapped_keys, batch_key=batch_key)
+        vmapped_keys = jax.device_put(
+            vmapped_keys,
+            sharding_config.make_sharding((None,) * len(vmapped_keys.shape)),
+        )
+        batch_key = jax.device_put(batch_key, sharding_config.make_sharding(()))
+        return cls(vmapped_keys=vmapped_keys, batch_key=batch_key, sharding_config=sharding_config)
 
     def broadcast(
         self,
         shape: tuple[int, ...],
         *,
         mode: KeychainBroadcastMode = KeychainBroadcastMode.AUTO,
-        sharding_axes: tuple[ShardingAxis | None, ...] | None = None,
+        sharding_axes: tuple[str | None, ...] | None = None,
     ) -> Self:
 
         prefix_shape, suffix_shape = _broadcast_prefix_and_suffix(self.vmapped_keys.shape, shape, mode)
@@ -146,15 +147,15 @@ class Keychain(eqx.Module):
         else:
             vmapped_keys = self.vmapped_keys
 
-        if sharding_axes is not None and not all(axis is None for axis in sharding_axes):
-            # Local import avoids a module <-> sharding cycle: sharding helpers are parameterized by ShardingAxis.
-            from lalamo.utils.sharding import make_sharding  # noqa: PLC0415
+        if sharding_axes is None:
+            sharding_axes = (None,) * len(vmapped_keys.shape)
+        vmapped_keys = jax.device_put(vmapped_keys, self.sharding_config.make_sharding(sharding_axes))
 
-            sharding = make_sharding(sharding_axes)
-            if sharding is not None:
-                vmapped_keys = reshard(vmapped_keys, sharding)
-
-        return type(self)(vmapped_keys=vmapped_keys, batch_key=self.batch_key)
+        return type(self)(
+            vmapped_keys=vmapped_keys,
+            batch_key=self.batch_key,
+            sharding_config=self.sharding_config,
+        )
 
     def split(self, num: int = 2) -> tuple[Self, ...]:
         vmapped_keys = self.broadcast(
@@ -162,13 +163,28 @@ class Keychain(eqx.Module):
             mode=KeychainBroadcastMode.PREFIX,
         ).vmapped_keys
         batch_keys = jax.random.split(self.batch_key, num)
+        batch_keys = jax.device_put(batch_keys, self.sharding_config.make_sharding((None,)))
+        batch_key_sharding = self.sharding_config.make_sharding(())
         return tuple(
-            type(self)(vmapped_keys=split_vmapped_keys, batch_key=batch_key)
+            type(self)(
+                vmapped_keys=split_vmapped_keys,
+                batch_key=jax.device_put(batch_key, batch_key_sharding),
+                sharding_config=self.sharding_config,
+            )
             for split_vmapped_keys, batch_key in zip(vmapped_keys, batch_keys, strict=True)
         )
 
     def squeeze(self, axis: int | tuple[int, ...] | None = None) -> Self:
-        return type(self)(vmapped_keys=jnp.squeeze(self.vmapped_keys, axis=axis), batch_key=self.batch_key)
+        vmapped_keys = jnp.squeeze(self.vmapped_keys, axis=axis)
+        vmapped_keys = jax.device_put(
+            vmapped_keys,
+            self.sharding_config.make_sharding((None,) * len(vmapped_keys.shape)),
+        )
+        return type(self)(
+            vmapped_keys=vmapped_keys,
+            batch_key=self.batch_key,
+            sharding_config=self.sharding_config,
+        )
 
     def rolling_broadcast(
         self,
@@ -203,10 +219,15 @@ class Keychain(eqx.Module):
             vmapped_keys = rolling_broadcast_axis(vmapped_keys, suffix_axis_size, self.vmapped_keys.ndim)
         for prefix_axis_size in reversed(prefix_shape):
             vmapped_keys = rolling_broadcast_axis(vmapped_keys, prefix_axis_size, 0)
+        vmapped_keys = jax.device_put(
+            vmapped_keys,
+            self.sharding_config.make_sharding((None,) * len(vmapped_keys.shape)),
+        )
 
         return type(self)(
             vmapped_keys=vmapped_keys,
             batch_key=self.batch_key,
+            sharding_config=self.sharding_config,
         )
 
 
@@ -299,6 +320,7 @@ else:
 
 class LalamoModule(Exportable, eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
     config: ConfigT_co = field(static=True)
+    sharding_config: ShardingConfig = field(static=True)
 
     def astype(self, dtype: DTypeLike) -> Self:
         from lalamo.weight_matrix import WeightMatrix  # noqa: PLC0415

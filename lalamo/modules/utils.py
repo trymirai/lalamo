@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from jax import vmap
 from jaxtyping import Array, Float, PyTree, Shaped
 
-from lalamo.module import Keychain, KeychainBroadcastMode, ShardingAxis
+from lalamo.module import Keychain, KeychainBroadcastMode
 
 __all__ = [
     "apply_soft_capping",
@@ -35,7 +35,7 @@ def call_vmapped[ResultT](
     *args: PyTree[Shaped[Array, "..."]],
     in_axes: PyTree[int | None] = 0,
     out_axes: PyTree[int | None] = 0,
-    added_sharding_axis: ShardingAxis | None = None,
+    added_sharding_axis: str | None = None,
 ) -> ResultT: ...
 
 
@@ -47,7 +47,7 @@ def call_vmapped[ResultT](
     forward_pass_config: object,
     in_axes: PyTree[int | None] = 0,
     out_axes: PyTree[int | None] = 0,
-    added_sharding_axis: ShardingAxis | None = None,
+    added_sharding_axis: str | None = None,
 ) -> ResultT: ...
 
 
@@ -59,7 +59,7 @@ def call_vmapped[ResultT](
     keychain: Keychain,
     in_axes: PyTree[int | None] = 0,
     out_axes: PyTree[int | None] = 0,
-    added_sharding_axis: ShardingAxis | None = None,
+    added_sharding_axis: str | None = None,
 ) -> ResultT: ...
 
 
@@ -72,7 +72,7 @@ def call_vmapped[ResultT](
     keychain: Keychain,
     in_axes: PyTree[int | None] = 0,
     out_axes: PyTree[int | None] = 0,
-    added_sharding_axis: ShardingAxis | None = None,
+    added_sharding_axis: str | None = None,
 ) -> ResultT: ...
 
 
@@ -84,7 +84,7 @@ def call_vmapped[*ArgT, ResultT](
     keychain: Keychain,
     in_axes: PyTree[int | None] = 0,
     out_axes: PyTree[int | None] = 0,
-    added_sharding_axis: ShardingAxis | None = None,
+    added_sharding_axis: str | None = None,
 ) -> ResultT: ...
 
 
@@ -131,7 +131,14 @@ def _call_with_keychain[ResultT](fn: Callable[..., ResultT], *, keychain: Keycha
         *mapped_args, vmapped_keys = args
         if not isinstance(vmapped_keys, jax.Array):
             raise TypeError(f"Expected JAX array key, got {type(vmapped_keys).__name__}")
-        return fn(*mapped_args, keychain=Keychain(vmapped_keys=vmapped_keys, batch_key=keychain.batch_key))
+        return fn(
+            *mapped_args,
+            keychain=Keychain(
+                vmapped_keys=vmapped_keys,
+                batch_key=keychain.batch_key,
+                sharding_config=keychain.sharding_config,
+            ),
+        )
 
     return wrapped
 
@@ -144,7 +151,7 @@ def call_vmapped[ResultT](
     keychain: Keychain | _Unspecified = _UNSPECIFIED,
     in_axes: PyTree[int | None] = 0,
     out_axes: PyTree[int | None] = 0,
-    added_sharding_axis: ShardingAxis | None = None,
+    added_sharding_axis: str | None = None,
 ) -> ResultT:
     mapped_fn = _bind_shared_kwargs(
         fn,
@@ -172,7 +179,7 @@ def call_vmapped_twice[ResultT](
     *args: PyTree[Shaped[Array, "..."]],
     in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
     out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
-    added_sharding_axes: tuple[ShardingAxis | None, ShardingAxis | None] = (None, None),
+    added_sharding_axes: tuple[str | None, str | None] = (None, None),
 ) -> ResultT: ...
 
 
@@ -184,7 +191,7 @@ def call_vmapped_twice[ResultT](
     forward_pass_config: object,
     in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
     out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
-    added_sharding_axes: tuple[ShardingAxis | None, ShardingAxis | None] = (None, None),
+    added_sharding_axes: tuple[str | None, str | None] = (None, None),
 ) -> ResultT: ...
 
 
@@ -196,7 +203,7 @@ def call_vmapped_twice[ResultT](
     keychain: Keychain,
     in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
     out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
-    added_sharding_axes: tuple[ShardingAxis | None, ShardingAxis | None] = (None, None),
+    added_sharding_axes: tuple[str | None, str | None] = (None, None),
 ) -> ResultT: ...
 
 
@@ -209,7 +216,7 @@ def call_vmapped_twice[ResultT](
     keychain: Keychain,
     in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
     out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
-    added_sharding_axes: tuple[ShardingAxis | None, ShardingAxis | None] = (None, None),
+    added_sharding_axes: tuple[str | None, str | None] = (None, None),
 ) -> ResultT: ...
 
 
@@ -221,7 +228,7 @@ def call_vmapped_twice[*ArgT, ResultT](
     keychain: Keychain,
     in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
     out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
-    added_sharding_axes: tuple[ShardingAxis | None, ShardingAxis | None] = (None, None),
+    added_sharding_axes: tuple[str | None, str | None] = (None, None),
 ) -> ResultT: ...
 
 
@@ -233,7 +240,7 @@ def call_vmapped_twice[ResultT](
     keychain: Keychain | _Unspecified = _UNSPECIFIED,
     in_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
     out_axes: tuple[PyTree[int | None], PyTree[int | None]] = (0, 0),
-    added_sharding_axes: tuple[ShardingAxis | None, ShardingAxis | None] = (None, None),
+    added_sharding_axes: tuple[str | None, str | None] = (None, None),
 ) -> ResultT:
     outer_in_axes, inner_in_axes = in_axes
     outer_out_axes, inner_out_axes = out_axes

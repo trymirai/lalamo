@@ -389,6 +389,7 @@ class AttentionConfig(TokenMixerConfig):
 
         return Attention(
             config=self,
+            sharding_config=initializer.sharding_config,
             qkv_projection=qkv_projection,
             gate_projection=gate_projection,
             out_projection=out_projection,
@@ -565,4 +566,5 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             self.config.num_groups,
             self.config.head_dim,
             dtype,
+            self.sharding_config,
         )

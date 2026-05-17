@@ -61,7 +61,12 @@ class NormalizationConfig(LalamoConfig):
             biases = initializer.zeros((input_dim,))
         else:
             biases = None
-        return Normalization(config=self, scales=scales, biases=biases)
+        return Normalization(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            scales=scales,
+            biases=biases,
+        )
 
 
 class Normalization(LalamoModule[NormalizationConfig]):

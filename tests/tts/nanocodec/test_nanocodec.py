@@ -16,6 +16,8 @@ from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec
 from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder
+from lalamo.utils.sharding import ShardingConfig
+from tests.helpers import make_test_sharding_config
 from tests.tts.nanocodec.nanocodec_torch_stuff import (
     AudioCodecModel,
     load_nemo_data,
@@ -46,7 +48,7 @@ def test_lalamo_nanocodec_matches_torch(cached_nemo_model: tuple[Mapping, Mappin
     torch_model.eval()
 
     lalamo_config = NanoCodecForeignConfig.from_nemo_config(config).to_tts_config(None).audio_decoder_config
-    lalamo_model = lalamo_config.init(EmptyInitializer(dtype=jnp.float32))
+    lalamo_model = lalamo_config.init(EmptyInitializer(dtype=jnp.float32, sharding_config=make_test_sharding_config()))
     assert isinstance(lalamo_model, NanoCodec)
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(dict(state_dict))
@@ -66,7 +68,9 @@ def test_lalamo_nanocodec_matches_torch(cached_nemo_model: tuple[Mapping, Mappin
     tokens_np = tokens_torch[0].numpy()
 
     tokens_jax = jnp.array(tokens_np)
-    audio_lalamo = lalamo_model.audio_from_codes(tokens_jax, keychain=Keychain.init(0))
+    audio_lalamo = lalamo_model.audio_from_codes(
+        tokens_jax, keychain=Keychain.init(0, sharding_config=make_test_sharding_config())
+    )
 
     np.testing.assert_allclose(
         np.array(audio_lalamo),
@@ -79,7 +83,11 @@ def test_lalamo_nanocodec_matches_torch(cached_nemo_model: tuple[Mapping, Mappin
 def test_nanocodec_model_spec_loading() -> None:
     message_to_generate = TTSMessage(content="Some noise will be generated here", speaker_id="0", style="unsupported")
 
-    generator, _ = import_model(model_spec="nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps", dtype=jnp.float32)
+    generator, _ = import_model(
+        model_spec="nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps",
+        sharding_config=ShardingConfig.replicated(),
+        dtype=jnp.float32,
+    )
 
     assert isinstance(generator, TTSModel)
     assert isinstance(generator.text_decoder, StubTextDecoder)
@@ -87,7 +95,7 @@ def test_nanocodec_model_spec_loading() -> None:
 
     generation_result = generator.generate_speech(
         [message_to_generate],
-        keychain=Keychain.init(0),
+        keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
     )
     audio = generation_result.audio
 

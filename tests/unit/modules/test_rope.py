@@ -6,7 +6,7 @@ from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
 from lalamo.initializer import RandomInitializer
-from lalamo.module import ShardingAxis
+from lalamo.module import LogicalAxis
 from lalamo.modules.rope import (
     LinearScalingRoPEConfig,
     LlamaRoPEConfig,
@@ -18,8 +18,8 @@ from lalamo.modules.rope import (
 )
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.utils.sharding import make_sharding
 from tests.common import assert_close
+from tests.helpers import make_sharding, make_test_sharding_config
 
 HEAD_DIM = 4
 NUM_TIMESTEPS = 8
@@ -29,7 +29,7 @@ def _rope(config: RoPEConfig | None = None) -> RoPE:
     if config is None:
         config = UnscaledRoPEConfig(base=10_000.0, max_sequence_length=NUM_TIMESTEPS)
     return config.init(
-        RandomInitializer(dtype=jnp.float32, key=jax.random.key(0)),
+        RandomInitializer(dtype=jnp.float32, sharding_config=make_test_sharding_config(), key=jax.random.key(0)),
         head_dim=HEAD_DIM,
         num_timesteps=NUM_TIMESTEPS,
     )
@@ -45,7 +45,7 @@ def _assert_close(result: Array, reference: Array) -> None:
 
 
 def _sharded_heads(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None)))
+    return jax.device_put(values, make_sharding((LogicalAxis.BATCH, None)))
 
 
 def _apply_reference(embeddings: PositionalEmbeddings, heads: Array) -> Array:
@@ -135,16 +135,20 @@ def test_rope_call_vmapped_over_batches_preserves_batch_sharding(fake_mesh: Mesh
         ],
         dtype=jnp.int32,
     )
-    timesteps = jax.device_put(timesteps, make_sharding((ShardingAxis.DATA, None)))
+    timesteps = jax.device_put(timesteps, make_sharding((LogicalAxis.BATCH, None)))
 
-    embeddings = call_vmapped(rope, timesteps, added_sharding_axis=ShardingAxis.DATA)
+    embeddings = call_vmapped(
+        rope,
+        timesteps,
+        added_sharding_axis=make_test_sharding_config().resolve_axis(LogicalAxis.BATCH),
+    )
 
     _assert_close(result=embeddings.sines, reference=_select_reference(rope.sines, timesteps))
     _assert_close(result=embeddings.cosines, reference=_select_reference(rope.cosines, timesteps))
     _assert_named_sharding(embeddings.sines.sharding, fake_mesh)
     _assert_named_sharding(embeddings.cosines.sharding, fake_mesh)
-    assert embeddings.sines.sharding == make_sharding((ShardingAxis.DATA, None, None))
-    assert embeddings.cosines.sharding == make_sharding((ShardingAxis.DATA, None, None))
+    assert embeddings.sines.sharding == make_sharding((LogicalAxis.BATCH, None, None))
+    assert embeddings.cosines.sharding == make_sharding((LogicalAxis.BATCH, None, None))
 
 
 def test_positional_embeddings_apply_matches_reference_and_preserves_sharding(fake_mesh: Mesh) -> None:
@@ -157,7 +161,7 @@ def test_positional_embeddings_apply_matches_reference_and_preserves_sharding(fa
 
     _assert_close(result=result, reference=_apply_reference(embeddings, heads))
     _assert_named_sharding(result.sharding, fake_mesh)
-    assert result.sharding == make_sharding((ShardingAxis.DATA, None))
+    assert result.sharding == make_sharding((LogicalAxis.BATCH, None))
 
 
 def test_positional_embeddings_apply_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
@@ -182,9 +186,10 @@ def test_positional_embeddings_apply_rejects_too_small_head_dim() -> None:
 
 def test_rope_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _rope()
-    table_sharding = make_sharding((None, ShardingAxis.TENSOR))
+    table_sharding = make_sharding((None, None))
     template = RoPE(
         config=original.config,
+        sharding_config=make_test_sharding_config(),
         sines=dummy_array(original.sines.shape, original.sines.dtype, table_sharding),
         cosines=dummy_array(original.cosines.shape, original.cosines.dtype, table_sharding),
     )

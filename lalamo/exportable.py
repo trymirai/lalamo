@@ -63,8 +63,7 @@ class Exportable:
             if not isinstance(subtree, (jax.Array, ShapeDtypeStruct)):
                 return subtree
 
-            exported_array = jax.device_put(expored_data.arrays[path], subtree.sharding)
-            return load_as(subtree, exported_array, allow_dtype_cast=allow_dtype_cast)
+            return load_as(subtree, expored_data.arrays[path], allow_dtype_cast=allow_dtype_cast)
 
         return jtu.tree_map_with_path(
             restore,

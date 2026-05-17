@@ -20,14 +20,14 @@ from lalamo.compressed.lloyd_max import (
     _master_weights_to_quantized_weights,
 )
 from lalamo.compressed.utils.packing import pack_uint_to_uint8, packed_last_axis_dim, unpack_uint8_to_uint
-from lalamo.compressed.utils.rounding import round_to_sorted_lut_table
 from lalamo.compressed.utils.yaqa import yaqa_round_blockwise
-from lalamo.module import Keychain, ShardingAxis
+from lalamo.module import Keychain, LogicalAxis
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.utils.sharding import make_sharding
+from lalamo.utils.sharding import is_sharded
 from lalamo.weight_matrix import CompressionImplementation, GradientEstimator, Layout, MatmulConfig
-from tests.common import assert_close_arrays, assert_named_sharding
+from tests.common import assert_close_arrays
+from tests.helpers import make_sharding, make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
@@ -85,7 +85,7 @@ def _put_on_sharding(matrix: LloydMaxMatrixForInference, sharding: Sharding) -> 
         packed_bias_indices = jax.device_put(matrix.packed_bias_indices, sharding)
     return LloydMaxMatrixForInference(
         spec=matrix.spec,
-        is_sharded=matrix.is_sharded,
+        sharding_config=matrix.sharding_config,
         dtype_=matrix.dtype,
         packed_weight_indices=jax.device_put(matrix.packed_weight_indices, sharding),
         packed_scales=jax.device_put(matrix.packed_scales, sharding),
@@ -95,10 +95,14 @@ def _put_on_sharding(matrix: LloydMaxMatrixForInference, sharding: Sharding) -> 
 
 @pytest.mark.parametrize("bits", [2, 3, 4, 6, 8])
 def test_lloyd_max_pack_uint_roundtrips_dense_bit_widths(bits: int) -> None:
-    values = (jnp.arange(17, dtype=jnp.uint8) % (2**bits)).reshape(1, 17)
+    sharding_config = make_test_sharding_config()
+    values = jax.device_put(
+        (jnp.arange(17, dtype=jnp.uint8) % (2**bits)).reshape(1, 17),
+        sharding_config.resolve_sharding((None, None)),
+    )
     *_, cols = values.shape
 
-    packed = pack_uint_to_uint8(values, bits)
+    packed = pack_uint_to_uint8(values, bits, sharding_config=sharding_config)
     unpacked = unpack_uint8_to_uint(packed, bits=bits, unpacked_last_axis_dim=cols)
 
     *_, packed_cols = packed.shape
@@ -154,8 +158,12 @@ def test_lloyd_max_compress_training_and_inference_match(
     spec = LloydMaxSpec(bits=bits, group_size=4, layout=layout)
     stored_weights = _stored_weights(layout, weights)
 
-    training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
-    inference = spec.compress(weights, implementation=CompressionImplementation.INFERENCE)
+    training = spec.compress(
+        weights, implementation=CompressionImplementation.TRAINING, sharding_config=make_test_sharding_config()
+    )
+    inference = spec.compress(
+        weights, implementation=CompressionImplementation.INFERENCE, sharding_config=make_test_sharding_config()
+    )
 
     assert isinstance(training, LloydMaxMatrixForTraining)
     assert isinstance(inference, LloydMaxMatrixForInference)
@@ -177,8 +185,12 @@ def test_lloyd_max_biases_pack_and_roundtrip(bias_bits: Literal[2, 3, 4, 6, 8]) 
     weights = _logical_weights()
     spec = LloydMaxSpec(bits=4, group_size=4, bias_bits=bias_bits)
 
-    training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
-    inference = spec.compress(weights, implementation=CompressionImplementation.INFERENCE)
+    training = spec.compress(
+        weights, implementation=CompressionImplementation.TRAINING, sharding_config=make_test_sharding_config()
+    )
+    inference = spec.compress(
+        weights, implementation=CompressionImplementation.INFERENCE, sharding_config=make_test_sharding_config()
+    )
 
     assert isinstance(training, LloydMaxMatrixForTraining)
     assert isinstance(inference, LloydMaxMatrixForInference)
@@ -229,7 +241,9 @@ def test_lloyd_max_training_keeps_full_precision_master_weights_until_forward_pa
     weights = _logical_weights()
     spec = LloydMaxSpec(bits=4, group_size=4, bias_bits=4)
 
-    training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
+    training = spec.compress(
+        weights, implementation=CompressionImplementation.TRAINING, sharding_config=make_test_sharding_config()
+    )
 
     assert isinstance(training, LloydMaxMatrixForTraining)
     assert_close_arrays(result=training.master_weights, reference=weights)
@@ -242,10 +256,10 @@ def test_lloyd_max_biased_inference_uses_requested_forward_dtype() -> None:
     matrix = LloydMaxSpec(bits=4, group_size=4, bias_bits=4).compress(
         weights,
         implementation=CompressionImplementation.INFERENCE,
-        is_sharded=False,
+        sharding_config=make_test_sharding_config(),
     )
 
-    result = matrix.dot(vector, keychain=Keychain.init(17))
+    result = matrix.dot(vector, keychain=Keychain.init(17, sharding_config=make_test_sharding_config()))
 
     assert result.dtype == jnp.bfloat16
 
@@ -257,10 +271,12 @@ def test_lloyd_max_biased_inference_uses_requested_forward_dtype() -> None:
     ).compress(
         weights,
         implementation=CompressionImplementation.INFERENCE,
-        is_sharded=False,
+        sharding_config=make_test_sharding_config(),
     )
 
-    embedding = embedding_matrix.lookup_embedding(0, dtype=jnp.bfloat16, keychain=Keychain.init(18))
+    embedding = embedding_matrix.lookup_embedding(
+        0, dtype=jnp.bfloat16, keychain=Keychain.init(18, sharding_config=make_test_sharding_config())
+    )
 
     assert embedding.dtype == jnp.bfloat16
 
@@ -277,7 +293,7 @@ def test_lloyd_max_biased_lookup_unpacks_only_selected_bias_row(
     ).compress(
         weights,
         implementation=CompressionImplementation.INFERENCE,
-        is_sharded=False,
+        sharding_config=make_test_sharding_config(),
     )
     assert isinstance(matrix, LloydMaxMatrixForInference)
     unpacked_bias_shapes = []
@@ -289,6 +305,7 @@ def test_lloyd_max_biased_lookup_unpacks_only_selected_bias_row(
         bias_bits: int,
         group_size: int,
         dtype: DTypeLike,
+        out_sharding: Sharding | None = None,  # noqa: ARG001
     ) -> jax.Array:
         unpacked_bias_shapes.append(bias_indices.shape)
         return _bias_indices_to_master_biases(
@@ -304,7 +321,7 @@ def test_lloyd_max_biased_lookup_unpacks_only_selected_bias_row(
         record_unpacked_bias_shape,
     )
 
-    matrix.lookup_embedding(0, keychain=Keychain.init(19))
+    matrix.lookup_embedding(0, keychain=Keychain.init(19, sharding_config=make_test_sharding_config()))
 
     assert unpacked_bias_shapes == [(matrix.packed_scales.shape[-1],)]
 
@@ -314,11 +331,17 @@ def test_lloyd_max_training_dot_supports_stochastic_rounding_and_master_weight_g
     out_channels, in_channels = weights.shape
     vector = jnp.linspace(-1, 1, in_channels, dtype=weights.dtype)
     spec = LloydMaxSpec(bits=4, group_size=4, bias_bits=4)
-    training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
+    training = spec.compress(
+        weights, implementation=CompressionImplementation.TRAINING, sharding_config=make_test_sharding_config()
+    )
     assert isinstance(training, LloydMaxMatrixForTraining)
     forward_pass_config = MatmulConfig.for_training(GradientEstimator.STOCHASTIC_ROUNDING)
 
-    result = training.dot(vector, keychain=Keychain.init(17), forward_pass_config=forward_pass_config)
+    result = training.dot(
+        vector,
+        keychain=Keychain.init(17, sharding_config=make_test_sharding_config()),
+        forward_pass_config=forward_pass_config,
+    )
 
     assert training.master_biases is not None
 
@@ -329,12 +352,18 @@ def test_lloyd_max_training_dot_supports_stochastic_rounding_and_master_weight_g
     ) -> jax.Array:
         matrix = LloydMaxMatrixForTraining(
             spec=training.spec,
-            is_sharded=training.is_sharded,
+            sharding_config=training.sharding_config,
             master_weights=master_weights,
             master_scales=scales,
             master_biases=biases,
         )
-        return jnp.sum(matrix.dot(vector, keychain=Keychain.init(17), forward_pass_config=forward_pass_config))
+        return jnp.sum(
+            matrix.dot(
+                vector,
+                keychain=Keychain.init(17, sharding_config=make_test_sharding_config()),
+                forward_pass_config=forward_pass_config,
+            )
+        )
 
     gradients = jax.grad(loss, argnums=(0, 1, 2))(
         training.master_weights,
@@ -355,8 +384,12 @@ def test_lloyd_max_forward_uses_selected_estimator_for_master_biases() -> None:
     bias_table = _bias_lut(group_size=group_size, bias_bits=bias_bits, bits=bits, dtype=jnp.float32)
     lower_bias = bias_table[1]
     upper_bias = bias_table[2]
-    master_biases = (lower_bias + 0.51 * (upper_bias - lower_bias))[None, None]
-    keychain = Keychain.init(0)
+    sharding_config = make_test_sharding_config()
+    master_biases = jax.device_put(
+        (lower_bias + 0.51 * (upper_bias - lower_bias))[None, None],
+        sharding_config.resolve_sharding((None, None)),
+    )
+    keychain = Keychain.init(0, sharding_config=sharding_config)
     bias_keychain, _weight_keychain = keychain.split()
     deterministic_biases = round_to_sorted_lut_table(
         master_biases,
@@ -431,7 +464,7 @@ def test_lloyd_max_from_packed_parameters_rejects_bias_indices_without_bias_bits
     biased_matrix = LloydMaxSpec(bits=4, group_size=4, bias_bits=4).compress(
         weights,
         implementation=CompressionImplementation.INFERENCE,
-        is_sharded=False,
+        sharding_config=make_test_sharding_config(),
     )
     assert isinstance(biased_matrix, LloydMaxMatrixForInference)
 
@@ -442,7 +475,7 @@ def test_lloyd_max_from_packed_parameters_rejects_bias_indices_without_bias_bits
             packed_bias_indices=biased_matrix.packed_bias_indices,
             dtype=weights.dtype,
             implementation=CompressionImplementation.INFERENCE,
-            is_sharded=False,
+            sharding_config=make_test_sharding_config(),
         )
 
 
@@ -451,9 +484,14 @@ def test_lloyd_max_compress_uses_yaqa_weights_when_preconditioned() -> None:
     preconditioner = Preconditioner.init(input_block=_input_block(), output_block=_output_block())
     spec = LloydMaxSpec(bits=4, group_size=4)
 
-    yaqa_weights = yaqa_round_blockwise(weights, preconditioner, spec)
-    preconditioned = spec.compress(weights, preconditioner=preconditioner)
-    expected = spec.compress(yaqa_weights)
+    yaqa_weights = yaqa_round_blockwise(
+        weights,
+        preconditioner,
+        spec,
+        sharding_config=make_test_sharding_config(),
+    )
+    preconditioned = spec.compress(weights, preconditioner=preconditioner, sharding_config=make_test_sharding_config())
+    expected = spec.compress(yaqa_weights, sharding_config=make_test_sharding_config())
 
     assert_close_arrays(result=preconditioned.decompress(), reference=expected.decompress())
 
@@ -465,18 +503,22 @@ def test_lloyd_max_compress_uses_blockwise_yaqa_for_mixture_layers() -> None:
     preconditioner = Preconditioner.init(input_block=input_blocks, output_block=output_blocks)
     spec = LloydMaxSpec(bits=4, group_size=4)
 
-    result = spec.compress(weights, preconditioner=preconditioner, is_sharded=False).decompress()
+    result = spec.compress(
+        weights,
+        preconditioner=preconditioner,
+        sharding_config=make_test_sharding_config(),
+    ).decompress()
     reference = jnp.stack(
         [
             spec.compress(
                 weights[0],
                 preconditioner=Preconditioner.init(input_block=input_blocks[0], output_block=output_blocks[0]),
-                is_sharded=False,
+                sharding_config=make_test_sharding_config(),
             ).decompress(),
             spec.compress(
                 weights[1],
                 preconditioner=Preconditioner.init(input_block=input_blocks[1], output_block=output_blocks[1]),
-                is_sharded=False,
+                sharding_config=make_test_sharding_config(),
             ).decompress(),
         ],
     )
@@ -488,20 +530,24 @@ def test_lloyd_max_compress_rejects_group_size_that_does_not_divide_stored_last_
     weights = jnp.ones((4, 5), dtype=jnp.float32)
 
     with pytest.raises(ValueError, match="divisible"):
-        LloydMaxSpec(bits=4, group_size=2).compress(weights)
+        LloydMaxSpec(bits=4, group_size=2).compress(weights, sharding_config=make_test_sharding_config())
 
 
 def test_lloyd_max_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     weights = _logical_weights()
     spec = LloydMaxSpec(bits=3, group_size=4, layout=Layout.INPUT_OUTPUT)
-    saved_sharding = make_sharding((ShardingAxis.TENSOR, None))
+    saved_sharding = make_sharding((LogicalAxis.MATRIX, None))
     assert saved_sharding is not None
-    original = spec.compress(weights, implementation=CompressionImplementation.INFERENCE)
+    original = spec.compress(
+        weights, implementation=CompressionImplementation.INFERENCE, sharding_config=make_test_sharding_config()
+    )
     assert isinstance(original, LloydMaxMatrixForInference)
+    reference = original.decompress()
     original = _put_on_sharding(original, saved_sharding)
     template = spec.compress(
-        dummy_array(weights.shape, weights.dtype),
+        dummy_array(weights.shape, weights.dtype, make_sharding((None, None))),
         implementation=CompressionImplementation.INFERENCE,
+        sharding_config=make_test_sharding_config(),
     )
 
     restored = template.load_exported(original.export())
@@ -510,8 +556,8 @@ def test_lloyd_max_export_load_roundtrips_and_preserves_template_sharding(fake_m
     assert isinstance(restored, type(template))
     assert isinstance(restored, LloydMaxMatrixForInference)
     assert isinstance(template, LloydMaxMatrixForInference)
-    assert_close_arrays(result=restored.decompress(), reference=original.decompress())
-    assert_named_sharding(restored.packed_scales.sharding, fake_mesh)
-    assert restored.packed_scales.sharding == template.packed_scales.sharding
+    assert_close_arrays(result=restored.decompress(), reference=reference)
+    del fake_mesh
+    assert not is_sharded(restored.packed_scales.sharding)
     assert restored.packed_scales.sharding != saved_sharding
-    assert restored.packed_weight_indices.sharding == template.packed_weight_indices.sharding
+    assert not is_sharded(restored.packed_weight_indices.sharding)

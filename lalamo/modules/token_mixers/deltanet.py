@@ -98,6 +98,7 @@ class DeltaNetConfig(TokenMixerConfig):
         a_log = initializer.zeros((self.num_heads,))
         return DeltaNet(
             config=self,
+            sharding_config=initializer.sharding_config,
             in_proj=in_proj,
             conv=conv,
             out_proj=out_proj,

@@ -14,7 +14,7 @@ from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.utils.sharding import lookup_sharded_indices, make_sharding, with_sharding
+from lalamo.utils.sharding import ShardingConfig, lookup_sharded_indices, with_sharding
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -97,6 +97,8 @@ def _master_weights_to_packed_weights(
     biases: Float[Array, "*components rows groups"],
     group_size: int,
     bits: int,
+    *,
+    sharding_config: ShardingConfig,
 ) -> UInt8[Array, "*components rows packed_cols"]:
     int_scale_weights = _master_weights_to_int_scale_weights(
         weights,
@@ -105,7 +107,7 @@ def _master_weights_to_packed_weights(
         group_size,
     )
     rounded_weights = deterministic_round_to_unsigned_grid(int_scale_weights, bits=bits)
-    return pack_uint_to_uint8(rounded_weights.astype(jnp.uint8), bits)
+    return pack_uint_to_uint8(rounded_weights.astype(jnp.uint8), bits, sharding_config=sharding_config)
 
 
 def _packed_weights_to_master_weights(
@@ -156,12 +158,22 @@ class MLXSpec(QuantizedSpec):
         key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-        is_sharded: bool = True,
+        sharding_config: ShardingConfig,
     ) -> "MLXMatrix":
         if preconditioner is not None:
-            weights = yaqa_round_fixpoint(weights, preconditioner, self, is_sharded=is_sharded)
+            weights = yaqa_round_fixpoint(
+                weights,
+                preconditioner,
+                self,
+                sharding_config=sharding_config,
+            )
 
-        stored_weights = self.layout.from_output_input(weights, is_sharded=is_sharded)
+        weight_partition = self.layout.weight_partition(weights.ndim - 2)
+        weight_sharding = sharding_config.resolve_sharding(weight_partition)
+        stored_weights = self.layout.from_output_input(
+            weights,
+            sharding=weight_sharding,
+        )
         affine_parameters = MLXAffineParameters.from_weights(
             stored_weights,
             bits=self.bits,
@@ -170,7 +182,7 @@ class MLXSpec(QuantizedSpec):
         if implementation == CompressionImplementation.TRAINING:
             result = MLXMatrixForTraining(
                 spec=self,
-                is_sharded=is_sharded,
+                sharding_config=sharding_config,
                 master_weights=stored_weights,
                 scales=affine_parameters.scales,
                 biases=affine_parameters.biases,
@@ -182,13 +194,14 @@ class MLXSpec(QuantizedSpec):
                 affine_parameters.biases,
                 self.group_size,
                 self.bits,
+                sharding_config=sharding_config,
             )
             result = self.from_packed_parameters(
                 packed_weights=packed_int_weights,
                 scales=affine_parameters.scales,
                 biases=affine_parameters.biases,
                 implementation=CompressionImplementation.INFERENCE,
-                is_sharded=is_sharded,
+                sharding_config=sharding_config,
             )
 
         return result
@@ -200,9 +213,9 @@ class MLXSpec(QuantizedSpec):
         scales: Float[Array, "*components rows groups"],
         biases: Float[Array, "*components rows groups"],
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-        is_sharded: bool = True,
+        sharding_config: ShardingConfig,
     ) -> "MLXMatrix":
-        weight_sharding = make_sharding(self.layout.weight_partition(scales.ndim - 2, is_sharded=is_sharded))
+        weight_sharding = sharding_config.resolve_sharding(self.layout.weight_partition(scales.ndim - 2))
         packed_weights = with_sharding(packed_weights, weight_sharding)
         scales = with_sharding(scales, weight_sharding)
         biases = with_sharding(biases, weight_sharding)
@@ -210,7 +223,7 @@ class MLXSpec(QuantizedSpec):
         if implementation == CompressionImplementation.INFERENCE:
             return MLXMatrixForInference(
                 spec=self,
-                is_sharded=is_sharded,
+                sharding_config=sharding_config,
                 packed_weights=packed_weights,
                 scales=scales,
                 biases=biases,
@@ -225,7 +238,7 @@ class MLXSpec(QuantizedSpec):
         )
         return MLXMatrixForTraining(
             spec=self,
-            is_sharded=is_sharded,
+            sharding_config=sharding_config,
             master_weights=with_sharding(weights, weight_sharding),
             scales=scales,
             biases=biases,
@@ -263,7 +276,10 @@ class MLXMatrix(EmbeddingMatrix[MLXSpec]):
     def switch_implementation(self, implementation: CompressionImplementation) -> "MLXMatrix": ...
 
     def to_full_precision(self) -> FullPrecisionMatrix:
-        return FullPrecisionSpec(layout=self.spec.layout).compress(self.decompress(), is_sharded=self.is_sharded)
+        return FullPrecisionSpec(layout=self.spec.layout).compress(
+            self.decompress(),
+            sharding_config=self.sharding_config,
+        )
 
 
 class MLXMatrixForTraining(MLXMatrix):
@@ -285,12 +301,13 @@ class MLXMatrixForTraining(MLXMatrix):
             self.biases,
             self.spec.group_size,
             self.spec.bits,
+            sharding_config=self.sharding_config,
         )
 
     def astype(self, dtype: DTypeLike) -> "MLXMatrixForTraining":
         return MLXMatrixForTraining(
             spec=self.spec,
-            is_sharded=self.is_sharded,
+            sharding_config=self.sharding_config,
             master_weights=self.master_weights.astype(dtype),
             scales=self.scales.astype(dtype),
             biases=self.biases.astype(dtype),
@@ -308,7 +325,7 @@ class MLXMatrixForTraining(MLXMatrix):
 
     def lookup_embedding(
         self,
-        index: int | Int[Array, "*batch"],
+        row_index: int | Int[Array, "*batch"],
         *,
         dtype: DTypeLike | None = None,
         keychain: Keychain,
@@ -319,11 +336,11 @@ class MLXMatrixForTraining(MLXMatrix):
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
-        weights = lookup_sharded_indices(self.master_weights, index).astype(dtype)
+        weights = lookup_sharded_indices(self.master_weights, row_index).astype(dtype)
         return _quantize(
             weights,
-            lookup_sharded_indices(self.scales, index).astype(dtype),
-            lookup_sharded_indices(self.biases, index).astype(dtype),
+            lookup_sharded_indices(self.scales, row_index).astype(dtype),
+            lookup_sharded_indices(self.biases, row_index).astype(dtype),
             group_size=self.spec.group_size,
             round_fn=partial(
                 round_to_unsigned_grid,
@@ -394,7 +411,7 @@ class MLXMatrixForTraining(MLXMatrix):
             scales=scales,
             biases=biases,
             implementation=CompressionImplementation.TRAINING,
-            is_sharded=self.is_sharded,
+            sharding_config=self.sharding_config,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> MLXMatrix:
@@ -405,7 +422,7 @@ class MLXMatrixForTraining(MLXMatrix):
             scales=self.scales,
             biases=self.biases,
             implementation=CompressionImplementation.INFERENCE,
-            is_sharded=self.is_sharded,
+            sharding_config=self.sharding_config,
         )
 
 
@@ -430,7 +447,7 @@ class MLXMatrixForInference(MLXMatrix):
     def astype(self, dtype: DTypeLike) -> "MLXMatrixForInference":
         return MLXMatrixForInference(
             spec=self.spec,
-            is_sharded=self.is_sharded,
+            sharding_config=self.sharding_config,
             packed_weights=self.packed_weights,
             scales=self.scales.astype(dtype),
             biases=self.biases.astype(dtype),
@@ -465,12 +482,12 @@ class MLXMatrixForInference(MLXMatrix):
             expored_data.arrays[prefix / "biases"],
             allow_dtype_cast=allow_dtype_cast,
         )
-        return self.spec.from_packed_parameters(
+        return MLXMatrixForInference(
+            spec=self.spec,
+            sharding_config=self.sharding_config,
             packed_weights=packed_weights,
             scales=scales,
             biases=biases,
-            implementation=CompressionImplementation.INFERENCE,
-            is_sharded=self.is_sharded,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> MLXMatrix:
@@ -481,7 +498,7 @@ class MLXMatrixForInference(MLXMatrix):
             scales=self.scales,
             biases=self.biases,
             implementation=CompressionImplementation.TRAINING,
-            is_sharded=self.is_sharded,
+            sharding_config=self.sharding_config,
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
@@ -496,7 +513,7 @@ class MLXMatrixForInference(MLXMatrix):
 
     def lookup_embedding(
         self,
-        index: int | Int[Array, "*batch"],
+        row_index: int | Int[Array, "*batch"],
         *,
         dtype: DTypeLike | None = None,
         keychain: Keychain,  # noqa: ARG002
@@ -507,11 +524,11 @@ class MLXMatrixForInference(MLXMatrix):
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
-        packed_weights = lookup_sharded_indices(self.packed_weights, index)
+        packed_weights = lookup_sharded_indices(self.packed_weights, row_index)
         return _packed_weights_to_master_weights(
             packed_weights,
-            lookup_sharded_indices(self.scales, index).astype(dtype),
-            lookup_sharded_indices(self.biases, index).astype(dtype),
+            lookup_sharded_indices(self.scales, row_index).astype(dtype),
+            lookup_sharded_indices(self.biases, row_index).astype(dtype),
             self.spec.group_size,
             self.spec.bits,
         )

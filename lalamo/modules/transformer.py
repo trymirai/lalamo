@@ -5,7 +5,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import Keychain, LalamoConfig, LalamoModule, ShardingAxis, field
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, field
 from lalamo.modules.token_mixers import AttentionConfig
 
 from .normalization import Normalization, NormalizationConfig
@@ -99,6 +99,7 @@ class TransformerConfig(LalamoConfig):
 
         return Transformer(
             config=self,
+            sharding_config=initializer.sharding_config,
             ropes=ropes,
             rope_indices=rope_indices,
             kv_source_layer_indices=self._kv_source_layer_indices(),
@@ -149,7 +150,7 @@ class Transformer(LalamoModule[TransformerConfig]):
             call_vmapped(
                 rope,
                 token_positions,
-                added_sharding_axis=ShardingAxis.DATA,
+                added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
             )
             for rope in self.ropes
         )

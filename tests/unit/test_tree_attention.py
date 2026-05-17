@@ -25,7 +25,9 @@ from lalamo.modules import (
 )
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.token_mixers.kv_cache import build_tree_attention_mask, tree_ancestor_mask
+from lalamo.utils.sharding import ShardingConfig
 from tests.common import assert_close
+from tests.helpers import make_test_sharding_config
 
 
 @pytest.fixture
@@ -95,7 +97,13 @@ def decoder() -> Decoder:
         transformer_config=transformer_config,
         vocab_size=vocab_size,
     )
-    return decoder_config.init(RandomInitializer(dtype=precision, key=jax.random.key(4)))
+    return decoder_config.init(
+        RandomInitializer(
+            dtype=precision,
+            sharding_config=ShardingConfig.replicated(jax.devices("cpu")[:8]),
+            key=jax.random.key(4),
+        ),
+    )
 
 
 def test_tree_ancestor_mask_chain() -> None:
@@ -167,7 +175,7 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
         state=None,
         return_updated_state=True,
         forward_pass_config=forward_pass_config,
-        keychain=Keychain.init(10),
+        keychain=Keychain.init(10, sharding_config=make_test_sharding_config()),
     )
     assert prefix_result.updated_state is not None
 
@@ -180,7 +188,7 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
             state=state,
             return_updated_state=True,
             forward_pass_config=single_token_forward_pass_config,
-            keychain=Keychain.init(20 + i),
+            keychain=Keychain.init(20 + i, sharding_config=make_test_sharding_config()),
         )
         assert step_result.updated_state is not None
         state = step_result.updated_state
@@ -192,7 +200,7 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
         state=prefix_result.updated_state,
         attention_parent_indices=jnp.array([[-1, 0, 1]], dtype=jnp.int32),
         forward_pass_config=single_token_forward_pass_config,
-        keychain=Keychain.init(30),
+        keychain=Keychain.init(30, sharding_config=make_test_sharding_config()),
     )
 
     assert_close(
@@ -211,7 +219,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         prefix_positions,
         state=None,
         return_updated_state=True,
-        keychain=Keychain.init(40),
+        keychain=Keychain.init(40, sharding_config=make_test_sharding_config()),
     )
     assert prefix_result.updated_state is not None
 
@@ -221,7 +229,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         jnp.array([[2]], dtype=jnp.int32),
         state=state_a,
         forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
-        keychain=Keychain.init(50),
+        keychain=Keychain.init(50, sharding_config=make_test_sharding_config()),
     )
     logits_a = result_a.logits[0, 0]
 
@@ -231,7 +239,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         jnp.array([[2]], dtype=jnp.int32),
         state=state_b,
         forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
-        keychain=Keychain.init(60),
+        keychain=Keychain.init(60, sharding_config=make_test_sharding_config()),
     )
     logits_b = result_b.logits[0, 0]
 
@@ -241,7 +249,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         state=prefix_result.updated_state,
         attention_parent_indices=jnp.array([[-1, -1]], dtype=jnp.int32),
         forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
-        keychain=Keychain.init(70),
+        keychain=Keychain.init(70, sharding_config=make_test_sharding_config()),
     )
 
     assert_close(

@@ -10,7 +10,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, LogicalAxis
 from lalamo.weight_matrix import GradientEstimator
 
 from .activations import Activation
@@ -121,7 +121,13 @@ class PLELayerConfig(LalamoConfig):
             has_biases=False,
         )
         norm = self.norm_config.init(initializer, model_dim)
-        return PLELayer(config=self, gate=gate, projection=projection, norm=norm)
+        return PLELayer(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            gate=gate,
+            projection=projection,
+            norm=norm,
+        )
 
 
 class PLELayer(LalamoModule[PLELayerConfig]):
@@ -142,14 +148,14 @@ class PLELayer(LalamoModule[PLELayerConfig]):
             self.gate,
             outputs,
             keychain=gate_keychain,
-            added_sharding_axes=(ShardingAxis.DATA, None),
+            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
         ple_gated = self.config.activation(ple_gated) * per_layer_input
         (ple_projected,) = call_vmapped_twice(
             self.projection,
             ple_gated,
             keychain=projection_keychain,
-            added_sharding_axes=(ShardingAxis.DATA, None),
+            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
         ple_normed = call_vmapped_twice(self.norm, ple_projected, forward_pass_config=forward_pass_config)
         return outputs + ple_normed
@@ -193,6 +199,7 @@ class TransformerLayerConfig(LalamoConfig):
         post_layer_scalar = initializer.ones((1,)) if self.has_post_layer_scalar else None
         return TransformerLayer(
             config=self,
+            sharding_config=initializer.sharding_config,
             pre_mixer_norm=pre_mixer_norm,
             mixer=mixer,
             post_mixer_norm=post_mixer_norm,
@@ -283,7 +290,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 attention_parent_indices,
             ),
             keychain=mixer_keychain,
-            added_sharding_axis=ShardingAxis.DATA,
+            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )
         if self.post_mixer_norm is not None:
             normalized_mixer_outputs = call_vmapped_twice(
@@ -356,6 +363,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
 
     def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> StateLayerBase:
         return jax.tree.map(
-            lambda array: jnp.repeat(array[None, ...], batch_size, axis=0),
+            lambda array: jax.device_put(
+                jnp.repeat(array[None, ...], batch_size, axis=0),
+                self.sharding_config.resolve_sharding((LogicalAxis.BATCH, *((None,) * array.ndim))),
+            ),
             self.mixer.init_static_state(capacity, dtype),
         )

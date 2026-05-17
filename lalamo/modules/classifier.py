@@ -10,7 +10,7 @@ from jaxtyping import Array, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, LogicalAxis
 from lalamo.weight_matrix import GradientEstimator
 
 from .activations import Activation
@@ -60,6 +60,7 @@ class PredictionHeadConfig(LalamoConfig):
         )
         return PredictionHead(
             config=self,
+            sharding_config=initializer.sharding_config,
             dense=dense_layer,
             norm=norm,
             readout=readout,
@@ -82,7 +83,7 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
             self.call_unbatched,
             inner_features,
             keychain=keychain,
-            added_sharding_axis=ShardingAxis.DATA,
+            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )
 
     @eqx.filter_jit
@@ -202,6 +203,7 @@ class ClassifierConfig(LalamoConfig):
         )
         return Classifier(
             config=self,
+            sharding_config=initializer.sharding_config,
             embedding=embedding,
             embedding_norm=embedding_norm,
             transformer=transformer,

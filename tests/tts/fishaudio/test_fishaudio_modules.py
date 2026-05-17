@@ -17,6 +17,7 @@ from lalamo.module import Keychain
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.torch_interop import torch_to_jax
 from tests.common import assert_close
+from tests.helpers import make_test_sharding_config
 from tests.tts.fishaudio.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
 )
@@ -50,7 +51,9 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     assert isinstance(config, DualARModelArgs)
 
     transformer_cfg, _ = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(config)
-    lalamo_transformer = transformer_cfg.init(EmptyInitializer(dtype=jnp.bfloat16))
+    lalamo_transformer = transformer_cfg.init(
+        EmptyInitializer(dtype=jnp.bfloat16, sharding_config=make_test_sharding_config()),
+    )
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_model.state_dict())
     lalamo_transformer = load_transformer_block(lalamo_transformer, weights_dict)
@@ -81,7 +84,7 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     lalamo_layer_result = lalamo_layer(
         embedded_input_lalamo,
         pos_emb_lalamo,
-        keychain=Keychain.init(0),
+        keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
     )
 
     fish_output_jax = torch_to_jax(fish_layer_result)

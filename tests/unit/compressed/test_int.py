@@ -10,8 +10,9 @@ from lalamo.compressed.int import IntMatrixForInference, IntMatrixForTraining, I
 from lalamo.compressed.utils.yaqa import yaqa_round_fixpoint
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.utils.sharding import make_sharding
+from lalamo.utils.sharding import is_sharded
 from lalamo.weight_matrix import CompressionImplementation, Layout
+from tests.helpers import make_sharding, make_test_sharding_config
 from tests.unit.compressed import test_common as compressed_common
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
@@ -120,7 +121,7 @@ def _put_on_sharding(matrix: IntMatrixForInference, sharding: Sharding) -> IntMa
         packed_zero_points = jax.device_put(matrix.packed_zero_points, sharding)
     return IntMatrixForInference(
         spec=matrix.spec,
-        is_sharded=matrix.is_sharded,
+        sharding_config=matrix.sharding_config,
         packed_weights=jax.device_put(matrix.packed_weights, sharding),
         scales=jax.device_put(matrix.scales, sharding),
         packed_zero_points=packed_zero_points,
@@ -153,8 +154,12 @@ def test_int_compress_and_decompress_match_manual_quantization(
     )
     expected_decompressed = layout.to_output_input(expected_decompressed)
 
-    training = spec.compress(weights, implementation=CompressionImplementation.TRAINING)
-    inference = spec.compress(weights, implementation=CompressionImplementation.INFERENCE)
+    training = spec.compress(
+        weights, implementation=CompressionImplementation.TRAINING, sharding_config=make_test_sharding_config()
+    )
+    inference = spec.compress(
+        weights, implementation=CompressionImplementation.INFERENCE, sharding_config=make_test_sharding_config()
+    )
 
     assert isinstance(training, IntMatrixForTraining)
     assert isinstance(inference, IntMatrixForInference)
@@ -184,9 +189,14 @@ def test_int_compress_uses_yaqa_weights_when_preconditioned() -> None:
     preconditioner = Preconditioner.init(input_block=_input_block(), output_block=_output_block())
     spec = IntSpec(bits=4, group_size=2)
 
-    yaqa_weights = yaqa_round_fixpoint(weights, preconditioner, spec)
-    preconditioned = spec.compress(weights, preconditioner=preconditioner)
-    expected = spec.compress(yaqa_weights)
+    yaqa_weights = yaqa_round_fixpoint(
+        weights,
+        preconditioner,
+        spec,
+        sharding_config=make_test_sharding_config(),
+    )
+    preconditioned = spec.compress(weights, preconditioner=preconditioner, sharding_config=make_test_sharding_config())
+    expected = spec.compress(yaqa_weights, sharding_config=make_test_sharding_config())
 
     compressed_common.assert_close_arrays(result=preconditioned.decompress(), reference=expected.decompress())
 
@@ -195,7 +205,7 @@ def test_int_compress_rejects_group_size_that_does_not_divide_stored_last_axis()
     weights = jnp.ones((4, 5), dtype=jnp.float32)
 
     with pytest.raises(ValueError, match="divisible"):
-        IntSpec(bits=4, group_size=2).compress(weights)
+        IntSpec(bits=4, group_size=2).compress(weights, sharding_config=make_test_sharding_config())
 
 
 def test_int_export_load_roundtrips_and_preserves_template_sharding(
@@ -205,12 +215,15 @@ def test_int_export_load_roundtrips_and_preserves_template_sharding(
     spec = IntSpec(bits=4, group_size=2, layout=Layout.INPUT_OUTPUT)
     saved_sharding = make_sharding((None, None))
     assert saved_sharding is not None
-    original = spec.compress(weights, implementation=CompressionImplementation.INFERENCE)
+    original = spec.compress(
+        weights, implementation=CompressionImplementation.INFERENCE, sharding_config=make_test_sharding_config()
+    )
     assert isinstance(original, IntMatrixForInference)
     original = _put_on_sharding(original, saved_sharding)
     template = spec.compress(
-        dummy_array(weights.shape, weights.dtype),
+        dummy_array(weights.shape, weights.dtype, make_sharding((None, None))),
         implementation=CompressionImplementation.INFERENCE,
+        sharding_config=make_test_sharding_config(),
     )
 
     restored = template.load_exported(original.export())
@@ -226,13 +239,14 @@ def test_int_export_load_roundtrips_and_preserves_template_sharding(
     assert restored.packed_weights.sharding == template.packed_weights.sharding
     assert restored.packed_zero_points is not None
     assert template.packed_zero_points is not None
-    assert restored.packed_zero_points.sharding == template.packed_zero_points.sharding
+    assert not is_sharded(restored.packed_zero_points.sharding)
 
 
 def test_int_symmetric_from_packed_parameters_rejects_zero_points() -> None:
     original = IntSpec(bits=4, group_size=2, layout=Layout.INPUT_OUTPUT).compress(
         _logical_weights(),
         implementation=CompressionImplementation.INFERENCE,
+        sharding_config=make_test_sharding_config(),
     )
     spec = IntSpec(bits=4, group_size=2, is_symmetric=True, layout=Layout.INPUT_OUTPUT)
     assert isinstance(original, IntMatrixForInference)
@@ -243,4 +257,5 @@ def test_int_symmetric_from_packed_parameters_rejects_zero_points() -> None:
             packed_weights=original.packed_weights,
             scales=original.scales,
             packed_zero_points=original.packed_zero_points,
+            sharding_config=make_test_sharding_config(),
         )

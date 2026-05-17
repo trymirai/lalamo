@@ -7,15 +7,15 @@ from einops import rearrange
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
-from lalamo.module import Keychain, ShardingAxis
+from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPassConfig
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec
 from tests.common import assert_close
+from tests.helpers import make_sharding, make_test_sharding_config
 
 MODEL_DIM = 4
 NUM_HEADS = 2
@@ -30,7 +30,8 @@ def _weights(shape: tuple[int, ...], *, offset: int = 0) -> jax.Array:
 def _linear(weights: Array, output_dims: tuple[int, ...]) -> Linear:
     return Linear(
         config=LinearConfig(),
-        weights=FullPrecisionSpec().compress(weights),
+        sharding_config=make_test_sharding_config(),
+        weights=FullPrecisionSpec().compress(weights, sharding_config=make_test_sharding_config()),
         biases=None,
         output_dims=output_dims,
     )
@@ -57,6 +58,7 @@ def _attention(*, logit_soft_cap: float | None = None) -> Attention:
             gate_projection_config=None,
             use_rope=False,
         ),
+        sharding_config=make_test_sharding_config(),
         qkv_projection=_linear(_weights((3 * qkv_dim, MODEL_DIM)), (qkv_dim, qkv_dim, qkv_dim)),
         gate_projection=None,
         out_projection=_linear(_weights((MODEL_DIM, qkv_dim), offset=100), (MODEL_DIM,)),
@@ -103,22 +105,24 @@ def _inputs() -> Array:
 
 
 def _sharded_sequence(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((None, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((None, None)))
 
 
 def _sharded_sequences(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((LogicalAxis.BATCH, None, None)))
 
 
 def test_attention_matches_reference_and_preserves_tensor_sharding(fake_mesh: Mesh) -> None:
     module = _attention()
     inputs = _sharded_sequence(_inputs())
 
-    result = module(inputs, positional_embeddings=None, keychain=Keychain.init(0))
+    result = module(
+        inputs, positional_embeddings=None, keychain=Keychain.init(0, sharding_config=make_test_sharding_config())
+    )
 
     _assert_close(result=result.outputs, reference=_reference(module, inputs))
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
-    assert result.outputs.sharding == make_sharding((None, ShardingAxis.TENSOR))
+    assert result.outputs.sharding == make_sharding((None, None))
     assert result.state is None
 
 
@@ -126,20 +130,27 @@ def test_attention_returns_dynamic_state_with_tensor_sharding(fake_mesh: Mesh) -
     module = _attention()
     inputs = _sharded_sequence(_inputs())
 
-    result = module(inputs, positional_embeddings=None, return_updated_state=True, keychain=Keychain.init(1))
+    result = module(
+        inputs,
+        positional_embeddings=None,
+        return_updated_state=True,
+        keychain=Keychain.init(1, sharding_config=make_test_sharding_config()),
+    )
 
     assert result.state is not None
     _assert_named_sharding(result.state.keys.sharding, fake_mesh)
     _assert_named_sharding(result.state.values.sharding, fake_mesh)
-    assert result.state.keys.sharding == make_sharding((None, ShardingAxis.TENSOR, None))
-    assert result.state.values.sharding == make_sharding((None, ShardingAxis.TENSOR, None))
+    assert result.state.keys.sharding == make_sharding((None, None, None))
+    assert result.state.values.sharding == make_sharding((None, None, None))
 
 
 def test_attention_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
     module = _attention()
     inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.bfloat16).reshape(5, MODEL_DIM) / 10)
 
-    result = module(inputs, positional_embeddings=None, keychain=Keychain.init(6))
+    result = module(
+        inputs, positional_embeddings=None, keychain=Keychain.init(6, sharding_config=make_test_sharding_config())
+    )
 
     assert result.outputs.dtype == inputs.dtype
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
@@ -150,12 +161,14 @@ def test_attention_under_jit_matches_reference_and_preserves_tensor_sharding(fak
     inputs = _sharded_sequence(_inputs())
 
     result = eqx.filter_jit(
-        lambda module, values: module(values, positional_embeddings=None, keychain=Keychain.init(2)),
+        lambda module, values: module(
+            values, positional_embeddings=None, keychain=Keychain.init(2, sharding_config=make_test_sharding_config())
+        ),
     )(module, inputs)
 
     _assert_close(result=result.outputs, reference=_reference(module, inputs))
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
-    assert result.outputs.sharding == make_sharding((None, ShardingAxis.TENSOR))
+    assert result.outputs.sharding == make_sharding((None, None))
 
 
 def test_attention_implementations_match(fake_mesh: Mesh) -> None:
@@ -168,7 +181,7 @@ def test_attention_implementations_match(fake_mesh: Mesh) -> None:
         forward_pass_config=MixerForwardPassConfig(
             attention_implementation=AttentionImplementation.STANDARD,
         ),
-        keychain=Keychain.init(7),
+        keychain=Keychain.init(7, sharding_config=make_test_sharding_config()),
     )
     stable_reduction = module(
         inputs,
@@ -177,7 +190,7 @@ def test_attention_implementations_match(fake_mesh: Mesh) -> None:
             attention_implementation=AttentionImplementation.STABLE_REDUCTION,
             attention_tile_size=2,
         ),
-        keychain=Keychain.init(8),
+        keychain=Keychain.init(8, sharding_config=make_test_sharding_config()),
     )
 
     _assert_close(result=stable_reduction.outputs, reference=standard.outputs)
@@ -194,7 +207,7 @@ def test_soft_capped_attention_implementations_match(fake_mesh: Mesh) -> None:
         forward_pass_config=MixerForwardPassConfig(
             attention_implementation=AttentionImplementation.STANDARD,
         ),
-        keychain=Keychain.init(9),
+        keychain=Keychain.init(9, sharding_config=make_test_sharding_config()),
     )
     stable_reduction = module(
         inputs,
@@ -203,7 +216,7 @@ def test_soft_capped_attention_implementations_match(fake_mesh: Mesh) -> None:
             attention_implementation=AttentionImplementation.STABLE_REDUCTION,
             attention_tile_size=2,
         ),
-        keychain=Keychain.init(10),
+        keychain=Keychain.init(10, sharding_config=make_test_sharding_config()),
     )
 
     _assert_close(result=stable_reduction.outputs, reference=standard.outputs)
@@ -217,30 +230,40 @@ def test_attention_vmapped_over_inputs_matches_reference_and_keeps_data_sharding
     result = call_vmapped(
         lambda values, *, keychain: module(values, positional_embeddings=None, keychain=keychain),
         inputs,
-        keychain=Keychain.init(3),
-        added_sharding_axis=ShardingAxis.DATA,
+        keychain=Keychain.init(3, sharding_config=make_test_sharding_config()),
+        added_sharding_axis=make_test_sharding_config().resolve_axis(LogicalAxis.BATCH),
     )
     reference = jnp.stack([_reference(module, values) for values in jnp.asarray(jax.device_get(inputs))])
 
     _assert_close(result=result.outputs, reference=reference)
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
-    assert result.outputs.sharding == make_sharding((ShardingAxis.DATA, None, ShardingAxis.TENSOR))
+    assert result.outputs.sharding == make_sharding((LogicalAxis.BATCH, None, None))
 
 
 def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _attention()
+    weight_sharding = make_sharding((None, None))
     template = Attention(
         config=original.config,
+        sharding_config=make_test_sharding_config(),
         qkv_projection=Linear(
             config=LinearConfig(),
-            weights=FullPrecisionSpec().compress(dummy_array(original.qkv_projection.weights.shape, jnp.float32)),
+            sharding_config=make_test_sharding_config(),
+            weights=FullPrecisionSpec().compress(
+                dummy_array(original.qkv_projection.weights.shape, jnp.float32, weight_sharding),
+                sharding_config=make_test_sharding_config(),
+            ),
             biases=None,
             output_dims=original.qkv_projection.output_dims,
         ),
         gate_projection=None,
         out_projection=Linear(
             config=LinearConfig(),
-            weights=FullPrecisionSpec().compress(dummy_array(original.out_projection.weights.shape, jnp.float32)),
+            sharding_config=make_test_sharding_config(),
+            weights=FullPrecisionSpec().compress(
+                dummy_array(original.out_projection.weights.shape, jnp.float32, weight_sharding),
+                sharding_config=make_test_sharding_config(),
+            ),
             biases=None,
             output_dims=original.out_projection.output_dims,
         ),
@@ -251,7 +274,9 @@ def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_m
     inputs = _sharded_sequence(_inputs())
 
     restored = template.load_exported(original.export())
-    result = restored(inputs, positional_embeddings=None, keychain=Keychain.init(4))
+    result = restored(
+        inputs, positional_embeddings=None, keychain=Keychain.init(4, sharding_config=make_test_sharding_config())
+    )
 
     assert isinstance(restored.qkv_projection.weights, FullPrecisionMatrix)
     assert isinstance(restored.out_projection.weights, FullPrecisionMatrix)
@@ -261,7 +286,9 @@ def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_m
     assert restored.out_projection.weights.weights.sharding == template.out_projection.weights.weights.sharding
     _assert_close(
         result=result.outputs,
-        reference=original(inputs, positional_embeddings=None, keychain=Keychain.init(5)).outputs,
+        reference=original(
+            inputs, positional_embeddings=None, keychain=Keychain.init(5, sharding_config=make_test_sharding_config())
+        ).outputs,
     )
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
-    assert result.outputs.sharding == make_sharding((None, ShardingAxis.TENSOR))
+    assert result.outputs.sharding == make_sharding((None, None))

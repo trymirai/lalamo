@@ -4,7 +4,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.module import Keychain, LalamoConfig, LalamoModule, ShardingAxis
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis
 from lalamo.modules.activations import Activation
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
@@ -67,6 +67,7 @@ class ConvNeXtBlockConfig(LalamoConfig):
 
         return ConvNeXtBlock(
             config=self,
+            sharding_config=initializer.sharding_config,
             depthwise_conv=dwconv,
             norm=norm,
             pointwise_conv_step1=pwconv1,
@@ -163,6 +164,7 @@ class UpsamplingBlockConfig(LalamoConfig):
 
         return UpsamplingBlock(
             config=self,
+            sharding_config=initializer.sharding_config,
             trans_conv=trans_conv,
             convnext=convnext,
         )
@@ -224,7 +226,11 @@ class UpsamplerConfig(LalamoConfig):
             for config, trans_conv_params in zip(self.block_configs, trans_conv_params_per_block, strict=True)
         ]
 
-        return Upsampler(config=self, blocks=tuple(blocks))
+        return Upsampler(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            blocks=tuple(blocks),
+        )
 
 
 class Upsampler(LalamoModule[UpsamplerConfig]):
@@ -280,6 +286,7 @@ class VectorQuantizeConfig(LalamoConfig):
 
         return VectorQuantize(
             config=self,
+            sharding_config=initializer.sharding_config,
             codebook=codebook,
             out_proj=out_proj,
         )
@@ -316,7 +323,7 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
             embed_id,
             forward_pass_config=EmbeddingForwardPassConfig(activation_dtype=self.codebook.embedding.dtype),
             keychain=embed_keychain,
-            added_sharding_axis=ShardingAxis.DATA,
+            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )
         (z_q,) = call_vmapped(
             self.out_proj,
@@ -361,6 +368,7 @@ class ResidualVectorQuantizeConfig(LalamoConfig):
 
         return ResidualVectorQuantize(
             config=self,
+            sharding_config=initializer.sharding_config,
             quantizers=tuple(quantizers),
         )
 
@@ -448,6 +456,7 @@ class DownsampleResidualVectorQuantizeConfig(LalamoConfig):
 
         return DownsampleResidualVectorQuantize(
             config=self,
+            sharding_config=initializer.sharding_config,
             semantic_quantizer=semantic_quantizer,
             quantizer=quantizer,
             post_module=post_module,
@@ -580,6 +589,7 @@ class ResidualUnitConfig(LalamoConfig):
 
         return ResidualUnit(
             config=self,
+            sharding_config=initializer.sharding_config,
             snake1=snake1,
             conv1=conv1,
             snake2=snake2,
@@ -677,6 +687,7 @@ class DACDecoderBlockConfig(LalamoConfig):
 
         return DACDecoderBlock(
             config=self,
+            sharding_config=initializer.sharding_config,
             snake=snake,
             trans_conv=trans_conv,
             res_unit1=res_unit1,
@@ -792,6 +803,7 @@ class DACDecoderConfig(LalamoConfig):
 
         return DACDecoder(
             config=self,
+            sharding_config=initializer.sharding_config,
             first_conv=first_conv,
             decoder_blocks=tuple(decoder_blocks),
             final_snake=final_snake,

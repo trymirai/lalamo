@@ -10,6 +10,7 @@ from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.utils.sharding import sharding_of
 
 __all__ = [
     "CausalConvResult",
@@ -41,6 +42,7 @@ class SeparableCausalConvConfig(LalamoConfig):
             biases = None
         return SeparableCausalConv(
             config=self,
+            sharding_config=initializer.sharding_config,
             weights=weights,
             biases=biases,
         )
@@ -138,6 +140,7 @@ def _separable_causal_conv_impl(
         feature_group_count=input_dim,
         padding="VALID",
         dimension_numbers=("NTC", "OTI", "NTC"),
+        out_sharding=sharding_of(inputs),
     )
 
 
