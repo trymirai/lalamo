@@ -37,7 +37,7 @@ class Initializer(ABC):
         partition: tuple[LogicalAxis | None, ...] | None = None,
     ) -> NamedSharding:
         if partition is None:
-            return self.sharding_config.make_sharding((None,) * len(shape))
+            return self.sharding_config.resolve_sharding((None,) * len(shape))
         if len(shape) != len(partition):
             raise ValueError(f"Shape {shape} and partition {partition} must have the same length")
         return self.sharding_config.resolve_sharding(partition)
@@ -123,27 +123,25 @@ class EmptyInitializer(Initializer):
             mixture_dims = ()
         else:
             mixture_dims = (mixture_size,)
-        if is_sharded:
-            sharding_config = self.sharding_config
-        else:
-            sharding_config = self.sharding_config.replicated_with_same_mesh()
-        return ShapeDtypeMatrix(
-            spec=ShapeDtypeSpec(layout=Layout.OUTPUT_INPUT),
-            sharding_config=sharding_config,
-            mixture_dims=mixture_dims,
-            input_dim=input_dim,
-            output_dim=output_dim,
-            dtype_=self.dtype,
+        return ShapeDtypeSpec(layout=Layout.OUTPUT_INPUT).compress(
+            self._dummy_array(
+                (*mixture_dims, output_dim, input_dim),
+                self.dtype,
+                None,
+            ),
+            sharding_config=self.sharding_config,
+            is_sharded=is_sharded,
         )
 
     def embedding_matrix(self, vocabulary_size: int, model_dim: int) -> ShapeDtypeMatrix:
-        return ShapeDtypeMatrix(
-            spec=ShapeDtypeSpec(layout=Layout.INPUT_OUTPUT),
-            sharding_config=self.sharding_config.replicated_with_same_mesh(),
-            mixture_dims=(),
-            input_dim=vocabulary_size,
-            output_dim=model_dim,
-            dtype_=self.dtype,
+        return ShapeDtypeSpec(layout=Layout.INPUT_OUTPUT).compress(
+            self._dummy_array(
+                (model_dim, vocabulary_size),
+                self.dtype,
+                (None, None),
+            ),
+            sharding_config=self.sharding_config,
+            is_sharded=False,
         )
 
 
@@ -195,14 +193,14 @@ class RandomInitializer(Initializer):
         else:
             mixture_dims = (mixture_size,)
         std = 1.0 / math.sqrt(input_dim)
-        weights = self.normal(std, (*mixture_dims, output_dim, input_dim))
-        if is_sharded:
-            sharding_config = self.sharding_config
-        else:
-            sharding_config = self.sharding_config.replicated_with_same_mesh()
+        weights = self.normal(
+            std,
+            (*mixture_dims, output_dim, input_dim),
+        )
         return FullPrecisionSpec(Layout.OUTPUT_INPUT).compress(
             weights,
-            sharding_config=sharding_config,
+            sharding_config=self.sharding_config,
+            is_sharded=is_sharded,
         )
 
     def embedding_matrix(self, vocabulary_size: int, model_dim: int) -> FullPrecisionMatrix:
@@ -210,5 +208,6 @@ class RandomInitializer(Initializer):
         weights = self.normal(std, (model_dim, vocabulary_size), partition=(None, None))
         return FullPrecisionSpec(Layout.INPUT_OUTPUT).compress(
             weights,
-            sharding_config=self.sharding_config.replicated_with_same_mesh(),
+            sharding_config=self.sharding_config,
+            is_sharded=False,
         )

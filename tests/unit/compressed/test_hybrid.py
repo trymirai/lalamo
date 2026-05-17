@@ -11,7 +11,7 @@ from lalamo.compressed.low_rank import LowRankSpec
 from lalamo.compressed.utils.hadamard import hadamard_transform
 from lalamo.module import Keychain
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.sharding import ShardingConfig
+from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
@@ -19,12 +19,13 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 from tests.common import assert_close
-from tests.helpers import make_test_sharding_config
+from tests.helpers import make_sharding, make_test_sharding_config
 
 
 def _weights(output_dim: int = 32, input_dim: int = 64) -> Float[Array, "output_dim input_dim"]:
     shape = (output_dim, input_dim)
-    return (jnp.arange(prod(shape), dtype=jnp.float32).reshape(shape) - 17) / 19
+    weights = (jnp.arange(prod(shape), dtype=jnp.float32).reshape(shape) - 17) / 19
+    return jax.device_put(weights, make_test_sharding_config().resolve_sharding((None, None)))
 
 
 def _assert_close(result: Float[Array, "*shape"], reference: Float[Array, "*shape"]) -> None:
@@ -66,12 +67,14 @@ class _PreconditionerRecordingSpec(WeightMatrixSpec):
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
+        is_sharded: bool = True,
     ) -> FullPrecisionMatrix:
         self.calls.append(preconditioner)
         return FullPrecisionSpec().compress(
             weights,
             implementation=implementation,
             sharding_config=sharding_config,
+            is_sharded=is_sharded,
         )
 
 
@@ -185,6 +188,20 @@ def test_hybrid_output_incoherence_leaves_input_basis_unprocessed() -> None:
     _assert_close(result=matrix.decompress(), reference=weights)
 
 
+def test_hybrid_incoherence_gathers_channel_sharded_weights() -> None:
+    weights = jax.device_put(_weights(), make_sharding((LogicalAxis.MATRIX, None)))
+    spec = HybridSpec(
+        quantization_spec=FullPrecisionSpec(),
+        adapter_spec=None,
+        incoherence_block_size=32,
+        incoherence_processing_mode=IncoherenceProcessingMode.OUTPUT,
+    )
+
+    matrix = spec.compress(weights, key=jax.random.key(2), sharding_config=make_test_sharding_config())
+
+    _assert_close(result=matrix.decompress(), reference=weights)
+
+
 def test_hybrid_incoherence_dot_matches_original_weights() -> None:
     weights = _weights()
     matrix = HybridSpec(
@@ -238,11 +255,16 @@ def test_hybrid_adapter_compresses_residual_with_original_input_and_transformed_
 
     assert matrix.incoherence_signs is not None
     assert matrix.adapter is not None
-    transformed_weights = matrix.incoherence_signs.process_weights(weights, block_size=32)
+    transformed_weights = matrix.incoherence_signs.process_weights(
+        weights,
+        block_size=32,
+        sharding_config=make_test_sharding_config(),
+    )
     transformed_residual = transformed_weights - matrix.quantized.decompress()
     expected_adapter = matrix.incoherence_signs.unprocess_weight_input_axis(
         transformed_residual,
         block_size=32,
+        sharding_config=make_test_sharding_config(),
     )
 
     _assert_close(result=matrix.adapter.decompress(), reference=expected_adapter)

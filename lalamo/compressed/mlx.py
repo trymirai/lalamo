@@ -159,6 +159,7 @@ class MLXSpec(QuantizedSpec):
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
+        is_sharded: bool = True,
     ) -> "MLXMatrix":
         if preconditioner is not None:
             weights = yaqa_round_fixpoint(
@@ -168,12 +169,9 @@ class MLXSpec(QuantizedSpec):
                 sharding_config=sharding_config,
             )
 
-        weight_partition = self.layout.weight_partition(weights.ndim - 2)
-        weight_sharding = sharding_config.resolve_sharding(weight_partition)
-        stored_weights = self.layout.from_output_input(
-            weights,
-            sharding=weight_sharding,
-        )
+        weight_axes = self.layout.weight_partition(weights.ndim - 2, is_sharded=is_sharded)
+        weight_sharding = sharding_config.resolve_sharding(weight_axes)
+        stored_weights = self.layout.from_output_input(weights, sharding=weight_sharding)
         affine_parameters = MLXAffineParameters.from_weights(
             stored_weights,
             bits=self.bits,
@@ -183,6 +181,7 @@ class MLXSpec(QuantizedSpec):
             result = MLXMatrixForTraining(
                 spec=self,
                 sharding_config=sharding_config,
+                is_sharded=is_sharded,
                 master_weights=stored_weights,
                 scales=affine_parameters.scales,
                 biases=affine_parameters.biases,
@@ -202,6 +201,7 @@ class MLXSpec(QuantizedSpec):
                 biases=affine_parameters.biases,
                 implementation=CompressionImplementation.INFERENCE,
                 sharding_config=sharding_config,
+                is_sharded=is_sharded,
             )
 
         return result
@@ -214,8 +214,10 @@ class MLXSpec(QuantizedSpec):
         biases: Float[Array, "*components rows groups"],
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
+        is_sharded: bool = True,
     ) -> "MLXMatrix":
-        weight_sharding = sharding_config.resolve_sharding(self.layout.weight_partition(scales.ndim - 2))
+        weight_axes = self.layout.weight_partition(scales.ndim - 2, is_sharded=is_sharded)
+        weight_sharding = sharding_config.resolve_sharding(weight_axes)
         packed_weights = with_sharding(packed_weights, weight_sharding)
         scales = with_sharding(scales, weight_sharding)
         biases = with_sharding(biases, weight_sharding)
@@ -224,6 +226,7 @@ class MLXSpec(QuantizedSpec):
             return MLXMatrixForInference(
                 spec=self,
                 sharding_config=sharding_config,
+                is_sharded=is_sharded,
                 packed_weights=packed_weights,
                 scales=scales,
                 biases=biases,
@@ -239,6 +242,7 @@ class MLXSpec(QuantizedSpec):
         return MLXMatrixForTraining(
             spec=self,
             sharding_config=sharding_config,
+            is_sharded=is_sharded,
             master_weights=with_sharding(weights, weight_sharding),
             scales=scales,
             biases=biases,
@@ -279,6 +283,7 @@ class MLXMatrix(EmbeddingMatrix[MLXSpec]):
         return FullPrecisionSpec(layout=self.spec.layout).compress(
             self.decompress(),
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
         )
 
 
@@ -308,6 +313,7 @@ class MLXMatrixForTraining(MLXMatrix):
         return MLXMatrixForTraining(
             spec=self.spec,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
             master_weights=self.master_weights.astype(dtype),
             scales=self.scales.astype(dtype),
             biases=self.biases.astype(dtype),
@@ -412,6 +418,7 @@ class MLXMatrixForTraining(MLXMatrix):
             biases=biases,
             implementation=CompressionImplementation.TRAINING,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> MLXMatrix:
@@ -423,6 +430,7 @@ class MLXMatrixForTraining(MLXMatrix):
             biases=self.biases,
             implementation=CompressionImplementation.INFERENCE,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
         )
 
 
@@ -448,6 +456,7 @@ class MLXMatrixForInference(MLXMatrix):
         return MLXMatrixForInference(
             spec=self.spec,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
             packed_weights=self.packed_weights,
             scales=self.scales.astype(dtype),
             biases=self.biases.astype(dtype),
@@ -485,6 +494,7 @@ class MLXMatrixForInference(MLXMatrix):
         return MLXMatrixForInference(
             spec=self.spec,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
             packed_weights=packed_weights,
             scales=scales,
             biases=biases,
@@ -499,6 +509,7 @@ class MLXMatrixForInference(MLXMatrix):
             biases=self.biases,
             implementation=CompressionImplementation.TRAINING,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:

@@ -99,6 +99,7 @@ class WeightMatrixSpec(RegistryABC):
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
+        is_sharded: bool = True,
     ) -> "WeightMatrix": ...
 
 
@@ -108,6 +109,7 @@ WeightMatrixSpecT_co = TypeVar("WeightMatrixSpecT_co", bound=WeightMatrixSpec, c
 class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpecT_co]):  # noqa: UP046
     spec: WeightMatrixSpecT_co = field(static=True)
     sharding_config: ShardingConfig = field(static=True)
+    is_sharded: bool = field(static=True)
 
     def _raise_if_batched(self) -> None:
         if self.ndim != 2:
@@ -132,6 +134,7 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
             weights,
             implementation=CompressionImplementation.INFERENCE,
             sharding_config=sharding_config,
+            is_sharded=self.is_sharded,
         )
         if isinstance(result, type(self)):
             return result
@@ -139,6 +142,7 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
             weights,
             implementation=CompressionImplementation.TRAINING,
             sharding_config=sharding_config,
+            is_sharded=self.is_sharded,
         )
         assert isinstance(result, type(self))
         return result
@@ -240,7 +244,11 @@ class Layout(StrEnum):
     def weight_partition(
         self,
         num_leading_dims: int,
+        *,
+        is_sharded: bool = True,
     ) -> tuple[LogicalAxis | None, ...]:
+        if not is_sharded:
+            return (None,) * (num_leading_dims + 2)
         if num_leading_dims > 0:
             return (LogicalAxis.MIXTURE,) * num_leading_dims + (None, None)
         if self == Layout.INPUT_OUTPUT:
@@ -331,11 +339,14 @@ class FullPrecisionSpec(WeightMatrixSpec):
         preconditioner: Preconditioner | None = None,  # noqa: ARG002
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
         sharding_config: ShardingConfig,
+        is_sharded: bool = True,
     ) -> "FullPrecisionMatrix":
-        sharding = sharding_config.resolve_sharding(self.layout.weight_partition(weights.ndim - 2))
+        logical_axes = self.layout.weight_partition(weights.ndim - 2, is_sharded=is_sharded)
+        sharding = sharding_config.resolve_sharding(logical_axes)
         return FullPrecisionMatrix(
             spec=self,
             sharding_config=sharding_config,
+            is_sharded=is_sharded,
             weights=self.layout.from_output_input(
                 weights,
                 sharding=sharding,
@@ -358,6 +369,7 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         return FullPrecisionMatrix(
             spec=self.spec,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
             weights=self.weights.astype(dtype),
         )
 
@@ -432,25 +444,39 @@ class ShapeDtypeSpec(WeightMatrixSpec):
         preconditioner: Preconditioner | None = None,  # noqa: ARG002
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
         sharding_config: ShardingConfig,
+        is_sharded: bool = True,
     ) -> "ShapeDtypeMatrix":
         if not isinstance(weights, ShapeDtypeStruct):
             raise TypeError("Can only compress ShapeDtypeStructs to ShapeDtypeMatrices")
-        *mixture_dims, output_dim, input_dim = weights.shape
+        *mixture_dims, _output_dim, _input_dim = weights.shape
+        logical_axes = Layout.OUTPUT_INPUT.weight_partition(len(mixture_dims), is_sharded=is_sharded)
+        sharding = sharding_config.resolve_sharding(logical_axes)
+        dummy_weights = dummy_array(weights.shape, weights.dtype, sharding)
         return ShapeDtypeMatrix(
             spec=self,
             sharding_config=sharding_config,
-            mixture_dims=tuple(mixture_dims),
-            input_dim=input_dim,
-            output_dim=output_dim,
-            dtype_=weights.dtype,
+            is_sharded=is_sharded,
+            dummy_weights=dummy_weights,
         )
 
 
 class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
-    mixture_dims: tuple[int, ...]
-    input_dim: int
-    output_dim: int
-    dtype_: DTypeLike
+    dummy_weights: Float[Array, "*components out_channels in_channels"]
+
+    @property
+    def mixture_dims(self) -> tuple[int, ...]:
+        *mixture_dims, _output_dim, _input_dim = self.dummy_weights.shape
+        return tuple(mixture_dims)
+
+    @property
+    def input_dim(self) -> int:
+        *_, input_dim = self.dummy_weights.shape
+        return input_dim
+
+    @property
+    def output_dim(self) -> int:
+        *_, output_dim, _input_dim = self.dummy_weights.shape
+        return output_dim
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -458,25 +484,25 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
 
     @property
     def dtype(self) -> DTypeLike:
-        return self.dtype_
+        return self.dummy_weights.dtype
 
     def astype(self, dtype: DTypeLike) -> "ShapeDtypeMatrix":
         return ShapeDtypeMatrix(
             spec=self.spec,
             sharding_config=self.sharding_config,
-            mixture_dims=self.mixture_dims,
-            input_dim=self.input_dim,
-            output_dim=self.output_dim,
-            dtype_=dtype,
+            is_sharded=self.is_sharded,
+            dummy_weights=dummy_array(
+                shape=self.dummy_weights.shape,
+                dtype=dtype,
+                sharding=sharding_of(self.dummy_weights),
+            ),
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
-        shape = (*self.mixture_dims, self.output_dim, self.input_dim)
-        sharding = self._resolve_sharding(Layout.OUTPUT_INPUT.weight_partition(len(self.mixture_dims)))
         return dummy_array(
-            shape=shape,
-            dtype=self.dtype_,
-            sharding=sharding,
+            self.dummy_weights.shape,
+            self.dummy_weights.dtype,
+            self.sharding_config.resolve_sharding((None,) * len(self.dummy_weights.shape)),
         )
 
     def load_exported(
@@ -489,10 +515,13 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
         if prefix is None:
             prefix = ParameterPath()
 
-        # You call this an ugly hack, I call this an elegant solution to a difficult problem (@norpadon).
         saved_spec = expored_data.metadata[prefix / "spec"]
         loaded_spec = WeightMatrixSpec.from_json(saved_spec)
-        dummy_layer = loaded_spec.compress(self.decompress(), sharding_config=self.sharding_config)
+        dummy_layer = loaded_spec.compress(
+            self.decompress(),
+            sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
+        )
         result = dummy_layer.load_exported(expored_data, allow_dtype_cast=allow_dtype_cast, prefix=prefix)
         return cast("Self", result)
 

@@ -12,7 +12,7 @@ from lalamo.compressed.utils.hadamard import hadamard_transform
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
-from lalamo.utils.sharding import ShardingConfig
+from lalamo.utils.sharding import ShardingConfig, sharding_of
 from lalamo.weight_matrix import (
     CompressionImplementation,
     EmbeddingMatrix,
@@ -58,8 +58,8 @@ def _process_preconditioner_block(
 ) -> Float[Array, "*components channels channels"] | None:
     if block is None or signs is None:
         return block
-    block = jax.device_put(block, sharding_config.make_sharding((None,) * block.ndim))
-    signs = jax.device_put(signs, sharding_config.make_sharding((None,)))
+    block = jax.device_put(block, sharding_config.resolve_sharding((None,) * block.ndim))
+    signs = jax.device_put(signs, sharding_config.resolve_sharding((None,)))
     signed_block = block * signs[..., None] * signs[None, ...]
     return _hadamard_transform_output_axis(
         hadamard_transform(signed_block, block_size),
@@ -134,42 +134,62 @@ class IncoherenceSigns(eqx.Module):
         self,
         weights: Float[Array, "*components out_channels in_channels"],
         block_size: Literal[32, 64, 128],
+        sharding_config: ShardingConfig,
     ) -> Float[Array, "*components out_channels in_channels"]:
+        input_sharding = sharding_of(weights)
+        weights = jax.device_put(
+            weights,
+            sharding_config.resolve_sharding((None,) * weights.ndim),
+        )
         if self.input_signs is not None:
             weights = hadamard_transform(weights * self.input_signs, block_size)
         if self.output_signs is not None:
             weights = _hadamard_transform_output_axis(weights * self.output_signs[..., None], block_size)
-        return weights
+        return jax.device_put(weights, input_sharding)
 
     def unprocess_weights(
         self,
         weights: Float[Array, "*components out_channels in_channels"],
         block_size: Literal[32, 64, 128],
+        sharding_config: ShardingConfig,
     ) -> Float[Array, "*components out_channels in_channels"]:
         return self.unprocess_weight_input_axis(
-            self.unprocess_weight_output_axis(weights, block_size),
+            self.unprocess_weight_output_axis(weights, block_size, sharding_config),
             block_size,
+            sharding_config,
         )
 
     def unprocess_weight_input_axis(
         self,
         weights: Float[Array, "*components out_channels in_channels"],
         block_size: Literal[32, 64, 128],
+        sharding_config: ShardingConfig,
     ) -> Float[Array, "*components out_channels in_channels"]:
         if self.input_signs is None:
             return weights
+        input_sharding = sharding_of(weights)
+        weights = jax.device_put(
+            weights,
+            sharding_config.resolve_sharding((None,) * weights.ndim),
+        )
         restored = hadamard_transform(weights, block_size)
-        return restored * self.input_signs
+        return jax.device_put(restored * self.input_signs, input_sharding)
 
     def unprocess_weight_output_axis(
         self,
         weights: Float[Array, "*components out_channels in_channels"],
         block_size: Literal[32, 64, 128],
+        sharding_config: ShardingConfig,
     ) -> Float[Array, "*components out_channels in_channels"]:
         if self.output_signs is None:
             return weights
+        input_sharding = sharding_of(weights)
+        weights = jax.device_put(
+            weights,
+            sharding_config.resolve_sharding((None,) * weights.ndim),
+        )
         restored = _hadamard_transform_output_axis(weights, block_size)
-        return restored * self.output_signs[..., None]
+        return jax.device_put(restored * self.output_signs[..., None], input_sharding)
 
     def input_transform(
         self,
@@ -216,6 +236,7 @@ class HybridSpec(WeightMatrixSpec):
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
+        is_sharded: bool = True,
     ) -> "HybridMatrix":
         *_, output_dim, input_dim = weights.shape
         if key is None and isinstance(weights, Tracer):
@@ -236,7 +257,7 @@ class HybridSpec(WeightMatrixSpec):
                 key=incoherence_key,
                 sharding_config=sharding_config,
             )
-            weights = incoherence_signs.process_weights(weights, self.incoherence_block_size)
+            weights = incoherence_signs.process_weights(weights, self.incoherence_block_size, sharding_config)
             if preconditioner is not None:
                 quantization_preconditioner = _process_preconditioner(
                     preconditioner,
@@ -251,6 +272,7 @@ class HybridSpec(WeightMatrixSpec):
             preconditioner=quantization_preconditioner,
             implementation=implementation,
             sharding_config=sharding_config,
+            is_sharded=is_sharded,
         )
         if self.adapter_spec is not None:
             residual = weights - quantized.decompress()
@@ -260,6 +282,7 @@ class HybridSpec(WeightMatrixSpec):
                 residual = incoherence_signs.unprocess_weight_input_axis(
                     residual,
                     self.incoherence_block_size,
+                    sharding_config,
                 )
                 if preconditioner is not None:
                     assert quantization_preconditioner is not None
@@ -273,6 +296,7 @@ class HybridSpec(WeightMatrixSpec):
                 preconditioner=adapter_preconditioner,
                 implementation=implementation,
                 sharding_config=sharding_config,
+                is_sharded=is_sharded,
             )
         else:
             adapter = None
@@ -280,6 +304,7 @@ class HybridSpec(WeightMatrixSpec):
         return HybridMatrix(
             spec=self,
             sharding_config=sharding_config,
+            is_sharded=is_sharded,
             quantized=quantized,
             adapter=adapter,
             incoherence_signs=incoherence_signs,
@@ -295,6 +320,7 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
         return FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(
             self.decompress(),
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
         )
 
     @property
@@ -313,6 +339,7 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
         return HybridMatrix(
             spec=self.spec,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
             quantized=quantized,
             adapter=adapter,
             incoherence_signs=self.incoherence_signs,
@@ -323,12 +350,16 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
         block_size = self.spec.incoherence_block_size
         if self.incoherence_signs is not None:
             assert block_size is not None
-            result = self.incoherence_signs.unprocess_weights(result, block_size)
+            result = self.incoherence_signs.unprocess_weights(result, block_size, self.sharding_config)
         if self.adapter is not None:
             adapter = self.adapter.decompress()
             if self.incoherence_signs is not None:
                 assert block_size is not None
-                adapter = self.incoherence_signs.unprocess_weight_output_axis(adapter, block_size)
+                adapter = self.incoherence_signs.unprocess_weight_output_axis(
+                    adapter,
+                    block_size,
+                    self.sharding_config,
+                )
             result = result + adapter
         return result
 
@@ -340,6 +371,7 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
         return HybridMatrix(
             spec=self.spec,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
             quantized=quantized,
             adapter=adapter,
             incoherence_signs=self.incoherence_signs,

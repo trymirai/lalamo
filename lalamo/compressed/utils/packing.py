@@ -2,7 +2,6 @@ import math
 
 import jax.numpy as jnp
 from einops import rearrange
-from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, DTypeLike
 
 from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
@@ -51,7 +50,7 @@ def pack_uint_to_uint8(unpacked: Array, bits: int, *, sharding_config: ShardingC
     *_, packed_last_dim = packed_shape
     *_, unpacked_last_dim = unpacked.shape
     *leading_specs, _packed_axis_spec = unpacked_sharding.spec
-    packed_sharding = NamedSharding(sharding_config.mesh, PartitionSpec(*leading_specs, None))
+    packed_sharding = sharding_config.make_sharding((*leading_specs, None))
     if 8 % bits == 0 and unpacked_last_dim % _values_per_byte(bits) == 0:
         values_per_byte = _values_per_byte(bits)
         grouped = rearrange(

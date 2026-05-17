@@ -258,6 +258,7 @@ class MicrofloatSpec(QuantizedSpec):
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
+        is_sharded: bool = True,
     ) -> "MicrofloatMatrix":
         if preconditioner is not None:
             weights = yaqa_round_fixpoint(
@@ -267,10 +268,10 @@ class MicrofloatSpec(QuantizedSpec):
                 sharding_config=sharding_config,
             )
 
-        weight_partition = self.layout.weight_partition(weights.ndim - 2)
-        *global_scale_axes, row_axis, grouped_axis = weight_partition
+        weight_axes = self.layout.weight_partition(weights.ndim - 2, is_sharded=is_sharded)
+        *global_scale_axes, row_axis, grouped_axis = weight_axes
         parameter_axes = (*global_scale_axes, row_axis)
-        weight_sharding = sharding_config.resolve_sharding(weight_partition)
+        weight_sharding = sharding_config.resolve_sharding(weight_axes)
         parameter_sharding = sharding_config.resolve_sharding((*parameter_axes, None))
         global_scale_sharding = sharding_config.resolve_sharding(global_scale_axes)
         grouped_values_sharding = sharding_config.resolve_sharding(
@@ -292,6 +293,7 @@ class MicrofloatSpec(QuantizedSpec):
             return MicrofloatMatrixForTraining(
                 spec=self,
                 sharding_config=sharding_config,
+                is_sharded=is_sharded,
                 master_weights=stored_weights,
                 master_scales=master_scales,
                 global_scale=global_scale,
@@ -313,6 +315,7 @@ class MicrofloatSpec(QuantizedSpec):
             dtype=stored_weights.dtype,
             implementation=CompressionImplementation.INFERENCE,
             sharding_config=sharding_config,
+            is_sharded=is_sharded,
         )
 
     def from_packed_parameters(
@@ -324,13 +327,14 @@ class MicrofloatSpec(QuantizedSpec):
         dtype: DTypeLike = jnp.float32,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
+        is_sharded: bool = True,
     ) -> "MicrofloatMatrix":
-        weight_partition = self.layout.weight_partition(packed_scales.ndim - 2)
-        *global_scale_axes, row_axis, grouped_axis = weight_partition
+        weight_axes = self.layout.weight_partition(packed_scales.ndim - 2, is_sharded=is_sharded)
+        *global_scale_axes, row_axis, grouped_axis = weight_axes
         parameter_axes = (*global_scale_axes, row_axis)
         parameter_sharding = sharding_config.resolve_sharding((*parameter_axes, None))
         global_scale_sharding = sharding_config.resolve_sharding(global_scale_axes)
-        weight_sharding = sharding_config.resolve_sharding(weight_partition)
+        weight_sharding = sharding_config.resolve_sharding(weight_axes)
         grouped_values_sharding = sharding_config.resolve_sharding(
             (*parameter_axes, None, grouped_axis),
         )
@@ -342,6 +346,7 @@ class MicrofloatSpec(QuantizedSpec):
             return MicrofloatMatrixForInference(
                 spec=self,
                 sharding_config=sharding_config,
+                is_sharded=is_sharded,
                 dtype_=jnp.dtype(dtype),
                 packed_weights=packed_weights,
                 packed_scales=packed_scales,
@@ -361,6 +366,7 @@ class MicrofloatSpec(QuantizedSpec):
         return MicrofloatMatrixForTraining(
             spec=self,
             sharding_config=sharding_config,
+            is_sharded=is_sharded,
             master_weights=with_sharding(weights, weight_sharding),
             master_scales=with_sharding(_unpack_scales(packed_scales, self.scale_mode, dtype), parameter_sharding),
             global_scale=global_scale,
@@ -423,6 +429,7 @@ class MicrofloatMatrix(EmbeddingMatrix[MicrofloatSpec]):
             return MicrofloatMatrixForInference(
                 spec=self.spec,
                 sharding_config=self.sharding_config,
+                is_sharded=self.is_sharded,
                 dtype_=jnp.dtype(self.dtype),
                 packed_weights=packed_weights,
                 packed_scales=packed_scales,
@@ -435,6 +442,7 @@ class MicrofloatMatrix(EmbeddingMatrix[MicrofloatSpec]):
             dtype=self.dtype,
             implementation=implementation,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
         )
 
     def _from_packed_parameters(self, implementation: CompressionImplementation) -> "MicrofloatMatrix":
@@ -445,6 +453,7 @@ class MicrofloatMatrix(EmbeddingMatrix[MicrofloatSpec]):
             dtype=self.dtype,
             implementation=implementation,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
         )
 
     @abstractmethod
@@ -463,6 +472,7 @@ class MicrofloatMatrix(EmbeddingMatrix[MicrofloatSpec]):
         return FullPrecisionSpec(layout=self.spec.layout).compress(
             self.decompress(),
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
@@ -513,8 +523,8 @@ class MicrofloatMatrixForTraining(MicrofloatMatrix):
 
     @property
     def _packed_weights(self) -> UInt8[Array, "*components rows packed_cols"]:
-        weight_partition = self.spec.layout.weight_partition(self.master_scales.ndim - 2)
-        *parameter_axes, grouped_axis = weight_partition
+        weight_axes = self.spec.layout.weight_partition(self.master_scales.ndim - 2, is_sharded=self.is_sharded)
+        *parameter_axes, grouped_axis = weight_axes
         return _master_weights_to_packed_weights(
             self.master_weights,
             self.master_scales,
@@ -528,8 +538,8 @@ class MicrofloatMatrixForTraining(MicrofloatMatrix):
 
     @property
     def _packed_scales(self) -> UInt8[Array, "*components rows groups"] | Float[Array, "*components rows groups"]:
-        weight_partition = self.spec.layout.weight_partition(self.master_scales.ndim - 2)
-        *parameter_axes, _grouped_axis = weight_partition
+        weight_axes = self.spec.layout.weight_partition(self.master_scales.ndim - 2, is_sharded=self.is_sharded)
+        *parameter_axes, _grouped_axis = weight_axes
         return _pack_scales(
             self.master_scales,
             self.spec.scale_mode,
@@ -540,6 +550,7 @@ class MicrofloatMatrixForTraining(MicrofloatMatrix):
         return MicrofloatMatrixForTraining(
             spec=self.spec,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
             master_weights=self.master_weights.astype(dtype),
             master_scales=self.master_scales.astype(dtype),
             global_scale=self.global_scale.astype(dtype),
@@ -579,9 +590,9 @@ class MicrofloatMatrixForTraining(MicrofloatMatrix):
             scales = lookup_sharded_indices(scales, row_index)
             global_scale = self.global_scale
         if row_index is None:
-            weight_partition = self.spec.layout.weight_partition(scales.ndim - 2)
-            *parameter_axes, grouped_axis = weight_partition
-            weight_sharding = self._resolve_sharding(weight_partition)
+            weight_axes = self.spec.layout.weight_partition(scales.ndim - 2, is_sharded=self.is_sharded)
+            *parameter_axes, grouped_axis = weight_axes
+            weight_sharding = self._resolve_sharding(weight_axes)
             scale_sharding = self._resolve_sharding((*parameter_axes, None))
             grouped_values_sharding = self._resolve_sharding((*parameter_axes, None, grouped_axis))
         else:
@@ -633,6 +644,7 @@ class MicrofloatMatrixForInference(MicrofloatMatrix):
         return MicrofloatMatrixForInference(
             spec=self.spec,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
             dtype_=jnp.dtype(dtype),
             packed_weights=self.packed_weights,
             packed_scales=self.packed_scales,
@@ -673,9 +685,9 @@ class MicrofloatMatrixForInference(MicrofloatMatrix):
             packed_scales = lookup_sharded_indices(packed_scales, row_index)
             global_scale = self.global_scale
         if row_index is None:
-            weight_partition = self.spec.layout.weight_partition(packed_scales.ndim - 2)
-            *parameter_axes, grouped_axis = weight_partition
-            weight_sharding = self._resolve_sharding(weight_partition)
+            weight_axes = self.spec.layout.weight_partition(packed_scales.ndim - 2, is_sharded=self.is_sharded)
+            *parameter_axes, grouped_axis = weight_axes
+            weight_sharding = self._resolve_sharding(weight_axes)
             grouped_values_sharding = self._resolve_sharding((*parameter_axes, None, grouped_axis))
         else:
             weight_sharding = None

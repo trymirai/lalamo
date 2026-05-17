@@ -89,8 +89,14 @@ def host_embedding_table(matrix: EmbeddingMatrix[WeightMatrixSpec]) -> jax.Array
     match matrix.spec:
         case IntSpec() | MLXSpec() | LloydMaxSpec() | MicrofloatSpec() | FullPrecisionSpec() as spec:
             weights = matrix.decompress()
-            sharding = matrix.sharding_config.resolve_sharding(spec.layout.weight_partition(weights.ndim - 2))
-            return host_array(spec.layout.from_output_input(weights, sharding=sharding))
+            return host_array(
+                spec.layout.from_output_input(
+                    weights,
+                    sharding=matrix.sharding_config.resolve_sharding(
+                        spec.layout.weight_partition(weights.ndim - 2, is_sharded=matrix.is_sharded),
+                    ),
+                ),
+            )
     raise TypeError(f"Unsupported matrix spec type: {type(matrix.spec).__name__}")
 
 
@@ -112,16 +118,11 @@ def _compress(
     *,
     layout: Layout,
     implementation: CompressionImplementation,
-    is_sharded: bool = True,
 ) -> EmbeddingMatrix[WeightMatrixSpec]:
-    if is_sharded:
-        sharding_config = make_test_sharding_config()
-    else:
-        sharding_config = make_test_sharding_config().replicated_with_same_mesh()
     matrix = case.make_spec(4, 2, layout).compress(
         weights,
         implementation=implementation,
-        sharding_config=sharding_config,
+        sharding_config=make_test_sharding_config(),
     )
     assert isinstance(matrix, EmbeddingMatrix)
     return matrix
@@ -183,7 +184,6 @@ def test_compressed_matrix_lookup_embedding_matches_selected_row_and_feature_sha
         logical_weights(case),
         layout=Layout.INPUT_OUTPUT,
         implementation=implementation,
-        is_sharded=False,
     )
     token_index = 2
 

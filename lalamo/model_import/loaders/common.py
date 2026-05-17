@@ -16,4 +16,5 @@ def load_full_precision(
     return FullPrecisionSpec(layout=template.spec.layout).compress(
         weights.astype(template.dtype),
         sharding_config=template.sharding_config,
+        is_sharded=template.is_sharded,
     )

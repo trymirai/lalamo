@@ -122,6 +122,7 @@ def _put_on_sharding(matrix: IntMatrixForInference, sharding: Sharding) -> IntMa
     return IntMatrixForInference(
         spec=matrix.spec,
         sharding_config=matrix.sharding_config,
+        is_sharded=matrix.is_sharded,
         packed_weights=jax.device_put(matrix.packed_weights, sharding),
         scales=jax.device_put(matrix.scales, sharding),
         packed_zero_points=packed_zero_points,

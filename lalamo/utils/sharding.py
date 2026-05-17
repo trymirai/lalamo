@@ -53,9 +53,6 @@ class ShardingConfig:
     def replicated(cls, devices: Sequence[jax.Device] | None = None) -> "ShardingConfig":
         return cls(mesh=cls._mesh("replica", devices))
 
-    def replicated_with_same_mesh(self) -> "ShardingConfig":
-        return type(self)(mesh=self.mesh)
-
     @classmethod
     def data_parallel(cls, devices: Sequence[jax.Device] | None = None) -> "ShardingConfig":
         return cls(

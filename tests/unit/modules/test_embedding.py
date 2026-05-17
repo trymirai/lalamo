@@ -42,9 +42,15 @@ def _weights(*, offset: int = 0) -> jax.Array:
 
 
 def _input_embedding_matrix(*, offset: int = 0) -> FullPrecisionMatrix:
-    return FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(
-        jnp.matrix_transpose(_weights(offset=offset)),
-        sharding_config=make_test_sharding_config().replicated_with_same_mesh(),
+    spec = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT)
+    return FullPrecisionMatrix(
+        spec=spec,
+        sharding_config=make_test_sharding_config(),
+        is_sharded=False,
+        weights=spec.layout.from_output_input(
+            jnp.matrix_transpose(_weights(offset=offset)),
+            sharding=make_sharding((None, None)),
+        ),
     )
 
 
@@ -284,7 +290,7 @@ def test_tied_embedding_export_load_roundtrips_and_preserves_template_sharding(f
     assert isinstance(template.embedding, ShapeDtypeMatrix)
     assert template.embedding.shape == (VOCAB_SIZE, MODEL_DIM)
     assert template.embedding.decompress().shape == (MODEL_DIM, VOCAB_SIZE)
-    assert restored.embedding.sharding_config == make_test_sharding_config().replicated_with_same_mesh()
+    assert restored.embedding.sharding_config == make_test_sharding_config()
     assert not is_sharded(restored.embedding.weights.sharding)
     _assert_close(
         result=result,
@@ -313,7 +319,7 @@ def test_untied_embedding_export_load_roundtrips_and_preserves_template_sharding
     assert template.input_embedding.shape == (VOCAB_SIZE, MODEL_DIM)
     assert template.input_embedding.decompress().shape == (MODEL_DIM, VOCAB_SIZE)
     assert template.output_embedding.shape == (VOCAB_SIZE, MODEL_DIM)
-    assert restored.input_embedding.sharding_config == make_test_sharding_config().replicated_with_same_mesh()
+    assert restored.input_embedding.sharding_config == make_test_sharding_config()
     assert restored.output_embedding.sharding_config == make_test_sharding_config()
     assert not is_sharded(restored.input_embedding.weights.sharding)
     _assert_named_sharding(restored.output_embedding.weights.sharding, fake_mesh)

@@ -77,6 +77,7 @@ def _put_on_sharding(matrix: MicrofloatMatrixForInference, sharding: Sharding) -
     return MicrofloatMatrixForInference(
         spec=matrix.spec,
         sharding_config=matrix.sharding_config,
+        is_sharded=matrix.is_sharded,
         dtype_=matrix.dtype,
         packed_weights=jax.device_put(matrix.packed_weights, sharding),
         packed_scales=jax.device_put(matrix.packed_scales, sharding),
@@ -85,7 +86,7 @@ def _put_on_sharding(matrix: MicrofloatMatrixForInference, sharding: Sharding) -
 
 
 def test_microfloat_from_packed_parameters_decodes_fp4_values_in_gpt_oss_nibble_order() -> None:
-    sharding_config = make_test_sharding_config().replicated_with_same_mesh()
+    sharding_config = make_test_sharding_config()
     codes = jax.device_put(
         jnp.arange(16, dtype=jnp.uint8).reshape(1, 16),
         sharding_config.resolve_sharding((None, None)),
@@ -106,6 +107,7 @@ def test_microfloat_from_packed_parameters_decodes_fp4_values_in_gpt_oss_nibble_
         global_scale=jnp.array(1, dtype=jnp.float32),
         dtype=jnp.float32,
         sharding_config=sharding_config,
+        is_sharded=False,
     )
 
     assert isinstance(matrix, MicrofloatMatrixForInference)
@@ -121,7 +123,8 @@ def test_microfloat_from_packed_parameters_matches_existing_decode_mxfp4_helper(
         packed_scales=scale_exponents,
         global_scale=jnp.array(1, dtype=jnp.float32),
         dtype=jnp.float32,
-        sharding_config=make_test_sharding_config().replicated_with_same_mesh(),
+        sharding_config=make_test_sharding_config(),
+        is_sharded=False,
     )
     expected = decode_mxfp4(blocks, scale_exponents, dtype=jnp.float32, flatten=False)
     expected = rearrange(expected, "rows groups group_size -> rows (groups group_size)")
@@ -136,12 +139,14 @@ def test_microfloat_compress_uses_e8m0_power_of_two_scale_exponents() -> None:
     matrix = spec.compress(
         weights,
         implementation=CompressionImplementation.TRAINING,
-        sharding_config=make_test_sharding_config().replicated_with_same_mesh(),
+        sharding_config=make_test_sharding_config(),
+        is_sharded=False,
     )
     inference = spec.compress(
         weights,
         implementation=CompressionImplementation.INFERENCE,
-        sharding_config=make_test_sharding_config().replicated_with_same_mesh(),
+        sharding_config=make_test_sharding_config(),
+        is_sharded=False,
     )
 
     assert isinstance(matrix, MicrofloatMatrixForTraining)
@@ -197,6 +202,7 @@ def test_microfloat_training_dot_has_ste_gradients(scale_mode: MicrofloatScaleMo
         matrix = MicrofloatMatrixForTraining(
             spec=training.spec,
             sharding_config=training.sharding_config,
+            is_sharded=training.is_sharded,
             master_weights=master_weights,
             master_scales=scales,
             global_scale=global_scale,

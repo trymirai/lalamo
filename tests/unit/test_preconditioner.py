@@ -43,7 +43,7 @@ class _PreconditionerModelConfig(ModelConfig[ChatCodecConfig]):
             block=_Block(
                 config=_BlockConfig(),
                 sharding_config=make_test_sharding_config(),
-                matrix=initializer.weight_matrix(output_dim=3, input_dim=4),
+                matrix=initializer.weight_matrix(output_dim=3, input_dim=4, is_sharded=False),
             ),
         )
 
@@ -84,7 +84,8 @@ def _model() -> _PreconditionerModel:
             sharding_config=make_test_sharding_config(),
             matrix=FullPrecisionSpec().compress(
                 jnp.ones((3, 4), dtype=jnp.float32),
-                sharding_config=make_test_sharding_config().replicated_with_same_mesh(),
+                sharding_config=make_test_sharding_config(),
+                is_sharded=False,
             ),
         ),
     )

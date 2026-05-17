@@ -20,9 +20,15 @@ from lalamo.weight_matrix import (
 from tests.common import assert_close
 from tests.helpers import make_test_sharding_config
 
+pytestmark = pytest.mark.usefixtures("fake_mesh")
+
 
 def _round_weights(weights: jax.Array) -> jax.Array:
     return jnp.round(jnp.clip(weights, -1, 1))
+
+
+def _shard_weights(weights: jax.Array) -> jax.Array:
+    return jax.device_put(weights, make_test_sharding_config().resolve_sharding((None,) * weights.ndim))
 
 
 @dataclass(frozen=True)
@@ -35,11 +41,13 @@ class _RoundSpec(QuantizedSpec):
         preconditioner: Preconditioner | None = None,  # noqa: ARG002
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
+        is_sharded: bool = True,
     ) -> FullPrecisionMatrix:
         return FullPrecisionSpec().compress(
             _round_weights(weights),
             implementation=implementation,
             sharding_config=sharding_config,
+            is_sharded=is_sharded,
         )
 
     @property
@@ -72,12 +80,14 @@ class _BlockMeanSpec(QuantizedSpec):
         preconditioner: Preconditioner | None = None,  # noqa: ARG002
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
+        is_sharded: bool = True,
     ) -> FullPrecisionMatrix:
         block_mean = jnp.mean(weights, axis=(-2, -1), keepdims=True)
         return FullPrecisionSpec().compress(
             jnp.broadcast_to(block_mean, weights.shape),
             implementation=implementation,
             sharding_config=sharding_config,
+            is_sharded=is_sharded,
         )
 
     @property
@@ -107,12 +117,14 @@ class _ImplementationSensitiveSpec(QuantizedSpec):
         preconditioner: Preconditioner | None = None,  # noqa: ARG002
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
+        is_sharded: bool = True,
     ) -> FullPrecisionMatrix:
         value = 1 if implementation == CompressionImplementation.INFERENCE else -1
         return FullPrecisionSpec().compress(
             jnp.full_like(weights, value),
             implementation=implementation,
             sharding_config=sharding_config,
+            is_sharded=is_sharded,
         )
 
     @property
@@ -133,7 +145,7 @@ class _ImplementationSensitiveSpec(QuantizedSpec):
 
 
 def _weights() -> jax.Array:
-    return 1.2 * jax.random.normal(jax.random.key(0), (64, 64), dtype=jnp.float32)
+    return _shard_weights(1.2 * jax.random.normal(jax.random.key(0), (64, 64), dtype=jnp.float32))
 
 
 def _positive_definite_block(seed: int) -> jax.Array:
@@ -248,7 +260,7 @@ def test_yaqa_round_fixpoint_raises_when_iteration_limit_prevents_convergence() 
 
 
 def test_yaqa_round_fixpoint_runs_under_vmap_with_batched_preconditioners() -> None:
-    weights = jnp.stack([_weights(), _weights() * 0.5])
+    weights = _shard_weights(jnp.stack([_weights(), _weights() * 0.5]))
     input_blocks = jnp.stack([_input_block(), _positive_definite_block(23)])
     output_blocks = jnp.stack([_output_block(), _positive_definite_block(29)])
     preconditioner = Preconditioner.init(input_block=input_blocks, output_block=output_blocks)
@@ -276,7 +288,7 @@ def test_yaqa_round_fixpoint_runs_under_vmap_with_batched_preconditioners() -> N
 
 
 def test_yaqa_round_fixpoint_uses_inference_compression() -> None:
-    weights = jnp.zeros((4, 4), dtype=jnp.float32)
+    weights = _shard_weights(jnp.zeros((4, 4), dtype=jnp.float32))
 
     result = yaqa_round_fixpoint(
         weights,
@@ -289,7 +301,7 @@ def test_yaqa_round_fixpoint_uses_inference_compression() -> None:
 
 
 def test_yaqa_round_blockwise_quantizes_each_block_separately() -> None:
-    weights = jnp.arange(16, dtype=jnp.float32).reshape(4, 4)
+    weights = _shard_weights(jnp.arange(16, dtype=jnp.float32).reshape(4, 4))
     block_means = jnp.mean(weights.reshape(2, 2, 2, 2), axis=(1, 3), keepdims=True)
     expected = jnp.broadcast_to(block_means, (2, 2, 2, 2)).reshape(4, 4)
 
@@ -304,7 +316,7 @@ def test_yaqa_round_blockwise_quantizes_each_block_separately() -> None:
 
 
 def test_yaqa_round_blockwise_uses_inference_compression() -> None:
-    weights = jnp.zeros((4, 4), dtype=jnp.float32)
+    weights = _shard_weights(jnp.zeros((4, 4), dtype=jnp.float32))
 
     result = yaqa_round_blockwise(
         weights,
@@ -328,7 +340,7 @@ def test_yaqa_round_blockwise_matches_fixpoint_for_two_sided_preconditioner() ->
 
 
 def test_yaqa_round_blockwise_runs_under_vmap_with_batched_preconditioners() -> None:
-    weights = jnp.stack([_weights(), _weights() * 0.5])
+    weights = _shard_weights(jnp.stack([_weights(), _weights() * 0.5]))
     input_blocks = jnp.stack([_input_block(), _positive_definite_block(23)])
     output_blocks = jnp.stack([_output_block(), _positive_definite_block(29)])
     preconditioner = Preconditioner.init(input_block=input_blocks, output_block=output_blocks)

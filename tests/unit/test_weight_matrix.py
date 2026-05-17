@@ -43,6 +43,7 @@ def test_full_precision_export_load_roundtrips_weights_spec_and_template_shardin
     original = FullPrecisionMatrix(
         spec=spec,
         sharding_config=make_test_sharding_config(),
+        is_sharded=False,
         weights=jax.device_put(_stored_weights(layout, weights), saved_sharding),
     )
     skeleton = spec.compress(
@@ -77,12 +78,12 @@ def test_full_precision_dot_matches_logical_matmul_and_preserves_input_sharding(
     assert_close_arrays(result=result, reference=weights @ vector)
 
 
-def test_initializer_weight_matrix_is_sharded_false_uses_replicated_config() -> None:
+def test_initializer_weight_matrix_is_sharded_false_uses_replicated_weight_sharding() -> None:
     initializer = EmptyInitializer(dtype=jnp.float32, sharding_config=make_test_sharding_config())
 
     matrix = initializer.weight_matrix(4, 4, is_sharded=False)
 
-    assert matrix.sharding_config == make_test_sharding_config().replicated_with_same_mesh()
+    assert matrix.sharding_config == make_test_sharding_config()
     assert matrix.decompress().sharding == make_sharding((None, None))
 
 
@@ -99,9 +100,15 @@ def test_mixture_weight_matrix_shards_only_mixture_axes(layout: Layout) -> None:
 
 def test_full_precision_lookup_embedding_matches_selected_row_and_feature_sharding(fake_mesh: Mesh) -> None:
     del fake_mesh
-    matrix = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(
-        _logical_weights(),
-        sharding_config=make_test_sharding_config().replicated_with_same_mesh(),
+    spec = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT)
+    matrix = FullPrecisionMatrix(
+        spec=spec,
+        sharding_config=make_test_sharding_config(),
+        is_sharded=False,
+        weights=spec.layout.from_output_input(
+            _logical_weights(),
+            sharding=make_sharding((None, None)),
+        ),
     )
     token_index = 2
 

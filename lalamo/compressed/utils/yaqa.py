@@ -2,13 +2,14 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+import jax.tree_util as jtu
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.compressed.quantized_spec import QuantizedSpec
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.utils.sharding import LogicalAxis, ShardingConfig
+from lalamo.utils.sharding import LogicalAxis, ShardingConfig, sharding_of
 from lalamo.weight_matrix import CompressionImplementation
 
 from .block_ldl import block_ldl
@@ -33,13 +34,28 @@ def yaqa_round_fixpoint(
     max_iters: int | None = None,
     atol: float = 1e-7,
 ) -> Float[Array, "*components output_channels input_channels"]:
+    input_sharding = sharding_of(weights)
+    input_dtype = weights.dtype
     *_, output_dim, input_dim = weights.shape
     if max_iters is None:
         max_iters = 2 * (input_dim + output_dim)
 
+    replicated_weight_sharding = sharding_config.make_sharding((None,) * weights.ndim)
+    replicated_weights = jax.device_put(
+        weights.astype(jnp.float32),
+        replicated_weight_sharding,
+    )
+
+    def gather_preconditioner_leaf(leaf: Array) -> Array:
+        return jax.device_put(
+            leaf,
+            sharding_config.make_sharding((None,) * leaf.ndim),
+        )
+
+    replicated_preconditioner = jtu.tree_map(gather_preconditioner_leaf, preconditioner)
     result, has_converged = _yaqa_round_fixpoint(
-        weights,
-        preconditioner,
+        replicated_weights,
+        replicated_preconditioner,
         spec,
         sharding_config=sharding_config,
         max_iters=max_iters,
@@ -48,7 +64,7 @@ def yaqa_round_fixpoint(
     if not bool(jax.device_get(jnp.all(has_converged))):
         raise ConvergenceError(f"YAQA failed to converge in {max_iters} iterations.")
 
-    return result.astype(weights.dtype)
+    return jax.device_put(result.astype(input_dtype), input_sharding)
 
 
 def _yaqa_round_fixpoint(
@@ -74,17 +90,18 @@ def _yaqa_round_fixpoint(
             spmd_axis_name=spmd_axis_name,
         )(weights, preconditioner)
 
-    weights = weights.astype(jnp.float32)
     output_dim, input_dim = weights.shape
 
     input_block = preconditioner.input_block
     output_block = preconditioner.output_block
     if input_block is None and output_block is None:
-        return spec.compress(
+        rounded_weights = spec.compress(
             weights,
             implementation=CompressionImplementation.INFERENCE,
-            sharding_config=sharding_config.replicated_with_same_mesh(),
-        ).decompress(), jnp.ones((), dtype=jnp.bool_)
+            sharding_config=sharding_config,
+            is_sharded=False,
+        ).decompress()
+        return rounded_weights, jnp.ones((), dtype=jnp.bool_)
 
     if input_block is None:
         input_fisher_tril = None
@@ -104,14 +121,15 @@ def _yaqa_round_fixpoint(
         return spec.compress(
             candidate_weights,
             implementation=CompressionImplementation.INFERENCE,
-            sharding_config=sharding_config.replicated_with_same_mesh(),
+            sharding_config=sharding_config,
+            is_sharded=False,
         ).decompress()
 
     def calculate_adjustment(
         quantized_weights: Float[Array, "output_channels input_channels"],
     ) -> Float[Array, "output_channels input_channels"]:
         residual = weights - quantized_weights
-        adjustment = jnp.zeros_like(residual)
+        adjustment = residual * jnp.array(0, dtype=residual.dtype)
 
         with use_dot_algorithm_preset(DotAlgorithmPreset.F32_F32_F32):
             if input_fisher_tril is not None:
@@ -211,21 +229,39 @@ def yaqa_round_blockwise(
     *,
     sharding_config: ShardingConfig,
 ) -> Float[Array, "*components output_channels input_channels"]:
-    if weights.ndim > 2:
-        spmd_axis_name = sharding_config.resolve_axis(LogicalAxis.MIXTURE)
+    input_sharding = sharding_of(weights)
+    input_dtype = weights.dtype
+    replicated_weight_sharding = sharding_config.make_sharding((None,) * weights.ndim)
+    replicated_weights = jax.device_put(
+        weights.astype(jnp.float32),
+        replicated_weight_sharding,
+    )
+
+    def gather_preconditioner_leaf(leaf: Array) -> Array:
+        return jax.device_put(
+            leaf,
+            sharding_config.make_sharding((None,) * leaf.ndim),
+        )
+
+    replicated_preconditioner = jtu.tree_map(gather_preconditioner_leaf, preconditioner)
+    if replicated_weights.ndim > 2:
         result = jax.vmap(
             partial(
-                yaqa_round_blockwise,
+                _yaqa_round_blockwise_2d,
                 spec=spec,
                 sharding_config=sharding_config,
             ),
             in_axes=(0, 0),
-            spmd_axis_name=spmd_axis_name,
-        )(weights, preconditioner)
+        )(replicated_weights, replicated_preconditioner)
     else:
-        result = _yaqa_round_blockwise_2d(weights, preconditioner, spec, sharding_config=sharding_config)
+        result = _yaqa_round_blockwise_2d(
+            replicated_weights,
+            replicated_preconditioner,
+            spec,
+            sharding_config=sharding_config,
+        )
 
-    return result.astype(weights.dtype)
+    return jax.device_put(result.astype(input_dtype), input_sharding)
 
 
 def _yaqa_round_blockwise_2d(
@@ -235,7 +271,6 @@ def _yaqa_round_blockwise_2d(
     *,
     sharding_config: ShardingConfig,
 ) -> Float[Array, "output_channels input_channels"]:
-    weights = weights.astype(jnp.float32)
     output_dim, input_dim = weights.shape
     if output_dim % spec.output_block_size != 0:
         raise ValueError(f"output_dim={output_dim} must be divisible by output_block_size={spec.output_block_size}")
@@ -256,7 +291,7 @@ def _yaqa_round_blockwise_2d(
         output_feedback = block_ldl(output_block, spec.output_block_size).tril.T
         output_feedback = output_feedback - jnp.identity(output_dim, dtype=output_feedback.dtype)
 
-    quantized_weights = jnp.zeros_like(weights)
+    quantized_weights = weights * jnp.array(0, dtype=weights.dtype)
     num_output_blocks = output_dim // spec.output_block_size
     num_input_blocks = input_dim // spec.input_block_size
 

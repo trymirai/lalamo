@@ -115,11 +115,13 @@ def test_quantized_spec_quantize_block_matches_inference_compression(spec: Quant
     weights = (
         jnp.arange(spec.output_block_size * spec.input_block_size, dtype=jnp.float32).reshape(block_shape) - 3
     ) / 5
+    weights = jax.device_put(weights, make_test_sharding_config().make_sharding((None, None)))
 
     expected = spec.compress(
         weights,
         implementation=CompressionImplementation.INFERENCE,
-        sharding_config=make_test_sharding_config().replicated_with_same_mesh(),
+        sharding_config=make_test_sharding_config(),
+        is_sharded=False,
     ).decompress()
 
     assert_close_arrays(
@@ -142,11 +144,13 @@ def test_quantized_spec_quantize_block_supports_batched_blocks() -> None:
             ),
         ],
     )
+    weights = jax.device_put(weights, make_test_sharding_config().make_sharding((None, None, None)))
 
     expected = spec.compress(
         weights,
         implementation=CompressionImplementation.INFERENCE,
-        sharding_config=make_test_sharding_config().replicated_with_same_mesh(),
+        sharding_config=make_test_sharding_config(),
+        is_sharded=False,
     ).decompress()
 
     assert_close_arrays(

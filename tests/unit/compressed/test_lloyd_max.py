@@ -20,6 +20,7 @@ from lalamo.compressed.lloyd_max import (
     _master_weights_to_quantized_weights,
 )
 from lalamo.compressed.utils.packing import pack_uint_to_uint8, packed_last_axis_dim, unpack_uint8_to_uint
+from lalamo.compressed.utils.rounding import round_to_sorted_lut_table
 from lalamo.compressed.utils.yaqa import yaqa_round_blockwise
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.preconditioner import Preconditioner
@@ -86,6 +87,7 @@ def _put_on_sharding(matrix: LloydMaxMatrixForInference, sharding: Sharding) -> 
     return LloydMaxMatrixForInference(
         spec=matrix.spec,
         sharding_config=matrix.sharding_config,
+        is_sharded=matrix.is_sharded,
         dtype_=matrix.dtype,
         packed_weight_indices=jax.device_put(matrix.packed_weight_indices, sharding),
         packed_scales=jax.device_put(matrix.packed_scales, sharding),
@@ -353,6 +355,7 @@ def test_lloyd_max_training_dot_supports_stochastic_rounding_and_master_weight_g
         matrix = LloydMaxMatrixForTraining(
             spec=training.spec,
             sharding_config=training.sharding_config,
+            is_sharded=training.is_sharded,
             master_weights=master_weights,
             master_scales=scales,
             master_biases=biases,

@@ -41,6 +41,7 @@ class LowRankSpec(WeightMatrixSpec):
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
+        is_sharded: bool = True,
     ) -> "LowRankMatrix":
         if weights.ndim > 2 and preconditioner is not None:
             compress_component = partial(
@@ -48,6 +49,7 @@ class LowRankSpec(WeightMatrixSpec):
                 key=key,
                 implementation=implementation,
                 sharding_config=sharding_config,
+                is_sharded=is_sharded,
             )
             spmd_axis_name = sharding_config.resolve_axis(LogicalAxis.MIXTURE)
             return jax.vmap(compress_component, spmd_axis_name=spmd_axis_name)(
@@ -67,7 +69,7 @@ class LowRankSpec(WeightMatrixSpec):
                 input_factor = jnp.linalg.cholesky(input_block, upper=True)
                 weights = weights @ input_factor.T
 
-        svd_sharding = sharding_config.make_sharding((None,) * weights.ndim)
+        svd_sharding = sharding_config.resolve_sharding((None,) * weights.ndim)
         weights = jax.device_put(weights, svd_sharding)
         u, singular_values, vh = jnp.linalg.svd(weights, full_matrices=False)
         *_, svd_rank = singular_values.shape
@@ -82,15 +84,17 @@ class LowRankSpec(WeightMatrixSpec):
         if input_factor is not None:
             down_projection = solve_triangular(input_factor, down_projection.T, lower=False).T
         leading_dims = weights.ndim - 2
-        up_projection_sharding = sharding_config.resolve_sharding(
-            Layout.OUTPUT_INPUT.weight_partition(leading_dims),
-        )
-        down_projection_sharding = sharding_config.resolve_sharding(
-            (LogicalAxis.MIXTURE,) * leading_dims + (None, None),
-        )
+        up_projection_axes = Layout.OUTPUT_INPUT.weight_partition(leading_dims, is_sharded=is_sharded)
+        if is_sharded:
+            down_projection_axes = (LogicalAxis.MIXTURE,) * leading_dims + (None, None)
+        else:
+            down_projection_axes = Layout.OUTPUT_INPUT.weight_partition(leading_dims, is_sharded=False)
+        up_projection_sharding = sharding_config.resolve_sharding(up_projection_axes)
+        down_projection_sharding = sharding_config.resolve_sharding(down_projection_axes)
         return LowRankMatrix(
             spec=self,
             sharding_config=sharding_config,
+            is_sharded=is_sharded,
             up_projection=jax.device_put(up_projection, up_projection_sharding),
             down_projection=jax.device_put(down_projection, down_projection_sharding),
         )
@@ -104,6 +108,7 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
         return FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(
             self.decompress(),
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
         )
 
     @property
@@ -120,6 +125,7 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
         return LowRankMatrix(
             spec=self.spec,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
             up_projection=self.up_projection.astype(dtype),
             down_projection=self.down_projection.astype(dtype),
         )

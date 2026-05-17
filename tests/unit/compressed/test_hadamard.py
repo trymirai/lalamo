@@ -6,7 +6,13 @@ import pytest
 from jaxtyping import TypeCheckError
 
 from lalamo.compressed.utils.hadamard import hadamard_transform
+from lalamo.utils.sharding import LogicalAxis
 from tests.common import assert_close, gpu_only, tolerance
+from tests.helpers import make_sharding
+
+
+def _replicated(inputs: jax.Array) -> jax.Array:
+    return jax.device_put(inputs, make_sharding((None,) * inputs.ndim))
 
 
 def _sylvester_hadamard_matrix(block_size: int) -> jax.Array:
@@ -37,7 +43,7 @@ def _assert_close(result: jax.Array, reference: jax.Array) -> None:
 
 @pytest.mark.parametrize("block_size", [32, 64, 128])
 def test_hadamard_transform_matches_dense_reference(block_size: Literal[32, 64, 128]) -> None:
-    inputs = (jnp.arange(2 * block_size, dtype=jnp.float32) - 3) / 5
+    inputs = _replicated((jnp.arange(2 * block_size, dtype=jnp.float32) - 3) / 5)
 
     result = hadamard_transform(inputs, block_size)
 
@@ -46,7 +52,7 @@ def test_hadamard_transform_matches_dense_reference(block_size: Literal[32, 64, 
 
 
 def test_hadamard_transform_is_its_own_inverse() -> None:
-    inputs = (jnp.arange(128, dtype=jnp.float32) - 7) / 3
+    inputs = _replicated((jnp.arange(128, dtype=jnp.float32) - 7) / 3)
 
     result = hadamard_transform(hadamard_transform(inputs, block_size=64), block_size=64)
 
@@ -54,7 +60,7 @@ def test_hadamard_transform_is_its_own_inverse() -> None:
 
 
 def test_hadamard_transform_preserves_bfloat16_dtype() -> None:
-    inputs = jnp.arange(64, dtype=jnp.bfloat16)
+    inputs = _replicated(jnp.arange(64, dtype=jnp.bfloat16))
 
     result = hadamard_transform(inputs, block_size=32)
 
@@ -67,16 +73,23 @@ def test_hadamard_transform_preserves_bfloat16_dtype() -> None:
 @pytest.mark.parametrize("block_size", [0, 8, 16, 256])
 def test_hadamard_transform_rejects_unsupported_block_size(block_size: int) -> None:
     with pytest.raises((TypeCheckError, ValueError)):
-        hadamard_transform(jnp.ones((256,), dtype=jnp.float32), block_size)  # type: ignore[arg-type]
+        hadamard_transform(_replicated(jnp.ones((256,), dtype=jnp.float32)), block_size)  # type: ignore[arg-type]
 
 
 def test_hadamard_transform_rejects_input_dimension_not_divisible_by_block_size() -> None:
     with pytest.raises(ValueError, match="multiple of block size"):
-        hadamard_transform(jnp.ones((96,), dtype=jnp.float32), block_size=64)
+        hadamard_transform(_replicated(jnp.ones((96,), dtype=jnp.float32)), block_size=64)
+
+
+def test_hadamard_transform_rejects_channel_sharded_inputs() -> None:
+    inputs = jax.device_put(jnp.ones((64,), dtype=jnp.float32), make_sharding((LogicalAxis.MATRIX,)))
+
+    with pytest.raises(ValueError, match="channels axis"):
+        hadamard_transform(inputs, block_size=32)
 
 
 def test_hadamard_transform_jit_matches_dense_reference() -> None:
-    inputs = (jnp.arange(128, dtype=jnp.float32) - 3) / 2
+    inputs = _replicated((jnp.arange(128, dtype=jnp.float32) - 3) / 2)
 
     result = jax.jit(lambda inputs: hadamard_transform(inputs, block_size=32))(inputs)
 
@@ -84,7 +97,7 @@ def test_hadamard_transform_jit_matches_dense_reference() -> None:
 
 
 def test_hadamard_transform_vmap_matches_dense_reference() -> None:
-    inputs = (jnp.reshape(jnp.arange(3 * 128, dtype=jnp.float32), (3, 128)) - 5) / 7
+    inputs = _replicated((jnp.reshape(jnp.arange(3 * 128, dtype=jnp.float32), (3, 128)) - 5) / 7)
 
     result = jax.vmap(lambda inputs: hadamard_transform(inputs, block_size=64))(inputs)
     reference = jax.vmap(lambda inputs: _dense_hadamard_transform(inputs, block_size=64))(inputs)
@@ -94,12 +107,11 @@ def test_hadamard_transform_vmap_matches_dense_reference() -> None:
 
 
 def test_hadamard_transform_custom_vjp_matches_self_adjoint_reference() -> None:
-    inputs = (jnp.arange(64, dtype=jnp.float32) - 2) / 3
-    cotangent = (jnp.arange(64, dtype=jnp.float32) + 1) / 7
+    inputs = _replicated((jnp.arange(64, dtype=jnp.float32) - 2) / 3)
+    cotangent = _replicated((jnp.arange(64, dtype=jnp.float32) + 1) / 7)
 
-    result = jax.grad(
-        lambda inputs: jnp.vdot(hadamard_transform(inputs, block_size=32), cotangent),
-    )(inputs)
+    _, vjp_fn = jax.vjp(lambda inputs: hadamard_transform(inputs, block_size=32), inputs)
+    (result,) = vjp_fn(cotangent)
 
     _assert_close(result=result, reference=hadamard_transform(cotangent, block_size=32))
 
@@ -111,7 +123,7 @@ def test_hadamard_transform_cute_matches_dense_reference_on_gpu(
     block_size: Literal[32, 64, 128],
     dtype: jnp.dtype,
 ) -> None:
-    inputs = ((jnp.arange(block_size, dtype=jnp.float32) % 23) / 11).astype(dtype)
+    inputs = _replicated(((jnp.arange(block_size, dtype=jnp.float32) % 23) / 11).astype(dtype))
 
     result = jax.jit(lambda inputs: hadamard_transform(inputs, block_size=block_size))(inputs)
 
@@ -121,8 +133,8 @@ def test_hadamard_transform_cute_matches_dense_reference_on_gpu(
 
 @gpu_only
 def test_hadamard_transform_cute_custom_vjp_matches_self_adjoint_reference_on_gpu() -> None:
-    inputs = (jnp.arange(128, dtype=jnp.float32) - 7) / 13
-    cotangent = jnp.sin(jnp.arange(128, dtype=jnp.float32))
+    inputs = _replicated((jnp.arange(128, dtype=jnp.float32) - 7) / 13)
+    cotangent = _replicated(jnp.sin(jnp.arange(128, dtype=jnp.float32)))
 
     _, vjp_fn = jax.vjp(lambda inputs: hadamard_transform(inputs, block_size=128), inputs)
     (result,) = vjp_fn(cotangent)
@@ -132,7 +144,9 @@ def test_hadamard_transform_cute_custom_vjp_matches_self_adjoint_reference_on_gp
 
 @gpu_only
 def test_hadamard_transform_cute_vmap_matches_dense_reference_on_gpu() -> None:
-    inputs = ((jnp.reshape(jnp.arange(5 * 64 * 4, dtype=jnp.float32), (5, 64 * 4)) % 29) / 17).astype(jnp.bfloat16)
+    inputs = _replicated(
+        ((jnp.reshape(jnp.arange(5 * 64 * 4, dtype=jnp.float32), (5, 64 * 4)) % 29) / 17).astype(jnp.bfloat16)
+    )
 
     result = jax.jit(jax.vmap(lambda inputs: hadamard_transform(inputs, block_size=64)))(inputs)
     reference = jax.vmap(lambda inputs: _dense_hadamard_transform(inputs, block_size=64))(inputs)

@@ -253,7 +253,9 @@ def _load_awq_array(
         if unpacked_zeros is not None:
             unpacked_zeros = _reverse_uint4_order(unpacked_zeros, AWQ_UINT4_REVERSE_ORDER)
 
-    weight_sharding = sharding_config.resolve_sharding(layout.weight_partition(unpacked_weights.ndim - 2))
+    weight_sharding = sharding_config.resolve_sharding(
+        layout.weight_partition(unpacked_weights.ndim - 2, is_sharded=template.is_sharded),
+    )
     weight_values = jax.device_put(unpacked_weights.T.astype(template.dtype), weight_sharding)
     scale_values = jax.device_put(scales.T.astype(template.dtype), weight_sharding)
     if unpacked_zeros is None:
@@ -277,6 +279,7 @@ def _load_awq_array(
         packed_zero_points=packed_zero_points,
         implementation=implementation,
         sharding_config=sharding_config,
+        is_sharded=template.is_sharded,
     )
 
 
@@ -327,7 +330,9 @@ def _load_packed_mlx_matrix(
     group_size = expected_grouped_channels // num_groups
     unpacked_weights = unpack_int32(packed_weights, bits)
 
-    weight_sharding = sharding_config.resolve_sharding(layout.weight_partition(unpacked_weights.ndim - 2))
+    weight_sharding = sharding_config.resolve_sharding(
+        layout.weight_partition(unpacked_weights.ndim - 2, is_sharded=template.is_sharded),
+    )
     weight_values = jax.device_put(unpacked_weights.astype(template.dtype), weight_sharding)
     scale_values = jax.device_put(scales.astype(template.dtype), weight_sharding)
     bias_values = jax.device_put(deq_biases.astype(template.dtype), weight_sharding)
@@ -339,6 +344,7 @@ def _load_packed_mlx_matrix(
         biases=bias_values,
         implementation=implementation,
         sharding_config=sharding_config,
+        is_sharded=template.is_sharded,
     )
 
 

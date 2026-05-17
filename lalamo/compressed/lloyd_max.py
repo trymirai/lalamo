@@ -427,6 +427,7 @@ class LloydMaxSpec(QuantizedSpec):
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
+        is_sharded: bool = True,
     ) -> "LloydMaxMatrix":
         if preconditioner is not None:
             weights = yaqa_round_blockwise(
@@ -436,9 +437,9 @@ class LloydMaxSpec(QuantizedSpec):
                 sharding_config=sharding_config,
             )
 
-        weight_partition = self.layout.weight_partition(weights.ndim - 2)
-        *parameter_axes, grouped_axis = weight_partition
-        weight_sharding = sharding_config.resolve_sharding(weight_partition)
+        weight_axes = self.layout.weight_partition(weights.ndim - 2, is_sharded=is_sharded)
+        *parameter_axes, grouped_axis = weight_axes
+        weight_sharding = sharding_config.resolve_sharding(weight_axes)
         parameter_sharding = sharding_config.resolve_sharding((*parameter_axes, None))
         grouped_values_sharding = sharding_config.resolve_sharding(
             (*parameter_axes, None, grouped_axis),
@@ -467,6 +468,7 @@ class LloydMaxSpec(QuantizedSpec):
             return LloydMaxMatrixForTraining(
                 spec=self,
                 sharding_config=sharding_config,
+                is_sharded=is_sharded,
                 master_weights=with_sharding(stored_weights, weight_sharding),
                 master_scales=master_scales,
                 master_biases=master_biases,
@@ -498,6 +500,7 @@ class LloydMaxSpec(QuantizedSpec):
             dtype=stored_weights.dtype,
             implementation=CompressionImplementation.INFERENCE,
             sharding_config=sharding_config,
+            is_sharded=is_sharded,
         )
 
     def from_packed_parameters(
@@ -509,6 +512,7 @@ class LloydMaxSpec(QuantizedSpec):
         dtype: DTypeLike = jnp.float32,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
+        is_sharded: bool = True,
     ) -> "LloydMaxMatrix":
         if self.bias_bits is None:
             if packed_bias_indices is not None:
@@ -516,10 +520,10 @@ class LloydMaxSpec(QuantizedSpec):
         elif packed_bias_indices is None:
             raise ValueError("LloydMax biases require packed bias indices.")
 
-        weight_partition = self.layout.weight_partition(packed_scales.ndim - 2)
-        *parameter_axes, grouped_axis = weight_partition
+        weight_axes = self.layout.weight_partition(packed_scales.ndim - 2, is_sharded=is_sharded)
+        *parameter_axes, grouped_axis = weight_axes
         parameter_sharding = sharding_config.resolve_sharding((*parameter_axes, None))
-        weight_sharding = sharding_config.resolve_sharding(weight_partition)
+        weight_sharding = sharding_config.resolve_sharding(weight_axes)
         grouped_values_sharding = sharding_config.resolve_sharding(
             (*parameter_axes, None, grouped_axis),
         )
@@ -532,6 +536,7 @@ class LloydMaxSpec(QuantizedSpec):
             return LloydMaxMatrixForInference(
                 spec=self,
                 sharding_config=sharding_config,
+                is_sharded=is_sharded,
                 dtype_=jnp.dtype(dtype),
                 packed_weight_indices=packed_weight_indices,
                 packed_scales=packed_scales,
@@ -575,6 +580,7 @@ class LloydMaxSpec(QuantizedSpec):
         return LloydMaxMatrixForTraining(
             spec=self,
             sharding_config=sharding_config,
+            is_sharded=is_sharded,
             master_weights=with_sharding(weights, weight_sharding),
             master_scales=with_sharding(packed_scales.astype(dtype), parameter_sharding),
             master_biases=master_biases,
@@ -654,6 +660,7 @@ class LloydMaxMatrix(EmbeddingMatrix[LloydMaxSpec]):
             return LloydMaxMatrixForInference(
                 spec=self.spec,
                 sharding_config=self.sharding_config,
+                is_sharded=self.is_sharded,
                 dtype_=jnp.dtype(self.dtype),
                 packed_weight_indices=packed_weight_indices,
                 packed_scales=packed_scales,
@@ -666,6 +673,7 @@ class LloydMaxMatrix(EmbeddingMatrix[LloydMaxSpec]):
             dtype=self.dtype,
             implementation=implementation,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
         )
 
     def _from_packed_parameters(self, implementation: CompressionImplementation) -> "LloydMaxMatrix":
@@ -676,6 +684,7 @@ class LloydMaxMatrix(EmbeddingMatrix[LloydMaxSpec]):
             dtype=self.dtype,
             implementation=implementation,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
         )
 
     @abstractmethod
@@ -694,6 +703,7 @@ class LloydMaxMatrix(EmbeddingMatrix[LloydMaxSpec]):
         return FullPrecisionSpec(layout=self.spec.layout).compress(
             self.decompress(),
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
@@ -747,8 +757,8 @@ class LloydMaxMatrixForTraining(LloydMaxMatrix):
 
     @property
     def _packed_weight_indices(self) -> UInt8[Array, "*components rows packed_cols"]:
-        weight_partition = self.spec.layout.weight_partition(self.master_scales.ndim - 2)
-        *parameter_axes, grouped_axis = weight_partition
+        weight_axes = self.spec.layout.weight_partition(self.master_scales.ndim - 2, is_sharded=self.is_sharded)
+        *parameter_axes, grouped_axis = weight_axes
         return _master_weights_to_packed_weight_indices(
             self.master_weights,
             self.master_scales,
@@ -756,7 +766,7 @@ class LloydMaxMatrixForTraining(LloydMaxMatrix):
             bits=self.spec.bits,
             bias_bits=self.spec.bias_bits,
             group_size=self.spec.group_size,
-            weight_sharding=self._resolve_sharding(weight_partition),
+            weight_sharding=self._resolve_sharding(weight_axes),
             parameter_sharding=self._resolve_sharding((*parameter_axes, None)),
             grouped_values_sharding=self._resolve_sharding((*parameter_axes, None, grouped_axis)),
             sharding_config=self.sharding_config,
@@ -764,8 +774,8 @@ class LloydMaxMatrixForTraining(LloydMaxMatrix):
 
     @property
     def _packed_scales(self) -> Float[Array, "*components rows groups"]:
-        weight_partition = self.spec.layout.weight_partition(self.master_scales.ndim - 2)
-        *parameter_axes, _grouped_axis = weight_partition
+        weight_axes = self.spec.layout.weight_partition(self.master_scales.ndim - 2, is_sharded=self.is_sharded)
+        *parameter_axes, _grouped_axis = weight_axes
         return pack_e4m3_scales(
             self.master_scales,
             out_sharding=self._resolve_sharding((*parameter_axes, None)),
@@ -790,6 +800,7 @@ class LloydMaxMatrixForTraining(LloydMaxMatrix):
         return LloydMaxMatrixForTraining(
             spec=self.spec,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
             master_weights=self.master_weights.astype(dtype),
             master_scales=self.master_scales.astype(dtype),
             master_biases=master_biases,
@@ -831,9 +842,9 @@ class LloydMaxMatrixForTraining(LloydMaxMatrix):
                 master_biases = lookup_sharded_indices(master_biases, row_index)
         scales = scales.astype(dtype)
         if row_index is None:
-            weight_partition = self.spec.layout.weight_partition(scales.ndim - 2)
-            *parameter_axes, grouped_axis = weight_partition
-            weight_sharding = self._resolve_sharding(weight_partition)
+            weight_axes = self.spec.layout.weight_partition(scales.ndim - 2, is_sharded=self.is_sharded)
+            *parameter_axes, grouped_axis = weight_axes
+            weight_sharding = self._resolve_sharding(weight_axes)
             scale_sharding = self._resolve_sharding((*parameter_axes, None))
             grouped_values_sharding = self._resolve_sharding((*parameter_axes, None, grouped_axis))
         else:
@@ -891,6 +902,7 @@ class LloydMaxMatrixForInference(LloydMaxMatrix):
         return LloydMaxMatrixForInference(
             spec=self.spec,
             sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
             dtype_=jnp.dtype(dtype),
             packed_weight_indices=self.packed_weight_indices,
             packed_scales=self.packed_scales,
@@ -932,9 +944,9 @@ class LloydMaxMatrixForInference(LloydMaxMatrix):
             if packed_bias_indices is not None:
                 packed_bias_indices = lookup_sharded_indices(packed_bias_indices, row_index)
         if row_index is None:
-            weight_partition = self.spec.layout.weight_partition(packed_scales.ndim - 2)
-            *parameter_axes, grouped_axis = weight_partition
-            weight_sharding = self._resolve_sharding(weight_partition)
+            weight_axes = self.spec.layout.weight_partition(packed_scales.ndim - 2, is_sharded=self.is_sharded)
+            *parameter_axes, grouped_axis = weight_axes
+            weight_sharding = self._resolve_sharding(weight_axes)
             parameter_sharding = self._resolve_sharding((*parameter_axes, None))
             grouped_values_sharding = self._resolve_sharding((*parameter_axes, None, grouped_axis))
         else:

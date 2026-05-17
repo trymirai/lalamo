@@ -97,6 +97,7 @@ def _put_on_sharding(matrix: MLXMatrixForInference, sharding: Sharding) -> MLXMa
     return MLXMatrixForInference(
         spec=matrix.spec,
         sharding_config=matrix.sharding_config,
+        is_sharded=matrix.is_sharded,
         packed_weights=jax.device_put(matrix.packed_weights, sharding),
         scales=jax.device_put(matrix.scales, sharding),
         biases=jax.device_put(matrix.biases, sharding),
