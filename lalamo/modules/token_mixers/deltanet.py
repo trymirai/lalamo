@@ -58,10 +58,6 @@ class DeltaNetConfig(TokenMixerConfig):
     value_head_dim: int
     kernel_size: int
 
-    @property
-    def rope_dim(self) -> None:
-        return None
-
     def init(
         self,
         initializer: Initializer,

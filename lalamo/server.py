@@ -229,7 +229,7 @@ async def create_batch(
         active_batches = active_batch_ids()
         if active_batches:
             batch_id = sorted(active_batches)[0]
-            raise HTTPException(409, f"{batch_id} is in progress; starting new things is not allowed.")
+            raise HTTPException(409, f"{batch_id} is in progress; starting new batches is not allowed.")
 
         batch = Batch.init(total=len(requests))
         batch.save()

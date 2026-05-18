@@ -43,20 +43,11 @@ class LFM2DecoderTracer(
     def embedding(self, token_ids: Tensor) -> Tensor:
         return self.hf_model.model.embed_tokens.forward(token_ids)
 
-    def global_rope(self, x: Tensor, position_ids: Tensor) -> tuple[Tensor, Tensor]:
-        return self.hf_model.model.rotary_emb.forward(x, position_ids)
-
-    def local_rope(self, x: Tensor, position_ids: Tensor) -> tuple[Tensor, Tensor]:
-        hf_rope = getattr(self.hf_model.model, "rotary_emb_local", None)
-        if hf_rope is None:
-            hf_rope = self.hf_model.model.rotary_emb
-        return hf_rope.forward(x, position_ids)
-
     def rope_fns(self) -> list[tuple[str, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]]]:
         has_attention_layers = any(layer.is_attention_layer for layer in self.hf_model.model.layers)
         if not has_attention_layers:
             return []
-        return [("Global", self.global_rope)]
+        return [("Global", self.hf_model.model.rotary_emb.forward)]
 
     def rmsnorm(self, rmsnorm: Lfm2RMSNorm, x: Tensor) -> Tensor:
         return rmsnorm.forward(x)

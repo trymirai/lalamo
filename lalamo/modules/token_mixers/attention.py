@@ -335,16 +335,8 @@ class AttentionConfig(TokenMixerConfig):
     has_qkv_biases: bool
     has_out_biases: bool
     gate_projection_config: LinearConfig | None = None
-    use_rope: bool = True
-    partial_rope_dim: int | None = None
     # Scale-free RMS normalization on values
     normalize_values: bool = False
-
-    @property
-    def rope_dim(self) -> int | None:
-        if not self.use_rope:
-            return None
-        return self.partial_rope_dim if self.partial_rope_dim is not None else self.head_dim
 
     def init(
         self,
@@ -436,8 +428,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
     @property
     def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        if not self.config.use_rope:
-            return PositionalEmbeddingSelector.NONE
         if self.use_sliding_window:
             return PositionalEmbeddingSelector.LOCAL
         return PositionalEmbeddingSelector.GLOBAL

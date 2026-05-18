@@ -127,7 +127,7 @@ class ConfigMapping:
     def lalamo_transformer_cfg_from_fish_text_decoder_cfg(
         config: BaseModelArgs,
     ) -> tuple[TransformerConfig, LinearConfig]:
-        global_rope_config = UnscaledRoPEConfig(
+        rope_config = UnscaledRoPEConfig(
             base=float(config.rope_base),
             max_sequence_length=config.max_seq_len,
             head_dim=config.head_dim,
@@ -140,11 +140,10 @@ class ConfigMapping:
             subtract_mean=False,
         )
 
-        qkv_projection_config = LinearConfig()
-        out_projection_config = LinearConfig()
+        linear_config = LinearConfig()
         mixer_config = AttentionConfig(
-            qkv_projection_config=qkv_projection_config,
-            out_projection_config=out_projection_config,
+            qkv_projection_config=linear_config,
+            out_projection_config=linear_config,
             query_norm_config=norm_config if config.attention_qk_norm else None,
             key_norm_config=norm_config if config.attention_qk_norm else None,
             num_heads=config.n_head,
@@ -159,42 +158,31 @@ class ConfigMapping:
             has_out_biases=False,
         )
 
-        mlp_linear_config = LinearConfig()
-        mlp_use_up_biases = False
-        mlp_use_down_biases = False
         mlp_config = DenseMLPConfig(
-            linear_config=mlp_linear_config,
+            linear_config=linear_config,
             activation=SiLU(),
-            has_up_biases=mlp_use_up_biases,
-            has_down_biases=mlp_use_down_biases,
+            has_up_biases=False,
+            has_down_biases=False,
             gate_clipping=None,
             up_clipping=None,
         )
 
-        pre_mixer_norm_config = norm_config
-        post_mixer_norm_config = None
-        pre_mlp_norm_config = norm_config
-        post_mlp_norm_config = None
-
         layer_config = TransformerLayerConfig(
-            pre_mixer_norm_config=pre_mixer_norm_config,
+            pre_mixer_norm_config=norm_config,
             mixer_config=mixer_config,
-            post_mixer_norm_config=post_mixer_norm_config,
-            pre_mlp_norm_config=pre_mlp_norm_config,
+            post_mixer_norm_config=None,
+            pre_mlp_norm_config=norm_config,
             mlp_config=mlp_config,
-            post_mlp_norm_config=post_mlp_norm_config,
-            rope_config=global_rope_config,
+            post_mlp_norm_config=None,
+            rope_config=rope_config,
         )
-        model_dim = config.dim
-        hidden_dim = config.intermediate_size
-        context_length = config.max_seq_len
 
         transformer_cfg = TransformerConfig(
-            layer_configs=tuple([layer_config] * config.n_layer),
+            layer_configs=(layer_config,) * config.n_layer,
             output_norm_config=norm_config,
-            model_dim=model_dim,
-            hidden_dim=hidden_dim,
-            context_length=context_length,
+            model_dim=config.dim,
+            hidden_dim=config.intermediate_size,
+            context_length=config.max_seq_len,
         )
         linear_out_cfg = LinearConfig()
 

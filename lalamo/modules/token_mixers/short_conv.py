@@ -59,10 +59,6 @@ class ShortConvConfig(TokenMixerConfig):
 
     kernel_size: int
 
-    @property
-    def rope_dim(self) -> None:
-        return None
-
     def init(
         self,
         initializer: Initializer,

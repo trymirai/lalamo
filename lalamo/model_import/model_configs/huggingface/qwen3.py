@@ -45,7 +45,7 @@ class HFQwen3Config(HuggingFaceLMConfig):
 
     def _get_sliding_window_sizes(self) -> tuple[int | None, ...]:
         if not self.use_sliding_window:
-            return tuple([None] * self.num_hidden_layers)
+            return (None,) * self.num_hidden_layers
 
         # The HuggingFace Qwen3 implementation's comment states that bottom layers use SWA,
         # but the code (`configuration_qwen3.py`) implements it for the top layers.

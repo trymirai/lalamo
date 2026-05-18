@@ -63,10 +63,10 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
     window_size: int,
     input_dim: int,
 ) -> TransformerConfig:
-    # NOTE: this condifion is from post_init() for the post-module config object
+    # FishAudio post-init treats -1 as n_head.
     n_local_heads = config["n_head"] if config["n_local_heads"] == -1 else config["n_local_heads"]
 
-    global_rope_config = UnscaledRoPEConfig(
+    rope_config = UnscaledRoPEConfig(
         base=float(config["rope_base"]),
         max_sequence_length=config["block_size"],
         head_dim=config["head_dim"],
@@ -79,11 +79,10 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         subtract_mean=False,
     )
 
-    qkv_projection_config = LinearConfig()
-    out_projection_config = LinearConfig()
+    linear_config = LinearConfig()
     mixer_config = AttentionConfig(
-        qkv_projection_config=qkv_projection_config,
-        out_projection_config=out_projection_config,
+        qkv_projection_config=linear_config,
+        out_projection_config=linear_config,
         query_norm_config=None,
         key_norm_config=None,
         num_heads=config["n_head"],
@@ -98,42 +97,31 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         has_out_biases=False,
     )
 
-    mlp_linear_config = LinearConfig()
-    mlp_use_up_biases = False
-    mlp_use_down_biases = False
     mlp_config = DenseMLPConfig(
-        linear_config=mlp_linear_config,
+        linear_config=linear_config,
         activation=SiLU(),
-        has_up_biases=mlp_use_up_biases,
-        has_down_biases=mlp_use_down_biases,
+        has_up_biases=False,
+        has_down_biases=False,
         gate_clipping=None,
         up_clipping=None,
     )
 
-    pre_mixer_norm_config = norm_config_pre
-    post_mixer_norm_config = None
-    pre_mlp_norm_config = norm_config_pre
-    post_mlp_norm_config = None
-
     layer_config = TransformerLayerConfig(
-        pre_mixer_norm_config=pre_mixer_norm_config,
+        pre_mixer_norm_config=norm_config_pre,
         mixer_config=mixer_config,
-        post_mixer_norm_config=post_mixer_norm_config,
-        pre_mlp_norm_config=pre_mlp_norm_config,
+        post_mixer_norm_config=None,
+        pre_mlp_norm_config=norm_config_pre,
         mlp_config=mlp_config,
-        post_mlp_norm_config=post_mlp_norm_config,
-        rope_config=global_rope_config,
+        post_mlp_norm_config=None,
+        rope_config=rope_config,
     )
-    hidden_dim = config["intermediate_size"]
-    context_length = config["block_size"]
 
     return TransformerConfig(
-        global_rope_config=global_rope_config,
-        layer_configs=tuple([layer_config] * config["n_layer"]),
+        layer_configs=(layer_config,) * config["n_layer"],
         output_norm_config=norm_config_pre,
         model_dim=input_dim,
-        hidden_dim=hidden_dim,
-        context_length=context_length,
+        hidden_dim=config["intermediate_size"],
+        context_length=config["block_size"],
     )
 
 
@@ -285,7 +273,7 @@ class FishAudioConfig(ForeignTTSConfig):
         head_dim = self.fast_head_dim if fast_module else self.head_dim
         attention_qk_norm = self.fast_attention_qk_norm if fast_module else self.attention_qk_norm
 
-        global_rope_config = UnscaledRoPEConfig(
+        rope_config = UnscaledRoPEConfig(
             base=float(self.rope_base),
             max_sequence_length=self.max_seq_len,
             head_dim=head_dim,
@@ -298,11 +286,10 @@ class FishAudioConfig(ForeignTTSConfig):
             subtract_mean=False,
         )
 
-        qkv_projection_config = LinearConfig()
-        out_projection_config = LinearConfig()
+        linear_config = LinearConfig()
         mixer_config = AttentionConfig(
-            qkv_projection_config=qkv_projection_config,
-            out_projection_config=out_projection_config,
+            qkv_projection_config=linear_config,
+            out_projection_config=linear_config,
             query_norm_config=norm_config if attention_qk_norm else None,
             key_norm_config=norm_config if attention_qk_norm else None,
             num_heads=n_head,
@@ -317,42 +304,31 @@ class FishAudioConfig(ForeignTTSConfig):
             has_out_biases=False,
         )
 
-        mlp_linear_config = LinearConfig()
-        mlp_use_up_biases = False
-        mlp_use_down_biases = False
         mlp_config = DenseMLPConfig(
-            linear_config=mlp_linear_config,
+            linear_config=linear_config,
             activation=SiLU(),
-            has_up_biases=mlp_use_up_biases,
-            has_down_biases=mlp_use_down_biases,
+            has_up_biases=False,
+            has_down_biases=False,
             gate_clipping=None,
             up_clipping=None,
         )
 
-        pre_mixer_norm_config = norm_config
-        post_mixer_norm_config = None
-        pre_mlp_norm_config = norm_config
-        post_mlp_norm_config = None
-
         layer_config = TransformerLayerConfig(
-            pre_mixer_norm_config=pre_mixer_norm_config,
+            pre_mixer_norm_config=norm_config,
             mixer_config=mixer_config,
-            post_mixer_norm_config=post_mixer_norm_config,
-            pre_mlp_norm_config=pre_mlp_norm_config,
+            post_mixer_norm_config=None,
+            pre_mlp_norm_config=norm_config,
             mlp_config=mlp_config,
-            post_mlp_norm_config=post_mlp_norm_config,
-            rope_config=global_rope_config,
+            post_mlp_norm_config=None,
+            rope_config=rope_config,
         )
-        model_dim = dim
-        hidden_dim = intermediate_size
-        context_length = self.max_seq_len
 
         transformer_cfg = TransformerConfig(
-            layer_configs=tuple([layer_config] * n_layer),
+            layer_configs=(layer_config,) * n_layer,
             output_norm_config=norm_config,
-            model_dim=model_dim,
-            hidden_dim=hidden_dim,
-            context_length=context_length,
+            model_dim=dim,
+            hidden_dim=intermediate_size,
+            context_length=self.max_seq_len,
         )
         linear_out_cfg = LinearConfig()
 

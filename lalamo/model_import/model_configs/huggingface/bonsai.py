@@ -96,37 +96,33 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
             gate_clipping=None,
         )
 
-        layer_configs = []
-        for _ in range(self.num_hidden_layers):
-            attention_config = AttentionConfig(
-                qkv_projection_config=linear_config,
-                out_projection_config=linear_config,
-                query_norm_config=rmsnorm_config,
-                key_norm_config=rmsnorm_config,
-                logit_soft_cap=None,
-                has_sinks=False,
-                has_qkv_biases=self.attention_bias,
-                has_out_biases=self.attention_bias,
-                num_heads=self.num_attention_heads,
-                num_groups=self.num_key_value_heads,
-                head_dim=self.head_dim,
-                is_causal=True,
-                scale=None,
-                sliding_window_size=None,
-            )
-            transformer_layer_config = TransformerLayerConfig(
-                pre_mixer_norm_config=rmsnorm_config,
-                mixer_config=attention_config,
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=rmsnorm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=None,
-            )
-            layer_configs.append(transformer_layer_config)
+        attention_config = AttentionConfig(
+            qkv_projection_config=linear_config,
+            out_projection_config=linear_config,
+            query_norm_config=rmsnorm_config,
+            key_norm_config=rmsnorm_config,
+            logit_soft_cap=None,
+            has_sinks=False,
+            has_qkv_biases=self.attention_bias,
+            has_out_biases=self.attention_bias,
+            num_heads=self.num_attention_heads,
+            num_groups=self.num_key_value_heads,
+            head_dim=self.head_dim,
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
+        )
+        transformer_layer_config = TransformerLayerConfig(
+            pre_mixer_norm_config=rmsnorm_config,
+            mixer_config=attention_config,
+            post_mixer_norm_config=None,
+            pre_mlp_norm_config=rmsnorm_config,
+            mlp_config=mlp_config,
+            post_mlp_norm_config=None,
+            rope_config=rope_config,
+        )
         transformer_config = TransformerConfig(
-            global_rope_config=rope_config,
-            local_rope_config=None,
-            layer_configs=tuple(layer_configs),
+            layer_configs=(transformer_layer_config,) * self.num_hidden_layers,
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,

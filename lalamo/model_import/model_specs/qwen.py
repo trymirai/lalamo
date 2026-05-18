@@ -8,7 +8,7 @@ from lalamo.model_import.origins import HuggingFaceOrigin
 
 __all__ = ["QWEN_MODELS"]
 
-QWEN_THINKING_OUTPUT_PARSER_REGEX = r"(?s)<think>(?P<chain_of_thought>.*?)(?:</think>(?P<response>.*))?\Z"
+QWEN_THINKING_OUTPUT_PARSER_REGEX = r"(?s)(?:<think>)?(?P<chain_of_thought>.*?)(?:</think>(?P<response>.*))?\Z"
 
 
 def _qwen3_mlx_model_spec(

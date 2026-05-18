@@ -123,10 +123,6 @@ class Mamba2Config(TokenMixerConfig):
     def conv_dim(self) -> int:
         return self.inner_dim + 2 * self.num_groups * self.state_dim
 
-    @property
-    def rope_dim(self) -> None:
-        return None
-
     def init(
         self,
         initializer: Initializer,

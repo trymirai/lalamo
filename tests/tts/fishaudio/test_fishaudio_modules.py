@@ -75,8 +75,8 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     fish_layer = fish_model.layers[0]
     fish_layer_result = fish_layer(embedded_input_torch, freqs_cis, mask, input_pos=input_pos)
 
-    (global_rope,) = lalamo_transformer.ropes
-    pos_emb_lalamo = call_vmapped(global_rope, input_pos_lalamo)
+    (rope,) = lalamo_transformer.ropes
+    pos_emb_lalamo = call_vmapped(rope, input_pos_lalamo)
     lalamo_layer = lalamo_transformer.layers[0]
     lalamo_layer_result = lalamo_layer(
         embedded_input_lalamo,

@@ -169,10 +169,6 @@ class TransformerLayerConfig(LalamoConfig):
     kv_source_layer_index: int | None = None
     rope_config: RoPEConfig | None = None
 
-    @property
-    def rope_dim(self) -> int | None:
-        return self.mixer_config.rope_dim
-
     def init(
         self,
         initializer: Initializer,
@@ -216,6 +212,8 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
 
     @property
     def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
+        if self.config.rope_config is None:
+            return PositionalEmbeddingSelector.NONE
         return self.mixer.positional_embedding_selector
 
     @eqx.filter_jit

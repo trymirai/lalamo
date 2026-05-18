@@ -85,51 +85,47 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
                 "SmolLM3 requires no_rope_layers to be a per-layer mask with at least num_hidden_layers entries, "
                 f"got {len(self.no_rope_layers)} entries for {self.num_hidden_layers} layers.",
             )
+        uses_rope_by_layer = tuple(bool(flag) for flag in self.no_rope_layers[: self.num_hidden_layers])
 
-        layer_configs = []
-        for layer_idx in range(self.num_hidden_layers):
-            # Despite the name, no_rope_layers is a per-layer flag where 1 = use RoPE,
-            # matching HF's own SmolLM3Attention: self.use_rope = config.no_rope_layers[layer_idx]
-            use_rope = bool(self.no_rope_layers[layer_idx])
-
-            attention_config = AttentionConfig(
-                qkv_projection_config=linear_config,
-                out_projection_config=linear_config,
-                query_norm_config=None,
-                key_norm_config=None,
-                logit_soft_cap=None,
-                has_sinks=False,
-                has_qkv_biases=self.attention_bias,
-                has_out_biases=self.attention_bias,
-                num_heads=self.num_attention_heads,
-                num_groups=self.num_key_value_heads,
-                head_dim=layer_head_dim,
-                is_causal=True,
-                scale=None,
-                sliding_window_size=None,
+        attention_config = AttentionConfig(
+            qkv_projection_config=linear_config,
+            out_projection_config=linear_config,
+            query_norm_config=None,
+            key_norm_config=None,
+            logit_soft_cap=None,
+            has_sinks=False,
+            has_qkv_biases=self.attention_bias,
+            has_out_biases=self.attention_bias,
+            num_heads=self.num_attention_heads,
+            num_groups=self.num_key_value_heads,
+            head_dim=layer_head_dim,
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
+        )
+        mlp_config = DenseMLPConfig(
+            linear_config=linear_config,
+            activation=SiLU(),
+            has_up_biases=self.mlp_bias,
+            has_down_biases=self.mlp_bias,
+            up_clipping=None,
+            gate_clipping=None,
+        )
+        layer_configs = tuple(
+            TransformerLayerConfig(
+                pre_mixer_norm_config=rmsnorm_config,
+                mixer_config=attention_config,
+                post_mixer_norm_config=None,
+                pre_mlp_norm_config=rmsnorm_config,
+                mlp_config=mlp_config,
+                post_mlp_norm_config=None,
+                rope_config=rope_config if uses_rope else None,
             )
-            mlp_config = DenseMLPConfig(
-                linear_config=linear_config,
-                activation=SiLU(),
-                has_up_biases=self.mlp_bias,
-                has_down_biases=self.mlp_bias,
-                up_clipping=None,
-                gate_clipping=None,
-            )
-            layer_configs.append(
-                TransformerLayerConfig(
-                    pre_mixer_norm_config=rmsnorm_config,
-                    mixer_config=attention_config,
-                    post_mixer_norm_config=None,
-                    pre_mlp_norm_config=rmsnorm_config,
-                    mlp_config=mlp_config,
-                    post_mlp_norm_config=None,
-                    rope_config=rope_config if use_rope else None,
-                ),
-            )
+            for uses_rope in uses_rope_by_layer
+        )
 
         transformer_config = TransformerConfig(
-            layer_configs=tuple(layer_configs),
+            layer_configs=layer_configs,
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
