@@ -96,6 +96,12 @@ gpu_lock = asyncio.Lock()
 creation_lock = asyncio.Lock()
 
 
+def active_batch_ids() -> set[str]:
+    if not hasattr(app.state, "active_batch_ids"):
+        app.state.active_batch_ids = set()
+    return app.state.active_batch_ids
+
+
 async def sweep_cache() -> None:
     while True:
         cutoff = time.time() - 96 * 3600
@@ -112,6 +118,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         raise RuntimeError("This app must run with a single worker.")
     app.state.cache_dir.mkdir(parents=True, exist_ok=True)
     app.state.tasks = set()
+    app.state.active_batch_ids = set()
     sweeper = asyncio.create_task(sweep_cache())
     yield
     sweeper.cancel()
@@ -192,7 +199,7 @@ async def execute_batch(batch: Batch, requests: list[RequestBody]) -> None:
     def run_generate_replies_with_stats() -> None:
         for response in generate_replies(requests):
             collected.append(response)
-            replace(batch, completed=len(collected)).save()
+            replace(batch, completed=len(collected), results=tuple(collected)).save()
 
     try:
         async with gpu_lock:
@@ -209,16 +216,27 @@ async def execute_batch(batch: Batch, requests: list[RequestBody]) -> None:
         batch.save()
 
 
+def finish_batch_task(task: asyncio.Task, batch_id: str) -> None:
+    active_batch_ids().discard(batch_id)
+    app.state.tasks.discard(task)
+
+
 @app.post("/batches", status_code=202)
 async def create_batch(
     requests: Annotated[list[RequestBody], Depends(validate_requests)],
 ) -> Batch:
     async with creation_lock:
+        active_batches = active_batch_ids()
+        if active_batches:
+            batch_id = sorted(active_batches)[0]
+            raise HTTPException(409, f"{batch_id} is in progress; starting new things is not allowed.")
+
         batch = Batch.init(total=len(requests))
         batch.save()
-    task = asyncio.create_task(execute_batch(batch, requests))
-    app.state.tasks.add(task)
-    task.add_done_callback(app.state.tasks.discard)
+        active_batches.add(batch.id)
+        task = asyncio.create_task(execute_batch(batch, requests))
+        app.state.tasks.add(task)
+        task.add_done_callback(lambda completed_task: finish_batch_task(completed_task, batch.id))
     return batch
 
 
