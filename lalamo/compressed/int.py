@@ -39,7 +39,7 @@ from .utils.grouping import (
 )
 from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from .utils.rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
-from .utils.yaqa import yaqa_round_fixpoint
+from .utils.yaqa import yaqa_round_blockwise
 
 __all__ = [
     "IntMatrix",
@@ -284,7 +284,7 @@ class IntSpec(QuantizedSpec):
         is_sharded: bool = True,
     ) -> "IntMatrix":
         if preconditioner is not None:
-            weights = yaqa_round_fixpoint(
+            weights = yaqa_round_blockwise(
                 weights,
                 preconditioner,
                 self,
