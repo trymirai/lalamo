@@ -1,11 +1,28 @@
 from lalamo.model_import.model_configs import (
     HFGemma3Config,
     HFGemma3TextConfig,
+    HFGemma4Config,
 )
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.origins import HuggingFaceOrigin
 
 __all__ = ["GEMMA_MODELS"]
+
+GEMMA4_BASE_CHAT_TEMPLATE = "{{ bos_token or '' }}{% for message in messages %}{{ message.content }}{% endfor %}"
+
+
+def _gemma4_model_spec(name: str, size: str) -> LanguageModelSpec:
+    chat_template = FileSpec("chat_template.jinja") if name.endswith("-it") else GEMMA4_BASE_CHAT_TEMPLATE
+    return LanguageModelSpec(
+        vendor="Google",
+        family="Gemma-4",
+        name=name,
+        size=size,
+        origin=HuggingFaceOrigin(repo=f"google/{name}"),
+        config_type=HFGemma4Config,
+        configs=ConfigMap(chat_template=chat_template),
+    )
+
 
 GEMMA3 = [
     LanguageModelSpec(
@@ -101,4 +118,11 @@ GEMMA3 = [
     ),
 ]
 
-GEMMA_MODELS = GEMMA3
+GEMMA4 = [
+    _gemma4_model_spec("gemma-4-E2B", "2B"),
+    _gemma4_model_spec("gemma-4-E2B-it", "2B"),
+    _gemma4_model_spec("gemma-4-E4B", "4B"),
+    _gemma4_model_spec("gemma-4-E4B-it", "4B"),
+]
+
+GEMMA_MODELS = GEMMA3 + GEMMA4
