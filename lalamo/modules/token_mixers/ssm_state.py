@@ -23,6 +23,7 @@ class SSMStateLayer(StateLayerBase):
                 "SSM state must have 3 or 4 dimensions: [batch], heads, state_channels, head_channels,"
                 f" got shape {self.ssm_state.shape}",
             )
+
     @classmethod
     def init(
         cls,
