@@ -240,6 +240,8 @@ class HFGemma4Config(HuggingFaceLMConfig):
         json_path = Path(json_path)
         with open(json_path) as f:
             config = json.load(f)
+        eos_token_id = config.get("eos_token_id", config["text_config"]["eos_token_id"])
+        config["eos_token_id"] = [eos_token_id] if isinstance(eos_token_id, int) else list(eos_token_id)
         return cls._converter.structure(config, cls)
 
     def to_decoder_config(
