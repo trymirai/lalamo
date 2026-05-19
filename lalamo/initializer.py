@@ -1,6 +1,6 @@
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import jax
 from jax import numpy as jnp
@@ -31,6 +31,9 @@ __all__ = [
 @dataclass
 class Initializer(ABC):
     dtype: DTypeLike
+
+    def with_dtype(self, dtype: DTypeLike) -> "Initializer":
+        return replace(self, dtype=dtype)
 
     def _partition_to_sharding(
         self,

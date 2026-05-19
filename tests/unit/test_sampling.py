@@ -55,8 +55,10 @@ def test_init_rejects_invalid_arguments(call: Callable[[], SamplingPolicy], matc
         (SamplingPolicy.init(temperature=2.0), [1.0, 2.0, 4.0], [0.5, 1.0, 2.0]),
         (SamplingPolicy.init(top_k=2), [1.0, 5.0, 3.0, 4.0], [-jnp.inf, 5.0, -jnp.inf, 4.0]),
         (SamplingPolicy.init(top_k=8), [1.0, 5.0, 3.0], [1.0, 5.0, 3.0]),
+        (SamplingPolicy.init(top_k=1, top_p=0.5), [3.0, 3.0, 1.0], [3.0, -jnp.inf, -jnp.inf]),
         (SamplingPolicy.init(top_p=0.5), [5.0, 4.0, 3.0], [5.0, -jnp.inf, -jnp.inf]),
         (SamplingPolicy.init(top_p=0.9), [3.0, 2.0, 1.0], [3.0, 2.0, -jnp.inf]),
+        (SamplingPolicy.init(top_p=0.5), [0.0, 0.0], [0.0, -jnp.inf]),
         (SamplingPolicy.init(min_p=0.2), jnp.log(jnp.array([1.0, 0.25, 0.05])), [0.0, -1.3862944, -jnp.inf]),
         (
             _with_counts(SamplingPolicy.init(repetition_penalty=2.0), (0, 1), 2, 4),
@@ -80,6 +82,13 @@ def test_process_logits(policy: SamplingPolicy, logits: jax.Array | list[float],
     result = policy.process_logits(jnp.asarray(logits, dtype=jnp.float32))
 
     _assert_array(result, jnp.array(expected, dtype=jnp.float32))
+
+
+def test_top_k_keeps_exactly_k_tokens_at_cutoff_ties() -> None:
+    result = SamplingPolicy.init(top_k=2).process_logits(jnp.array([5.0, 4.0, 4.0, 4.0, 3.0], dtype=jnp.float32))
+
+    assert jnp.isfinite(result).sum().item() == 2
+    assert result[0].item() == 5.0
 
 
 def test_token_counts_ignore_out_of_vocab_tokens_and_update_generated_tokens() -> None:

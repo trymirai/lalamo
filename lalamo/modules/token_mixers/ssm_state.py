@@ -23,9 +23,6 @@ class SSMStateLayer(StateLayerBase):
                 "SSM state must have 3 or 4 dimensions: [batch], heads, state_channels, head_channels,"
                 f" got shape {self.ssm_state.shape}",
             )
-        if self.conv_state.dtype != self.ssm_state.dtype:
-            raise ValueError("Conv state and SSM state must have the same dtype")
-
     @classmethod
     def init(
         cls,
@@ -33,7 +30,8 @@ class SSMStateLayer(StateLayerBase):
         conv_dim: int,
         ssm_state_shape: tuple[int, ...],
         dtype: DTypeLike,
+        ssm_dtype: DTypeLike | None = None,
     ) -> Self:
         conv_state = jnp.zeros((kernel_size - 1, conv_dim), dtype=dtype)
-        ssm_state = jnp.zeros(ssm_state_shape, dtype=dtype)
+        ssm_state = jnp.zeros(ssm_state_shape, dtype=ssm_dtype or dtype)
         return cls(conv_state=conv_state, ssm_state=ssm_state)

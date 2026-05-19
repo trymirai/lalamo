@@ -190,10 +190,10 @@ class SamplingPolicy(eqx.Module):
         logits = self._apply_repetition_penalty(logits)
         logits = self._apply_presence_penalty(logits)
         logits = self._apply_frequency_penalty(logits)
-        logits = self._apply_temperature(logits)
         logits = self._apply_top_k(logits)
         logits = self._apply_top_p(logits)
-        return self._apply_min_p(logits)
+        logits = self._apply_min_p(logits)
+        return self._apply_temperature(logits)
 
     def __call__(self, logits: Float[Array, " vocabulary"], *, keychain: Keychain) -> Int[Array, ""]:
         self._raise_if_batched()
@@ -270,9 +270,9 @@ class SamplingPolicy(eqx.Module):
             return logits
         (vocabulary_size,) = logits.shape
         effective_top_k = jnp.clip(self.top_k, 1, vocabulary_size)
-        sorted_logits = jnp.sort(logits, axis=-1, descending=True)
-        min_logit = sorted_logits[effective_top_k - 1]
-        filtered_logits = jnp.where(logits >= min_logit, logits, -jnp.inf)
+        sorted_indices = jnp.argsort(logits, axis=-1, descending=True)
+        ranks = jnp.empty_like(sorted_indices).at[sorted_indices].set(jnp.arange(vocabulary_size, dtype=jnp.int32))
+        filtered_logits = jnp.where(ranks < effective_top_k, logits, -jnp.inf)
         return jnp.where(self.top_k > 0, filtered_logits, logits)
 
     def _apply_top_p(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
@@ -280,11 +280,11 @@ class SamplingPolicy(eqx.Module):
             return logits
         sorted_indices = jnp.argsort(logits, axis=-1, descending=True)
         sorted_logits = jnp.take_along_axis(logits, sorted_indices, axis=-1)
-        cumulative_probs = jnp.cumsum(jax.nn.softmax(sorted_logits, axis=-1), axis=-1)
+        sorted_probs = jax.nn.softmax(sorted_logits, axis=-1)
+        cumulative_probs = jnp.cumsum(sorted_probs, axis=-1)
+        cumulative_probs_before_token = cumulative_probs - sorted_probs
 
-        to_remove_sorted = cumulative_probs > self.top_p
-        to_remove_sorted = jnp.roll(to_remove_sorted, shift=1, axis=-1)
-        to_remove_sorted = to_remove_sorted.at[0].set(False)
+        to_remove_sorted = cumulative_probs_before_token >= self.top_p
 
         unsort_indices = jnp.argsort(sorted_indices, axis=-1)
         to_remove_unsorted = jnp.take_along_axis(to_remove_sorted, unsort_indices, axis=-1)
