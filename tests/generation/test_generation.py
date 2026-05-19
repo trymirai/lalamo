@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import jax.numpy as jnp
 import pytest
 from jax.lax import DotAlgorithmPreset
@@ -12,6 +14,23 @@ from tests.conftest import ConvertModel, filter_specs, load_converted_model, mar
 from tests.model_test_tiers import ModelTier
 
 core_llm_specs = filter_specs(model_type=LanguageModelSpec, max_tier=ModelTier.CORE)
+
+
+def _stable_generation_forward_pass_configs() -> tuple[DecoderForwardPassConfig, DecoderForwardPassConfig]:
+    prefill_forward_pass_config = DecoderForwardPassConfig.for_tracer_tests()
+    decode_forward_pass_config = DecoderForwardPassConfig.for_tracer_tests()
+    decode_transformer_config = decode_forward_pass_config.transformer_forward_pass_config
+    decode_forward_pass_config = replace(
+        decode_forward_pass_config,
+        transformer_forward_pass_config=replace(
+            decode_transformer_config,
+            mlp_forward_pass_config=replace(
+                decode_transformer_config.mlp_forward_pass_config,
+                mode=ForwardPassMode.SINGLE_TOKEN,
+            ),
+        ),
+    )
+    return prefill_forward_pass_config, decode_forward_pass_config
 
 
 @pytest.fixture(params=mark_by_size(core_llm_specs), ids=[spec.origin.description for spec in core_llm_specs])
@@ -100,12 +119,15 @@ def test_batch_generation(language_model: LanguageModel) -> None:
     )
 
     generation_config = GenerationConfig(temperature=0.0)
+    prefill_forward_pass_config, decode_forward_pass_config = _stable_generation_forward_pass_configs()
     max_output_length = 10
     response_token_ids = language_model.generate_tokens(
         padded_token_ids,
         generation_config=generation_config,
         prompt_lengths_without_padding=batched_prompt_lengths,
         max_output_length=max_output_length,
+        prefill_forward_pass_config=prefill_forward_pass_config,
+        decode_forward_pass_config=decode_forward_pass_config,
         keychain=Keychain.init(3),
     ).token_ids
 
@@ -127,6 +149,8 @@ def test_batch_generation(language_model: LanguageModel) -> None:
             generation_config=generation_config,
             prompt_lengths_without_padding=lengths,
             max_output_length=max_output_length,
+            prefill_forward_pass_config=prefill_forward_pass_config,
+            decode_forward_pass_config=decode_forward_pass_config,
             keychain=Keychain.init(10 + pair_index),
         ).token_ids
 
