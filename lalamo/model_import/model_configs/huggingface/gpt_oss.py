@@ -2,24 +2,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from jaxtyping import DTypeLike
-
-from lalamo.modules import (
-    AttentionConfig,
-    DecoderConfig,
-    DenseMLPConfig,
-    FullPrecisionLinearConfig,
-    MixtureOfExpertsConfig,
-    NormalizationConfig,
-    SoftmaxRouting,
-    TiedEmbeddingConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
-    UntiedEmbeddingConfig,
-    UpcastMode,
-    YARNRoPEConfig,
-)
 from lalamo.modules.activations import SiLU
+from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, SoftmaxRouting
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import YARNRoPEConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .common import HuggingFaceLMConfig
 
@@ -75,8 +67,6 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         # Embedding
@@ -84,20 +74,17 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                precision=activation_precision,
             )
         else:
             embedding_config = UntiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                precision=activation_precision,
             )
 
         head_dim = self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads
 
         if self.rope_scaling is not None and self.rope_scaling.rope_type == "yarn":
             rope_config = YARNRoPEConfig(
-                precision=activation_precision,
                 base=self.rope_theta,
                 max_sequence_length=context_length or self.max_position_embeddings,
                 scaling_factor=self.rope_scaling.factor,
@@ -109,7 +96,6 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
             )
         else:
             rope_config = YARNRoPEConfig(
-                precision=activation_precision,
                 base=self.rope_theta,
                 max_sequence_length=context_length or self.max_position_embeddings,
                 scaling_factor=1.0,
@@ -121,8 +107,6 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
             )
 
         rmsnorm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
@@ -130,7 +114,7 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
         )
 
         # Linear layers
-        linear_config = FullPrecisionLinearConfig(precision=activation_precision)
+        linear_config = LinearConfig()
 
         # Experts (MoE) scaffold
         # Router: linear with bias; Experts: DenseMLP with SiLU(alpha=1.702) and value/gate clipping

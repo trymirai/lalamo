@@ -1,12 +1,11 @@
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
-from typing import Self
+from collections.abc import Sequence
+from dataclasses import dataclass
 
-import jax
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Float, Int
 
-from lalamo.common import ParameterTree, require_mapping, require_tree
-from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
+from lalamo.initializer import Initializer
+from lalamo.module import Keychain
+from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfig
 
 from .fishaudio_modules import (
     ConvNeXtSpatialParams,
@@ -21,8 +20,7 @@ from .fishaudio_modules import (
 
 
 @dataclass(frozen=True)
-class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
-    precision: DTypeLike
+class DescriptAudioCodecConfig(TTSAudioDecoderConfig):
     quantizer_config: DownsampleResidualVectorQuantizeConfig
     decoder_config: DACDecoderConfig
     samplerate: int
@@ -40,8 +38,9 @@ class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
     codebook_size: int
     semantic_codebook_size: int
 
-    def empty(
+    def init(
         self,
+        initializer: Initializer,
     ) -> "DescriptAudioCodec":
         (
             semantic_quantizer_params,
@@ -61,56 +60,16 @@ class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
             codebook_size=self.codebook_size,
             semantic_codebook_size=self.semantic_codebook_size,
         )
-        quantizer = self.quantizer_config.empty(
+
+        quantizer = self.quantizer_config.init(
+            initializer,
             upsampler_trans_conv_params=upsample_conv_params,
             convnext_spatial_params=convnext_params,
             semantic_quantizer_params=semantic_quantizer_params,
             quantizer_params=quantizer_params,
         )
 
-        decoder = self.decoder_config.empty(spatial_params=decoder_spatial_params)
-
-        return DescriptAudioCodec(
-            config=self,
-            quantizer=quantizer,
-            decoder=decoder,
-        )
-
-    def random_init(
-        self,
-        *,
-        key: PRNGKeyArray,
-    ) -> "DescriptAudioCodec":
-        key1, key2 = jax.random.split(key)
-
-        (
-            semantic_quantizer_params,
-            quantizer_params,
-            convnext_params,
-            upsample_conv_params,
-            decoder_spatial_params,
-        ) = DescriptAudioCodecConfig.create_spatial_parameter_objects(
-            encoder_dim=self.encoder_dim,
-            encoder_rates=self.encoder_rates,
-            decoder_dim=self.decoder_dim,
-            decoder_rates=self.decoder_rates,
-            input_dim=self.input_dim,
-            n_codebooks=self.n_codebooks,
-            codebook_dim=self.codebook_dim,
-            downsample_factor=self.downsample_factor,
-            codebook_size=self.codebook_size,
-            semantic_codebook_size=self.semantic_codebook_size,
-        )
-
-        quantizer = self.quantizer_config.random_init(
-            upsampler_trans_conv_params=upsample_conv_params,
-            convnext_spatial_params=convnext_params,
-            semantic_quantizer_params=semantic_quantizer_params,
-            quantizer_params=quantizer_params,
-            key=key1,
-        )
-
-        decoder = self.decoder_config.random_init(spatial_params=decoder_spatial_params, key=key2)
+        decoder = self.decoder_config.init(initializer, spatial_params=decoder_spatial_params)
 
         return DescriptAudioCodec(
             config=self,
@@ -195,10 +154,6 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
         return self.config.samplerate
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
     def semantic_codebook_size(self) -> int:
         return self.quantizer.semantic_codebook_size
 
@@ -214,34 +169,13 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
     def __call__(
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
+        *,
+        keychain: Keychain,
     ) -> Float[Array, "batch audio_samples 1"]:
-        z = self.quantizer.decode(indices)
-        audio = self.decoder(z)
+        z = self.quantizer.decode(indices, keychain=keychain)
+        return self.decoder(z)
 
-        return audio
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "quantizer": self.quantizer.export_weights(),
-            "decoder": self.decoder.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-
-        quantizer_weights = weights["quantizer"]
-        decoder_weights = weights["decoder"]
-
-        assert isinstance(quantizer_weights, Mapping)
-        assert isinstance(decoder_weights, Mapping)
-
-        return replace(
-            self,
-            quantizer=self.quantizer.import_weights(require_tree(quantizer_weights)),
-            decoder=self.decoder.import_weights(require_tree(decoder_weights)),
-        )
-
-    def audio_from_codes(self, indices: Array) -> Array:
+    def audio_from_codes(self, indices: Array, *, keychain: Keychain) -> Array:
         if len(indices.shape) == 2:
             indices = indices[None, :]
-        return self(indices)[0, :, 0]
+        return self(indices, keychain=keychain)[0, :, 0]

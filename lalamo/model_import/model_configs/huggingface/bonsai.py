@@ -2,23 +2,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from jaxtyping import DTypeLike
-
-from lalamo.modules import (
-    AttentionConfig,
-    DecoderConfig,
-    DenseMLPConfig,
-    MLXQuantizedLinearConfig,
-    MLXQuantizedTiedEmbeddingConfig,
-    MLXQuantizedUntiedEmbeddingConfig,
-    NormalizationConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
-    UpcastMode,
-    YARNRoPEConfig,
-)
 from lalamo.modules.activations import SiLU
-from lalamo.quantization import QuantizationMode
+from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import YARNRoPEConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
@@ -56,67 +49,44 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
     vocab_size: int
     head_dim: int
 
-    # Bonsai's config.json doesn't include torch_dtype
     torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
     quantization: QuantizationConfigType = None
 
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         assert isinstance(self.quantization, MLXQuantizationConfig), "HFBonsaiConfig requires MLX quantization config"
         assert not self.use_sliding_window, "Sliding window attention is not supported for Bonsai"
-        quantization = self.quantization
-        quantization_mode = QuantizationMode.from_num_bits(quantization.bits)
-
         if self.tie_word_embeddings:
-            embedding_config = MLXQuantizedTiedEmbeddingConfig(
+            embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                group_size=quantization.group_size,
-                embedding_quantization_mode=quantization_mode,
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
             )
         else:
-            embedding_config = MLXQuantizedUntiedEmbeddingConfig(
+            embedding_config = UntiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                group_size=quantization.group_size,
-                embedding_quantization_mode=quantization_mode,
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
             )
 
         rope_config = YARNRoPEConfig(
-            precision=activation_precision,
             base=self.rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
             scaling_factor=self.rope_scaling.factor,
             original_context_length=self.rope_scaling.original_max_position_embeddings,
             beta_fast=self.rope_scaling.beta_fast,
             beta_slow=self.rope_scaling.beta_slow,
-            head_dim=self.head_dim,
             truncate=True,
         )
 
         rmsnorm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
-        linear_config = MLXQuantizedLinearConfig(
-            group_size=quantization.group_size,
-            weight_quantization_mode=quantization_mode,
-            activation_quantization_mode=None,
-            activation_precision=activation_precision,
-        )
+        linear_config = LinearConfig()
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=SiLU(),
@@ -126,36 +96,33 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
             gate_clipping=None,
         )
 
-        layer_configs = []
-        for _ in range(self.num_hidden_layers):
-            attention_config = AttentionConfig(
-                qkv_projection_config=linear_config,
-                out_projection_config=linear_config,
-                query_norm_config=rmsnorm_config,
-                key_norm_config=rmsnorm_config,
-                logit_soft_cap=None,
-                has_sinks=False,
-                has_qkv_biases=self.attention_bias,
-                has_out_biases=self.attention_bias,
-                num_heads=self.num_attention_heads,
-                num_groups=self.num_key_value_heads,
-                head_dim=self.head_dim,
-                is_causal=True,
-                scale=None,
-                sliding_window_size=None,
-            )
-            transformer_layer_config = TransformerLayerConfig(
-                pre_mixer_norm_config=rmsnorm_config,
-                mixer_config=attention_config,
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=rmsnorm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=None,
-                rope_config=rope_config,
-            )
-            layer_configs.append(transformer_layer_config)
+        attention_config = AttentionConfig(
+            qkv_projection_config=linear_config,
+            out_projection_config=linear_config,
+            query_norm_config=rmsnorm_config,
+            key_norm_config=rmsnorm_config,
+            logit_soft_cap=None,
+            has_sinks=False,
+            has_qkv_biases=self.attention_bias,
+            has_out_biases=self.attention_bias,
+            num_heads=self.num_attention_heads,
+            num_groups=self.num_key_value_heads,
+            head_dim=self.head_dim,
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
+        )
+        transformer_layer_config = TransformerLayerConfig(
+            pre_mixer_norm_config=rmsnorm_config,
+            mixer_config=attention_config,
+            post_mixer_norm_config=None,
+            pre_mlp_norm_config=rmsnorm_config,
+            mlp_config=mlp_config,
+            post_mlp_norm_config=None,
+            rope_config=rope_config,
+        )
         transformer_config = TransformerConfig(
-            layer_configs=tuple(layer_configs),
+            layer_configs=(transformer_layer_config,) * self.num_hidden_layers,
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,

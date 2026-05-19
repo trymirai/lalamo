@@ -1,5 +1,14 @@
+from lalamo.model_import.model_spec import (
+    ClassifierModelSpec,
+    ConfigMap,
+    FileSpec,
+    JSONFieldSpec,
+    LanguageModelSpec,
+    ModelSpec,
+    TTSModelSpec,
+)
+
 from .bonsai import BONSAI_MODELS
-from .common import FileSpec, ModelSpec, ModelType, UseCase
 from .deepseek import DEEPSEEK_MODELS
 from .essential_ai import RNJ_MODELS
 from .fishaudio import FISHAUDIO_TTS_MODELS
@@ -12,17 +21,18 @@ from .llamba import LLAMBA_MODELS
 from .mirai import MIRAI_CLASSIFIER_MODELS
 from .mistral import MISTRAL_MODELS
 from .nanbeige import NANBEIGE_MODELS
-
-# from .pleias import PLEIAS_MODELS
 from .polaris import POLARIS_MODELS
 from .qwen import QWEN_MODELS
 
 __all__ = [
     "ALL_MODEL_LISTS",
+    "ClassifierModelSpec",
+    "ConfigMap",
     "FileSpec",
+    "JSONFieldSpec",
+    "LanguageModelSpec",
     "ModelSpec",
-    "ModelType",
-    "UseCase",
+    "TTSModelSpec",
 ]
 
 TTS_MODELS = FISHAUDIO_TTS_MODELS
@@ -36,7 +46,6 @@ ALL_MODEL_LISTS = [
     HUGGINGFACE_MODELS,
     GPT_OSS_MODELS,
     MISTRAL_MODELS,
-    # PLEIAS_MODELS,  # TODO(norpadon): Add chat template
     POLARIS_MODELS,
     QWEN_MODELS,
     MIRAI_CLASSIFIER_MODELS,

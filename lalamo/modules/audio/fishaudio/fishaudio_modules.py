@@ -1,13 +1,10 @@
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
-import jax
 from jax import numpy as jnp
-from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Float, Int
 
-from lalamo.common import ParameterTree, require_tree
+from lalamo.initializer import Initializer
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, ShardingAxis
 from lalamo.modules.activations import Activation
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
@@ -17,11 +14,11 @@ from lalamo.modules.audio.common_modules import (
     Snake1d,
     Snake1dConfig,
 )
-from lalamo.modules.common import ForwardPassMode, LalamoModule
-from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
-from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
+from lalamo.modules.embedding import EmbeddingForwardPassConfig, TiedEmbedding, TiedEmbeddingConfig
+from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
-from lalamo.modules.transformer import Transformer, TransformerConfig
+from lalamo.modules.transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
+from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
 
 @dataclass(frozen=True)
@@ -40,52 +37,20 @@ class ConvNeXtSpatialParams:
 
 
 @dataclass(frozen=True)
-class ConvNeXtBlockConfig:
-    precision: DTypeLike
+class ConvNeXtBlockConfig(LalamoConfig):
     activation: Activation
     dwconv_config: CausalConv1dConfig
     norm_config: NormalizationConfig
-    pwconv_config: FullPrecisionLinearConfig
+    pwconv_config: LinearConfig
 
-    def random_init(
+    def init(
         self,
-        dim: int,
-        spatial_params: ConvNeXtSpatialParams,
-        *,
-        key: PRNGKeyArray,
-    ) -> "ConvNeXtBlock":
-        key1, key2, key3 = jax.random.split(key, 3)
-
-        dwconv = self.dwconv_config.random_init(
-            in_channels=dim,
-            out_channels=dim,
-            kernel_size=spatial_params.kernel_size,
-            stride=1,
-            dilation=spatial_params.dilation,
-            groups=dim,
-            key=key1,
-        )
-
-        norm = self.norm_config.init(dim)
-
-        hidden_dim = int(spatial_params.mlp_ratio * dim)
-        pwconv1 = self.pwconv_config.random_init(dim, (hidden_dim,), has_biases=True, key=key2)
-        pwconv2 = self.pwconv_config.random_init(hidden_dim, (dim,), has_biases=True, key=key3)
-
-        return ConvNeXtBlock(
-            config=self,
-            depthwise_conv=dwconv,
-            norm=norm,
-            pointwise_conv_step1=pwconv1,
-            pointwise_conv_step2=pwconv2,
-        )
-
-    def empty(
-        self,
+        initializer: Initializer,
         dim: int,
         spatial_params: ConvNeXtSpatialParams,
     ) -> "ConvNeXtBlock":
-        dwconv = self.dwconv_config.empty(
+        dwconv = self.dwconv_config.init(
+            initializer,
             in_channels=dim,
             out_channels=dim,
             kernel_size=spatial_params.kernel_size,
@@ -94,11 +59,11 @@ class ConvNeXtBlockConfig:
             groups=dim,
         )
 
-        norm = self.norm_config.empty(dim)
+        norm = self.norm_config.init(initializer, dim)
 
         hidden_dim = int(spatial_params.mlp_ratio * dim)
-        pwconv1 = self.pwconv_config.empty(dim, (hidden_dim,), has_biases=True)
-        pwconv2 = self.pwconv_config.empty(hidden_dim, (dim,), has_biases=True)
+        pwconv1 = self.pwconv_config.init(initializer, input_dim=dim, output_dims=(hidden_dim,), has_biases=True)
+        pwconv2 = self.pwconv_config.init(initializer, input_dim=hidden_dim, output_dims=(dim,), has_biases=True)
 
         return ConvNeXtBlock(
             config=self,
@@ -127,12 +92,8 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
 
     depthwise_conv: CausalConv1d
     norm: Normalization
-    pointwise_conv_step1: FullPrecisionLinear
-    pointwise_conv_step2: FullPrecisionLinear
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+    pointwise_conv_step1: Linear
+    pointwise_conv_step2: Linear
 
     @property
     def dim(self) -> int:
@@ -142,46 +103,29 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
         self,
         x: Float[Array, "batch sequence channels"],
         apply_residual: bool = True,
+        *,
+        keychain: Keychain,
     ) -> Float[Array, "batch sequence channels"]:
         residual = x
 
+        step1_keychain, step2_keychain = keychain.split()
         x = self.depthwise_conv(x)
-        x = jax.vmap(jax.vmap(self.norm))(x)
-        (x,) = jax.vmap(jax.vmap(self.pointwise_conv_step1))(x)
-        x = jax.vmap(jax.vmap(self.config.activation))(x)
-        (x,) = jax.vmap(jax.vmap(self.pointwise_conv_step2))(x)
+        x = call_vmapped_twice(self.norm, x)
+        (x,) = call_vmapped_twice(
+            self.pointwise_conv_step1,
+            x,
+            keychain=step1_keychain,
+        )
+        x = call_vmapped_twice(self.config.activation, x)
+        (x,) = call_vmapped_twice(
+            self.pointwise_conv_step2,
+            x,
+            keychain=step2_keychain,
+        )
         if apply_residual:
             x = residual + x
 
         return x
-
-    def export_weights(self) -> ParameterTree[Array]:
-        result: dict[str, ParameterTree[Array]] = {
-            "dwconv": self.depthwise_conv.export_weights(),
-            "norm": self.norm.export_weights(),
-            "pwconv1": self.pointwise_conv_step1.export_weights(),
-            "pwconv2": self.pointwise_conv_step2.export_weights(),
-        }
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "ConvNeXtBlock":
-        assert isinstance(weights, Mapping)
-        dwconv_weights = weights["dwconv"]
-        norm_weights = weights["norm"]
-        pwconv1_weights = weights["pwconv1"]
-        pwconv2_weights = weights["pwconv2"]
-        assert isinstance(dwconv_weights, Mapping)
-        assert isinstance(norm_weights, Mapping)
-        assert isinstance(pwconv1_weights, Mapping)
-        assert isinstance(pwconv2_weights, Mapping)
-
-        return replace(
-            self,
-            depthwise_conv=self.depthwise_conv.import_weights(require_tree(dwconv_weights)),
-            norm=self.norm.import_weights(require_tree(norm_weights)),
-            pointwise_conv_step1=self.pointwise_conv_step1.import_weights(require_tree(pwconv1_weights)),
-            pointwise_conv_step2=self.pointwise_conv_step2.import_weights(require_tree(pwconv2_weights)),
-        )
 
 
 @dataclass(frozen=True)
@@ -193,53 +137,26 @@ class TransposeConvSpatialParams:
 
 
 @dataclass(frozen=True)
-class UpsamplingBlockConfig:
-    precision: DTypeLike
+class UpsamplingBlockConfig(LalamoConfig):
     trans_conv_config: CausalTransposeConv1dConfig
     convnext_config: ConvNeXtBlockConfig
 
-    def random_init(
+    def init(
         self,
-        trans_conv_params: TransposeConvSpatialParams,
-        convnext_spatial_params: ConvNeXtSpatialParams,
-        *,
-        key: PRNGKeyArray,
-    ) -> "UpsamplingBlock":
-        key1, key2 = jax.random.split(key)
-
-        trans_conv = self.trans_conv_config.random_init(
-            in_channels=trans_conv_params.in_channels,
-            out_channels=trans_conv_params.out_channels,
-            kernel_size=trans_conv_params.upsample_kernel_size,
-            stride=trans_conv_params.upsample_stride,
-            key=key1,
-        )
-
-        convnext = self.convnext_config.random_init(
-            dim=trans_conv_params.out_channels,
-            spatial_params=convnext_spatial_params,
-            key=key2,
-        )
-
-        return UpsamplingBlock(
-            config=self,
-            trans_conv=trans_conv,
-            convnext=convnext,
-        )
-
-    def empty(
-        self,
+        initializer: Initializer,
         trans_conv_params: TransposeConvSpatialParams,
         convnext_spatial_params: ConvNeXtSpatialParams,
     ) -> "UpsamplingBlock":
-        trans_conv = self.trans_conv_config.empty(
+        trans_conv = self.trans_conv_config.init(
+            initializer,
             in_channels=trans_conv_params.in_channels,
             out_channels=trans_conv_params.out_channels,
             kernel_size=trans_conv_params.upsample_kernel_size,
             stride=trans_conv_params.upsample_stride,
         )
 
-        convnext = self.convnext_config.empty(
+        convnext = self.convnext_config.init(
+            initializer,
             dim=trans_conv_params.out_channels,
             spatial_params=convnext_spatial_params,
         )
@@ -266,10 +183,6 @@ class UpsamplingBlock(LalamoModule[UpsamplingBlockConfig]):
     convnext: ConvNeXtBlock
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
     def in_channels(self) -> int:
         return self.trans_conv.in_channels
 
@@ -280,38 +193,20 @@ class UpsamplingBlock(LalamoModule[UpsamplingBlockConfig]):
     def __call__(
         self,
         x: Float[Array, "batch sequence in_channels"],
+        *,
+        keychain: Keychain,
     ) -> Float[Array, "batch sequence_out out_channels"]:
         x = self.trans_conv(x)
-        x = self.convnext(x)
-
-        return x
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "trans_conv": self.trans_conv.export_weights(),
-            "convnext": self.convnext.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "UpsamplingBlock":
-        assert isinstance(weights, Mapping)
-        trans_conv_weights = weights["trans_conv"]
-        convnext_weights = weights["convnext"]
-        assert isinstance(trans_conv_weights, Mapping)
-        assert isinstance(convnext_weights, Mapping)
-
-        return replace(
-            self,
-            trans_conv=self.trans_conv.import_weights(require_tree(trans_conv_weights)),
-            convnext=self.convnext.import_weights(require_tree(convnext_weights)),
-        )
+        return self.convnext(x, keychain=keychain)
 
 
 @dataclass(frozen=True)
-class UpsamplerConfig:
+class UpsamplerConfig(LalamoConfig):
     block_configs: tuple[UpsamplingBlockConfig, ...]
 
-    def empty(
+    def init(
         self,
+        initializer: Initializer,
         trans_conv_params_per_block: tuple[TransposeConvSpatialParams, ...],
         convnext_spatial_params: ConvNeXtSpatialParams,
     ) -> "Upsampler":
@@ -320,34 +215,14 @@ class UpsamplerConfig:
             f"number of block params ({len(trans_conv_params_per_block)})"
         )
 
-        blocks = []
-        for config, trans_conv_params in zip(self.block_configs, trans_conv_params_per_block, strict=True):
-            block = config.empty(
+        blocks = [
+            config.init(
+                initializer,
                 trans_conv_params=trans_conv_params,
                 convnext_spatial_params=convnext_spatial_params,
             )
-            blocks.append(block)
-
-        return Upsampler(config=self, blocks=tuple(blocks))
-
-    def random_init(
-        self,
-        trans_conv_params_per_block: tuple[TransposeConvSpatialParams, ...],
-        convnext_spatial_params: ConvNeXtSpatialParams,
-        *,
-        key: PRNGKeyArray,
-    ) -> "Upsampler":
-        assert len(self.block_configs) == len(trans_conv_params_per_block)
-
-        blocks = []
-        keys = jax.random.split(key, len(self.block_configs))
-        for config, trans_conv_params, k in zip(self.block_configs, trans_conv_params_per_block, keys, strict=True):
-            block = config.random_init(
-                trans_conv_params=trans_conv_params,
-                convnext_spatial_params=convnext_spatial_params,
-                key=k,
-            )
-            blocks.append(block)
+            for config, trans_conv_params in zip(self.block_configs, trans_conv_params_per_block, strict=True)
+        ]
 
         return Upsampler(config=self, blocks=tuple(blocks))
 
@@ -365,86 +240,43 @@ class Upsampler(LalamoModule[UpsamplerConfig]):
     blocks: tuple[UpsamplingBlock, ...]
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        if len(self.blocks) > 0:
-            return self.blocks[0].activation_precision
-        raise ValueError("Upsampler has no blocks")
-
-    @property
     def num_blocks(self) -> int:
         return len(self.blocks)
 
     def __call__(
         self,
         x: Float[Array, "batch sequence in_channels"],
+        *,
+        keychain: Keychain,
     ) -> Float[Array, "batch sequence_out out_channels"]:
-        for block in self.blocks:
-            x = block(x)
+        for block, block_keychain in zip(self.blocks, keychain.split(len(self.blocks)), strict=True):
+            x = block(x, keychain=block_keychain)
         return x
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "blocks": [block.export_weights() for block in self.blocks],
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "Upsampler":
-        assert isinstance(weights, Mapping)
-        block_weights = weights["blocks"]
-        new_blocks = []
-        for block, w in zip(self.blocks, block_weights, strict=True):
-            assert isinstance(w, Mapping)
-            new_blocks.append(block.import_weights(w))
-
-        return replace(self, blocks=tuple(new_blocks))
 
 
 @dataclass(frozen=True)
-class VectorQuantizeConfig:
-    precision: DTypeLike
+class VectorQuantizeConfig(LalamoConfig):
     codebook_config: TiedEmbeddingConfig
-    out_proj_config: FullPrecisionLinearConfig
+    out_proj_config: LinearConfig
 
-    def empty(
+    def init(
         self,
+        initializer: Initializer,
         input_dim: int,
         codebook_size: int,
         codebook_dim: int,
     ) -> "VectorQuantize":
-        codebook = self.codebook_config.empty(codebook_size, codebook_dim)
+        codebook = self.codebook_config.init(
+            initializer,
+            model_dim=codebook_dim,
+            vocab_size=codebook_size,
+        )
         assert isinstance(codebook, TiedEmbedding)
 
-        out_proj = self.out_proj_config.empty(
-            input_dim=codebook_dim,
-            output_dims=(input_dim,),
-            has_biases=True,
+        out_proj = self.out_proj_config.init(
+            initializer, input_dim=codebook_dim, output_dims=(input_dim,), has_biases=True
         )
-        assert isinstance(out_proj, FullPrecisionLinear)
-
-        return VectorQuantize(
-            config=self,
-            codebook=codebook,
-            out_proj=out_proj,
-        )
-
-    def random_init(
-        self,
-        input_dim: int,
-        codebook_size: int,
-        codebook_dim: int,
-        key: PRNGKeyArray,
-    ) -> "VectorQuantize":
-        codebook_key, proj_key = jax.random.split(key)
-
-        codebook = self.codebook_config.random_init(codebook_size, codebook_dim, key=codebook_key)
-        assert isinstance(codebook, TiedEmbedding)
-
-        out_proj = self.out_proj_config.random_init(
-            input_dim=codebook_dim,
-            output_dims=(input_dim,),
-            has_biases=True,
-            key=proj_key,
-        )
-        assert isinstance(out_proj, FullPrecisionLinear)
+        assert isinstance(out_proj, Linear)
 
         return VectorQuantize(
             config=self,
@@ -462,11 +294,7 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
     """
 
     codebook: TiedEmbedding
-    out_proj: FullPrecisionLinear
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+    out_proj: Linear
 
     @property
     def codebook_size(self) -> int:
@@ -476,28 +304,26 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
     def codebook_dim(self) -> int:
         return self.codebook.model_dim
 
-    def decode_code(self, embed_id: Int[Array, " tokens"]) -> Float[Array, "tokens code_size"]:
-        z_p = self.codebook.embed(embed_id)
-        (z_q,) = vmap(self.out_proj)(z_p)
-        return z_q
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "codebook": self.codebook.export_weights(),
-            "out_proj": self.out_proj.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        codebook_weights = weights["codebook"]
-        out_proj_weights = weights["out_proj"]
-        assert isinstance(codebook_weights, Mapping)
-        assert isinstance(out_proj_weights, Mapping)
-        return replace(
-            self,
-            codebook=self.codebook.import_weights(require_tree(codebook_weights)),
-            out_proj=self.out_proj.import_weights(require_tree(out_proj_weights)),
+    def decode_code(
+        self,
+        embed_id: Int[Array, " tokens"],
+        *,
+        keychain: Keychain,
+    ) -> Float[Array, "tokens channels"]:
+        embed_keychain, out_keychain = keychain.split()
+        z_p = call_vmapped(
+            self.codebook.embed,
+            embed_id,
+            forward_pass_config=EmbeddingForwardPassConfig(activation_dtype=self.codebook.embedding.dtype),
+            keychain=embed_keychain,
+            added_sharding_axis=ShardingAxis.DATA,
         )
+        (z_q,) = call_vmapped(
+            self.out_proj,
+            z_p,
+            keychain=out_keychain,
+        )
+        return z_q
 
 
 @dataclass(frozen=True)
@@ -508,12 +334,12 @@ class VectorQuantizerParams:
 
 
 @dataclass(frozen=True)
-class ResidualVectorQuantizeConfig:
-    precision: DTypeLike
+class ResidualVectorQuantizeConfig(LalamoConfig):
     vq_config: VectorQuantizeConfig
 
-    def empty(
+    def init(
         self,
+        initializer: Initializer,
         input_dim: int,
         codebook_size: int,
         codebook_dim: int | list[int],
@@ -524,33 +350,12 @@ class ResidualVectorQuantizeConfig:
             codebook_dims = list(codebook_dim)
 
         quantizers = [
-            self.vq_config.empty(
+            self.vq_config.init(
+                initializer,
                 input_dim=input_dim,
                 codebook_size=codebook_size,
                 codebook_dim=dim,
             )
-            for dim in codebook_dims
-        ]
-
-        return ResidualVectorQuantize(
-            config=self,
-            quantizers=tuple(quantizers),
-        )
-
-    def random_init(
-        self,
-        input_dim: int,
-        codebook_size: int,
-        codebook_dim: int | list[int],
-        key: PRNGKeyArray,
-    ) -> "ResidualVectorQuantize":
-        if isinstance(codebook_dim, int):
-            codebook_dims = [codebook_dim]
-        else:
-            codebook_dims = list(codebook_dim)
-
-        quantizers = [
-            self.vq_config.random_init(input_dim=input_dim, codebook_size=codebook_size, codebook_dim=dim, key=key)
             for dim in codebook_dims
         ]
 
@@ -568,105 +373,77 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
     quantizers: tuple[VectorQuantize, ...]
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
     def n_codebooks(self) -> int:
         return len(self.quantizers)
 
-    def from_codes(self, codes: Int[Array, "n_codebooks tokens"]) -> Float[Array, "tokens code_size"]:
-        n_codebooks = codes.shape[0]
-        z_q = self.quantizers[0].decode_code(codes[0])
-        for i in range(1, n_codebooks):
-            z_q = z_q + self.quantizers[i].decode_code(codes[i])
+    def from_codes(
+        self,
+        codes: Int[Array, "n_codebooks tokens"],
+        *,
+        keychain: Keychain,
+    ) -> Float[Array, "tokens channels"]:
+        num_input_codebooks, _ = codes.shape
+        selected_quantizers = self.quantizers[:num_input_codebooks]
+        first_quantizer, *remaining_quantizers = selected_quantizers
+        first_codes, *remaining_codes = codes
+        first_quantizer_keychain, *remaining_quantizer_keychains = keychain.split(num_input_codebooks)
+        z_q = first_quantizer.decode_code(
+            first_codes,
+            keychain=first_quantizer_keychain,
+        )
+        for quantizer, quantizer_codes, quantizer_keychain in zip(
+            remaining_quantizers,
+            remaining_codes,
+            remaining_quantizer_keychains,
+            strict=True,
+        ):
+            z_q = z_q + quantizer.decode_code(
+                quantizer_codes,
+                keychain=quantizer_keychain,
+            )
         return z_q
 
-    def __call__(self, codes: Int[Array, "batch n_codebooks tokens"]) -> Float[Array, "batch tokens code_size"]:
-        return vmap(self.from_codes)(codes)
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "quantizers": [q.export_weights() for q in self.quantizers],
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        quantizer_weights = weights["quantizers"]
-        new_quantizers = []
-        for q, w in zip(self.quantizers, quantizer_weights, strict=True):
-            assert isinstance(w, Mapping)
-            new_quantizers.append(q.import_weights(w))
-        return replace(self, quantizers=tuple(new_quantizers))
+    def __call__(
+        self,
+        codes: Int[Array, "batch n_codebooks tokens"],
+        *,
+        keychain: Keychain,
+    ) -> Float[Array, "batch tokens channels"]:
+        return call_vmapped(self.from_codes, codes, keychain=keychain)
 
 
 @dataclass(frozen=True)
-class DownsampleResidualVectorQuantizeConfig:
-    precision: DTypeLike
+class DownsampleResidualVectorQuantizeConfig(LalamoConfig):
     semantic_quantizer_config: ResidualVectorQuantizeConfig
     quantizer_config: ResidualVectorQuantizeConfig
     post_module_config: TransformerConfig
     upsampler_config: UpsamplerConfig
 
-    def empty(
+    def init(
         self,
+        initializer: Initializer,
         upsampler_trans_conv_params: tuple[TransposeConvSpatialParams, ...],
         convnext_spatial_params: ConvNeXtSpatialParams,
         semantic_quantizer_params: VectorQuantizerParams,
         quantizer_params: VectorQuantizerParams,
     ) -> "DownsampleResidualVectorQuantize":
-        semantic_quantizer = self.semantic_quantizer_config.empty(
+        semantic_quantizer = self.semantic_quantizer_config.init(
+            initializer,
             input_dim=semantic_quantizer_params.input_dim,
             codebook_size=semantic_quantizer_params.codebook_size,
             codebook_dim=semantic_quantizer_params.codebook_dim,
         )
-        quantizer = self.quantizer_config.empty(
+        quantizer = self.quantizer_config.init(
+            initializer,
             input_dim=quantizer_params.input_dim,
             codebook_size=quantizer_params.codebook_size,
             codebook_dim=quantizer_params.codebook_dim,
         )
-        post_module = self.post_module_config.empty()
-        upsampler = self.upsampler_config.empty(
+        post_module = self.post_module_config.init(initializer)
+        upsampler = self.upsampler_config.init(
+            initializer,
             trans_conv_params_per_block=upsampler_trans_conv_params,
             convnext_spatial_params=convnext_spatial_params,
-        )
-
-        return DownsampleResidualVectorQuantize(
-            config=self,
-            semantic_quantizer=semantic_quantizer,
-            quantizer=quantizer,
-            post_module=post_module,
-            upsampler=upsampler,
-        )
-
-    def random_init(
-        self,
-        upsampler_trans_conv_params: tuple[TransposeConvSpatialParams, ...],
-        convnext_spatial_params: ConvNeXtSpatialParams,
-        semantic_quantizer_params: VectorQuantizerParams,
-        quantizer_params: VectorQuantizerParams,
-        *,
-        key: PRNGKeyArray,
-    ) -> "DownsampleResidualVectorQuantize":
-        key1, key2, key3, key4 = jax.random.split(key, 4)
-
-        semantic_quantizer = self.semantic_quantizer_config.random_init(
-            input_dim=semantic_quantizer_params.input_dim,
-            codebook_size=semantic_quantizer_params.codebook_size,
-            codebook_dim=semantic_quantizer_params.codebook_dim,
-            key=key1,
-        )
-        quantizer = self.quantizer_config.random_init(
-            input_dim=quantizer_params.input_dim,
-            codebook_size=quantizer_params.codebook_size,
-            codebook_dim=quantizer_params.codebook_dim,
-            key=key2,
-        )
-        post_module = self.post_module_config.random_init(key=key3)
-        upsampler = self.upsampler_config.random_init(
-            trans_conv_params_per_block=upsampler_trans_conv_params,
-            convnext_spatial_params=convnext_spatial_params,
-            key=key4,
         )
 
         return DownsampleResidualVectorQuantize(
@@ -700,10 +477,6 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
     upsampler: Upsampler
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
     def semantic_codebook_size(self) -> int:
         return self.semantic_quantizer.quantizers[0].codebook_size
 
@@ -714,12 +487,23 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
     def decode(
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
+        *,
+        keychain: Keychain,
     ) -> Float[Array, "batch upsampled_tokens channels"]:
+        semantic_keychain, residual_keychain, post_keychain, upsampler_keychain = keychain.split(4)
         semantic_indices = jnp.clip(indices[:, :1], 0, self.semantic_codebook_size - 1)
         residual_indices = jnp.clip(indices[:, 1:], 0, self.quantizer_codebook_size - 1)
 
-        z_q_semantic = vmap(self.semantic_quantizer.from_codes)(semantic_indices)
-        z_q_residual = vmap(self.quantizer.from_codes)(residual_indices)
+        z_q_semantic = call_vmapped(
+            self.semantic_quantizer.from_codes,
+            semantic_indices,
+            keychain=semantic_keychain,
+        )
+        z_q_residual = call_vmapped(
+            self.quantizer.from_codes,
+            residual_indices,
+            keychain=residual_keychain,
+        )
 
         z_q = z_q_semantic + z_q_residual
 
@@ -734,49 +518,19 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
             return_layer_results=False,
             return_positional_embeddings=False,
             lengths_without_padding=None,
-            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-            forward_pass_config=None,
+            forward_pass_config=TransformerForwardPassConfig(),
+            keychain=post_keychain,
         )
         z_q = post_result.outputs
-
-        z_q = self.upsampler(z_q)
-
-        return z_q
+        return self.upsampler(z_q, keychain=upsampler_keychain)
 
     def __call__(
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
+        *,
+        keychain: Keychain,
     ) -> Float[Array, "batch upsampled_tokens channels"]:
-        return self.decode(indices)
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "semantic_quantizer": self.semantic_quantizer.export_weights(),
-            "quantizer": self.quantizer.export_weights(),
-            "post_module": self.post_module.export_weights(),
-            "upsampler": self.upsampler.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree) -> Self:
-        assert isinstance(weights, Mapping)
-
-        semantic_quantizer_weights = weights["semantic_quantizer"]
-        quantizer_weights = weights["quantizer"]
-        post_module_weights = weights["post_module"]
-        upsampler_weights = weights["upsampler"]
-
-        assert isinstance(semantic_quantizer_weights, Mapping)
-        assert isinstance(quantizer_weights, Mapping)
-        assert isinstance(post_module_weights, Mapping)
-        assert isinstance(upsampler_weights, Mapping)
-
-        return replace(
-            self,
-            semantic_quantizer=self.semantic_quantizer.import_weights(semantic_quantizer_weights),
-            quantizer=self.quantizer.import_weights(quantizer_weights),
-            post_module=self.post_module.import_weights(post_module_weights),
-            upsampler=self.upsampler.import_weights(upsampler_weights),
-        )
+        return self.decode(indices, keychain=keychain)
 
 
 @dataclass(frozen=True)
@@ -786,23 +540,24 @@ class ResidualUnitSpatialParams:
 
 
 @dataclass(frozen=True)
-class ResidualUnitConfig:
-    precision: DTypeLike
+class ResidualUnitConfig(LalamoConfig):
     snake_config: Snake1dConfig
     conv_config: CausalConv1dConfig
     causal: bool = True
 
-    def empty(
+    def init(
         self,
+        initializer: Initializer,
         dim: int,
         spatial_params: ResidualUnitSpatialParams,
     ) -> "ResidualUnit":
         if not self.causal:
             raise NotImplementedError("Non-causal ResidualUnit is not implemented")
 
-        snake1 = self.snake_config.empty(dim)
+        snake1 = self.snake_config.init(initializer, dim)
 
-        conv1 = self.conv_config.empty(
+        conv1 = self.conv_config.init(
+            initializer,
             in_channels=dim,
             out_channels=dim,
             kernel_size=spatial_params.kernel_size,
@@ -811,59 +566,16 @@ class ResidualUnitConfig:
             groups=1,
         )
 
-        snake2 = self.snake_config.empty(dim)
+        snake2 = self.snake_config.init(initializer, dim)
 
-        conv2 = self.conv_config.empty(
+        conv2 = self.conv_config.init(
+            initializer,
             in_channels=dim,
             out_channels=dim,
             kernel_size=1,
             stride=1,
             dilation=1,
             groups=1,
-        )
-
-        return ResidualUnit(
-            config=self,
-            snake1=snake1,
-            conv1=conv1,
-            snake2=snake2,
-            conv2=conv2,
-        )
-
-    def random_init(
-        self,
-        dim: int,
-        spatial_params: ResidualUnitSpatialParams,
-        *,
-        key: PRNGKeyArray,
-    ) -> "ResidualUnit":
-        if not self.causal:
-            raise NotImplementedError("Non-causal ResidualUnit is not implemented")
-
-        key1, key2 = jax.random.split(key, 2)
-
-        snake1 = self.snake_config.random_init(dim)
-
-        conv1 = self.conv_config.random_init(
-            in_channels=dim,
-            out_channels=dim,
-            kernel_size=spatial_params.kernel_size,
-            stride=1,
-            dilation=spatial_params.dilation,
-            groups=1,
-            key=key1,
-        )
-
-        snake2 = self.snake_config.random_init(dim)
-
-        conv2 = self.conv_config.random_init(
-            in_channels=dim,
-            out_channels=dim,
-            kernel_size=1,
-            stride=1,
-            dilation=1,
-            groups=1,
-            key=key2,
         )
 
         return ResidualUnit(
@@ -893,10 +605,6 @@ class ResidualUnit(LalamoModule[ResidualUnitConfig]):
     conv1: CausalConv1d
     snake2: Snake1d
     conv2: CausalConv1d
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
 
     @property
     def dim(self) -> int:
@@ -929,33 +637,6 @@ class ResidualUnit(LalamoModule[ResidualUnitConfig]):
 
         return x + y
 
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "snake1": self.snake1.export_weights(),
-            "conv1": self.conv1.export_weights(),
-            "snake2": self.snake2.export_weights(),
-            "conv2": self.conv2.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree) -> "ResidualUnit":
-        assert isinstance(weights, Mapping)
-        snake1_weights = weights["snake1"]
-        conv1_weights = weights["conv1"]
-        snake2_weights = weights["snake2"]
-        conv2_weights = weights["conv2"]
-        assert isinstance(snake1_weights, Mapping)
-        assert isinstance(conv1_weights, Mapping)
-        assert isinstance(snake2_weights, Mapping)
-        assert isinstance(conv2_weights, Mapping)
-
-        return replace(
-            self,
-            snake1=self.snake1.import_weights(snake1_weights),
-            conv1=self.conv1.import_weights(conv1_weights),
-            snake2=self.snake2.import_weights(snake2_weights),
-            conv2=self.conv2.import_weights(conv2_weights),
-        )
-
 
 @dataclass(frozen=True)
 class AudioDecoderBlockSpatialParams:
@@ -965,68 +646,34 @@ class AudioDecoderBlockSpatialParams:
 
 
 @dataclass(frozen=True)
-class DACDecoderBlockConfig:
-    precision: DTypeLike
+class DACDecoderBlockConfig(LalamoConfig):
     snake_config: Snake1dConfig
     trans_conv_config: CausalTransposeConv1dConfig
     res_unit_config: ResidualUnitConfig
     causal: bool = True
 
-    def empty(
+    def init(
         self,
+        initializer: Initializer,
         spatial_params: AudioDecoderBlockSpatialParams,
     ) -> "DACDecoderBlock":
         input_dim = spatial_params.input_dim
         output_dim = spatial_params.output_dim
         stride = spatial_params.stride
 
-        snake = self.snake_config.empty(input_dim)
+        snake = self.snake_config.init(initializer, input_dim)
 
-        trans_conv = self.trans_conv_config.empty(
+        trans_conv = self.trans_conv_config.init(
+            initializer,
             in_channels=input_dim,
             out_channels=output_dim,
             kernel_size=2 * stride,
             stride=stride,
         )
 
-        res_unit1 = self.res_unit_config.empty(output_dim, ResidualUnitSpatialParams(dilation=1))
-        res_unit2 = self.res_unit_config.empty(output_dim, ResidualUnitSpatialParams(dilation=3))
-        res_unit3 = self.res_unit_config.empty(output_dim, ResidualUnitSpatialParams(dilation=9))
-
-        return DACDecoderBlock(
-            config=self,
-            snake=snake,
-            trans_conv=trans_conv,
-            res_unit1=res_unit1,
-            res_unit2=res_unit2,
-            res_unit3=res_unit3,
-        )
-
-    def random_init(
-        self,
-        spatial_params: AudioDecoderBlockSpatialParams,
-        *,
-        key: PRNGKeyArray,
-    ) -> "DACDecoderBlock":
-        input_dim = spatial_params.input_dim
-        output_dim = spatial_params.output_dim
-        stride = spatial_params.stride
-
-        key1, key2, key3, key4 = jax.random.split(key, 4)
-
-        snake = self.snake_config.random_init(input_dim)
-
-        trans_conv = self.trans_conv_config.random_init(
-            in_channels=input_dim,
-            out_channels=output_dim,
-            kernel_size=2 * stride,
-            stride=stride,
-            key=key1,
-        )
-
-        res_unit1 = self.res_unit_config.random_init(output_dim, ResidualUnitSpatialParams(dilation=1), key=key2)
-        res_unit2 = self.res_unit_config.random_init(output_dim, ResidualUnitSpatialParams(dilation=3), key=key3)
-        res_unit3 = self.res_unit_config.random_init(output_dim, ResidualUnitSpatialParams(dilation=9), key=key4)
+        res_unit1 = self.res_unit_config.init(initializer, output_dim, ResidualUnitSpatialParams(dilation=1))
+        res_unit2 = self.res_unit_config.init(initializer, output_dim, ResidualUnitSpatialParams(dilation=3))
+        res_unit3 = self.res_unit_config.init(initializer, output_dim, ResidualUnitSpatialParams(dilation=9))
 
         return DACDecoderBlock(
             config=self,
@@ -1059,10 +706,6 @@ class DACDecoderBlock(LalamoModule[DACDecoderBlockConfig]):
     res_unit3: ResidualUnit
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
     def input_dim(self) -> int:
         return self.snake.channels
 
@@ -1078,40 +721,7 @@ class DACDecoderBlock(LalamoModule[DACDecoderBlockConfig]):
         x = self.trans_conv(x)
         x = self.res_unit1(x)
         x = self.res_unit2(x)
-        x = self.res_unit3(x)
-        return x
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "snake": self.snake.export_weights(),
-            "trans_conv": self.trans_conv.export_weights(),
-            "res_unit1": self.res_unit1.export_weights(),
-            "res_unit2": self.res_unit2.export_weights(),
-            "res_unit3": self.res_unit3.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "DACDecoderBlock":
-        assert isinstance(weights, Mapping)
-        snake_weights = weights["snake"]
-        trans_conv_weights = weights["trans_conv"]
-        res_unit1_weights = weights["res_unit1"]
-        res_unit2_weights = weights["res_unit2"]
-        res_unit3_weights = weights["res_unit3"]
-
-        assert isinstance(snake_weights, Mapping)
-        assert isinstance(trans_conv_weights, Mapping)
-        assert isinstance(res_unit1_weights, Mapping)
-        assert isinstance(res_unit2_weights, Mapping)
-        assert isinstance(res_unit3_weights, Mapping)
-
-        return replace(
-            self,
-            snake=self.snake.import_weights(require_tree(snake_weights)),
-            trans_conv=self.trans_conv.import_weights(require_tree(trans_conv_weights)),
-            res_unit1=self.res_unit1.import_weights(require_tree(res_unit1_weights)),
-            res_unit2=self.res_unit2.import_weights(require_tree(res_unit2_weights)),
-            res_unit3=self.res_unit3.import_weights(require_tree(res_unit3_weights)),
-        )
+        return self.res_unit3(x)
 
 
 @dataclass(frozen=True)
@@ -1123,15 +733,15 @@ class DACDecoderSpatialParams:
 
 
 @dataclass(frozen=True)
-class DACDecoderConfig:
-    precision: DTypeLike
+class DACDecoderConfig(LalamoConfig):
     conv_config: CausalConv1dConfig
     snake_config: Snake1dConfig
     decoder_block_config: DACDecoderBlockConfig
     causal: bool = True
 
-    def empty(
+    def init(
         self,
+        initializer: Initializer,
         spatial_params: DACDecoderSpatialParams,
     ) -> "DACDecoder":
         if not self.causal:
@@ -1142,7 +752,8 @@ class DACDecoderConfig:
         rates = spatial_params.rates
         d_out = spatial_params.d_out
 
-        first_conv = self.conv_config.empty(
+        first_conv = self.conv_config.init(
+            initializer,
             in_channels=input_channel,
             out_channels=channels,
             kernel_size=7,
@@ -1161,84 +772,22 @@ class DACDecoderConfig:
                 output_dim=block_output_dim,
                 stride=stride,
             )
-            block = self.decoder_block_config.empty(spatial_params=block_spatial)
+            block = self.decoder_block_config.init(initializer, spatial_params=block_spatial)
             decoder_blocks.append(block)
 
         # Final output dimension after all decoder blocks
         final_dim = channels // (2 ** len(rates))
 
-        final_snake = self.snake_config.empty(final_dim)
+        final_snake = self.snake_config.init(initializer, final_dim)
 
-        final_conv = self.conv_config.empty(
+        final_conv = self.conv_config.init(
+            initializer,
             in_channels=final_dim,
             out_channels=d_out,
             kernel_size=7,
             stride=1,
             dilation=1,
             groups=1,
-        )
-
-        return DACDecoder(
-            config=self,
-            first_conv=first_conv,
-            decoder_blocks=tuple(decoder_blocks),
-            final_snake=final_snake,
-            final_conv=final_conv,
-        )
-
-    def random_init(
-        self,
-        spatial_params: DACDecoderSpatialParams,
-        *,
-        key: PRNGKeyArray,
-    ) -> "DACDecoder":
-        if not self.causal:
-            raise NotImplementedError("Non-causal AudioDecoder is not implemented")
-
-        input_channel = spatial_params.input_channel
-        channels = spatial_params.channels
-        rates = spatial_params.rates
-        d_out = spatial_params.d_out
-
-        num_keys = 2 + len(rates)  # first_conv + blocks + final_conv
-        keys = jax.random.split(key, num_keys)
-
-        first_conv = self.conv_config.random_init(
-            in_channels=input_channel,
-            out_channels=channels,
-            kernel_size=7,
-            stride=1,
-            dilation=1,
-            groups=1,
-            key=keys[0],
-        )
-
-        decoder_blocks: list[DACDecoderBlock] = []
-        for i, stride in enumerate(rates):
-            block_input_dim = channels // (2**i)
-            block_output_dim = channels // (2 ** (i + 1))
-
-            block_spatial = AudioDecoderBlockSpatialParams(
-                input_dim=block_input_dim,
-                output_dim=block_output_dim,
-                stride=stride,
-            )
-            block = self.decoder_block_config.random_init(spatial_params=block_spatial, key=keys[1 + i])
-            decoder_blocks.append(block)
-
-        # Final dimension
-        final_dim = channels // (2 ** len(rates))
-
-        final_snake = self.snake_config.random_init(final_dim)
-
-        final_conv = self.conv_config.random_init(
-            in_channels=final_dim,
-            out_channels=d_out,
-            kernel_size=7,
-            stride=1,
-            dilation=1,
-            groups=1,
-            key=keys[-1],
         )
 
         return DACDecoder(
@@ -1270,10 +819,6 @@ class DACDecoder(LalamoModule[DACDecoderConfig]):
     final_conv: CausalConv1d
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
     def input_channels(self) -> int:
         return self.first_conv.in_channels
 
@@ -1298,39 +843,4 @@ class DACDecoder(LalamoModule[DACDecoderConfig]):
         x = self.final_conv(x)
 
         # Tanh to constrain output to [-1, 1]
-        x = jnp.tanh(x)
-
-        return x
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "first_conv": self.first_conv.export_weights(),
-            "decoder_blocks": [block.export_weights() for block in self.decoder_blocks],
-            "final_snake": self.final_snake.export_weights(),
-            "final_conv": self.final_conv.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "DACDecoder":
-        assert isinstance(weights, Mapping)
-
-        first_conv_weights = weights["first_conv"]
-        block_weights = weights["decoder_blocks"]
-        final_snake_weights = weights["final_snake"]
-        final_conv_weights = weights["final_conv"]
-
-        assert isinstance(first_conv_weights, Mapping)
-        assert isinstance(final_snake_weights, Mapping)
-        assert isinstance(final_conv_weights, Mapping)
-
-        new_blocks = []
-        for block, w in zip(self.decoder_blocks, block_weights, strict=True):
-            assert isinstance(w, Mapping)
-            new_blocks.append(block.import_weights(w))
-
-        return replace(
-            self,
-            first_conv=self.first_conv.import_weights(require_tree(first_conv_weights)),
-            decoder_blocks=tuple(new_blocks),
-            final_snake=self.final_snake.import_weights(require_tree(final_snake_weights)),
-            final_conv=self.final_conv.import_weights(require_tree(final_conv_weights)),
-        )
+        return jnp.tanh(x)

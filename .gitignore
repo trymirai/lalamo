@@ -52,8 +52,15 @@ _tmp
 # parquet (dataset) files in the root
 *parquet
 
+.envrc
+
 # Git worktrees
 .worktrees/
 
+# jax cache
+.jax_cache/
+
 # preserve github folder
 !.github
+
+.env

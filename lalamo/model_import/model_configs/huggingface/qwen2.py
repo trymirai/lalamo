@@ -2,24 +2,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from jaxtyping import DTypeLike
-
-from lalamo.modules import (
-    AttentionConfig,
-    DecoderConfig,
-    DenseMLPConfig,
-    FullPrecisionLinearConfig,
-    GroupQuantizedLinearConfig,
-    NormalizationConfig,
-    TiedEmbeddingConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
-    UnscaledRoPEConfig,
-    UntiedEmbeddingConfig,
-    UpcastMode,
-)
 from lalamo.modules.activations import SiLU
-from lalamo.quantization import QuantizationMode
+from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceLMConfig
 
@@ -69,48 +61,32 @@ class HFQwen2Config(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                precision=activation_precision,
             )
         else:
             embedding_config = UntiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                precision=activation_precision,
             )
         head_dim = self.hidden_size // self.num_attention_heads
         rope_config = UnscaledRoPEConfig(
-            precision=activation_precision,
             base=self.rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
             head_dim=head_dim,
         )
         rmsnorm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
-        if self.quantization_config is None:
-            linear_config = FullPrecisionLinearConfig(
-                precision=activation_precision,
-            )
-        else:
-            linear_config = GroupQuantizedLinearConfig(
-                group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
-            )
+        linear_config = LinearConfig()
+        head_dim = self.hidden_size // self.num_attention_heads
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=SiLU(),

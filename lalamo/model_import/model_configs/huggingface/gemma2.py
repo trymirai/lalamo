@@ -2,21 +2,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from jaxtyping import DTypeLike
-
-from lalamo.modules import (
-    AttentionConfig,
-    DecoderConfig,
-    DenseMLPConfig,
-    FullPrecisionLinearConfig,
-    NormalizationConfig,
-    TiedEmbeddingConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
-    UnscaledRoPEConfig,
-    UpcastMode,
-)
 from lalamo.modules.activations import GELU
+from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .common import HuggingFaceLMConfig
 
@@ -57,8 +52,6 @@ class HFGemma2Config(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         embedding_input_scale = self.hidden_size**0.5
@@ -66,25 +59,19 @@ class HFGemma2Config(HuggingFaceLMConfig):
         embedding_config = TiedEmbeddingConfig(
             input_scale=embedding_input_scale,
             logit_soft_cap=self.final_logit_softcapping,
-            precision=activation_precision,
         )
         rope_config = UnscaledRoPEConfig(
-            precision=activation_precision,
             base=self.rope_theta,
             max_sequence_length=self.max_position_embeddings,
             head_dim=self.head_dim,
         )
         rmsnorm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=1.0,
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=False,
         )
-        linear_config = FullPrecisionLinearConfig(
-            precision=activation_precision,
-        )
+        linear_config = LinearConfig()
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=GELU(),

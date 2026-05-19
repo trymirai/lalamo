@@ -1,17 +1,16 @@
 from lalamo.model_import.model_configs.huggingface import HFGemma3TextConfig
-
-from .common import ModelSpec
+from lalamo.model_import.model_spec import LanguageModelSpec
+from lalamo.model_import.origins import HuggingFaceOrigin
 
 __all__ = ["RNJ_MODELS"]
 
 RNJ_MODELS = [
-    ModelSpec(
+    LanguageModelSpec(
         vendor="EssentialAI",
         family="rnj-1",
         name="rnj-1-instruct",
         size="8B",
-        quantization=None,
-        repo="EssentialAI/rnj-1-instruct",
+        origin=HuggingFaceOrigin(repo="EssentialAI/rnj-1-instruct"),
         config_type=HFGemma3TextConfig,
     ),
 ]

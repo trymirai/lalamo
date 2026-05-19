@@ -1,34 +1,32 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from enum import StrEnum
 from typing import Self
 
 import equinox as eqx
-import jax
 from jax import numpy as jnp
-from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jax.lax import DotAlgorithmPreset
+from jaxtyping import Array, Float, Int
 
-from lalamo.common import ParameterTree, require_mapping, require_tree
-from lalamo.modules import Activation
-from lalamo.modules.normalization import NormalizationConfig
-from lalamo.modules.transformer import (
-    Normalization,
-    Transformer,
-    TransformerConfig,
-    TransformerForwardPassConfig,
-)
-from lalamo.modules.utils import vmap_twice
+from lalamo.exportable import Exportable
+from lalamo.initializer import Initializer
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
+from lalamo.weight_matrix import GradientEstimator
 
-from .common import ForwardPassMode, LalamoModule
-from .embedding import EmbeddingBase, EmbeddingConfig
-from .linear import LinearBase, LinearConfig
+from .activations import Activation
+from .embedding import EmbeddingBase, EmbeddingConfig, EmbeddingForwardPassConfig
+from .linear import Linear, LinearConfig
+from .normalization import Normalization, NormalizationConfig, NormalizationForwardPassConfig
 from .rope import PositionalEmbeddings
+from .transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
 from .transformer_layer import TransformerLayerResult
+from .utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
     "Classifier",
     "ClassifierActivationTrace",
     "ClassifierConfig",
+    "ClassifierForwardPassConfig",
     "ClassifierResult",
 ]
 
@@ -39,97 +37,76 @@ class PoolingType(StrEnum):
 
 
 @dataclass(frozen=True)
-class PredictionHeadConfig:
+class PredictionHeadConfig(LalamoConfig):
     dense_config: LinearConfig
     activation: Activation
     normalization_config: NormalizationConfig
     readout_config: LinearConfig
     use_dense_bias: bool
 
-    def empty(self, input_size: int, num_labels: int) -> "PredictionHead":
-        dense_layer = self.dense_config.empty(
+    def init(self, initializer: Initializer, input_size: int, num_labels: int) -> "PredictionHead":
+        dense_layer = self.dense_config.init(
+            initializer,
             input_dim=input_size,
             output_dims=(input_size,),
             has_biases=self.use_dense_bias,
         )
-        norm = self.normalization_config.empty(input_size)
-        readout = self.readout_config.empty(input_dim=input_size, output_dims=(num_labels,), has_biases=True)
-
-        return PredictionHead(
-            config=self,
-            dense=dense_layer,
-            activation=self.activation,
-            norm=norm,
-            readout=readout,
-        )
-
-    def random_init(self, input_size: int, num_labels: int, key: PRNGKeyArray) -> "PredictionHead":
-        dense_key, readout_key = jax.random.split(key)
-        dense_layer = self.dense_config.random_init(
-            input_size,
-            (input_size,),
-            has_biases=self.use_dense_bias,
-            key=dense_key,
-        )
-        norm = self.normalization_config.empty(input_size)
-        readout = self.readout_config.random_init(
+        norm = self.normalization_config.init(initializer, input_size)
+        readout = self.readout_config.init(
+            initializer,
             input_dim=input_size,
             output_dims=(num_labels,),
             has_biases=True,
-            key=readout_key,
         )
-
         return PredictionHead(
             config=self,
             dense=dense_layer,
-            activation=self.activation,
             norm=norm,
             readout=readout,
         )
 
 
 class PredictionHead(LalamoModule[PredictionHeadConfig]):
-    dense: LinearBase
-    activation: Activation
+    dense: Linear
     norm: Normalization
-    readout: LinearBase
+    readout: Linear
 
-    def __call__(self, inner_features: Float[Array, "batch channels"]) -> Float[Array, "batch logits"]:
-        return vmap(self.call_unbatched)(inner_features)
+    @eqx.filter_jit
+    def __call__(
+        self,
+        inner_features: Float[Array, "batch channels"],
+        *,
+        keychain: Keychain,
+    ) -> Float[Array, "batch logits"]:
+        return call_vmapped(
+            self.call_unbatched,
+            inner_features,
+            keychain=keychain,
+            added_sharding_axis=ShardingAxis.DATA,
+        )
 
+    @eqx.filter_jit
     def call_unbatched(
         self,
         inner_features: Float[Array, " in_channels"],
+        *,
+        keychain: Keychain,
     ) -> Float[Array, " logits"]:
-        (dense_outs,) = self.dense(inner_features)
-        dense_outs = self.activation(dense_outs)
+        dense_keychain, readout_keychain = keychain.split()
+        (dense_outs,) = self.dense(
+            inner_features,
+            keychain=dense_keychain,
+        )
+        dense_outs = self.config.activation(dense_outs)
         norm_outs = self.norm(dense_outs)
-        (result,) = self.readout(norm_outs)
-        return result
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.dense.activation_precision
-
-    def export_weights(self) -> ParameterTree:
-        result = dict(
-            dense=self.dense.export_weights(),
-            norm=self.norm.export_weights(),
-            readout=self.readout.export_weights(),
+        (result,) = self.readout(
+            norm_outs,
+            keychain=readout_keychain,
         )
         return result
 
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        return replace(
-            self,
-            dense=self.dense.import_weights(require_tree(weights["dense"])),
-            norm=self.norm.import_weights(require_tree(weights["norm"])),
-            readout=self.readout.import_weights(require_tree(weights["readout"])),
-        )
 
-
-class ClassifierActivationTrace(eqx.Module):
+class ClassifierActivationTrace(Exportable, eqx.Module):
     token_ids: Int[Array, "batch tokens"]
     token_positions: Int[Array, "batch tokens"]
 
@@ -141,35 +118,59 @@ class ClassifierActivationTrace(eqx.Module):
     output_pooling: Float[Array, "batch channels"]
     logits: Float[Array, "batch logits"]
 
-    def export(self) -> ParameterTree:
-        result = dict(
-            token_ids=self.token_ids,
-            token_positions=self.token_positions,
-            layer_results=[layer_result.export() for layer_result in self.layer_results],
-            output_norm=self.output_norm,
-            output_pooling=self.output_pooling,
-            logits=self.logits,
-        )
-        if self.rope_embeddings is not None:
-            result["rope_embeddings"] = [emb.export() for emb in self.rope_embeddings]
-        return result
 
-
-class ClassifierResult(eqx.Module):
+class ClassifierResult(Exportable, eqx.Module):
     logits: Float[Array, "batch logits"]
     activation_trace: ClassifierActivationTrace | None = None
 
-    def export(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = dict(
-            logits=self.logits,
+
+@dataclass(frozen=True)
+class ClassifierForwardPassConfig:
+    embedding_forward_pass_config: EmbeddingForwardPassConfig = dataclass_field(
+        default_factory=EmbeddingForwardPassConfig,
+    )
+    transformer_forward_pass_config: TransformerForwardPassConfig = dataclass_field(
+        default_factory=TransformerForwardPassConfig,
+    )
+    normalization_forward_pass_config: NormalizationForwardPassConfig = dataclass_field(
+        default_factory=NormalizationForwardPassConfig,
+    )
+
+    @classmethod
+    def for_tracer_tests(cls) -> Self:
+        return cls(
+            embedding_forward_pass_config=EmbeddingForwardPassConfig.for_tracer_tests(),
+            transformer_forward_pass_config=TransformerForwardPassConfig.for_tracer_tests(),
+            normalization_forward_pass_config=NormalizationForwardPassConfig.for_tracer_tests(),
         )
-        if self.activation_trace is not None:
-            result["activation_trace"] = self.activation_trace.export()
-        return result
+
+    @classmethod
+    def for_inference(
+        cls,
+        mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
+        precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
+    ) -> Self:
+        return cls(
+            embedding_forward_pass_config=EmbeddingForwardPassConfig.for_inference(precision),
+            transformer_forward_pass_config=TransformerForwardPassConfig.for_inference(mode, precision),
+            normalization_forward_pass_config=NormalizationForwardPassConfig.for_inference(),
+        )
+
+    @classmethod
+    def for_training(
+        cls,
+        gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
+        precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
+    ) -> Self:
+        return cls(
+            embedding_forward_pass_config=EmbeddingForwardPassConfig.for_training(gradient_estimator, precision),
+            transformer_forward_pass_config=TransformerForwardPassConfig.for_training(gradient_estimator, precision),
+            normalization_forward_pass_config=NormalizationForwardPassConfig.for_training(),
+        )
 
 
 @dataclass(frozen=True)
-class ClassifierConfig:
+class ClassifierConfig(LalamoConfig):
     embedding_config: EmbeddingConfig
     embedding_norm_config: NormalizationConfig
     transformer_config: TransformerConfig
@@ -184,50 +185,23 @@ class ClassifierConfig:
     context_length: int
     num_labels: int
     classifier_pooling: PoolingType
+    output_labels: tuple[str, ...] | None = None
 
-    output_labels: tuple[str, ...] | None
-
-    def random_init(
-        self,
-        *,
-        key: PRNGKeyArray,
-    ) -> "Classifier":
-        embedding_key, transformer_key, prediction_head_key = jax.random.split(key, num=3)
-        embedding = self.embedding_config.random_init(
-            vocab_size=self.vocab_size,
+    def init(self, initializer: Initializer) -> "Classifier":
+        embedding = self.embedding_config.init(
+            initializer,
             model_dim=self.model_dim,
-            key=embedding_key,
-        )
-        embedding_norm = self.embedding_norm_config.empty(self.model_dim)
-        transformer = self.transformer_config.random_init(
-            key=transformer_key,
-        )
-        prediction_head = self.prediction_head_config.random_init(
-            input_size=self.hidden_dim,
-            num_labels=self.num_labels,
-            key=prediction_head_key,
-        )
-        return Classifier(
-            self,
-            embedding=embedding,
-            embedding_norm=embedding_norm,
-            transformer=transformer,
-            prediction_head=prediction_head,
-        )
-
-    def empty(self) -> "Classifier":
-        embedding = self.embedding_config.empty(
             vocab_size=self.vocab_size,
-            model_dim=self.model_dim,
         )
-        embedding_norm = self.embedding_norm_config.empty(self.model_dim)
-        transformer = self.transformer_config.empty()
-        prediction_head = self.prediction_head_config.empty(
+        embedding_norm = self.embedding_norm_config.init(initializer, self.model_dim)
+        transformer = self.transformer_config.init(initializer)
+        prediction_head = self.prediction_head_config.init(
+            initializer,
             input_size=self.hidden_dim,
             num_labels=self.num_labels,
         )
         return Classifier(
-            self,
+            config=self,
             embedding=embedding,
             embedding_norm=embedding_norm,
             transformer=transformer,
@@ -241,14 +215,6 @@ class Classifier(LalamoModule[ClassifierConfig]):
     transformer: Transformer
     prediction_head: PredictionHead
 
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.embedding.activation_precision
-
-    def __post_init__(self) -> None:
-        if self.config.output_labels is not None and len(self.config.output_labels) != self.config.num_labels:
-            raise ValueError("Number of output logits is different from provided list of labels")
-
     @eqx.filter_jit
     def __call__(
         self,
@@ -256,11 +222,23 @@ class Classifier(LalamoModule[ClassifierConfig]):
         token_positions: Int[Array, "batch tokens"],
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: TransformerForwardPassConfig | None = None,
+        forward_pass_config: ClassifierForwardPassConfig = ClassifierForwardPassConfig(),
+        *,
+        keychain: Keychain,
     ) -> ClassifierResult:
-        inner_features = self.embedding.embed(token_ids)
-        normalized_embeddings = vmap_twice(self.embedding_norm)(inner_features)
+        embedding_keychain, transformer_keychain, prediction_head_keychain = keychain.split(3)
+        inner_features = call_vmapped_twice(
+            self.embedding.embed,
+            token_ids,
+            forward_pass_config=forward_pass_config.embedding_forward_pass_config,
+            keychain=embedding_keychain,
+            added_sharding_axes=(ShardingAxis.DATA, None),
+        )
+        normalized_embeddings = call_vmapped_twice(
+            self.embedding_norm,
+            inner_features,
+            forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+        )
 
         transformer_result = self.transformer(
             inner_features=normalized_embeddings,
@@ -270,8 +248,8 @@ class Classifier(LalamoModule[ClassifierConfig]):
             return_layer_results=return_activation_trace,
             return_positional_embeddings=return_activation_trace,
             lengths_without_padding=lengths_without_padding,
-            forward_pass_mode=forward_pass_mode,
-            forward_pass_config=forward_pass_config,
+            forward_pass_config=forward_pass_config.transformer_forward_pass_config,
+            keychain=transformer_keychain,
         )
 
         if self.config.classifier_pooling == PoolingType.CLS:
@@ -282,7 +260,10 @@ class Classifier(LalamoModule[ClassifierConfig]):
         else:
             raise TypeError(f"classifier_pooling of unknown type: {self.config.classifier_pooling}")
 
-        logits = self.prediction_head(pooled_output)
+        logits = self.prediction_head(
+            pooled_output,
+            keychain=prediction_head_keychain,
+        )
 
         if return_activation_trace:
             assert transformer_result.layer_results is not None
@@ -302,23 +283,4 @@ class Classifier(LalamoModule[ClassifierConfig]):
         return ClassifierResult(
             logits=logits,
             activation_trace=activation_trace,
-        )
-
-    def export_weights(self) -> ParameterTree:
-        result = dict(
-            embedding=self.embedding.export_weights(),
-            embedding_norm=self.embedding_norm.export_weights(),
-            transformer=self.transformer.export_weights(),
-            prediction_head=self.prediction_head.export_weights(),
-        )
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        return replace(
-            self,
-            embedding=self.embedding.import_weights(require_tree(weights["embedding"])),
-            embedding_norm=self.embedding_norm.import_weights(require_tree(weights["embedding_norm"])),
-            transformer=self.transformer.import_weights(require_tree(weights["transformer"])),
-            prediction_head=self.prediction_head.import_weights(require_tree(weights["prediction_head"])),
         )

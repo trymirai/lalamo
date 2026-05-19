@@ -1,133 +1,124 @@
-import json
-from dataclasses import asdict
-from typing import cast
+from collections.abc import Callable
 
 import jax
 import jax.numpy as jnp
 import pytest
 
-pytest.importorskip("torch")
-
-import torch
-from transformers import GenerationConfig as TransformersGenerationConfig
-from transformers.generation.utils import GenerationMixin
-
-from lalamo.model_import.common import FileSpec, download_file
-from lalamo.model_import.huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config
-from lalamo.model_import.model_specs.common import ModelSpec, ModelType
-from lalamo.models.language_model import GenerationConfig
-from lalamo.modules.torch_interop import torch_to_jax
-from lalamo.sampling import (
-    CompositePolicy,
-    FrequencyPenalty,
-    PresencePenalty,
-    RepetitionPenalty,
-)
-from tests.common import assert_close
-from tests.conftest import filter_specs, mark_by_size
-from tests.model_test_tiers import ModelTier
-
-standard_llm_specs = filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.STANDARD)
+from lalamo.module import Keychain
+from lalamo.sampling import SamplingPolicy
 
 
-@pytest.mark.parametrize("spec", mark_by_size(standard_llm_specs), ids=[s.repo for s in standard_llm_specs])
-def test_logit_processing(spec: ModelSpec) -> None:
-    # TODO: lalamo should do greedy for do_sample=False
-    generation_config = spec.configs.generation_config
+def _assert_array(result: jax.Array | None, expected: jax.Array) -> None:
+    assert result is not None
+    assert jnp.array_equal(result, expected)
 
-    if isinstance(generation_config, GenerationConfig):
-        generation_config_dict = asdict(generation_config)
-        generation_config_dict.pop("stop_token_ids")
-        generation_config_dict.pop("banned_tokens")
-        generation_config_dict.pop("presence_penalty")
-        generation_config_dict.pop("frequency_penalty")
-        lalamo_hf_generation_config = HFGenerationConfig(**generation_config_dict)
-        hf_generation_config = TransformersGenerationConfig.from_dict(
-            {**asdict(lalamo_hf_generation_config), "do_sample": True},
-        )
-    elif isinstance(generation_config, FileSpec):
-        hf_generation_config_file = download_file(generation_config, spec.repo)
-        hf_generation_config_dict = json.loads(hf_generation_config_file.read_text())
-        hf_generation_config = TransformersGenerationConfig.from_dict({**hf_generation_config_dict, "do_sample": True})
-        lalamo_hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)
-    else:
-        hf_generation_config = TransformersGenerationConfig(do_sample=True)
-        lalamo_hf_generation_config = HFGenerationConfig()
 
-    hf_processors = GenerationMixin()._get_logits_processor(hf_generation_config, input_ids_seq_length=1)  # noqa: SLF001
-    lalamo_policy = (
-        _policy_from_hf_config(lalamo_hf_generation_config)
-        .default_policy(vocab_size=256)
-        .init(
-            prompt_token_ids=jnp.zeros((1,), dtype=jnp.int32),
-            prompt_length=jnp.asarray(1, dtype=jnp.int32),
-        )
+def _with_counts(
+    policy: SamplingPolicy,
+    tokens: tuple[int, ...],
+    length: int,
+    vocabulary_size: int,
+) -> SamplingPolicy:
+    return policy.with_prompt_token_counts(
+        jnp.array(tokens, dtype=jnp.int32),
+        jnp.array(length, dtype=jnp.int32),
+        vocabulary_size=vocabulary_size,
     )
 
-    for i in range(256):
-        key = jax.random.PRNGKey(i)
 
-        logits = jax.random.normal(key, (256,), dtype=jnp.float32)
-
-        lalamo_result = lalamo_policy.process_logits(logits)
-
-        hf_scores = cast("FloatTensor", torch.tensor(jax.device_get(logits), dtype=torch.float32).unsqueeze(0))
-        hf_input_ids = cast("LongTensor", torch.zeros((1, 1), dtype=torch.long))
-        hf_result = torch_to_jax(hf_processors(hf_input_ids, hf_scores)[0])
-
-        assert_close(
-            result=lalamo_result,
-            reference=hf_result,
-            atol=1e-6,
-            rtol=1e-6,
-            fraction_of_allowed_violations=0.01,
-        )
-
-
-def test_counting_penalty_stateful_update() -> None:
-    vocab_size = 8
-    prompt = jnp.asarray([1, 2, 1, 0, 0], dtype=jnp.int32)
-    prompt_length = jnp.asarray(3, dtype=jnp.int32)
-
-    policy = CompositePolicy(
+@pytest.mark.parametrize(
+    ("call", "match"),
+    [
+        (lambda: SamplingPolicy.init(banned_tokens=range(17)), "At most 16 banned tokens"),
+        (lambda: SamplingPolicy.init(banned_tokens=(-1,)), "Banned tokens must be non-negative"),
+        (lambda: SamplingPolicy.init(repetition_penalty=0.0), "repetition_penalty must be positive"),
         (
-            RepetitionPenalty.zero(2.0, vocab_size),
-            PresencePenalty.zero(0.5, vocab_size),
-            FrequencyPenalty.zero(0.25, vocab_size),
-        )
-    ).init(prompt, prompt_length)
+            lambda: SamplingPolicy.init_batch(
+                temperature=(0.5,),
+                top_k=(1, 2),
+            ),
+            "same length",
+        ),
+    ],
+)
+def test_init_rejects_invalid_arguments(call: Callable[[], SamplingPolicy], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        call()
 
-    policy = policy.update(jnp.asarray(3, dtype=jnp.int32))
-    policy = policy.update(jnp.asarray(1, dtype=jnp.int32))
 
-    expected_counts = jnp.asarray([0, 3, 1, 1, 0, 0, 0, 0], dtype=jnp.int32)
-    for sub_policy in policy.policies:
-        assert jnp.array_equal(sub_policy.token_counts, expected_counts)
+@pytest.mark.parametrize(
+    ("policy", "logits", "expected"),
+    [
+        (SamplingPolicy.init(), [1.0, -2.0, 3.5], [1.0, -2.0, 3.5]),
+        (SamplingPolicy.init(banned_tokens=(1, 3)), [0.0, 1.0, 2.0, 3.0], [0.0, -jnp.inf, 2.0, -jnp.inf]),
+        (SamplingPolicy.init(temperature=0.0), [0.0, 3.0, 2.0], [-jnp.inf, 1.0, -jnp.inf]),
+        (SamplingPolicy.init(temperature=2.0), [1.0, 2.0, 4.0], [0.5, 1.0, 2.0]),
+        (SamplingPolicy.init(top_k=2), [1.0, 5.0, 3.0, 4.0], [-jnp.inf, 5.0, -jnp.inf, 4.0]),
+        (SamplingPolicy.init(top_k=8), [1.0, 5.0, 3.0], [1.0, 5.0, 3.0]),
+        (SamplingPolicy.init(top_p=0.5), [5.0, 4.0, 3.0], [5.0, -jnp.inf, -jnp.inf]),
+        (SamplingPolicy.init(top_p=0.9), [3.0, 2.0, 1.0], [3.0, 2.0, -jnp.inf]),
+        (SamplingPolicy.init(min_p=0.2), jnp.log(jnp.array([1.0, 0.25, 0.05])), [0.0, -1.3862944, -jnp.inf]),
+        (
+            _with_counts(SamplingPolicy.init(repetition_penalty=2.0), (0, 1), 2, 4),
+            [4.0, -3.0, 8.0, 1.0],
+            [2.0, -6.0, 8.0, 1.0],
+        ),
+        (
+            _with_counts(SamplingPolicy.init(presence_penalty=0.5), (0, 0, 2), 3, 3),
+            [4.0, 3.0, 2.0],
+            [3.5, 3.0, 1.5],
+        ),
+        (
+            _with_counts(SamplingPolicy.init(frequency_penalty=0.5), (0, 0, 2), 3, 3),
+            [4.0, 3.0, 2.0],
+            [3.0, 3.0, 1.5],
+        ),
+        (SamplingPolicy.init(top_k=1, banned_tokens=(1,)), [1.0, 4.0, 3.0], [-jnp.inf, -jnp.inf, 3.0]),
+    ],
+)
+def test_process_logits(policy: SamplingPolicy, logits: jax.Array | list[float], expected: list[float]) -> None:
+    result = policy.process_logits(jnp.asarray(logits, dtype=jnp.float32))
 
-    logits = jnp.asarray([1.0, 2.0, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0], dtype=jnp.float32)
-    counts = expected_counts.astype(jnp.float32)
+    _assert_array(result, jnp.array(expected, dtype=jnp.float32))
 
-    seen = counts > 0
-    positive = logits > 0
-    expected_rep = jnp.where(seen & positive, logits / 2.0, jnp.where(seen, logits * 2.0, logits))
-    expected_presence = jnp.where(seen, expected_rep - 0.5, expected_rep)
-    expected_final = expected_presence - 0.25 * counts
 
-    assert_close(
-        result=policy.process_logits(logits),
-        reference=expected_final,
-        atol=1e-6,
-        rtol=1e-6,
-        fraction_of_allowed_violations=0.0,
+def test_token_counts_ignore_out_of_vocab_tokens_and_update_generated_tokens() -> None:
+    policy = _with_counts(SamplingPolicy.init(repetition_penalty=2.0), (1, -1, 9, 2), 4, 4)
+    updated_policy = policy.with_next_token_count(jnp.array(2, dtype=jnp.int32))
+    updated_policy = updated_policy.with_next_token_count(jnp.array(99, dtype=jnp.int32))
+    updated_policy = updated_policy.with_next_token_count(jnp.array(-1, dtype=jnp.int32))
+
+    _assert_array(policy.token_counts, jnp.array([0, 1, 1, 0], dtype=jnp.int32))
+    _assert_array(updated_policy.token_counts, jnp.array([0, 1, 2, 0], dtype=jnp.int32))
+    _assert_array(
+        policy.process_logits(jnp.array([1.0, 2.0, 4.0, 8.0], dtype=jnp.float32)),
+        jnp.array([1.0, 1.0, 2.0, 8.0], dtype=jnp.float32),
     )
 
 
-def test_counting_penalty_ignores_out_of_vocab_prompt_tokens() -> None:
-    vocab_size = 4
-    prompt = jnp.asarray([1, 99, 2], dtype=jnp.int32)
-    prompt_length = jnp.asarray(3, dtype=jnp.int32)
+def test_batched_policy_requires_vmap_and_processes_rows() -> None:
+    policy = SamplingPolicy.init_batch(
+        temperature=(0.0, 1.0),
+        top_k=(0, 1),
+        top_p=(1.0, 1.0),
+        min_p=(0.0, 0.0),
+        banned_tokens=((), ()),
+    )
+    logits = jnp.array([[1.0, 3.0, 2.0], [1.0, 3.0, 2.0]], dtype=jnp.float32)
 
-    policy = CompositePolicy((PresencePenalty.zero(1.0, vocab_size),)).init(prompt, prompt_length)
+    with pytest.raises(ValueError, match="Use vmap"):
+        policy.process_logits(logits[0])
 
-    (sub_policy,) = policy.policies
-    assert jnp.array_equal(sub_policy.token_counts, jnp.asarray([0, 1, 1, 0], dtype=jnp.int32))
+    result = jax.vmap(lambda policy_row, logits_row: policy_row.process_logits(logits_row))(policy, logits)
+
+    _assert_array(result, jnp.array([[-jnp.inf, 1.0, -jnp.inf], [-jnp.inf, 3.0, -jnp.inf]], dtype=jnp.float32))
+
+
+def test_call_samples_greedy_token_when_temperature_is_zero() -> None:
+    result = SamplingPolicy.init(temperature=0.0)(
+        jnp.array([0.0, 3.0, 2.0], dtype=jnp.float32),
+        keychain=Keychain.init(0),
+    )
+
+    assert result.shape == ()
+    assert result.item() == 1

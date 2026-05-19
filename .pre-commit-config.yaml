@@ -30,15 +30,15 @@ repos:
       - id: ruff-check
         name: ruff check
         language: system
-        entry: ruff check lalamo
+        entry: ruff check --fix .
         pass_filenames: false
       - id: ruff-format
         name: ruff format
         language: system
         entry: ruff format .
         pass_filenames: false
-      - id: ty-check
-        name: ty check
+      - id: pyrefly-check
+        name: pyrefly check
         language: system
-        entry: ty check lalamo
+        entry: pyrefly check
         pass_filenames: false

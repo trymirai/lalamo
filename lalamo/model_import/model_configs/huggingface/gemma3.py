@@ -3,25 +3,19 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 import jax.numpy as jnp
-from jaxtyping import DTypeLike
 
-from lalamo.modules import (
-    DecoderConfig,
-    MLXQuantizedLinearConfig,
-    MLXQuantizedTiedEmbeddingConfig,
-    TiedEmbeddingConfig,
-    TransformerConfig,
-)
 from lalamo.modules.activations import GELU
-from lalamo.modules.linear import FullPrecisionLinearConfig
+from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig
+from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import LinearScalingRoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.transformer import TransformerConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
-from lalamo.quantization import QuantizationMode
 
-from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
+from .common import HuggingFaceLMConfig, QuantizationConfigType
 
 __all__ = ["HFGemma3Config", "HFGemma3TextConfig"]
 
@@ -84,34 +78,15 @@ class HFGemma3TextConfigRaw:
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
-        fallback_quantization: QuantizationConfigType | None = None,
     ) -> DecoderConfig:
-        quantization = self.quantization or self.quantization_config or fallback_quantization
         input_scale = _round_to_bfloat16(self.hidden_size**0.5)
         attention_scale = self.query_pre_attn_scalar**-0.5
-        if quantization is None:
-            embedding_config = TiedEmbeddingConfig(
-                input_scale=input_scale,
-                logit_soft_cap=self.final_logit_softcapping,
-                precision=activation_precision,
-            )
-        elif isinstance(quantization, MLXQuantizationConfig):
-            embedding_config = MLXQuantizedTiedEmbeddingConfig(
-                input_scale=input_scale,
-                logit_soft_cap=self.final_logit_softcapping,
-                group_size=quantization.group_size,
-                embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
-            )
-        else:
-            raise RuntimeError(f"Unsupported quantization format: {type(quantization)}")
+        embedding_config = TiedEmbeddingConfig(
+            input_scale=input_scale,
+            logit_soft_cap=self.final_logit_softcapping,
+        )
         rms_norm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=1.0,
             upcast_mode=UpcastMode.FULL_LAYER,
@@ -120,7 +95,6 @@ class HFGemma3TextConfigRaw:
 
         if isinstance(self.rope_scaling, GemmaRoPEScalingConfig):
             global_rope_config = LinearScalingRoPEConfig(
-                precision=activation_precision,
                 base=self.rope_theta,
                 max_sequence_length=self.max_position_embeddings,
                 scaling_factor=self.rope_scaling.factor,
@@ -128,7 +102,6 @@ class HFGemma3TextConfigRaw:
             )
         elif isinstance(self.rope_scaling, YarnRopeScalingConfig):
             global_rope_config = YARNRoPEConfig(
-                precision=activation_precision,
                 base=self.rope_theta,
                 scaling_factor=self.rope_scaling.factor,
                 max_sequence_length=self.max_position_embeddings,
@@ -140,7 +113,6 @@ class HFGemma3TextConfigRaw:
             )
         elif self.rope_scaling is None:
             global_rope_config = UnscaledRoPEConfig(
-                precision=activation_precision,
                 base=self.rope_theta,
                 max_sequence_length=context_length or self.max_position_embeddings,
                 head_dim=self.head_dim,
@@ -149,23 +121,12 @@ class HFGemma3TextConfigRaw:
             raise ValueError("Invalid rope scaling configuration")
 
         local_rope_config = UnscaledRoPEConfig(
-            precision=activation_precision,
             base=self.rope_local_base_freq,
             max_sequence_length=context_length or self.max_position_embeddings,
             head_dim=self.head_dim,
         )
 
-        if quantization is None:
-            linear_config = FullPrecisionLinearConfig(precision=activation_precision)
-        elif isinstance(quantization, MLXQuantizationConfig):
-            linear_config = MLXQuantizedLinearConfig(
-                group_size=quantization.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
-            )
-        else:
-            raise RuntimeError(f"Unsupported quantization format: {type(quantization)}")
+        linear_config = LinearConfig()
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=GELU(),
@@ -260,15 +221,9 @@ class HFGemma3Config(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
-        quantization = self.quantization or self.quantization_config
         return self.text_config.to_decoder_config(
             context_length=context_length,
-            activation_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             metadata_dict=metadata_dict,
-            fallback_quantization=quantization,
         )

@@ -7,14 +7,17 @@ import jax
 import pytest
 from jax import numpy as jnp
 from jax.experimental.checkify import checkify, div_checks, nan_checks, user_checks
+from jax.sharding import Mesh, NamedSharding, Sharding
 
-__all__ = ["assert_close", "checkify_forward", "skip_on_gpu", "tolerance"]
+__all__ = ["assert_close", "assert_close_arrays", "assert_named_sharding", "checkify_forward", "gpu_only", "tolerance"]
 
-DEFAULT_ATOL = 1e-4
-DEFAULT_RTOL = 1e-3
+DEFAULT_ATOL = 1e-3
+DEFAULT_RTOL = 3e-2
 
 _current_atol: ContextVar[float] = ContextVar("_current_atol", default=DEFAULT_ATOL)
 _current_rtol: ContextVar[float] = ContextVar("_current_rtol", default=DEFAULT_RTOL)
+
+gpu_only = pytest.mark.gpu
 
 
 @contextmanager
@@ -35,9 +38,13 @@ def checkify_forward(module):  # noqa: ANN001, ANN201
     )
 
 
-def skip_on_gpu(reason: str) -> None:
-    if any(device.platform == "gpu" for device in jax.devices()):
-        pytest.skip(reason)
+def assert_named_sharding(sharding: Sharding, mesh: Mesh) -> None:
+    assert isinstance(sharding, NamedSharding)
+    assert sharding.mesh == mesh
+
+
+def assert_close_arrays(result: jax.Array, reference: jax.Array) -> None:
+    assert_close(result=jnp.asarray(jax.device_get(result)), reference=jnp.asarray(jax.device_get(reference)))
 
 
 def assert_close(

@@ -1,15 +1,11 @@
-from __future__ import annotations
-
 import re
 import tomllib
 from enum import IntEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TypedDict, cast
 
+from lalamo.model_import.model_spec import ModelSpec
 from tests.helpers import unsi
-
-if TYPE_CHECKING:
-    from lalamo.model_import.model_specs.common import ModelSpec
 
 PARAM_UNITS = ("", "K", "M", "B")
 
@@ -68,7 +64,15 @@ def model_size(spec: ModelSpec) -> ModelSize:
 
 
 def get_models_by_tier(tier: ModelTier) -> tuple[str, ...]:
-    return tuple(MODEL_TEST_TIERS_CONFIG["tiers"][tier.name.lower()])
+    match tier:
+        case ModelTier.CANONICAL:
+            return tuple(MODEL_TEST_TIERS_CONFIG["tiers"]["canonical"])
+        case ModelTier.CORE:
+            return tuple(MODEL_TEST_TIERS_CONFIG["tiers"]["core"])
+        case ModelTier.STANDARD:
+            return tuple(MODEL_TEST_TIERS_CONFIG["tiers"]["standard"])
+        case ModelTier.EXTRA:
+            return tuple(MODEL_TEST_TIERS_CONFIG["tiers"]["extra"])
 
 
 MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = tuple(

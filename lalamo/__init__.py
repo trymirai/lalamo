@@ -1,21 +1,23 @@
-import os
+# ruff: noqa: E402
+from lalamo.preamble import init_jax
 
-# Must run before importing jax / tensorflow, this hides the XLA optimization logs
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+init_jax()
 
-from lalamo.commands import (
-    CollectTracesCallbacks,
-    ConversionCallbacks,
-    EstimateBatchsizeCallbacks,
-    Precision,
-    TrainCallbacks,
-    collect_traces,
-    convert,
-    estimate_batchsize,
-    train,
+from lalamo.checkpoint_manager import CheckpointManager
+from lalamo.model_import import ModelSpec
+from lalamo.model_import.model_spec import (
+    ClassifierModelSpec,
+    ConfigMap,
+    FileSpec,
+    JSONFieldSpec,
+    LanguageModelSpec,
+    TTSModelSpec,
 )
-from lalamo.message_processor import (
+from lalamo.models import ClassifierModel, LanguageModel
+from lalamo.models.chat_codec import (
     AssistantMessage,
+    ChatCodec,
+    ChatCodecConfig,
     ContentBlock,
     Image,
     Message,
@@ -23,48 +25,27 @@ from lalamo.message_processor import (
     ToolSchema,
     UserMessage,
 )
-from lalamo.model_import import ModelSpec, import_model
-from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFieldSpec, ModelType, UseCase, WeightsType
-from lalamo.models import ClassifierModel, LanguageModel
-from lalamo.modules.common import ShardingConfig, pad_and_apply_data_sharding
-from lalamo.quantization import QuantizationMode
-from lalamo.speculator import (
-    CollectTracesEvent,
-    SpeculatorTrainingEvent,
-)
 
 __version__ = "0.8.0"
 
 __all__ = [
     "AssistantMessage",
+    "ChatCodec",
+    "ChatCodecConfig",
+    "CheckpointManager",
     "ClassifierModel",
-    "CollectTracesCallbacks",
-    "CollectTracesEvent",
+    "ClassifierModelSpec",
     "ConfigMap",
     "ContentBlock",
-    "ConversionCallbacks",
-    "EstimateBatchsizeCallbacks",
     "FileSpec",
     "Image",
     "JSONFieldSpec",
     "LanguageModel",
+    "LanguageModelSpec",
     "Message",
     "ModelSpec",
-    "ModelType",
-    "Precision",
-    "QuantizationMode",
-    "ShardingConfig",
-    "SpeculatorTrainingEvent",
     "SystemMessage",
+    "TTSModelSpec",
     "ToolSchema",
-    "TrainCallbacks",
-    "UseCase",
     "UserMessage",
-    "WeightsType",
-    "collect_traces",
-    "convert",
-    "estimate_batchsize",
-    "import_model",
-    "pad_and_apply_data_sharding",
-    "train",
 ]

@@ -1,46 +1,54 @@
-from dataclasses import dataclass, replace
-from typing import Any, Self
+from dataclasses import dataclass
+from typing import Any, NamedTuple
 
 import jax
 from jax import numpy as jnp
-from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, Float, Int
 
-from lalamo.common import ParameterTree, require_mapping, require_tree
-from lalamo.modules.activations import Identity
+from lalamo.initializer import Initializer
+from lalamo.module import Keychain, ShardingAxis
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
 )
-from lalamo.modules.audio.fishaudio.fishaudio_consts import REPEAT_WINDOW_SIZE, SHORT_LOGITS_SIZE
-from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
-from lalamo.modules.common import ForwardPassMode
+from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfig
+from lalamo.modules.decoder import DecoderForwardPassConfig
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
-from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
-from lalamo.modules.token_mixers.state.common import State
+from lalamo.modules.linear import Linear, LinearConfig
+from lalamo.modules.token_mixer import State
 from lalamo.modules.transformer import Transformer, TransformerConfig
-from lalamo.modules.utils import vmap_twice
+from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 from lalamo.sampling import SamplingPolicy
 
 
 @dataclass
 class FishAudioTextDecoderResult:
-    token_codes: Float[Array, "batch codes"]
+    token_codes: Int[Array, "batch codebooks"]
     hidden_states: Array | None
     state: State | None
 
 
+class DecodeUtteranceLoopState(NamedTuple):
+    slow_state: State | None
+    current_codes: Int[Array, "batch codebooks"]
+    loop_keychain: Keychain
+    generated_count: Int[Array, ""]
+    seq: Int[Array, "codebooks max_seq_len"]
+    previous_tokens: Int[Array, "codebooks max_seq_len"]
+    is_finished: Bool[Array, ""]
+
+
 @dataclass(frozen=True)
-class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
+class FishAudioTextDecoderConfig(TTSTextDecoderConfig):
     slow_embeddings_config: TiedEmbeddingConfig
     slow_model_config: TransformerConfig
-    slow_readout_config: FullPrecisionLinearConfig
+    slow_readout_config: LinearConfig
 
     fast_embeddings_config: TiedEmbeddingConfig
     fast_model_config: TransformerConfig
-    fast_readout_config: FullPrecisionLinearConfig
+    fast_readout_config: LinearConfig
 
     codebook_embeddings_config: TiedEmbeddingConfig
-    fast_model_projection_config: FullPrecisionLinearConfig | None
+    fast_model_projection_config: LinearConfig | None
 
     semantic_token_begin_id: int
     semantic_token_end_id: int
@@ -54,107 +62,56 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
 
     scale_codebook_embeddings: bool
 
-    precision: DTypeLike
+    short_logits_size: int = 1024
+    repeat_window_size: int = 16
 
-    short_logits_size: int = SHORT_LOGITS_SIZE
-    repeat_window_size: int = REPEAT_WINDOW_SIZE
-
-    def empty(self) -> "FishAudioTextDecoder":
-        embeddings_slow = self.slow_embeddings_config.empty(self.vocab_size, self.slow_model_dim)
-        embeddings_fast = self.fast_embeddings_config.empty(self.codebook_size, self.fast_model_dim)
-        codebook_embeddings = self.codebook_embeddings_config.empty(
-            self.codebook_size * self.num_codebooks,
-            self.slow_model_dim,
-        )
-        if self.fast_model_projection_config is not None:
-            fast_model_projection = self.fast_model_projection_config.empty(
-                input_dim=self.slow_model_dim,
-                output_dims=(self.fast_model_dim,),
-                has_biases=False,
-            )
-        else:
-            fast_model_projection = Identity()
-        assert isinstance(embeddings_slow, TiedEmbedding)
-        assert isinstance(embeddings_fast, TiedEmbedding)
-        assert isinstance(codebook_embeddings, TiedEmbedding)
-        return FishAudioTextDecoder(
-            self,
-            embeddings_slow=embeddings_slow,
-            transformer_slow=self.slow_model_config.empty(),
-            readout_slow=self.slow_readout_config.empty(
-                input_dim=self.slow_model_dim,
-                output_dims=(self.vocab_size,),
-                has_biases=False,
-            ),
-            embeddings_fast=embeddings_fast,
-            transformer_fast=self.fast_model_config.empty(),
-            readout_fast=self.fast_readout_config.empty(
-                input_dim=self.fast_model_dim,
-                output_dims=(self.codebook_size,),
-                has_biases=False,
-            ),
-            codebook_embeddings=codebook_embeddings,
-            fast_model_projection=fast_model_projection,
-        )
-
-    def random_init(self, *, key: PRNGKeyArray) -> "FishAudioTextDecoder":
-        (
-            key_emb_slow,
-            key_transformer_slow,
-            key_readout_slow,
-            key_emb_fast,
-            key_transformer_fast,
-            key_readout_fast,
-            key_emb_codebook,
-            key_fast_proj,
-        ) = jax.random.split(key, 8)
-
-        embeddings_slow = self.slow_embeddings_config.random_init(
+    def init(self, initializer: Initializer) -> "FishAudioTextDecoder":
+        embeddings_slow = self.slow_embeddings_config.init(
+            initializer,
+            model_dim=self.slow_model_dim,
             vocab_size=self.vocab_size,
-            model_dim=self.slow_model_dim,
-            key=key_emb_slow,
         )
-        embeddings_fast = self.fast_embeddings_config.random_init(
-            vocab_size=self.codebook_size,
+        embeddings_fast = self.fast_embeddings_config.init(
+            initializer,
             model_dim=self.fast_model_dim,
-            key=key_emb_fast,
+            vocab_size=self.codebook_size,
         )
-        codebook_embeddings = self.codebook_embeddings_config.random_init(
-            vocab_size=self.codebook_size * self.num_codebooks,
+        codebook_embeddings = self.codebook_embeddings_config.init(
+            initializer,
             model_dim=self.slow_model_dim,
-            key=key_emb_codebook,
+            vocab_size=self.codebook_size * self.num_codebooks,
         )
         if self.fast_model_projection_config is not None:
-            fast_model_projection = self.fast_model_projection_config.random_init(
+            fast_model_projection = self.fast_model_projection_config.init(
+                initializer,
                 input_dim=self.slow_model_dim,
                 output_dims=(self.fast_model_dim,),
                 has_biases=False,
-                key=key_fast_proj,
             )
         else:
-            fast_model_projection = Identity()
+            fast_model_projection = None
 
         assert isinstance(embeddings_slow, TiedEmbedding)
         assert isinstance(embeddings_fast, TiedEmbedding)
         assert isinstance(codebook_embeddings, TiedEmbedding)
 
         return FishAudioTextDecoder(
-            self,
+            config=self,
             embeddings_slow=embeddings_slow,
-            transformer_slow=self.slow_model_config.random_init(key=key_transformer_slow),
-            readout_slow=self.slow_readout_config.random_init(
+            transformer_slow=self.slow_model_config.init(initializer),
+            readout_slow=self.slow_readout_config.init(
+                initializer,
                 input_dim=self.slow_model_dim,
                 output_dims=(self.vocab_size,),
                 has_biases=False,
-                key=key_readout_slow,
             ),
             embeddings_fast=embeddings_fast,
-            transformer_fast=self.fast_model_config.random_init(key=key_transformer_fast),
-            readout_fast=self.fast_readout_config.random_init(
+            transformer_fast=self.fast_model_config.init(initializer),
+            readout_fast=self.fast_readout_config.init(
+                initializer,
                 input_dim=self.fast_model_dim,
                 output_dims=(self.codebook_size,),
                 has_biases=False,
-                key=key_readout_fast,
             ),
             codebook_embeddings=codebook_embeddings,
             fast_model_projection=fast_model_projection,
@@ -164,65 +121,14 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
 class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     embeddings_slow: TiedEmbedding
     transformer_slow: Transformer
-    readout_slow: FullPrecisionLinear
+    readout_slow: Linear
 
     embeddings_fast: TiedEmbedding
     transformer_fast: Transformer
-    readout_fast: FullPrecisionLinear
+    readout_fast: Linear
 
     codebook_embeddings: TiedEmbedding
-    fast_model_projection: FullPrecisionLinear | Identity
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    def export_weights(self) -> ParameterTree:
-        if isinstance(self.fast_model_projection, Identity):
-            fast_model_proj_weighs = {}
-        else:
-            fast_model_proj_weighs = self.fast_model_projection.export_weights()
-
-        return {
-            "embeddings_slow": self.embeddings_slow.export_weights(),
-            "embeddings_fast": self.embeddings_fast.export_weights(),
-            "transformer_slow": self.transformer_slow.export_weights(),
-            "transformer_fast": self.transformer_fast.export_weights(),
-            "readout_slow": self.readout_slow.export_weights(),
-            "readout_fast": self.readout_fast.export_weights(),
-            "codebook_embeddings": self.codebook_embeddings.export_weights(),
-            "fast_model_projection": fast_model_proj_weighs,
-        }
-
-    def import_weights(self, weights: ParameterTree) -> Self:
-        weights = require_mapping(weights)
-        return replace(
-            self,
-            embeddings_slow=self.embeddings_slow.import_weights(require_tree(weights["embeddings_slow"])),
-            embeddings_fast=self.embeddings_fast.import_weights(require_tree(weights["embeddings_fast"])),
-            transformer_slow=self.transformer_slow.import_weights(require_tree(weights["transformer_slow"])),
-            transformer_fast=self.transformer_fast.import_weights(require_tree(weights["transformer_fast"])),
-            readout_slow=self.readout_slow.import_weights(require_tree(weights["readout_slow"])),
-            readout_fast=self.readout_fast.import_weights(require_tree(weights["readout_fast"])),
-            codebook_embeddings=self.codebook_embeddings.import_weights(require_tree(weights["codebook_embeddings"])),
-            fast_model_projection=self.fast_model_projection.import_weights(
-                require_tree(weights["fast_model_projection"]),
-            )
-            if isinstance(self.fast_model_projection, FullPrecisionLinear)
-            else Identity(),
-        )
-
-    @property
-    def semantic_begin_id(self) -> int:
-        return self.config.semantic_token_begin_id
-
-    @property
-    def semantic_end_id(self) -> int:
-        return self.config.semantic_token_end_id
-
-    @property
-    def num_codebooks(self) -> int:
-        return self.config.num_codebooks
+    fast_model_projection: Linear | None
 
     def embed_slow_model(self) -> Array:
         return jnp.zeros((1, 2, 3))
@@ -231,9 +137,11 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         self,
         text_tokens: Int[Array, "batch tokens"],
         sampling_policy: SamplingPolicy,
-        key: PRNGKeyArray,
+        *,
+        keychain: Keychain,
         input_pos: Int[Array, "batch tokens"] | None = None,
         state: State | None = None,
+        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
     ) -> FishAudioTextDecoderResult:
         batch_size, seq_length = text_tokens.shape
         if input_pos is None:
@@ -247,7 +155,12 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         # ignore it for now
         text_and_codebooks = text_and_codebooks.at[:, 0, :].set(text_tokens)
 
-        embeddings = self.embed(text_and_codebooks)
+        embed_keychain, decode_keychain = keychain.split()
+        embeddings = self.embed(
+            text_and_codebooks,
+            forward_pass_config=forward_pass_config,
+            keychain=embed_keychain,
+        )
 
         codes, updated_state = decode_next_token(
             model=self,
@@ -256,7 +169,8 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             input_pos=input_pos,
             sampling_policy=sampling_policy,
             previous_tokens=None,
-            key=key,
+            forward_pass_config=forward_pass_config,
+            keychain=decode_keychain,
         )
 
         return FishAudioTextDecoderResult(token_codes=codes, hidden_states=None, state=updated_state)
@@ -265,24 +179,64 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         self,
         inp: Int[Array, "batch codebooks tokens"],
         apply_codebook_embeddings: bool = False,
+        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
+        *,
+        keychain: Keychain,
     ) -> Float[Array, "batch tokens embedding"]:
         """
         apply_codebook_embeddings argument should be set to 'True' if audio-prompt is used. In this
         case we expect codebook lines [1:-1] to be filled with something meaningful
         """
 
-        vq_masks = (inp[:, 0] >= self.semantic_begin_id) & (inp[:, 0] <= self.semantic_end_id)
-        embeddings = self.embeddings_slow.embed(inp[:, 0])
+        vq_masks = (inp[:, 0] >= self.config.semantic_token_begin_id) & (
+            inp[:, 0] <= self.config.semantic_token_end_id
+        )
+        slow_embed_keychain, codebook_embed_keychain = keychain.split()
+        embeddings = call_vmapped_twice(
+            self.embeddings_slow.embed,
+            inp[:, 0],
+            forward_pass_config=forward_pass_config.embedding_forward_pass_config,
+            keychain=slow_embed_keychain,
+            added_sharding_axes=(ShardingAxis.DATA, None),
+        )
 
-        if apply_codebook_embeddings or jnp.any(vq_masks):
+        def add_codebook_embeddings(
+            current_embeddings: Float[Array, "batch tokens embedding"],
+        ) -> Float[Array, "batch tokens embedding"]:
             _, _, seq_length = inp.shape
             codebook_offsets = (jnp.arange(self.config.num_codebooks) * self.config.codebook_size).reshape(-1, 1)
             codebook_offsets = jnp.tile(codebook_offsets, (1, seq_length))
-            codebook_embeds = vmap(self.codebook_embeddings.embed)(inp[:, 1:, :] + codebook_offsets)
+
+            def embed_codebook_batch(
+                codebook_ids: Int[Array, "codebooks tokens"],
+                *,
+                keychain: Keychain,
+            ) -> Float[Array, "codebooks tokens embedding"]:
+                return call_vmapped_twice(
+                    self.codebook_embeddings.embed,
+                    codebook_ids,
+                    forward_pass_config=forward_pass_config.embedding_forward_pass_config,
+                    keychain=keychain,
+                )
+
+            codebook_embeds = call_vmapped(
+                embed_codebook_batch,
+                inp[:, 1:, :] + codebook_offsets,
+                keychain=codebook_embed_keychain,
+                added_sharding_axis=ShardingAxis.DATA,
+            )
 
             vq_embeds_sum = codebook_embeds.sum(axis=1)
-            vq_embeds_sum = vq_embeds_sum.at[~vq_masks].set(0)
-            embeddings = embeddings + vq_embeds_sum
+            vq_embeds_sum = jnp.where(vq_masks[..., None], vq_embeds_sum, jnp.zeros_like(vq_embeds_sum))
+            return current_embeddings + vq_embeds_sum
+
+        should_apply_codebook_embeddings = True if apply_codebook_embeddings else jnp.any(vq_masks)
+        embeddings = jax.lax.cond(
+            should_apply_codebook_embeddings,
+            add_codebook_embeddings,
+            lambda current_embeddings: current_embeddings,
+            embeddings,
+        )
 
         if self.config.scale_codebook_embeddings:
             # Expand vq_masks to match x's shape
@@ -297,8 +251,10 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         self,
         text_tokens: Int[Array, "batch tokens"],
         sampling_policy: SamplingPolicy | None = None,
-        key: PRNGKeyArray | None = None,
-    ) -> Int[Array, "num_codebooks tokens"]:
+        *,
+        keychain: Keychain,
+        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
+    ) -> Int[Array, "num_codebooks generated_tokens"]:
         """
         Generate semantic tokens for a full utterance given text tokens in an autoregressive
         generation loop. Processing text tokens through the slow transformer and generating
@@ -318,8 +274,6 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
 
         if sampling_policy is None:
             sampling_policy = default_fishaudio_sampling_policy()
-        if key is None:
-            key = jax.random.PRNGKey(123)
 
         max_new_tokens = max_seq_len - prompt_length
 
@@ -336,14 +290,26 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         previous_tokens = jnp.zeros((codebook_dim, max_seq_len), dtype=jnp.int32)
 
         input_pos = jnp.arange(prompt_length)[None, :]
-        embeddings = self.embed(prompt)
+        embed_keychain, decode_keychain = keychain.split()
+        first_decode_keychain, loop_keychain = decode_keychain.split()
+        embeddings = self.embed(
+            prompt,
+            forward_pass_config=forward_pass_config,
+            keychain=embed_keychain,
+        )
+        initial_slow_state = self.transformer_slow.init_static_state(
+            batch_size,
+            max_seq_len,
+            embeddings.dtype,
+        )
         first_codes, state_slow = decode_next_token(
             model=self,
             x=embeddings,
-            state_slow=None,
+            state_slow=initial_slow_state,
             input_pos=input_pos,
             sampling_policy=sampling_policy,
-            key=key,
+            forward_pass_config=forward_pass_config,
+            keychain=first_decode_keychain,
             previous_tokens=None,
         )
 
@@ -351,51 +317,67 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         previous_tokens = previous_tokens.at[:, 0].set(first_codes[0])
 
         if first_codes[0, 0] == self.config.im_end_token_id:
-            codes = seq[1:, prompt_length : prompt_length + 1]
-            return codes
+            return seq[1:, prompt_length : prompt_length + 1]
 
-        cur_token = first_codes
-        generated_count = 1
-        for i in range(1, max_new_tokens):
-            cur_token_expanded = cur_token.reshape(batch_size, codebook_dim, 1)
+        window_size = min(self.config.repeat_window_size, max_seq_len)
 
-            # Get windowed previous tokens for repetition penalty
-            win_size = self.config.repeat_window_size
-            if i < win_size:
-                window = previous_tokens[:, :win_size]
-            else:
-                window = previous_tokens[:, i - win_size : i]
-
-            embeddings = self.embed(cur_token_expanded)
-
-            input_pos = jnp.array([[prompt_length + i - 1]])
-
-            if key is not None:
-                key, subkey = jax.random.split(key)
-            else:
-                subkey = None
+        def decode_next_step(loop_state: DecodeUtteranceLoopState) -> DecodeUtteranceLoopState:
+            loop_keychain, decode_keychain = loop_state.loop_keychain.split()
+            cur_token_expanded = loop_state.current_codes.reshape(batch_size, codebook_dim, 1)
+            window_start = jnp.maximum(loop_state.generated_count - window_size, 0)
+            window = jax.lax.dynamic_slice(
+                loop_state.previous_tokens,
+                (0, window_start),
+                (codebook_dim, window_size),
+            )
+            embeddings = self.embed(
+                cur_token_expanded,
+                forward_pass_config=forward_pass_config,
+                keychain=embed_keychain,
+            )
 
             next_codes, state_slow = decode_next_token(
                 model=self,
                 x=embeddings,
-                state_slow=state_slow,
-                input_pos=input_pos,
+                state_slow=loop_state.slow_state,
+                input_pos=(prompt_length + loop_state.generated_count - 1)[None, None],
                 sampling_policy=sampling_policy,
-                key=subkey,
+                forward_pass_config=forward_pass_config,
+                keychain=decode_keychain,
                 previous_tokens=window,
+                previous_tokens_length=jnp.minimum(loop_state.generated_count, window_size),
             )
 
-            seq = seq.at[:, prompt_length + i].set(next_codes[0])
-            previous_tokens = previous_tokens.at[:, i].set(next_codes[0])
-            generated_count += 1
+            return DecodeUtteranceLoopState(
+                slow_state=state_slow,
+                current_codes=next_codes,
+                loop_keychain=loop_keychain,
+                generated_count=loop_state.generated_count + 1,
+                seq=loop_state.seq.at[:, prompt_length + loop_state.generated_count].set(next_codes[0]),
+                previous_tokens=loop_state.previous_tokens.at[:, loop_state.generated_count].set(next_codes[0]),
+                is_finished=next_codes[0, 0] == self.config.im_end_token_id,
+            )
 
-            if next_codes[0, 0] == self.config.im_end_token_id:
-                break
-
-            cur_token = next_codes
+        initial_loop_state = DecodeUtteranceLoopState(
+            slow_state=state_slow,
+            current_codes=first_codes,
+            loop_keychain=loop_keychain,
+            generated_count=jnp.int32(1),
+            seq=seq,
+            previous_tokens=previous_tokens,
+            is_finished=first_codes[0, 0] == self.config.im_end_token_id,
+        )
+        final_loop_state = jax.lax.while_loop(
+            lambda loop_state: (~loop_state.is_finished) & (loop_state.generated_count < max_new_tokens),
+            decode_next_step,
+            initial_loop_state,
+        )
 
         # Extract codebook codes (exclude text token row and prompt, exclude last token which is end token)
-        codes = seq[1:, prompt_length : prompt_length + generated_count - 1]
+        generated_count = int(final_loop_state.generated_count)
+        ended_with_im_end = bool(final_loop_state.is_finished)
+        output_count = generated_count - (1 if ended_with_im_end else 0)
+        codes = final_loop_state.seq[1:, prompt_length : prompt_length + output_count]
         assert jnp.all(codes >= 0), "Negative code found"
 
         return codes
@@ -407,11 +389,23 @@ def decode_next_token(
     state_slow: State | None,
     input_pos: Array,
     sampling_policy: SamplingPolicy,
-    key: PRNGKeyArray,
-    previous_tokens: Array | None = None,  # noqa: ARG001, reserved for future when repetition penalty is done
-) -> tuple[Int[Array, "batch codes"], State | None]:
+    *,
+    keychain: Keychain,
+    forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
+    previous_tokens: Array | None = None,
+    previous_tokens_length: Int[Array, ""] | None = None,
+) -> tuple[Int[Array, "batch codebooks"], State | None]:
     batch_size = x.shape[0]
-    assert batch_size == 1, "Batching not supported yet"
+    assert batch_size == 1, "Batch scheduling not supported yet"
+    (
+        slow_transformer_keychain,
+        fast_projection_keychain,
+        slow_readout_keychain,
+        fast_transformer_keychain,
+        fast_readout_keychain,
+        fast_embed_keychain,
+    ) = keychain.split(6)
+    slow_sampling_keychain, loop_sampling_keychain = keychain.split()
 
     slow_model_result = model.transformer_slow(
         inner_features=x,
@@ -421,25 +415,40 @@ def decode_next_token(
         return_layer_results=True,
         return_positional_embeddings=False,
         lengths_without_padding=None,
-        forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config=None,
+        forward_pass_config=forward_pass_config.transformer_forward_pass_config,
+        keychain=slow_transformer_keychain,
     )
     assert slow_model_result.layer_results is not None
     hidden_states = slow_model_result.layer_results[-1].outputs[:, -1:]
-    (hidden_states,) = vmap(model.fast_model_projection)(hidden_states)
-    hidden_states = hidden_states.reshape(hidden_states.shape[0], 1, -1)
+    if model.fast_model_projection is not None:
+        (hidden_states,) = call_vmapped(
+            model.fast_model_projection,
+            hidden_states,
+            keychain=fast_projection_keychain,
+        )
 
-    (logits,) = vmap_twice(model.readout_slow)(slow_model_result.outputs)
+    (logits,) = call_vmapped_twice(
+        model.readout_slow,
+        slow_model_result.outputs,
+        keychain=slow_readout_keychain,
+    )
 
-    n_codes = model.num_codebooks + 1
+    n_codes = model.config.num_codebooks + 1
 
     codebooks = jnp.zeros((batch_size, n_codes), dtype=jnp.int32)
-    codebooks = codebooks.at[0, 0].set(vmap(lambda x: sampling_policy(x, key=key))(logits[:, -1, :])[0])
-    first_fast_code = jnp.array([codebooks[0, 0] - model.semantic_begin_id])
-    first_fast_code = first_fast_code.at[first_fast_code < 0].set(0)
+    first_code = _sample_with_previous_tokens(
+        sampling_policy,
+        logits[0, -1, :],
+        None if previous_tokens is None else previous_tokens[0],
+        previous_tokens_length=previous_tokens_length,
+        keychain=slow_sampling_keychain,
+    )
+    codebooks = codebooks.at[0, 0].set(first_code)
+    first_fast_code = jnp.array([codebooks[0, 0] - model.config.semantic_token_begin_id])
+    first_fast_code = jnp.maximum(first_fast_code, 0)
     codebooks = codebooks.at[0, 1].set(first_fast_code[0])
 
-    state_fast = model.transformer_fast.init_static_state(batch_size, n_codes)
+    state_fast = model.transformer_fast.init_static_state(batch_size, n_codes, hidden_states.dtype)
 
     input_pos_fast = jnp.zeros((batch_size, 1), dtype=jnp.int32)
     fast_first_result = model.transformer_fast(
@@ -450,17 +459,25 @@ def decode_next_token(
         return_layer_results=False,
         return_positional_embeddings=False,
         lengths_without_padding=None,
-        forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
-        forward_pass_config=None,
+        forward_pass_config=forward_pass_config.transformer_forward_pass_config,
+        keychain=fast_transformer_keychain,
     )
     state_fast = fast_first_result.updated_state
 
-    embedded_logits = model.embeddings_fast.embed(first_fast_code)
+    embedded_logits = call_vmapped(
+        model.embeddings_fast.embed,
+        first_fast_code,
+        forward_pass_config=forward_pass_config.embedding_forward_pass_config,
+        keychain=fast_embed_keychain,
+        added_sharding_axis=ShardingAxis.DATA,
+    )
+    loop_sampling_keys = jax.random.split(loop_sampling_keychain.vmapped_keys, max(n_codes - 2, 0))
 
     def loop_iteration(
         iteration_state: tuple[State | None, Array, Any],
-        index: jnp.int32,
+        loop_input: tuple[Int[Array, ""], Array],
     ) -> tuple[tuple[State | None, Array, Any], None]:
+        index, sample_vmapped_key = loop_input
         transformer_state, logits, codebooks = iteration_state
         logits = logits.reshape(logits.shape[0], 1, -1)
         input_pos_fast = jnp.array([index - 1])[None, :]
@@ -472,24 +489,77 @@ def decode_next_token(
             return_layer_results=False,
             return_positional_embeddings=False,
             lengths_without_padding=None,
-            forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
-            forward_pass_config=None,
+            forward_pass_config=forward_pass_config.transformer_forward_pass_config,
+            keychain=fast_transformer_keychain,
         )
-        (fast_logits,) = vmap_twice(model.readout_fast)(fast_result.outputs)
+        (fast_logits,) = call_vmapped_twice(
+            model.readout_fast,
+            fast_result.outputs,
+            keychain=fast_readout_keychain,
+        )
         new_state = fast_result.updated_state
 
         short_logits = fast_logits[:, :, : model.config.short_logits_size]
-        code = vmap(lambda x: sampling_policy(x, key=key))(short_logits[:, -1, :])
+        code = _sample_with_previous_tokens(
+            sampling_policy,
+            short_logits[0, -1, :],
+            None if previous_tokens is None else previous_tokens[index],
+            previous_tokens_length=previous_tokens_length,
+            keychain=Keychain(vmapped_keys=sample_vmapped_key, batch_key=keychain.batch_key),
+        )
 
-        new_logits = model.embeddings_fast.embed(code)
-        codebooks = codebooks.at[0, index].set(code[0])
+        new_logits = call_vmapped(
+            model.embeddings_fast.embed,
+            code[None],
+            forward_pass_config=forward_pass_config.embedding_forward_pass_config,
+            keychain=fast_embed_keychain,
+            added_sharding_axis=ShardingAxis.DATA,
+        )
+        codebooks = codebooks.at[0, index].set(code)
         return (new_state, new_logits, codebooks), None
 
     scan_result, _ = jax.lax.scan(
         loop_iteration,
         (state_fast, embedded_logits, codebooks),
-        jnp.arange(2, n_codes, dtype=jnp.int32),
+        (jnp.arange(2, n_codes, dtype=jnp.int32), loop_sampling_keys),
     )
     _, _, codebooks = scan_result
 
     return codebooks, slow_model_result.updated_state
+
+
+def _sample_with_previous_tokens(
+    sampling_policy: SamplingPolicy,
+    logits: Float[Array, " vocabulary"],
+    previous_tokens: Int[Array, " window"] | None,
+    previous_tokens_length: Int[Array, ""] | None,
+    *,
+    keychain: Keychain,
+) -> Int[Array, ""]:
+    if previous_tokens is None:
+        return sampling_policy(logits, keychain=keychain)
+    if sampling_policy.repetition_penalty is None:
+        return sampling_policy(logits, keychain=keychain)
+
+    previous_tokens_length = (
+        previous_tokens_length
+        if previous_tokens_length is not None
+        else jnp.asarray(previous_tokens.shape[0], dtype=jnp.int32)
+    )
+    valid_token_mask = jnp.arange(previous_tokens.shape[0], dtype=jnp.int32) < previous_tokens_length
+    clipped_previous_tokens = jnp.clip(previous_tokens, 0, logits.shape[0] - 1)
+    seen_token_counts = (
+        jnp.zeros(logits.shape, dtype=jnp.int32)
+        .at[clipped_previous_tokens]
+        .add(
+            valid_token_mask.astype(jnp.int32),
+        )
+    )
+    seen_token_mask = seen_token_counts > 0
+    penalized_logits = jnp.where(
+        logits > 0,
+        logits / sampling_policy.repetition_penalty,
+        logits * sampling_policy.repetition_penalty,
+    )
+    adjusted_logits = jnp.where(seen_token_mask, penalized_logits, logits)
+    return sampling_policy(adjusted_logits, keychain=keychain)

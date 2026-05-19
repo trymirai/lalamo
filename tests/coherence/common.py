@@ -152,7 +152,10 @@ def judge(
         raise ValueError(f"max_retries must be >= 1, got {max_retries}")
     last_error: Exception | None = None
     for attempt in range(max_retries):
-        temperature = 0.0 if attempt == 0 else 0.5
+        if attempt == 0:
+            temperature = 0.0
+        else:
+            temperature = 0.5
         try:
             resp = httpx.post(
                 OPENROUTER_ENDPOINT,
@@ -170,13 +173,13 @@ def judge(
             )
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
-        except Exception as e:
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as e:
             last_error = e
             log.warning("Judge error (attempt %d/%d): %s", attempt + 1, max_retries, e)
             continue
         try:
             return _parse_verdict(content)
-        except Exception as e:
+        except (KeyError, TypeError, ValueError) as e:
             last_error = e
             log.warning(
                 "Judge returned unparseable response (attempt %d/%d): %s", attempt + 1, max_retries, content[:200]

@@ -1,87 +1,67 @@
 import logging
 import os
 import time
-from pathlib import Path
 
-import polars as pl
 import pytest
-from typer.testing import CliRunner
 
-from lalamo.main import app
-from lalamo.model_import.model_specs.common import ModelSpec, ModelType
-from tests.conftest import ConvertModel, filter_specs, mark_by_size
+from lalamo.model_import.model_spec import LanguageModelSpec, ModelSpec
+from lalamo.models import LanguageModel
+from lalamo.models.chat_codec import UserMessage
+from lalamo.models.language_model import GenerationConfig
+from lalamo.module import Keychain
+from tests.conftest import ConvertModel, filter_specs, load_converted_model, mark_by_size
 from tests.model_test_tiers import ModelTier
 
 from .common import DEFAULT_JUDGE_MODEL, TASK_PROMPT, judge
 
-standard_llm_specs = filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.STANDARD)
+standard_llm_specs = filter_specs(model_type=LanguageModelSpec, max_tier=ModelTier.STANDARD)
 
 log = logging.getLogger(__name__)
-
-_runner = CliRunner()
 
 COHERENCE_MAX_TOKENS = 128
 
 
 def _generate_single(
-    converted_model_path: Path,
-    work_dir: Path,
+    model: LanguageModel,
     prompt: str,
     *,
     max_tokens: int,
-    tag: str,
 ) -> str:
-    dataset_path = work_dir / f"{tag}_dataset.parquet"
-    output_path = work_dir / f"{tag}_replies.parquet"
-    pl.DataFrame({"conversation": [[{"role": "user", "content": prompt}]]}).write_parquet(dataset_path)
-    result = _runner.invoke(
-        app,
-        [
-            "generate-replies",
-            str(converted_model_path),
-            str(dataset_path),
-            "--output-path",
-            str(output_path),
-            "--batch-size",
-            "1",
-            "--max-output-length",
-            str(max_tokens),
-        ],
-        terminal_width=240,
-    )
-    assert result.exit_code == 0, (
-        f"generate-replies failed (exit {result.exit_code}).\n"
-        f"--- output ---\n{result.output}\n"
-        f"--- exception ---\n{result.exception!r}"
-    )
-    return pl.read_parquet(output_path).get_column("response").to_list()[0]
+    return model.reply(
+        [UserMessage(prompt)],
+        generation_config=GenerationConfig(temperature=0.0),
+        max_output_length=max_tokens,
+        keychain=Keychain.init(0),
+    ).response
 
 
-@pytest.mark.parametrize("spec", mark_by_size(standard_llm_specs), ids=[s.repo for s in standard_llm_specs])
+@pytest.mark.parametrize(
+    "spec",
+    mark_by_size(standard_llm_specs),
+    ids=[s.origin.description for s in standard_llm_specs],
+)
 def test_model_coherent_and_stops(
     spec: ModelSpec,
     convert_model: ConvertModel,
-    tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     start_time = time.monotonic()
-    converted_model_path = convert_model(spec.repo)
-    log.info("Model conversion took %.1fs for %s", time.monotonic() - start_time, spec.repo)
+    converted_model_path = convert_model(spec.origin.description)
+    log.info("Model conversion took %.1fs for %s", time.monotonic() - start_time, spec.origin.description)
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     assert api_key is not None
     judge_model = os.getenv("COHERENCE_JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
 
-    work_dir = tmp_path_factory.mktemp("coherence")
+    model = load_converted_model(converted_model_path)
+    assert isinstance(model, LanguageModel)
 
     start_time = time.monotonic()
     coherence_output = _generate_single(
-        converted_model_path,
-        work_dir,
+        model,
         TASK_PROMPT,
         max_tokens=COHERENCE_MAX_TOKENS,
-        tag="coherence",
     )
-    log.info("Coherence generation took %.1fs for %s", time.monotonic() - start_time, spec.repo)
+    log.info("Coherence generation took %.1fs for %s", time.monotonic() - start_time, spec.origin.description)
 
     assert coherence_output, "Model produced empty output for coherence prompt"
     log.info("Coherence output:\n%s", coherence_output)

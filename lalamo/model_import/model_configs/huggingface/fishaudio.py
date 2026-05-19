@@ -7,30 +7,14 @@ from typing import Any, Self
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.common import ParameterPath
-from lalamo.model_import.loaders.common import load_parameters
+from lalamo.model import Model
 from lalamo.model_import.loaders.fishaudio_loaders import (
     load_fishaudio_audio_decoder,
     load_fishaudio_text_decoder,
 )
 from lalamo.model_import.model_configs import ForeignTTSConfig
-from lalamo.modules import (
-    GELU,
-    AttentionConfig,
-    DenseMLPConfig,
-    FullPrecisionLinearConfig,
-    LalamoModule,
-    NormalizationConfig,
-    SiLU,
-    TiedEmbeddingConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
-    TTSConfig,
-    TTSModel,
-    UnscaledRoPEConfig,
-    UpcastMode,
-    VocoderConfig,
-)
+from lalamo.models import TTSConfig, TTSModel
+from lalamo.modules.activations import GELU, SiLU
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
 )
@@ -54,41 +38,51 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     UpsamplingBlockConfig,
     VectorQuantizeConfig,
 )
+from lalamo.modules.audio.vocoders import NoopVocoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.surgery import load_as_at
+from lalamo.weight_matrix import CompressionImplementation
 
 __all__ = ["FishAudioConfig"]
 
 
+def _tts_decoders(model: TTSModel) -> tuple[object, object]:
+    return model.text_decoder, model.audio_decoder
+
+
 def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
     config: Mapping[Any, Any],
-    precision: DTypeLike,
-    accumulation_precision: DTypeLike,
     window_size: int,
     input_dim: int,
 ) -> TransformerConfig:
-    # NOTE: this condifion is from post_init() for the post-module config object
+    # FishAudio post-init treats -1 as n_head.
     n_local_heads = config["n_head"] if config["n_local_heads"] == -1 else config["n_local_heads"]
 
-    global_rope_config = UnscaledRoPEConfig(
-        precision=precision,
-        base=config["rope_base"],
+    rope_config = UnscaledRoPEConfig(
+        base=float(config["rope_base"]),
         max_sequence_length=config["block_size"],
         head_dim=config["head_dim"],
     )
 
     norm_config_pre = NormalizationConfig(
-        scale_precision=precision,
-        accumulation_precision=accumulation_precision,
         epsilon=config["norm_eps"],
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         subtract_mean=False,
     )
 
-    qkv_projection_config = FullPrecisionLinearConfig(precision=precision)
-    out_projection_config = FullPrecisionLinearConfig(precision=precision)
+    linear_config = LinearConfig()
     mixer_config = AttentionConfig(
-        qkv_projection_config=qkv_projection_config,
-        out_projection_config=out_projection_config,
+        qkv_projection_config=linear_config,
+        out_projection_config=linear_config,
         query_norm_config=None,
         key_norm_config=None,
         num_heads=config["n_head"],
@@ -103,87 +97,66 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         has_out_biases=False,
     )
 
-    mlp_linear_config = FullPrecisionLinearConfig(precision=precision)
-    mlp_use_up_biases = False
-    mlp_use_down_biases = False
     mlp_config = DenseMLPConfig(
-        linear_config=mlp_linear_config,
+        linear_config=linear_config,
         activation=SiLU(),
-        has_up_biases=mlp_use_up_biases,
-        has_down_biases=mlp_use_down_biases,
+        has_up_biases=False,
+        has_down_biases=False,
         gate_clipping=None,
         up_clipping=None,
     )
 
-    pre_mixer_norm_config = norm_config_pre
-    post_mixer_norm_config = None
-    pre_mlp_norm_config = norm_config_pre
-    post_mlp_norm_config = None
-
     layer_config = TransformerLayerConfig(
-        pre_mixer_norm_config=pre_mixer_norm_config,
+        pre_mixer_norm_config=norm_config_pre,
         mixer_config=mixer_config,
-        post_mixer_norm_config=post_mixer_norm_config,
-        pre_mlp_norm_config=pre_mlp_norm_config,
+        post_mixer_norm_config=None,
+        pre_mlp_norm_config=norm_config_pre,
         mlp_config=mlp_config,
-        post_mlp_norm_config=post_mlp_norm_config,
-        rope_config=global_rope_config,
+        post_mlp_norm_config=None,
+        rope_config=rope_config,
     )
-    hidden_dim = config["intermediate_size"]
-    context_length = config["block_size"]
 
-    transformer_cfg = TransformerConfig(
-        layer_configs=tuple([layer_config] * config["n_layer"]),
+    return TransformerConfig(
+        layer_configs=(layer_config,) * config["n_layer"],
         output_norm_config=norm_config_pre,
         model_dim=input_dim,
-        hidden_dim=hidden_dim,
-        context_length=context_length,
+        hidden_dim=config["intermediate_size"],
+        context_length=config["block_size"],
     )
-
-    return transformer_cfg
 
 
 def instantiate_dac_config_from_fishaudio_config(
     fish_dac_config: Mapping[Any, Any],
-    precision: DTypeLike,
-    accumulation_precision: DTypeLike,
 ) -> DescriptAudioCodecConfig:
     samplerate = fish_dac_config["sample_rate"]
     fish_quantizer_config = fish_dac_config["quantizer"]
 
     input_dim = fish_quantizer_config["input_dim"]
-    downsample_factor = fish_quantizer_config["downsample_factor"]
+    downsample_factor = tuple(fish_quantizer_config["downsample_factor"])
     post_module_config_dict = fish_quantizer_config["post_module"]
     encoder_dim = fish_dac_config["encoder_dim"]
-    encoder_rates = fish_dac_config["encoder_rates"]
+    encoder_rates = tuple(fish_dac_config["encoder_rates"])
     decoder_dim = fish_dac_config["decoder_dim"]
-    decoder_rates = fish_dac_config["decoder_rates"]
-    fish_quantizer_config = fish_dac_config["quantizer"]
-    input_dim = fish_quantizer_config["input_dim"]
+    decoder_rates = tuple(fish_dac_config["decoder_rates"])
     n_codebooks = fish_quantizer_config["n_codebooks"]
     codebook_dim = fish_quantizer_config["codebook_dim"]
-    downsample_factor = fish_quantizer_config["downsample_factor"]
     codebook_size = fish_quantizer_config["codebook_size"]
     semantic_codebook_size = fish_quantizer_config["semantic_codebook_size"]
 
     convnext_config = ConvNeXtBlockConfig(
-        precision=precision,
         activation=GELU(approximate=False),
-        dwconv_config=CausalConv1dConfig(precision=precision, has_biases=True),
+        dwconv_config=CausalConv1dConfig(has_biases=True),
         norm_config=NormalizationConfig(
-            scale_precision=precision,
-            accumulation_precision=accumulation_precision,
             epsilon=1e-6,
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=True,
-            use_bias=True,
+            has_biases=True,
         ),
-        pwconv_config=FullPrecisionLinearConfig(precision=precision),
+        pwconv_config=LinearConfig(),
     )
     upsampling_block_config = UpsamplingBlockConfig(
-        precision=precision,
-        trans_conv_config=CausalTransposeConv1dConfig(precision=precision, has_biases=True),
+        trans_conv_config=CausalTransposeConv1dConfig(has_biases=True),
         convnext_config=convnext_config,
     )
     num_blocks = len(downsample_factor)
@@ -193,56 +166,46 @@ def instantiate_dac_config_from_fishaudio_config(
     post_module_transformer_foreign = post_module_config_dict["config"]
     post_module_config = lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         post_module_transformer_foreign,
-        precision,
-        accumulation_precision,
         window_size=post_module_config_dict["window_size"],
         input_dim=post_module_config_dict["input_dim"],
     )
 
     vq_config = VectorQuantizeConfig(
-        precision=precision,
         codebook_config=TiedEmbeddingConfig(
             input_scale=None,
             logit_soft_cap=None,
-            precision=precision,
         ),
-        out_proj_config=FullPrecisionLinearConfig(precision=precision),
+        out_proj_config=LinearConfig(),
     )
     lalamo_rvq_config = ResidualVectorQuantizeConfig(
-        precision=precision,
         vq_config=vq_config,
     )
 
     quantizer_full_config = DownsampleResidualVectorQuantizeConfig(
-        precision=precision,
         semantic_quantizer_config=lalamo_rvq_config,
         quantizer_config=lalamo_rvq_config,
         post_module_config=post_module_config,
         upsampler_config=upsampler_config,
     )
     res_unit_config = ResidualUnitConfig(
-        precision=precision,
-        snake_config=Snake1dConfig(precision=precision),
-        conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
+        snake_config=Snake1dConfig(),
+        conv_config=CausalConv1dConfig(has_biases=True),
         causal=True,
     )
     decoder_block_config = DACDecoderBlockConfig(
-        precision=precision,
-        snake_config=Snake1dConfig(precision=precision),
-        trans_conv_config=CausalTransposeConv1dConfig(precision=precision, has_biases=True),
+        snake_config=Snake1dConfig(),
+        trans_conv_config=CausalTransposeConv1dConfig(has_biases=True),
         res_unit_config=res_unit_config,
         causal=True,
     )
     decoder_config = DACDecoderConfig(
-        precision=precision,
-        conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
-        snake_config=Snake1dConfig(precision=precision),
+        conv_config=CausalConv1dConfig(has_biases=True),
+        snake_config=Snake1dConfig(),
         decoder_block_config=decoder_block_config,
         causal=True,
     )
 
     return DescriptAudioCodecConfig(
-        precision=precision,
         quantizer_config=quantizer_full_config,
         decoder_config=decoder_config,
         samplerate=samplerate,
@@ -276,7 +239,7 @@ class FishAudioConfig(ForeignTTSConfig):
     fast_n_head: int
     fast_n_local_heads: int
     head_dim: int
-    initializer_range: int
+    initializer_range: float
     intermediate_size: int
     max_seq_len: int
     model_type: str
@@ -300,10 +263,8 @@ class FishAudioConfig(ForeignTTSConfig):
 
     def extract_textual_transformer_configs(
         self,
-        precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         fast_module: bool = False,
-    ) -> tuple[TransformerConfig, FullPrecisionLinearConfig]:
+    ) -> tuple[TransformerConfig, LinearConfig]:
         n_layer = self.n_fast_layer if fast_module else self.n_layer
         n_head = self.fast_n_head if fast_module else self.n_head
         dim = self.fast_dim if fast_module else self.dim
@@ -312,27 +273,23 @@ class FishAudioConfig(ForeignTTSConfig):
         head_dim = self.fast_head_dim if fast_module else self.head_dim
         attention_qk_norm = self.fast_attention_qk_norm if fast_module else self.attention_qk_norm
 
-        global_rope_config = UnscaledRoPEConfig(
-            precision=precision,
-            base=self.rope_base,
+        rope_config = UnscaledRoPEConfig(
+            base=float(self.rope_base),
             max_sequence_length=self.max_seq_len,
             head_dim=head_dim,
         )
 
         norm_config = NormalizationConfig(
-            scale_precision=precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
 
-        qkv_projection_config = FullPrecisionLinearConfig(precision=precision)
-        out_projection_config = FullPrecisionLinearConfig(precision=precision)
+        linear_config = LinearConfig()
         mixer_config = AttentionConfig(
-            qkv_projection_config=qkv_projection_config,
-            out_projection_config=out_projection_config,
+            qkv_projection_config=linear_config,
+            out_projection_config=linear_config,
             query_norm_config=norm_config if attention_qk_norm else None,
             key_norm_config=norm_config if attention_qk_norm else None,
             num_heads=n_head,
@@ -347,81 +304,61 @@ class FishAudioConfig(ForeignTTSConfig):
             has_out_biases=False,
         )
 
-        mlp_linear_config = FullPrecisionLinearConfig(precision=precision)
-        mlp_use_up_biases = False
-        mlp_use_down_biases = False
         mlp_config = DenseMLPConfig(
-            linear_config=mlp_linear_config,
+            linear_config=linear_config,
             activation=SiLU(),
-            has_up_biases=mlp_use_up_biases,
-            has_down_biases=mlp_use_down_biases,
+            has_up_biases=False,
+            has_down_biases=False,
             gate_clipping=None,
             up_clipping=None,
         )
 
-        pre_mixer_norm_config = norm_config
-        post_mixer_norm_config = None
-        pre_mlp_norm_config = norm_config
-        post_mlp_norm_config = None
-
         layer_config = TransformerLayerConfig(
-            pre_mixer_norm_config=pre_mixer_norm_config,
+            pre_mixer_norm_config=norm_config,
             mixer_config=mixer_config,
-            post_mixer_norm_config=post_mixer_norm_config,
-            pre_mlp_norm_config=pre_mlp_norm_config,
+            post_mixer_norm_config=None,
+            pre_mlp_norm_config=norm_config,
             mlp_config=mlp_config,
-            post_mlp_norm_config=post_mlp_norm_config,
-            rope_config=global_rope_config,
+            post_mlp_norm_config=None,
+            rope_config=rope_config,
         )
-        model_dim = dim
-        hidden_dim = intermediate_size
-        context_length = self.max_seq_len
 
         transformer_cfg = TransformerConfig(
-            layer_configs=tuple([layer_config] * n_layer),
+            layer_configs=(layer_config,) * n_layer,
             output_norm_config=norm_config,
-            model_dim=model_dim,
-            hidden_dim=hidden_dim,
-            context_length=context_length,
+            model_dim=dim,
+            hidden_dim=intermediate_size,
+            context_length=self.max_seq_len,
         )
-        linear_out_cfg = FullPrecisionLinearConfig(precision=precision)
+        linear_out_cfg = LinearConfig()
 
         return (transformer_cfg, linear_out_cfg)
 
     def to_tts_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
     ) -> TTSConfig:
         audio_decoder_config = instantiate_dac_config_from_fishaudio_config(
             fish_dac_config=get_default_fishaudio_dac_config(),
-            precision=activation_precision,
-            accumulation_precision=accumulation_precision,
         )
 
         slow_transformer_cfg, slow_readout_cfg = self.extract_textual_transformer_configs(
-            precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             fast_module=False,
         )
         fast_transformer_cfg, fast_readout_cfg = self.extract_textual_transformer_configs(
-            precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             fast_module=True,
         )
-        slow_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=activation_precision)
-        fast_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=activation_precision)
+        slow_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None)
+        fast_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None)
 
         codebook_embeddings_cfg = TiedEmbeddingConfig(
             input_scale=None,
             logit_soft_cap=None,
-            precision=activation_precision,
         )
         if self.dim == self.fast_dim:
             fast_model_projection_config = None
         else:
-            fast_model_projection_config = FullPrecisionLinearConfig(activation_precision)
+            fast_model_projection_config = LinearConfig()
         text_decoder_config = FishAudioTextDecoderConfig(
             slow_embeddings_config=slow_embedding_cfg,
             slow_model_config=slow_transformer_cfg,
@@ -441,35 +378,34 @@ class FishAudioConfig(ForeignTTSConfig):
             num_codebooks=self.num_codebooks,
             max_seq_len=min(context_length, self.max_seq_len) if context_length else self.max_seq_len,
             scale_codebook_embeddings=self.scale_codebook_embeddings,
-            precision=activation_precision,
         )
         return TTSConfig(
             text_decoder_config=text_decoder_config,
             audio_decoder_config=audio_decoder_config,
-            vocoder_config=VocoderConfig(),
-            activation_precision=activation_precision,
+            vocoder_config=NoopVocoderConfig(),
         )
 
     def _load_weights(
         self,
-        model: LalamoModule,
+        model: Model,
         weights_dict: Mapping[str, Array],
-    ) -> LalamoModule:
+        *,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
+    ) -> Model:
         assert isinstance(model, TTSModel)
+        tts_model: TTSModel = model
 
-        assert isinstance(model.text_decoder, FishAudioTextDecoder)
-        loaded_text_decoder = load_fishaudio_text_decoder(model.text_decoder, weights_dict, ParameterPath())
+        assert isinstance(tts_model.text_decoder, FishAudioTextDecoder)
+        loaded_text_decoder = load_fishaudio_text_decoder(tts_model.text_decoder, weights_dict, ParameterPath())
 
-        assert isinstance(model.audio_decoder, DescriptAudioCodec)
-        loaded_audio_decoder = load_fishaudio_audio_decoder(model.audio_decoder, weights_dict, ParameterPath())
+        assert isinstance(tts_model.audio_decoder, DescriptAudioCodec)
+        loaded_audio_decoder = load_fishaudio_audio_decoder(tts_model.audio_decoder, weights_dict, ParameterPath())
 
-        return load_parameters(
-            lambda m: (
-                m.text_decoder,
-                m.audio_decoder,
-            ),
-            model,
+        return load_as_at(
+            _tts_decoders,
+            tts_model,
             (loaded_text_decoder, loaded_audio_decoder),
+            allow_dtype_cast=True,
         )
 
     @classmethod
@@ -480,7 +416,7 @@ class FishAudioConfig(ForeignTTSConfig):
         return cls(**config)
 
     @property
-    def default_precision(self) -> DTypeLike:
+    def default_dtype(self) -> DTypeLike:
         # NOTE: in reality FishAudio text-decoder is bf16 while audio-decoder if fp32.
         # Currently lalamo weight manipulation pipeline does not support such
         # mixed-model-mixed-weight configuration so we upcast everything to fp32

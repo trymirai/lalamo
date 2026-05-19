@@ -18,10 +18,11 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from jax import numpy as jnp
 
-from lalamo import import_model
 from lalamo.data.huggingface_message import HFMessage
-from lalamo.models import GenerationConfig
-from lalamo.models.common import InferenceConfig
+from lalamo.inference.batch_scheduler import BatchSchedulerConfig, ContinuousBatchScheduler
+from lalamo.model_import.common import import_model
+from lalamo.models import GenerationConfig, LanguageModel
+from lalamo.module import Keychain
 
 BatchStatus = Literal["in_progress", "completed", "failed"]
 
@@ -34,16 +35,18 @@ class RequestBody:
     max_completion_tokens: int = 8192
 
     generation_config: GenerationConfig | None = None
-    precision: Literal["bfloat16", "float32"] = "bfloat16"
+    dtype: Literal["bfloat16", "float32"] = "bfloat16"
     seed: int | None = None
+    enable_thinking: bool = True
 
     def shares_batch_params(self, other: Self) -> bool:
         return (
             self.model == other.model
             and self.max_completion_tokens == other.max_completion_tokens
             and self.generation_config == other.generation_config
-            and self.precision == other.precision
+            and self.dtype == other.dtype
             and (self.seed is None) == (other.seed is None)
+            and self.enable_thinking == other.enable_thinking
         )
 
 
@@ -67,9 +70,10 @@ class Batch:
 
     @classmethod
     def init(cls, total: int) -> Self:
-        while cls.from_id(batch_id := f"batch_{uuid.uuid4().hex[:6]}") is not None:
-            pass
-        return cls(id=batch_id, total=total)
+        while True:
+            batch_id = f"batch_{uuid.uuid4().hex[:6]}"
+            if cls.from_id(batch_id) is None:
+                return cls(id=batch_id, total=total)
 
     @classmethod
     def from_id(cls, batch_id: str) -> Self | None:
@@ -92,6 +96,12 @@ gpu_lock = asyncio.Lock()
 creation_lock = asyncio.Lock()
 
 
+def active_batch_ids() -> set[str]:
+    if not hasattr(app.state, "active_batch_ids"):
+        app.state.active_batch_ids = set()
+    return app.state.active_batch_ids
+
+
 async def sweep_cache() -> None:
     while True:
         cutoff = time.time() - 96 * 3600
@@ -108,6 +118,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         raise RuntimeError("This app must run with a single worker.")
     app.state.cache_dir.mkdir(parents=True, exist_ok=True)
     app.state.tasks = set()
+    app.state.active_batch_ids = set()
     sweeper = asyncio.create_task(sweep_cache())
     yield
     sweeper.cancel()
@@ -147,24 +158,32 @@ def validate_requests(
 def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
     reference, *_ = requests
 
-    model, _metadata = import_model(reference.model, precision=reference.precision)
+    model = import_model(reference.model, dtype=jnp.dtype(reference.dtype)).model
+    if not isinstance(model, LanguageModel):
+        raise RuntimeError(f"Expected a language model, got {type(model).__name__}")  # noqa: TRY004
 
     dataset = [[hf_message.as_message() for hf_message in request.messages] for request in requests]
 
     if reference.seed is not None:
-        base_key = jax.random.key(0)
-        keys = jnp.stack([jax.random.fold_in(base_key, jnp.uint32(request.seed)) for request in requests])
+        batch_key = jax.random.key(0)
+        keys = jnp.stack([jax.random.fold_in(batch_key, jnp.uint32(request.seed)) for request in requests])
     else:
-        base_key = jax.random.key(random.getrandbits(32))
-        keys = jax.random.split(base_key, len(requests))
+        batch_key, split_key = jax.random.split(jax.random.key(random.getrandbits(32)))
+        keys = jax.random.split(split_key, len(requests))
+    keychain = Keychain(vmapped_keys=keys, batch_key=batch_key)
 
     sequence_ids = [request.sequence_id for request in requests]
+    batch_scheduler = ContinuousBatchScheduler(model=model)
 
-    for reply_idx, reply in model.reply_many(  # type: ignore[possibly-missing-attribute]
+    for reply_idx, reply in batch_scheduler.reply_many(
         dataset,
         generation_config=reference.generation_config,
-        inference_config=InferenceConfig(reference.max_completion_tokens),
-        keys=keys,
+        batch_scheduler_config=BatchSchedulerConfig(
+            max_output_length=reference.max_completion_tokens,
+            batch_size=None,
+        ),
+        enable_thinking=reference.enable_thinking,
+        keychain=keychain,
         vram_bytes=app.state.vram_bytes,
     ):
         yield ResponseBody(
@@ -180,7 +199,7 @@ async def execute_batch(batch: Batch, requests: list[RequestBody]) -> None:
     def run_generate_replies_with_stats() -> None:
         for response in generate_replies(requests):
             collected.append(response)
-            replace(batch, completed=len(collected)).save()
+            replace(batch, completed=len(collected), results=tuple(collected)).save()
 
     try:
         async with gpu_lock:
@@ -197,16 +216,27 @@ async def execute_batch(batch: Batch, requests: list[RequestBody]) -> None:
         batch.save()
 
 
+def finish_batch_task(task: asyncio.Task, batch_id: str) -> None:
+    active_batch_ids().discard(batch_id)
+    app.state.tasks.discard(task)
+
+
 @app.post("/batches", status_code=202)
 async def create_batch(
     requests: Annotated[list[RequestBody], Depends(validate_requests)],
 ) -> Batch:
     async with creation_lock:
+        active_batches = active_batch_ids()
+        if active_batches:
+            batch_id = sorted(active_batches)[0]
+            raise HTTPException(409, f"{batch_id} is in progress; starting new batches is not allowed.")
+
         batch = Batch.init(total=len(requests))
         batch.save()
-    task = asyncio.create_task(execute_batch(batch, requests))
-    app.state.tasks.add(task)
-    task.add_done_callback(app.state.tasks.discard)
+        active_batches.add(batch.id)
+        task = asyncio.create_task(execute_batch(batch, requests))
+        app.state.tasks.add(task)
+        task.add_done_callback(lambda completed_task: finish_batch_task(completed_task, batch.id))
     return batch
 
 

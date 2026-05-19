@@ -3,36 +3,37 @@ name = "lalamo"
 description = "JAX library for optimization and export of models for use with the UZU inference engine."
 requires-python = ">=3.12, <4"
 dependencies = [
+    "beartype>=0.22.9",
     "cattrs[msgpack]>=24.1.2",
     "click>=8.1.8",
     "einops>=0.8.0",
     "equinox>=0.11.11",
-    "huggingface-hub[hf-transfer]>=0.27.1",
-    "jax>=0.8.1",
+    "huggingface-hub>=0.27.1",
+    "jax>=0.10.0",
     "jaxtyping>=0.2.36",
     "jinja2>=3.1.6",
     "ml-dtypes>=0.5.1",
     "optax>=0.2.4",
+    "orbax-checkpoint==0.11.33",
+    "polars>=1.33.1",
+    "requests>=2.32.5",
     "rich>=14.0.0",
+    "soundfile>=0.13.1",
     "thefuzz>=0.22.1",
+    "tokamax>=0.0.12",
     "tokenizers>=0.21.2",
     "typer>=0.15.1",
-    "polars>=1.33.1",
     "xxhash>=3.5.0",
-    # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
-    "requests>=2.32.5",
-    "soundfile>=0.13.1",
-    "transformers>=5.5",
 ]
 readme = { file = "README.md", content-type = "text/markdown" }
 dynamic = ["version"]
 
 [project.optional-dependencies]
-cpu = ["jax[cpu]>=0.8.1"]
-cuda = ["jax[cuda]>=0.8.1"]
-tpu = ["jax[tpu]>=0.8.1"]
+cpu = ["jax[cpu]>=0.10.0"]
+cuda = ["jax[cuda]>=0.10.0", "nvidia-cutlass-dsl>=4.4; platform_system == 'Linux'"]
+tpu = ["jax[tpu]>=0.10.0"]
 pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
-fishaudio = ["torch>=2.8.0", "transformers>=5.2.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
+fishaudio = ["torch>=2.8.0", "transformers>=5.5.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
 nanocodec = ["torch>=2.8.0"]
 server = ["fastapi>=0.135.3", "uvicorn>=0.44.0"]
 
@@ -41,30 +42,32 @@ dev = [
     "accelerate>=1.7.0",
     "autoawq>=0.2.9; platform_system == 'Linux' and platform_machine == 'x86_64'",
     "beartype>=0.19.0",
+    "bidict>=0.23.1",
+    "blobfile>=3.1.0",
     "cartesia-metal ; sys_platform == 'darwin'",
     "cartesia-mlx ; sys_platform == 'darwin'",
+    "fish-speech",
+    "httpx>=0.28.0",
+    "hypothesis>=6.150.0",
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.5",
     "kernels>=0.10.2",
     "memray>=1.17.2",
     "mlx-lm>=0.28.3 ; sys_platform == 'darwin'",
-    "pytest-env>=1.1.5",
-    "pytest>=8.3.4",
-    "torch>=2.8.0",
-    "torchaudio>=2.8.0",
-    "torchao>=0.7.0",
-    "transformers>=5.2.0",
-    "twine>=6.1.0",
-    "ruff>=0.14.0",
-    "ty>=0.0.4",
-    "pytest-xdist>=3.8.0",
-    "hypothesis>=6.150.0",
-    "fish-speech",
-    "bidict>=0.23.1",
-    "tiktoken>=0.12.0",
     "omegaconf>=2.3.0",
-    "blobfile>=3.1.0",
-    "httpx>=0.28.0",
+    "pyrefly>=0.60.2",
+    "pytest-env>=1.1.5",
+    "pytest-xdist>=3.8.0",
+    "pytest>=8.3.4",
+    "ruff>=0.14.0",
+    "tiktoken>=0.12.0",
+    "torch>=2.8.0",
+    "torchao>=0.7.0",
+    "torchaudio>=2.8.0",
+    "transformers>=5.5",
+    "twine>=6.1.0",
+    "types-pyyaml>=6.0.12.20260408",
+    "types-requests>=2.33.0.20260408",
 ]
 
 [project.scripts]
@@ -73,6 +76,7 @@ lalamo = "lalamo.main:app"
 [build-system]
 requires = ["setuptools>=65.5.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -104,27 +108,22 @@ cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="
 fish-speech = { git="https://github.com/trymirai/fish-speech.git", tag="c6dd030" }
 
 [tool.pytest.ini_options]
-# Disable jaxtyping for now because of its internal bug.
-# addopts = "--jaxtyping-packages=lalamo,beartype.beartype"
+addopts = "--jaxtyping-packages=lalamo,lalamo_typechecking.typechecker"
 # addopts = ["--dist=loadgroup"]
 # log_cli = true
 # log_cli_level = "INFO"
 markers = [
     "fast: quick smoke tests",
-    "benchmark: slow benchmarks that require model downloads (opt-in via -m benchmark)",
+    "gpu: requires a JAX GPU device",
 ]
 
 [tool.pytest_env]
+env_files = [".env"]
 JAX_DEBUG_NANS = "True"
 JAX_DEBUG_KEY_REUSE = "False"
 JAX_TRACEBACK_FILTERING = "off"
 TORCH_COMPILE_DISABLE = "1"
-
-[tool.pyright]
-venv = "."
-venvPath = ".venv"
-pythonVersion = "3.12"
-typeCheckingMode = "standard"
+XLA_FLAGS = "--xla_gpu_deterministic_ops=true"
 
 [tool.ruff]
 target-version = "py312"
@@ -133,43 +132,54 @@ line-length = 119
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = [
-    "C408",
-    "C901",
-    "D",
-    "EM101",
-    "EM102",
-    "ERA001",
-    "FIX002",
-    "F722",
-    "FBT001",
-    "FBT002",
-    "N812",
-    "PD008",
-    "PGH003",
-    "PLC0415",
-    "PLR0904",
-    "PLR0912",
-    "PLR0913",
-    "PLR0915",
-    "PLR0917",
-    "PLR2004",
-    "PLR6301",
-    "PLW0108",
-    "PT",
-    "PTH123",
-    "RET503",
-    "RET504",
-    "RUF005",
-    "S",
-    "SIM108",
-    "T20",
-    "TD003",
-    "TRY003",
-    "CPY001",
-    "COM812",
-    "TC003",
-    "PLW0108"
+    # Documentation and file metadata.
+    "D",        # pydocstyle rules: require docstrings and enforce docstring formatting.
+    "CPY001",   # Require a copyright notice at the top of each file.
+
+    # Exceptions and error reporting.
+    "EM101",    # Disallow raw string literals directly in exception constructors.
+    "EM102",    # Disallow f-string literals directly in exception constructors.
+    "TRY003",   # Require long exception messages to live on the exception type itself.
+
+    # Typing and import hygiene.
+    "F722",     # Flag syntax errors inside forward annotations.
+    "TC001",    # Move application import into a type-checking block.
+    "TC003",    # Move stdlib imports used only for typing into `if TYPE_CHECKING:`.
+
+    # Testing and security rule families.
+    "PT",       # flake8-pytest-style rules: enforce pytest fixture, marker, and assertion conventions.
+    "S",        # flake8-bandit rules: flag likely security issues.
+
+    # Complexity, signatures, and object design.
+    "B008",     # Allow frozen dataclass instances as function defaults.
+    "C901",     # Flag overly complex functions.
+    "FBT001",   # Flag boolean-typed positional parameters.
+    "FBT002",   # Flag positional parameters whose default value is boolean.
+    "PLR0904",  # Flag classes with too many public methods.
+    "PLR0911",  # Flag functions with too many return statements.
+    "PLR0912",  # Flag functions with too many branches.
+    "PLR0913",  # Flag functions with too many parameters.
+    "PLR0915",  # Flag functions with too many statements.
+    "PLR0917",  # Flag functions with too many positional parameters.
+    "PLR2004",  # Flag magic numbers in comparisons.
+    "PLR6301",  # Flag instance methods that never use `self`.
+
+    # Formatting and simplification rewrites.
+    "SIM108",   # Prefer a ternary expression over a simple `if`/`else` assignment block.
+    "COM812",   # Require trailing commas in multiline literals and calls.
+
+    # Comments, TODOs, and debug output.r
+    "FIX002",   # Flag TODO comments.
+    "T20",      # flake8-print rules: flag `print()` and `pprint()` calls.
+    "TD003",    # Require TODO comments to include an issue link.
+
+    # Library API conventions.
+    "PTH123",   # Prefer `Path.open()` over builtin `open()`.
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"lalamo_typechecking.py" = ["ANN401"]
+"tests/tts/fishaudio/fishaudio_thin_wrapper.py" = ["ALL"]
 
 [tool.typos.default.extend-words]
 ba = "ba"
@@ -180,3 +190,20 @@ pard = "pard"
 ba = "ba"
 PARD = "PARD"
 pard = "pard"
+
+[tool.pyrefly]
+python-version = "3.12.0"
+infer-with-first-use = false
+python-interpreter-path = ".venv/bin/python"
+project-includes = ["./"]
+ignore-missing-imports = [
+    "cartesia_mlx",
+    "cartesia_mlx.*",
+    "cuda",
+    "cuda.*",
+    "cutlass",
+    "cutlass.*",
+    "mlx",
+    "mlx.*",
+    "mlx_lm.*",
+]

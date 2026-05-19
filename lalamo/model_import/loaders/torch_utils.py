@@ -3,7 +3,7 @@ from collections.abc import Mapping
 import jax.numpy as jnp
 from jaxtyping import Array
 
-from lalamo.common import ParameterPath
+from lalamo.utils.parameter_path import ParameterPath
 
 
 def fuse_weight_norm_conv1d_as_linear(

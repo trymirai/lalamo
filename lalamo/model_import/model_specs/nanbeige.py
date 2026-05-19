@@ -1,18 +1,17 @@
 from lalamo.model_import.model_configs import HFLlamaConfig
-
-from .common import ModelSpec
+from lalamo.model_import.model_spec import LanguageModelSpec
+from lalamo.model_import.origins import HuggingFaceOrigin
 
 __all__ = ["NANBEIGE_MODELS"]
 
 NANBEIGE41 = [
-    ModelSpec(
+    LanguageModelSpec(
         vendor="Nanbeige",
         family="Nanbeige-4.1",
         name="Nanbeige4.1-3B",
         size="3B",
-        repo="Nanbeige/Nanbeige4.1-3B",
+        origin=HuggingFaceOrigin(repo="Nanbeige/Nanbeige4.1-3B"),
         config_type=HFLlamaConfig,
-        use_cases=tuple(),
     ),
 ]
 

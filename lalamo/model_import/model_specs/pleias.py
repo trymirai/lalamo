@@ -1,18 +1,17 @@
 from lalamo.model_import.model_configs import HFLlamaConfig
-
-from .common import ModelSpec
+from lalamo.model_import.model_spec import LanguageModelSpec
+from lalamo.model_import.origins import HuggingFaceOrigin
 
 __all__ = ["PLEIAS_MODELS"]
 
 
 PLEIAS_MODELS = [
-    ModelSpec(
+    LanguageModelSpec(
         vendor="PleIAs",
         family="Pleias-RAG",
         name="Pleias-RAG-1B",
         size="1B",
-        quantization=None,
-        repo="PleIAs/Pleias-RAG-1B",
+        origin=HuggingFaceOrigin(repo="PleIAs/Pleias-RAG-1B"),
         config_type=HFLlamaConfig,
     ),
 ]

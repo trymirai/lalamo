@@ -3,17 +3,19 @@ from dataclasses import dataclass
 from typing import ClassVar, Literal
 
 import cattrs
+import equinox as eqx
 import jax.numpy as jnp
+from cattrs.strategies import configure_tagged_union
 from jaxtyping import Array, DTypeLike
 
+from lalamo.model import Model
 from lalamo.model_import.loaders import (
     load_huggingface_classifier,
     load_huggingface_decoder,
 )
 from lalamo.model_import.model_configs import ForeignClassifierConfig, ForeignLMConfig
-from lalamo.modules import Decoder
-from lalamo.modules.classifier import Classifier
-from lalamo.modules.common import LalamoModule
+from lalamo.models import ClassifierModel, LanguageModel
+from lalamo.weight_matrix import CompressionImplementation
 
 __all__ = [
     "AWQQuantizationConfig",
@@ -69,32 +71,29 @@ class MLXQuantizationConfig:
     bits: int
 
 
-QuantizationConfigType = AWQQuantizationConfig | GPTQQuantizationConfig | MLXQuantizationConfig | None
+type QuantizationConfig = AWQQuantizationConfig | GPTQQuantizationConfig | MLXQuantizationConfig
+type QuantizationConfigType = QuantizationConfig | None
 
 
-def _structure_quantization_config(v: object, _: object) -> QuantizationConfigType:
-    match v:
-        case None:
-            return None
-
-        case {"quant_method": "awq", **_other}:
-            return cattrs.structure(v, AWQQuantizationConfig)
-
-        case {"quant_method": "gptq", **_other}:
-            return cattrs.structure(v, GPTQQuantizationConfig)
-
-        case {**_other}:
-            return cattrs.structure(v, MLXQuantizationConfig)
-
-        case _:
-            raise RuntimeError(f"Cannot structure {v}field")
+def _quantization_tag(config_type: type) -> str:
+    return {
+        AWQQuantizationConfig: "awq",
+        GPTQQuantizationConfig: "gptq",
+        MLXQuantizationConfig: "mlx",
+    }[config_type]
 
 
 @dataclass(frozen=True)
 class HuggingFaceLMConfig(ForeignLMConfig):
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
-    _converter.register_structure_hook(QuantizationConfigType, _structure_quantization_config)
+    configure_tagged_union(
+        QuantizationConfig,
+        _converter,
+        tag_name="quant_method",
+        tag_generator=_quantization_tag,
+        default=MLXQuantizationConfig,
+    )
 
     @property
     def eos_token_ids(self) -> list[int]:
@@ -108,28 +107,42 @@ class HuggingFaceLMConfig(ForeignLMConfig):
         return result
 
     @property
-    def default_precision(self) -> DTypeLike:
+    def default_dtype(self) -> DTypeLike:
         return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
 
     def _load_weights(
         self,
-        model: LalamoModule,
+        model: Model,
         weights_dict: Mapping[str, Array],
-    ) -> LalamoModule:
-        assert isinstance(model, Decoder)
-        return load_huggingface_decoder(model, weights_dict)
+        *,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    ) -> Model:
+        assert isinstance(model, LanguageModel)
+        decoder = load_huggingface_decoder(
+            module=model.decoder,
+            weights_dict=weights_dict,
+            implementation=implementation,
+        )
+        return eqx.tree_at(lambda m: (m.decoder,), model, (decoder,))
 
 
 @dataclass(frozen=True)
 class HuggingFaceClassifierConfig(ForeignClassifierConfig):
     @property
-    def default_precision(self) -> DTypeLike:
+    def default_dtype(self) -> DTypeLike:
         return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
 
     def _load_weights(
         self,
-        model: LalamoModule,
+        model: Model,
         weights_dict: Mapping[str, Array],
-    ) -> LalamoModule:
-        assert isinstance(model, Classifier)
-        return load_huggingface_classifier(model, weights_dict)
+        *,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    ) -> Model:
+        assert isinstance(model, ClassifierModel)
+        classifier = load_huggingface_classifier(
+            module=model.classifier,
+            weights_dict=weights_dict,
+            implementation=implementation,
+        )
+        return eqx.tree_at(lambda m: (m.classifier,), model, (classifier,))

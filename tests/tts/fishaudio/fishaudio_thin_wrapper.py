@@ -1,11 +1,10 @@
+# pyrefly: ignore-errors
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Self
 
 import torch
 from fish_speech.models.dac.modded_dac import DAC
-from fish_speech.models.dac.rvq import ResidualVectorQuantize
 from fish_speech.models.text2semantic.llama import (
     BaseModelArgs,
     BaseTransformerForwardResult,
@@ -16,17 +15,18 @@ from fish_speech.models.text2semantic.llama import (
 )
 from fish_speech.tokenizer import IM_END_TOKEN, FishTokenizer
 from hydra.utils import instantiate
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Float, Int
 from omegaconf import DictConfig
 from torch._tensor import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from lalamo.common import ParameterTree
+from lalamo.initializer import Initializer
+from lalamo.module import Keychain
+from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfig
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
-from lalamo.modules.audio.text_decoder import TTSTextDecoder
-from lalamo.modules.audio.text_to_speech import TTSAudioDecoder
-from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
+from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfig
 from lalamo.sampling import SamplingPolicy
+from lalamo.utils.torch_interop import jax_to_torch, torch_to_jax
 from tests.tts.fishaudio.fishaudio_sampling import (
     FishAudioSamplingParams,
     sampling_params_from_policy,
@@ -357,31 +357,22 @@ def load_fish_audio_audio_decoder(chkpt_path: Path, device: str = "cpu") -> "Fis
 
 
 @dataclass(frozen=True)
-class FishAudioAudioDecoderConfig_Foreign:
+class FishAudioAudioDecoderConfig_Foreign(TTSAudioDecoderConfig):
     dac_config: DictConfig
 
+    def init(self, initializer: Initializer) -> "FishAudioAudioDecoder_Foreign":  # noqa: ARG002
+        raise NotImplementedError("FishAudio native audio decoder must be loaded from checkpoint.")
 
-class FishAudioAudioDecoder_Foreign(TTSAudioDecoder[FishAudioAudioDecoderConfig_Foreign]):
+
+class FishAudioAudioDecoder_Foreign(TTSAudioDecoder):
+    config: FishAudioAudioDecoderConfig_Foreign
     dac_model: DAC
 
     @property
     def samplerate(self) -> int:
         return self.dac_model.sample_rate
 
-    @property
-    def activation_precision(self) -> DTypeLike:
-        semantic_quantizer = self.dac_model.quantizer
-        assert isinstance(semantic_quantizer, ResidualVectorQuantize)
         return torch_to_jax(semantic_quantizer.quantizers[0].codebook.weight.dtype)
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {}
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],  # noqa: ARG002
-    ) -> Self:
-        return self
 
     def __call__(self, rvq_codes: Int[Array, " codes tokens"]) -> Array:
         device = self.dac_model.device
@@ -396,13 +387,21 @@ class FishAudioAudioDecoder_Foreign(TTSAudioDecoder[FishAudioAudioDecoderConfig_
         audio_samples = torch_to_jax(audio_samples[0, 0])
         return audio_samples
 
-    def audio_from_codes(self, indices: Array) -> Array:
+    def audio_from_codes(
+        self,
+        indices: Array,
+        *,
+        keychain: Keychain,  # noqa: ARG002
+    ) -> Array:
         return self(indices)
 
 
 @dataclass(frozen=True)
-class FishAudioTextDecoderConfig_Foreign:
+class FishAudioTextDecoderConfig_Foreign(TTSTextDecoderConfig):
     fish_config: DualARModelArgs
+
+    def init(self, initializer: Initializer) -> "FishAudioTextDecoder_Foreign":  # noqa: ARG002
+        raise NotImplementedError("FishAudio native text decoder must be loaded from checkpoint.")
 
     @classmethod
     def from_config_file(cls, path_to_config: str | Path) -> "FishAudioTextDecoderConfig_Foreign":
@@ -464,21 +463,9 @@ class FishAudioTextDecoderConfig_Foreign:
         return FishAudioTextDecoder_Foreign(config=self, fish_model=fish_model)
 
 
-class FishAudioTextDecoder_Foreign(TTSTextDecoder[FishAudioTextDecoderConfig_Foreign]):
+class FishAudioTextDecoder_Foreign(TTSTextDecoder):
+    config: FishAudioTextDecoderConfig_Foreign
     fish_model: DualARTransformer
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return torch_to_jax(self.fish_model.embeddings.weight.dtype)
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {}
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],  # noqa: ARG002
-    ) -> Self:
-        return self
 
     def __call__(
         self,
@@ -538,8 +525,9 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder[FishAudioTextDecoderConfig_For
         self,
         text_tokens: Int[Array, "batch tokens"],
         sampling_policy: SamplingPolicy | None = None,
-        key: PRNGKeyArray | None = None,  # noqa: ARG002
-    ) -> Int[Array, "num_codebooks tokens"]:
+        *,
+        keychain: Keychain,  # noqa: ARG002
+    ) -> Int[Array, "num_codebooks generated_tokens"]:
         text_tokens_torch = jax_to_torch(text_tokens)
         sampling_params = sampling_params_from_policy(sampling_policy)
 

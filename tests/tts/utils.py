@@ -5,7 +5,7 @@ import torch
 from jax import numpy as jnp
 from scipy.interpolate import CubicSpline
 
-from lalamo.modules.torch_interop import torch_to_jax
+from lalamo.utils.torch_interop import torch_to_jax
 
 
 def prepare_state_dict_for_lalamo_loaders(
@@ -102,7 +102,8 @@ def generate_harmonic_row(
         Tuple of (filtered_signal, raw_harmonics)
     """
     f0_ref_points = [0.8, 0.95, 1.05, 1.15, 1.25]
-    np.random.shuffle(f0_ref_points)
+    rng = np.random.default_rng()
+    rng.shuffle(f0_ref_points)
     f0_for_interpolation = np.stack(([0.0, 0.25, 0.5, 0.75, 1.0], f0_ref_points), axis=1)
 
     if not flat_frequency:

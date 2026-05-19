@@ -3,10 +3,10 @@ import gc
 import importlib.util
 import os
 from abc import abstractmethod
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Self
+from typing import Self
 
 import jax
 import jax.numpy as jnp
@@ -15,14 +15,20 @@ import torch
 from jaxtyping import Array
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
-from lalamo import ClassifierModel, LanguageModel, import_model
-from lalamo.common import get_default_device_bytes
-from lalamo.model_import.common import ModelType
-from lalamo.modules.classifier import ClassifierActivationTrace, ClassifierResult
+from lalamo import ClassifierModel, LanguageModel
+from lalamo.model_import.common import import_model
+from lalamo.module import Keychain
+from lalamo.modules.classifier import (
+    ClassifierActivationTrace,
+    ClassifierForwardPassConfig,
+    ClassifierResult,
+)
 from lalamo.modules.decoder import (
     DecoderActivationTrace,
+    DecoderForwardPassConfig,
     DecoderResult,
 )
+from lalamo.utils.memory import get_available_bytes_on_default_device
 from tests.common import assert_close, checkify_forward
 from tests.helpers import si, unsi
 
@@ -44,7 +50,7 @@ class DType(Enum):
 
     @property
     def mlx_dtype(self) -> "mx.Dtype":
-        return getattr(mx, self.value)  # type: ignore
+        return getattr(mx, self.value)
 
     @property
     def jax_dtype(self) -> jnp.dtype:
@@ -80,7 +86,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     def embedding(self, token_ids: ArrayT) -> ArrayT: ...
 
     @abstractmethod
-    def rope_fns(self) -> list[tuple[str, Any]]:
+    def rope_fns(self) -> list[tuple[str, Callable[[ArrayT, ArrayT], tuple[ArrayT, ArrayT]]]]:
         """Returns list of (label, rope_fn) pairs for each unique rope to test."""
         ...
 
@@ -155,7 +161,13 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_rope(self, activation_trace: ActivationTrace, rope_index: int, ref_rope: Any, label: str) -> None:
+    def match_rope(
+        self,
+        activation_trace: ActivationTrace,
+        rope_index: int,
+        ref_rope: Callable[[ArrayT, ArrayT], tuple[ArrayT, ArrayT]],
+        label: str,
+    ) -> None:
         assert activation_trace.rope_embeddings is not None
         llm_results = activation_trace.rope_embeddings[rope_index]
 
@@ -348,7 +360,6 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         )
 
     def match_activations(self, result: InferenceResult) -> None:
-        # assert isinstance(result, DecoderResult)
         assert result.activation_trace is not None
         for i, (label, rope_fn) in enumerate(self.rope_fns()):
             self.match_rope(result.activation_trace, i, rope_fn, label)
@@ -419,7 +430,7 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
         if "LALAMO_MEMORY_FOR_TRACE" in os.environ:
             default_device_bytes = unsi(os.environ["LALAMO_MEMORY_FOR_TRACE"])
         else:
-            default_device_bytes = get_default_device_bytes()
+            default_device_bytes = get_available_bytes_on_default_device()
 
         if default_device_bytes is not None and test_spec.minimum_memory_for_trace > default_device_bytes:
             pytest.skip(
@@ -445,31 +456,40 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
     model = None
     inference_results = None
     try:
-        model, model_metadata = import_model(
+        import_dtype = None
+        if test_spec.dtype is not None:
+            import_dtype = test_spec.dtype.jax_dtype
+        imported_model = import_model(
             test_spec.model_repo,
             context_length=test_spec.num_tokens * test_spec.token_stride,
-            precision=test_spec.dtype.jax_dtype if test_spec.dtype is not None else None,
+            dtype=import_dtype,
         )
+        model = imported_model.model
+        keychain = Keychain.init(0)
         with jax.disable_jit():
-            match model_metadata.model_type:
-                case ModelType.LANGUAGE_MODEL:
-                    assert isinstance(model, LanguageModel)
-                    err, inference_results = checkify_forward(model.model)(
-                        token_ids=token_ids,
-                        token_positions=token_positions,
-                        return_updated_state=True,
-                        return_activation_trace=True,
-                    )
-                    err.throw()
-
-                case ModelType.CLASSIFIER_MODEL:
-                    assert isinstance(model, ClassifierModel)
-                    err, inference_results = checkify_forward(model.model)(
-                        token_ids=token_ids,
-                        token_positions=token_positions,
-                        return_activation_trace=True,
-                    )
-                    err.throw()
+            if isinstance(model, LanguageModel):
+                forward_pass_config = DecoderForwardPassConfig.for_tracer_tests()
+                err, inference_results = checkify_forward(model.decoder)(
+                    token_ids=token_ids,
+                    token_positions=token_positions,
+                    return_updated_state=True,
+                    return_activation_trace=True,
+                    forward_pass_config=forward_pass_config,
+                    keychain=keychain,
+                )
+                err.throw()
+            elif isinstance(model, ClassifierModel):
+                forward_pass_config = ClassifierForwardPassConfig.for_tracer_tests()
+                err, inference_results = checkify_forward(model.classifier)(
+                    token_ids=token_ids,
+                    token_positions=token_positions,
+                    return_activation_trace=True,
+                    forward_pass_config=forward_pass_config,
+                    keychain=keychain,
+                )
+                err.throw()
+            else:
+                raise TypeError(f"Unsupported model type for tracing: {type(model).__name__}")
 
         tracer.match_activations(inference_results)
     finally:

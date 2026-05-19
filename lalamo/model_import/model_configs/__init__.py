@@ -1,4 +1,4 @@
-from .common import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig, ForeignTTSConfig
+from .foreign_config import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig, ForeignTTSConfig
 from .huggingface import (
     HFBonsaiConfig,
     HFGemma2Config,

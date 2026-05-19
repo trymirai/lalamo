@@ -54,15 +54,15 @@ jobs:
         with:
           dev: 'true'
 
-      - name: Run ty
+      - name: Run pyrefly
         if: ${{ always() && steps.setup.outcome == 'success' }}
         run: |
-          ty check lalamo
+          pyrefly check
 
       - name: Run ruff
         if: ${{ always() && steps.setup.outcome == 'success' }}
         run: |
-          ruff check lalamo
+          ruff check .
 
       - name: Run ruff format
         if: ${{ always() && steps.setup.outcome == 'success' }}
@@ -113,8 +113,8 @@ jobs:
           pytest tests/tts
 
   cli:
-    name: CLI tests
-    runs-on: [github-n2hmem16]
+    name: CLI
+    runs-on: ubuntu-latest
     needs: [unit, config]
     if: ${{ needs.config.outputs.run-tests == 'true' }}
 
@@ -124,6 +124,6 @@ jobs:
         with:
           dev: 'true'
 
-      - name: Run tests
+      - name: Run pytest
         run: |
           pytest tests/cli

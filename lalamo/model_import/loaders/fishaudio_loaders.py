@@ -7,23 +7,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import equinox as eqx
 from einops import rearrange
 from jax import numpy as jnp
 from jaxtyping import Array, Float
 from tokenizers import Tokenizer
 
-from lalamo.common import ParameterPath
-from lalamo.modules import (
-    Attention,
-    DenseMLP,
-    FullPrecisionLinear,
-    Identity,
-    LinearBase,
-    MLPBase,
-    Normalization,
-    Transformer,
-    TransformerLayer,
-)
 from lalamo.modules.audio.fishaudio import DescriptAudioCodec, FishAudioTextDecoder
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     FishAudioSpecialInferenceTokens,
@@ -43,8 +32,16 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     UpsamplingBlock,
     VectorQuantize,
 )
+from lalamo.modules.linear import Linear
+from lalamo.modules.mlp import DenseMLP, MLPBase
+from lalamo.modules.normalization import Normalization
+from lalamo.modules.token_mixers.attention import Attention
+from lalamo.modules.transformer import Transformer
+from lalamo.modules.transformer_layer import TransformerLayer
+from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.surgery import load_as_at
 
-from .common import load_parameters
+from .common import load_full_precision
 from .huggingface import load_rmsnorm, load_tied_embedding
 from .nanocodec_loaders import (
     load_causal_conv1d,
@@ -52,6 +49,10 @@ from .nanocodec_loaders import (
     load_snake1d,
 )
 from .torch_utils import fuse_weight_norm_conv1d_as_linear
+
+
+def _dense_mlp_projections(module: DenseMLP) -> tuple[Linear, Linear]:
+    return module.up_projection, module.down_projection
 
 
 def _permute_for_rope_rotate_half(
@@ -77,21 +78,21 @@ def _permute_for_rope_rotate_half(
         # For 1D vectors: swap interleaved pairs to grouped halves
         return rearrange(weight, "(half_dim pair) -> (pair half_dim)", pair=2)
 
-    out_features, _ = weight.shape
-    assert out_features == num_heads * head_dim, (
-        f"Output features {out_features} must equal num_heads * head_dim = {num_heads * head_dim}"
+    out_channels, _ = weight.shape
+    assert out_channels == num_heads * head_dim, (
+        f"Output channels {out_channels} must equal num_heads * head_dim = {num_heads * head_dim}"
     )
     # For 2D matrices: swap interleaved pairs to grouped halves within each head
     return rearrange(
         weight,
-        "(heads half_dim pair) in_features -> (heads pair half_dim) in_features",
+        "(heads half_dim pair) in_channels -> (heads pair half_dim) in_channels",
         heads=num_heads,
         pair=2,
     )
 
 
 def _permute_qkv_for_rope_rotate_half(
-    qkv_weight: Float[Array, "q_dim+k_dim+v_dim in_features"],
+    qkv_weight: Float[Array, "qkv_channels in_channels"],
     num_heads: int,
     num_groups: int,
     head_dim: int,
@@ -102,7 +103,7 @@ def _permute_qkv_for_rope_rotate_half(
     Only Q and K need permutation (they use RoPE). V is unchanged.
 
     Args:
-        qkv_weight: Fused QKV weight of shape (q_dim + k_dim + v_dim, in_features)
+        qkv_weight: Fused QKV weight of shape (q_dim + k_dim + v_dim, in_channels)
                     where q_dim = num_heads * head_dim, k_dim = v_dim = num_groups * head_dim
         num_heads: Number of query heads.
         num_groups: Number of key/value heads (groups for GQA).
@@ -137,30 +138,15 @@ def _fuse_full_precision_weights(
 
 
 def load_linear_and_fuse_scaling(
-    module: LinearBase,
+    module: Linear,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None = None,
     scaling_to_fuse: Array | None = None,
-) -> LinearBase:
-    """Load linear layer directly or fuse several sum-matrices into one linear layer.
-    Additionally fuse final result with scaling weights that would follow after the layer.
-    Args:
-        module: target linear module into which weights will be loaded
-        weights_dict: mapping with weights
-        path: path to linear layer within the given weights mapping
-        sublayers_to_fuse: optional list of names of matrices that we want to fuse into single linear layer
-        scaling_to_fuze: optional array of scales we want to fuse into given linear module
-
-    Returns:
-        Linear layer with weights loaded into it
-    """
-    assert isinstance(module, FullPrecisionLinear)
+) -> Linear:
+    assert isinstance(module, Linear)
     if not module.has_biases:
-        if sublayers_to_fuse:
-            paths_to_check = [path / proj / "bias" for proj in sublayers_to_fuse]
-        else:
-            paths_to_check = path / "bias"
+        paths_to_check = [path / proj / "bias" for proj in sublayers_to_fuse] if sublayers_to_fuse else [path / "bias"]
         for p in paths_to_check:
             if p in weights_dict:
                 raise ValueError(f"Bias tensor found at {p} but module does not support it.")
@@ -180,7 +166,20 @@ def load_linear_and_fuse_scaling(
         if bias is not None:
             bias = bias * scaling_to_fuse
 
-    return load_parameters(lambda m: (m.weights, m.biases), module, (weights, bias))
+    new_weights = load_full_precision(module.weights, weights)
+    return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, bias))
+
+
+def _load_rope_norm(
+    module: Normalization | None,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+) -> Normalization | None:
+    if module is None:
+        return None
+    norm = load_rmsnorm(module, weights_dict, path)
+    permuted_scales = _permute_for_rope_rotate_half(norm.scales, 1, norm.scales.shape[0])
+    return load_as_at(lambda m: (m.scales,), norm, (permuted_scales,), allow_dtype_cast=True)
 
 
 def load_transformer_block(
@@ -193,7 +192,7 @@ def load_transformer_block(
         attn_module: Attention,
         weights_dict: Mapping[str, Array],
         path: ParameterPath,
-        scaling_to_fuze: Array | None = None,
+        scaling_to_fuse: Array | None = None,
     ) -> Attention:
         qkv_projection = load_linear_and_fuse_scaling(
             attn_module.qkv_projection,
@@ -201,63 +200,34 @@ def load_transformer_block(
             path / "wqkv",
             sublayers_to_fuse=None,
         )
-        assert isinstance(qkv_projection, FullPrecisionLinear)
+        assert isinstance(qkv_projection, Linear)
 
         # Permute QKV weights from interleaved RoPE format to rotate-half format
         permuted_qkv_weights = _permute_qkv_for_rope_rotate_half(
-            qkv_projection.weights,
-            num_heads=attn_module.num_heads,
-            num_groups=attn_module.num_groups,
-            head_dim=attn_module.head_dim,
+            qkv_projection.weights.decompress(),
+            num_heads=attn_module.config.num_heads,
+            num_groups=attn_module.config.num_groups,
+            head_dim=attn_module.config.head_dim,
         )
-        qkv_projection = load_parameters(
-            lambda m: (m.weights,),
-            qkv_projection,
-            (permuted_qkv_weights,),
-        )
-        assert isinstance(qkv_projection, FullPrecisionLinear)
+        new_weights = qkv_projection.weights.spec.compress(permuted_qkv_weights)
+        qkv_projection = eqx.tree_at(lambda m: (m.weights,), qkv_projection, (new_weights,))
+        assert isinstance(qkv_projection, Linear)
 
         out_projection = load_linear_and_fuse_scaling(
             attn_module.out_projection,
             weights_dict,
             path / "wo",
-            scaling_to_fuse=scaling_to_fuze,
+            scaling_to_fuse=scaling_to_fuse,
         )
 
-        if attn_module.query_norm is not None:
-            query_norm = load_rmsnorm(attn_module.query_norm, weights_dict, path / "q_norm")
-            permuted_scales = _permute_for_rope_rotate_half(
-                query_norm.scales,
-                1,
-                query_norm.scales.shape[0],
-            )
-            query_norm = load_parameters(
-                lambda m: (m.scales,),
-                query_norm,
-                (permuted_scales,),
-            )
-        else:
-            query_norm = None
+        query_norm = _load_rope_norm(attn_module.query_norm, weights_dict, path / "q_norm")
+        key_norm = _load_rope_norm(attn_module.key_norm, weights_dict, path / "k_norm")
 
-        if attn_module.key_norm is not None:
-            key_norm = load_rmsnorm(attn_module.key_norm, weights_dict, path / "k_norm")
-            permuted_scales = _permute_for_rope_rotate_half(
-                key_norm.scales,
-                1,
-                key_norm.scales.shape[0],
-            )
-            key_norm = load_parameters(
-                lambda m: (m.scales,),
-                key_norm,
-                (permuted_scales,),
-            )
-        else:
-            key_norm = None
-
-        return load_parameters(
+        return load_as_at(
             lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm),
             attn_module,
             (qkv_projection, out_projection, query_norm, key_norm),
+            allow_dtype_cast=True,
         )
 
     def load_mlp(
@@ -267,26 +237,28 @@ def load_transformer_block(
         up_proj_key: str,
         gate_proj_key: str,
         down_proj_key: str,
-        scaling_to_fuze: Array | None = None,
+        scaling_to_fuse: Array | None = None,
     ) -> MLPBase:
         assert isinstance(module, DenseMLP)
+        dense_module: DenseMLP = module
         # Standard dense MLP with separate sublayers.
         up_projection = load_linear_and_fuse_scaling(
-            module.up_projection,
+            dense_module.up_projection,
             weights_dict,
             path,
             sublayers_to_fuse=[up_proj_key, gate_proj_key],
         )
         down_projection = load_linear_and_fuse_scaling(
-            module.down_projection,
+            dense_module.down_projection,
             weights_dict,
             path / down_proj_key,
-            scaling_to_fuse=scaling_to_fuze,
+            scaling_to_fuse=scaling_to_fuse,
         )
-        return load_parameters(
-            lambda m: (m.up_projection, m.down_projection),
-            module,
+        return load_as_at(
+            _dense_mlp_projections,
+            dense_module,
             (up_projection, down_projection),
+            allow_dtype_cast=True,
         )
 
     def load_transformer_layer_local(
@@ -313,7 +285,7 @@ def load_transformer_block(
             attn_module=module.mixer,
             weights_dict=weights_dict,
             path=path / "attention",
-            scaling_to_fuze=layer_scale_weights,
+            scaling_to_fuse=layer_scale_weights,
         )
 
         assert isinstance(module.pre_mlp_norm, Normalization)
@@ -334,10 +306,10 @@ def load_transformer_block(
             up_proj_key="w3",
             gate_proj_key="w1",
             down_proj_key="w2",
-            scaling_to_fuze=layer_scale_weights,
+            scaling_to_fuse=layer_scale_weights,
         )
 
-        return load_parameters(
+        return load_as_at(
             lambda m: (
                 m.pre_mixer_norm,
                 m.mixer,
@@ -355,6 +327,7 @@ def load_transformer_block(
                 mlp,
                 post_mlp_norm,
             ),
+            allow_dtype_cast=True,
         )
 
     base_path = ParameterPath() if path is None else path
@@ -368,7 +341,7 @@ def load_transformer_block(
     )
     output_norm = load_rmsnorm(module.output_norm, weights_dict, base_path / norm_name)
 
-    module = load_parameters(
+    return load_as_at(
         lambda m: (
             m.layers,
             m.output_norm,
@@ -378,29 +351,23 @@ def load_transformer_block(
             transformer_layers,
             output_norm,
         ),
+        allow_dtype_cast=True,
     )
-
-    return module
 
 
 def load_fish_audio_text_decoding_modules(
     transformer: Transformer,
-    output: FullPrecisionLinear,
+    output: Linear,
     weights_dict: Mapping[str, Array],
     fast: bool = False,
-) -> tuple[Transformer, FullPrecisionLinear]:
+) -> tuple[Transformer, Linear]:
     transformer = load_transformer_block(transformer, weights_dict=weights_dict, fast=fast)
 
     base_path = ParameterPath()
     output_linear_name = "output" if not fast else "fast_output"
     output_linear = load_linear_and_fuse_scaling(output, weights_dict, base_path / output_linear_name)
-    output = load_parameters(
-        lambda m: (m,),
-        output,
-        (output_linear,),
-    )
 
-    return (transformer, output)
+    return (transformer, output_linear)
 
 
 def load_vector_quantize(
@@ -426,30 +393,22 @@ def load_vector_quantize(
     Returns:
         VectorQuantize module with loaded weights.
     """
-    # Load codebook weights
-    codebook_weight = weights_dict[path / "codebook" / "weight"]
-    codebook = load_parameters(
-        lambda m: (m.weights,),
-        module.codebook,
-        (codebook_weight,),
-    )
+    codebook = load_tied_embedding(module.codebook, weights_dict, path / "codebook")
 
     # Load out_proj with weight norm fusion
     # The original is a Conv1d with kernel_size=1, so weight shape is (out, in, 1)
-    # Our FullPrecisionLinear expects (out, in), so we remove the kernel dimension
+    # Our Linear expects (out, in), so we remove the kernel dimension
     out_proj_weight, out_proj_bias = fuse_weight_norm_conv1d_as_linear(weights_dict, path / "out_proj")
     # Remove kernel dimension: (out_channels, in_channels, 1) -> (out_channels, in_channels)
     out_proj_weight = rearrange(out_proj_weight, "out_ch in_ch 1 -> out_ch in_ch")
-    out_proj = load_parameters(
-        lambda m: (m.weights, m.biases),
-        module.out_proj,
-        (out_proj_weight, out_proj_bias),
-    )
+    new_weights = load_full_precision(module.out_proj.weights, out_proj_weight)
+    out_proj = eqx.tree_at(lambda m: (m.weights, m.biases), module.out_proj, (new_weights, out_proj_bias))
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.codebook, m.out_proj),
         module,
         (codebook, out_proj),
+        allow_dtype_cast=True,
     )
 
 
@@ -479,10 +438,11 @@ def load_residual_vector_quantize(
         for i, quantizer in enumerate(module.quantizers)
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.quantizers,),
         module,
         (quantizers,),
+        allow_dtype_cast=True,
     )
 
 
@@ -517,49 +477,41 @@ def load_convnext_block(
     # PyTorch conv weights are (out_channels, in_channels/groups, kernel_size)
     dwconv_weight = weights_dict[path / "dwconv" / "conv" / "weight"]
     dwconv_bias = weights_dict[path / "dwconv" / "conv" / "bias"]
-    depthwise_conv = load_parameters(
+    depthwise_conv = load_as_at(
         lambda m: (m.weights, m.biases),
         module.depthwise_conv,
         (dwconv_weight, dwconv_bias),
+        allow_dtype_cast=True,
     )
 
     # Load norm (LayerNorm with weight and bias)
     norm_weight = weights_dict[path / "norm" / "weight"]
     norm_bias = weights_dict[path / "norm" / "bias"]
-    norm = load_parameters(
+    norm = load_as_at(
         lambda m: (m.scales, m.biases),
         module.norm,
         (norm_weight, norm_bias),
+        allow_dtype_cast=True,
     )
 
-    # Load pointwise conv 1 (Linear layer)
-    # PyTorch Linear weight is (out_features, in_features)
-    pwconv1_weight = weights_dict[path / "pwconv1" / "weight"]
-    pwconv1_bias = weights_dict[path / "pwconv1" / "bias"]
-    pointwise_conv_step1 = load_parameters(
-        lambda m: (m.weights, m.biases),
+    pointwise_conv_step1 = load_linear_and_fuse_scaling(
         module.pointwise_conv_step1,
-        (pwconv1_weight, pwconv1_bias),
+        weights_dict,
+        path / "pwconv1",
     )
 
-    # Load pointwise conv 2 (Linear layer), fusing layer scaling if present
-    pwconv2_weight = weights_dict[path / "pwconv2" / "weight"]
-    pwconv2_bias = weights_dict[path / "pwconv2" / "bias"]
-    layer_scale_path = path / "gamma"
-    if layer_scale_path in weights_dict:
-        layer_scale = weights_dict[layer_scale_path]
-        pwconv2_weight = pwconv2_weight * layer_scale[:, None]
-        pwconv2_bias = pwconv2_bias * layer_scale
-    pointwise_conv_step2 = load_parameters(
-        lambda m: (m.weights, m.biases),
+    pointwise_conv_step2 = load_linear_and_fuse_scaling(
         module.pointwise_conv_step2,
-        (pwconv2_weight, pwconv2_bias),
+        weights_dict,
+        path / "pwconv2",
+        scaling_to_fuse=weights_dict.get(path / "gamma"),
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.depthwise_conv, m.norm, m.pointwise_conv_step1, m.pointwise_conv_step2),
         module,
         (depthwise_conv, norm, pointwise_conv_step1, pointwise_conv_step2),
+        allow_dtype_cast=True,
     )
 
 
@@ -597,10 +549,11 @@ def load_upsampling_block(
     # Load ConvNeXt block (at index 1)
     convnext = load_convnext_block(module.convnext, weights_dict, path / "1")
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.trans_conv, m.convnext),
         module,
         (trans_conv, convnext),
+        allow_dtype_cast=True,
     )
 
 
@@ -626,10 +579,11 @@ def load_upsampler(
     """
     blocks = tuple(load_upsampling_block(block, weights_dict, path / i) for i, block in enumerate(module.blocks))
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.blocks,),
         module,
         (blocks,),
+        allow_dtype_cast=True,
     )
 
 
@@ -719,10 +673,11 @@ def load_downsample_rvq(
 
     post_module = load_transformer_block(module.post_module, weights_dict, fast=False, path=base_path / "post_module")
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.semantic_quantizer, m.quantizer, m.upsampler, m.post_module),
         module,
         (semantic_quantizer, quantizer, upsampler, post_module),
+        allow_dtype_cast=True,
     )
 
 
@@ -752,10 +707,11 @@ def load_residual_unit(
     snake2 = load_snake1d(module.snake2, weights_dict, path / "block" / "2")
     conv2 = load_causal_conv1d(module.conv2, weights_dict, path / "block" / "3" / "conv")
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.snake1, m.conv1, m.snake2, m.conv2),
         module,
         (snake1, conv1, snake2, conv2),
+        allow_dtype_cast=True,
     )
 
 
@@ -787,10 +743,11 @@ def load_audio_decoder_block(
     res_unit2 = load_residual_unit(module.res_unit2, weights_dict, path / "block" / "3")
     res_unit3 = load_residual_unit(module.res_unit3, weights_dict, path / "block" / "4")
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.snake, m.trans_conv, m.res_unit1, m.res_unit2, m.res_unit3),
         module,
         (snake, trans_conv, res_unit1, res_unit2, res_unit3),
+        allow_dtype_cast=True,
     )
 
 
@@ -852,10 +809,11 @@ def load_audio_decoder(
     final_conv_idx = num_blocks + 2
     final_conv = load_causal_conv1d(module.final_conv, weights_dict, path / "model" / final_conv_idx / "conv")
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.first_conv, m.decoder_blocks, m.final_snake, m.final_conv),
         module,
         (first_conv, decoder_blocks, final_snake, final_conv),
+        allow_dtype_cast=True,
     )
 
 
@@ -905,17 +863,17 @@ def load_fishaudio_text_decoder(
         basepath / "codebook_embeddings",
     )
 
-    if isinstance(module.fast_model_projection, FullPrecisionLinear):
+    if isinstance(module.fast_model_projection, Linear):
         fast_model_projection = load_linear_and_fuse_scaling(
             module.fast_model_projection,
             weights_dict,
             basepath / "fast_project_in",
         )
-        assert isinstance(fast_model_projection, FullPrecisionLinear)
+        assert isinstance(fast_model_projection, Linear)
     else:
-        fast_model_projection = Identity()
+        fast_model_projection = None
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (
             m.embeddings_slow,
             m.transformer_slow,
@@ -937,6 +895,7 @@ def load_fishaudio_text_decoder(
             codebook_embeddings,
             fast_model_projection,
         ),
+        allow_dtype_cast=True,
     )
 
 
@@ -948,15 +907,20 @@ def load_fishaudio_audio_decoder(
     loaded_quantizer = load_downsample_rvq(module.quantizer, weights_dict, base_path / "quantizer")
     loaded_decoder = load_audio_decoder(module.decoder, weights_dict, base_path / "decoder")
 
-    return load_parameters(lambda m: (m.quantizer, m.decoder), module, (loaded_quantizer, loaded_decoder))
+    return load_as_at(
+        lambda m: (m.quantizer, m.decoder),
+        module,
+        (loaded_quantizer, loaded_decoder),
+        allow_dtype_cast=True,
+    )
 
 
 def load_tokenizer_from_fishaudio_tiktoken(
     path_to_tokenizer: Path,
     path_to_special_tokens: Path,
 ) -> tuple[Tokenizer, FishAudioSpecialInferenceTokens]:
-    from tiktoken.core import Encoding as TiktokenEncoding
-    from transformers.integrations.tiktoken import convert_tiktoken_to_fast
+    from tiktoken.core import Encoding as TiktokenEncoding  # noqa: PLC0415
+    from transformers.integrations.tiktoken import convert_tiktoken_to_fast  # noqa: PLC0415
 
     def _load_fishaudio_tiktoken_data(
         tiktoken_path: Path,

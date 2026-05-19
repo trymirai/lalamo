@@ -2,26 +2,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from jaxtyping import DTypeLike
-
-from lalamo.modules import (
-    DecoderConfig,
-    DenseMLPConfig,
-    FullPrecisionLinearConfig,
-    Identity,
-    Mamba2Config,
-    MLXQuantizedLinearConfig,
-    MLXSemiQuantizedUntiedEmbeddingConfig,
-    NormalizationConfig,
-    SeparableCausalConvConfig,
-    SiLU,
-    TiedEmbeddingConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
-    UntiedEmbeddingConfig,
-    UpcastMode,
-)
-from lalamo.quantization import QuantizationMode
+from lalamo.modules.activations import Identity, SiLU
+from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
+from lalamo.modules.token_mixers.mamba import Mamba2Config
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .common import HuggingFaceLMConfig
 
@@ -66,56 +56,27 @@ class HFLlambaConfig(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
-        metadata_dict: Mapping[str, str],
+        metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        if "quantization_kwargs.group_size" in metadata_dict:
-            embedding_config = MLXSemiQuantizedUntiedEmbeddingConfig(
-                input_scale=None,
-                logit_soft_cap=None,
-                group_size=int(metadata_dict["quantization_kwargs.group_size"]),
-                embedding_quantization_mode=QuantizationMode.from_num_bits(
-                    int(metadata_dict["quantization_kwargs.bits"]),
-                ),
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
-            )
-        elif self.tie_embeddings:
+        if self.tie_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                precision=activation_precision,
             )
         else:
             embedding_config = UntiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                precision=activation_precision,
             )
 
         rmsnorm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.norm_epsilon,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
 
-        if metadata_dict and "quantization_kwargs.group_size" in metadata_dict:
-            linear_config = MLXQuantizedLinearConfig(
-                group_size=int(metadata_dict["quantization_kwargs.group_size"]),
-                weight_quantization_mode=QuantizationMode.from_num_bits(
-                    int(metadata_dict["quantization_kwargs.bits"]),
-                ),
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
-            )
-        else:
-            linear_config = FullPrecisionLinearConfig(
-                precision=activation_precision,
-            )
+        linear_config = LinearConfig()
 
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
@@ -140,7 +101,6 @@ class HFLlambaConfig(HuggingFaceLMConfig):
             in_projection_config=linear_config,
             out_projection_config=linear_config,
             conv_config=SeparableCausalConvConfig(
-                precision=activation_precision,
                 has_biases=self.ssm_cfg.conv_bias,
             ),
             activation=activation,

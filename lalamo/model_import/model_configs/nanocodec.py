@@ -10,10 +10,10 @@ import numpy as np
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.model_import.loaders.common import load_parameters
+from lalamo.model import Model
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
 from lalamo.model_import.model_configs import ForeignTTSConfig
-from lalamo.modules import LalamoModule, TTSConfig, TTSModel, VocoderConfig
+from lalamo.models import TTSConfig, TTSModel
 from lalamo.modules.audio.common_modules import CausalConv1dConfig
 from lalamo.modules.audio.fishaudio.fishaudio_modules import Snake1dConfig
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec, NanoCodecConfig
@@ -36,8 +36,15 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     ResidualBlockConfig,
 )
 from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder, StubTextDecoderConfig
+from lalamo.modules.audio.vocoders import NoopVocoderConfig
+from lalamo.utils.surgery import load_as_at
+from lalamo.weight_matrix import CompressionImplementation
 
 __all__ = ["NanoCodecForeignConfig"]
+
+
+def _tts_audio_decoder(model: TTSModel) -> tuple[object]:
+    return (model.audio_decoder,)
 
 
 def _require_key(config: Mapping, key: str, context: str) -> Any:  # noqa: ANN401
@@ -75,13 +82,10 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
     def to_tts_config(
         self,
         context_length: int | None,  # noqa: ARG002
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,  # noqa: ARG002
     ) -> TTSConfig:
         fsq_config = FiniteScalarQuantizerConfig(
             num_levels=self.num_levels_per_group,
             eps=DEFAULT_FSQ_EPS,
-            precision=activation_precision,
         )
 
         quantizer_config = GroupFiniteScalarQuantizerConfig(
@@ -89,13 +93,13 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
             quantizer_config=fsq_config,
         )
 
-        snake_config = Snake1dConfig(precision=activation_precision)
+        snake_config = Snake1dConfig()
         activation_config = HalfSnakeConfig(
             snake_config=snake_config,
             leaky_relu_negative_slope=DEFAULT_LEAKY_RELU_NEGATIVE_SLOPE,
         )
-        conv_config = CausalConv1dConfig(precision=activation_precision, has_biases=True)
-        transpose_conv_config = CausalTransposeConv1dConfig(precision=activation_precision, has_biases=True)
+        conv_config = CausalConv1dConfig(has_biases=True)
+        transpose_conv_config = CausalTransposeConv1dConfig(has_biases=True)
 
         residual_block_config = ResidualBlockConfig(
             activation_config=activation_config,
@@ -116,7 +120,6 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
         codebook_size = int(np.prod(self.num_levels_per_group))
 
         audio_decoder_config = NanoCodecConfig(
-            precision=activation_precision,
             quantizer_config=quantizer_config,
             decoder_config=decoder_config,
             samplerate=self.samplerate,
@@ -131,31 +134,33 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
         text_decoder_config = StubTextDecoderConfig(
             num_codebooks=num_codebooks,
             codebook_size=codebook_size,
-            precision=activation_precision,
         )
 
         return TTSConfig(
             text_decoder_config=text_decoder_config,
             audio_decoder_config=audio_decoder_config,
-            vocoder_config=VocoderConfig(),
-            activation_precision=activation_precision,
+            vocoder_config=NoopVocoderConfig(),
         )
 
     def _load_weights(
         self,
-        model: LalamoModule,
+        model: Model,
         weights_dict: Mapping[str, Array],
-    ) -> LalamoModule:
+        *,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
+    ) -> Model:
         assert isinstance(model, TTSModel)
-        assert isinstance(model.text_decoder, StubTextDecoder)
-        assert isinstance(model.audio_decoder, NanoCodec)
+        tts_model: TTSModel = model
+        assert isinstance(tts_model.text_decoder, StubTextDecoder)
+        assert isinstance(tts_model.audio_decoder, NanoCodec)
 
-        loaded_audio_decoder = load_nanocodec(model.audio_decoder, weights_dict)
+        loaded_audio_decoder = load_nanocodec(tts_model.audio_decoder, weights_dict)
 
-        return load_parameters(
-            lambda m: (m.audio_decoder,),
-            model,
+        return load_as_at(
+            _tts_audio_decoder,
+            tts_model,
             (loaded_audio_decoder,),
+            allow_dtype_cast=True,
         )
 
     @classmethod
@@ -192,5 +197,5 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
         )
 
     @property
-    def default_precision(self) -> DTypeLike:
+    def default_dtype(self) -> DTypeLike:
         return jnp.float32

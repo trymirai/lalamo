@@ -1,8 +1,8 @@
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from inspect import signature
-from typing import Any, Protocol, Self
+from typing import Any, Protocol, Self, Unpack, cast
 
 import jax
 import torch
@@ -26,34 +26,43 @@ from transformers.models.modernbert.modeling_modernbert import ModernBertEncoder
 from transformers.models.modernbert.modular_modernbert import ModernBertAttention, ModernBertMLP
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5GatedDeltaNet
 from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextDecoderLayer, Qwen3NextGatedDeltaNet
-from transformers.processing_utils import Unpack
 
-from lalamo.modules import DecoderResult
 from lalamo.modules.classifier import ClassifierResult
-from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
+from lalamo.modules.decoder import DecoderResult
+from lalamo.utils.torch_interop import jax_to_torch, torch_to_jax
 from tests.common import assert_close
 from tests.tracer.tracer import ActivationTrace, DType, InferenceResult, ModelTracer
 
 FRACTION_OF_ALLOWED_VIOLATIONS = 0.03
 
 
-class HFRotaryEmbedding(Protocol):
+class TorchModuleWithDevice(Protocol):
+    def parameters(self) -> Iterable[nn.Parameter]: ...
+
+    def buffers(self) -> Iterable[Tensor]: ...
+
+
+class HFRotaryEmbedding(TorchModuleWithDevice, Protocol):
     def forward(self, x: Tensor, position_ids: Tensor) -> tuple[Tensor, Tensor]: ...
 
 
-class HFWordEmbedding(Protocol):
+class HFWordEmbedding(TorchModuleWithDevice, Protocol):
     def forward(self, input_ids: Tensor) -> Tensor: ...
 
 
-class HFMLP(Protocol):
+class HFWordEmbeddingWithScale(HFWordEmbedding, Protocol):
+    embed_scale: Tensor
+
+
+class HFMLP(TorchModuleWithDevice, Protocol):
     def forward(self, x: Tensor) -> Tensor: ...
 
 
-class HFRMSNorm(Protocol):
+class HFRMSNorm(TorchModuleWithDevice, Protocol):
     def forward(self, x: Tensor) -> Tensor: ...
 
 
-class HFAttention(Protocol):
+class HFAttention(TorchModuleWithDevice, Protocol):
     def forward(
         self,
         hidden_states: Tensor,
@@ -65,17 +74,17 @@ class HFAttention(Protocol):
     ) -> Tensor: ...
 
 
-class HFDeltaNetAttention(Protocol):
+class HFDeltaNetAttention(TorchModuleWithDevice, Protocol):
     def forward(
         self,
         hidden_states: Tensor,
-        cache_params: Any | None = None,
+        cache_params: object | None = None,
         cache_position: Tensor | None = None,
         attention_mask: Tensor | None = None,
     ) -> Tensor: ...
 
 
-class HFPredictionHead(Protocol):
+class HFPredictionHead(TorchModuleWithDevice, Protocol):
     def forward(
         self,
         hidden_states: Tensor,
@@ -186,7 +195,7 @@ def _load_hf_model(
         device = torch.device("cpu")
 
     device_map: str | torch.device = device
-    max_memory: dict[str, str] | None = None
+    max_memory: dict[int | str, str] | None = None
     device_map_env = os.getenv("LALAMO_HF_DEVICE_MAP")
     is_qwen3_next = "qwen3_next" in model_repo.lower().replace("-", "_")
 
@@ -201,7 +210,7 @@ def _load_hf_model(
             gib = 1024**3
             try:
                 bytes_limit = gpu_devices[0].memory_stats().get("bytes_limit")
-            except:
+            except (AttributeError, NotImplementedError, RuntimeError):
                 bytes_limit = 60 * gib
             if bytes_limit is not None:
                 safe_bytes = int(bytes_limit * 0.9)
@@ -253,7 +262,7 @@ def _build_hf_attention_mask(
         bool_mask = causal
 
     neg_inf = torch.finfo(dtype).min
-    attention_mask = (
+    return (
         torch.where(
             bool_mask,
             torch.tensor(neg_inf, dtype=dtype, device=device),
@@ -263,10 +272,9 @@ def _build_hf_attention_mask(
         .unsqueeze(1)
         .expand(batch, 1, q_len, k_len)
     )
-    return attention_mask
 
 
-def _module_device(module: nn.Module, fallback_device: torch.device) -> torch.device:
+def _module_device(module: TorchModuleWithDevice, fallback_device: torch.device) -> torch.device:
     for param in module.parameters():
         if param.device.type == "meta":
             continue
@@ -306,9 +314,9 @@ class HFDecoderTracer(
     device: torch.device
 
     @property
-    def text_model(self) -> Any:
+    def text_model(self) -> HFTextModel:
         model = self.hf_model.model
-        return getattr(model, "language_model", model)
+        return cast("HFTextModel", getattr(model, "language_model", model))
 
     def from_jax(self, array: Array) -> torch.Tensor:
         return jax_to_torch(array)
@@ -320,7 +328,7 @@ class HFDecoderTracer(
         embed_device = _module_device(self.text_model.embed_tokens, self.device)
         return self.text_model.embed_tokens.forward(token_ids.to(embed_device))
 
-    def rope_fns(self) -> list[tuple[str, Any]]:
+    def rope_fns(self) -> list[tuple[str, Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]]]:
         rope = self.text_model.rotary_emb
         fns = {
             "full_attention": ("Global", lambda x, pos: _rope_forward(rope, x, pos, "full_attention", self.device)),
@@ -331,7 +339,7 @@ class HFDecoderTracer(
         }
         # Return rope functions in layer-encounter order, matching _init_ropes() deduplication
         seen: set[str] = set()
-        result: list[tuple[str, Any]] = []
+        result: list[tuple[str, Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]]] = []
         for layer in self.text_model.layers:
             attn = self.layer_attention(layer)
             layer_type = "sliding_attention" if getattr(attn, "is_sliding", False) else "full_attention"
@@ -374,7 +382,7 @@ class HFDecoderTracer(
         if "position_embeddings" in signature(attention.forward).parameters:
             forward_kwargs["position_embeddings"] = position_embeddings
 
-        attention_output, _ = attention.forward(**forward_kwargs)  # type: ignore
+        attention_output, _ = attention.forward(**forward_kwargs)  # type: ignore[call-arg]
         return attention_output
 
     def mlp(self, mlp: HFMLP, x: torch.Tensor) -> torch.Tensor:
@@ -397,7 +405,7 @@ class HFDecoderTracer(
                 position_embeddings[0].to(layer_device),
                 position_embeddings[1].to(layer_device),
             )
-        torch_outputs, *_ = layer.forward(
+        torch_outputs, *_ = cast("Any", layer).forward(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
         )
@@ -417,7 +425,7 @@ class HFDecoderTracer(
 
     def layer_pre_mlp_norm(self, layer: HFTransformerLayer | Gemma3DecoderLayer) -> HFRMSNorm:
         if hasattr(layer, "post_feedforward_layernorm"):
-            return layer.pre_feedforward_layernorm  # type: ignore
+            return layer.pre_feedforward_layernorm  # type: ignore[attr-defined]
 
         return layer.post_attention_layernorm
 
@@ -426,8 +434,8 @@ class HFDecoderTracer(
         layer: HFTransformerLayer | Gemma3DecoderLayer | Qwen3NextDecoderLayer,
     ) -> HFAttention | Gemma3Attention | HFDeltaNetAttention:
         if getattr(layer, "layer_type", None) == "linear_attention" and hasattr(layer, "linear_attn"):
-            return layer.linear_attn
-        return layer.self_attn
+            return cast("HFDeltaNetAttention", layer.linear_attn)
+        return cast("HFAttention | Gemma3Attention", layer.self_attn)
 
     def layer_mlp(self, layer: HFTransformerLayer | Gemma3DecoderLayer) -> HFMLP:
         return layer.mlp
@@ -483,11 +491,11 @@ class HFDecoderTracer(
 
         # Correct the bug in the HF Gemma implementation
         # See https://github.com/huggingface/transformers/issues/38702
-        text_model = getattr(hf_model.model, "language_model", hf_model.model)
-        if hasattr(text_model.embed_tokens, "embed_scale"):
-            wrong_scale = text_model.embed_tokens.embed_scale
-            correct_scale = wrong_scale.to(torch.bfloat16).to(wrong_scale.dtype)
-            text_model.embed_tokens.embed_scale = correct_scale
+        text_model = cast("HFTextModel", getattr(hf_model.model, "language_model", hf_model.model))
+        embed_scale = getattr(text_model.embed_tokens, "embed_scale", None)
+        if isinstance(embed_scale, torch.Tensor):
+            embed_tokens = cast("HFWordEmbeddingWithScale", text_model.embed_tokens)
+            embed_tokens.embed_scale = embed_scale.to(torch.bfloat16).to(embed_scale.dtype)
 
         return cls(hf_model, device)
 
@@ -521,8 +529,8 @@ class ModernBertTracer(
         return self.hf_model.classifier(x)
 
     def normalized_output(self, result: InferenceResult) -> Tensor:
-        assert result.activation_trace is not None
         assert isinstance(result, ClassifierResult)
+        assert result.activation_trace is not None
         return self.from_jax(result.activation_trace.output_pooling[None, ...])
 
     def _update_attention_mask(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor | None, torch.Tensor | None]:
@@ -589,7 +597,7 @@ class ModernBertTracer(
         self.match_attention_custom(
             activation_trace.pre_mixer_norm,
             activation_trace.mixer,
-            ref_layer.attn,  # type: ignore
+            ref_layer.attn,  # type: ignore[arg-type]
             layer_attention_mask,
             (ref_cosines, ref_sines),
             f"Layer {layer_index} Attention",
@@ -605,7 +613,7 @@ class ModernBertTracer(
         self.match_mlp(
             activation_trace.pre_mlp_norm,
             activation_trace.mlp,
-            ref_layer.mlp,  # type: ignore
+            ref_layer.mlp,  # type: ignore[arg-type]
             f"Layer {layer_index} MLP",
         )
         assert_close(
@@ -618,7 +626,7 @@ class ModernBertTracer(
         ref_inputs = jax_to_torch(activation_trace.inputs).to(self.device)
         assert ref_inputs.ndim == 3
 
-        forward_outputs = ref_layer.forward(
+        forward_outputs = cast("Any", ref_layer).forward(
             hidden_states=ref_inputs,
             attention_mask=layer_attention_mask.to(ref_inputs.device) if layer_attention_mask is not None else None,
             position_embeddings=(ref_cosines.to(ref_inputs.device), ref_sines.to(ref_inputs.device)),
@@ -669,7 +677,7 @@ class ModernBertTracer(
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def rope_fns(self) -> list[tuple[str, Any]]:
+    def rope_fns(self) -> list[tuple[str, Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]]]:
         return []
 
     def iterate_layers(self) -> Iterable[ModernBertEncoderLayer]:

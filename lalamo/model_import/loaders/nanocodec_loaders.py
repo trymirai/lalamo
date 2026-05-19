@@ -15,7 +15,6 @@ from einops import rearrange
 from jax import numpy as jnp
 from jaxtyping import Array, Float
 
-from lalamo.common import ParameterPath
 from lalamo.modules.audio.common_modules import Snake1d
 from lalamo.modules.audio.fishaudio.fishaudio_modules import CausalConv1d
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec
@@ -27,8 +26,9 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     HiFiGANResLayer,
     ResidualBlock,
 )
+from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.surgery import load_as_at
 
-from .common import load_parameters
 from .torch_utils import fuse_parametrized_weight_norm_conv1d
 
 __all__ = [
@@ -84,9 +84,7 @@ def transform_pytorch_transpose_conv_weights(
     # Reshape: -> (out_channels, in_per_group, K)
     kernel = kernel.reshape(out_channels, in_per_group, kernel_size)
     # Flip kernel along spatial dimension - required for transposed convolution
-    kernel = jnp.flip(kernel, axis=-1)
-
-    return kernel
+    return jnp.flip(kernel, axis=-1)
 
 
 # =============================================================================
@@ -119,10 +117,11 @@ def load_snake1d(
     # PyTorch shape: (1, channels, 1) -> (channels,)
     alpha = rearrange(alpha, "1 channels 1 -> channels")
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.alpha,),
         module,
         (alpha,),
+        allow_dtype_cast=True,
     )
 
 
@@ -150,16 +149,29 @@ def load_half_snake(
     """
     snake = load_snake1d(module.snake, weights_dict, path / "snake_act")
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.snake,),
         module,
         (snake,),
+        allow_dtype_cast=True,
     )
 
 
 # =============================================================================
 # Convolution Loaders
 # =============================================================================
+
+
+def _load_conv_weight_bias(
+    has_biases: bool,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    is_transposed: bool,
+) -> tuple[Array, Array | None]:
+    if (path / "parametrizations" / "weight" / "original0") in weights_dict:
+        return fuse_parametrized_weight_norm_conv1d(weights_dict, path, is_transposed=is_transposed)
+    return weights_dict[path / "weight"], weights_dict.get(path / "bias") if has_biases else None
 
 
 def load_causal_conv1d(
@@ -189,20 +201,13 @@ def load_causal_conv1d(
     Returns:
         CausalConv1d module with loaded weights.
     """
-    # Check if weights are in parametrized weight_norm format
-    weight_norm_path = path / "parametrizations" / "weight" / "original0"
-    if weight_norm_path in weights_dict:
-        # Fuse weight_norm parameters
-        weight, bias = fuse_parametrized_weight_norm_conv1d(weights_dict, path, is_transposed=False)
-    else:
-        # Weights are already fused
-        weight = weights_dict[path / "weight"]
-        bias = weights_dict.get(path / "bias") if module.biases is not None else None
+    weight, bias = _load_conv_weight_bias(module.biases is not None, weights_dict, path, is_transposed=False)
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.weights, m.biases),
         module,
         (weight, bias),
+        allow_dtype_cast=True,
     )
 
 
@@ -234,15 +239,7 @@ def load_causal_transpose_conv1d(
     Returns:
         CausalTransposeConv1d module with loaded weights.
     """
-    # Check if weights are in parametrized weight_norm format
-    weight_norm_path = path / "parametrizations" / "weight" / "original0"
-    if weight_norm_path in weights_dict:
-        # Fuse weight_norm parameters
-        weight_pytorch, bias = fuse_parametrized_weight_norm_conv1d(weights_dict, path, is_transposed=True)
-    else:
-        # Weights are already fused
-        weight_pytorch = weights_dict[path / "weight"]
-        bias = weights_dict.get(path / "bias") if module.biases is not None else None
+    weight_pytorch, bias = _load_conv_weight_bias(module.biases is not None, weights_dict, path, is_transposed=True)
 
     # Transform PyTorch weights to JAX format
     weight_jax = transform_pytorch_transpose_conv_weights(
@@ -252,10 +249,11 @@ def load_causal_transpose_conv1d(
         groups=module.groups,
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.weights, m.biases),
         module,
         (weight_jax, bias),
+        allow_dtype_cast=True,
     )
 
 
@@ -311,10 +309,11 @@ def load_residual_block(
         path / "skip_conv" / "conv",
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.input_activation, m.skip_activation, m.input_conv, m.skip_conv),
         module,
         (input_activation, skip_activation, input_conv, skip_conv),
+        allow_dtype_cast=True,
     )
 
 
@@ -347,10 +346,11 @@ def load_hifigan_res_block(
         load_residual_block(block, weights_dict, path / "res_blocks" / i) for i, block in enumerate(module.res_blocks)
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.res_blocks,),
         module,
         (res_blocks,),
+        allow_dtype_cast=True,
     )
 
 
@@ -382,10 +382,11 @@ def load_hifigan_res_layer(
         for i, block in enumerate(module.res_blocks)
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.res_blocks,),
         module,
         (res_blocks,),
+        allow_dtype_cast=True,
     )
 
 
@@ -486,7 +487,7 @@ def load_causal_hifigan_decoder(
         base_path / "post_conv" / "conv",
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (
             m.pre_conv,
             m.activations,
@@ -497,6 +498,7 @@ def load_causal_hifigan_decoder(
         ),
         module,
         (pre_conv, activations, upsample_convs, res_layers, post_activation, post_conv),
+        allow_dtype_cast=True,
     )
 
 
@@ -545,8 +547,9 @@ def load_nanocodec(
         ParameterPath("audio_decoder"),
     )
 
-    return load_parameters(
+    return load_as_at(
         lambda m: (m.decoder,),
         module,
         (decoder,),
+        allow_dtype_cast=True,
     )

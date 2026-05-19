@@ -1,6 +1,6 @@
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, Self
+from typing import Self
 
 import torch
 from jaxtyping import Array
@@ -15,8 +15,8 @@ from transformers.models.lfm2.modeling_lfm2 import (
     Lfm2ShortConv,
 )
 
-from lalamo.modules import DecoderResult
-from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
+from lalamo.modules.decoder import DecoderResult
+from lalamo.utils.torch_interop import jax_to_torch, torch_to_jax
 from tests.tracer.tracer import DType, InferenceResult, ModelTracer
 from tests.tracer.tracer_huggingface import _build_hf_attention_mask, _load_hf_model
 
@@ -43,9 +43,11 @@ class LFM2DecoderTracer(
     def embedding(self, token_ids: Tensor) -> Tensor:
         return self.hf_model.model.embed_tokens.forward(token_ids)
 
-    def rope_fns(self) -> list[tuple[str, Any]]:
-        global_rope = self.hf_model.model.rotary_emb
-        return [("Global", lambda x, pos: global_rope.forward(x, pos))]
+    def rope_fns(self) -> list[tuple[str, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]]]:
+        has_attention_layers = any(layer.is_attention_layer for layer in self.hf_model.model.layers)
+        if not has_attention_layers:
+            return []
+        return [("Global", self.hf_model.model.rotary_emb.forward)]
 
     def rmsnorm(self, rmsnorm: Lfm2RMSNorm, x: Tensor) -> Tensor:
         return rmsnorm.forward(x)
@@ -56,7 +58,7 @@ class LFM2DecoderTracer(
         hidden_states: Tensor,
         position_embeddings: tuple[Tensor, Tensor] | None,
     ) -> Tensor:
-        attention_mask = _build_hf_attention_mask(hidden_states, attention)  # type: ignore
+        attention_mask = _build_hf_attention_mask(hidden_states, attention)  # type: ignore[arg-type]
 
         if isinstance(attention, Lfm2Attention):
             assert position_embeddings is not None
@@ -85,7 +87,7 @@ class LFM2DecoderTracer(
     ) -> Tensor:
         torch_outputs, *_ = layer.forward(
             hidden_states=hidden_states,
-            position_embeddings=position_embeddings,  # type: ignore
+            position_embeddings=position_embeddings,  # type: ignore[arg-type]
         )
 
         return torch_outputs
@@ -93,8 +95,14 @@ class LFM2DecoderTracer(
     def layer_pre_attention_norm(self, layer: Lfm2DecoderLayer) -> Lfm2RMSNorm:
         return layer.operator_norm
 
+    def layer_post_attention_norm(self, layer: Lfm2DecoderLayer) -> None:
+        del layer
+
     def layer_pre_mlp_norm(self, layer: Lfm2DecoderLayer) -> Lfm2RMSNorm:
         return layer.ffn_norm
+
+    def layer_post_mlp_norm(self, layer: Lfm2DecoderLayer) -> None:
+        del layer
 
     def layer_attention(self, layer: Lfm2DecoderLayer) -> Lfm2Attention | Lfm2ShortConv:
         return layer.self_attn if layer.is_attention_layer else layer.conv
@@ -105,7 +113,7 @@ class LFM2DecoderTracer(
         return layer.feed_forward
 
     def iterate_layers(self) -> Iterable[Lfm2DecoderLayer]:
-        return self.hf_model.model.layers  # type: ignore
+        return self.hf_model.model.layers  # type: ignore[return-value]
 
     def output_norm(self) -> Lfm2RMSNorm:
         return self.hf_model.model.embedding_norm

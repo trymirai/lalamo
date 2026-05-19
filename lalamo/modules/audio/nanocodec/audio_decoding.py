@@ -1,12 +1,10 @@
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
-import jax
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Float, Int
 
-from lalamo.common import ParameterTree, require_tree
-from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
+from lalamo.initializer import Initializer
+from lalamo.module import Keychain
+from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfig
 
 from .nanocodec_modules import (
     CausalHiFiGANDecoder,
@@ -17,8 +15,7 @@ from .nanocodec_modules import (
 
 
 @dataclass(frozen=True)
-class NanoCodecConfig(TTSAudioDecoderConfigBase):
-    precision: DTypeLike
+class NanoCodecConfig(TTSAudioDecoderConfig):
     quantizer_config: GroupFiniteScalarQuantizerConfig
     decoder_config: CausalHiFiGANDecoderConfig
     samplerate: int
@@ -29,10 +26,10 @@ class NanoCodecConfig(TTSAudioDecoderConfigBase):
     resblock_kernel_sizes: tuple[int, ...]
     resblock_dilations: tuple[int, ...]
 
-    def empty(self) -> "NanoCodec":
-        """Create NanoCodec with placeholder weights."""
-        quantizer = self.quantizer_config.empty()
-        decoder = self.decoder_config.empty(
+    def init(self, initializer: Initializer) -> "NanoCodec":
+        quantizer = self.quantizer_config.init(initializer)
+        decoder = self.decoder_config.init(
+            initializer,
             input_dim=self.quantizer_config.codebook_dim,
             base_channels=self.base_channels,
             up_sample_rates=self.up_sample_rates,
@@ -40,32 +37,6 @@ class NanoCodecConfig(TTSAudioDecoderConfigBase):
             out_kernel_size=self.out_kernel_size,
             resblock_kernel_sizes=self.resblock_kernel_sizes,
             resblock_dilations=self.resblock_dilations,
-        )
-
-        return NanoCodec(
-            config=self,
-            quantizer=quantizer,
-            decoder=decoder,
-        )
-
-    def random_init(
-        self,
-        *,
-        key: PRNGKeyArray,
-    ) -> "NanoCodec":
-        """Create NanoCodec with randomly initialized weights."""
-        key_quantizer, key_decoder = jax.random.split(key)
-
-        quantizer = self.quantizer_config.random_init(key=key_quantizer)
-        decoder = self.decoder_config.random_init(
-            input_dim=self.quantizer_config.codebook_dim,
-            base_channels=self.base_channels,
-            up_sample_rates=self.up_sample_rates,
-            in_kernel_size=self.in_kernel_size,
-            out_kernel_size=self.out_kernel_size,
-            resblock_kernel_sizes=self.resblock_kernel_sizes,
-            resblock_dilations=self.resblock_dilations,
-            key=key_decoder,
         )
 
         return NanoCodec(
@@ -93,16 +64,14 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
         return self.config.samplerate
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
     def n_codebooks(self) -> int:
-        return self.quantizer.num_groups
+        return self.quantizer.config.num_groups
 
     def __call__(
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
+        *,
+        keychain: Keychain,  # noqa: ARG002
     ) -> Float[Array, "batch audio_samples"]:
         """Decode discrete tokens to audio waveform."""
         # Transpose from [B, C, T] to [B, T, C] for Lalamo quantizer (NSC format)
@@ -112,32 +81,9 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
         z = self.quantizer.decode(indices_nsc)
 
         # Decode to audio [B, T_audio]
-        audio = self.decoder(z)
+        return self.decoder(z)
 
-        return audio
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "quantizer": self.quantizer.export_weights(),
-            "decoder": self.decoder.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-
-        quantizer_weights = weights["quantizer"]
-        decoder_weights = weights["decoder"]
-
-        assert isinstance(quantizer_weights, Mapping)
-        assert isinstance(decoder_weights, Mapping)
-
-        return replace(
-            self,
-            quantizer=self.quantizer.import_weights(require_tree(quantizer_weights)),
-            decoder=self.decoder.import_weights(require_tree(decoder_weights)),
-        )
-
-    def audio_from_codes(self, indices: Array) -> Array:
+    def audio_from_codes(self, indices: Array, *, keychain: Keychain) -> Array:
         """Convenience method to decode a single sequence of codes to audio.
 
         Args:
@@ -148,4 +94,4 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
         """
         if len(indices.shape) == 2:
             indices = indices[None, :, :]
-        return self(indices)[0, :]
+        return self(indices, keychain=keychain)[0, :]
