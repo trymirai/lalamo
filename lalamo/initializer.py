@@ -149,6 +149,12 @@ class EmptyInitializer(Initializer):
 class RandomInitializer(Initializer):
     key: Key[Array, ""] | None = field(default=None, kw_only=True)
 
+    def with_dtype(self, dtype: DTypeLike) -> "RandomInitializer":
+        if self.key is None:
+            return replace(self, dtype=dtype)
+        self.key, key = jax.random.split(self.key)
+        return replace(self, dtype=dtype, key=key)
+
     def normal(
         self,
         std: float,
