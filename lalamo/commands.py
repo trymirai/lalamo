@@ -93,11 +93,12 @@ class EvalStats:
     count: int
     tokens: int
     steps: int
+    acceptance_length_sum: float
     elapsed_seconds: float
 
     @property
     def tokens_per_step(self) -> float:
-        return self.tokens / max(self.steps, 1)
+        return self.acceptance_length_sum / max(self.count, 1)
 
     @property
     def tokens_per_second(self) -> float:
@@ -151,7 +152,8 @@ class EvalResults:
 
     @property
     def tokens_per_step(self) -> float:
-        return self.tokens / max(self.steps, 1)
+        acceptance_length_sum = sum(stats.acceptance_length_sum for stats in self.by_category.values())
+        return acceptance_length_sum / max(self.total_count, 1)
 
     @property
     def tokens_per_second(self) -> float:
@@ -171,12 +173,14 @@ class EvalCounts:
     count: int = 0
     tokens: int = 0
     steps: int = 0
+    acceptance_length_sum: float = 0.0
 
     def add(self, tokens: int, steps: int) -> "EvalCounts":
         return EvalCounts(
             count=self.count + 1,
             tokens=self.tokens + tokens,
             steps=self.steps + steps,
+            acceptance_length_sum=self.acceptance_length_sum + tokens / max(steps, 1),
         )
 
 
@@ -360,6 +364,7 @@ def evaluate_speculator(
                 count=counts.count,
                 tokens=counts.tokens,
                 steps=counts.steps,
+                acceptance_length_sum=counts.acceptance_length_sum,
                 elapsed_seconds=elapsed_seconds,
             )
             for category, counts in by_category.items()
