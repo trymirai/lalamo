@@ -199,7 +199,7 @@ async def execute_batch(batch: Batch, requests: list[RequestBody]) -> None:
     def run_generate_replies_with_stats() -> None:
         for response in generate_replies(requests):
             collected.append(response)
-            replace(batch, completed=len(collected), results=tuple(collected)).save()
+            replace(batch, completed=len(collected)).save()
 
     try:
         async with gpu_lock:
