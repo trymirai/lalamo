@@ -53,7 +53,8 @@ def _apply_reference(embeddings: PositionalEmbeddings, heads: Array) -> Array:
         cosines=jnp.asarray(jax.device_get(embeddings.cosines)),
         sines=jnp.asarray(jax.device_get(embeddings.sines)),
     )
-    heads = jnp.asarray(jax.device_get(heads)).astype(jnp.float32)
+    dtype = embeddings.cosines.dtype
+    heads = jnp.asarray(jax.device_get(heads)).astype(dtype)
     rotated = heads[..., : embeddings.head_dim]
     rotated_half = jnp.concatenate(
         (
@@ -62,7 +63,7 @@ def _apply_reference(embeddings: PositionalEmbeddings, heads: Array) -> Array:
         ),
         axis=-1,
     )
-    result = rotated * embeddings.cosines.astype(jnp.float32) + rotated_half * embeddings.sines.astype(jnp.float32)
+    result = rotated * embeddings.cosines + rotated_half * embeddings.sines
     if heads.shape[-1] == embeddings.head_dim:
         return result
     return jnp.concatenate((result, heads[..., embeddings.head_dim :]), axis=-1)

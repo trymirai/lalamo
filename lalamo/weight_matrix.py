@@ -116,10 +116,6 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
     def shape(self) -> tuple[int, ...]: ...
 
     @property
-    def logical_shape(self) -> tuple[int, ...]:
-        return self.shape
-
-    @property
     def ndim(self) -> int:
         return len(self.shape)
 
@@ -225,12 +221,6 @@ class Layout(StrEnum):
             return (*leading_dims, input_dim, output_dim)
         return (*leading_dims, output_dim, input_dim)
 
-    def logical_shape(self, shape: tuple[int, ...]) -> tuple[int, ...]:
-        if self == Layout.INPUT_OUTPUT:
-            *leading_dims, input_dim, output_dim = shape
-            return (*leading_dims, output_dim, input_dim)
-        return shape
-
     @supports_dummy_arrays()
     def from_output_input(
         self,
@@ -320,10 +310,6 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
     @property
     def shape(self) -> tuple[int, ...]:
         return self.weights.shape
-
-    @property
-    def logical_shape(self) -> tuple[int, ...]:
-        return self.spec.layout.logical_shape(self.shape)
 
     @property
     def dtype(self) -> DTypeLike:
@@ -429,10 +415,6 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
     @property
     def shape(self) -> tuple[int, ...]:
         return self.spec.layout.weight_shape(self.mixture_dims, self.output_dim, self.input_dim)
-
-    @property
-    def logical_shape(self) -> tuple[int, ...]:
-        return (*self.mixture_dims, self.output_dim, self.input_dim)
 
     @property
     def dtype(self) -> DTypeLike:

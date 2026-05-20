@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 import equinox as eqx
 from jax import numpy as jnp
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
@@ -43,6 +43,14 @@ class PositionalEmbeddings(Exportable, eqx.Module):
     cosines: Float[Array, "*batch tokens head_channels"]
     sines: Float[Array, "*batch tokens head_channels"]
 
+    def astype(self, dtype: DTypeLike | None) -> "PositionalEmbeddings":
+        if dtype is None:
+            return self
+        return PositionalEmbeddings(
+            cosines=self.cosines.astype(dtype),
+            sines=self.sines.astype(dtype),
+        )
+
     @property
     def head_dim(self) -> int:
         return self.cosines.shape[-1]
@@ -62,9 +70,10 @@ class PositionalEmbeddings(Exportable, eqx.Module):
             raise ValueError(
                 f"RoPE head_dim {head_dim} exceeds input head_dim {heads.shape[-1]}",
             )
-        heads = heads.astype(jnp.float32)
-        cosines = self.cosines.astype(jnp.float32)
-        sines = self.sines.astype(jnp.float32)
+        dtype = self.cosines.dtype
+        heads = heads.astype(dtype)
+        cosines = self.cosines
+        sines = self.sines
         rotated = heads[..., :head_dim]
         rotated = rotated * cosines + self.rotate_half(rotated) * sines
         if heads.shape[-1] == head_dim:

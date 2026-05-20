@@ -362,10 +362,6 @@ class AWQMatrix(EmbeddingMatrix[AWQSpec]):
     scales: Float[Array, "*components rows groups"] = field(norm=ParameterNorm.L_INF)
 
     @property
-    def logical_shape(self) -> tuple[int, ...]:
-        return self.spec.layout.logical_shape(self.shape)
-
-    @property
     @abstractmethod
     def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]: ...
 

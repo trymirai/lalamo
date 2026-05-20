@@ -127,9 +127,10 @@ class Transformer(LalamoModule[TransformerConfig]):
             if state is not None
             else {}
         )
+        mixer_forward_pass_config = forward_pass_config.mixer_forward_pass_config
         rope_embeddings = tuple(
             call_vmapped(
-                rope,
+                lambda positions, rope=rope: rope(positions).astype(mixer_forward_pass_config.rope_dtype),
                 token_positions,
                 added_sharding_axis=ShardingAxis.DATA,
             )
