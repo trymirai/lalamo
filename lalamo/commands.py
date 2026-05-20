@@ -85,7 +85,7 @@ class EvalDatasetName(StrEnum):
 class EvalQuestion:
     id: int
     category: str
-    prompt: str
+    turns: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -199,23 +199,23 @@ def load_eval_questions(
             EvalQuestion(
                 id=int(row["question_id"]),
                 category=str(row["category"]),
-                prompt=str(row["turns"][0]),
+                turns=tuple(str(turn) for turn in row["turns"]),
             )
             for row in rows
         ]
 
     def gsm8k() -> list[EvalQuestion]:
         rows = cast("Iterable[dict[str, object]]", load_dataset("openai/gsm8k", "main", split="test"))
-        return [EvalQuestion(id=idx, category="math", prompt=str(row["question"])) for idx, row in enumerate(rows)]
+        return [EvalQuestion(id=idx, category="math", turns=(str(row["question"]),)) for idx, row in enumerate(rows)]
 
     def humaneval() -> list[EvalQuestion]:
         rows = cast("Iterable[dict[str, object]]", load_dataset("openai/openai_humaneval", split="test"))
-        return [EvalQuestion(id=idx, category="code", prompt=str(row["prompt"])) for idx, row in enumerate(rows)]
+        return [EvalQuestion(id=idx, category="code", turns=(str(row["prompt"]),)) for idx, row in enumerate(rows)]
 
     def math500() -> list[EvalQuestion]:
         rows = cast("Iterable[dict[str, object]]", load_dataset("HuggingFaceH4/MATH-500", split="test"))
         return [
-            EvalQuestion(id=idx, category=str(row["subject"]), prompt=str(row["problem"]))
+            EvalQuestion(id=idx, category=str(row["subject"]), turns=(str(row["problem"]),))
             for idx, row in enumerate(rows)
         ]
 
@@ -228,13 +228,13 @@ def load_eval_questions(
     source_questions = tuple((name, loaders[name]()) for name in names)
     groups = (
         tuple(
-            EvalQuestion(id=question.id, category=f"{name.value}/{question.category}", prompt=question.prompt)
+            EvalQuestion(id=question.id, category=f"{name.value}/{question.category}", turns=question.turns)
             for question in questions
         )
         for name, questions in source_questions
     )
     questions = [
-        EvalQuestion(id=idx, category=question.category, prompt=question.prompt)
+        EvalQuestion(id=idx, category=question.category, turns=question.turns)
         for idx, question in enumerate(
             question for row in zip_longest(*groups) for question in row if question is not None
         )
@@ -282,7 +282,10 @@ def evaluate_speculator(
         min_p=min_p,
     )
     tokenized = [
-        model.token_codec.encode_request([UserMessage(question.prompt)], enable_thinking=reasoning)
+        model.token_codec.encode_request(
+            [UserMessage(turn) for turn in question.turns],
+            enable_thinking=reasoning,
+        )
         for question in questions
     ]
     padded_length = max(len(tokens) for tokens in tokenized)
