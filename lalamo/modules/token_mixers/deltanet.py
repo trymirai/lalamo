@@ -90,7 +90,7 @@ class DeltaNetConfig(TokenMixerConfig):
             output_dims=(model_dim,),
             has_biases=False,
         )
-        norm = self.norm_config.init(initializer, self.value_head_dim)
+        norm = self.norm_config.init(fp32_initializer, self.value_head_dim)
         dt_bias = fp32_initializer.zeros((self.num_heads,))
         a_log = fp32_initializer.zeros((self.num_heads,))
         return DeltaNet(
@@ -434,7 +434,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
                 self.config.kernel_size,
                 self.conv_dim,
                 (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
-                inputs.dtype,
+                jnp.float32,
             )
 
         conv_output, updated_conv_state = self.conv(
@@ -518,5 +518,5 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             self.config.kernel_size,
             self.conv_dim,
             (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
-            dtype,
+            jnp.float32,
         )
