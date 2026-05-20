@@ -63,14 +63,6 @@ LLAMA32 = [
     LanguageModelSpec(
         vendor="Meta",
         family="Llama-3.2",
-        name="Llama-3.2-3B-Instruct-AWQ",
-        size="3B",
-        origin=HuggingFaceOrigin(repo="trymirai/Llama-3.2-3B-Instruct-AWQ"),
-        config_type=HFLlamaConfig,
-    ),
-    LanguageModelSpec(
-        vendor="Meta",
-        family="Llama-3.2",
         name="Llama-3.2-3B-Instruct-4bit",
         size="3B",
         origin=HuggingFaceOrigin(repo="mlx-community/Llama-3.2-3B-Instruct-4bit"),
