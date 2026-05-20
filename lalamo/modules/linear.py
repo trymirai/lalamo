@@ -7,7 +7,7 @@ from jaxtyping import Array, Float
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, field
-from lalamo.weight_matrix import MatmulConfig, WeightMatrix
+from lalamo.weight_matrix import FullPrecisionSpec, Layout, MatmulConfig, ShapeDtypeSpec, WeightMatrix
 
 __all__ = [
     "Linear",
@@ -64,8 +64,13 @@ class Linear(LalamoModule[LinearConfig]):
 
     @property
     def input_dim(self) -> int:
-        *_, _out, in_dim = self.weights.shape
-        return in_dim
+        if isinstance(self.weights.spec, FullPrecisionSpec | ShapeDtypeSpec):  # noqa: SIM102
+            if self.weights.spec.layout == Layout.INPUT_OUTPUT:
+                *_, input_dim, _output_dim = self.weights.shape
+                return input_dim
+
+        *_, _output_dim, input_dim = self.weights.shape
+        return input_dim
 
     @property
     def has_biases(self) -> bool:

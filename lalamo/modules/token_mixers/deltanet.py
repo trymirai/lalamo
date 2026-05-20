@@ -82,16 +82,17 @@ class DeltaNetConfig(TokenMixerConfig):
             ),
             has_biases=False,
         )
-        conv = self.conv_config.init(initializer, conv_dim, self.kernel_size)
+        fp32_initializer = initializer.with_dtype(jnp.float32)
+        conv = self.conv_config.init(fp32_initializer, conv_dim, self.kernel_size)
         out_proj = self.out_proj_config.init(
             initializer,
             input_dim=value_dim,
             output_dims=(model_dim,),
             has_biases=False,
         )
-        norm = self.norm_config.init(initializer, self.value_head_dim)
-        dt_bias = initializer.zeros((self.num_heads,))
-        a_log = initializer.zeros((self.num_heads,))
+        norm = self.norm_config.init(fp32_initializer, self.value_head_dim)
+        dt_bias = fp32_initializer.zeros((self.num_heads,))
+        a_log = fp32_initializer.zeros((self.num_heads,))
         return DeltaNet(
             config=self,
             in_proj=in_proj,
@@ -433,7 +434,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
                 self.config.kernel_size,
                 self.conv_dim,
                 (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
-                inputs.dtype,
+                jnp.float32,
             )
 
         conv_output, updated_conv_state = self.conv(
@@ -475,17 +476,17 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         length_without_padding = jnp.clip(length_without_padding, 0, num_tokens)
 
         core_result = self._chunked_scan(
-            query,
-            key,
-            value,
-            decay_factor,
-            beta,
-            state.ssm_state,
+            query.astype(jnp.float32),
+            key.astype(jnp.float32),
+            value.astype(jnp.float32),
+            decay_factor.astype(jnp.float32),
+            beta.astype(jnp.float32),
+            state.ssm_state.astype(jnp.float32),
             length_without_padding,
             forward_pass_config,
         )
         core_attn_out = core_result.outputs
-        final_state = core_result.final_state
+        final_state = core_result.final_state.astype(state.ssm_state.dtype)
 
         def norm_gate(x: Float[Array, " channels"], gate: Float[Array, " channels"]) -> Float[Array, " channels"]:
             normed = self.norm(x, forward_pass_config=forward_pass_config.normalization_forward_pass_config)
@@ -505,6 +506,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
 
         if return_updated_state:
             assert updated_conv_state is not None
+            updated_conv_state = updated_conv_state.astype(state.conv_state.dtype)
             updated_state = SSMStateLayer(updated_conv_state, final_state)
         else:
             updated_state = None
@@ -516,5 +518,5 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             self.config.kernel_size,
             self.conv_dim,
             (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
-            dtype,
+            jnp.float32,
         )

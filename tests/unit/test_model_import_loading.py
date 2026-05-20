@@ -24,6 +24,10 @@ from lalamo.weight_matrix import CompressionImplementation, FullPrecisionSpec, L
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
+INPUT_DIM = 8
+OUTPUT_DIM = 4
+NUM_GROUPS = 2
+
 
 def _pack_int32(values: Array, bits: int) -> Array:
     values_per_word = 32 // bits
@@ -36,41 +40,41 @@ def _pack_int32(values: Array, bits: int) -> Array:
 def _linear_template(dtype: DTypeLike, layout: Layout = Layout.OUTPUT_INPUT) -> Linear:
     result = LinearConfig().init(
         initializer=EmptyInitializer(dtype=dtype),
-        input_dim=4,
-        output_dims=(4,),
+        input_dim=INPUT_DIM,
+        output_dims=(OUTPUT_DIM,),
         has_biases=False,
     )
     if layout == Layout.OUTPUT_INPUT:
         return result
 
-    weights = FullPrecisionSpec(layout=layout).compress(dummy_array((4, 4), dtype))
+    weights = FullPrecisionSpec(layout=layout).compress(dummy_array((OUTPUT_DIM, INPUT_DIM), dtype))
     return eqx.tree_at(lambda module: module.weights, result, weights)
 
 
 def _mlx_weights(path: ParameterPath) -> Mapping[str, Array]:
-    unpacked_weights = jnp.arange(16, dtype=jnp.int32).reshape(4, 4)
+    unpacked_weights = jnp.arange(OUTPUT_DIM * INPUT_DIM, dtype=jnp.int32).reshape(OUTPUT_DIM, INPUT_DIM)
     return {
         path / "weight": _pack_int32(unpacked_weights, bits=8),
-        path / "scales": jnp.ones((4, 2), dtype=jnp.float32),
-        path / "biases": jnp.zeros((4, 2), dtype=jnp.float32),
+        path / "scales": jnp.ones((OUTPUT_DIM, NUM_GROUPS), dtype=jnp.float32),
+        path / "biases": jnp.zeros((OUTPUT_DIM, NUM_GROUPS), dtype=jnp.float32),
     }
 
 
 def _awq_weights(path: ParameterPath) -> Mapping[str, Array]:
-    unpacked_weights = jnp.arange(16, dtype=jnp.int32).reshape(4, 4)
-    unpacked_zero_points = jnp.zeros((2, 4), dtype=jnp.int32)
+    unpacked_weights = jnp.arange(INPUT_DIM * OUTPUT_DIM, dtype=jnp.int32).reshape(INPUT_DIM, OUTPUT_DIM)
+    unpacked_zero_points = jnp.zeros((NUM_GROUPS, OUTPUT_DIM), dtype=jnp.int32)
     return {
         path / "qweight": _pack_int32(unpacked_weights, bits=8),
         path / "qzeros": _pack_int32(unpacked_zero_points, bits=8),
-        path / "scales": jnp.ones((2, 4), dtype=jnp.float32),
+        path / "scales": jnp.ones((NUM_GROUPS, OUTPUT_DIM), dtype=jnp.float32),
     }
 
 
 def _symmetric_awq_weights(path: ParameterPath) -> Mapping[str, Array]:
-    unpacked_weights = jnp.arange(16, dtype=jnp.int32).reshape(4, 4) + 128
+    unpacked_weights = jnp.arange(INPUT_DIM * OUTPUT_DIM, dtype=jnp.int32).reshape(INPUT_DIM, OUTPUT_DIM) + 128
     return {
         path / "qweight": _pack_int32(unpacked_weights, bits=8),
-        path / "scales": jnp.ones((2, 4), dtype=jnp.float32),
+        path / "scales": jnp.ones((NUM_GROUPS, OUTPUT_DIM), dtype=jnp.float32),
     }
 
 

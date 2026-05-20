@@ -513,10 +513,16 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
         prefix_length = 0 if state is None else state.current_prefix_length()
         if state is None:
-            updated_state = DynamicKVCacheLayer.init(self.has_sinks, keys, values, length=length_without_padding)
+            updated_state = DynamicKVCacheLayer.init(
+                self.has_sinks,
+                keys.astype(values.dtype),
+                values,
+                length=length_without_padding,
+            )
         else:
             updated_state = state.extend(keys, values, added_length=length_without_padding)
 
+        queries = queries.astype(updated_state.keys.dtype)
         num_suffix_tokens, _, _ = queries.shape
         if attention_parent_indices is not None:
             mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices)
