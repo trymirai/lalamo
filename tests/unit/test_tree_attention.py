@@ -282,3 +282,215 @@ def test_tree_attention_mask_static_matches_dynamic() -> None:
         parent_indices=parent_indices,
     )
     assert jnp.array_equal(dynamic_mask, static_mask)
+
+
+def batched_tree_case() -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    prefix_token_ids = jnp.array(
+        [
+            [1, 2],
+            [3, 4],
+        ],
+        dtype=jnp.int32,
+    )
+    prefix_positions = jnp.array(
+        [
+            [0, 1],
+            [0, 1],
+        ],
+        dtype=jnp.int32,
+    )
+    tree_token_ids = jnp.array(
+        [
+            [5, 6, 7],
+            [8, 9, 10],
+        ],
+        dtype=jnp.int32,
+    )
+    tree_positions = jnp.array(
+        [
+            [2, 3, 4],
+            [2, 3, 3],
+        ],
+        dtype=jnp.int32,
+    )
+    parent_indices = jnp.array(
+        [
+            [-1, 0, 1],
+            [-1, 0, 0],
+        ],
+        dtype=jnp.int32,
+    )
+    return prefix_token_ids, prefix_positions, tree_token_ids, tree_positions, parent_indices
+
+
+def test_batched_tree_attention_matches_independent_dynamic_rows(decoder: Decoder) -> None:
+    prefix_token_ids, prefix_positions, tree_token_ids, tree_positions, parent_indices = batched_tree_case()
+
+    prefix_result = decoder(
+        prefix_token_ids,
+        prefix_positions,
+        state=None,
+        return_updated_state=True,
+        keychain=Keychain.init(80),
+    )
+    assert prefix_result.updated_state is not None
+
+    batched_result = decoder(
+        tree_token_ids,
+        tree_positions,
+        state=prefix_result.updated_state,
+        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+        attention_parent_indices=parent_indices,
+        keychain=Keychain.init(81),
+    )
+
+    row_logits = []
+    for row in range(prefix_token_ids.shape[0]):
+        row_prefix_result = decoder(
+            prefix_token_ids[row : row + 1],
+            prefix_positions[row : row + 1],
+            state=None,
+            return_updated_state=True,
+            keychain=Keychain.init(82 + row * 2),
+        )
+        assert row_prefix_result.updated_state is not None
+        row_tree_result = decoder(
+            tree_token_ids[row : row + 1],
+            tree_positions[row : row + 1],
+            state=row_prefix_result.updated_state,
+            forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+            attention_parent_indices=parent_indices[row : row + 1],
+            keychain=Keychain.init(83 + row * 2),
+        )
+        row_logits.append(row_tree_result.logits[0])
+
+    assert_close(
+        result=batched_result.logits,
+        reference=jnp.stack(row_logits),
+        operation_name="batched dynamic tree attention vs independent rows",
+    )
+
+
+def test_batched_tree_attention_matches_independent_static_rows(decoder: Decoder) -> None:
+    prefix_token_ids, prefix_positions, tree_token_ids, tree_positions, parent_indices = batched_tree_case()
+
+    prefix_result = decoder(
+        prefix_token_ids,
+        prefix_positions,
+        state=decoder.init_static_state(batch_size=2, capacity=8, dtype=jnp.bfloat16),
+        return_updated_state=True,
+        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+        keychain=Keychain.init(90),
+    )
+    assert prefix_result.updated_state is not None
+
+    batched_result = decoder(
+        tree_token_ids,
+        tree_positions,
+        state=prefix_result.updated_state,
+        return_updated_state=True,
+        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+        attention_parent_indices=parent_indices,
+        keychain=Keychain.init(91),
+    )
+    assert batched_result.updated_state is not None
+
+    batched_cache = batched_result.updated_state[0]
+    assert isinstance(batched_cache, StaticKVCacheLayer)
+    assert jnp.array_equal(batched_cache.current_length, jnp.array([5, 5], dtype=jnp.int32))
+
+    row_logits = []
+    for row in range(prefix_token_ids.shape[0]):
+        row_prefix_result = decoder(
+            prefix_token_ids[row : row + 1],
+            prefix_positions[row : row + 1],
+            state=decoder.init_static_state(batch_size=1, capacity=8, dtype=jnp.bfloat16),
+            return_updated_state=True,
+            forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+            keychain=Keychain.init(92 + row * 2),
+        )
+        assert row_prefix_result.updated_state is not None
+        row_tree_result = decoder(
+            tree_token_ids[row : row + 1],
+            tree_positions[row : row + 1],
+            state=row_prefix_result.updated_state,
+            return_updated_state=True,
+            forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+            attention_parent_indices=parent_indices[row : row + 1],
+            keychain=Keychain.init(93 + row * 2),
+        )
+        assert row_tree_result.updated_state is not None
+        row_cache = row_tree_result.updated_state[0]
+        assert isinstance(row_cache, StaticKVCacheLayer)
+        assert jnp.array_equal(row_cache.current_length, jnp.array([5], dtype=jnp.int32))
+        row_logits.append(row_tree_result.logits[0])
+
+    assert_close(
+        result=batched_result.logits,
+        reference=jnp.stack(row_logits),
+        operation_name="batched static tree attention vs independent rows",
+    )
+
+
+def test_padded_tree_nodes_do_not_affect_valid_logits(decoder: Decoder) -> None:
+    prefix_token_ids, prefix_positions, tree_token_ids, tree_positions, parent_indices = batched_tree_case()
+    tree_positions = tree_positions.at[1, 2].set(4)
+    parent_indices = parent_indices.at[1, 2].set(-1)
+
+    prefix_result = decoder(
+        prefix_token_ids,
+        prefix_positions,
+        state=decoder.init_static_state(batch_size=2, capacity=8, dtype=jnp.bfloat16),
+        return_updated_state=True,
+        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+        keychain=Keychain.init(100),
+    )
+    assert prefix_result.updated_state is not None
+
+    padded_result = decoder(
+        tree_token_ids,
+        tree_positions,
+        state=prefix_result.updated_state,
+        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+        attention_parent_indices=parent_indices,
+        keychain=Keychain.init(101),
+    )
+
+    changed_padding_token_ids = tree_token_ids.at[1, 2].set(20)
+    changed_padding_result = decoder(
+        changed_padding_token_ids,
+        tree_positions,
+        state=prefix_result.updated_state,
+        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+        attention_parent_indices=parent_indices,
+        keychain=Keychain.init(102),
+    )
+
+    row_prefix_result = decoder(
+        prefix_token_ids[1:2],
+        prefix_positions[1:2],
+        state=decoder.init_static_state(batch_size=1, capacity=8, dtype=jnp.bfloat16),
+        return_updated_state=True,
+        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+        keychain=Keychain.init(103),
+    )
+    assert row_prefix_result.updated_state is not None
+    short_tree_result = decoder(
+        tree_token_ids[1:2, :2],
+        tree_positions[1:2, :2],
+        state=row_prefix_result.updated_state,
+        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+        attention_parent_indices=parent_indices[1:2, :2],
+        keychain=Keychain.init(104),
+    )
+
+    assert_close(
+        result=padded_result.logits[1, :2],
+        reference=changed_padding_result.logits[1, :2],
+        operation_name="valid padded-row logits are independent of padding token",
+    )
+    assert_close(
+        result=padded_result.logits[1, :2],
+        reference=short_tree_result.logits[0],
+        operation_name="padded valid tree logits vs short independent tree",
+    )

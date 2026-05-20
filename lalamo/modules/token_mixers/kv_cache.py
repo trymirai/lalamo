@@ -7,9 +7,9 @@ import jax.numpy as jnp
 from jax.lax import dynamic_update_slice_in_dim
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
-from lalamo.modules.token_mixer import StateLayerBase
+from lalamo.modules.token_mixer import State, StateLayerBase
 
-__all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
+__all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer", "compact_state_layers"]
 
 
 @eqx.filter_jit
@@ -61,6 +61,22 @@ def build_tree_attention_mask(
     if has_sinks:
         mask = mask.at[:, 0].set(True)
     return mask
+
+
+@eqx.filter_jit
+def compact_state_layers(
+    state: State,
+    cache_len: Int[Array, " batch"],
+    accepted_indices: Int[Array, "batch max_slots"],
+    num_accepted: Int[Array, " batch"],
+    max_slots: int,
+) -> State:
+    return State(
+        layer.compact(cache_len, accepted_indices, num_accepted, max_slots)
+        if isinstance(layer, StaticKVCacheLayer)
+        else layer
+        for layer in state
+    )
 
 
 class KVCacheLayer(StateLayerBase):
@@ -300,6 +316,26 @@ class StaticKVCacheLayer(KVCacheLayer):
             keys=updated_keys,
             values=updated_values,
             current_length=updated_sequence_length,
+        )
+
+    def compact(
+        self,
+        cache_len: Int[Array, " batch"],
+        accepted_indices: Int[Array, "batch max_slots"],
+        num_accepted: Int[Array, " batch"],
+        max_slots: int,
+    ) -> "StaticKVCacheLayer":
+        slots = jnp.arange(max_slots, dtype=jnp.int32)
+        batch_indices = jnp.arange(self.keys.shape[0], dtype=jnp.int32)[:, None]
+        dst = cache_len[:, None] + slots[None, :]
+        src = cache_len[:, None] + accepted_indices
+        valid = slots[None, :] < num_accepted[:, None]
+        src = jnp.where(valid, src, dst)
+        return StaticKVCacheLayer(
+            has_sinks=self.has_sinks,
+            keys=self.keys.at[batch_indices, dst].set(self.keys[batch_indices, src]),
+            values=self.values.at[batch_indices, dst].set(self.values[batch_indices, src]),
+            current_length=cache_len + num_accepted,
         )
 
     @classmethod

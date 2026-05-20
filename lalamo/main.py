@@ -1,6 +1,7 @@
 import re
 import shutil
 import sys
+import time
 from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from functools import partial
@@ -16,26 +17,35 @@ from click import Context as ClickContext
 from click import Parameter as ClickParameter
 from click import ParamType
 from rich import box
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
 from rich.panel import Panel
 from rich.progress import (
+    MofNCompleteColumn,
     Progress,
     SpinnerColumn,
     TaskID,
     TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
 )
 from rich.prompt import Confirm
+from rich.rule import Rule
 from rich.table import Table
+from rich.text import Text
 from typer import Argument, Exit, Option, Typer
 
 from lalamo.audio.utils import play_mono_audio
 from lalamo.commands import (
     ConversionCallbacks,
     DType,
+    EvalDatasetName,
+    EvalResults,
     PullCallbacks,
     _suggest_similar_models,
 )
 from lalamo.commands import convert as _convert
+from lalamo.commands import evaluate_speculator as _evaluate_speculator
 from lalamo.commands import pull as _pull
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
@@ -45,6 +55,7 @@ from lalamo.models import GenerationConfig, LanguageModel, TTSModel
 from lalamo.models.chat_codec import Message, UserMessage
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
+from lalamo.speculator.common import load_speculator
 from lalamo.utils.memory import get_available_bytes_on_default_device
 
 SCRIPT_NAME = Path(sys.argv[0]).name
@@ -59,6 +70,8 @@ app = Typer(
     add_completion=False,
     pretty_exceptions_show_locals=False,
 )
+speculator_app = Typer(no_args_is_help=True)
+app.add_typer(speculator_app, name="speculator", help="Speculator utilities.")
 
 
 class ModelParser(ParamType):
@@ -122,6 +135,18 @@ def chat(
             help="Maximum number of tokens to generate per reply.",
         ),
     ] = 8192,
+    speculator_path: Annotated[
+        Path | None,
+        Option(
+            "--speculator",
+            help="Path to a speculator artifact.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            show_default="No speculator",
+        ),
+    ] = None,
     temperature: Annotated[
         float | None,
         Option(
@@ -139,6 +164,7 @@ def chat(
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
         model = LanguageModel.load(model_path)
+        speculator = None if speculator_path is None else load_speculator(speculator_path, model.decoder)
         if temperature is not None:
             generation_config = replace(model.config.generation_config, temperature=temperature)
         progress.remove_task(loading_task)
@@ -148,6 +174,7 @@ def chat(
                 [UserMessage("")],
                 generation_config=generation_config,
                 max_output_length=max_tokens,
+                speculator=speculator,
                 keychain=Keychain.init(0),
             ),
         )
@@ -158,6 +185,54 @@ def chat(
                 break
         progress.remove_task(warmup_task)
 
+    def print_response(response_messages: list[Message], keychain: Keychain) -> str:
+        response_text_parts = []
+        steps = 0
+        tokens = 0
+        started_at = time.perf_counter()
+
+        def status_text() -> Text:
+            elapsed = max(time.perf_counter() - started_at, 1e-9)
+            return Text.assemble(
+                ("tok/step: ", "dim"),
+                (f"{tokens / max(steps, 1):.2f}", "cyan"),
+                (" | throughput: ", "dim"),
+                (f"{tokens / elapsed:.2f}", "green"),
+                (" tokens/sec", "dim"),
+            )
+
+        def render_response() -> Group:
+            return Group(
+                Text("".join(response_text_parts)),
+                Rule(style="dim"),
+                status_text(),
+            )
+
+        with Live(
+            render_response(),
+            console=console,
+            refresh_per_second=8,
+            transient=False,
+            vertical_overflow="visible",
+        ) as live:
+            def step_callback(num_tokens: int) -> None:
+                nonlocal steps, tokens
+                steps += 1
+                tokens += num_tokens
+                live.update(render_response())
+
+            for token in model.stream_reply_text(
+                response_messages,
+                generation_config=generation_config,
+                max_output_length=max_tokens,
+                speculator=speculator,
+                step_callback=step_callback,
+                keychain=keychain,
+            ):
+                response_text_parts.append(token)
+                live.update(render_response())
+        return "".join(response_text_parts)
+
     if message is None:
         console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
         messages: list[Message] = []
@@ -166,28 +241,12 @@ def chat(
             user_text = console.input("[cyan]user> [/cyan]")
             messages.append(UserMessage(user_text))
 
-            console.print("[red]assistant> [/red]", end="")
-            response_text_parts = []
-            for token in model.stream_reply_text(
-                messages,
-                generation_config=generation_config,
-                max_output_length=max_tokens,
-                keychain=Keychain.init(turn_index + 1),
-            ):
-                console.print(token, end="")
-                response_text_parts.append(token)
-            console.print()
-            messages.append(model.token_codec.parse_response("".join(response_text_parts)))
+            console.print("[red]assistant> [/red]")
+            response_text = print_response(messages, Keychain.init(turn_index + 1))
+            messages.append(model.token_codec.parse_response(response_text))
             turn_index += 1
-
-    for token in model.stream_reply_text(
-        [UserMessage(message)],
-        generation_config=generation_config,
-        max_output_length=max_tokens,
-        keychain=Keychain.init(1),
-    ):
-        console.print(token, end="")
-    console.print()
+    else:
+        print_response([UserMessage(message)], Keychain.init(1))
 
 
 @dataclass
@@ -586,6 +645,192 @@ def server(
         cache_dir = Path.home() / ".cache" / "lalamo" / "batches"
 
     start_server(host=host, port=port, vram_bytes=vram_bytes, cache_dir=cache_dir)
+
+
+def print_speculator_eval_results(results: EvalResults) -> None:
+    config = results.config
+    speculator_name = config.speculator_path.name if config.speculator_path is not None else "no-speculator"
+    dataset_label = ",".join(name.value for name in config.dataset_names)
+    label = f"{dataset_label}, {speculator_name}"
+    config_table = Table(
+        title=f"Speculator eval config ({label})",
+        show_header=True,
+        header_style="bold",
+        box=box.ROUNDED,
+    )
+    config_table.add_column("Key")
+    config_table.add_column("Value")
+    config_table.add_row("dataset", dataset_label)
+    config_table.add_row("model_path", str(config.model_path))
+    config_table.add_row("speculator", str(config.speculator_path) if config.speculator_path is not None else "none")
+    config_table.add_row("questions", str(config.num_questions))
+    config_table.add_row("batch_size", str(config.batch_size))
+    config_table.add_row("max_output_length", str(config.max_output_length))
+    config_table.add_row("reasoning", str(config.reasoning).lower())
+    config_table.add_row("temperature", str(config.temperature))
+    config_table.add_row("top_p", "none" if config.top_p is None else str(config.top_p))
+    config_table.add_row("top_k", "none" if config.top_k is None else str(config.top_k))
+    config_table.add_row("min_p", "none" if config.min_p is None else str(config.min_p))
+    config_table.add_row("padded_length", str(config.padded_length))
+    config_table.add_row("warmup", str(config.warmup).lower())
+    config_table.add_row("seed", str(config.seed))
+    config_table.add_row("mtbench_cache", str(config.mtbench_cache_path))
+    console.print(config_table)
+
+    table = Table(
+        title=f"Speculator evaluation ({label})",
+        show_header=True,
+        header_style="bold",
+        box=box.ROUNDED,
+    )
+    table.add_column("Category", justify="right")
+    table.add_column("tok/step", justify="right")
+    table.add_column("tok/sec", justify="right")
+    table.add_column("mal", justify="right")
+    table.add_column("spec_rate", justify="right")
+    table.add_column("questions", justify="right")
+
+    for category in sorted(results.by_category):
+        stats = results.by_category[category]
+        table.add_row(
+            category,
+            f"{stats.tokens_per_step:.2f}",
+            f"{stats.tokens_per_second:.2f}",
+            f"{stats.mean_draft_accepted:.2f}",
+            f"{stats.speculation_rate:.2%}",
+            str(stats.count),
+        )
+    table.add_section()
+    table.add_row(
+        "OVERALL",
+        f"{results.tokens_per_step:.2f}",
+        f"{results.tokens_per_second:.2f}",
+        f"{results.mean_draft_accepted:.2f}",
+        f"{results.speculation_rate:.2%}",
+        str(results.total_count),
+    )
+    console.print(table)
+
+
+def parse_eval_dataset_names(value: str) -> tuple[EvalDatasetName, ...]:
+    names = tuple(item.strip() for item in value.split(",") if item.strip())
+    if not names:
+        raise ValueError("--dataset must specify at least one dataset.")
+    available = {dataset.value: dataset for dataset in EvalDatasetName}
+    unknown = tuple(name for name in names if name not in available)
+    if unknown:
+        raise ValueError(f"Unknown eval dataset(s): {', '.join(unknown)}. Available: {', '.join(sorted(available))}.")
+    return tuple(available[name] for name in names)
+
+
+@speculator_app.command("eval", help="Evaluate speculative decoding MAL and throughput.")
+def eval_speculator(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    speculator_path: Annotated[
+        Path | None,
+        Option(
+            "--speculator",
+            help="Path to a speculator artifact file.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            show_default="none",
+        ),
+    ] = None,
+    dataset_name: Annotated[
+        str,
+        Option("--dataset", help="Comma-separated evaluation datasets: mtbench,gsm8k,humaneval,math500."),
+    ] = "gsm8k,mtbench,math500",
+    num_questions: Annotated[
+        int | None,
+        Option("--num_questions", "--num-questions", help="Number of questions to evaluate."),
+    ] = None,
+    batch_size: Annotated[
+        int,
+        Option("--batch_size", "--batch-size", help="Batch size used for generation."),
+    ] = 32,
+    max_output_length: Annotated[
+        int,
+        Option("--max_output_length", "--max-output-length", help="Maximum number of generated tokens per question."),
+    ] = 4096,
+    reasoning: Annotated[
+        bool,
+        Option("--reasoning/--no-reasoning", help="Render eval prompts with reasoning/thinking enabled."),
+    ] = True,
+    temperature: Annotated[
+        float,
+        Option("--temperature", help="Sampling temperature. Use 0 for greedy decoding."),
+    ] = 1.0,
+    top_p: Annotated[
+        float | None,
+        Option("--top_p", "--top-p", help="Nucleus sampling threshold.", show_default="none"),
+    ] = None,
+    top_k: Annotated[
+        int | None,
+        Option("--top_k", "--top-k", help="Top-k sampling cutoff.", show_default="none"),
+    ] = None,
+    min_p: Annotated[
+        float | None,
+        Option("--min_p", "--min-p", help="Min-p sampling cutoff.", show_default="none"),
+    ] = None,
+    mtbench_cache_path: Annotated[
+        Path | None,
+        Option(
+            "--mtbench_cache",
+            "--mtbench-cache",
+            help="Cache path for MT-Bench questions.",
+            show_default="~/.cache/lalamo/eval/mt_bench_questions.jsonl",
+        ),
+    ] = None,
+    seed: Annotated[
+        int,
+        Option("--seed", help="Sampling seed."),
+    ] = 0,
+    warmup: Annotated[
+        bool,
+        Option("--warmup/--no-warmup", help="Run one warmup generation before measuring throughput."),
+    ] = True,
+) -> None:
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=err_console,
+        transient=True,
+    ) as progress:
+        progress_task = progress.add_task("📊 Evaluating speculative decoding...", total=None)
+        cache_path = mtbench_cache_path or Path.home() / ".cache" / "lalamo" / "eval" / "mt_bench_questions.jsonl"
+        results = _evaluate_speculator(
+            model_path=model_path,
+            dataset_names=parse_eval_dataset_names(dataset_name),
+            speculator_path=speculator_path,
+            mtbench_cache_path=cache_path,
+            num_questions=num_questions,
+            batch_size=batch_size,
+            max_output_length=max_output_length,
+            reasoning=reasoning,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            seed=seed,
+            warmup=warmup,
+            progress_callback=lambda completed, total: progress.update(
+                progress_task,
+                completed=completed,
+                total=total,
+            ),
+        )
+    print_speculator_eval_results(results)
 
 
 @app.callback()

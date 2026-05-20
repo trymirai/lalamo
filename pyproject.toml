@@ -6,6 +6,7 @@ dependencies = [
     "beartype>=0.22.9",
     "cattrs[msgpack]>=24.1.2",
     "click>=8.1.8",
+    "datasets>=2.21.0",
     "einops>=0.8.0",
     "equinox>=0.11.11",
     "huggingface-hub>=0.27.1",
@@ -72,6 +73,11 @@ dev = [
 
 [project.scripts]
 lalamo = "lalamo.main:app"
+
+[project.entry-points."lalamo.speculator_backends"]
+ngram = "lalamo.speculator.proposers.ngram"
+dflash = "lalamo.speculator.proposers.dflash"
+ddtree = "lalamo.speculator.proposers.ddtree"
 
 [build-system]
 requires = ["setuptools>=65.5.0", "wheel"]

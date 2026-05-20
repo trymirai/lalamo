@@ -5,7 +5,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax.typing import DTypeLike
-from jaxtyping import Array, Bool, Float, Int
+from jaxtyping import Array, Bool, Float, Int, Key
 
 from lalamo.module import Keychain
 
@@ -115,6 +115,10 @@ class SamplingPolicy(eqx.Module):
             or self.frequency_penalty is not None
         )
 
+    @property
+    def has_unsupported_tree_verification_processors(self) -> bool:
+        return self.banned_tokens is not None or self.has_count_penalties
+
     def with_prompt_token_counts(
         self,
         prompt_token_ids: Int[Array, " tokens"],
@@ -184,6 +188,20 @@ class SamplingPolicy(eqx.Module):
 
         return jax.tree.map(broadcast_leaf, self)
 
+    def reshape(
+        self,
+        old_leading_shape: tuple[int, ...],
+        new_leading_shape: tuple[int, ...],
+    ) -> "SamplingPolicy":
+        return jax.tree.map(
+            lambda value: (
+                value.reshape((*new_leading_shape, *value.shape[len(old_leading_shape) :]))
+                if eqx.is_array(value)
+                else value
+            ),
+            self,
+        )
+
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         self._raise_if_batched()
         logits = self._apply_banned_tokens(logits)
@@ -194,6 +212,16 @@ class SamplingPolicy(eqx.Module):
         logits = self._apply_top_k(logits)
         logits = self._apply_top_p(logits)
         return self._apply_min_p(logits)
+
+    def sample(
+        self,
+        logits: Float[Array, " vocabulary"],
+        key: Key[Array, ""],
+        should_count: Bool[Array, ""] | bool = True,
+    ) -> tuple[Float[Array, " vocabulary"], Int[Array, ""], "SamplingPolicy"]:
+        processed_logits = self.process_logits(logits.astype(jnp.float32))
+        token_id = jax.random.categorical(key, processed_logits).astype(jnp.int32)
+        return processed_logits, token_id, self.with_next_token_count(token_id, should_count)
 
     def __call__(self, logits: Float[Array, " vocabulary"], *, keychain: Keychain) -> Int[Array, ""]:
         self._raise_if_batched()
