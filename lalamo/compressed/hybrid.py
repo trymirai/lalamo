@@ -243,7 +243,10 @@ class HybridSpec(WeightMatrixSpec):
             key = jax.random.key(0)
 
         if key is not None:
-            quantization_key, adapter_key, incoherence_key = jax.random.split(key, 3)
+            quantization_key, adapter_key = jax.random.split(key, 2)
+            incoherence_key = jax.random.key(
+                42
+            )  # We use the same shared keys for matrices of the same size to enable RHT fusion.
         else:
             quantization_key, adapter_key, incoherence_key = None, None, None
 
