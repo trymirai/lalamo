@@ -556,7 +556,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             head_channels=self.config.head_dim,
         )
         if gate is not None:
-            attention_output = attention_output * jax.nn.sigmoid(gate)
+            attention_output = attention_output * jnp.sqrt(jax.nn.sigmoid(gate))
         attention_output = with_sharding(attention_output, make_sharding((None, None)))
         (result,) = call_vmapped(
             self.out_projection,
