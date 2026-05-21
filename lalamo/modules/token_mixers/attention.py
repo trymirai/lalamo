@@ -47,6 +47,19 @@ def _repeat_kv(
     return jnp.repeat(keys_or_values, group_size, axis=1)
 
 
+def _relative_position_log_bias(
+    num_queries: int,
+    num_keys: int,
+    dtype: DTypeLike,
+) -> Float[Array, "queries keys"]:
+    query_positions = jnp.arange(num_keys - num_queries, num_keys, dtype=dtype)
+    key_positions = jnp.arange(num_keys, dtype=dtype)
+    relative_positions = query_positions[:, None] - key_positions[None, :]
+    phase = relative_positions * jnp.asarray(2 * jnp.pi / 32, dtype=dtype)
+    multiplier = 1 + jnp.cos(phase) * jnp.asarray(0.99, dtype=dtype)
+    return jnp.log(multiplier)
+
+
 def _rms_normalize(
     inputs: Float[Array, "... channels"],
     eps: float,
@@ -249,6 +262,17 @@ def _attention_kernel(
     logit_soft_cap: float | None,
     forward_pass_config: MixerForwardPassConfig,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
+    position_bias = _relative_position_log_bias(
+        queries.shape[0],
+        keys.shape[0],
+        queries.dtype,
+    )
+    position_bias = jnp.broadcast_to(position_bias[None, :, :], (queries.shape[1], *position_bias.shape))
+    if bias is None:
+        bias = position_bias
+    else:
+        bias = bias + position_bias.astype(bias.dtype)
+
     def tokamax_attention() -> Float[Array, "dst_tokens heads head_channels"]:
         if bias is not None and logit_soft_cap is not None:
             raise RuntimeError("Tokamax attention does not support logit soft-capping with additive bias.")
