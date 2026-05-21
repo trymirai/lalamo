@@ -66,5 +66,5 @@ def min_max_within_groups(weights: Float[Array, "... rows groups group_channels"
 def scale_from_min_max(min_max: MinMax, *, bits: int, dtype: DTypeLike) -> Float[Array, "..."]:
     finfo = jnp.finfo(dtype)
     scale_range = min_max.max / unsigned_qmax(bits) - min_max.min / unsigned_qmax(bits)
-    scales = jnp.maximum(scale_range, finfo.eps)
-    return jnp.nan_to_num(scales, nan=finfo.eps, posinf=finfo.max, neginf=finfo.eps)
+    scales = jnp.maximum(scale_range, finfo.tiny)
+    return jnp.nan_to_num(scales, nan=finfo.tiny, posinf=finfo.max, neginf=finfo.tiny)

@@ -328,7 +328,7 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
 
     @property
     def shape(self) -> tuple[int, ...]:
-        return self.quantized.decompress().shape
+        return self.quantized.shape
 
     @property
     def dtype(self) -> DTypeLike:
