@@ -98,7 +98,7 @@ def test_separable_causal_conv_output_dtype_matches_input_dtype(fake_mesh: Mesh)
 
     result = module(inputs, precision=ConvPrecision.MATCH_INPUTS)
 
-    assert result.outputs.dtype == module.weights.dtype
+    assert result.outputs.dtype == inputs.dtype
     _assert_close(result=result.outputs, reference=_reference(module, inputs))
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
 
