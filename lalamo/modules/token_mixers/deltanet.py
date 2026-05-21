@@ -19,6 +19,7 @@ from lalamo.modules.token_mixer import (
     TokenMixerConfig,
     TokenMixerResult,
 )
+from lalamo.modules.token_mixers.convolutions import ConvPrecision
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
@@ -86,7 +87,7 @@ class DeltaNetConfig(TokenMixerConfig):
             ),
             has_biases=False,
         )
-        conv = self.conv_config.init(initializer, conv_dim, self.kernel_size)
+        conv = self.conv_config.init(initializer, conv_dim, self.kernel_size, dtype=jnp.float32)
         out_proj = self.out_proj_config.init(
             initializer,
             input_dim=value_dim,
@@ -412,7 +413,6 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
-        precision: DTypeLike = jnp.float32,
         *,
         keychain: Keychain,
     ) -> DeltaNetResult:
@@ -429,7 +429,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=in_keychain,
         )
-        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = (x.astype(precision) for x in projections)
+        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = (x.astype(jnp.float32) for x in projections)
         assert proj_query.shape[0] == num_tokens
 
         mixed_qkv = jnp.concatenate([proj_query, proj_key, proj_value], axis=-1)
@@ -447,6 +447,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             length_without_padding,
             state.conv_state,
             return_updated_state=return_updated_state,
+            precision=ConvPrecision.MATCH_WEIGHTS,
         )
         assert conv_output.dtype == jnp.float32
         assert conv_output.shape[0] == num_tokens

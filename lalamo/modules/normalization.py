@@ -39,7 +39,7 @@ class NormalizationForwardPassConfig:
 
     @classmethod
     def for_inference(cls) -> "NormalizationForwardPassConfig":
-        return cls(implementation=NormalizationImplementation.TOKAMAX)
+        return cls(implementation=NormalizationImplementation.JAX)
 
     @classmethod
     def for_training(cls) -> "NormalizationForwardPassConfig":
