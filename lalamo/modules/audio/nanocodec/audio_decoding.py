@@ -41,6 +41,7 @@ class NanoCodecConfig(TTSAudioDecoderConfig):
 
         return NanoCodec(
             config=self,
+            sharding_config=initializer.sharding_config,
             quantizer=quantizer,
             decoder=decoder,
         )

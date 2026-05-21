@@ -14,7 +14,7 @@ request_cpu_devices(8)
 
 import jax
 import pytest
-from jax.sharding import AxisType, Mesh
+from jax.sharding import Mesh
 from typer.testing import CliRunner
 
 from lalamo.commands import convert
@@ -22,7 +22,8 @@ from lalamo.main import app
 from lalamo.model import Model
 from lalamo.model_import.model_spec import ModelSpec
 from lalamo.model_registry import ModelRegistry
-from lalamo.module import ShardingAxis
+from lalamo.utils.sharding import ShardingConfig
+from tests.helpers import make_test_sharding_config
 from tests.model_test_tiers import TIER_BY_REPO, ModelSize, ModelTier, model_size
 
 # Keep this explicit. "default" is not the same as leaving the setting unset:
@@ -34,6 +35,7 @@ from tests.model_test_tiers import TIER_BY_REPO, ModelSize, ModelTier, model_siz
 jax.config.update("jax_default_matmul_precision", "default")
 
 FAST_MARKER = pytest.mark.fast
+SLOW_MARKER_NAME = "slow"
 SKIP_REQUIRES_JAX_GPU_MARKER = pytest.mark.skip(reason="requires a JAX GPU device")
 JAX_CUDA_BACKEND = "cuda"
 
@@ -68,7 +70,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     has_jax_gpu_device = _has_jax_gpu_device()
 
     for item in items:
-        if "/unit/" in str(item.fspath):
+        if "/unit/" in str(item.fspath) and item.get_closest_marker(SLOW_MARKER_NAME) is None:
             item.add_marker(FAST_MARKER)
         if item.get_closest_marker("gpu") is not None and not has_jax_gpu_device:
             item.add_marker(SKIP_REQUIRES_JAX_GPU_MARKER)
@@ -76,12 +78,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 @pytest.fixture
 def fake_mesh() -> Generator[Mesh]:
-    mesh = jax.make_mesh(
-        (2, 2, 2),
-        (ShardingAxis.DATA, ShardingAxis.TENSOR, ShardingAxis.EXPERT),
-        axis_types=(AxisType.Explicit, AxisType.Explicit, AxisType.Explicit),
-        devices=jax.devices("cpu")[:8],
-    )
+    mesh = make_test_sharding_config().mesh
     with jax.set_mesh(mesh):
         yield mesh
 
@@ -115,8 +112,8 @@ def mark_by_size(specs: tuple[ModelSpec, ...]) -> list[Any]:
     return [pytest.param(spec, marks=SIZE_MARKS[model_size(spec)]) for spec in specs]
 
 
-def load_converted_model(model_dir: Path) -> Model:
-    return Model.load(model_dir)
+def load_converted_model(model_dir: Path, sharding_config: ShardingConfig) -> Model:
+    return Model.load(model_dir, sharding_config=sharding_config)
 
 
 ANSI_ESCAPE_REGEX = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")

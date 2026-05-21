@@ -527,7 +527,7 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder):
         sampling_policy: SamplingPolicy | None = None,
         *,
         keychain: Keychain,  # noqa: ARG002
-    ) -> Int[Array, "num_codebooks generated_tokens"]:
+    ) -> Int[Array, "num_codebooks tokens"]:
         text_tokens_torch = jax_to_torch(text_tokens)
         sampling_params = sampling_params_from_policy(sampling_policy)
 

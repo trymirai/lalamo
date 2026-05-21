@@ -106,11 +106,11 @@ class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
     @eqx.filter_jit
     def embed(
         self,
-        x: int | Int[Array, ""],
+        x: int | Int[Array, "*tokens"],
         *,
         keychain: Keychain,
         forward_pass_config: EmbeddingForwardPassConfig = EmbeddingForwardPassConfig(),
-    ) -> Float[Array, " channels"]:
+    ) -> Float[Array, "*tokens channels"]:
         result = self.embedding_matrix.lookup_embedding(
             x,
             dtype=forward_pass_config.activation_dtype,
@@ -149,7 +149,11 @@ class TiedEmbeddingConfig(EmbeddingConfig):
         vocab_size: int,
     ) -> "TiedEmbedding":
         embedding = initializer.embedding_matrix(vocab_size, model_dim)
-        return TiedEmbedding(config=self, embedding=embedding)
+        return TiedEmbedding(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            embedding=embedding,
+        )
 
 
 class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
@@ -165,12 +169,12 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
 
     @property
     def model_dim(self) -> int:
-        model_dim, _ = self.embedding.logical_shape
+        _, model_dim = self.embedding.shape
         return model_dim
 
     @property
     def vocab_size(self) -> int:
-        _, vocab_size = self.embedding.logical_shape
+        vocab_size, _ = self.embedding.shape
         return vocab_size
 
     def _readout_logits(
@@ -200,6 +204,7 @@ class UntiedEmbeddingConfig(EmbeddingConfig):
         output_embedding = initializer.weight_matrix(vocab_size, model_dim)
         return UntiedEmbedding(
             config=self,
+            sharding_config=initializer.sharding_config,
             input_embedding=input_embedding,
             output_embedding=output_embedding,
         )
@@ -219,10 +224,10 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
 
     @property
     def model_dim(self) -> int:
-        model_dim, _ = self.input_embedding.logical_shape
+        _, model_dim = self.input_embedding.shape
         return model_dim
 
     @property
     def vocab_size(self) -> int:
-        _, vocab_size = self.input_embedding.logical_shape
+        vocab_size, _ = self.input_embedding.shape
         return vocab_size

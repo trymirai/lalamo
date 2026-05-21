@@ -1,8 +1,10 @@
 from abc import abstractmethod
 from dataclasses import dataclass
 
+import jax
 from jaxtyping import Array, Float
 
+from lalamo.utils.sharding import ShardingConfig, sharding_of
 from lalamo.weight_matrix import CompressionImplementation, WeightMatrixSpec
 
 __all__ = [
@@ -22,13 +24,23 @@ class QuantizedSpec(WeightMatrixSpec):
 
     def quantize_block(
         self,
-        weights: Float[Array, "out_block_channels in_block_channels"],
-    ) -> Float[Array, "out_block_channels in_block_channels"]:
+        weights: Float[Array, "*blocks out_block_channels in_block_channels"],
+        *,
+        sharding_config: ShardingConfig,
+    ) -> Float[Array, "*blocks out_block_channels in_block_channels"]:
         expected_shape = (self.output_block_size, self.input_block_size)
-        if weights.shape != expected_shape:
-            raise ValueError(f"Expected quantization block shape {expected_shape}, got {weights.shape}")
-        compressed = self.compress(weights, implementation=CompressionImplementation.TRAINING, is_sharded=False)
-        return compressed.decompress()
+        *_, output_block_size, input_block_size = weights.shape
+        actual_shape = (output_block_size, input_block_size)
+        if actual_shape != expected_shape:
+            raise ValueError(f"Expected quantization block shape {expected_shape}, got {actual_shape}")
+        input_sharding = sharding_of(weights)
+        compressed = self.compress(
+            weights,
+            implementation=CompressionImplementation.INFERENCE,
+            sharding_config=sharding_config,
+            is_sharded=False,
+        )
+        return jax.device_put(compressed.decompress(), input_sharding)
 
     @property
     @abstractmethod

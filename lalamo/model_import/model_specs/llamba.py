@@ -44,9 +44,4 @@ def _llamba_model_spec(size: str, suffix: str, quantization_bits: int | None) ->
 LLAMBA_MODELS = [
     _llamba_model_spec("1B", "", None),
     _llamba_model_spec("1B", "-4bit-mlx", 4),
-    _llamba_model_spec("1B", "-8bit-mlx", 8),
-    _llamba_model_spec("3B", "", None),
-    _llamba_model_spec("3B", "-4bit-mlx", 4),
-    _llamba_model_spec("8B", "", None),
-    _llamba_model_spec("8B", "-8bit-mlx", 8),
 ]

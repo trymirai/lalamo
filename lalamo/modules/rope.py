@@ -19,6 +19,7 @@ import math
 from dataclasses import dataclass
 
 import equinox as eqx
+import jax
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Int
 
@@ -26,7 +27,7 @@ from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule, field
 from lalamo.utils.registry_abc import RegistryABC
-from lalamo.utils.sharding import use_out_sharding
+from lalamo.utils.sharding import lookup_sharded_indices
 
 __all__ = [
     "LinearScalingRoPEConfig",
@@ -123,9 +124,21 @@ class RoPEConfig(LalamoConfig, RegistryABC):
         inverse_frequencies = self._mask_inverse_frequencies(inverse_frequencies, resolved_head_dim)
         outer_inverse_frequencies = jnp.outer(timesteps, inverse_frequencies)
         embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
-        cosines = (jnp.cos(embeddings) * self._attention_scaling_factor).astype(initializer.dtype)
-        sines = (jnp.sin(embeddings) * self._attention_scaling_factor).astype(initializer.dtype)
-        return RoPE(config=self, sines=sines, cosines=cosines)
+        table_sharding = initializer.sharding_config.resolve_sharding((None, None))
+        cosines = jax.device_put(
+            (jnp.cos(embeddings) * self._attention_scaling_factor).astype(initializer.default_dtype),
+            table_sharding,
+        )
+        sines = jax.device_put(
+            (jnp.sin(embeddings) * self._attention_scaling_factor).astype(initializer.default_dtype),
+            table_sharding,
+        )
+        return RoPE(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            sines=sines,
+            cosines=cosines,
+        )
 
 
 class RoPE(LalamoModule[RoPEConfig]):
@@ -143,11 +156,10 @@ class RoPE(LalamoModule[RoPEConfig]):
         return result
 
     @eqx.filter_jit
-    @use_out_sharding((None, None))
     def __call__(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
         return PositionalEmbeddings(
-            cosines=self.cosines[timesteps],
-            sines=self.sines[timesteps],
+            cosines=lookup_sharded_indices(self.cosines, timesteps),
+            sines=lookup_sharded_indices(self.sines, timesteps),
         )
 
 

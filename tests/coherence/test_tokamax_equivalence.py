@@ -17,6 +17,7 @@ from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPass
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.weight_matrix import FullPrecisionSpec
 from tests.common import assert_close
+from tests.helpers import make_test_sharding_config
 
 MODEL_DIM = 4
 NUM_HEADS = 2
@@ -31,7 +32,8 @@ def _weights(shape: tuple[int, ...], *, offset: int = 0) -> jax.Array:
 def _linear(weights: Array, output_dims: tuple[int, ...]) -> Linear:
     return Linear(
         config=LinearConfig(),
-        weights=FullPrecisionSpec().compress(weights),
+        sharding_config=make_test_sharding_config(),
+        weights=FullPrecisionSpec().compress(weights, sharding_config=make_test_sharding_config()),
         biases=None,
         output_dims=output_dims,
     )
@@ -56,7 +58,9 @@ def _attention() -> Attention:
             has_qkv_biases=False,
             has_out_biases=False,
             gate_projection_config=None,
+            use_rope=False,
         ),
+        sharding_config=make_test_sharding_config(),
         qkv_projection=_linear(_weights((3 * qkv_dim, MODEL_DIM)), (qkv_dim, qkv_dim, qkv_dim)),
         gate_projection=None,
         out_projection=_linear(_weights((MODEL_DIM, qkv_dim), offset=100), (MODEL_DIM,)),
@@ -75,6 +79,7 @@ def _normalization() -> Normalization:
             subtract_mean=True,
             has_biases=True,
         ),
+        sharding_config=make_test_sharding_config(),
         scales=jnp.array([1.0, 1.5, 2.0, 2.5], dtype=jnp.float32),
         biases=jnp.array([-0.25, 0.0, 0.25, 0.5], dtype=jnp.float32),
     )
@@ -90,7 +95,7 @@ def test_tokamax_attention_matches_standard() -> None:
         forward_pass_config=MixerForwardPassConfig(
             attention_implementation=AttentionImplementation.STANDARD,
         ),
-        keychain=Keychain.init(0),
+        keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
     )
     tokamax = module(
         inputs,
@@ -98,7 +103,7 @@ def test_tokamax_attention_matches_standard() -> None:
         forward_pass_config=MixerForwardPassConfig(
             attention_implementation=AttentionImplementation.TOKAMAX,
         ),
-        keychain=Keychain.init(0),
+        keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
     )
 
     assert_close(result=tokamax.outputs, reference=standard.outputs)
@@ -111,7 +116,7 @@ def test_tokamax_normalization_matches_standard() -> None:
     standard = module(
         inputs,
         forward_pass_config=NormalizationForwardPassConfig(
-            implementation=NormalizationImplementation.STANDARD,
+            implementation=NormalizationImplementation.JAX,
         ),
     )
     tokamax = module(

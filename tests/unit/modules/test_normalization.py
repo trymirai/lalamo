@@ -4,12 +4,12 @@ import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
-from lalamo.module import ShardingAxis
+from lalamo.module import LogicalAxis
 from lalamo.modules.normalization import Normalization, NormalizationConfig, UpcastMode
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.utils.sharding import make_sharding
 from tests.common import assert_close
+from tests.helpers import make_sharding, make_test_sharding_config
 
 
 def _config(
@@ -33,7 +33,12 @@ def _normalization(config: NormalizationConfig | None = None) -> Normalization:
         config = _config()
     scales = jnp.array([1.0, 1.5, 2.0, 2.5], dtype=jnp.float32)
     biases = jnp.array([-0.25, 0.0, 0.25, 0.5], dtype=jnp.float32) if config.has_biases else None
-    return Normalization(config=config, scales=scales, biases=biases)
+    return Normalization(
+        config=config,
+        sharding_config=make_test_sharding_config(),
+        scales=scales,
+        biases=biases,
+    )
 
 
 def _reference(module: Normalization, inputs: Array) -> Array:
@@ -70,14 +75,14 @@ def _assert_close(result: Array, reference: Array) -> None:
 
 
 def _sharded_input(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.TENSOR,)))
+    return jax.device_put(values, make_sharding((None,)))
 
 
 def _sharded_batched_inputs(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA, ShardingAxis.TENSOR)))
+    return jax.device_put(values, make_sharding((LogicalAxis.BATCH, None)))
 
 
-def test_normalization_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_normalization_matches_reference_and_preserves_tensor_sharding(fake_mesh: Mesh) -> None:
     module = _normalization()
     inputs = _sharded_input(jnp.array([1.0, -2.0, 3.0, -4.0], dtype=jnp.float32))
 
@@ -123,7 +128,7 @@ def test_normalization_only_normalization_upcast_returns_input_dtype(fake_mesh: 
     assert result.sharding == make_sharding((None,))
 
 
-def test_normalization_under_jit_matches_reference_and_drops_tensor_sharding(fake_mesh: Mesh) -> None:
+def test_normalization_under_jit_matches_reference_and_preserves_tensor_sharding(fake_mesh: Mesh) -> None:
     module = _normalization()
     inputs = _sharded_input(jnp.array([1.0, -2.0, 3.0, -4.0], dtype=jnp.float32))
 
@@ -146,19 +151,24 @@ def test_normalization_vmapped_over_inputs_matches_reference_and_keeps_data_shar
         ),
     )
 
-    result = call_vmapped(module, inputs, added_sharding_axis=ShardingAxis.DATA)
+    result = call_vmapped(
+        module,
+        inputs,
+        added_sharding_axis=make_test_sharding_config().resolve_axis(LogicalAxis.BATCH),
+    )
     reference = jax.vmap(lambda values: _reference(module, values))(inputs)
 
     _assert_close(result=result, reference=reference)
     _assert_named_sharding(result.sharding, fake_mesh)
-    assert result.sharding == make_sharding((ShardingAxis.DATA, None))
+    assert result.sharding == make_sharding((LogicalAxis.BATCH, None))
 
 
 def test_normalization_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _normalization()
-    parameter_sharding = make_sharding((ShardingAxis.DATA,))
+    parameter_sharding = make_sharding((None,))
     template = Normalization(
         config=original.config,
+        sharding_config=make_test_sharding_config(),
         scales=dummy_array(original.scales.shape, original.scales.dtype, parameter_sharding),
         biases=dummy_array(original.biases.shape, original.biases.dtype, parameter_sharding)
         if original.biases is not None

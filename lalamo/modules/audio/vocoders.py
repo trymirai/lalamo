@@ -24,8 +24,11 @@ class Vocoder[ConfigT: VocoderConfig](LalamoModule[ConfigT]):
 
 @dataclass(frozen=True)
 class NoopVocoderConfig(VocoderConfig):
-    def init(self, initializer: Initializer) -> "NoopVocoder":  # noqa: ARG002
-        return NoopVocoder(config=self)
+    def init(self, initializer: Initializer) -> "NoopVocoder":
+        return NoopVocoder(
+            config=self,
+            sharding_config=initializer.sharding_config,
+        )
 
 
 class NoopVocoder(Vocoder[NoopVocoderConfig]):

@@ -30,6 +30,7 @@ from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer import TransformerConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
 from lalamo.utils.torch_interop import torch_to_jax
+from tests.helpers import make_test_sharding_config
 
 from .fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
@@ -235,10 +236,11 @@ class FishAudioFromTorch:
 
         return TTSModel(
             config=TTSModelConfig(tts_config=tts_config, token_codec_config=token_codec.config),
+            sharding_config=make_test_sharding_config(),
             token_codec=token_codec,
             text_decoder=text_decoder,
             audio_decoder=audio_decoder,
-            vocoder=NoopVocoder(tts_config.vocoder_config),
+            vocoder=NoopVocoder(tts_config.vocoder_config, sharding_config=make_test_sharding_config()),
         )
 
 

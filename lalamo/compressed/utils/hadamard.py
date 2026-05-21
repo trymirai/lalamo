@@ -6,6 +6,8 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
+from lalamo.utils.sharding import sharding_of
+
 __all__ = [
     "hadamard_transform",
 ]
@@ -15,6 +17,10 @@ def hadamard_transform(
     inputs: Float[Array, "... channels"],
     block_size: Literal[32, 64, 128],
 ) -> Float[Array, "... channels"]:
+    sharding = sharding_of(inputs)
+    *_, channel_axis = sharding.spec
+    if channel_axis is not None:
+        raise ValueError("Hadamard transform inputs must not be sharded along the channels axis.")
     return _make_hadamard_transform_for_block_size(block_size)(inputs)
 
 

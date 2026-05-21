@@ -1,7 +1,7 @@
 from typing import Self
 
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float
+from jaxtyping import Array, Float
 
 from lalamo.modules.token_mixer import StateLayerBase
 
@@ -32,8 +32,7 @@ class SSMStateLayer(StateLayerBase):
         kernel_size: int,
         conv_dim: int,
         ssm_state_shape: tuple[int, ...],
-        dtype: DTypeLike,
     ) -> Self:
-        conv_state = jnp.zeros((kernel_size - 1, conv_dim), dtype=dtype)
-        ssm_state = jnp.zeros(ssm_state_shape, dtype=dtype)
+        conv_state = jnp.zeros((kernel_size - 1, conv_dim), dtype=jnp.float32)
+        ssm_state = jnp.zeros(ssm_state_shape, dtype=jnp.float32)
         return cls(conv_state=conv_state, ssm_state=ssm_state)

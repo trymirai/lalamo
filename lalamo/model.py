@@ -14,6 +14,7 @@ from lalamo.module import LalamoConfig, LalamoModule, field
 from lalamo.safetensors import safe_read, safe_write
 from lalamo.token_codec import TokenCodec, TokenCodecConfig
 from lalamo.utils.registry_abc import RegistryABC
+from lalamo.utils.sharding import ShardingConfig
 
 __all__ = [
     "Model",
@@ -58,7 +59,7 @@ class Model[
         self.token_codec.tokenizer.save(str(directory / "tokenizer.json"))
 
     @classmethod
-    def load(cls, directory: Path | str, dtype: DTypeLike = jnp.bfloat16) -> Self:
+    def load(cls, directory: Path | str, sharding_config: ShardingConfig, dtype: DTypeLike = jnp.bfloat16) -> Self:
         directory = Path(directory)
         with (directory / "config.json").open() as config_file:
             config = ModelConfig.from_json(json.load(config_file))
@@ -70,7 +71,7 @@ class Model[
             if metadata is not None:
                 decoded_metadata = {key: json.loads(value) for key, value in metadata.items()}
 
-            template = config.init(tokenizer, EmptyInitializer(dtype))
+            template = config.init(tokenizer, EmptyInitializer(dtype, sharding_config))
             result = Exportable.load_exported(
                 template,
                 ExportResults(

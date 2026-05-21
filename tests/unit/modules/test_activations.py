@@ -7,14 +7,14 @@ import pytest
 from jax.sharding import Mesh
 from jaxtyping import Array
 
-from lalamo.module import ShardingAxis
+from lalamo.module import LogicalAxis
 from lalamo.modules.activations import GELU, Activation, Identity, SiLU
-from lalamo.utils.sharding import make_sharding
 from tests.common import assert_close_arrays, assert_named_sharding
+from tests.helpers import make_sharding
 
 
 def _sharded_input(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA,)))
+    return jax.device_put(values, make_sharding((LogicalAxis.BATCH,)))
 
 
 @pytest.mark.parametrize(

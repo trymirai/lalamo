@@ -3,11 +3,12 @@ from dataclasses import dataclass, replace
 from typing import Literal
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array
 
-from lalamo.compressed import AWQMatrix, AWQSpec, MLXMatrix, MLXSpec
+from lalamo.compressed import IntMatrix, IntSpec, MLXMatrix, MLXSpec
 from lalamo.compressed.utils.packing import pack_uint_to_uint8
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.decoder import Decoder
@@ -22,6 +23,7 @@ from lalamo.modules.token_mixers.mamba import Mamba2, Mamba2Config
 from lalamo.modules.token_mixers.short_conv import ShortConv, ShortConvConfig
 from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at
 from lalamo.weight_matrix import CompressionImplementation, Layout, WeightMatrix
 
@@ -62,14 +64,8 @@ def _supported_quantization_bits(bits: int) -> Literal[4, 8]:
     raise ValueError(f"Unsupported quantization bit width: {bits}")
 
 
-def _supported_mlx_quantization_bits(bits: int) -> Literal[1, 4, 8]:
-    if bits == 1:
-        return 1
-    return _supported_quantization_bits(bits)
-
-
 def _reverse_uint4_order(array: Array, reverse_order: Array) -> Array:
-    """Reverses the AWQ packing order to get the logical order of channels for INT4."""
+    """Reverses the AutoAWQ packing order to get the logical order of channels for INT4."""
     pack_factor = 32 // 4
     *_, last_dim = array.shape
     if last_dim % pack_factor != 0:
@@ -204,8 +200,8 @@ def _load_matrix(
     expected_grouped_channels: int,
     full_precision_weights: Callable[[], Array],
     implementation: CompressionImplementation,
-    is_sharded: bool,
 ) -> WeightMatrix:
+    sharding_config = template.sharding_config
     if _is_awq(weights_dict, path, sublayers_to_fuse):
         return _load_awq_array(
             weights_dict,
@@ -214,7 +210,7 @@ def _load_matrix(
             template=template,
             layout=layout,
             implementation=implementation,
-            is_sharded=is_sharded,
+            sharding_config=sharding_config,
         )
     if _is_mlx(weights_dict, path, sublayers_to_fuse):
         return _load_mlx_matrix(
@@ -225,9 +221,9 @@ def _load_matrix(
             template=template,
             layout=layout,
             implementation=implementation,
-            is_sharded=is_sharded,
+            sharding_config=sharding_config,
         )
-    return load_full_precision(template, full_precision_weights(), is_sharded=is_sharded)
+    return load_full_precision(template, full_precision_weights())
 
 
 def _load_awq_array(
@@ -238,10 +234,10 @@ def _load_awq_array(
     template: WeightMatrix,
     layout: Layout,
     implementation: CompressionImplementation,
-    is_sharded: bool,
-) -> AWQMatrix:
+    sharding_config: ShardingConfig,
+) -> IntMatrix:
     packed_qweights, packed_qzeros, scales = _fuse_awq_weights(weights_dict, path, sublayers_to_fuse)
-    # AWQ HF layout: qweight [in_channels, out_packed], scales [num_groups, out_channels]
+    # AutoAWQ HF layout: qweight [in_channels, out_packed], scales [num_groups, out_channels]
     out_channels = scales.shape[1]
     num_groups = scales.shape[0]
     pack_factor = out_channels // packed_qweights.shape[1]
@@ -257,27 +253,33 @@ def _load_awq_array(
         if unpacked_zeros is not None:
             unpacked_zeros = _reverse_uint4_order(unpacked_zeros, AWQ_UINT4_REVERSE_ORDER)
 
-    weight_values = unpacked_weights.T.astype(template.dtype)
-    scale_values = scales.T.astype(template.dtype)
-    zero_point_values = None
-    if unpacked_zeros is not None:
-        zero_point_values = unpacked_zeros.T.astype(template.dtype)
+    weight_sharding = sharding_config.resolve_sharding(
+        layout.weight_partition(unpacked_weights.ndim - 2, is_sharded=template.is_sharded),
+    )
+    weight_values = jax.device_put(unpacked_weights.T.astype(template.dtype), weight_sharding)
+    scale_values = jax.device_put(scales.T.astype(template.dtype), weight_sharding)
+    if unpacked_zeros is None:
+        zero_point_values = None
+    else:
+        zero_point_values = jax.device_put(unpacked_zeros.T.astype(template.dtype), weight_sharding)
 
-    spec = AWQSpec(
+    spec = IntSpec(
         bits=_supported_quantization_bits(bits),
         group_size=group_size,
         is_symmetric=zero_point_values is None,
         layout=layout,
     )
-    packed_zero_points = None
-    if zero_point_values is not None:
-        packed_zero_points = pack_uint_to_uint8(zero_point_values, bits)
+    if zero_point_values is None:
+        packed_zero_points = None
+    else:
+        packed_zero_points = pack_uint_to_uint8(zero_point_values, bits, sharding_config=sharding_config)
     return spec.from_packed_parameters(
-        packed_weights=pack_uint_to_uint8(weight_values, bits),
+        packed_weights=pack_uint_to_uint8(weight_values, bits, sharding_config=sharding_config),
         scales=scale_values,
         packed_zero_points=packed_zero_points,
         implementation=implementation,
-        is_sharded=is_sharded,
+        sharding_config=sharding_config,
+        is_sharded=template.is_sharded,
     )
 
 
@@ -290,7 +292,7 @@ def _load_mlx_matrix(
     template: WeightMatrix,
     layout: Layout,
     implementation: CompressionImplementation,
-    is_sharded: bool,
+    sharding_config: ShardingConfig,
 ) -> MLXMatrix:
     packed_weights, deq_biases, scales = _fuse_mlx_weights(weights_dict, path, sublayers_to_fuse)
     return _load_packed_mlx_matrix(
@@ -301,7 +303,7 @@ def _load_mlx_matrix(
         template=template,
         layout=layout,
         implementation=implementation,
-        is_sharded=is_sharded,
+        sharding_config=sharding_config,
     )
 
 
@@ -314,12 +316,12 @@ def _load_packed_mlx_matrix(
     template: WeightMatrix,
     layout: Layout,
     implementation: CompressionImplementation,
-    is_sharded: bool,
+    sharding_config: ShardingConfig,
 ) -> MLXMatrix:
     # MLX HF layout: weight [rows, packed_cols], scales [rows, num_groups].
     packed_in = packed_weights.shape[-1]
     num_groups = scales.shape[-1]
-    for bits in (1, 4, 8):
+    for bits in (4, 8):
         if packed_in * (32 // bits) == expected_grouped_channels:
             break
     else:
@@ -328,17 +330,21 @@ def _load_packed_mlx_matrix(
     group_size = expected_grouped_channels // num_groups
     unpacked_weights = unpack_int32(packed_weights, bits)
 
-    weight_values = unpacked_weights.astype(template.dtype)
-    scale_values = scales.astype(template.dtype)
-    bias_values = deq_biases.astype(template.dtype)
+    weight_sharding = sharding_config.resolve_sharding(
+        layout.weight_partition(unpacked_weights.ndim - 2, is_sharded=template.is_sharded),
+    )
+    weight_values = jax.device_put(unpacked_weights.astype(template.dtype), weight_sharding)
+    scale_values = jax.device_put(scales.astype(template.dtype), weight_sharding)
+    bias_values = jax.device_put(deq_biases.astype(template.dtype), weight_sharding)
 
-    spec = MLXSpec(bits=_supported_mlx_quantization_bits(bits), group_size=group_size, layout=layout)
+    spec = MLXSpec(bits=_supported_quantization_bits(bits), group_size=group_size, layout=layout)
     return spec.from_packed_parameters(
-        packed_weights=pack_uint_to_uint8(weight_values, bits),
+        packed_weights=pack_uint_to_uint8(weight_values, bits, sharding_config=sharding_config),
         scales=scale_values,
         biases=bias_values,
         implementation=implementation,
-        is_sharded=is_sharded,
+        sharding_config=sharding_config,
+        is_sharded=template.is_sharded,
     )
 
 
@@ -349,11 +355,8 @@ def load_linear(
     sublayers_to_fuse: list[str] | None = None,
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-    is_sharded: bool | None = None,
 ) -> Linear:
     bias = _load_bias(module, weights_dict, path, sublayers_to_fuse)
-    if is_sharded is None:
-        is_sharded = module.weights.is_sharded
 
     weights = _load_matrix(
         module.weights,
@@ -364,7 +367,6 @@ def load_linear(
         expected_grouped_channels=module.input_dim,
         full_precision_weights=lambda: _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse),
         implementation=implementation,
-        is_sharded=is_sharded,
     )
     return _update_linear(module, weights, bias)
 
@@ -531,25 +533,6 @@ def load_moe(
 
         # Combine up and gate for our format: (num_experts, hidden*2, model_dim)
         combined_up_gate_weights = jnp.concatenate([up_weights, gate_weights], axis=1)
-        if num_shared > 0:
-            if num_shared != 1:
-                raise ValueError("Single shared expert path found but num_shared_experts != 1.")
-            shared_expert_path = path / "shared_expert"
-            shared_up_gate_weights = jnp.concatenate(
-                [
-                    weights_dict[shared_expert_path / "up_proj.weight"],
-                    weights_dict[shared_expert_path / "gate_proj.weight"],
-                ],
-                axis=0,
-            )
-            combined_up_gate_weights = jnp.concatenate(
-                [combined_up_gate_weights, shared_up_gate_weights[None, ...]],
-                axis=0,
-            )
-            down_weights = jnp.concatenate(
-                [down_weights, weights_dict[shared_expert_path / "down_proj.weight"][None, ...]],
-                axis=0,
-            )
 
         up_projection = _update_linear(
             module.experts.up_projection,
@@ -991,7 +974,7 @@ def load_delta_net_attention(
                 template=module.in_proj.weights,
                 layout=Layout.OUTPUT_INPUT,
                 implementation=implementation,
-                is_sharded=module.in_proj.weights.is_sharded,
+                sharding_config=module.in_proj.weights.sharding_config,
             )
         in_proj = _update_linear(module.in_proj, new_weights, None)
     conv = _load_conv(module.conv, weights_dict, path, permute_conv)
@@ -1130,7 +1113,6 @@ def _load_weight_matrix(
         expected_grouped_channels=_input_dim(matrix),
         full_precision_weights=lambda: weights_dict[path / "weight"],
         implementation=implementation,
-        is_sharded=matrix.is_sharded,
     )
 
 
@@ -1150,7 +1132,6 @@ def _load_input_embedding_matrix(
         expected_grouped_channels=matrix.output_dim if hasattr(matrix, "output_dim") else matrix.shape[-1],
         full_precision_weights=lambda: jnp.matrix_transpose(weights_dict[path / "weight"]),
         implementation=implementation,
-        is_sharded=matrix.is_sharded,
     )
 
 

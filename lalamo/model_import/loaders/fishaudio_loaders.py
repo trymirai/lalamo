@@ -11,7 +11,9 @@ import equinox as eqx
 from einops import rearrange
 from jax import numpy as jnp
 from jaxtyping import Array, Float
+from tiktoken.core import Encoding as TiktokenEncoding
 from tokenizers import Tokenizer
+from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.modules.audio.fishaudio import DescriptAudioCodec, FishAudioTextDecoder
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
@@ -209,7 +211,10 @@ def load_transformer_block(
             num_groups=attn_module.config.num_groups,
             head_dim=attn_module.config.head_dim,
         )
-        new_weights = qkv_projection.weights.spec.compress(permuted_qkv_weights)
+        new_weights = qkv_projection.weights.spec.compress(
+            permuted_qkv_weights,
+            sharding_config=qkv_projection.weights.sharding_config,
+        )
         qkv_projection = eqx.tree_at(lambda m: (m.weights,), qkv_projection, (new_weights,))
         assert isinstance(qkv_projection, Linear)
 
@@ -823,6 +828,7 @@ def load_descript_audio_codec(dac_module: DescriptAudioCodec, state_dict: Mappin
 
     return DescriptAudioCodec(
         config=dac_module.config,
+        sharding_config=dac_module.sharding_config,
         quantizer=loaded_quantizer,
         decoder=loaded_decoder,
     )
@@ -919,8 +925,6 @@ def load_tokenizer_from_fishaudio_tiktoken(
     path_to_tokenizer: Path,
     path_to_special_tokens: Path,
 ) -> tuple[Tokenizer, FishAudioSpecialInferenceTokens]:
-    from tiktoken.core import Encoding as TiktokenEncoding  # noqa: PLC0415
-    from transformers.integrations.tiktoken import convert_tiktoken_to_fast  # noqa: PLC0415
 
     def _load_fishaudio_tiktoken_data(
         tiktoken_path: Path,

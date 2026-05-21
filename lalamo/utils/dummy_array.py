@@ -6,7 +6,7 @@ import equinox as eqx
 import jax.tree_util as jtu
 from jax import Array as JaxArray
 from jax import ShapeDtypeStruct
-from jax.sharding import NamedSharding, Sharding, get_mesh
+from jax.sharding import Mesh, NamedSharding
 from jaxtyping import Array, DTypeLike
 
 __all__ = [
@@ -18,19 +18,24 @@ __all__ = [
     "supports_dummy_arrays",
 ]
 
-type OutShardingRule = Callable[[tuple[NamedSharding, ...]], NamedSharding | None]
+type OutShardingRule = Callable[[tuple[NamedSharding, ...]], NamedSharding]
 
 
-def dummy_array(shape: int | tuple[int, ...], dtype: DTypeLike, sharding: Sharding | None = None) -> Array:
+def dummy_array(
+    shape: int | tuple[int, ...],
+    dtype: DTypeLike,
+    sharding: NamedSharding,
+) -> Array:
     if isinstance(shape, int):
         shape = (shape,)
     return cast("Array", ShapeDtypeStruct(shape=shape, dtype=dtype, sharding=sharding))
 
 
-def preserve_first_input_sharding(input_shardings: tuple[NamedSharding, ...]) -> NamedSharding | None:
+def preserve_first_input_sharding(input_shardings: tuple[NamedSharding, ...]) -> NamedSharding:
     if not input_shardings:
-        return None
-    return input_shardings[0]
+        raise ValueError("Cannot preserve the first input sharding without any sharded inputs.")
+    first_input_sharding, *_ = input_shardings
+    return first_input_sharding
 
 
 def is_dummy_array(value: object) -> TypeGuard[Array]:
@@ -42,40 +47,46 @@ def contains_dummy_arrays(value: object) -> bool:
 
 
 def _input_named_shardings(value: object) -> tuple[NamedSharding, ...]:
-    from lalamo.utils.sharding import sharding_of  # noqa: PLC0415
-
     shardings = []
     for leaf in jtu.tree_leaves(value):
-        if not is_dummy_array(leaf) and not isinstance(leaf, JaxArray):
+        if is_dummy_array(leaf):
+            sharding = leaf.sharding
+            if not isinstance(sharding, NamedSharding):
+                raise TypeError(f"Expected dummy array input with NamedSharding, got {type(sharding).__name__}.")
+            if not isinstance(sharding.mesh, Mesh):
+                raise TypeError(f"Expected dummy array input with concrete Mesh, got {type(sharding.mesh).__name__}.")
+            if sharding.mesh.empty:
+                raise ValueError("Expected dummy array input with non-empty mesh.")
+            shardings.append(sharding)
             continue
 
-        sharding = sharding_of(leaf)
-        if isinstance(sharding, NamedSharding):
-            shardings.append(sharding)
+        if isinstance(leaf, JaxArray):
+            sharding = leaf.sharding
+            if isinstance(sharding, NamedSharding) and isinstance(sharding.mesh, Mesh) and not sharding.mesh.empty:
+                shardings.append(sharding)
     return tuple(shardings)
 
 
-def _apply_dummy_array_sharding(value: object, sharding: NamedSharding | None) -> object:
-    from lalamo.utils.sharding import with_sharding  # noqa: PLC0415
-
-    if is_dummy_array(value):
-        return with_sharding(value, sharding)
-    return value
+def _apply_dummy_array_sharding(
+    value: object,
+    sharding: NamedSharding,
+) -> object:
+    if not is_dummy_array(value):
+        return value
+    return dummy_array(value.shape, value.dtype, sharding)
 
 
 def _concretize_dummy_array_mesh(value: object, input_shardings: tuple[NamedSharding, ...]) -> object:
-    from lalamo.utils.sharding import sharding_of, with_sharding  # noqa: PLC0415
-
     if not is_dummy_array(value):
         return value
 
-    sharding = sharding_of(value)
-    if not isinstance(sharding, NamedSharding):
+    sharding = value.sharding
+    if isinstance(sharding, NamedSharding) and isinstance(sharding.mesh, Mesh) and not sharding.mesh.empty:
         return value
-    if input_shardings:
-        return with_sharding(value, NamedSharding(input_shardings[0].mesh, sharding.spec))
-
-    return with_sharding(value, NamedSharding(get_mesh(), sharding.spec))
+    if not isinstance(sharding, NamedSharding):
+        raise TypeError(f"Expected dummy array output with NamedSharding, got {type(sharding).__name__}.")
+    first_input_sharding, *_ = input_shardings
+    return dummy_array(value.shape, value.dtype, NamedSharding(first_input_sharding.mesh, sharding.spec))
 
 
 def supports_dummy_arrays[**Params, ResultT](
@@ -98,7 +109,10 @@ def supports_dummy_arrays[**Params, ResultT](
                 )
 
             sharding = out_sharding_rule(input_shardings)
-            return cast("ResultT", jtu.tree_map(lambda leaf: _apply_dummy_array_sharding(leaf, sharding), result))
+            return cast(
+                "ResultT",
+                jtu.tree_map(lambda leaf: _apply_dummy_array_sharding(leaf, sharding), result),
+            )
 
         return wrapped
 

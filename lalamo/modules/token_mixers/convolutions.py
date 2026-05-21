@@ -1,18 +1,21 @@
 import math
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import einsum, rearrange
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.utils.sharding import sharding_of
 
 __all__ = [
     "CausalConvResult",
+    "ConvPrecision",
     "SeparableCausalConv",
     "SeparableCausalConvConfig",
 ]
@@ -32,32 +35,30 @@ class SeparableCausalConvConfig(LalamoConfig):
         initializer: Initializer,
         input_dim: int,
         kernel_size: int,
+        dtype: DTypeLike,
     ) -> "SeparableCausalConv":
         scale = 1 / math.sqrt(kernel_size * input_dim)
-        weights = initializer.normal(scale, (input_dim, kernel_size))
+        weights = initializer.normal(scale, (input_dim, kernel_size), dtype=dtype)
         if self.has_biases:
-            biases = initializer.zeros((input_dim,))
+            biases = initializer.zeros((input_dim,), dtype=dtype)
         else:
             biases = None
         return SeparableCausalConv(
             config=self,
+            sharding_config=initializer.sharding_config,
             weights=weights,
             biases=biases,
         )
 
 
+class ConvPrecision(StrEnum):
+    MATCH_WEIGHTS = "match_weights"
+    MATCH_INPUTS = "match_input"
+
+
 class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
     weights: Float[Array, "channels kernel"]
     biases: Float[Array, " channels"] | None
-
-    def __post_init__(self) -> None:
-        input_dim, _ = self.weights.shape
-        if self.biases is not None:
-            (output_dim,) = self.biases.shape
-            if output_dim != input_dim:
-                raise ValueError(
-                    f"Output dimension of biases ({output_dim}) must match input dimension ({input_dim})",
-                )
 
     @property
     def input_dim(self) -> int:
@@ -80,7 +81,16 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         length_without_padding: Int[Array, ""] | int | None = None,
         state: Float[Array, "prefix_tokens channels"] | None = None,
         return_updated_state: bool = False,
+        precision: ConvPrecision = ConvPrecision.MATCH_INPUTS,
     ) -> CausalConvResult:
+        match precision:
+            case ConvPrecision.MATCH_WEIGHTS:
+                dtype = self.weights.dtype
+            case ConvPrecision.MATCH_INPUTS:
+                dtype = inputs.dtype
+
+        inputs = inputs.astype(dtype)
+
         num_suffix_tokens, input_dim = inputs.shape
 
         if state is None:
@@ -91,12 +101,12 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         inputs_with_history = _causal_conv_context(state, inputs)
         conv_outputs = _separable_causal_conv(
             inputs_with_history[None, -required_context:, :],
-            self.weights.astype(inputs.dtype),
+            self.weights.astype(dtype),
         )
 
         results = conv_outputs.squeeze(0)
         if self.biases is not None:
-            results = _add_conv_biases(results, self.biases.astype(results.dtype))
+            results = results + self.biases.astype(dtype)
 
         if return_updated_state:
             if length_without_padding is None:
@@ -116,12 +126,20 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         self,
         token: Float[Array, " channels"],
         state: Float[Array, "kernel_minus_1 channels"],
+        precision: ConvPrecision = ConvPrecision.MATCH_INPUTS,
     ) -> tuple[Float[Array, " channels"], Float[Array, "kernel_minus_1 channels"]]:
-        """Single-token conv update without full convolution overhead."""
-        full_input = jnp.concatenate([state, token[None, :]], axis=0)
-        output = einsum(full_input, self.weights.astype(token.dtype), "kernel channels, channels kernel -> channels")
+        match precision:
+            case ConvPrecision.MATCH_WEIGHTS:
+                dtype = self.weights.dtype
+            case ConvPrecision.MATCH_INPUTS:
+                dtype = token.dtype
+
+        assert state.dtype == dtype
+
+        full_input = jnp.concatenate([state, token[None, :].astype(dtype)], axis=0)
+        output = einsum(full_input, self.weights.astype(dtype), "kernel channels, channels kernel -> channels")
         if self.biases is not None:
-            output = output + self.biases.astype(output.dtype)
+            output = output + self.biases.astype(dtype)
         new_state = jnp.concatenate([state[1:], token[None, :]], axis=0)
         return output, new_state
 
@@ -138,6 +156,7 @@ def _separable_causal_conv_impl(
         feature_group_count=input_dim,
         padding="VALID",
         dimension_numbers=("NTC", "OTI", "NTC"),
+        out_sharding=sharding_of(inputs),
     )
 
 
@@ -207,13 +226,6 @@ def _causal_conv_context(
     inputs: Float[Array, "suffix_tokens channels"],
 ) -> Float[Array, "context_tokens channels"]:
     return jnp.concatenate([state, inputs], axis=0)
-
-
-def _add_conv_biases(
-    outputs: Float[Array, "suffix_tokens channels"],
-    biases: Float[Array, " channels"],
-) -> Float[Array, "suffix_tokens channels"]:
-    return outputs + biases
 
 
 def _updated_causal_conv_state(

@@ -27,7 +27,6 @@ from lalamo.modules.token_mixer import (
     TokenMixerResult,
 )
 from lalamo.modules.utils import apply_soft_capping, call_vmapped, call_vmapped_twice
-from lalamo.utils.sharding import make_sharding, with_sharding
 
 from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 
@@ -53,7 +52,7 @@ def _rms_normalize(
     forward_pass_config: NormalizationForwardPassConfig,
 ) -> Float[Array, "... channels"]:
     match forward_pass_config.implementation:
-        case NormalizationImplementation.STANDARD:
+        case NormalizationImplementation.JAX:
             upcasted_inputs = inputs.astype(jnp.float32)
             variance = jnp.mean(jnp.square(upcasted_inputs), axis=-1, keepdims=True)
             return (upcasted_inputs * jax.lax.rsqrt(variance + eps)).astype(inputs.dtype)
@@ -335,8 +334,16 @@ class AttentionConfig(TokenMixerConfig):
     has_qkv_biases: bool
     has_out_biases: bool
     gate_projection_config: LinearConfig | None = None
+    use_rope: bool = True
+    partial_rope_dim: int | None = None
     # Scale-free RMS normalization on values
     normalize_values: bool = False
+
+    @property
+    def rope_dim(self) -> int | None:
+        if not self.use_rope:
+            return None
+        return self.partial_rope_dim if self.partial_rope_dim is not None else self.head_dim
 
     def init(
         self,
@@ -395,6 +402,7 @@ class AttentionConfig(TokenMixerConfig):
 
         return Attention(
             config=self,
+            sharding_config=initializer.sharding_config,
             qkv_projection=qkv_projection,
             gate_projection=gate_projection,
             out_projection=out_projection,
@@ -428,6 +436,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
     @property
     def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
+        if not self.config.use_rope:
+            return PositionalEmbeddingSelector.NONE
         if self.use_sliding_window:
             return PositionalEmbeddingSelector.LOCAL
         return PositionalEmbeddingSelector.GLOBAL
@@ -484,10 +494,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             groups=self.config.num_groups,
             head_channels=self.config.head_dim,
         )
-        queries = with_sharding(queries, make_sharding((None, None, None)))
-        keys = with_sharding(keys, make_sharding((None, None, None)))
-        values = with_sharding(values, make_sharding((None, None, None)))
-
         if self.query_norm is not None:
             queries = call_vmapped_twice(
                 self.query_norm,
@@ -551,14 +557,12 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         )
         if gate is not None:
             attention_output = attention_output * jax.nn.sigmoid(gate)
-        attention_output = with_sharding(attention_output, make_sharding((None, None)))
         (result,) = call_vmapped(
             self.out_projection,
             attention_output,
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=out_keychain,
         )
-        result = with_sharding(result, make_sharding((None, None)))
 
         if not return_updated_state:
             updated_state = None
@@ -575,4 +579,5 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             self.config.num_groups,
             self.config.head_dim,
             dtype,
+            self.sharding_config,
         )

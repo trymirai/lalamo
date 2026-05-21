@@ -4,14 +4,18 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
+from jax.sharding import Mesh, NamedSharding
 from jaxtyping import DTypeLike, PyTree
 
+from lalamo.utils.dummy_array import dummy_array
+from lalamo.utils.sharding import LogicalAxis, is_sharded
 from lalamo.utils.surgery import (
     load_as,
     map_nodes_of_type,
     zip_nodes_with,
 )
 from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec
+from tests.helpers import make_sharding, make_test_sharding_config
 
 
 class Linear(eqx.Module):
@@ -29,7 +33,9 @@ def _matrix(
     dtype: DTypeLike = jnp.float32,
     fill_value: float = 0,
 ) -> FullPrecisionMatrix:
-    return FullPrecisionSpec().compress(jnp.full(shape, fill_value, dtype=dtype), is_sharded=False)
+    return FullPrecisionSpec().compress(
+        jnp.full(shape, fill_value, dtype=dtype), sharding_config=make_test_sharding_config()
+    )
 
 
 def test_load_as_loads_matching_array_tree() -> None:
@@ -72,6 +78,39 @@ def test_load_as_treats_weight_matrices_as_leaf_nodes() -> None:
     result = load_as(template, value)
 
     assert result["matrix"] is value["matrix"]
+
+
+def test_load_as_switches_weight_matrix_sharding_to_template(fake_mesh: Mesh) -> None:
+    template = FullPrecisionSpec().compress(
+        jnp.zeros((2, 3), dtype=jnp.float32),
+        sharding_config=make_test_sharding_config(),
+    )
+    value = FullPrecisionSpec().compress(
+        jnp.ones((2, 3), dtype=jnp.float32), sharding_config=make_test_sharding_config()
+    )
+
+    result = load_as(template, value)
+
+    assert result.sharding_config == template.sharding_config
+    assert result.weights.sharding == template.weights.sharding
+    assert isinstance(result.weights.sharding, NamedSharding)
+    assert result.weights.sharding.mesh == fake_mesh
+    assert jnp.all(result.weights == 1)
+
+
+def test_load_as_uses_template_replicated_sharding_without_host_roundtrip(fake_mesh: Mesh) -> None:
+    template = dummy_array((4,), jnp.float32, make_sharding((None,)))
+    source_sharding = make_sharding((LogicalAxis.MIXTURE,))
+    assert source_sharding is not None
+    value = jax.device_put(jnp.arange(4, dtype=jnp.float32), source_sharding)
+
+    result = load_as(template, value)
+
+    assert result.sharding == template.sharding
+    assert not is_sharded(result.sharding)
+    assert result.sharding != source_sharding
+    assert jnp.array_equal(result, value)
+    del fake_mesh
 
 
 def test_load_as_casts_weight_matrix_dtype_when_allowed() -> None:

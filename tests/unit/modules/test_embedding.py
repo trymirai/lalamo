@@ -8,7 +8,7 @@ from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array, DTypeLike
 
 from lalamo.initializer import EmptyInitializer
-from lalamo.module import Keychain, ShardingAxis
+from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.embedding import (
     EmbeddingForwardPassConfig,
     TiedEmbedding,
@@ -17,9 +17,10 @@ from lalamo.modules.embedding import (
     UntiedEmbeddingConfig,
 )
 from lalamo.modules.utils import apply_soft_capping, call_vmapped
-from lalamo.utils.sharding import make_sharding
+from lalamo.utils.sharding import is_sharded
 from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, Layout, ShapeDtypeMatrix
 from tests.common import assert_close
+from tests.helpers import make_sharding, make_test_sharding_config
 
 MODEL_DIM = 6
 VOCAB_SIZE = 10
@@ -41,16 +42,28 @@ def _weights(*, offset: int = 0) -> jax.Array:
 
 
 def _input_embedding_matrix(*, offset: int = 0) -> FullPrecisionMatrix:
-    return FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(jnp.matrix_transpose(_weights(offset=offset)))
+    spec = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT)
+    return FullPrecisionMatrix(
+        spec=spec,
+        sharding_config=make_test_sharding_config(),
+        is_sharded=False,
+        weights=spec.layout.from_output_input(
+            jnp.matrix_transpose(_weights(offset=offset)),
+            sharding=make_sharding((None, None)),
+        ),
+    )
 
 
 def _output_embedding_matrix(*, offset: int = 100) -> FullPrecisionMatrix:
-    return FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(_weights(offset=offset))
+    return FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(
+        _weights(offset=offset), sharding_config=make_test_sharding_config()
+    )
 
 
 def _tied_embedding() -> TiedEmbedding:
     return TiedEmbedding(
         config=TiedEmbeddingConfig(input_scale=1.5, logit_soft_cap=2.0),
+        sharding_config=make_test_sharding_config(),
         embedding=_input_embedding_matrix(),
     )
 
@@ -58,6 +71,7 @@ def _tied_embedding() -> TiedEmbedding:
 def _untied_embedding() -> UntiedEmbedding:
     return UntiedEmbedding(
         config=UntiedEmbeddingConfig(input_scale=1.5, logit_soft_cap=2.0),
+        sharding_config=make_test_sharding_config(),
         input_embedding=_input_embedding_matrix(),
         output_embedding=_output_embedding_matrix(),
     )
@@ -77,7 +91,7 @@ def _embed_reference(
     result = module.embedding_matrix.lookup_embedding(
         token_id,
         dtype=forward_pass_config.activation_dtype,
-        keychain=Keychain.init(10),
+        keychain=Keychain.init(10, sharding_config=make_test_sharding_config()),
         forward_pass_config=forward_pass_config.matmul_config,
     )
     if module.config.input_scale is not None:
@@ -93,14 +107,14 @@ def _readout_reference(
     if isinstance(module, TiedEmbedding):
         logits = module.embedding.dot(
             inputs,
-            keychain=Keychain.init(11),
+            keychain=Keychain.init(11, sharding_config=make_test_sharding_config()),
             forward_pass_config=forward_pass_config.matmul_config,
             transposed=True,
         )
     else:
         logits = module.readout_matrix.dot(
             inputs,
-            keychain=Keychain.init(11),
+            keychain=Keychain.init(11, sharding_config=make_test_sharding_config()),
             forward_pass_config=forward_pass_config.matmul_config,
         )
     logits = logits.astype(forward_pass_config.logit_dtype)
@@ -123,7 +137,7 @@ def _sharded_vector(values: Array) -> Array:
 
 
 def _sharded_vectors(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None)))
+    return jax.device_put(values, make_sharding((LogicalAxis.BATCH, None)))
 
 
 @pytest.mark.parametrize("tied", [True, False], ids=["tied", "untied"])
@@ -138,12 +152,16 @@ def test_embedding_embed_matches_reference_under_jit(
     forward_pass_config = EmbeddingForwardPassConfig(activation_dtype=activation_dtype)
 
     def call(module: TiedEmbedding | UntiedEmbedding, token_id: Array) -> Array:
-        return module.embed(token_id, keychain=Keychain.init(0), forward_pass_config=forward_pass_config)
+        return module.embed(
+            token_id,
+            keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
+            forward_pass_config=forward_pass_config,
+        )
 
     result = eqx.filter_jit(call)(module, token_id)
 
     _assert_close(result=result, reference=_embed_reference(module, token_id, forward_pass_config))
-    assert result.dtype == jnp.dtype(forward_pass_config.activation_dtype)
+    assert result.dtype == forward_pass_config.activation_dtype
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == make_sharding((None,))
 
@@ -156,7 +174,9 @@ def test_embedding_embed_vmapped_over_tokens_keeps_token_and_feature_axes_unshar
     module = _embedding(tied)
     token_ids = jnp.array([0, 2], dtype=jnp.int32)
 
-    result = jax.vmap(lambda token_id: module.embed(token_id, keychain=Keychain.init(1)))(token_ids)
+    result = jax.vmap(
+        lambda token_id: module.embed(token_id, keychain=Keychain.init(1, sharding_config=make_test_sharding_config()))
+    )(token_ids)
     reference = jax.vmap(lambda token_id: _embed_reference(module, token_id))(token_ids)
 
     _assert_close(result=result, reference=reference)
@@ -175,7 +195,7 @@ def test_embedding_embed_call_vmapped_over_tokens_keeps_token_and_feature_axes_u
     result = call_vmapped(
         module.embed,
         token_ids,
-        keychain=Keychain.init(1),
+        keychain=Keychain.init(1, sharding_config=make_test_sharding_config()),
     )
     reference = jax.vmap(lambda token_id: _embed_reference(module, token_id))(token_ids)
 
@@ -196,12 +216,16 @@ def test_embedding_readout_matches_reference_under_jit_and_preserves_input_shard
     forward_pass_config = EmbeddingForwardPassConfig(logit_dtype=logit_dtype)
 
     def call(module: TiedEmbedding | UntiedEmbedding, values: Array) -> Array:
-        return module.readout(values, keychain=Keychain.init(2), forward_pass_config=forward_pass_config)
+        return module.readout(
+            values,
+            keychain=Keychain.init(2, sharding_config=make_test_sharding_config()),
+            forward_pass_config=forward_pass_config,
+        )
 
     result = eqx.filter_jit(call)(module, inputs)
 
     _assert_close(result=result, reference=_readout_reference(module, inputs, forward_pass_config))
-    assert result.dtype == jnp.dtype(forward_pass_config.logit_dtype)
+    assert result.dtype == forward_pass_config.logit_dtype
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == inputs.sharding
 
@@ -212,7 +236,11 @@ def test_embedding_embed_dtype_can_be_overridden(fake_mesh: Mesh, tied: bool) ->
     token_id = jnp.array(2, dtype=jnp.int32)
     forward_pass_config = EmbeddingForwardPassConfig(activation_dtype=jnp.float32)
 
-    result = module.embed(token_id, keychain=Keychain.init(12), forward_pass_config=forward_pass_config)
+    result = module.embed(
+        token_id,
+        keychain=Keychain.init(12, sharding_config=make_test_sharding_config()),
+        forward_pass_config=forward_pass_config,
+    )
 
     assert result.dtype == jnp.float32
     _assert_named_sharding(result.sharding, fake_mesh)
@@ -224,7 +252,7 @@ def test_embedding_readout_defaults_to_float32_with_bfloat16_inputs(fake_mesh: M
     module = _embedding(tied)
     inputs = jnp.linspace(-1.0, 1.25, MODEL_DIM, dtype=jnp.bfloat16)
 
-    result = module.readout(inputs, keychain=Keychain.init(13))
+    result = module.readout(inputs, keychain=Keychain.init(13, sharding_config=make_test_sharding_config()))
 
     assert result.dtype == jnp.float32
     _assert_named_sharding(result.sharding, fake_mesh)
@@ -236,7 +264,9 @@ def test_embedding_readout_vmapped_over_inputs_preserves_input_sharding(fake_mes
     module = _embedding(tied)
     inputs = _sharded_vectors(jnp.arange(2 * MODEL_DIM, dtype=jnp.float32).reshape(2, MODEL_DIM) / 10)
 
-    result = jax.vmap(lambda values: module.readout(values, keychain=Keychain.init(3)))(inputs)
+    result = jax.vmap(
+        lambda values: module.readout(values, keychain=Keychain.init(3, sharding_config=make_test_sharding_config()))
+    )(inputs)
     reference = jax.vmap(lambda values: _readout_reference(module, values))(inputs)
 
     _assert_close(result=result, reference=reference)
@@ -246,29 +276,41 @@ def test_embedding_readout_vmapped_over_inputs_preserves_input_sharding(fake_mes
 
 def test_tied_embedding_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _tied_embedding()
-    template = original.config.init(EmptyInitializer(dtype=jnp.float32), model_dim=MODEL_DIM, vocab_size=VOCAB_SIZE)
+    template = original.config.init(
+        EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
+        model_dim=MODEL_DIM,
+        vocab_size=VOCAB_SIZE,
+    )
     inputs = _sharded_vector(jnp.linspace(-1.0, 1.25, MODEL_DIM, dtype=jnp.float32))
 
     restored = template.load_exported(original.export())
-    result = restored.readout(inputs, keychain=Keychain.init(4))
+    result = restored.readout(inputs, keychain=Keychain.init(4, sharding_config=make_test_sharding_config()))
 
     assert isinstance(restored.embedding, FullPrecisionMatrix)
     assert isinstance(template.embedding, ShapeDtypeMatrix)
     assert template.embedding.shape == (VOCAB_SIZE, MODEL_DIM)
     assert template.embedding.decompress().shape == (MODEL_DIM, VOCAB_SIZE)
-    _assert_named_sharding(restored.embedding.weights.sharding, fake_mesh)
-    _assert_close(result=result, reference=original.readout(inputs, keychain=Keychain.init(5)))
+    assert restored.embedding.sharding_config == make_test_sharding_config()
+    assert not is_sharded(restored.embedding.weights.sharding)
+    _assert_close(
+        result=result,
+        reference=original.readout(inputs, keychain=Keychain.init(5, sharding_config=make_test_sharding_config())),
+    )
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == inputs.sharding
 
 
 def test_untied_embedding_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _untied_embedding()
-    template = original.config.init(EmptyInitializer(dtype=jnp.float32), model_dim=MODEL_DIM, vocab_size=VOCAB_SIZE)
+    template = original.config.init(
+        EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
+        model_dim=MODEL_DIM,
+        vocab_size=VOCAB_SIZE,
+    )
     inputs = _sharded_vector(jnp.linspace(-1.0, 1.25, MODEL_DIM, dtype=jnp.float32))
 
     restored = template.load_exported(original.export())
-    result = restored.readout(inputs, keychain=Keychain.init(6))
+    result = restored.readout(inputs, keychain=Keychain.init(6, sharding_config=make_test_sharding_config()))
 
     assert isinstance(restored.input_embedding, FullPrecisionMatrix)
     assert isinstance(restored.output_embedding, FullPrecisionMatrix)
@@ -277,8 +319,13 @@ def test_untied_embedding_export_load_roundtrips_and_preserves_template_sharding
     assert template.input_embedding.shape == (VOCAB_SIZE, MODEL_DIM)
     assert template.input_embedding.decompress().shape == (MODEL_DIM, VOCAB_SIZE)
     assert template.output_embedding.shape == (VOCAB_SIZE, MODEL_DIM)
-    _assert_named_sharding(restored.input_embedding.weights.sharding, fake_mesh)
+    assert restored.input_embedding.sharding_config == make_test_sharding_config()
+    assert restored.output_embedding.sharding_config == make_test_sharding_config()
+    assert not is_sharded(restored.input_embedding.weights.sharding)
     _assert_named_sharding(restored.output_embedding.weights.sharding, fake_mesh)
-    _assert_close(result=result, reference=original.readout(inputs, keychain=Keychain.init(7)))
+    _assert_close(
+        result=result,
+        reference=original.readout(inputs, keychain=Keychain.init(7, sharding_config=make_test_sharding_config())),
+    )
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == inputs.sharding

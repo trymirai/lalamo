@@ -12,6 +12,7 @@ from lalamo.modules.token_mixer import MixerForwardPassConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.token_mixers.mamba import Mamba2, Mamba2Config
 from tests.common import assert_close, tolerance
+from tests.helpers import make_test_sharding_config
 
 MODEL_DIM = 4
 NUM_HEADS = 2
@@ -49,7 +50,12 @@ def _mamba() -> Mamba2:
         has_in_biases=False,
         has_out_biases=False,
     )
-    return config.init(RandomInitializer(dtype=jnp.float32, key=jax.random.key(1)), model_dim=MODEL_DIM)
+    return config.init(
+        RandomInitializer(
+            default_dtype=jnp.float32, sharding_config=make_test_sharding_config(), key=jax.random.key(1)
+        ),
+        model_dim=MODEL_DIM,
+    )
 
 
 @pytest.mark.parametrize(("ssm_chunk_size", "ssm_min_tail_size_to_chunk"), SSM_CHUNK_CONFIGS)

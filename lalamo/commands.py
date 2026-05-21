@@ -21,6 +21,7 @@ from lalamo.model_import.common import (
     import_model,
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
+from lalamo.utils.sharding import ShardingConfig
 
 
 @dataclass
@@ -197,6 +198,7 @@ def convert(
 
     imported_model = import_model(
         model_spec,
+        sharding_config=ShardingConfig.replicated(),
         dtype=import_dtype,
         context_length=context_length,
         progress_callback=progress_callback,

@@ -6,6 +6,7 @@ import pytest
 
 from lalamo.module import Keychain
 from lalamo.sampling import SamplingPolicy
+from tests.helpers import make_test_sharding_config
 
 
 def _assert_array(result: jax.Array | None, expected: jax.Array) -> None:
@@ -117,7 +118,7 @@ def test_batched_policy_requires_vmap_and_processes_rows() -> None:
 def test_call_samples_greedy_token_when_temperature_is_zero() -> None:
     result = SamplingPolicy.init(temperature=0.0)(
         jnp.array([0.0, 3.0, 2.0], dtype=jnp.float32),
-        keychain=Keychain.init(0),
+        keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
     )
 
     assert result.shape == ()
