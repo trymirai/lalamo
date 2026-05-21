@@ -545,7 +545,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             updated_state.values,
             bias=sink_bias,
             mask=mask,
-            scale=self.config.scale,
+            scale=-(self.config.scale if self.config.scale is not None else self.config.head_dim**-0.5),
             logit_soft_cap=self.config.logit_soft_cap,
             forward_pass_config=forward_pass_config,
         )
