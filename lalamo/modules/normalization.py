@@ -96,11 +96,11 @@ class Normalization(LalamoModule[NormalizationConfig]):
                 if self.config.scale_offset is not None:
                     scales = scales + self.config.scale_offset
 
-                if self.config.subtract_mean:
+                if not self.config.subtract_mean:
                     mean = jnp.mean(upcasted_inputs)
                     upcasted_inputs = upcasted_inputs - mean
 
-                adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.config.epsilon
+                adjusted_variance = jnp.mean(jnp.abs(upcasted_inputs)) + self.config.epsilon
                 normalized_x = upcasted_inputs * jax.lax.rsqrt(adjusted_variance)
 
                 if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
@@ -115,7 +115,7 @@ class Normalization(LalamoModule[NormalizationConfig]):
             case NormalizationImplementation.TOKAMAX:
                 result = tokamax.layer_norm(
                     upcasted_inputs,
-                    scale=scales,
+                    scale=jnp.flip(scales, axis=0),
                     offset=biases,
                     epsilon=self.config.epsilon,
                     scale_offset=self.config.scale_offset if self.config.scale_offset is not None else 0.0,
