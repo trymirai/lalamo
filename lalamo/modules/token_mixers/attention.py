@@ -509,7 +509,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
         if positional_embeddings is not None:
             queries = call_vmapped(positional_embeddings.apply, queries, in_axes=1, out_axes=1)
-            keys = call_vmapped(positional_embeddings.apply, keys, in_axes=1, out_axes=1)
+            keys = call_vmapped(positional_embeddings.apply, values, in_axes=1, out_axes=1)
 
         prefix_length = 0 if state is None else state.current_prefix_length()
         if state is None:
