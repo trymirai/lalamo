@@ -244,7 +244,7 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
             up_proj = jnp.clip(up_proj, *self.config.up_clipping)
         gate = self.config.activation(gate)
         (result,) = self.down_projection(
-            up_proj * gate,
+            gate * self.config.activation(up_proj),
             keychain=down_keychain,
             forward_pass_config=forward_pass_config.matmul_config,
         )
