@@ -25,18 +25,17 @@ class UpcastMode(StrEnum):
 
 
 class NormalizationImplementation(StrEnum):
-    STANDARD = "standard"
+    JAX = "jax"
     TOKAMAX = "tokamax"
 
 
 @dataclass(frozen=True)
 class NormalizationForwardPassConfig:
-    implementation: NormalizationImplementation = NormalizationImplementation.STANDARD
-    accumulation_precision: DTypeLike | None = jnp.float32
+    implementation: NormalizationImplementation = NormalizationImplementation.JAX
 
     @classmethod
     def for_tracer_tests(cls) -> "NormalizationForwardPassConfig":
-        return cls(implementation=NormalizationImplementation.STANDARD)
+        return cls(implementation=NormalizationImplementation.JAX)
 
     @classmethod
     def for_inference(cls) -> "NormalizationForwardPassConfig":
@@ -44,7 +43,7 @@ class NormalizationForwardPassConfig:
 
     @classmethod
     def for_training(cls) -> "NormalizationForwardPassConfig":
-        return cls(implementation=NormalizationImplementation.STANDARD)
+        return cls(implementation=NormalizationImplementation.JAX)
 
 
 @dataclass(frozen=True)
@@ -78,49 +77,57 @@ class Normalization(LalamoModule[NormalizationConfig]):
         (result,) = self.scales.shape
         return result
 
+    def _call_jax(
+        self,
+        inputs: Float[Array, " channels"],
+        accumulation_precision: DTypeLike = jnp.float32,
+    ) -> Float[Array, " channels"]:
+        upcasted_inputs = inputs.astype(accumulation_precision)
+
+        scales = self.scales
+        if self.config.upcast_mode == UpcastMode.FULL_LAYER:
+            scales = scales.astype(jnp.float32)
+
+        if self.config.scale_offset is not None:
+            scales += self.config.scale_offset
+
+        if self.config.subtract_mean:
+            mean = jnp.mean(upcasted_inputs)
+            upcasted_inputs = upcasted_inputs - mean
+
+        adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.config.epsilon
+        normalized_x = upcasted_inputs * jax.lax.rsqrt(adjusted_variance)
+
+        if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
+            normalized_x = normalized_x.astype(inputs.dtype)
+
+        result = normalized_x * scales
+
+        if self.biases is not None:
+            result += self.biases
+
+        return result.astype(inputs.dtype)
+
     @eqx.filter_jit
     def __call__(
         self,
         inputs: Float[Array, " channels"],
         forward_pass_config: NormalizationForwardPassConfig = NormalizationForwardPassConfig(),
-        accumulation_precision: DTypeLike | None = None,
+        accumulation_precision: DTypeLike = jnp.float32,
     ) -> Float[Array, " channels"]:
-        accumulation_precision = accumulation_precision or forward_pass_config.accumulation_precision or inputs.dtype
-        upcasted_inputs = inputs.astype(accumulation_precision)
-
-        scale_dtype = accumulation_precision if self.config.upcast_mode == UpcastMode.FULL_LAYER else inputs.dtype
-        scales = self.scales.astype(scale_dtype)
-        biases = None
-        if self.biases is not None:
-            biases = self.biases.astype(scale_dtype)
-
         match forward_pass_config.implementation:
-            case NormalizationImplementation.STANDARD:
-                if self.config.scale_offset is not None:
-                    scales = scales + self.config.scale_offset
-
-                if self.config.subtract_mean:
-                    mean = jnp.mean(upcasted_inputs)
-                    upcasted_inputs = upcasted_inputs - mean
-
-                adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.config.epsilon
-                normalized_x = upcasted_inputs * jax.lax.rsqrt(adjusted_variance)
-
-                if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
-                    normalized_x = normalized_x.astype(inputs.dtype)
-
-                result = normalized_x * scales
-
-                if biases is not None:
-                    result += biases
-                return result.astype(inputs.dtype)
+            case NormalizationImplementation.JAX:
+                return self._call_jax(inputs, accumulation_precision)
 
             case NormalizationImplementation.TOKAMAX:
+                if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
+                    raise ValueError("Tokamax implementation only supports FULL_LAYER upcast mode.")
+
                 return tokamax.layer_norm(
-                    upcasted_inputs,
-                    scale=scales,
-                    offset=biases,
+                    inputs,
+                    scale=self.scales,
+                    offset=self.biases,
                     epsilon=self.config.epsilon,
-                    scale_offset=self.config.scale_offset if self.config.scale_offset is not None else 0.0,
+                    scale_offset=self.config.scale_offset or 0.0,
                     subtract_mean=self.config.subtract_mean,
-                ).astype(inputs.dtype)
+                )

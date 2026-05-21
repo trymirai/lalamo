@@ -48,7 +48,9 @@ def test_lalamo_nanocodec_matches_torch(cached_nemo_model: tuple[Mapping, Mappin
     torch_model.eval()
 
     lalamo_config = NanoCodecForeignConfig.from_nemo_config(config).to_tts_config(None).audio_decoder_config
-    lalamo_model = lalamo_config.init(EmptyInitializer(dtype=jnp.float32, sharding_config=make_test_sharding_config()))
+    lalamo_model = lalamo_config.init(
+        EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config())
+    )
     assert isinstance(lalamo_model, NanoCodec)
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(dict(state_dict))

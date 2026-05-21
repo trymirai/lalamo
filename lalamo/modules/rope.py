@@ -126,11 +126,11 @@ class RoPEConfig(LalamoConfig, RegistryABC):
         embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
         table_sharding = initializer.sharding_config.resolve_sharding((None, None))
         cosines = jax.device_put(
-            (jnp.cos(embeddings) * self._attention_scaling_factor).astype(initializer.dtype),
+            (jnp.cos(embeddings) * self._attention_scaling_factor).astype(initializer.default_dtype),
             table_sharding,
         )
         sines = jax.device_put(
-            (jnp.sin(embeddings) * self._attention_scaling_factor).astype(initializer.dtype),
+            (jnp.sin(embeddings) * self._attention_scaling_factor).astype(initializer.default_dtype),
             table_sharding,
         )
         return RoPE(

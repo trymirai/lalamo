@@ -28,7 +28,7 @@ __all__ = [
 
 @dataclass
 class Initializer(ABC):
-    dtype: DTypeLike
+    default_dtype: DTypeLike
     sharding_config: ShardingConfig
 
     def _partition_to_sharding(
@@ -48,6 +48,7 @@ class Initializer(ABC):
         std: float,
         shape: tuple[int, ...],
         partition: tuple[LogicalAxis | None, ...] | None = None,
+        dtype: DTypeLike | None = None,
     ) -> Array: ...
 
     @abstractmethod
@@ -55,6 +56,7 @@ class Initializer(ABC):
         self,
         shape: tuple[int, ...],
         partition: tuple[LogicalAxis | None, ...] | None = None,
+        dtype: DTypeLike | None = None,
     ) -> Array: ...
 
     @abstractmethod
@@ -62,6 +64,7 @@ class Initializer(ABC):
         self,
         shape: tuple[int, ...],
         partition: tuple[LogicalAxis | None, ...] | None = None,
+        dtype: DTypeLike | None = None,
     ) -> Array: ...
 
     @abstractmethod
@@ -70,12 +73,18 @@ class Initializer(ABC):
         output_dim: int,
         input_dim: int,
         mixture_size: int | None = None,
+        dtype: DTypeLike | None = None,
         *,
         is_sharded: bool = True,
     ) -> WeightMatrix: ...
 
     @abstractmethod
-    def embedding_matrix(self, vocabulary_size: int, model_dim: int) -> EmbeddingMatrix: ...
+    def embedding_matrix(
+        self,
+        vocabulary_size: int,
+        model_dim: int,
+        dtype: DTypeLike | None = None,
+    ) -> EmbeddingMatrix: ...
 
 
 @dataclass
@@ -94,28 +103,32 @@ class EmptyInitializer(Initializer):
         std: float,  # noqa: ARG002
         shape: tuple[int, ...],
         partition: tuple[LogicalAxis | None, ...] | None = None,
+        dtype: DTypeLike | None = None,
     ) -> Array:
-        return self._dummy_array(shape, self.dtype, partition)
+        return self._dummy_array(shape, dtype or self.default_dtype, partition)
 
     def ones(
         self,
         shape: tuple[int, ...],
         partition: tuple[LogicalAxis | None, ...] | None = None,
+        dtype: DTypeLike | None = None,
     ) -> Array:
-        return self._dummy_array(shape, self.dtype, partition)
+        return self._dummy_array(shape, dtype or self.default_dtype, partition)
 
     def zeros(
         self,
         shape: tuple[int, ...],
         partition: tuple[LogicalAxis | None, ...] | None = None,
+        dtype: DTypeLike | None = None,
     ) -> Array:
-        return self._dummy_array(shape, self.dtype, partition)
+        return self._dummy_array(shape, dtype or self.default_dtype, partition)
 
     def weight_matrix(
         self,
         output_dim: int,
         input_dim: int,
         mixture_size: int | None = None,
+        dtype: DTypeLike | None = None,
         *,
         is_sharded: bool = True,
     ) -> ShapeDtypeMatrix:
@@ -126,18 +139,23 @@ class EmptyInitializer(Initializer):
         return ShapeDtypeSpec(layout=Layout.OUTPUT_INPUT).compress(
             self._dummy_array(
                 (*mixture_dims, output_dim, input_dim),
-                self.dtype,
+                dtype or self.default_dtype,
                 None,
             ),
             sharding_config=self.sharding_config,
             is_sharded=is_sharded,
         )
 
-    def embedding_matrix(self, vocabulary_size: int, model_dim: int) -> ShapeDtypeMatrix:
+    def embedding_matrix(
+        self,
+        vocabulary_size: int,
+        model_dim: int,
+        dtype: DTypeLike | None = None,
+    ) -> ShapeDtypeMatrix:
         return ShapeDtypeSpec(layout=Layout.INPUT_OUTPUT).compress(
             self._dummy_array(
                 (model_dim, vocabulary_size),
-                self.dtype,
+                dtype or self.default_dtype,
                 (None, None),
             ),
             sharding_config=self.sharding_config,
@@ -154,30 +172,33 @@ class RandomInitializer(Initializer):
         std: float,
         shape: tuple[int, ...],
         partition: tuple[LogicalAxis | None, ...] | None = None,
+        dtype: DTypeLike | None = None,
     ) -> Array:
         if self.key is None:
             raise ValueError("RandomInitializer requires a key.")
         sharding = self._partition_to_sharding(shape, partition)
         self.key, key = jax.random.split(self.key)
-        values = jax.random.normal(key, shape, self.dtype) * std
+        values = jax.random.normal(key, shape, dtype or self.default_dtype) * std
         return jax.device_put(values, sharding)
 
     def ones(
         self,
         shape: tuple[int, ...],
         partition: tuple[LogicalAxis | None, ...] | None = None,
+        dtype: DTypeLike | None = None,
     ) -> Array:
         sharding = self._partition_to_sharding(shape, partition)
-        values = jnp.ones(shape, self.dtype)
+        values = jnp.ones(shape, dtype or self.default_dtype)
         return jax.device_put(values, sharding)
 
     def zeros(
         self,
         shape: tuple[int, ...],
         partition: tuple[LogicalAxis | None, ...] | None = None,
+        dtype: DTypeLike | None = None,
     ) -> Array:
         sharding = self._partition_to_sharding(shape, partition)
-        values = jnp.zeros(shape, self.dtype)
+        values = jnp.zeros(shape, dtype or self.default_dtype)
         return jax.device_put(values, sharding)
 
     def weight_matrix(
@@ -185,6 +206,7 @@ class RandomInitializer(Initializer):
         output_dim: int,
         input_dim: int,
         mixture_size: int | None = None,
+        dtype: DTypeLike | None = None,
         *,
         is_sharded: bool = True,
     ) -> FullPrecisionMatrix:
@@ -196,6 +218,7 @@ class RandomInitializer(Initializer):
         weights = self.normal(
             std,
             (*mixture_dims, output_dim, input_dim),
+            dtype=dtype or self.default_dtype,
         )
         return FullPrecisionSpec(Layout.OUTPUT_INPUT).compress(
             weights,
@@ -203,9 +226,19 @@ class RandomInitializer(Initializer):
             is_sharded=is_sharded,
         )
 
-    def embedding_matrix(self, vocabulary_size: int, model_dim: int) -> FullPrecisionMatrix:
+    def embedding_matrix(
+        self,
+        vocabulary_size: int,
+        model_dim: int,
+        dtype: DTypeLike | None = None,
+    ) -> FullPrecisionMatrix:
         std = 1.0 / math.sqrt(model_dim)
-        weights = self.normal(std, (model_dim, vocabulary_size), partition=(None, None))
+        weights = self.normal(
+            std,
+            (model_dim, vocabulary_size),
+            partition=(None, None),
+            dtype=dtype or self.default_dtype,
+        )
         return FullPrecisionSpec(Layout.INPUT_OUTPUT).compress(
             weights,
             sharding_config=self.sharding_config,

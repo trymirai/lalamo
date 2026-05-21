@@ -94,8 +94,8 @@ class DeltaNetConfig(TokenMixerConfig):
             has_biases=False,
         )
         norm = self.norm_config.init(initializer, self.value_head_dim)
-        dt_bias = initializer.zeros((self.num_heads,))
-        a_log = initializer.zeros((self.num_heads,))
+        dt_bias = initializer.zeros((self.num_heads,), dtype=jnp.float32)
+        a_log = initializer.zeros((self.num_heads,), dtype=jnp.float32)
         return DeltaNet(
             config=self,
             sharding_config=initializer.sharding_config,
@@ -412,6 +412,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
+        precision: DTypeLike = jnp.float32,
         *,
         keychain: Keychain,
     ) -> DeltaNetResult:
@@ -422,12 +423,13 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
 
         in_keychain, out_keychain = keychain.split()
         num_tokens, *_ = inputs.shape
-        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = call_vmapped(
+        projections = call_vmapped(
             self.in_proj,
             inputs,
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=in_keychain,
         )
+        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = (x.astype(precision) for x in projections)
         assert proj_query.shape[0] == num_tokens
 
         mixed_qkv = jnp.concatenate([proj_query, proj_key, proj_value], axis=-1)
@@ -438,7 +440,6 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
                 self.config.kernel_size,
                 self.conv_dim,
                 (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
-                inputs.dtype,
             )
 
         conv_output, updated_conv_state = self.conv(
@@ -447,6 +448,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             state.conv_state,
             return_updated_state=return_updated_state,
         )
+        assert conv_output.dtype == jnp.float32
         assert conv_output.shape[0] == num_tokens
         conv_output = jax.nn.silu(conv_output)
 
@@ -457,10 +459,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         value = value.reshape(num_tokens, self.config.num_heads, self.config.value_head_dim)
 
         # since we work with exponentials, we (possibly?) uplift dtype to make sure numbers are nice
-        decay_factor = -jnp.exp(self.a_log.astype(jnp.float32)) * jax.nn.softplus(
-            (decay_input + self.dt_bias).astype(jnp.float32),
-        )
-        decay_factor = decay_factor.astype(inputs.dtype)
+        decay_factor = -jnp.exp(self.a_log) * jax.nn.softplus(decay_input + self.dt_bias)
 
         repeat_factor = self.config.num_heads // self.config.num_groups
         if repeat_factor > 1:
@@ -521,5 +520,4 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             self.config.kernel_size,
             self.conv_dim,
             (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
-            dtype,
         )

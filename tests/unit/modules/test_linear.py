@@ -191,7 +191,7 @@ def test_linear_mixture_vmapped_over_experts_matches_reference_and_keeps_expert_
 
 def test_linear_config_init_mixture_keeps_biases_unsharded() -> None:
     linear = LinearConfig().init_mixture(
-        EmptyInitializer(dtype=jnp.float32, sharding_config=make_test_sharding_config()),
+        EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
         mixture_size=2,
         input_dim=INPUT_DIM,
         output_dims=OUTPUT_DIMS,
@@ -210,7 +210,7 @@ def test_linear_export_load_roundtrips_and_preserves_template_sharding(fake_mesh
         config=LinearConfig(),
         sharding_config=make_test_sharding_config(),
         weights=EmptyInitializer(
-            dtype=jnp.float32,
+            default_dtype=jnp.float32,
             sharding_config=make_test_sharding_config(),
         ).weight_matrix(TOTAL_OUTPUT_DIM, INPUT_DIM),
         biases=dummy_array((TOTAL_OUTPUT_DIM,), jnp.float32, bias_template_sharding),

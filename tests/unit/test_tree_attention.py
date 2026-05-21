@@ -99,7 +99,7 @@ def decoder() -> Decoder:
     )
     return decoder_config.init(
         RandomInitializer(
-            dtype=precision,
+            default_dtype=precision,
             sharding_config=ShardingConfig.replicated(jax.devices("cpu")[:8]),
             key=jax.random.key(4),
         ),

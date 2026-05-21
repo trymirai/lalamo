@@ -161,7 +161,7 @@ def test_embedding_embed_matches_reference_under_jit(
     result = eqx.filter_jit(call)(module, token_id)
 
     _assert_close(result=result, reference=_embed_reference(module, token_id, forward_pass_config))
-    assert result.dtype == jnp.dtype(forward_pass_config.activation_dtype)
+    assert result.dtype == forward_pass_config.activation_dtype
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == make_sharding((None,))
 
@@ -225,7 +225,7 @@ def test_embedding_readout_matches_reference_under_jit_and_preserves_input_shard
     result = eqx.filter_jit(call)(module, inputs)
 
     _assert_close(result=result, reference=_readout_reference(module, inputs, forward_pass_config))
-    assert result.dtype == jnp.dtype(forward_pass_config.logit_dtype)
+    assert result.dtype == forward_pass_config.logit_dtype
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == inputs.sharding
 
@@ -277,7 +277,7 @@ def test_embedding_readout_vmapped_over_inputs_preserves_input_sharding(fake_mes
 def test_tied_embedding_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _tied_embedding()
     template = original.config.init(
-        EmptyInitializer(dtype=jnp.float32, sharding_config=make_test_sharding_config()),
+        EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
         model_dim=MODEL_DIM,
         vocab_size=VOCAB_SIZE,
     )
@@ -303,7 +303,7 @@ def test_tied_embedding_export_load_roundtrips_and_preserves_template_sharding(f
 def test_untied_embedding_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _untied_embedding()
     template = original.config.init(
-        EmptyInitializer(dtype=jnp.float32, sharding_config=make_test_sharding_config()),
+        EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
         model_dim=MODEL_DIM,
         vocab_size=VOCAB_SIZE,
     )

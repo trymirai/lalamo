@@ -116,7 +116,7 @@ def test_tokamax_normalization_matches_standard() -> None:
     standard = module(
         inputs,
         forward_pass_config=NormalizationForwardPassConfig(
-            implementation=NormalizationImplementation.STANDARD,
+            implementation=NormalizationImplementation.JAX,
         ),
     )
     tokamax = module(

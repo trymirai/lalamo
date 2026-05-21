@@ -36,7 +36,7 @@ def _pack_int32(values: Array, bits: int) -> Array:
 
 def _linear_template(dtype: DTypeLike, layout: Layout = Layout.OUTPUT_INPUT) -> Linear:
     result = LinearConfig().init(
-        initializer=EmptyInitializer(dtype=dtype, sharding_config=make_test_sharding_config()),
+        initializer=EmptyInitializer(default_dtype=dtype, sharding_config=make_test_sharding_config()),
         input_dim=4,
         output_dims=(4,),
         has_biases=False,

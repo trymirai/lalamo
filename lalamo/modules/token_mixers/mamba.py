@@ -152,9 +152,9 @@ class Mamba2Config(TokenMixerConfig):
 
         conv = self.conv_config.init(initializer, self.conv_dim, self.kernel_size)
 
-        skip_connection_weight = initializer.normal(1.0, (self.num_heads,))
+        skip_connection_weight = initializer.normal(1.0, (self.num_heads,), dtype=jnp.float32)
 
-        gate_bias = initializer.zeros((self.inner_dim,))
+        gate_bias = initializer.zeros((self.inner_dim,), dtype=jnp.float32)
 
         return Mamba2(
             config=self,
@@ -595,6 +595,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
+        precision: DTypeLike = jnp.float32,
         *,
         keychain: Keychain,
     ) -> Mamba2Result:
@@ -608,7 +609,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
                 self.config.kernel_size,
                 self.conv_dim,
                 (self.config.num_heads, self.config.head_dim, self.config.state_dim),
-                inputs.dtype,
             )
 
         seq_len, _ = inputs.shape
@@ -617,12 +617,13 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             return self._decode_step(inputs, state, forward_pass_config, keychain=keychain)
 
         in_keychain, out_keychain = keychain.split()
-        conv_inputs, gate_values, time_delta_log = call_vmapped(
+        projections = call_vmapped(
             self.in_projection,
             inputs,
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=in_keychain,
         )
+        conv_inputs, gate_values, time_delta_log = (x.astype(precision) for x in projections)
 
         conv_output, updated_conv_state = self.conv(
             conv_inputs,
@@ -714,5 +715,4 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             self.config.kernel_size,
             self.conv_dim,
             (self.config.num_heads, self.config.head_dim, self.config.state_dim),
-            dtype,
         )

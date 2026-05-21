@@ -51,7 +51,9 @@ def _mamba() -> Mamba2:
         has_out_biases=False,
     )
     return config.init(
-        RandomInitializer(dtype=jnp.float32, sharding_config=make_test_sharding_config(), key=jax.random.key(1)),
+        RandomInitializer(
+            default_dtype=jnp.float32, sharding_config=make_test_sharding_config(), key=jax.random.key(1)
+        ),
         model_dim=MODEL_DIM,
     )
 

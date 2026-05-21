@@ -37,7 +37,7 @@ def test_fsq_matches_torch() -> None:
         eps=DEFAULT_FSQ_EPS,
     )
     lalamo_quantizer = lalamo_config.init(
-        EmptyInitializer(dtype=jnp.float32, sharding_config=make_test_sharding_config()),
+        EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
     )
     torch_quantizer = nanocodec_torch.FiniteScalarQuantizer(num_levels=num_levels, eps=1e-3)
 
@@ -74,7 +74,7 @@ def test_group_fsq_matches_torch() -> None:
     )
     lalamo_config = GroupFiniteScalarQuantizerConfig(num_groups=num_groups, quantizer_config=fsq_config)
     lalamo_quantizer = lalamo_config.init(
-        EmptyInitializer(dtype=jnp.float32, sharding_config=make_test_sharding_config()),
+        EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
     )
     torch_quantizer = nanocodec_torch.GroupFiniteScalarQuantizer(
         num_groups=num_groups,
@@ -150,7 +150,7 @@ def test_causal_hifigan_decoder_forward_matches_torch() -> None:
         post_conv_config=conv_config,
     )
     lalamo_decoder = lalamo_decoder_config.init(
-        EmptyInitializer(dtype=jnp.float32, sharding_config=make_test_sharding_config()),
+        EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
         input_dim=input_dim,
         base_channels=base_channels,
         up_sample_rates=up_sample_rates,

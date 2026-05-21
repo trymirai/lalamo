@@ -53,7 +53,11 @@ def _deltanet() -> DeltaNet:
         kernel_size=KERNEL_SIZE,
     )
     return config.init(
-        RandomInitializer(dtype=jnp.float32, sharding_config=make_test_sharding_config(), key=jax.random.key(0)),
+        RandomInitializer(
+            default_dtype=jnp.float32,
+            sharding_config=make_test_sharding_config(),
+            key=jax.random.key(0),
+        ),
         model_dim=MODEL_DIM,
     )
 

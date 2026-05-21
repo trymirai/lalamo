@@ -55,7 +55,7 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_model.state_dict())
     lalamo_text_decoder = load_fishaudio_text_decoder(
         lalamo_config.init(
-            EmptyInitializer(dtype=jnp.bfloat16, sharding_config=make_test_sharding_config()),
+            EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config()),
         ),
         weights_dict,
     )
@@ -103,7 +103,7 @@ def test_dac_matches_pytorch(fish_audio_local_model_path: Path) -> None:
         get_default_fishaudio_dac_config(),
     )
     lalamo_dac = audio_decoder_cfg.init(
-        EmptyInitializer(dtype=jnp.float32, sharding_config=make_test_sharding_config()),
+        EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
     )
     lalamo_dac = load_descript_audio_codec(lalamo_dac, weights_dict)
 

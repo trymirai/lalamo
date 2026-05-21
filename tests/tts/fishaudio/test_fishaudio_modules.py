@@ -52,7 +52,7 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
 
     transformer_cfg, _ = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(config)
     lalamo_transformer = transformer_cfg.init(
-        EmptyInitializer(dtype=jnp.bfloat16, sharding_config=make_test_sharding_config()),
+        EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config()),
     )
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_model.state_dict())

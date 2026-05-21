@@ -79,7 +79,7 @@ def test_full_precision_dot_matches_logical_matmul_and_preserves_input_sharding(
 
 
 def test_initializer_weight_matrix_is_sharded_false_uses_replicated_weight_sharding() -> None:
-    initializer = EmptyInitializer(dtype=jnp.float32, sharding_config=make_test_sharding_config())
+    initializer = EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config())
 
     matrix = initializer.weight_matrix(4, 4, is_sharded=False)
 

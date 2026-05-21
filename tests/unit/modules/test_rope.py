@@ -29,7 +29,9 @@ def _rope(config: RoPEConfig | None = None) -> RoPE:
     if config is None:
         config = UnscaledRoPEConfig(base=10_000.0, max_sequence_length=NUM_TIMESTEPS)
     return config.init(
-        RandomInitializer(dtype=jnp.float32, sharding_config=make_test_sharding_config(), key=jax.random.key(0)),
+        RandomInitializer(
+            default_dtype=jnp.float32, sharding_config=make_test_sharding_config(), key=jax.random.key(0)
+        ),
         head_dim=HEAD_DIM,
         num_timesteps=NUM_TIMESTEPS,
     )

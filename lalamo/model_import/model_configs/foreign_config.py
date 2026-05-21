@@ -65,7 +65,7 @@ class ForeignConfig[ConfigT: ModelConfig](RegistryABC):
     ) -> Model:
         model = config.init(
             tokenizer=tokenizer,
-            initializer=EmptyInitializer(dtype=dtype, sharding_config=sharding_config),
+            initializer=EmptyInitializer(default_dtype=dtype, sharding_config=sharding_config),
         )
         return self._load_weights(model=model, weights_dict=weights_dict, implementation=implementation)
 

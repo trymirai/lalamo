@@ -51,7 +51,7 @@ def _rms_normalize(
     forward_pass_config: NormalizationForwardPassConfig,
 ) -> Float[Array, "... channels"]:
     match forward_pass_config.implementation:
-        case NormalizationImplementation.STANDARD:
+        case NormalizationImplementation.JAX:
             upcasted_inputs = inputs.astype(jnp.float32)
             variance = jnp.mean(jnp.square(upcasted_inputs), axis=-1, keepdims=True)
             return (upcasted_inputs * jax.lax.rsqrt(variance + eps)).astype(inputs.dtype)

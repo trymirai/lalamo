@@ -6,7 +6,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import einsum, rearrange
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
@@ -35,9 +35,9 @@ class SeparableCausalConvConfig(LalamoConfig):
         kernel_size: int,
     ) -> "SeparableCausalConv":
         scale = 1 / math.sqrt(kernel_size * input_dim)
-        weights = initializer.normal(scale, (input_dim, kernel_size))
+        weights = initializer.normal(scale, (input_dim, kernel_size), dtype=jnp.float32)
         if self.has_biases:
-            biases = initializer.zeros((input_dim,))
+            biases = initializer.zeros((input_dim,), dtype=jnp.float32)
         else:
             biases = None
         return SeparableCausalConv(
@@ -51,15 +51,6 @@ class SeparableCausalConvConfig(LalamoConfig):
 class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
     weights: Float[Array, "channels kernel"]
     biases: Float[Array, " channels"] | None
-
-    def __post_init__(self) -> None:
-        input_dim, _ = self.weights.shape
-        if self.biases is not None:
-            (output_dim,) = self.biases.shape
-            if output_dim != input_dim:
-                raise ValueError(
-                    f"Output dimension of biases ({output_dim}) must match input dimension ({input_dim})",
-                )
 
     @property
     def input_dim(self) -> int:
@@ -82,7 +73,10 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         length_without_padding: Int[Array, ""] | int | None = None,
         state: Float[Array, "prefix_tokens channels"] | None = None,
         return_updated_state: bool = False,
+        precision: DTypeLike = jnp.float32,
     ) -> CausalConvResult:
+        inputs = inputs.astype(precision)
+
         num_suffix_tokens, input_dim = inputs.shape
 
         if state is None:
@@ -93,12 +87,12 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         inputs_with_history = _causal_conv_context(state, inputs)
         conv_outputs = _separable_causal_conv(
             inputs_with_history[None, -required_context:, :],
-            self.weights.astype(inputs.dtype),
+            self.weights.astype(precision),
         )
 
         results = conv_outputs.squeeze(0)
         if self.biases is not None:
-            results = _add_conv_biases(results, self.biases.astype(results.dtype))
+            results = _add_conv_biases(results, self.biases.astype(precision))
 
         if return_updated_state:
             if length_without_padding is None:
