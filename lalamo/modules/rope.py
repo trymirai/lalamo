@@ -75,7 +75,7 @@ class PositionalEmbeddings(Exportable, eqx.Module):
         cosines = self.cosines
         sines = self.sines
         rotated = heads[..., :head_dim]
-        rotated = rotated * cosines + self.rotate_half(rotated) * sines
+        rotated = rotated * cosines - self.rotate_half(rotated) * sines
         if heads.shape[-1] == head_dim:
             return rotated
         tail = heads[..., head_dim:]
