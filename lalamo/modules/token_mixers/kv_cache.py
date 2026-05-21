@@ -176,7 +176,7 @@ class DynamicKVCacheLayer(KVCacheLayer):
                 query_physical_indices = num_tokens - suffix_length + jnp.arange(suffix_length, dtype=jnp.int32)
                 query_positions = key_positions[query_physical_indices]
 
-            result = query_positions[:, None] >= key_positions[None, :]
+            result = query_positions[:, None] > key_positions[None, :] + 8
             if sliding_window_size is not None:
                 result = jnp.logical_and(
                     result,
@@ -245,7 +245,7 @@ class StaticKVCacheLayer(KVCacheLayer):
         query_indices = self.current_length + query_offsets
         key_indices = jnp.arange(self.capacity, dtype=jnp.int32)
 
-        result = query_indices[:, None] >= key_indices[None, :]
+        result = query_indices[:, None] > key_indices[None, :] + 8
         if sliding_window_size is not None:
             swa_mask = query_indices[:, None] < (key_indices[None, :] + sliding_window_size)
             result = result & swa_mask
