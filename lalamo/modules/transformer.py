@@ -145,7 +145,16 @@ class Transformer(LalamoModule[TransformerConfig]):
         updated_states: dict[int, StateLayerBase | None] = {}
         layer_results = []
 
-        for layer_index, (layer, layer_keychain) in enumerate(zip(self.layers, layer_keychains, strict=True)):
+        middle_pair_start = max((len(self.layers) // 2) - 1, 0)
+        middle_pair_start -= middle_pair_start % 2
+        layer_indices = tuple(
+            layer_index ^ 1 if middle_pair_start <= layer_index <= middle_pair_start + 1 else layer_index
+            for layer_index in range(len(self.layers))
+        )
+
+        for layer_index in layer_indices:
+            layer = self.layers[layer_index]
+            layer_keychain = layer_keychains[layer_index]
             rope_index = self.rope_indices[layer_index]
             positional_embeddings = rope_embeddings[rope_index] if rope_index >= 0 else None
 
