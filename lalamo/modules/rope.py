@@ -21,7 +21,7 @@ from dataclasses import dataclass
 import equinox as eqx
 import jax
 from jax import numpy as jnp
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
@@ -44,6 +44,14 @@ class PositionalEmbeddings(Exportable, eqx.Module):
     cosines: Float[Array, "*batch tokens head_channels"]
     sines: Float[Array, "*batch tokens head_channels"]
 
+    def astype(self, dtype: DTypeLike | None) -> "PositionalEmbeddings":
+        if dtype is None:
+            return self
+        return PositionalEmbeddings(
+            cosines=self.cosines.astype(dtype),
+            sines=self.sines.astype(dtype),
+        )
+
     @property
     def head_dim(self) -> int:
         return self.cosines.shape[-1]
@@ -63,8 +71,10 @@ class PositionalEmbeddings(Exportable, eqx.Module):
             raise ValueError(
                 f"RoPE head_dim {head_dim} exceeds input head_dim {heads.shape[-1]}",
             )
-        cosines = self.cosines.astype(heads.dtype)
-        sines = self.sines.astype(heads.dtype)
+        dtype = self.cosines.dtype
+        heads = heads.astype(dtype)
+        cosines = self.cosines
+        sines = self.sines
         rotated = heads[..., :head_dim]
         rotated = rotated * cosines + self.rotate_half(rotated) * sines
         if heads.shape[-1] == head_dim:
@@ -120,17 +130,20 @@ class RoPEConfig(LalamoConfig, RegistryABC):
             inverse_frequencies,
             resolved_head_dim,
             self.max_sequence_length,
-        )
-        inverse_frequencies = self._mask_inverse_frequencies(inverse_frequencies, resolved_head_dim)
+        ).astype(jnp.float32)
+        inverse_frequencies = self._mask_inverse_frequencies(
+            inverse_frequencies,
+            resolved_head_dim,
+        ).astype(jnp.float32)
         outer_inverse_frequencies = jnp.outer(timesteps, inverse_frequencies)
         embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
         table_sharding = initializer.sharding_config.resolve_sharding((None, None))
         cosines = jax.device_put(
-            (jnp.cos(embeddings) * self._attention_scaling_factor).astype(initializer.default_dtype),
+            (jnp.cos(embeddings) * self._attention_scaling_factor).astype(jnp.float32),
             table_sharding,
         )
         sines = jax.device_put(
-            (jnp.sin(embeddings) * self._attention_scaling_factor).astype(initializer.default_dtype),
+            (jnp.sin(embeddings) * self._attention_scaling_factor).astype(jnp.float32),
             table_sharding,
         )
         return RoPE(

@@ -18,7 +18,6 @@ from lalamo.modules.token_mixer import (
     TokenMixerConfig,
     TokenMixerResult,
 )
-from lalamo.modules.token_mixers.convolutions import ConvPrecision
 from lalamo.modules.utils import call_vmapped
 
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
@@ -151,7 +150,7 @@ class Mamba2Config(TokenMixerConfig):
             has_biases=self.has_out_biases,
         )
 
-        conv = self.conv_config.init(initializer, self.conv_dim, self.kernel_size, dtype=jnp.float32)
+        conv = self.conv_config.init(initializer, self.conv_dim, self.kernel_size)
 
         skip_connection_weight = initializer.normal(1.0, (self.num_heads,), dtype=jnp.float32)
 
@@ -631,7 +630,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             length_without_padding,
             state.conv_state,
             return_updated_state=return_updated_state,
-            precision=ConvPrecision.MATCH_WEIGHTS,
         )
         conv_activated = self.config.activation(conv_output)
 

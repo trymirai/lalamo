@@ -199,6 +199,8 @@ class DynamicKVCacheLayer(KVCacheLayer):
         added_length: Int[Array, ""] | int | None = None,
     ) -> "DynamicKVCacheLayer":
         self._raise_if_batched()
+        added_keys = added_keys.astype(self.keys.dtype)
+        added_values = added_values.astype(self.values.dtype)
         updated_keys = jnp.concatenate([self.keys, added_keys], axis=0)
         updated_values = jnp.concatenate([self.values, added_values], axis=0)
 
@@ -281,6 +283,8 @@ class StaticKVCacheLayer(KVCacheLayer):
         if added_length is None:
             added_length = num_added_tokens
 
+        added_keys = added_keys.astype(self.keys.dtype)
+        added_values = added_values.astype(self.values.dtype)
         updated_keys = dynamic_update_slice_in_dim(
             self.keys,
             added_keys,

@@ -17,7 +17,7 @@ from lalamo.modules.token_mixer import (
     TokenMixerConfig,
     TokenMixerResult,
 )
-from lalamo.modules.token_mixers.convolutions import ConvPrecision, SeparableCausalConv, SeparableCausalConvConfig
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from lalamo.modules.utils import call_vmapped
 
 __all__ = [
@@ -74,7 +74,7 @@ class ShortConvConfig(TokenMixerConfig):
             output_dims=(model_dim,) * 3,
             has_biases=False,
         )
-        conv = self.conv_config.init(initializer, model_dim, self.kernel_size, dtype=initializer.default_dtype)
+        conv = self.conv_config.init(initializer, model_dim, self.kernel_size)
         out_projection = self.out_projection_config.init(
             initializer,
             input_dim=model_dim,
@@ -135,7 +135,6 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
             length_without_padding,
             prev_conv_state,
             return_updated_state,
-            precision=ConvPrecision.MATCH_INPUTS,
         )
 
         (outputs,) = call_vmapped(

@@ -182,7 +182,7 @@ def estimate_batchsize_for_memory_budget(
 
 
 def _usable_bytes_from_available_bytes(available_bytes: int) -> int:
-    return int(available_bytes * 0.98)
+    return int(available_bytes * 0.9)
 
 
 def _memory_budget_for_auto_batching(available_bytes: int) -> int:

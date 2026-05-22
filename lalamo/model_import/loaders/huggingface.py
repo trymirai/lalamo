@@ -93,14 +93,6 @@ def unpack_int32(packed_weights: Array, bits: int) -> Array:
     )
 
 
-def _input_dim(weights: WeightMatrix) -> int:
-    if getattr(weights.spec, "layout", Layout.OUTPUT_INPUT) == Layout.INPUT_OUTPUT:
-        *_, input_dim, _output_dim = weights.shape
-        return input_dim
-    *_, _output_dim, input_dim = weights.shape
-    return input_dim
-
-
 def _fuse_full_precision_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
@@ -1110,7 +1102,7 @@ def _load_weight_matrix(
         path,
         None,
         layout=Layout.OUTPUT_INPUT,
-        expected_grouped_channels=_input_dim(matrix),
+        expected_grouped_channels=matrix.shape[-1],
         full_precision_weights=lambda: weights_dict[path / "weight"],
         implementation=implementation,
     )
@@ -1129,7 +1121,7 @@ def _load_input_embedding_matrix(
         path,
         None,
         layout=Layout.INPUT_OUTPUT,
-        expected_grouped_channels=matrix.output_dim if hasattr(matrix, "output_dim") else matrix.shape[-1],
+        expected_grouped_channels=matrix.shape[-1],
         full_precision_weights=lambda: jnp.matrix_transpose(weights_dict[path / "weight"]),
         implementation=implementation,
     )

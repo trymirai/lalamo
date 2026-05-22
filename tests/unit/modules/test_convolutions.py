@@ -8,7 +8,7 @@ from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
 from lalamo.module import LogicalAxis
-from lalamo.modules.token_mixers.convolutions import ConvPrecision, SeparableCausalConv, SeparableCausalConvConfig
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.dummy_array import dummy_array
 from tests.common import assert_close
@@ -38,9 +38,9 @@ def _conv(has_biases: bool = True) -> SeparableCausalConv:
 
 def _reference(module: SeparableCausalConv, inputs: Array, state: Array | None = None) -> Array:
     inputs = jnp.asarray(jax.device_get(inputs))
-    weights = jnp.asarray(jax.device_get(module.weights))
+    weights = jnp.asarray(jax.device_get(module.weights)).astype(inputs.dtype)
     if state is None:
-        state = jnp.zeros((module.kernel_size - 1, module.input_dim), dtype=jnp.float32)
+        state = jnp.zeros((module.kernel_size - 1, module.input_dim), dtype=inputs.dtype)
     else:
         state = jnp.asarray(jax.device_get(state))
 
@@ -96,7 +96,7 @@ def test_separable_causal_conv_output_dtype_matches_input_dtype(fake_mesh: Mesh)
     module = _conv()
     inputs = _sharded_sequence(jnp.arange(5 * CHANNELS, dtype=jnp.bfloat16).reshape(5, CHANNELS) / 10)
 
-    result = module(inputs, precision=ConvPrecision.MATCH_INPUTS)
+    result = module(inputs)
 
     assert result.outputs.dtype == inputs.dtype
     _assert_close(result=result.outputs, reference=_reference(module, inputs))
@@ -132,12 +132,12 @@ def test_separable_causal_conv_step_matches_last_full_call_output() -> None:
     _assert_close(result=next_state, reference=full_output.state)
 
 
-def test_separable_causal_conv_step_output_dtype_matches_input_dtype() -> None:
+def test_separable_causal_conv_step_output_dtype_matches_token_dtype() -> None:
     module = _conv()
     state = jnp.array([[10.0, 11.0, 12.0, 13.0], [14.0, 15.0, 16.0, 17.0]], dtype=jnp.bfloat16)
     token = jnp.array([0.0, 0.25, 0.5, 0.75], dtype=jnp.bfloat16)
 
-    step_output, _ = module.step(token, state, precision=ConvPrecision.MATCH_INPUTS)
+    step_output, _ = module.step(token, state)
 
     assert step_output.dtype == token.dtype
 

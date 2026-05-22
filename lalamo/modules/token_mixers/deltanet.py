@@ -19,7 +19,6 @@ from lalamo.modules.token_mixer import (
     TokenMixerConfig,
     TokenMixerResult,
 )
-from lalamo.modules.token_mixers.convolutions import ConvPrecision
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
@@ -87,16 +86,17 @@ class DeltaNetConfig(TokenMixerConfig):
             ),
             has_biases=False,
         )
-        conv = self.conv_config.init(initializer, conv_dim, self.kernel_size, dtype=jnp.float32)
+        fp32_initializer = initializer.with_dtype(jnp.float32)
+        conv = self.conv_config.init(fp32_initializer, conv_dim, self.kernel_size)
         out_proj = self.out_proj_config.init(
             initializer,
             input_dim=value_dim,
             output_dims=(model_dim,),
             has_biases=False,
         )
-        norm = self.norm_config.init(initializer, self.value_head_dim)
-        dt_bias = initializer.zeros((self.num_heads,), dtype=jnp.float32)
-        a_log = initializer.zeros((self.num_heads,), dtype=jnp.float32)
+        norm = self.norm_config.init(fp32_initializer, self.value_head_dim)
+        dt_bias = fp32_initializer.zeros((self.num_heads,))
+        a_log = fp32_initializer.zeros((self.num_heads,))
         return DeltaNet(
             config=self,
             sharding_config=initializer.sharding_config,
@@ -423,13 +423,12 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
 
         in_keychain, out_keychain = keychain.split()
         num_tokens, *_ = inputs.shape
-        projections = call_vmapped(
+        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = call_vmapped(
             self.in_proj,
             inputs,
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=in_keychain,
         )
-        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = (x.astype(jnp.float32) for x in projections)
         assert proj_query.shape[0] == num_tokens
 
         mixed_qkv = jnp.concatenate([proj_query, proj_key, proj_value], axis=-1)
@@ -447,9 +446,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             length_without_padding,
             state.conv_state,
             return_updated_state=return_updated_state,
-            precision=ConvPrecision.MATCH_WEIGHTS,
         )
-        assert conv_output.dtype == jnp.float32
         assert conv_output.shape[0] == num_tokens
         conv_output = jax.nn.silu(conv_output)
 
@@ -494,7 +491,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
 
         def norm_gate(x: Float[Array, " channels"], gate: Float[Array, " channels"]) -> Float[Array, " channels"]:
             normed = self.norm(x, forward_pass_config=forward_pass_config.normalization_forward_pass_config)
-            return normed * jax.nn.silu(gate.astype(jnp.float32)).astype(x.dtype)
+            return normed * jax.nn.silu(gate)
 
         num_tokens, *_ = gate.shape
         gate = gate.reshape(num_tokens, self.config.num_heads, self.config.value_head_dim)

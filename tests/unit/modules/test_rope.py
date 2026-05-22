@@ -55,7 +55,8 @@ def _apply_reference(embeddings: PositionalEmbeddings, heads: Array) -> Array:
         cosines=jnp.asarray(jax.device_get(embeddings.cosines)),
         sines=jnp.asarray(jax.device_get(embeddings.sines)),
     )
-    heads = jnp.asarray(jax.device_get(heads))
+    dtype = embeddings.cosines.dtype
+    heads = jnp.asarray(jax.device_get(heads)).astype(dtype)
     rotated = heads[..., : embeddings.head_dim]
     rotated_half = jnp.concatenate(
         (
@@ -64,7 +65,7 @@ def _apply_reference(embeddings: PositionalEmbeddings, heads: Array) -> Array:
         ),
         axis=-1,
     )
-    result = rotated * embeddings.cosines.astype(heads.dtype) + rotated_half * embeddings.sines.astype(heads.dtype)
+    result = rotated * embeddings.cosines + rotated_half * embeddings.sines
     if heads.shape[-1] == embeddings.head_dim:
         return result
     return jnp.concatenate((result, heads[..., embeddings.head_dim :]), axis=-1)
@@ -164,19 +165,6 @@ def test_positional_embeddings_apply_matches_reference_and_preserves_sharding(fa
     _assert_close(result=result, reference=_apply_reference(embeddings, heads))
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == make_sharding((LogicalAxis.BATCH, None))
-
-
-def test_positional_embeddings_apply_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
-    rope = _rope()
-    timesteps = jnp.array([0, 1, 3, 5], dtype=jnp.int32)
-    embeddings = rope(timesteps)
-    heads = _sharded_heads(jnp.arange(4 * 6, dtype=jnp.bfloat16).reshape(4, 6) / 10)
-
-    result = embeddings.apply(heads)
-
-    assert result.dtype == heads.dtype
-    _assert_close(result=result, reference=_apply_reference(embeddings, heads))
-    _assert_named_sharding(result.sharding, fake_mesh)
 
 
 def test_positional_embeddings_apply_rejects_too_small_head_dim() -> None:

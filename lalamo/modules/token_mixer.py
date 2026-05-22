@@ -58,6 +58,7 @@ class AttentionImplementation(Enum):
 class MixerForwardPassConfig:
     attention_implementation: AttentionImplementation = AttentionImplementation.STANDARD
     attention_accumulation_dtype: DTypeLike | None = jnp.float32
+    rope_dtype: DTypeLike | None = jnp.float32
     attention_tile_size: int = 128
     ssm_chunk_size: int = 32
     ssm_min_tail_size_to_chunk: int = 16

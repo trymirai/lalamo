@@ -96,6 +96,7 @@ extra = [
   "mlx-community/LFM2.5-1.2B-Thinking-4bit",
   "mlx-community/LFM2.5-1.2B-Thinking-8bit",
   "mistralai/Codestral-22B-v0.1",
+  "RekaAI/reka-flash-3.1",
   "Qwen/Qwen3-0.6B-MLX-8bit",
   "Qwen/Qwen3-1.7B-MLX-4bit",
   "Qwen/Qwen3-1.7B-MLX-8bit",
