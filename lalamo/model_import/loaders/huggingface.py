@@ -1331,15 +1331,6 @@ def load_huggingface_classifier(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> Classifier:
-    def load_tied_embedding_local(
-        module: TiedEmbedding,
-        weights_dict: Mapping[str, Array],
-        decoder_path: ParameterPath,
-    ) -> TiedEmbedding:
-        weights = weights_dict[decoder_path / "embeddings" / "tok_embeddings" / "weight"]
-        embedding = load_full_precision(module.embedding, weights)
-        return eqx.tree_at(lambda m: (m.embedding,), module, (embedding,))
-
     def load_linear_with_reshuffling(
         module: Linear,
         weights_dict: Mapping[str, Array],
@@ -1445,7 +1436,7 @@ def load_huggingface_classifier(
     head_path = base_path / "head"
     classifier_path = base_path / "classifier"
     assert isinstance(module.embedding, TiedEmbedding)
-    embedding = load_tied_embedding_local(module.embedding, weights_dict, decoder_path)
+    embedding = load_tied_embedding(module.embedding, weights_dict, decoder_path / "embeddings" / "tok_embeddings")
     embedding_norm = load_rmsnorm(module.embedding_norm, weights_dict, base_path / "model" / "embeddings" / "norm")
 
     decoder_layers = tuple(

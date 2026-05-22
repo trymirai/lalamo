@@ -1,6 +1,6 @@
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 import jax
 from jax import numpy as jnp
@@ -30,9 +30,6 @@ __all__ = [
 class Initializer(ABC):
     default_dtype: DTypeLike
     sharding_config: ShardingConfig
-
-    def with_dtype(self, dtype: DTypeLike) -> "Initializer":
-        return replace(self, default_dtype=dtype)
 
     def _partition_to_sharding(
         self,
@@ -169,12 +166,6 @@ class EmptyInitializer(Initializer):
 @dataclass
 class RandomInitializer(Initializer):
     key: Key[Array, ""] | None = field(default=None, kw_only=True)
-
-    def with_dtype(self, dtype: DTypeLike) -> "RandomInitializer":
-        if self.key is None:
-            return replace(self, default_dtype=dtype)
-        self.key, key = jax.random.split(self.key)
-        return replace(self, default_dtype=dtype, key=key)
 
     def normal(
         self,

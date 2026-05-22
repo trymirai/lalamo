@@ -1,9 +1,11 @@
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from math import prod
 from pathlib import Path
 
 import equinox as eqx
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from jaxtyping import Array, DTypeLike
 from tokenizers import Tokenizer
@@ -13,11 +15,16 @@ from lalamo.compressed.int import IntMatrixForInference, IntMatrixForTraining, I
 from lalamo.compressed.mlx import MLXMatrixForInference, MLXMatrixForTraining
 from lalamo.initializer import EmptyInitializer, Initializer
 from lalamo.model import Model, ModelConfig
-from lalamo.model_import.loaders.huggingface import load_linear
+from lalamo.model_import.loaders.huggingface import load_huggingface_classifier, load_linear
 from lalamo.model_import.model_configs.foreign_config import ForeignConfig
+from lalamo.model_import.model_configs.huggingface import ModernBERTConfig
 from lalamo.models.chat_codec import ChatCodec, ChatCodecConfig
-from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.module import Keychain, LalamoConfig, LalamoModule
+from lalamo.modules.classifier import Classifier
+from lalamo.modules.embedding import TiedEmbedding
 from lalamo.modules.linear import Linear, LinearConfig
+from lalamo.modules.mlp import DenseMLP
+from lalamo.modules.token_mixers.attention import Attention
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.weight_matrix import CompressionImplementation, FullPrecisionSpec, Layout, WeightMatrix
@@ -28,6 +35,11 @@ pytestmark = pytest.mark.usefixtures("fake_mesh")
 INPUT_DIM = 8
 OUTPUT_DIM = 4
 NUM_GROUPS = 2
+CLASSIFIER_VOCAB_SIZE = 16
+CLASSIFIER_HIDDEN_SIZE = 4
+CLASSIFIER_INTERMEDIATE_SIZE = 8
+CLASSIFIER_NUM_HEADS = 2
+CLASSIFIER_NUM_LABELS = 2
 
 
 def _pack_int32(values: Array, bits: int) -> Array:
@@ -82,6 +94,95 @@ def _symmetric_awq_weights(path: ParameterPath) -> Mapping[str, Array]:
     }
 
 
+def _classifier_tensor(shape: tuple[int, ...]) -> Array:
+    return jnp.arange(prod(shape), dtype=jnp.float32).reshape(shape)
+
+
+def _classifier_template() -> Classifier:
+    config = ModernBERTConfig(
+        architectures=["ModernBertForSequenceClassification"],
+        attention_bias=False,
+        attention_dropout=0.0,
+        bos_token_id=0,
+        classifier_activation="gelu",
+        classifier_bias=False,
+        classifier_dropout=0.0,
+        classifier_pooling="mean",
+        cls_token_id=1,
+        decoder_bias=False,
+        deterministic_flash_attn=False,
+        embedding_dropout=0.0,
+        eos_token_id=2,
+        global_attn_every_n_layers=1,
+        global_rope_theta=10000.0,
+        gradient_checkpointing=False,
+        hidden_activation="gelu",
+        hidden_size=CLASSIFIER_HIDDEN_SIZE,
+        initializer_cutoff_factor=2.0,
+        initializer_range=0.02,
+        intermediate_size=CLASSIFIER_INTERMEDIATE_SIZE,
+        layer_norm_eps=1e-5,
+        local_attention=4,
+        local_rope_theta=10000.0,
+        max_position_embeddings=8,
+        mlp_bias=False,
+        mlp_dropout=0.0,
+        model_type="modernbert",
+        norm_bias=False,
+        norm_eps=1e-5,
+        num_attention_heads=CLASSIFIER_NUM_HEADS,
+        num_hidden_layers=1,
+        pad_token_id=3,
+        position_embedding_type="absolute",
+        sep_token_id=4,
+        transformers_version="test",
+        vocab_size=CLASSIFIER_VOCAB_SIZE,
+        id2label={0: "negative", 1: "positive"},
+        label2id={"negative": 0, "positive": 1},
+    )
+    return config.to_classifier_config(context_length=8).init(
+        EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
+    )
+
+
+def _classifier_weights(classifier: Classifier) -> Mapping[str, Array]:
+    assert isinstance(classifier.embedding, TiedEmbedding)
+    layer = classifier.transformer.layers[0]
+    assert isinstance(layer.mixer, Attention)
+    assert isinstance(layer.mlp, DenseMLP)
+    assert layer.pre_mlp_norm is not None
+
+    base_path = ParameterPath()
+    decoder_path = base_path / "model"
+    head_path = base_path / "head"
+    classifier_path = base_path / "classifier"
+
+    return {
+        decoder_path / "embeddings" / "tok_embeddings" / "weight": _classifier_tensor(
+            (CLASSIFIER_VOCAB_SIZE, CLASSIFIER_HIDDEN_SIZE),
+        ),
+        decoder_path / "embeddings" / "norm" / "weight": _classifier_tensor(classifier.embedding_norm.scales.shape),
+        decoder_path / "layers" / 0 / "attn" / "Wqkv" / "weight": _classifier_tensor(
+            layer.mixer.qkv_projection.weights.shape,
+        ),
+        decoder_path / "layers" / 0 / "attn" / "Wo" / "weight": _classifier_tensor(
+            layer.mixer.out_projection.weights.shape,
+        ),
+        decoder_path / "layers" / 0 / "mlp_norm" / "weight": _classifier_tensor(layer.pre_mlp_norm.scales.shape),
+        decoder_path / "layers" / 0 / "mlp" / "Wi" / "weight": _classifier_tensor(
+            layer.mlp.up_projection.weights.shape,
+        ),
+        decoder_path / "layers" / 0 / "mlp" / "Wo" / "weight": _classifier_tensor(
+            layer.mlp.down_projection.weights.shape,
+        ),
+        decoder_path / "final_norm" / "weight": _classifier_tensor(classifier.transformer.output_norm.scales.shape),
+        head_path / "dense" / "weight": _classifier_tensor(classifier.prediction_head.dense.weights.shape),
+        head_path / "norm" / "weight": _classifier_tensor(classifier.prediction_head.norm.scales.shape),
+        classifier_path / "weight": _classifier_tensor(classifier.prediction_head.readout.weights.shape),
+        classifier_path / "bias": _classifier_tensor((CLASSIFIER_NUM_LABELS,)),
+    }
+
+
 @pytest.mark.parametrize(
     ("weights_factory", "implementation", "expected_type"),
     [
@@ -125,6 +226,23 @@ def test_load_linear_symmetric_awq_without_qzeros_uses_symmetric_spec() -> None:
     assert isinstance(loaded.weights, IntMatrixForInference)
     assert loaded.weights.spec.is_symmetric
     assert loaded.weights.packed_zero_points is None
+
+
+def test_load_huggingface_classifier_uses_hf_embedding_layout() -> None:
+    classifier = _classifier_template()
+    weights = _classifier_weights(classifier)
+
+    loaded = load_huggingface_classifier(classifier, weights)
+
+    assert isinstance(loaded.embedding, TiedEmbedding)
+    assert isinstance(classifier.embedding, TiedEmbedding)
+    assert loaded.embedding.embedding.shape == classifier.embedding.embedding.shape
+    token_embedding = loaded.embedding.embedding.lookup_embedding(
+        0,
+        keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
+    )
+    expected_embedding = weights["model.embeddings.tok_embeddings.weight"][0].astype(token_embedding.dtype)
+    np.testing.assert_array_equal(token_embedding, expected_embedding)
 
 
 @dataclass(frozen=True)
