@@ -225,7 +225,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             keychain=keychain,
             forward_pass_config=forward_pass_config.matmul_config,
         )
-        conv_out, new_conv_state = self.conv.step(conv_in, state.conv_state)
+        conv_out, new_conv_state = self.conv.step(conv_in, state.conv_state, precision=ConvPrecision.MATCH_WEIGHTS)
         conv_activated = self.config.activation(conv_out)
 
         values_flat, input_proj_flat, output_proj_flat = jnp.split(

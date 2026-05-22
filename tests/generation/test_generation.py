@@ -2,15 +2,17 @@ from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from jax.lax import DotAlgorithmPreset
+from jax.sharding import NamedSharding
 
 from lalamo.inference.batch_scheduler import BatchSchedulerConfig, FixedSizeBatchScheduler
 from lalamo.model_import.model_spec import LanguageModelSpec
 from lalamo.models import LanguageModel
 from lalamo.models.chat_codec import UserMessage
 from lalamo.models.language_model import GenerationConfig
-from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
+from lalamo.module import ForwardPassMode, Keychain, LogicalAxis, ShardingConfig
 from lalamo.modules import DecoderForwardPassConfig
 from tests.conftest import ConvertModel, filter_specs, load_converted_model, mark_by_size
 from tests.helpers import make_test_sharding_config
@@ -83,9 +85,13 @@ def _sharded_generation_batch(
 
 
 def _take_batch_prefix(language_model: LanguageModel, values: jax.Array, batch_size: int) -> jax.Array:
-    return values.at[:batch_size].get(
-        out_sharding=language_model.sharding_config.make_sharding((None,) * values.ndim),
-    )
+    full_mesh_replicated_sharding = language_model.sharding_config.make_sharding((None,) * values.ndim)
+    prefix = values.at[:batch_size].get(out_sharding=full_mesh_replicated_sharding)
+    return jax.device_put(np.asarray(prefix), _host_replicated_sharding(values.ndim))
+
+
+def _host_replicated_sharding(ndim: int) -> NamedSharding:
+    return ShardingConfig.replicated(jax.devices()[:1]).make_sharding((None,) * ndim)
 
 
 def _take_first_batch_row(language_model: LanguageModel, values: jax.Array) -> jax.Array:
@@ -96,6 +102,14 @@ def _take_first_batch_row(language_model: LanguageModel, values: jax.Array) -> j
 def language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) -> LanguageModel:
     model_dir = convert_model(request.param.origin.description)
     model = load_converted_model(model_dir, make_test_sharding_config())
+    assert isinstance(model, LanguageModel)
+    return model
+
+
+@pytest.fixture(params=mark_by_size(core_llm_specs), ids=[spec.origin.description for spec in core_llm_specs])
+def replicated_language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) -> LanguageModel:
+    model_dir = convert_model(request.param.origin.description)
+    model = load_converted_model(model_dir, ShardingConfig.replicated())
     assert isinstance(model, LanguageModel)
     return model
 
@@ -249,23 +263,23 @@ def test_batch_generation(language_model: LanguageModel) -> None:
         assert token_lists[0] == token_lists[1], f"Prompt {prompt_idx} produced different outputs in different batches"
 
 
-def test_streaming_generation(language_model: LanguageModel) -> None:
+def test_streaming_generation(replicated_language_model: LanguageModel) -> None:
     prompt = [UserMessage("What's the capital of UK?")]
-    token_ids = jnp.array(language_model.token_codec.encode_request(prompt))
+    token_ids = jnp.array(replicated_language_model.token_codec.encode_request(prompt))
 
-    token_stream = language_model.stream_tokens(
+    token_stream = replicated_language_model.stream_tokens(
         token_ids,
         max_output_length=1024,
-        keychain=Keychain.init(4, sharding_config=language_model.sharding_config),
+        keychain=Keychain.init(4, sharding_config=replicated_language_model.sharding_config),
     )
     response_token_ids = jnp.array(list(token_stream))
-    response_text = language_model.token_codec.tokenizer.decode(response_token_ids)
+    response_text = replicated_language_model.token_codec.tokenizer.decode(response_token_ids)
     assert "london" in response_text.lower(), response_text
 
 
-def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
+def test_streaming_vs_eager_consistency(replicated_language_model: LanguageModel) -> None:
     prompt = [UserMessage("What's the largest domestic cat breed?")]
-    token_ids = jnp.array(language_model.token_codec.encode_request(prompt))
+    token_ids = jnp.array(replicated_language_model.token_codec.encode_request(prompt))
 
     generation_config = GenerationConfig(temperature=0.0)
     prefill_forward_pass_config = DecoderForwardPassConfig.for_inference(precision=DotAlgorithmPreset.F32_F32_F32)
@@ -274,14 +288,14 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
         precision=DotAlgorithmPreset.F32_F32_F32,
     )
 
-    generation_keychain = Keychain.init(5, sharding_config=language_model.sharding_config)
+    generation_keychain = Keychain.init(5, sharding_config=replicated_language_model.sharding_config)
     max_output_length = 10
     eager_token_ids, eager_lengths = _sharded_generation_batch(
-        language_model,
+        replicated_language_model,
         token_ids[None, :],
         jnp.array([token_ids.size], dtype=jnp.int32),
     )
-    eager_token_ids = language_model.generate_tokens(
+    eager_token_ids = replicated_language_model.generate_tokens(
         eager_token_ids,
         generation_config=generation_config,
         prompt_lengths_without_padding=eager_lengths,
@@ -290,9 +304,9 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
         decode_forward_pass_config=decode_forward_pass_config,
         keychain=generation_keychain,
     ).token_ids
-    eager_token_ids = _take_first_batch_row(language_model, eager_token_ids)
+    eager_token_ids = _take_first_batch_row(replicated_language_model, eager_token_ids)
 
-    streaming_token_generator = language_model.stream_tokens(
+    streaming_token_generator = replicated_language_model.stream_tokens(
         token_ids,
         generation_config=generation_config,
         max_output_length=max_output_length,
@@ -307,18 +321,18 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
         streaming_token_ids.squeeze().tolist(),
     )
 
-    batch_scheduler = FixedSizeBatchScheduler(model=language_model)
+    batch_scheduler = FixedSizeBatchScheduler(model=replicated_language_model)
     [(idx, batch_response)] = list(
         batch_scheduler.reply_many(
             [prompt],
             generation_config=generation_config,
             batch_scheduler_config=BatchSchedulerConfig(
-                batch_size=_batch_axis_size(language_model),
+                batch_size=_batch_axis_size(replicated_language_model),
                 max_output_length=10,
             ),
             keychain=generation_keychain,
         ),
     )
     assert idx == 0
-    streaming_response = language_model.token_codec.decode_response(streaming_token_ids.tolist())
+    streaming_response = replicated_language_model.token_codec.decode_response(streaming_token_ids.tolist())
     assert batch_response == streaming_response

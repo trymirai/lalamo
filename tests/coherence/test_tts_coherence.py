@@ -7,9 +7,8 @@ from transformers import pipeline
 from lalamo.model_import.model_spec import ModelSpec, TTSModelSpec
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.models.tts_model import TTSModel
-from lalamo.module import Keychain
+from lalamo.module import Keychain, ShardingConfig
 from tests.conftest import ConvertModel, filter_specs, load_converted_model
-from tests.helpers import make_test_sharding_config
 from tests.model_test_tiers import COHERENCE_TTS_REPOS
 
 PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -23,7 +22,7 @@ coherence_tts_specs = filter_specs(model_type=TTSModelSpec, repos=frozenset(COHE
 @pytest.mark.parametrize("spec", coherence_tts_specs, ids=[s.origin.description for s in coherence_tts_specs])
 def test_tts_coherence(spec: ModelSpec, convert_model: ConvertModel) -> None:
     converted_path = convert_model(spec.origin.description)
-    model = load_converted_model(converted_path, make_test_sharding_config())
+    model = load_converted_model(converted_path, ShardingConfig.replicated())
     assert isinstance(model, TTSModel)
 
     asr = pipeline("automatic-speech-recognition", model="openai/whisper-tiny.en")

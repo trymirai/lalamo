@@ -10,8 +10,8 @@ from lalamo.inference.batch_scheduler import (
 from lalamo.models import LanguageModel
 from lalamo.models.chat_codec import UserMessage
 from lalamo.models.language_model import GenerationConfig
+from lalamo.module import ShardingConfig
 from tests.conftest import ConvertModel
-from tests.helpers import make_test_sharding_config
 
 _FUZZ_MODEL_REPOS = (
     "Qwen/Qwen3-0.6B",
@@ -33,7 +33,7 @@ _FUZZ_PROMPTS = (
 @pytest.fixture(scope="module", params=_FUZZ_MODEL_REPOS, ids=_FUZZ_MODEL_REPOS)
 def fuzz_language_model(request: pytest.FixtureRequest, _convert_model_session: ConvertModel) -> LanguageModel:
     model_dir = _convert_model_session(request.param, cached=True)
-    model = LanguageModel.load(model_dir, sharding_config=make_test_sharding_config())
+    model = LanguageModel.load(model_dir, sharding_config=ShardingConfig.replicated())
     assert isinstance(model, LanguageModel)
     return model
 
@@ -73,7 +73,7 @@ def test_continuous_vs_fixed_fuzz(
     tokenized = [fuzz_language_model.token_codec.encode_request(prompt) for prompt in prompts]
 
     generation_config = GenerationConfig(
-        temperature=0,
+        temperature=0.0,
         frequency_penalty=0.5,
         stop_token_ids=fuzz_language_model.config.generation_config.stop_token_ids,
     )

@@ -1,5 +1,4 @@
 import functools
-import math
 import threading
 import time
 import warnings
@@ -996,14 +995,8 @@ class ContinuousBatchScheduler(BatchScheduler):
         batch_size = batch_scheduler_config.batch_size
         max_output_length = batch_scheduler_config.max_output_length
         padded_length = batch_scheduler_config.padded_length
-        batch_axis = self.model.sharding_config.resolve_axis(LogicalAxis.BATCH)
-        if batch_axis is not None:
-            batch_axis_size = self.model.sharding_config.mesh.shape[batch_axis]
-            if batch_size % batch_axis_size != 0:
-                raise ValueError(
-                    f"Batch size {batch_size} must be divisible by sharding axis {batch_axis!r} "
-                    f"of size {batch_axis_size}.",
-                )
+        if any(axis is not None for axis in self.model.sharding_config.logical_to_physical.values()):
+            raise RuntimeError("ContinuousBatchScheduler does not support sharded models.")
 
         block_size = min(self.block_size, max_output_length)
         prefill_capacity = (
@@ -1011,14 +1004,7 @@ class ContinuousBatchScheduler(BatchScheduler):
         ) * self.prefill_chunk_size
         state_capacity = prefill_capacity + max_output_length + 1
         requested_prefill_batch_size = max(1, min(int(batch_size * self.prefill_batch_fraction + 1), batch_size))
-        if batch_axis is None:
-            prefill_batch_size = requested_prefill_batch_size
-        else:
-            batch_axis_size = self.model.sharding_config.mesh.shape[batch_axis]
-            prefill_batch_size = min(
-                batch_size,
-                math.ceil(requested_prefill_batch_size / batch_axis_size) * batch_axis_size,
-            )
+        prefill_batch_size = requested_prefill_batch_size
 
         prefills: PrefillSource = PrefillSource(
             tokenized_messages=tokenized,

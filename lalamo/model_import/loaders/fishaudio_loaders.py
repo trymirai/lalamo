@@ -5,16 +5,14 @@ import shutil
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import equinox as eqx
 from einops import rearrange
 from jax import numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, Float
-from tiktoken.core import Encoding as TiktokenEncoding
 from tokenizers import Tokenizer
-from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.modules.audio.fishaudio import DescriptAudioCodec, FishAudioTextDecoder
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
@@ -53,6 +51,9 @@ from .nanocodec_loaders import (
     load_snake1d,
 )
 from .torch_utils import fuse_weight_norm_conv1d_as_linear
+
+if TYPE_CHECKING:
+    from tiktoken.core import Encoding as TiktokenEncoding
 
 
 def _dense_mlp_projections(module: DenseMLP) -> tuple[Linear, Linear]:
@@ -929,11 +930,13 @@ def load_tokenizer_from_fishaudio_tiktoken(
     path_to_tokenizer: Path,
     path_to_special_tokens: Path,
 ) -> tuple[Tokenizer, FishAudioSpecialInferenceTokens]:
+    from tiktoken.core import Encoding as TiktokenEncoding  # noqa: PLC0415
+    from transformers.integrations.tiktoken import convert_tiktoken_to_fast  # noqa: PLC0415
 
     def _load_fishaudio_tiktoken_data(
         tiktoken_path: Path,
         special_tokens: dict[str, int],
-    ) -> tuple[TiktokenEncoding, FishAudioSpecialInferenceTokens]:
+    ) -> tuple["TiktokenEncoding", FishAudioSpecialInferenceTokens]:
         def load_tiktoken_bpe(tiktoken_bpe_file: Path) -> dict[bytes, int]:
             data = {}
             with open(tiktoken_bpe_file) as token_file:
