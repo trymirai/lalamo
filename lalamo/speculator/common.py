@@ -10,7 +10,7 @@ from jaxtyping import Array, Int, Key
 from lalamo.data.completion_features import FeatureRequest
 from lalamo.modules.decoder import Decoder
 from lalamo.sampling import SamplingPolicy
-from lalamo.speculator.proposal import TrieProposal
+from lalamo.speculator.proposal import ChainProposal, Proposal
 from lalamo.speculator.state import LMState, PrefillResults
 from lalamo.utils.registry_abc import RegistryABC
 
@@ -58,7 +58,7 @@ class Speculator(ABC):
         )
 
     @abstractmethod
-    def draft(self, state: LMState) -> TrieProposal: ...
+    def draft(self, state: LMState) -> Proposal: ...
 
 
 class NoSpeculator(Speculator):
@@ -66,8 +66,8 @@ class NoSpeculator(Speculator):
     def max_step_tokens(self) -> int:
         return 1
 
-    def draft(self, state: LMState) -> TrieProposal:
-        return state.create_root_proposal(budget=1)
+    def draft(self, state: LMState) -> ChainProposal:
+        return state.create_chain_proposal()
 
 
 class SpeculatorBackend[ConfigT](RegistryABC):

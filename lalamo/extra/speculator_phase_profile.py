@@ -23,7 +23,7 @@ from lalamo.module import Keychain, KeychainBroadcastMode
 from lalamo.modules.decoder import DecoderForwardPassConfig, DecoderResult
 from lalamo.sampling import SamplingPolicy
 from lalamo.speculator.common import NoSpeculator, Speculator, load_speculator
-from lalamo.speculator.proposal import AcceptedProposal, ProposalInputs, TrieProposal
+from lalamo.speculator.proposal import AcceptedProposal, Proposal, ProposalInputs
 from lalamo.speculator.state import LMState
 
 
@@ -254,7 +254,7 @@ def profile_generation(
         current_output_lengths = output_lengths(state)
         done = is_done(state)
 
-        def draft_phase(current_state: LMState = state) -> TrieProposal:
+        def draft_phase(current_state: LMState = state) -> Proposal:
             return active_speculator.draft(current_state)
 
         proposal = measure_phase(
@@ -294,7 +294,7 @@ def profile_generation(
         )
 
         def target_sample_phase(
-            current_proposal: TrieProposal = proposal,
+            current_proposal: Proposal = proposal,
             current_decoder_result: DecoderResult = decoder_result,
         ) -> tuple[Array, Array, SamplingPolicy]:
             return current_proposal.sample(current_decoder_result.logits)
@@ -307,7 +307,7 @@ def profile_generation(
         )
 
         def verify_phase(
-            current_proposal: TrieProposal = proposal,
+            current_proposal: Proposal = proposal,
             current_sampled_token_ids: Array = sampled_token_ids,
             current_next_sampling_policies: SamplingPolicy = next_sampling_policies,
             current_output_lengths_snapshot: Array = current_output_lengths,

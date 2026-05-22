@@ -16,7 +16,7 @@ from jaxtyping import Array, Bool, Float, Int
 from lalamo.module import Keychain
 from lalamo.modules import Decoder
 from lalamo.speculator.common import SpeculatorBackend, write_speculator_artifact
-from lalamo.speculator.proposal import TrieProposal
+from lalamo.speculator.proposal import FlatTrieProposal, ProposalNodes
 from lalamo.speculator.state import LMState
 
 from .dflash import (
@@ -84,7 +84,7 @@ class DDTreeSpeculator(DFlashSpeculator):
     def max_step_tokens(self) -> int:
         return min(self.tree_budget, max(self.model.config.block_size - 1, 0)) + 1
 
-    def draft(self, state: LMState) -> TrieProposal:
+    def draft(self, state: LMState) -> FlatTrieProposal:
         if not isinstance(state, DFlashLMState):
             raise TypeError(f"DDTree requires DFlashLMState, got {type(state).__name__}")
         batch_size = state.root_bonus_id.shape[0]
@@ -103,19 +103,26 @@ def build_ddtree_proposal(
     state: DFlashLMState,
     draft_logits: Float[Array, "batch depth vocabulary"],
     node_budget: int,
-) -> TrieProposal:
+) -> FlatTrieProposal:
     node_budget = max(int(node_budget), 1)
-    proposal = state.create_root_proposal(budget=node_budget + 1)
     token_ids, parent_indices, depths, node_mask = ddtree_nodes_from_logits(
         draft_logits,
         node_budget,
     )
-    return proposal.add_nodes(
-        token_ids,
-        parent_indices,
-        depths,
-        node_mask,
-        min(node_budget, draft_logits.shape[1]),
+    return FlatTrieProposal.from_nodes(
+        state.root_bonus_id,
+        state.next_token_position + 1,
+        state.sampling_policy,
+        state.gumbel_keys,
+        state.root_sample_logits.shape[-1],
+        ProposalNodes(
+            token_ids=token_ids,
+            parent_indices=parent_indices,
+            depths=depths,
+            seeds=jnp.zeros_like(token_ids),
+            node_mask=node_mask,
+            max_depth=min(node_budget, draft_logits.shape[1]),
+        ),
     )
 
 
@@ -132,7 +139,8 @@ def ddtree_nodes_from_logits(
         raise ValueError("node_budget must be positive")
     batch_size, _depth, vocabulary_size = logits.shape
     top_k = min(node_budget, vocabulary_size)
-    top_log_probs, top_token_ids = jax.lax.top_k(jax.nn.log_softmax(logits, axis=-1), top_k)
+    top_logits, top_token_ids = jax.lax.top_k(logits.astype(jnp.float32), top_k)
+    top_log_probs = top_logits - jax.nn.logsumexp(logits.astype(jnp.float32), axis=-1, keepdims=True)
     output_shape = jax.ShapeDtypeStruct((batch_size, node_budget), jnp.int32)
     mask_shape = jax.ShapeDtypeStruct((batch_size, node_budget), jnp.bool)
     return jax.pure_callback(

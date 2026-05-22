@@ -24,7 +24,7 @@ from lalamo.modules.decoder import Decoder
 from lalamo.modules.token_mixer import State
 from lalamo.sampling import SamplingPolicy
 from lalamo.speculator.common import Speculator, SpeculatorBackend, write_speculator_artifact
-from lalamo.speculator.proposal import AcceptedProposal, TrieProposal
+from lalamo.speculator.proposal import AcceptedProposal, FlatTrieProposal, ProposalNodes
 from lalamo.speculator.state import LMState, PrefillResults
 from lalamo.speculator.training import (
     SpeculatorBatchResult,
@@ -557,11 +557,9 @@ class NGramSpeculator(Speculator):
         )
         return NGramLMState.from_base(state, prefill_results)
 
-    def draft(self, state: LMState) -> TrieProposal:
+    def draft(self, state: LMState) -> FlatTrieProposal:
         if not isinstance(state, NGramLMState):
             raise TypeError(f"NGram requires NGramLMState, got {type(state).__name__}")
-        node_budget = self.width * self.depth
-        proposal = state.create_root_proposal(budget=node_budget + 1)
         slots = jnp.arange(state.context_token_ids.shape[1], dtype=jnp.int32)[None, :]
         context_token_mask = slots < state.context_lengths[:, None]
         token_ids, parent_indices, depths, node_mask = ngram_nodes_from_context(
@@ -573,12 +571,20 @@ class NGramSpeculator(Speculator):
             self.depth,
             self.vocab_size(state),
         )
-        return proposal.add_nodes(
-            token_ids,
-            parent_indices,
-            depths,
-            node_mask,
-            self.depth,
+        return FlatTrieProposal.from_nodes(
+            state.root_bonus_id,
+            state.next_token_position + 1,
+            state.sampling_policy,
+            state.gumbel_keys,
+            state.root_sample_logits.shape[-1],
+            ProposalNodes(
+                token_ids=token_ids,
+                parent_indices=parent_indices,
+                depths=depths,
+                seeds=jnp.zeros_like(token_ids),
+                node_mask=node_mask,
+                max_depth=self.depth,
+            ),
         )
 
     def contexts(self, state: LMState) -> list[list[int]]:

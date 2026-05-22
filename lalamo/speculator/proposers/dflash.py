@@ -45,7 +45,7 @@ from lalamo.speculator.common import (
     SpeculatorBackend,
     write_speculator_artifact,
 )
-from lalamo.speculator.proposal import AcceptedProposal, TrieProposal
+from lalamo.speculator.proposal import AcceptedProposal, ChainProposal
 from lalamo.weight_matrix import FullPrecisionSpec, Layout
 
 __all__ = [
@@ -925,7 +925,7 @@ class DFlashSpeculator(Speculator):
             draft_context_start=state.next_token_position - valid_ctx_len,
         )
 
-    def draft(self, state: LMState) -> TrieProposal:
+    def draft(self, state: LMState) -> ChainProposal:
         if not isinstance(state, DFlashLMState):
             raise TypeError(f"DFlash requires DFlashLMState, got {type(state).__name__}")
         batch_size = state.root_bonus_id.shape[0]
@@ -939,16 +939,11 @@ class DFlashSpeculator(Speculator):
         )
 
         proposal_budget = min(self.tree_budget, self.model.config.block_size)
-        proposal = state.create_root_proposal(budget=proposal_budget)
         if proposal_budget == 1:
-            return proposal
+            return state.create_chain_proposal()
 
         chain_depth = proposal_budget - 1
-        token_ids, parent_indices, depths, node_mask = proposal.sample_chain_nodes(
-            draft.draft_logits[:, :chain_depth],
-        )
-        return proposal.add_nodes(token_ids, parent_indices, depths, node_mask, chain_depth)
-
+        return state.create_chain_proposal(draft.draft_logits[:, :chain_depth].astype(jnp.float32))
 
 
 class DFlashBackend(SpeculatorBackend[DFlashBackendConfig]):
