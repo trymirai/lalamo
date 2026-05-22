@@ -10,6 +10,7 @@ from typing import Any
 import equinox as eqx
 from einops import rearrange
 from jax import numpy as jnp
+from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, Float
 from tiktoken.core import Encoding as TiktokenEncoding
 from tokenizers import Tokenizer
@@ -41,6 +42,7 @@ from lalamo.modules.token_mixers.attention import Attention
 from lalamo.modules.transformer import Transformer
 from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.sharding import sharding_of, with_sharding
 from lalamo.utils.surgery import load_as_at
 
 from .common import load_full_precision
@@ -116,6 +118,8 @@ def _permute_qkv_for_rope_rotate_half(
     """
     q_dim = num_heads * head_dim
     k_dim = num_groups * head_dim
+    replicated_sharding = NamedSharding(sharding_of(qkv_weight).mesh, PartitionSpec(*((None,) * qkv_weight.ndim)))
+    qkv_weight = with_sharding(qkv_weight, replicated_sharding)
 
     q_weight = qkv_weight[:q_dim, :]
     k_weight = qkv_weight[q_dim : q_dim + k_dim, :]

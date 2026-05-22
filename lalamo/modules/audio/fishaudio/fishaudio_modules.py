@@ -19,6 +19,7 @@ from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
+from lalamo.utils.sharding import with_sharding
 
 
 @dataclass(frozen=True)
@@ -116,12 +117,20 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
             self.pointwise_conv_step1,
             x,
             keychain=step1_keychain,
+            added_sharding_axes=(
+                self.sharding_config.resolve_axis(LogicalAxis.BATCH),
+                self.sharding_config.resolve_axis(LogicalAxis.SEQUENCE),
+            ),
         )
         x = call_vmapped_twice(self.config.activation, x)
         (x,) = call_vmapped_twice(
             self.pointwise_conv_step2,
             x,
             keychain=step2_keychain,
+            added_sharding_axes=(
+                self.sharding_config.resolve_axis(LogicalAxis.BATCH),
+                self.sharding_config.resolve_axis(LogicalAxis.SEQUENCE),
+            ),
         )
         if apply_residual:
             x = residual + x
@@ -318,12 +327,10 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
         keychain: Keychain,
     ) -> Float[Array, "tokens channels"]:
         embed_keychain, out_keychain = keychain.split()
-        z_p = call_vmapped(
-            self.codebook.embed,
+        z_p = self.codebook.embed(
             embed_id,
             forward_pass_config=EmbeddingForwardPassConfig(activation_dtype=self.codebook.embedding.dtype),
             keychain=embed_keychain,
-            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )
         (z_q,) = call_vmapped(
             self.out_proj,
@@ -507,17 +514,23 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
             self.semantic_quantizer.from_codes,
             semantic_indices,
             keychain=semantic_keychain,
+            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )
         z_q_residual = call_vmapped(
             self.quantizer.from_codes,
             residual_indices,
             keychain=residual_keychain,
+            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )
 
         z_q = z_q_semantic + z_q_residual
 
         batch_size, seq_length, _ = z_q.shape
         token_positions = jnp.broadcast_to(jnp.arange(seq_length)[None, :], (batch_size, seq_length))
+        token_positions = with_sharding(
+            token_positions,
+            self.sharding_config.resolve_sharding((LogicalAxis.BATCH, None)),
+        )
 
         post_result = self.post_module(
             inner_features=z_q,

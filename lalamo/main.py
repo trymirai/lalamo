@@ -143,21 +143,6 @@ def chat(
         if temperature is not None:
             generation_config = replace(model.config.generation_config, temperature=temperature)
         progress.remove_task(loading_task)
-        warmup_task = progress.add_task("🔥 Warming up compilation cache...")
-        warmup_tokens = iter(
-            model.stream_reply_text(
-                [UserMessage("")],
-                generation_config=generation_config,
-                max_output_length=max_tokens,
-                keychain=Keychain.init(0, sharding_config=model.sharding_config),
-            ),
-        )
-        for _ in range(2):
-            try:
-                next(warmup_tokens)
-            except StopIteration:
-                break
-        progress.remove_task(warmup_task)
 
     if message is None:
         console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
