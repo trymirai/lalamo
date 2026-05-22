@@ -28,12 +28,13 @@ def _generate_single(
     *,
     max_tokens: int,
 ) -> str:
-    return model.reply(
+    message = model.reply(
         [UserMessage(prompt)],
         generation_config=GenerationConfig(temperature=0.0),
         max_output_length=max_tokens,
         keychain=Keychain.init(0, sharding_config=model.sharding_config),
-    ).response
+    )
+    return "\n".join(part for part in (message.chain_of_thought, message.response) if part).strip()
 
 
 @pytest.mark.parametrize(
