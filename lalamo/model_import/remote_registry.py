@@ -25,11 +25,14 @@ class RegistryModel:
     repo_id: str
     quantization: str | None
     files: list[RegistryModelFile]
+    output_parser_regex: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RegistryModel":
         if "repoId" in data:
             data = {**data, "repo_id": data.pop("repoId")}
+        if "outputParserRegex" in data:
+            data = {**data, "output_parser_regex": data.pop("outputParserRegex")}
         return cls._converter.structure(data, cls)
 
 
