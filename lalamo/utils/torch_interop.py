@@ -1,6 +1,8 @@
 from typing import overload
 
+import jax
 import jax.numpy as jnp
+import numpy as np
 import torch
 from jaxtyping import Array
 from torch.utils import dlpack as torch_dlpach
@@ -40,6 +42,17 @@ def dtype_to_jax(in_type: str | torch.dtype) -> jnp.dtype:
             return jnp.dtype(_torch_dtype_to_typestr[in_type])
 
 
+def _torch_can_import_array_device(value: Array) -> bool:
+    return all(device.platform == "cpu" for device in value.devices()) or torch.cuda.is_available()
+
+
+def _jax_to_torch_via_host(value: Array) -> torch.Tensor:
+    if value.dtype == jnp.bfloat16:
+        intermediate_array = np.array(jax.device_get(value.view(jnp.uint16)), copy=True)
+        return torch.from_numpy(intermediate_array).view(torch.bfloat16)
+    return torch.from_numpy(np.array(jax.device_get(value), copy=True))
+
+
 @torch.no_grad()
 def _torch_to_jax_bfloat16(tensor: torch.Tensor) -> Array:
     if tensor.dtype != torch.bfloat16:
@@ -71,6 +84,8 @@ def jax_to_torch(value: Array | str | jnp.dtype) -> torch.Tensor | torch.dtype:
     if isinstance(value, str | jnp.dtype):
         return dtype_to_torch(value)
     if isinstance(value, Array):
+        if not _torch_can_import_array_device(value):
+            return _jax_to_torch_via_host(value)
         if value.dtype == jnp.bfloat16:
             intermediate_array = value.view(jnp.uint16)
             return torch_dlpach.from_dlpack(intermediate_array).view(torch.bfloat16)

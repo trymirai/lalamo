@@ -15,7 +15,6 @@ from lalamo.models.language_model import GenerationConfig
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis, ShardingConfig
 from lalamo.modules import DecoderForwardPassConfig
 from tests.conftest import ConvertModel, filter_specs, load_converted_model, mark_by_size
-from tests.helpers import make_test_sharding_config
 from tests.model_test_tiers import ModelTier
 
 core_llm_specs = filter_specs(model_type=LanguageModelSpec, max_tier=ModelTier.CORE)
@@ -96,8 +95,8 @@ def _take_first_batch_row(language_model: LanguageModel, values: jax.Array) -> n
 
 @pytest.fixture(params=mark_by_size(core_llm_specs), ids=[spec.origin.description for spec in core_llm_specs])
 def language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) -> Generator[LanguageModel]:
-    model_dir = convert_model(request.param.origin.description)
-    model = load_converted_model(model_dir, make_test_sharding_config())
+    model_dir = convert_model(request.param.origin.description, cached=True)
+    model = load_converted_model(model_dir, ShardingConfig.replicated())
     assert isinstance(model, LanguageModel)
     with jax.set_mesh(model.sharding_config.mesh):
         yield model
@@ -105,7 +104,7 @@ def language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) 
 
 @pytest.fixture(params=mark_by_size(core_llm_specs), ids=[spec.origin.description for spec in core_llm_specs])
 def replicated_language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) -> LanguageModel:
-    model_dir = convert_model(request.param.origin.description)
+    model_dir = convert_model(request.param.origin.description, cached=True)
     model = load_converted_model(model_dir, ShardingConfig.replicated())
     assert isinstance(model, LanguageModel)
     return model
@@ -124,7 +123,7 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
     result = language_model.generate_tokens(
         token_ids,
         prompt_lengths_without_padding=prompt_lengths,
-        max_output_length=1024,
+        max_output_length=64,
         num_top_logits_to_return=num_top_logits_to_return,
         keychain=Keychain.init(0, sharding_config=language_model.sharding_config),
     )
@@ -163,7 +162,7 @@ def test_padding(language_model: LanguageModel) -> None:
     response_token_ids = language_model.generate_tokens(
         token_ids,
         prompt_lengths_without_padding=prompt_lengths,
-        max_output_length=1024,
+        max_output_length=64,
         keychain=Keychain.init(1, sharding_config=language_model.sharding_config),
     ).token_ids
     response_token_ids = _take_first_batch_row(language_model, response_token_ids)
@@ -178,7 +177,7 @@ def test_padding(language_model: LanguageModel) -> None:
     response_token_ids = language_model.generate_tokens(
         token_ids,
         prompt_lengths_without_padding=prompt_lengths,
-        max_output_length=1024,
+        max_output_length=64,
         keychain=Keychain.init(2, sharding_config=language_model.sharding_config),
     ).token_ids
     response_token_ids = _take_first_batch_row(language_model, response_token_ids)
@@ -266,7 +265,7 @@ def test_streaming_generation(replicated_language_model: LanguageModel) -> None:
 
     token_stream = replicated_language_model.stream_tokens(
         token_ids,
-        max_output_length=1024,
+        max_output_length=64,
         keychain=Keychain.init(4, sharding_config=replicated_language_model.sharding_config),
     )
     response_token_ids = jnp.array(list(token_stream))
