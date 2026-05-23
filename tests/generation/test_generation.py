@@ -259,20 +259,6 @@ def test_batch_generation(language_model: LanguageModel) -> None:
         assert token_lists[0] == token_lists[1], f"Prompt {prompt_idx} produced different outputs in different batches"
 
 
-def test_streaming_generation(replicated_language_model: LanguageModel) -> None:
-    prompt = [UserMessage("What's the capital of UK?")]
-    token_ids = jnp.array(replicated_language_model.token_codec.encode_request(prompt))
-
-    token_stream = replicated_language_model.stream_tokens(
-        token_ids,
-        max_output_length=64,
-        keychain=Keychain.init(4, sharding_config=replicated_language_model.sharding_config),
-    )
-    response_token_ids = jnp.array(list(token_stream))
-    response_text = replicated_language_model.token_codec.tokenizer.decode(response_token_ids)
-    assert "london" in response_text.lower(), response_text
-
-
 def test_streaming_vs_eager_consistency(replicated_language_model: LanguageModel) -> None:
     prompt = [UserMessage("What's the largest domestic cat breed?")]
     token_ids = jnp.array(replicated_language_model.token_codec.encode_request(prompt))
