@@ -6,7 +6,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.lax import DotAlgorithmPreset
-from jax.sharding import NamedSharding
 
 from lalamo.inference.batch_scheduler import BatchSchedulerConfig, FixedSizeBatchScheduler
 from lalamo.model_import.model_spec import LanguageModelSpec
@@ -85,17 +84,13 @@ def _sharded_generation_batch(
     )
 
 
-def _take_batch_prefix(language_model: LanguageModel, values: jax.Array, batch_size: int) -> jax.Array:
+def _take_batch_prefix(language_model: LanguageModel, values: jax.Array, batch_size: int) -> np.ndarray:
     full_mesh_replicated_sharding = language_model.sharding_config.make_sharding((None,) * values.ndim)
     prefix = values.at[:batch_size].get(out_sharding=full_mesh_replicated_sharding)
-    return jax.device_put(np.asarray(prefix), _host_replicated_sharding(values.ndim))
+    return np.asarray(prefix)
 
 
-def _host_replicated_sharding(ndim: int) -> NamedSharding:
-    return ShardingConfig.replicated(jax.devices()[:1]).make_sharding((None,) * ndim)
-
-
-def _take_first_batch_row(language_model: LanguageModel, values: jax.Array) -> jax.Array:
+def _take_first_batch_row(language_model: LanguageModel, values: jax.Array) -> np.ndarray:
     return _take_batch_prefix(language_model, values, 1).squeeze(0)
 
 
@@ -172,7 +167,7 @@ def test_padding(language_model: LanguageModel) -> None:
         keychain=Keychain.init(1, sharding_config=language_model.sharding_config),
     ).token_ids
     response_token_ids = _take_first_batch_row(language_model, response_token_ids)
-    response_text = language_model.token_codec.tokenizer.decode(response_token_ids)
+    response_text = language_model.token_codec.tokenizer.decode(response_token_ids.tolist())
     assert "elephants" not in response_text.lower()
 
     token_ids, prompt_lengths = _sharded_generation_batch(
@@ -187,7 +182,7 @@ def test_padding(language_model: LanguageModel) -> None:
         keychain=Keychain.init(2, sharding_config=language_model.sharding_config),
     ).token_ids
     response_token_ids = _take_first_batch_row(language_model, response_token_ids)
-    response_text = language_model.token_codec.tokenizer.decode(response_token_ids)
+    response_text = language_model.token_codec.tokenizer.decode(response_token_ids.tolist())
     assert "elephants" in response_text.lower()
 
 
