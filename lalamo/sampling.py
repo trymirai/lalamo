@@ -190,10 +190,10 @@ class SamplingPolicy(eqx.Module):
         logits = self._apply_repetition_penalty(logits)
         logits = self._apply_presence_penalty(logits)
         logits = self._apply_frequency_penalty(logits)
+        logits = self._apply_temperature(logits)
         logits = self._apply_top_k(logits)
         logits = self._apply_top_p(logits)
-        logits = self._apply_min_p(logits)
-        return self._apply_temperature(logits)
+        return self._apply_min_p(logits)
 
     def __call__(self, logits: Float[Array, " vocabulary"], *, keychain: Keychain) -> Int[Array, ""]:
         self._raise_if_batched()
