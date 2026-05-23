@@ -1,3 +1,4 @@
+from collections.abc import Generator
 from dataclasses import replace
 
 import jax
@@ -99,11 +100,12 @@ def _take_first_batch_row(language_model: LanguageModel, values: jax.Array) -> j
 
 
 @pytest.fixture(params=mark_by_size(core_llm_specs), ids=[spec.origin.description for spec in core_llm_specs])
-def language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) -> LanguageModel:
+def language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) -> Generator[LanguageModel]:
     model_dir = convert_model(request.param.origin.description)
     model = load_converted_model(model_dir, make_test_sharding_config())
     assert isinstance(model, LanguageModel)
-    return model
+    with jax.set_mesh(model.sharding_config.mesh):
+        yield model
 
 
 @pytest.fixture(params=mark_by_size(core_llm_specs), ids=[spec.origin.description for spec in core_llm_specs])

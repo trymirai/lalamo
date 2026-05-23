@@ -38,7 +38,7 @@ def yaqa_round_fixpoint(
     input_dtype = weights.dtype
     *_, output_dim, input_dim = weights.shape
     if max_iters is None:
-        max_iters = 2 * (input_dim + output_dim)
+        max_iters = max(128, 2 * (input_dim + output_dim))
 
     replicated_weight_sharding = sharding_config.make_sharding((None,) * weights.ndim)
     replicated_weights = jax.device_put(
