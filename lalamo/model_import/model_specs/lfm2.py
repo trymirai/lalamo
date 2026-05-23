@@ -2,6 +2,7 @@ from itertools import chain, product
 
 from lalamo.model_import.model_configs import HFLFM2Config
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
+from lalamo.model_import.model_specs.output_parser_regexes import OPTIONAL_THINKING_OUTPUT_PARSER_REGEX
 from lalamo.model_import.origins import HuggingFaceOrigin
 from lalamo.models.language_model import GenerationConfig
 
@@ -36,13 +37,13 @@ _LFM20_MODELS = [
 ]
 
 _LFM25_MODEL_SPECS = (
-    ("LiquidAI", "LFM2.5-350M", "350M", None),
-    ("LiquidAI", "LFM2.5-1.2B-Instruct", "1.2B", None),
-    ("LiquidAI", "LFM2.5-1.2B-Instruct-MLX-4bit", "1.2B", 4),
-    ("LiquidAI", "LFM2.5-1.2B-Instruct-MLX-8bit", "1.2B", 8),
-    ("LiquidAI", "LFM2.5-1.2B-Thinking", "1.2B", None),
-    ("mlx-community", "LFM2.5-1.2B-Thinking-4bit", "1.2B", 4),
-    ("mlx-community", "LFM2.5-1.2B-Thinking-8bit", "1.2B", 8),
+    ("LiquidAI", "LFM2.5-350M", "350M", None, None),
+    ("LiquidAI", "LFM2.5-1.2B-Instruct", "1.2B", None, None),
+    ("LiquidAI", "LFM2.5-1.2B-Instruct-MLX-4bit", "1.2B", 4, None),
+    ("LiquidAI", "LFM2.5-1.2B-Instruct-MLX-8bit", "1.2B", 8, None),
+    ("LiquidAI", "LFM2.5-1.2B-Thinking", "1.2B", None, OPTIONAL_THINKING_OUTPUT_PARSER_REGEX),
+    ("mlx-community", "LFM2.5-1.2B-Thinking-4bit", "1.2B", 4, OPTIONAL_THINKING_OUTPUT_PARSER_REGEX),
+    ("mlx-community", "LFM2.5-1.2B-Thinking-8bit", "1.2B", 8, OPTIONAL_THINKING_OUTPUT_PARSER_REGEX),
 )
 
 _LFM25_MODELS = [
@@ -57,8 +58,9 @@ _LFM25_MODELS = [
             generation_config=GenerationConfig(temperature=0.1, top_k=50, top_p=0.1),  # , repetition_penalty=1.05
             chat_template=FileSpec("chat_template.jinja"),
         ),
+        output_parser_regex=output_parser_regex,
     )
-    for repo_owner, name, size, _quantization_bits in _LFM25_MODEL_SPECS
+    for repo_owner, name, size, _quantization_bits, output_parser_regex in _LFM25_MODEL_SPECS
 ]
 
 LFM2_MODELS = _LFM20_MODELS + _LFM25_MODELS

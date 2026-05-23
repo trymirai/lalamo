@@ -1,5 +1,6 @@
 from lalamo.model_import.model_configs import HFQwen3Config
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
+from lalamo.model_import.model_specs.output_parser_regexes import OPTIONAL_THINKING_OUTPUT_PARSER_REGEX
 from lalamo.model_import.origins import HuggingFaceOrigin
 
 __all__ = ["POLARIS_MODELS"]
@@ -15,5 +16,6 @@ POLARIS_MODELS = [
         configs=ConfigMap(
             chat_template=FileSpec("chat_template.jinja"),
         ),
+        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
     ),
 ]
