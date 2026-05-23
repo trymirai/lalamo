@@ -644,7 +644,7 @@ def load_rmsnorm(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Normalization:
-    scales = weights_dict[path / "weight"]
+    scales = weights_dict[path / "weight"].astype(jnp.float32)
     return load_as_at(lambda m: (m.scales,), module, (scales,), allow_dtype_cast=True)
 
 
@@ -969,12 +969,12 @@ def load_delta_net_attention(
                 sharding_config=module.in_proj.weights.sharding_config,
             )
         in_proj = _update_linear(module.in_proj, new_weights, None)
-    conv = _load_conv(module.conv, weights_dict, path, permute_conv)
+    conv = _load_conv(module.conv, weights_dict, path, permute_conv).astype(jnp.float32)
     out_proj = load_linear(module.out_proj, weights_dict, path / "out_proj", implementation=implementation)
     norm = load_rmsnorm(module.norm, weights_dict, path / "norm")
 
-    dt_bias = weights_dict.get(path / "dt_bias", module.dt_bias)
-    a_log = weights_dict.get(path / "A_log", module.a_log)
+    dt_bias = weights_dict.get(path / "dt_bias", module.dt_bias).astype(jnp.float32)
+    a_log = weights_dict.get(path / "A_log", module.a_log).astype(jnp.float32)
 
     return load_as_at(
         lambda m: (
