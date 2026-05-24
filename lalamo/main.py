@@ -5,7 +5,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from functools import partial
 from importlib.util import find_spec
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated
 
 import jax
@@ -474,7 +474,7 @@ def pull(
     ] = False,
 ) -> None:
     if output_dir is None:
-        output_dir = DEFAULT_OUTPUT_DIR / model_spec.name
+        output_dir = DEFAULT_OUTPUT_DIR / PurePosixPath(model_spec.repo_id).name
 
     _pull(
         model_spec,

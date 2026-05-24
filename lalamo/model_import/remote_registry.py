@@ -1,3 +1,4 @@
+import importlib.metadata
 from dataclasses import dataclass, replace
 from typing import ClassVar
 
@@ -110,6 +111,10 @@ class RegistryModel:
 
     @property
     def repo_id(self) -> str:
+        return self.accessibility.reference.source_repository.identifier
+
+    @property
+    def artifact_repo_id(self) -> str:
         return self.accessibility.reference.repository.identifier
 
     @property
@@ -137,7 +142,7 @@ def fetch_available_models() -> list[RegistryModel]:
             "backends": [
                 {
                     "identifier": "uzu",
-                    "version": "0.10.0",
+                    "version": importlib.metadata.version("lalamo"),
                 },
             ],
         },
