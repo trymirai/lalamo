@@ -28,7 +28,7 @@ from lalamo.model_import.common import (
     import_model,
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
-from lalamo.models.chat_codec import UserMessage
+from lalamo.models.chat_codec import AssistantMessage, Message, UserMessage
 from lalamo.models.language_model import GenerationConfig, LanguageModel
 from lalamo.module import Keychain
 from lalamo.speculator.common import load_speculator
@@ -254,7 +254,7 @@ def evaluate_speculator(
     mtbench_cache_path: Path,
     num_questions: int | None = None,
     batch_size: int = 32,
-    max_output_length: int = 4096,
+    max_output_length: int = 2048,
     reasoning: bool = True,
     temperature: float = 1.0,
     top_p: float | None = None,
@@ -273,8 +273,9 @@ def evaluate_speculator(
     if not questions:
         raise ValueError("Evaluation dataset is empty.")
     total_questions = len(questions)
+    total_generations = sum(len(question.turns) for question in questions)
     if progress_callback is not None:
-        progress_callback(0, total_questions)
+        progress_callback(0, total_generations)
 
     model = LanguageModel.load(model_path)
     speculator = load_speculator(speculator_path, model.decoder) if speculator_path is not None else None
@@ -285,60 +286,117 @@ def evaluate_speculator(
         top_k=top_k,
         min_p=min_p,
     )
-    tokenized = [
-        model.token_codec.encode_request(
-            [UserMessage(turn) for turn in question.turns],
-            enable_thinking=reasoning,
-        )
-        for question in questions
-    ]
-    padded_length = max(len(tokens) for tokens in tokenized)
-
-    if warmup:
-        warmup_tokenized = tokenized[: min(batch_size, total_questions)]
-        warmup_batch_size = len(warmup_tokenized)
-        warmup_lengths = jnp.asarray([len(tokens) for tokens in warmup_tokenized], dtype=jnp.int32)
-        warmup_prompt_token_ids, _ = pad_sequences(warmup_tokenized, pad_token_id=0, padded_length=padded_length)
-        warmup_results = model.generate_tokens(
-            warmup_prompt_token_ids,
-            generation_config=generation_config,
-            prompt_lengths_without_padding=warmup_lengths,
-            max_output_length=max_output_length,
-            speculator=speculator,
-            keychain=Keychain.init(seed + total_questions, shape=(warmup_batch_size,)),
-        )
-        jax.device_get(warmup_results.num_tokens_per_step)
-
+    max_padded_length = 0
     by_category: dict[str, EvalCounts] = {}
-    started_at = time.perf_counter()
-    completed = 0
-    for batch_start in range(0, total_questions, batch_size):
-        batch_questions = questions[batch_start : batch_start + batch_size]
-        batch_tokenized = tokenized[batch_start : batch_start + batch_size]
-        current_batch_size = len(batch_tokenized)
-        prompt_lengths_without_padding = jnp.asarray([len(tokens) for tokens in batch_tokenized], dtype=jnp.int32)
-        prompt_token_ids, _ = pad_sequences(batch_tokenized, pad_token_id=0, padded_length=padded_length)
+
+    def response_token_ids(token_ids: list[int]) -> list[int]:
+        stop_token_ids = set(generation_config.stop_token_ids)
+        if not stop_token_ids:
+            return token_ids
+        response_length = next(
+            (idx for idx, token_id in enumerate(token_ids) if token_id in stop_token_ids),
+            len(token_ids),
+        )
+        return token_ids[:response_length]
+
+    def uses_reasoning(category: str) -> bool:
+        return reasoning and not category.startswith(f"{EvalDatasetName.MTBENCH.value}/")
+
+    def run_generation_batch(
+        messages: list[list[Message]],
+        categories: list[str],
+        seed_offset: int,
+        *,
+        collect_counts: bool,
+    ) -> list[AssistantMessage]:
+        nonlocal max_padded_length
+        tokenized = [
+            model.token_codec.encode_request(
+                message,
+                enable_thinking=uses_reasoning(category),
+            )
+            for message, category in zip(messages, categories, strict=True)
+        ]
+        padded_length = max(len(tokens) for tokens in tokenized)
+        max_padded_length = max(max_padded_length, padded_length)
+        prompt_lengths_without_padding = jnp.asarray([len(tokens) for tokens in tokenized], dtype=jnp.int32)
+        prompt_token_ids, _ = pad_sequences(tokenized, pad_token_id=0, padded_length=padded_length)
         batch_results = model.generate_tokens(
             prompt_token_ids,
             generation_config=generation_config,
             prompt_lengths_without_padding=prompt_lengths_without_padding,
             max_output_length=max_output_length,
             speculator=speculator,
-            keychain=Keychain.init(seed + batch_start, shape=(current_batch_size,)),
+            keychain=Keychain.init(seed + seed_offset, shape=(len(messages),)),
         )
         counts = jax.device_get(batch_results.num_tokens_per_step)
-        token_counts = counts.sum(axis=0).tolist()
-        step_counts = (counts > 0).sum(axis=0).tolist()
-        for question, token_count, step_count in zip(batch_questions, token_counts, step_counts, strict=True):
-            tokens = int(token_count)
-            steps = int(step_count)
-            by_category[question.category] = by_category.get(question.category, EvalCounts()).add(
-                tokens=tokens,
-                steps=steps,
+        if collect_counts:
+            token_counts = counts.sum(axis=0).tolist()
+            step_counts = (counts > 0).sum(axis=0).tolist()
+            for category, token_count, step_count in zip(categories, token_counts, step_counts, strict=True):
+                tokens = int(token_count)
+                steps = int(step_count)
+                by_category[category] = by_category.get(category, EvalCounts()).add(
+                    tokens=tokens,
+                    steps=steps,
+                )
+
+        responses: list[AssistantMessage] = []
+        for token_ids, category in zip(jax.device_get(batch_results.token_ids).tolist(), categories, strict=True):
+            response = model.token_codec.decode_response(
+                response_token_ids(token_ids),
+                expect_thinking=uses_reasoning(category),
             )
-            completed += 1
-            if progress_callback is not None:
-                progress_callback(completed, total_questions)
+            responses.append(response)
+        return responses
+
+    def run_question_batch(
+        batch_questions: list[EvalQuestion],
+        seed_offset: int,
+        *,
+        collect_counts: bool,
+    ) -> int:
+        completed_generations = 0
+        conversations: list[list[Message]] = [[] for _ in batch_questions]
+        max_turns = max(len(question.turns) for question in batch_questions)
+        for turn_index in range(max_turns):
+            active_indices = [
+                question_index
+                for question_index, question in enumerate(batch_questions)
+                if turn_index < len(question.turns)
+            ]
+            if not active_indices:
+                continue
+            active_messages: list[list[Message]] = []
+            active_categories: list[str] = []
+            for question_index in active_indices:
+                question = batch_questions[question_index]
+                conversations[question_index].append(UserMessage(question.turns[turn_index]))
+                active_messages.append(conversations[question_index])
+                active_categories.append(question.category)
+
+            responses = run_generation_batch(
+                active_messages,
+                active_categories,
+                seed_offset + completed_generations,
+                collect_counts=collect_counts,
+            )
+            for question_index, response in zip(active_indices, responses, strict=True):
+                conversations[question_index].append(response)
+            completed_generations += len(active_indices)
+        return completed_generations
+
+    if warmup:
+        warmup_questions = questions[: min(batch_size, total_questions)]
+        run_question_batch(warmup_questions, total_questions, collect_counts=False)
+
+    started_at = time.perf_counter()
+    completed = 0
+    for batch_start in range(0, total_questions, batch_size):
+        batch_questions = questions[batch_start : batch_start + batch_size]
+        completed += run_question_batch(batch_questions, completed, collect_counts=True)
+        if progress_callback is not None:
+            progress_callback(completed, total_generations)
     elapsed_seconds = time.perf_counter() - started_at
 
     return EvalResults(
@@ -354,7 +412,7 @@ def evaluate_speculator(
             top_p=top_p,
             top_k=top_k,
             min_p=min_p,
-            padded_length=padded_length,
+            padded_length=max_padded_length,
             seed=seed,
             warmup=warmup,
             mtbench_cache_path=mtbench_cache_path,
