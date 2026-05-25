@@ -86,10 +86,21 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
+          if grep -q "pulled model tensor signatures differ from a fresh conversion" pull_smoke.log; then
+            notice="[CI NOTICE] Pulled model tensors differ from fresh conversion."
+            detail="The pull succeeded, but stored artifact tensor names, shapes, or dtypes do not match a fresh conversion from this checkout."
+          elif grep -q "test_pulled_model_generates_adequate_output" pull_smoke.log; then
+            notice="[CI NOTICE] A pulled model no longer runs cleanly with current lalamo."
+            detail="The direct pull/chat smoke failed, so pulled artifacts are not runtime-compatible with this release."
+          else
+            notice="[CI NOTICE] Pull tests failed."
+            detail="The pull smoke failed before the failure could be classified. Check the pytest output below."
+          fi
+
           {
-            echo "[CI NOTICE] Pull tests failed."
+            echo "$notice"
             echo
-            echo "This usually indicates a compatibility break for pulled models."
+            echo "$detail"
             echo "Please consider bumping the major version for this release, and updating all the server-stored models."
             echo
             echo "<details><summary>Error output (last 200 lines)</summary>"

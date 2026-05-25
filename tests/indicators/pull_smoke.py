@@ -1,19 +1,105 @@
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from safetensors import safe_open
 from tokenizers import Tokenizer
 
-from tests.conftest import RunLalamo, strip_ansi_escape
+from tests.conftest import ConvertModel, RunLalamo, strip_ansi_escape
+from tests.model_test_tiers import ModelTier, get_models_by_tier
 
 PULL_MODEL_REPO = "google/gemma-3-1b-it"
+PULL_SIGNATURE_MODEL_REPOS = get_models_by_tier(ModelTier.CANONICAL) + get_models_by_tier(ModelTier.CORE)
 MATH_PROMPT = "What is 2 + 2? Reply with a single number, nothing else."
 YES_NO_PROMPT = "Are apples fruits? Answer with one word: yes or no."
 MAX_RESPONSE_TOKENS = 30
 
 
-def _has_model_weights(model_dir: Path) -> bool:
-    return (model_dir / "model.safetensors").exists() or any(model_dir.glob("model*.safetensors"))
+@dataclass(frozen=True)
+class TensorSignature:
+    dtype: str
+    shape: tuple[int, ...]
+
+
+def _pull_model_dir(
+    repo: str,
+    tmp_path_factory: pytest.TempPathFactory,
+    run_lalamo: RunLalamo,
+) -> Path:
+    output_dir = tmp_path_factory.mktemp("pulled_models") / repo.replace("/", "__")
+    run_lalamo("pull", repo, "--output-dir", str(output_dir))
+
+    assert (output_dir / "config.json").exists(), f"Missing config.json in {output_dir}"
+    assert (output_dir / "tokenizer.json").exists(), f"Missing tokenizer.json in {output_dir}"
+    assert any(output_dir.glob("model*.safetensors")), f"Missing model weights in {output_dir}"
+    return output_dir
+
+
+def _tensor_signatures(model_dir: Path) -> dict[str, TensorSignature]:
+    weight_paths = tuple(sorted(model_dir.glob("model*.safetensors")))
+    assert weight_paths, f"Missing model weights in {model_dir}"
+
+    signatures: dict[str, TensorSignature] = {}
+    for weight_path in weight_paths:
+        with safe_open(weight_path, framework="numpy") as tensors_file:
+            for tensor_name in sorted(tensors_file.keys()):
+                if tensor_name in signatures:
+                    raise AssertionError(f"Duplicate tensor {tensor_name!r} across safetensors files in {model_dir}")
+
+                tensor_slice = tensors_file.get_slice(tensor_name)
+                signatures[tensor_name] = TensorSignature(
+                    dtype=tensor_slice.get_dtype(),
+                    shape=tuple(tensor_slice.get_shape()),
+                )
+
+    return signatures
+
+
+def _format_tensor_signature_diffs(
+    *,
+    converted_signatures: dict[str, TensorSignature],
+    pulled_signatures: dict[str, TensorSignature],
+    limit: int = 20,
+) -> str:
+    converted_names = set(converted_signatures)
+    pulled_names = set(pulled_signatures)
+    missing_from_pull = sorted(converted_names - pulled_names)
+    extra_in_pull = sorted(pulled_names - converted_names)
+    mismatched = [
+        (
+            tensor_name,
+            converted_signatures[tensor_name],
+            pulled_signatures[tensor_name],
+        )
+        for tensor_name in sorted(converted_names & pulled_names)
+        if converted_signatures[tensor_name] != pulled_signatures[tensor_name]
+    ]
+
+    lines: list[str] = []
+    for label, tensor_names in (
+        ("Tensors missing from pulled artifact", missing_from_pull),
+        ("Extra tensors in pulled artifact", extra_in_pull),
+    ):
+        if tensor_names:
+            hidden_count = len(tensor_names) - limit
+            visible_names = ", ".join(tensor_names[:limit])
+            hidden_suffix = ""
+            if hidden_count > 0:
+                hidden_suffix = f", ... ({hidden_count} more)"
+            lines.append(f"{label} ({len(tensor_names)}): {visible_names}{hidden_suffix}")
+
+    if mismatched:
+        lines.append(f"Tensor signature mismatches ({len(mismatched)}):")
+        lines.extend(
+            f"  {tensor_name}: converted={converted_signature}, pulled={pulled_signature}"
+            for tensor_name, converted_signature, pulled_signature in mismatched[:limit]
+        )
+        hidden_count = len(mismatched) - limit
+        if hidden_count > 0:
+            lines.append(f"  ... ({hidden_count} more)")
+
+    return "\n".join(lines)
 
 
 @pytest.fixture(scope="session")
@@ -21,13 +107,7 @@ def pulled_model_dir(
     tmp_path_factory: pytest.TempPathFactory,
     run_lalamo: RunLalamo,
 ) -> Path:
-    output_dir = tmp_path_factory.mktemp("pulled_models") / PULL_MODEL_REPO.replace("/", "__")
-    run_lalamo("pull", PULL_MODEL_REPO, "--output-dir", str(output_dir))
-
-    assert (output_dir / "config.json").exists(), f"Missing config.json in {output_dir}"
-    assert (output_dir / "tokenizer.json").exists(), f"Missing tokenizer.json in {output_dir}"
-    assert _has_model_weights(output_dir), f"Missing model weights in {output_dir}"
-    return output_dir
+    return _pull_model_dir(PULL_MODEL_REPO, tmp_path_factory, run_lalamo)
 
 
 def test_pulled_model_generates_adequate_output(
@@ -64,3 +144,26 @@ def test_pulled_model_generates_adequate_output(
     assert token_counts[1] < MAX_RESPONSE_TOKENS, (
         f"Yes/no response is too long ({token_counts[1]} tokens): {responses[1]!r}"
     )
+
+
+@pytest.mark.parametrize("repo", PULL_SIGNATURE_MODEL_REPOS, ids=PULL_SIGNATURE_MODEL_REPOS)
+def test_pulled_canonical_and_core_model_tensor_signatures_match_fresh_conversion(
+    repo: str,
+    tmp_path_factory: pytest.TempPathFactory,
+    run_lalamo: RunLalamo,
+    convert_model: ConvertModel,
+) -> None:
+    pulled_model_dir = _pull_model_dir(repo, tmp_path_factory, run_lalamo)
+    converted_model_dir = convert_model(repo, cached=True)
+    converted_signatures = _tensor_signatures(converted_model_dir)
+    pulled_signatures = _tensor_signatures(pulled_model_dir)
+
+    diff_message = _format_tensor_signature_diffs(
+        converted_signatures=converted_signatures,
+        pulled_signatures=pulled_signatures,
+    )
+
+    if pulled_signatures != converted_signatures:
+        raise AssertionError(
+            f"pulled model tensor signatures differ from a fresh conversion for {repo}.\n{diff_message}"
+        )
