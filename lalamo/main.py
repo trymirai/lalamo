@@ -688,7 +688,7 @@ def print_speculator_eval_results(results: EvalResults) -> None:
     table.add_column("tok/sec", justify="right")
     table.add_column("mal", justify="right")
     table.add_column("spec_rate", justify="right")
-    table.add_column("questions", justify="right")
+    table.add_column("generations", justify="right")
 
     for category in sorted(results.by_category):
         stats = results.by_category[category]
@@ -759,7 +759,7 @@ def eval_speculator(
     max_output_length: Annotated[
         int,
         Option("--max_output_length", "--max-output-length", help="Maximum number of generated tokens per question."),
-    ] = 4096,
+    ] = 2048,
     reasoning: Annotated[
         bool,
         Option("--reasoning/--no-reasoning", help="Render eval prompts with reasoning/thinking enabled."),

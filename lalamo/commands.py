@@ -16,7 +16,7 @@ import thefuzz.fuzz
 import thefuzz.process
 from datasets import load_dataset
 
-from lalamo.data.utils import pad_sequences
+from lalamo.data.utils import pad_sequences, round_up_to_multiple
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import (
     DownloadingFileEvent,
@@ -299,9 +299,6 @@ def evaluate_speculator(
         )
         return token_ids[:response_length]
 
-    def uses_reasoning(category: str) -> bool:
-        return reasoning and not category.startswith(f"{EvalDatasetName.MTBENCH.value}/")
-
     def run_generation_batch(
         messages: list[list[Message]],
         categories: list[str],
@@ -313,11 +310,11 @@ def evaluate_speculator(
         tokenized = [
             model.token_codec.encode_request(
                 message,
-                enable_thinking=uses_reasoning(category),
+                enable_thinking=reasoning,
             )
-            for message, category in zip(messages, categories, strict=True)
+            for message in messages
         ]
-        padded_length = max(len(tokens) for tokens in tokenized)
+        padded_length = round_up_to_multiple(max(len(tokens) for tokens in tokenized), 256)
         max_padded_length = max(max_padded_length, padded_length)
         prompt_lengths_without_padding = jnp.asarray([len(tokens) for tokens in tokenized], dtype=jnp.int32)
         prompt_token_ids, _ = pad_sequences(tokenized, pad_token_id=0, padded_length=padded_length)
@@ -342,10 +339,10 @@ def evaluate_speculator(
                 )
 
         responses: list[AssistantMessage] = []
-        for token_ids, category in zip(jax.device_get(batch_results.token_ids).tolist(), categories, strict=True):
+        for token_ids in jax.device_get(batch_results.token_ids).tolist():
             response = model.token_codec.decode_response(
                 response_token_ids(token_ids),
-                expect_thinking=uses_reasoning(category),
+                expect_thinking=reasoning,
             )
             responses.append(response)
         return responses
