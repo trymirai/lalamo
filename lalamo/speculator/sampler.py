@@ -37,8 +37,9 @@ def token_gumbels(
     dtype: DTypeLike = jnp.float32,
 ) -> Float[Array, "*rows candidates"]:
     dtype = jnp.dtype(dtype)
-    key0 = keys[..., 0].astype(jnp.uint32)
-    key1 = keys[..., 1].astype(jnp.uint32)
+    key_bits = jax.random.key_data(keys)
+    key0 = key_bits[..., 0].astype(jnp.uint32)
+    key1 = key_bits[..., 1].astype(jnp.uint32)
     position_bits = positions.astype(jnp.uint32)
     seed_bits = seeds.astype(jnp.uint32)
     bits = token_ids.astype(jnp.uint32)
