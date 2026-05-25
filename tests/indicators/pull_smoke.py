@@ -66,38 +66,24 @@ def _format_tensor_signature_diffs(
     pulled_names = set(pulled_signatures)
     missing_from_pull = sorted(converted_names - pulled_names)
     extra_in_pull = sorted(pulled_names - converted_names)
-    mismatched = [
-        (
-            tensor_name,
+    mismatched = {
+        tensor_name: (
             converted_signatures[tensor_name],
             pulled_signatures[tensor_name],
         )
         for tensor_name in sorted(converted_names & pulled_names)
         if converted_signatures[tensor_name] != pulled_signatures[tensor_name]
-    ]
+    }
 
     lines: list[str] = []
-    for label, tensor_names in (
-        ("Tensors missing from pulled artifact", missing_from_pull),
-        ("Extra tensors in pulled artifact", extra_in_pull),
-    ):
-        if tensor_names:
-            hidden_count = len(tensor_names) - limit
-            visible_names = ", ".join(tensor_names[:limit])
-            hidden_suffix = ""
-            if hidden_count > 0:
-                hidden_suffix = f", ... ({hidden_count} more)"
-            lines.append(f"{label} ({len(tensor_names)}): {visible_names}{hidden_suffix}")
-
+    if missing_from_pull:
+        lines.append(f"Tensors missing from pulled artifact ({len(missing_from_pull)}): {missing_from_pull[:limit]}")
+    if extra_in_pull:
+        lines.append(f"Extra tensors in pulled artifact ({len(extra_in_pull)}): {extra_in_pull[:limit]}")
     if mismatched:
         lines.append(f"Tensor signature mismatches ({len(mismatched)}):")
-        lines.extend(
-            f"  {tensor_name}: converted={converted_signature}, pulled={pulled_signature}"
-            for tensor_name, converted_signature, pulled_signature in mismatched[:limit]
-        )
-        hidden_count = len(mismatched) - limit
-        if hidden_count > 0:
-            lines.append(f"  ... ({hidden_count} more)")
+        for tensor_name, (converted_signature, pulled_signature) in tuple(mismatched.items())[:limit]:
+            lines.append(f"  {tensor_name}: converted={converted_signature}, pulled={pulled_signature}")
 
     return "\n".join(lines)
 
