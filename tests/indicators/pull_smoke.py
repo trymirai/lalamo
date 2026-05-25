@@ -88,18 +88,11 @@ def _format_tensor_signature_diffs(
     return "\n".join(lines)
 
 
-@pytest.fixture(scope="session")
-def pulled_model_dir(
+def test_pulled_model_generates_adequate_output(
     tmp_path_factory: pytest.TempPathFactory,
     run_lalamo: RunLalamo,
-) -> Path:
-    return _pull_model_dir(PULL_MODEL_REPO, tmp_path_factory, run_lalamo)
-
-
-def test_pulled_model_generates_adequate_output(
-    pulled_model_dir: Path,
-    run_lalamo: RunLalamo,
 ) -> None:
+    pulled_model_dir = _pull_model_dir(PULL_MODEL_REPO, tmp_path_factory, run_lalamo)
     responses = [
         strip_ansi_escape(
             run_lalamo(
