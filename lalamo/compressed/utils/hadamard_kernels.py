@@ -1,4 +1,5 @@
 # pyrefly: ignore-errors
+from functools import partial
 from math import sqrt
 from typing import Literal
 
@@ -9,6 +10,8 @@ from cuda.bindings import driver as cuda
 from cutlass import cute
 from cutlass.cute.arch import WARP_SIZE
 from jaxtyping import Array, Float
+
+from lalamo.utils.sharding import is_sharded, sharding_of
 
 
 @cute.kernel
@@ -72,7 +75,7 @@ def _launch_hadamard_transform(
     )
 
 
-def cute_hadamard_transform(
+def _local_cute_hadamard_transform(
     inputs: Float[Array, "... channels"],
     block_size: Literal[32, 64, 128],
 ) -> Float[Array, "... channels"]:
@@ -87,3 +90,19 @@ def cute_hadamard_transform(
         block_size=block_size,
         num_blocks_per_cta=num_blocks_per_cta,
     )(inputs)
+
+
+def cute_hadamard_transform(
+    inputs: Float[Array, "... channels"],
+    block_size: Literal[32, 64, 128],
+) -> Float[Array, "... channels"]:
+    sharding = sharding_of(inputs)
+    if is_sharded(sharding):
+        return jax.shard_map(
+            partial(_local_cute_hadamard_transform, block_size=block_size),
+            mesh=sharding.mesh,
+            in_specs=sharding.spec,
+            out_specs=sharding.spec,
+        )(inputs)
+
+    return _local_cute_hadamard_transform(inputs, block_size)

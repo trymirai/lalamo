@@ -6,7 +6,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.module import Keychain, ShardingAxis
+from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
 )
@@ -97,6 +97,7 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfig):
 
         return FishAudioTextDecoder(
             config=self,
+            sharding_config=initializer.sharding_config,
             embeddings_slow=embeddings_slow,
             transformer_slow=self.slow_model_config.init(initializer),
             readout_slow=self.slow_readout_config.init(
@@ -197,7 +198,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             inp[:, 0],
             forward_pass_config=forward_pass_config.embedding_forward_pass_config,
             keychain=slow_embed_keychain,
-            added_sharding_axes=(ShardingAxis.DATA, None),
+            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
 
         def add_codebook_embeddings(
@@ -223,7 +224,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
                 embed_codebook_batch,
                 inp[:, 1:, :] + codebook_offsets,
                 keychain=codebook_embed_keychain,
-                added_sharding_axis=ShardingAxis.DATA,
+                added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
             )
 
             vq_embeds_sum = codebook_embeds.sum(axis=1)
@@ -254,7 +255,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         *,
         keychain: Keychain,
         forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
-    ) -> Int[Array, "num_codebooks generated_tokens"]:
+    ) -> Int[Array, "num_codebooks semantic_tokens"]:
         """
         Generate semantic tokens for a full utterance given text tokens in an autoregressive
         generation loop. Processing text tokens through the slow transformer and generating
@@ -469,7 +470,7 @@ def decode_next_token(
         first_fast_code,
         forward_pass_config=forward_pass_config.embedding_forward_pass_config,
         keychain=fast_embed_keychain,
-        added_sharding_axis=ShardingAxis.DATA,
+        added_sharding_axis=model.sharding_config.resolve_axis(LogicalAxis.BATCH),
     )
     loop_sampling_keys = jax.random.split(loop_sampling_keychain.vmapped_keys, max(n_codes - 2, 0))
 
@@ -505,7 +506,11 @@ def decode_next_token(
             short_logits[0, -1, :],
             None if previous_tokens is None else previous_tokens[index],
             previous_tokens_length=previous_tokens_length,
-            keychain=Keychain(vmapped_keys=sample_vmapped_key, batch_key=keychain.batch_key),
+            keychain=Keychain(
+                vmapped_keys=sample_vmapped_key,
+                batch_key=keychain.batch_key,
+                sharding_config=keychain.sharding_config,
+            ),
         )
 
         new_logits = call_vmapped(
@@ -513,7 +518,7 @@ def decode_next_token(
             code[None],
             forward_pass_config=forward_pass_config.embedding_forward_pass_config,
             keychain=fast_embed_keychain,
-            added_sharding_axis=ShardingAxis.DATA,
+            added_sharding_axis=model.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )
         codebooks = codebooks.at[0, index].set(code)
         return (new_state, new_logits, codebooks), None

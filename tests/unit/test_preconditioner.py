@@ -11,11 +11,12 @@ from tokenizers.models import WordLevel
 from lalamo.initializer import Initializer
 from lalamo.model import Model, ModelConfig
 from lalamo.models.chat_codec import ChatCodec, ChatCodecConfig
-from lalamo.module import LalamoConfig, LalamoModule, ShardingAxis
+from lalamo.module import LalamoConfig, LalamoModule, LogicalAxis
 from lalamo.preconditioner import Preconditioner, PreconditionerDict
-from lalamo.utils.sharding import is_sharded, make_sharding
+from lalamo.utils.sharding import is_sharded
 from lalamo.weight_matrix import FullPrecisionSpec, WeightMatrix
 from tests.common import assert_close
+from tests.helpers import make_sharding, make_test_sharding_config
 
 
 def _assert_close(result: jax.Array, reference: jax.Array) -> None:
@@ -36,11 +37,13 @@ class _PreconditionerModelConfig(ModelConfig[ChatCodecConfig]):
     def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "_PreconditionerModel":
         return _PreconditionerModel(
             config=self,
+            sharding_config=initializer.sharding_config,
             token_codec=self.token_codec_config.init(tokenizer),
             first=initializer.weight_matrix(output_dim=2, input_dim=3),
             block=_Block(
                 config=_BlockConfig(),
-                matrix=initializer.weight_matrix(output_dim=3, input_dim=4),
+                sharding_config=make_test_sharding_config(),
+                matrix=initializer.weight_matrix(output_dim=3, input_dim=4, is_sharded=False),
             ),
         )
 
@@ -71,11 +74,19 @@ def _model() -> _PreconditionerModel:
     config = _PreconditionerModelConfig(token_codec_config=_chat_codec_config())
     return _PreconditionerModel(
         config=config,
+        sharding_config=make_test_sharding_config(),
         token_codec=config.token_codec_config.init(_tokenizer()),
-        first=FullPrecisionSpec().compress(jnp.ones((2, 3), dtype=jnp.float32)),
+        first=FullPrecisionSpec().compress(
+            jnp.ones((2, 3), dtype=jnp.float32), sharding_config=make_test_sharding_config()
+        ),
         block=_Block(
             config=_BlockConfig(),
-            matrix=FullPrecisionSpec().compress(jnp.ones((3, 4), dtype=jnp.float32)),
+            sharding_config=make_test_sharding_config(),
+            matrix=FullPrecisionSpec().compress(
+                jnp.ones((3, 4), dtype=jnp.float32),
+                sharding_config=make_test_sharding_config(),
+                is_sharded=False,
+            ),
         ),
     )
 
@@ -247,7 +258,7 @@ def test_preconditioner_dict_save_restores_unsharded_preconditioners(
                 2 * jnp.eye(2, dtype=jnp.float32),
             ],
         ),
-        make_sharding((ShardingAxis.DATA, None, None)),
+        make_sharding((LogicalAxis.BATCH, None, None)),
     )
     assert is_sharded(input_block.sharding)
     assert input_block.sharding.mesh == fake_mesh

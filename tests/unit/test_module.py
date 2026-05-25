@@ -6,19 +6,19 @@ import jax.numpy as jnp
 import pytest
 from jax.sharding import Mesh, NamedSharding
 
-from lalamo.compressed.awq import AWQMatrixForInference, AWQMatrixForTraining, AWQSpec
+from lalamo.compressed.int import IntMatrixForInference, IntMatrixForTraining, IntSpec
 from lalamo.module import (
     Keychain,
     KeychainBroadcastMode,
     LalamoConfig,
     LalamoModule,
+    LogicalAxis,
     ParameterNorm,
-    ShardingAxis,
     field,
 )
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import CompressionImplementation, FullPrecisionMatrix, WeightMatrix
+from tests.helpers import make_sharding, make_test_sharding_config
 
 
 def _key_data(*, key: jax.Array) -> tuple[int, ...]:
@@ -30,8 +30,8 @@ def _flat_key_data(keys: jax.Array) -> list[tuple[int, ...]]:
 
 
 def test_keychain_init_is_deterministic_for_seed_and_shape() -> None:
-    first = Keychain.init(0, shape=(2, 3))
-    second = Keychain.init(0, shape=(2, 3))
+    first = Keychain.init(0, shape=(2, 3), sharding_config=make_test_sharding_config())
+    second = Keychain.init(0, shape=(2, 3), sharding_config=make_test_sharding_config())
 
     assert first.vmapped_keys.shape == (2, 3)
     assert first.batch_key.shape == ()
@@ -40,7 +40,7 @@ def test_keychain_init_is_deterministic_for_seed_and_shape() -> None:
 
 
 def test_keychain_init_produces_distinct_vmapped_keys() -> None:
-    keychain = Keychain.init(0, shape=(2, 3))
+    keychain = Keychain.init(0, shape=(2, 3), sharding_config=make_test_sharding_config())
 
     key_values = _flat_key_data(keychain.vmapped_keys)
 
@@ -48,7 +48,7 @@ def test_keychain_init_produces_distinct_vmapped_keys() -> None:
 
 
 def test_keychain_broadcast_adds_distinct_leading_keys() -> None:
-    keychain = Keychain.init(0, shape=(2,))
+    keychain = Keychain.init(0, shape=(2,), sharding_config=make_test_sharding_config())
 
     broadcast = keychain.broadcast((3, 2))
 
@@ -62,7 +62,7 @@ def test_keychain_broadcast_adds_distinct_leading_keys() -> None:
 
 
 def test_keychain_broadcast_adds_distinct_trailing_keys() -> None:
-    keychain = Keychain.init(0, shape=(2,))
+    keychain = Keychain.init(0, shape=(2,), sharding_config=make_test_sharding_config())
 
     broadcast = keychain.broadcast((2, 3))
 
@@ -76,7 +76,7 @@ def test_keychain_broadcast_adds_distinct_trailing_keys() -> None:
 
 
 def test_keychain_broadcast_rejects_ambiguous_auto_mode() -> None:
-    keychain = Keychain.init(0, shape=(2,))
+    keychain = Keychain.init(0, shape=(2,), sharding_config=make_test_sharding_config())
 
     with pytest.raises(ValueError, match="Ambiguous"):
         keychain.broadcast((2, 2))
@@ -86,7 +86,7 @@ def test_keychain_broadcast_rejects_ambiguous_auto_mode() -> None:
 
 
 def test_keychain_broadcast_to_current_shape_preserves_keys() -> None:
-    keychain = Keychain.init(0, shape=(2,))
+    keychain = Keychain.init(0, shape=(2,), sharding_config=make_test_sharding_config())
     broadcast = keychain.broadcast((2,))
 
     assert jnp.array_equal(jax.random.key_data(broadcast.vmapped_keys), jax.random.key_data(keychain.vmapped_keys))
@@ -94,25 +94,25 @@ def test_keychain_broadcast_to_current_shape_preserves_keys() -> None:
 
 
 def test_keychain_broadcast_rejects_incompatible_shape() -> None:
-    keychain = Keychain.init(0, shape=(2,))
+    keychain = Keychain.init(0, shape=(2,), sharding_config=make_test_sharding_config())
 
     with pytest.raises(ValueError, match=r"Cannot broadcast|Expected target shape|Incompatible shapes"):
         keychain.broadcast((3,))
 
 
 def test_keychain_broadcast_can_shard_vmapped_keys_without_changing_shape(fake_mesh: Mesh) -> None:
-    keychain = Keychain.init(0, shape=(2,))
+    keychain = Keychain.init(0, shape=(2,), sharding_config=make_test_sharding_config())
 
-    sharded = keychain.broadcast((2,), sharding_axes=(ShardingAxis.DATA,))
+    sharded = keychain.broadcast((2,), sharding_axes=(make_test_sharding_config().resolve_axis(LogicalAxis.BATCH),))
 
     assert isinstance(sharded.vmapped_keys.sharding, NamedSharding)
     assert sharded.vmapped_keys.sharding.mesh == fake_mesh
-    assert sharded.vmapped_keys.sharding == make_sharding((ShardingAxis.DATA,))
+    assert sharded.vmapped_keys.sharding == make_sharding((LogicalAxis.BATCH,))
     assert jnp.array_equal(jax.random.key_data(sharded.batch_key), jax.random.key_data(keychain.batch_key))
 
 
 def test_keychain_split_splits_vmapped_and_batch_keys() -> None:
-    keychain = Keychain.init(0, shape=(2,))
+    keychain = Keychain.init(0, shape=(2,), sharding_config=make_test_sharding_config())
 
     left, right = keychain.split()
 
@@ -125,7 +125,7 @@ def test_keychain_split_splits_vmapped_and_batch_keys() -> None:
 
 
 def test_keychain_split_respects_requested_count() -> None:
-    splits = Keychain.init(0, shape=(2,)).split(num=3)
+    splits = Keychain.init(0, shape=(2,), sharding_config=make_test_sharding_config()).split(num=3)
 
     assert len(splits) == 3
     assert all(split.vmapped_keys.shape == (2,) for split in splits)
@@ -133,7 +133,7 @@ def test_keychain_split_respects_requested_count() -> None:
 
 
 def test_keychain_squeeze_removes_singleton_vmapped_axes() -> None:
-    keychain = Keychain.init(0, shape=(1, 2, 1))
+    keychain = Keychain.init(0, shape=(1, 2, 1), sharding_config=make_test_sharding_config())
 
     squeezed = keychain.squeeze()
 
@@ -146,7 +146,7 @@ def test_keychain_squeeze_removes_singleton_vmapped_axes() -> None:
 
 
 def test_keychain_rolling_broadcast_adds_distinct_leading_keys() -> None:
-    keychain = Keychain.init(0, shape=(2,))
+    keychain = Keychain.init(0, shape=(2,), sharding_config=make_test_sharding_config())
 
     broadcast = keychain.rolling_broadcast((3, 2))
 
@@ -201,8 +201,16 @@ class ExampleModule(LalamoModule[ExampleConfig]):
 
 
 def test_lalamo_module_config_is_static_and_weights_are_leaves() -> None:
-    first = ExampleModule(config=ExampleConfig(width=1, dtype=jnp.dtype(jnp.float32)), weights=jnp.ones((2,)))
-    second = ExampleModule(config=ExampleConfig(width=2, dtype=jnp.dtype(jnp.float32)), weights=jnp.ones((2,)))
+    first = ExampleModule(
+        config=ExampleConfig(width=1, dtype=jnp.dtype(jnp.float32)),
+        sharding_config=make_test_sharding_config(),
+        weights=jnp.ones((2,)),
+    )
+    second = ExampleModule(
+        config=ExampleConfig(width=2, dtype=jnp.dtype(jnp.float32)),
+        sharding_config=make_test_sharding_config(),
+        weights=jnp.ones((2,)),
+    )
 
     first_leaves, first_tree = jax.tree_util.tree_flatten(first)
     second_leaves, second_tree = jax.tree_util.tree_flatten(second)
@@ -223,9 +231,12 @@ class NestedModule(LalamoModule[ExampleConfig]):
 
 def _matrix_module() -> MatrixModule:
     weights = jnp.arange(16, dtype=jnp.float32).reshape(4, 4) / 8
-    matrix = AWQSpec(bits=4, group_size=2).compress(weights, implementation=CompressionImplementation.TRAINING)
+    matrix = IntSpec(bits=4, group_size=2).compress(
+        weights, implementation=CompressionImplementation.TRAINING, sharding_config=make_test_sharding_config()
+    )
     return MatrixModule(
         config=ExampleConfig(width=4, dtype=jnp.dtype(jnp.float32)),
+        sharding_config=make_test_sharding_config(),
         matrix=matrix,
         biases=jnp.ones((4,), dtype=jnp.float32),
     )
@@ -236,7 +247,7 @@ def test_lalamo_module_astype_casts_weight_matrices_and_array_parameters(fake_me
 
     result = module.astype(jnp.bfloat16)
 
-    assert isinstance(module.matrix, AWQMatrixForTraining)
+    assert isinstance(module.matrix, IntMatrixForTraining)
     assert isinstance(module.matrix.scales.sharding, NamedSharding)
     assert module.matrix.scales.sharding.mesh == fake_mesh
     assert result.matrix.dtype == jnp.bfloat16
@@ -248,7 +259,8 @@ def test_lalamo_module_astype_casts_weight_matrices_and_array_parameters(fake_me
 def test_lalamo_module_astype_casts_dummy_array_parameters(fake_mesh: Mesh) -> None:
     module = ExampleModule(
         config=ExampleConfig(width=4, dtype=jnp.dtype(jnp.float32)),
-        weights=dummy_array((4,), jnp.float32, make_sharding((ShardingAxis.DATA,))),
+        sharding_config=make_test_sharding_config(),
+        weights=dummy_array((4,), jnp.float32, make_sharding((LogicalAxis.BATCH,))),
     )
 
     result = module.astype(jnp.bfloat16)
@@ -256,19 +268,20 @@ def test_lalamo_module_astype_casts_dummy_array_parameters(fake_mesh: Mesh) -> N
     assert result.weights.dtype == jnp.bfloat16
     assert isinstance(result.weights.sharding, NamedSharding)
     assert result.weights.sharding.mesh == fake_mesh
-    assert result.weights.sharding == make_sharding((ShardingAxis.DATA,))
+    assert result.weights.sharding == make_sharding((LogicalAxis.BATCH,))
 
 
 def test_lalamo_module_switch_implementation_recurses_into_nested_weight_matrices(fake_mesh: Mesh) -> None:
     module = NestedModule(
         config=ExampleConfig(width=4, dtype=jnp.dtype(jnp.float32)),
+        sharding_config=make_test_sharding_config(),
         inner=_matrix_module(),
     )
 
     result = module.switch_implementation(CompressionImplementation.INFERENCE)
 
-    assert isinstance(module.inner.matrix, AWQMatrixForTraining)
-    assert isinstance(result.inner.matrix, AWQMatrixForInference)
+    assert isinstance(module.inner.matrix, IntMatrixForTraining)
+    assert isinstance(result.inner.matrix, IntMatrixForInference)
     assert isinstance(result.inner.matrix.scales.sharding, NamedSharding)
     assert result.inner.matrix.scales.sharding.mesh == fake_mesh
 

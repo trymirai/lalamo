@@ -18,6 +18,7 @@ from lalamo.modules.token_mixer import (
     TokenMixerConfig,
     TokenMixerResult,
 )
+from lalamo.modules.token_mixers.convolutions import ConvPrecision
 from lalamo.modules.utils import call_vmapped
 
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
@@ -123,6 +124,10 @@ class Mamba2Config(TokenMixerConfig):
     def conv_dim(self) -> int:
         return self.inner_dim + 2 * self.num_groups * self.state_dim
 
+    @property
+    def rope_dim(self) -> None:
+        return None
+
     def init(
         self,
         initializer: Initializer,
@@ -146,14 +151,15 @@ class Mamba2Config(TokenMixerConfig):
             has_biases=self.has_out_biases,
         )
 
-        conv = self.conv_config.init(initializer, self.conv_dim, self.kernel_size)
+        conv = self.conv_config.init(initializer, self.conv_dim, self.kernel_size, dtype=jnp.float32)
 
-        skip_connection_weight = initializer.normal(1.0, (self.num_heads,))
+        skip_connection_weight = initializer.normal(1.0, (self.num_heads,), dtype=jnp.float32)
 
-        gate_bias = initializer.zeros((self.inner_dim,))
+        gate_bias = initializer.zeros((self.inner_dim,), dtype=jnp.float32)
 
         return Mamba2(
             config=self,
+            sharding_config=initializer.sharding_config,
             in_projection=in_projection,
             conv=conv,
             out_projection=out_projection,
@@ -219,7 +225,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             keychain=keychain,
             forward_pass_config=forward_pass_config.matmul_config,
         )
-        conv_out, new_conv_state = self.conv.step(conv_in, state.conv_state)
+        conv_out, new_conv_state = self.conv.step(conv_in, state.conv_state, precision=ConvPrecision.MATCH_WEIGHTS)
         conv_activated = self.config.activation(conv_out)
 
         values_flat, input_proj_flat, output_proj_flat = jnp.split(
@@ -590,6 +596,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
+        precision: DTypeLike = jnp.float32,
         *,
         keychain: Keychain,
     ) -> Mamba2Result:
@@ -603,7 +610,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
                 self.config.kernel_size,
                 self.conv_dim,
                 (self.config.num_heads, self.config.head_dim, self.config.state_dim),
-                inputs.dtype,
             )
 
         seq_len, _ = inputs.shape
@@ -612,18 +618,20 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             return self._decode_step(inputs, state, forward_pass_config, keychain=keychain)
 
         in_keychain, out_keychain = keychain.split()
-        conv_inputs, gate_values, time_delta_log = call_vmapped(
+        projections = call_vmapped(
             self.in_projection,
             inputs,
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=in_keychain,
         )
+        conv_inputs, gate_values, time_delta_log = (x.astype(precision) for x in projections)
 
         conv_output, updated_conv_state = self.conv(
             conv_inputs,
             length_without_padding,
             state.conv_state,
             return_updated_state=return_updated_state,
+            precision=ConvPrecision.MATCH_WEIGHTS,
         )
         conv_activated = self.config.activation(conv_output)
 
@@ -709,5 +717,4 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             self.config.kernel_size,
             self.conv_dim,
             (self.config.num_heads, self.config.head_dim, self.config.state_dim),
-            dtype,
         )

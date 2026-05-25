@@ -4,13 +4,13 @@ from jax import ShapeDtypeStruct
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from jaxtyping import Array
 
-from lalamo.module import ShardingAxis
+from lalamo.module import LogicalAxis
 from lalamo.utils.dummy_array import contains_dummy_arrays, dummy_array, is_dummy_array, supports_dummy_arrays
-from lalamo.utils.sharding import make_sharding
+from tests.helpers import make_sharding
 
 
 def test_dummy_array_predicates() -> None:
-    value = dummy_array((2,), jnp.float32)
+    value = dummy_array((2,), jnp.float32, make_sharding((None,)))
 
     assert is_dummy_array(value)
     assert contains_dummy_arrays({"value": value})
@@ -36,7 +36,7 @@ def test_supports_dummy_arrays_evaluates_shape_for_dummy_arrays() -> None:
     def flatten(values: Array) -> Array:
         return jnp.reshape(values, (-1,))
 
-    values = dummy_array((2, 3), jnp.float16)
+    values = dummy_array((2, 3), jnp.float16, make_sharding((None, None)))
 
     result = flatten(values)
 
@@ -50,33 +50,33 @@ def test_supports_dummy_arrays_preserves_inferred_named_sharding(fake_mesh: Mesh
     def add_one(values: Array) -> Array:
         return values + 1
 
-    values = dummy_array((8,), jnp.float32, make_sharding((ShardingAxis.DATA,)))
+    values = dummy_array((8,), jnp.float32, make_sharding((LogicalAxis.BATCH,)))
 
     result = add_one(values)
 
     assert isinstance(result, ShapeDtypeStruct)
     assert isinstance(result.sharding, NamedSharding)
-    assert tuple(result.sharding.spec) == (ShardingAxis.DATA,)
+    assert tuple(result.sharding.spec) == (LogicalAxis.BATCH,)
     assert result.sharding.mesh.axis_names == fake_mesh.axis_names
 
 
 def test_supports_dummy_arrays_applies_out_sharding_rule(fake_mesh: Mesh) -> None:
     def shard_like_tensor_axis(input_shardings: tuple[NamedSharding, ...]) -> NamedSharding:
         (source_sharding,) = input_shardings
-        return NamedSharding(source_sharding.mesh, PartitionSpec(ShardingAxis.TENSOR))
+        return NamedSharding(source_sharding.mesh, PartitionSpec(LogicalAxis.MIXTURE))
 
     @supports_dummy_arrays(out_sharding_rule=shard_like_tensor_axis)
     def add_one(values: Array) -> Array:
         return values + 1
 
-    values = dummy_array((8,), jnp.float32, make_sharding((ShardingAxis.DATA,)))
+    values = dummy_array((8,), jnp.float32, make_sharding((LogicalAxis.BATCH,)))
 
     result = add_one(values)
 
     assert isinstance(result, ShapeDtypeStruct)
     assert isinstance(result.sharding, NamedSharding)
     assert result.sharding.mesh == fake_mesh
-    assert tuple(result.sharding.spec) == (ShardingAxis.TENSOR,)
+    assert tuple(result.sharding.spec) == (LogicalAxis.MIXTURE,)
 
 
 def test_supports_dummy_arrays_passes_concrete_input_named_sharding_to_rule(fake_mesh: Mesh) -> None:
@@ -88,12 +88,12 @@ def test_supports_dummy_arrays_passes_concrete_input_named_sharding_to_rule(fake
     def add_one(values: Array, _reference: Array) -> Array:
         return values + 1
 
-    values = dummy_array((8,), jnp.float32, make_sharding((ShardingAxis.DATA,)))
-    reference = jax.device_put(jnp.zeros((8,), dtype=jnp.float32), make_sharding((ShardingAxis.TENSOR,)))
+    values = dummy_array((8,), jnp.float32, make_sharding((LogicalAxis.BATCH,)))
+    reference = jax.device_put(jnp.zeros((8,), dtype=jnp.float32), make_sharding((LogicalAxis.MIXTURE,)))
 
     result = add_one(values, reference)
 
     assert isinstance(result, ShapeDtypeStruct)
     assert isinstance(result.sharding, NamedSharding)
     assert result.sharding.mesh == fake_mesh
-    assert tuple(result.sharding.spec) == (ShardingAxis.TENSOR,)
+    assert tuple(result.sharding.spec) == (LogicalAxis.MIXTURE,)

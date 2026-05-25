@@ -8,7 +8,7 @@ from lalamo.model_import.model_spec import LanguageModelSpec, ModelSpec
 from lalamo.models import LanguageModel
 from lalamo.models.chat_codec import UserMessage
 from lalamo.models.language_model import GenerationConfig
-from lalamo.module import Keychain
+from lalamo.module import Keychain, ShardingConfig
 from tests.conftest import ConvertModel, filter_specs, load_converted_model, mark_by_size
 from tests.model_test_tiers import ModelTier
 
@@ -27,12 +27,13 @@ def _generate_single(
     *,
     max_tokens: int,
 ) -> str:
-    return model.reply(
+    message = model.reply(
         [UserMessage(prompt)],
         generation_config=GenerationConfig(temperature=0.0),
         max_output_length=max_tokens,
-        keychain=Keychain.init(0),
-    ).response
+        keychain=Keychain.init(0, sharding_config=model.sharding_config),
+    )
+    return "\n".join(part for part in (message.chain_of_thought, message.response) if part).strip()
 
 
 @pytest.mark.parametrize(
@@ -52,7 +53,7 @@ def test_model_coherent_and_stops(
     assert api_key is not None
     judge_model = os.getenv("COHERENCE_JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
 
-    model = load_converted_model(converted_model_path)
+    model = load_converted_model(converted_model_path, ShardingConfig.replicated())
     assert isinstance(model, LanguageModel)
 
     start_time = time.monotonic()

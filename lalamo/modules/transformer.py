@@ -5,7 +5,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import Keychain, LalamoConfig, LalamoModule, ShardingAxis, field
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, field
 from lalamo.modules.token_mixers import AttentionConfig
 
 from .normalization import Normalization, NormalizationConfig
@@ -62,6 +62,13 @@ class TransformerConfig(LalamoConfig):
             rope_indices.append(rope_cache[cache_key])
         return tuple(ropes), tuple(rope_indices)
 
+    def _kv_source_layer_indices(self) -> tuple[int, ...]:
+        result = []
+        for i, layer_config in enumerate(self.layer_configs):
+            if layer_config.kv_source_layer_index is None:
+                result.append(i)
+        return tuple(result)
+
     def init(self, initializer: Initializer) -> "Transformer":
         ropes, rope_indices = self._init_ropes(initializer)
 
@@ -77,13 +84,10 @@ class TransformerConfig(LalamoConfig):
 
         return Transformer(
             config=self,
+            sharding_config=initializer.sharding_config,
             ropes=ropes,
             rope_indices=rope_indices,
-            kv_source_layer_indices=tuple(
-                layer_index
-                for layer_index, layer_config in enumerate(self.layer_configs)
-                if layer_config.kv_source_layer_index is None
-            ),
+            kv_source_layer_indices=self._kv_source_layer_indices(),
             layers=layers,
             output_norm=output_norm,
         )
@@ -132,7 +136,7 @@ class Transformer(LalamoModule[TransformerConfig]):
             call_vmapped(
                 rope,
                 token_positions,
-                added_sharding_axis=ShardingAxis.DATA,
+                added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
             ).astype(
                 mixer_forward_pass_config.rope_dtype,
             )

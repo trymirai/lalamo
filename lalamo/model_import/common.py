@@ -25,6 +25,7 @@ from lalamo.models import (
 )
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.models.tts_codec import TTSCodecConfig
+from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.template_hacking import fix_chat_template
 from lalamo.weight_matrix import CompressionImplementation
 
@@ -232,6 +233,7 @@ def _load_model[ModelT: Model](
     progress_callback: Callable[[StatusEvent], None] | None = None,
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    sharding_config: ShardingConfig,
 ) -> ModelT:
     report_status(progress_callback, InitializingModelEvent())
 
@@ -241,6 +243,7 @@ def _load_model[ModelT: Model](
         dtype=dtype,
         weights_dict=weights_dict,
         implementation=implementation,
+        sharding_config=sharding_config,
     )
     assert isinstance(model, expected_model_type)
     report_status(progress_callback, FinishedInitializingModelEvent())
@@ -269,6 +272,7 @@ def _import_generation_config(
 def _import_language_model(
     model_spec: LanguageModelSpec,
     *,
+    sharding_config: ShardingConfig,
     context_length: int | None = None,
     dtype: DTypeLike | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
@@ -296,12 +300,14 @@ def _import_language_model(
             weights_dict=checkpoint.weights,
             progress_callback=progress_callback,
             implementation=implementation,
+            sharding_config=sharding_config,
         )
 
 
 def _import_classifier(
     model_spec: ClassifierModelSpec,
     *,
+    sharding_config: ShardingConfig,
     context_length: int | None = None,
     dtype: DTypeLike | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
@@ -315,6 +321,7 @@ def _import_classifier(
     model_config = ClassifierModelConfig(
         token_codec_config=token_codec_config,
         classifier_config=classifier_config,
+        output_labels=classifier_config.output_labels,
     )
     with _load_checkpoint(model_spec, progress_callback) as checkpoint:
         return _load_model(
@@ -326,12 +333,14 @@ def _import_classifier(
             weights_dict=checkpoint.weights,
             progress_callback=progress_callback,
             implementation=implementation,
+            sharding_config=sharding_config,
         )
 
 
 def _import_tts_model(
     model_spec: TTSModelSpec,
     *,
+    sharding_config: ShardingConfig,
     context_length: int | None = None,
     dtype: DTypeLike | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
@@ -381,12 +390,14 @@ def _import_tts_model(
             weights_dict=checkpoint.weights,
             progress_callback=progress_callback,
             implementation=implementation,
+            sharding_config=sharding_config,
         )
 
 
 def import_model(
     model_spec: ModelSpec | str,
     *,
+    sharding_config: ShardingConfig,
     context_length: int | None = None,
     dtype: DTypeLike | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
@@ -403,9 +414,9 @@ def import_model(
                 raise ValueError(f"Unknown model and local path does not exist: {model_spec}")
 
             if dtype is None:
-                model = Model.load(model_path)
+                model = Model.load(model_path, sharding_config)
             else:
-                model = Model.load(model_path, dtype=dtype)
+                model = Model.load(model_path, sharding_config, dtype=dtype)
 
             model_metadata = ModelMetadata(
                 toolchain_version=importlib.metadata.version("lalamo"),
@@ -423,6 +434,7 @@ def import_model(
         case LanguageModelSpec():
             model = _import_language_model(
                 model_spec,
+                sharding_config=sharding_config,
                 context_length=context_length,
                 dtype=dtype,
                 progress_callback=progress_callback,
@@ -431,6 +443,7 @@ def import_model(
         case ClassifierModelSpec():
             model = _import_classifier(
                 model_spec,
+                sharding_config=sharding_config,
                 context_length=context_length,
                 dtype=dtype,
                 progress_callback=progress_callback,
@@ -439,6 +452,7 @@ def import_model(
         case TTSModelSpec():
             model = _import_tts_model(
                 model_spec,
+                sharding_config=sharding_config,
                 context_length=context_length,
                 dtype=dtype,
                 progress_callback=progress_callback,

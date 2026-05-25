@@ -8,8 +8,8 @@ from jax.sharding import Mesh, NamedSharding
 from lalamo.compressed.low_rank import LowRankSpec
 from lalamo.module import Keychain
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.sharding import make_sharding
 from tests.common import assert_close_arrays, assert_named_sharding
+from tests.helpers import make_sharding, make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
@@ -58,7 +58,7 @@ def test_low_rank_compress_and_decompress_match_truncated_svd() -> None:
     weights = _logical_weights()
     rank = 2
 
-    matrix = LowRankSpec(rank=rank).compress(weights)
+    matrix = LowRankSpec(rank=rank).compress(weights, sharding_config=make_test_sharding_config())
 
     assert_close_arrays(result=matrix.decompress(), reference=_manual_low_rank_decompress(weights, rank))
 
@@ -70,7 +70,9 @@ def test_low_rank_compress_with_preconditioner_matches_truncated_svd_in_weighted
         output_block=_positive_definite_block(17),
     )
 
-    matrix = LowRankSpec(rank=2).compress(weights, preconditioner=preconditioner)
+    matrix = LowRankSpec(rank=2).compress(
+        weights, preconditioner=preconditioner, sharding_config=make_test_sharding_config()
+    )
 
     transformed_result = _apply_preconditioner(matrix.decompress(), preconditioner)
     transformed_reference = _manual_low_rank_decompress(_apply_preconditioner(weights, preconditioner), 2)
@@ -79,14 +81,14 @@ def test_low_rank_compress_with_preconditioner_matches_truncated_svd_in_weighted
 
 def test_low_rank_compress_rejects_rank_larger_than_svd_rank() -> None:
     with pytest.raises(ValueError, match="SVD only produced rank"):
-        LowRankSpec(rank=5).compress(_logical_weights())
+        LowRankSpec(rank=5).compress(_logical_weights(), sharding_config=make_test_sharding_config())
 
 
 def test_low_rank_dot_matches_decompressed_weights_and_keeps_output_unsharded(fake_mesh: Mesh) -> None:
-    matrix = LowRankSpec(rank=2).compress(_logical_weights())
+    matrix = LowRankSpec(rank=2).compress(_logical_weights(), sharding_config=make_test_sharding_config())
     vector = jax.device_put(jnp.arange(4, dtype=jnp.float32), _unsharded_sharding(1))
 
-    result = matrix.dot(vector, keychain=Keychain.init(2))
+    result = matrix.dot(vector, keychain=Keychain.init(2, sharding_config=make_test_sharding_config()))
 
     assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == _unsharded_sharding(1)

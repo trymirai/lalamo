@@ -15,9 +15,8 @@ from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dum
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import (
-    make_sharding,
-    reshard_as,
-    use_out_sharding,
+    ShardingConfig,
+    lookup_sharded_indices,
     with_sharding,
 )
 from lalamo.utils.surgery import load_as
@@ -40,17 +39,17 @@ from .utils.grouping import (
 )
 from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from .utils.rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
-from .utils.yaqa import yaqa_round_weights
+from .utils.yaqa import yaqa_round_blockwise
 
 __all__ = [
-    "AWQMatrix",
-    "AWQMatrixForInference",
-    "AWQMatrixForTraining",
-    "AWQSpec",
+    "IntMatrix",
+    "IntMatrixForInference",
+    "IntMatrixForTraining",
+    "IntSpec",
 ]
 
 
-class AWQAffineParameters(NamedTuple):
+class IntAffineParameters(NamedTuple):
     scales: Float[Array, "*components rows groups"]
     zero_points: Float[Array, "*components rows groups"] | None
 
@@ -86,14 +85,15 @@ class AWQAffineParameters(NamedTuple):
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _awq_master_weights_to_int_scale(
+def _master_weights_to_int_scale_weights(
     weights: Float[Array, "... cols"],
     scales: Float[Array, "... groups"],
     int_scale_zero_points: Float[Array, "... groups"] | None,
     group_size: int,
     bits: int,
 ) -> Float[Array, "... cols"]:
-    grouped_weights = weights.reshape(*weights.shape[:-1], weights.shape[-1] // group_size, group_size)
+    *leading_dims, num_cols = weights.shape
+    grouped_weights = weights.reshape(*leading_dims, num_cols // group_size, group_size)
     if int_scale_zero_points is None:
         int_scale_zero_points = 2 ** (bits - 1)
     else:
@@ -104,16 +104,17 @@ def _awq_master_weights_to_int_scale(
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _awq_int_scale_weights_to_master(
+def _integer_scaled_weights_to_master_weights(
     int_scale_weights: Float[Array, "... cols"],
     scales: Float[Array, "... groups"],
     int_scale_zero_points: Float[Array, "... groups"] | None,
     group_size: int,
     bits: int,
 ) -> Float[Array, "... cols"]:
+    *leading_dims, num_cols = int_scale_weights.shape
     grouped_int_scale_weights = int_scale_weights.reshape(
-        *int_scale_weights.shape[:-1],
-        int_scale_weights.shape[-1] // group_size,
+        *leading_dims,
+        num_cols // group_size,
         group_size,
     )
     if int_scale_zero_points is None:
@@ -126,7 +127,7 @@ def _awq_int_scale_weights_to_master(
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _awq_quantize(
+def _quantize(
     weights: Float[Array, "... cols"],
     scales: Float[Array, "... groups"],
     zero_points: Float[Array, "... groups"] | None,
@@ -139,7 +140,7 @@ def _awq_quantize(
     else:
         int_scale_zero_points = round_fn(zero_points / stop_gradient(scales))
 
-    int_scale_weights = _awq_master_weights_to_int_scale(
+    int_scale_weights = _master_weights_to_int_scale_weights(
         weights,
         stop_gradient(scales),
         stop_gradient(int_scale_zero_points),
@@ -147,35 +148,39 @@ def _awq_quantize(
         bits,
     )
     int_weights = round_fn(int_scale_weights)
-    return _awq_int_scale_weights_to_master(int_weights, scales, int_scale_zero_points, group_size, bits)
+    return _integer_scaled_weights_to_master_weights(int_weights, scales, int_scale_zero_points, group_size, bits)
 
 
 @supports_dummy_arrays()
-def _awq_pack_master_zero_points(
+def _master_zero_points_to_packed_zero_points(
     zero_points: Float[Array, "*components rows groups"] | None,
     scales: Float[Array, "*components rows groups"],
     bits: int,
+    *,
+    sharding_config: ShardingConfig,
 ) -> UInt8[Array, "*components rows packed_groups"] | None:
     if zero_points is None:
         return None
 
     int_scale_zero_points = deterministic_round_to_unsigned_grid(zero_points / scales, bits=bits)
-    return pack_uint_to_uint8(int_scale_zero_points, bits)
+    return pack_uint_to_uint8(int_scale_zero_points, bits, sharding_config=sharding_config)
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
-def _awq_pack_master_weights(
+def _master_weights_to_packed_weights(
     weights: Float[Array, "*components rows cols"],
     scales: Float[Array, "*components rows groups"],
     zero_points: Float[Array, "*components rows groups"] | None,
     group_size: int,
     bits: int,
+    *,
+    sharding_config: ShardingConfig,
 ) -> UInt8[Array, "*components rows packed_cols"]:
     if zero_points is None:
         int_scale_zero_points = None
     else:
         int_scale_zero_points = deterministic_round_to_unsigned_grid(zero_points / scales, bits=bits)
-    int_scale_weights = _awq_master_weights_to_int_scale(
+    int_scale_weights = _master_weights_to_int_scale_weights(
         weights,
         scales,
         int_scale_zero_points,
@@ -183,10 +188,10 @@ def _awq_pack_master_weights(
         bits,
     )
     int_weights = deterministic_round_to_unsigned_grid(int_scale_weights, bits=bits)
-    return pack_uint_to_uint8(int_weights, bits)
+    return pack_uint_to_uint8(int_weights, bits, sharding_config=sharding_config)
 
 
-def _awq_unpack_master_zero_points(
+def _packed_zero_points_to_master_zero_points(
     packed_zero_points: UInt8[Array, "*components rows packed_groups"] | None,
     scales: Float[Array, "*components rows groups"],
     bits: int,
@@ -194,28 +199,45 @@ def _awq_unpack_master_zero_points(
     if packed_zero_points is None:
         return None
 
-    int_scale_zero_points = unpack_uint8_to_uint(packed_zero_points, bits=bits, dtype=scales.dtype)
+    *_, num_groups = scales.shape
+    int_scale_zero_points = unpack_uint8_to_uint(
+        packed_zero_points,
+        bits=bits,
+        dtype=scales.dtype,
+        unpacked_last_axis_dim=num_groups,
+    )
     return int_scale_zero_points.astype(scales.dtype) * scales
 
 
-def _awq_unpack_master_weights(
+def _packed_weights_to_master_weights(
     packed_weights: UInt8[Array, "... packed_cols"],
     scales: Float[Array, "... groups"],
     packed_zero_points: UInt8[Array, "... packed_groups"] | None,
     group_size: int,
     bits: int,
 ) -> Float[Array, "... cols"]:
-    int_weights = unpack_uint8_to_uint(packed_weights, bits=bits, dtype=scales.dtype)
+    int_weights = unpack_uint8_to_uint(
+        packed_weights,
+        bits=bits,
+        dtype=scales.dtype,
+        unpacked_last_axis_dim=scales.shape[-1] * group_size,
+    )
     if packed_zero_points is None:
         int_scale_zero_points = None
     else:
-        int_scale_zero_points = unpack_uint8_to_uint(packed_zero_points, bits=bits, dtype=scales.dtype)
+        *_, num_groups = scales.shape
+        int_scale_zero_points = unpack_uint8_to_uint(
+            packed_zero_points,
+            bits=bits,
+            dtype=scales.dtype,
+            unpacked_last_axis_dim=num_groups,
+        )
 
-    return _awq_int_scale_weights_to_master(int_weights, scales, int_scale_zero_points, group_size, bits)
+    return _integer_scaled_weights_to_master_weights(int_weights, scales, int_scale_zero_points, group_size, bits)
 
 
 @dataclass(frozen=True)
-class AWQSpec(QuantizedSpec):
+class IntSpec(QuantizedSpec):
     bits: Literal[4, 8]
     group_size: int
     is_symmetric: bool = False
@@ -239,7 +261,7 @@ class AWQSpec(QuantizedSpec):
             zero_point_bits = 0
         else:
             zero_point_bits = self.bits
-        return float(self.bits + (16 + zero_point_bits) / self.group_size)
+        return float(self.bits + (32 + zero_point_bits) / self.group_size)
 
     @property
     def distortion(self) -> float:
@@ -249,8 +271,7 @@ class AWQSpec(QuantizedSpec):
             return endpoint_correction * standard_normal_absmax_squared(self.group_size) / (12 * qmax**2)
 
         qmax = (2**self.bits) - 1
-        endpoint_correction = (self.group_size - 2) / self.group_size
-        return endpoint_correction * standard_normal_range_squared(self.group_size) / (12 * qmax**2)
+        return standard_normal_range_squared(self.group_size) / (12 * qmax**2)
 
     def compress(
         self,
@@ -259,44 +280,56 @@ class AWQSpec(QuantizedSpec):
         key: Key[Array, ""] | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        sharding_config: ShardingConfig,
         is_sharded: bool = True,
-    ) -> "AWQMatrix":
+    ) -> "IntMatrix":
         if preconditioner is not None:
-            weights = yaqa_round_weights(weights, preconditioner, self, is_sharded=is_sharded)
+            weights = yaqa_round_blockwise(
+                weights,
+                preconditioner,
+                self,
+                sharding_config=sharding_config,
+            )
 
-        stored_weights = self.layout.from_output_input(weights, is_sharded=is_sharded)
-        affine_parameters = AWQAffineParameters.from_weights(
+        weight_axes = self.layout.weight_partition(weights.ndim - 2, is_sharded=is_sharded)
+        weight_sharding = sharding_config.resolve_sharding(weight_axes)
+        stored_weights = self.layout.from_output_input(weights, sharding=weight_sharding)
+        affine_parameters = IntAffineParameters.from_weights(
             stored_weights,
             bits=self.bits,
             group_size=self.group_size,
             is_symmetric=self.is_symmetric,
         )
         if implementation == CompressionImplementation.TRAINING:
-            result = AWQMatrixForTraining(
+            result = IntMatrixForTraining(
                 spec=self,
+                sharding_config=sharding_config,
                 is_sharded=is_sharded,
-                weights=stored_weights,
+                master_weights=stored_weights,
                 scales=affine_parameters.scales,
-                zero_points=affine_parameters.zero_points,
+                master_zero_points=affine_parameters.zero_points,
             )
         else:
-            packed_weights = _awq_pack_master_weights(
+            packed_weights = _master_weights_to_packed_weights(
                 stored_weights,
                 affine_parameters.scales,
                 affine_parameters.zero_points,
                 self.group_size,
                 self.bits,
+                sharding_config=sharding_config,
             )
-            packed_zero_points = _awq_pack_master_zero_points(
+            packed_zero_points = _master_zero_points_to_packed_zero_points(
                 affine_parameters.zero_points,
                 affine_parameters.scales,
                 self.bits,
+                sharding_config=sharding_config,
             )
             result = self.from_packed_parameters(
                 packed_weights=packed_weights,
                 scales=affine_parameters.scales,
                 packed_zero_points=packed_zero_points,
                 implementation=CompressionImplementation.INFERENCE,
+                sharding_config=sharding_config,
                 is_sharded=is_sharded,
             )
 
@@ -309,56 +342,60 @@ class AWQSpec(QuantizedSpec):
         scales: Float[Array, "*components rows groups"],
         packed_zero_points: UInt8[Array, "*components rows packed_groups"] | None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        sharding_config: ShardingConfig,
         is_sharded: bool = True,
-    ) -> "AWQMatrix":
+    ) -> "IntMatrix":
         if self.is_symmetric:
             if packed_zero_points is not None:
-                raise ValueError("Symmetric AWQ parameters must not include packed zero points.")
+                raise ValueError("Symmetric Int parameters must not include packed zero points.")
         elif packed_zero_points is None:
-            raise ValueError("Asymmetric AWQ parameters require packed zero points.")
+            raise ValueError("Asymmetric Int parameters require packed zero points.")
 
-        weight_partition = self.layout.weight_partition(scales.ndim - 2, is_sharded=is_sharded)
-        weight_sharding = make_sharding(weight_partition)
+        weight_axes = self.layout.weight_partition(scales.ndim - 2, is_sharded=is_sharded)
+        *scale_axes, _grouped_axis = weight_axes
+        weight_sharding = sharding_config.resolve_sharding(weight_axes)
+        packed_zero_points_sharding = sharding_config.resolve_sharding((*scale_axes, None))
 
         packed_weights = with_sharding(packed_weights, weight_sharding)
         scales = with_sharding(scales, weight_sharding)
         if packed_zero_points is not None:
-            packed_zero_points_sharding = make_sharding((*weight_partition[:-1], None))
             packed_zero_points = with_sharding(packed_zero_points, packed_zero_points_sharding)
 
         if implementation == CompressionImplementation.INFERENCE:
-            return AWQMatrixForInference(
+            return IntMatrixForInference(
                 spec=self,
+                sharding_config=sharding_config,
                 is_sharded=is_sharded,
                 packed_weights=packed_weights,
                 scales=scales,
                 packed_zero_points=packed_zero_points,
             )
 
-        weights = _awq_unpack_master_weights(
+        weights = _packed_weights_to_master_weights(
             packed_weights,
             scales,
             packed_zero_points,
             self.group_size,
             self.bits,
         )
-        zero_points = _awq_unpack_master_zero_points(
+        zero_points = _packed_zero_points_to_master_zero_points(
             packed_zero_points,
             scales,
             self.bits,
         )
         if zero_points is not None:
             zero_points = with_sharding(zero_points, weight_sharding)
-        return AWQMatrixForTraining(
+        return IntMatrixForTraining(
             spec=self,
+            sharding_config=sharding_config,
             is_sharded=is_sharded,
-            weights=with_sharding(weights, weight_sharding),
+            master_weights=with_sharding(weights, weight_sharding),
             scales=scales,
-            zero_points=zero_points,
+            master_zero_points=zero_points,
         )
 
 
-class AWQMatrix(EmbeddingMatrix[AWQSpec]):
+class IntMatrix(EmbeddingMatrix[IntSpec]):
     scales: Float[Array, "*components rows groups"] = field(norm=ParameterNorm.L_INF)
 
     @property
@@ -390,88 +427,95 @@ class AWQMatrix(EmbeddingMatrix[AWQSpec]):
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
-    ) -> "AWQMatrix": ...
+    ) -> "IntMatrix": ...
 
     @abstractmethod
-    def switch_implementation(self, implementation: CompressionImplementation) -> "AWQMatrix": ...
+    def switch_implementation(self, implementation: CompressionImplementation) -> "IntMatrix": ...
 
     def to_full_precision(self) -> FullPrecisionMatrix:
-        return FullPrecisionSpec(layout=self.spec.layout).compress(self.decompress(), is_sharded=self.is_sharded)
+        return FullPrecisionSpec(layout=self.spec.layout).compress(
+            self.decompress(),
+            sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
+        )
 
 
-class AWQMatrixForTraining(AWQMatrix):
-    weights: Float[Array, "*components rows cols"] = field(norm=ParameterNorm.SPECTRAL)
-    zero_points: Float[Array, "*components rows groups"] | None = field(norm=ParameterNorm.L_INF)
+class IntMatrixForTraining(IntMatrix):
+    master_weights: Float[Array, "*components rows cols"] = field(norm=ParameterNorm.SPECTRAL)
+    master_zero_points: Float[Array, "*components rows groups"] | None = field(norm=ParameterNorm.L_INF)
 
     @property
     def shape(self) -> tuple[int, ...]:
-        return self.weights.shape
+        return self.master_weights.shape
 
     @property
     def dtype(self) -> DTypeLike:
-        return self.weights.dtype
+        return self.master_weights.dtype
 
     @property
     def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]:
-        return _awq_pack_master_weights(
-            self.weights,
+        return _master_weights_to_packed_weights(
+            self.master_weights,
             self.scales,
-            self.zero_points,
+            self.master_zero_points,
             self.spec.group_size,
             self.spec.bits,
+            sharding_config=self.sharding_config,
         )
 
     @property
     def _packed_quantized_zero_points(self) -> UInt8[Array, "*components rows packed_groups"] | None:
-        return _awq_pack_master_zero_points(
-            self.zero_points,
+        return _master_zero_points_to_packed_zero_points(
+            self.master_zero_points,
             self.scales,
             self.spec.bits,
+            sharding_config=self.sharding_config,
         )
 
-    def astype(self, dtype: DTypeLike) -> "AWQMatrixForTraining":
-        zero_points = self.zero_points
+    def astype(self, dtype: DTypeLike) -> "IntMatrixForTraining":
+        zero_points = self.master_zero_points
         if zero_points is not None:
             zero_points = zero_points.astype(dtype)
-        return AWQMatrixForTraining(
+        return IntMatrixForTraining(
             spec=self.spec,
+            sharding_config=self.sharding_config,
             is_sharded=self.is_sharded,
-            weights=self.weights.astype(dtype),
+            master_weights=self.master_weights.astype(dtype),
             scales=self.scales.astype(dtype),
-            zero_points=zero_points,
+            master_zero_points=zero_points,
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
-        weights = _awq_quantize(
-            self.weights,
+        weights = _quantize(
+            self.master_weights,
             self.scales,
-            self.zero_points,
+            self.master_zero_points,
             group_size=self.spec.group_size,
             bits=self.spec.bits,
             round_fn=partial(deterministic_round_to_unsigned_grid, bits=self.spec.bits),
         )
         return self.spec.layout.to_output_input(weights)
 
-    @use_out_sharding((None,))
     def lookup_embedding(
         self,
-        index: int | Int[Array, ""],
+        row_index: int | Int[Array, "*batch"],
         *,
         dtype: DTypeLike | None = None,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
-    ) -> Float[Array, " out_channels"]:
+    ) -> Float[Array, "*batch out_channels"]:
         self._raise_if_batched()
         if self.spec.layout != Layout.INPUT_OUTPUT:
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
         if dtype is None:
             dtype = self.dtype
-        zero_points = self.zero_points
+        zero_points = self.master_zero_points
         if zero_points is not None:
-            zero_points = zero_points[index, :].astype(dtype)
-        return _awq_quantize(
-            self.weights[index, :].astype(dtype),
-            self.scales[index, :].astype(dtype),
+            zero_points = lookup_sharded_indices(zero_points, row_index).astype(dtype)
+        weights = lookup_sharded_indices(self.master_weights, row_index).astype(dtype)
+        return _quantize(
+            weights,
+            lookup_sharded_indices(self.scales, row_index).astype(dtype),
             zero_points,
             group_size=self.spec.group_size,
             bits=self.spec.bits,
@@ -492,11 +536,11 @@ class AWQMatrixForTraining(AWQMatrix):
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
-        zero_points = self.zero_points
+        zero_points = self.master_zero_points
         if zero_points is not None:
             zero_points = zero_points.astype(vector.dtype)
-        dequantized_weights = _awq_quantize(
-            self.weights.astype(vector.dtype),
+        dequantized_weights = _quantize(
+            self.master_weights.astype(vector.dtype),
             self.scales.astype(vector.dtype),
             zero_points,
             group_size=self.spec.group_size,
@@ -512,9 +556,7 @@ class AWQMatrixForTraining(AWQMatrix):
         if transposed:
             layout = layout.transpose()
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            result = layout.matmul(dequantized_weights, vector)
-
-        return reshard_as(result, vector)
+            return layout.matmul(dequantized_weights, vector)
 
     def load_exported(
         self,
@@ -522,7 +564,7 @@ class AWQMatrixForTraining(AWQMatrix):
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
-    ) -> AWQMatrix:
+    ) -> IntMatrix:
         if prefix is None:
             prefix = ParameterPath()
         saved_spec = exported_data.metadata[prefix / "spec"]
@@ -535,7 +577,11 @@ class AWQMatrixForTraining(AWQMatrix):
             exported_data.arrays[prefix / "weights"],
             allow_dtype_cast=False,
         )
-        scales = load_as(self.scales, exported_data.arrays[prefix / "scales"], allow_dtype_cast=allow_dtype_cast)
+        scales = load_as(
+            self.scales,
+            exported_data.arrays[prefix / "scales"],
+            allow_dtype_cast=allow_dtype_cast,
+        )
         packed_zero_points = self._packed_quantized_zero_points
         if packed_zero_points is not None:
             packed_zero_points = load_as(
@@ -548,10 +594,11 @@ class AWQMatrixForTraining(AWQMatrix):
             scales=scales,
             packed_zero_points=packed_zero_points,
             implementation=CompressionImplementation.TRAINING,
+            sharding_config=self.sharding_config,
             is_sharded=self.is_sharded,
         )
 
-    def switch_implementation(self, implementation: CompressionImplementation) -> AWQMatrix:
+    def switch_implementation(self, implementation: CompressionImplementation) -> IntMatrix:
         if implementation == CompressionImplementation.TRAINING:
             return self
         return self.spec.from_packed_parameters(
@@ -559,11 +606,12 @@ class AWQMatrixForTraining(AWQMatrix):
             scales=self.scales,
             packed_zero_points=self._packed_quantized_zero_points,
             implementation=CompressionImplementation.INFERENCE,
+            sharding_config=self.sharding_config,
             is_sharded=self.is_sharded,
         )
 
 
-class AWQMatrixForInference(AWQMatrix):
+class IntMatrixForInference(IntMatrix):
     packed_weights: UInt8[Array, "*components rows packed_cols"]
     scales: Float[Array, "*components rows groups"]
     packed_zero_points: UInt8[Array, "*components rows packed_groups"] | None
@@ -585,9 +633,10 @@ class AWQMatrixForInference(AWQMatrix):
     def _packed_quantized_zero_points(self) -> UInt8[Array, "*components rows packed_groups"] | None:
         return self.packed_zero_points
 
-    def astype(self, dtype: DTypeLike) -> "AWQMatrixForInference":
-        return AWQMatrixForInference(
+    def astype(self, dtype: DTypeLike) -> "IntMatrixForInference":
+        return IntMatrixForInference(
             spec=self.spec,
+            sharding_config=self.sharding_config,
             is_sharded=self.is_sharded,
             packed_weights=self.packed_weights,
             scales=self.scales.astype(dtype),
@@ -600,7 +649,7 @@ class AWQMatrixForInference(AWQMatrix):
         allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
-    ) -> AWQMatrix:
+    ) -> IntMatrix:
         if prefix is None:
             prefix = ParameterPath()
         saved_spec = exported_data.metadata[prefix / "spec"]
@@ -613,7 +662,11 @@ class AWQMatrixForInference(AWQMatrix):
             exported_data.arrays[prefix / "weights"],
             allow_dtype_cast=False,
         )
-        scales = load_as(self.scales, exported_data.arrays[prefix / "scales"], allow_dtype_cast=allow_dtype_cast)
+        scales = load_as(
+            self.scales,
+            exported_data.arrays[prefix / "scales"],
+            allow_dtype_cast=allow_dtype_cast,
+        )
         packed_zero_points = self._packed_quantized_zero_points
         if packed_zero_points is not None:
             packed_zero_points = load_as(
@@ -621,15 +674,16 @@ class AWQMatrixForInference(AWQMatrix):
                 exported_data.arrays[prefix / "zero_points"],
                 allow_dtype_cast=False,
             )
-        return self.spec.from_packed_parameters(
+        return IntMatrixForInference(
+            spec=self.spec,
+            sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
             packed_weights=packed_weights,
             scales=scales,
             packed_zero_points=packed_zero_points,
-            implementation=CompressionImplementation.INFERENCE,
-            is_sharded=self.is_sharded,
         )
 
-    def switch_implementation(self, implementation: CompressionImplementation) -> AWQMatrix:
+    def switch_implementation(self, implementation: CompressionImplementation) -> IntMatrix:
         if implementation == CompressionImplementation.INFERENCE:
             return self
         return self.spec.from_packed_parameters(
@@ -637,11 +691,12 @@ class AWQMatrixForInference(AWQMatrix):
             scales=self.scales,
             packed_zero_points=self.packed_zero_points,
             implementation=CompressionImplementation.TRAINING,
+            sharding_config=self.sharding_config,
             is_sharded=self.is_sharded,
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
-        weights = _awq_unpack_master_weights(
+        weights = _packed_weights_to_master_weights(
             self.packed_weights,
             self.scales,
             self.packed_zero_points,
@@ -650,15 +705,14 @@ class AWQMatrixForInference(AWQMatrix):
         )
         return self.spec.layout.to_output_input(weights)
 
-    @use_out_sharding((None,))
     def lookup_embedding(
         self,
-        index: int | Int[Array, ""],
+        row_index: int | Int[Array, "*batch"],
         *,
         dtype: DTypeLike | None = None,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
-    ) -> Float[Array, " out_channels"]:
+    ) -> Float[Array, "*batch out_channels"]:
         self._raise_if_batched()
         if self.spec.layout != Layout.INPUT_OUTPUT:
             raise ValueError(f"Embedding lookup not supported for layout {self.spec.layout}")
@@ -666,10 +720,11 @@ class AWQMatrixForInference(AWQMatrix):
             dtype = self.dtype
         packed_zero_points = self.packed_zero_points
         if packed_zero_points is not None:
-            packed_zero_points = packed_zero_points[index, :]
-        return _awq_unpack_master_weights(
-            self.packed_weights[index, :],
-            self.scales[index, :].astype(dtype),
+            packed_zero_points = lookup_sharded_indices(packed_zero_points, row_index)
+        packed_weights = lookup_sharded_indices(self.packed_weights, row_index)
+        return _packed_weights_to_master_weights(
+            packed_weights,
+            lookup_sharded_indices(self.scales, row_index).astype(dtype),
             packed_zero_points,
             self.spec.group_size,
             self.spec.bits,
@@ -684,7 +739,7 @@ class AWQMatrixForInference(AWQMatrix):
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
-        weights = _awq_unpack_master_weights(
+        weights = _packed_weights_to_master_weights(
             self.packed_weights,
             self.scales.astype(vector.dtype),
             self.packed_zero_points,
@@ -695,6 +750,4 @@ class AWQMatrixForInference(AWQMatrix):
         if transposed:
             layout = layout.transpose()
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            result = layout.matmul(weights, vector)
-
-        return reshard_as(result, vector)
+            return layout.matmul(weights, vector)

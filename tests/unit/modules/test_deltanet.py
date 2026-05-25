@@ -12,6 +12,7 @@ from lalamo.modules.token_mixer import MixerForwardPassConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
 from tests.common import assert_close
+from tests.helpers import make_test_sharding_config
 
 MODEL_DIM = 4
 NUM_HEADS = 2
@@ -51,7 +52,14 @@ def _deltanet() -> DeltaNet:
         value_head_dim=VALUE_HEAD_DIM,
         kernel_size=KERNEL_SIZE,
     )
-    return config.init(RandomInitializer(dtype=jnp.float32, key=jax.random.key(0)), model_dim=MODEL_DIM)
+    return config.init(
+        RandomInitializer(
+            default_dtype=jnp.float32,
+            sharding_config=make_test_sharding_config(),
+            key=jax.random.key(0),
+        ),
+        model_dim=MODEL_DIM,
+    )
 
 
 @pytest.mark.parametrize(("ssm_chunk_size", "ssm_min_tail_size_to_chunk"), SSM_CHUNK_CONFIGS)

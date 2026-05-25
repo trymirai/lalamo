@@ -1,11 +1,10 @@
 import re
 from pathlib import Path
 
-import polars as pl
 import pytest
 from tokenizers import Tokenizer
 
-from tests.conftest import RunLalamo
+from tests.conftest import RunLalamo, strip_ansi_escape
 
 PULL_MODEL_REPO = "google/gemma-3-1b-it"
 MATH_PROMPT = "What is 2 + 2? Reply with a single number, nothing else."
@@ -33,36 +32,23 @@ def pulled_model_dir(
 
 def test_pulled_model_generates_adequate_output(
     pulled_model_dir: Path,
-    tmp_path_factory: pytest.TempPathFactory,
     run_lalamo: RunLalamo,
 ) -> None:
-    work_dir = tmp_path_factory.mktemp("pull_smoke")
-    dataset_path = work_dir / "dataset.parquet"
-    output_path = work_dir / "responses.parquet"
-
-    pl.DataFrame(
-        {
-            "conversation": [
-                [{"role": "user", "content": MATH_PROMPT}],
-                [{"role": "user", "content": YES_NO_PROMPT}],
-            ],
-        },
-    ).write_parquet(dataset_path)
-
-    run_lalamo(
-        "generate-replies",
-        str(pulled_model_dir),
-        str(dataset_path),
-        "--output-path",
-        str(output_path),
-        "--batch-size",
-        "2",
-        "--max-output-length",
-        "64",
-    )
-
-    responses = [str(response) for response in pl.read_parquet(output_path).get_column("response").to_list()]
-    assert len(responses) == 2
+    responses = [
+        strip_ansi_escape(
+            run_lalamo(
+                "chat",
+                str(pulled_model_dir),
+                "--message",
+                prompt,
+                "--max-tokens",
+                "64",
+                "--temperature",
+                "0",
+            ),
+        )
+        for prompt in [MATH_PROMPT, YES_NO_PROMPT]
+    ]
 
     tokenizer = Tokenizer.from_file(str(pulled_model_dir / "tokenizer.json"))
     token_counts = [len(tokenizer.encode(response).ids) for response in responses]

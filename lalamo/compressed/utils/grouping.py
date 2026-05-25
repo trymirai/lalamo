@@ -30,14 +30,14 @@ def grouped_last_axis_shape(shape: tuple[int, ...], *, group_size: int) -> tuple
 
 
 def group_by_last_axis(
-    weights: Float[Array, "... rows cols"],
+    weights: Float[Array, "... cols"],
     *,
     group_size: int,
-) -> Float[Array, "... rows groups group_channels"]:
+) -> Float[Array, "... groups group_channels"]:
     grouped_last_axis_shape(weights.shape, group_size=group_size)
     return rearrange(
         weights,
-        "... out_channels (groups group_size) -> ... out_channels groups group_size",
+        "... (groups group_size) -> ... groups group_size",
         group_size=group_size,
     )
 

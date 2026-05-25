@@ -21,11 +21,17 @@ __all__ = [
 @dataclass(frozen=True)
 class ClassifierModelConfig(ModelConfig[ChatCodecConfig]):
     classifier_config: ClassifierConfig
+    output_labels: tuple[str, ...] | None = None
 
     def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "ClassifierModel":
         classifier = self.classifier_config.init(initializer)
         token_codec = self.token_codec_config.init(tokenizer)
-        return ClassifierModel(self, token_codec, classifier)
+        return ClassifierModel(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            token_codec=token_codec,
+            classifier=classifier,
+        )
 
 
 class ClassifierModel(Model[ChatCodecConfig, ClassifierModelConfig, ChatCodec]):
@@ -33,7 +39,7 @@ class ClassifierModel(Model[ChatCodecConfig, ClassifierModelConfig, ChatCodec]):
     classifier: Classifier
 
     def label_output_logits(self, logits: Float[Array, "batch logits"]) -> dict[str, Float[Array, " batch"]]:
-        output_labels = self.classifier.config.output_labels
+        output_labels = self.config.output_labels or self.classifier.config.output_labels
         probabilities = jax.nn.sigmoid(logits)
 
         if output_labels is None:

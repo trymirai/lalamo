@@ -42,6 +42,30 @@ __all__ = [
 ]
 
 
+@jax.custom_vjp
+def _round_with_identity_gradients(inputs: Float[Array, "..."]) -> Float[Array, "..."]:
+    return jnp.round(inputs)
+
+
+def _round_with_identity_gradients_fwd(
+    inputs: Float[Array, "..."],
+) -> tuple[Float[Array, "..."], None]:
+    return jnp.round(inputs), None
+
+
+def _round_with_identity_gradients_bwd(
+    residuals: None,  # noqa: ARG001
+    gradients: Float[Array, "..."],
+) -> tuple[Float[Array, "..."]]:
+    return (gradients,)
+
+
+_round_with_identity_gradients.defvjp(
+    _round_with_identity_gradients_fwd,
+    _round_with_identity_gradients_bwd,
+)
+
+
 @dataclass(frozen=True)
 class FiniteScalarQuantizerConfig(LalamoConfig):
     num_levels: tuple[int, ...]
@@ -60,7 +84,7 @@ class FiniteScalarQuantizerConfig(LalamoConfig):
             result *= level
         return result
 
-    def init(self, initializer: Initializer) -> "FiniteScalarQuantizer":  # noqa: ARG002
+    def init(self, initializer: Initializer) -> "FiniteScalarQuantizer":
         """Create quantizer with buffer arrays.
 
         Note: FSQ has no learnable weights, only precomputed buffers.
@@ -69,6 +93,7 @@ class FiniteScalarQuantizerConfig(LalamoConfig):
         dim_base_index = jnp.cumprod(jnp.concatenate([jnp.array([1], dtype=jnp.int32), num_levels[:-1]]))
         return FiniteScalarQuantizer(
             config=self,
+            sharding_config=initializer.sharding_config,
             num_levels_buffer=num_levels,
             dim_base_index=dim_base_index,
         )
@@ -113,8 +138,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
 
     def _round_ste(self, inputs: Float[Array, "batch dim timesteps"]) -> Float[Array, "batch dim timesteps"]:
         """Round to nearest integer with straight-through estimator."""
-        rounded = jnp.round(inputs)
-        return inputs + jax.lax.stop_gradient(rounded - inputs)
+        return _round_with_identity_gradients(inputs)
 
     def _inputs_to_codes(self, inputs: Float[Array, "batch dim timesteps"]) -> Float[Array, "batch dim timesteps"]:
         """Convert continuous inputs to quantized codes normalized to [-1, 1].
@@ -210,6 +234,7 @@ class GroupFiniteScalarQuantizerConfig(LalamoConfig):
         quantizers = tuple(self.quantizer_config.init(initializer) for _ in range(self.num_groups))
         return GroupFiniteScalarQuantizer(
             config=self,
+            sharding_config=initializer.sharding_config,
             quantizers=quantizers,
         )
 
@@ -272,6 +297,7 @@ class HalfSnakeConfig(LalamoConfig):
         snake = self.snake_config.init(initializer, snake_channels)
         return HalfSnake(
             config=self,
+            sharding_config=initializer.sharding_config,
             snake=snake,
             total_channels=channels,
         )
@@ -351,6 +377,7 @@ class ResidualBlockConfig(LalamoConfig):
 
         return ResidualBlock(
             config=self,
+            sharding_config=initializer.sharding_config,
             input_activation=input_activation,
             skip_activation=skip_activation,
             input_conv=input_conv,
@@ -412,7 +439,11 @@ class HiFiGANResBlockConfig(LalamoConfig):
             )
             for dilation in dilations
         )
-        return HiFiGANResBlock(config=self, res_blocks=res_blocks)
+        return HiFiGANResBlock(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            res_blocks=res_blocks,
+        )
 
 
 class HiFiGANResBlock(LalamoModule[HiFiGANResBlockConfig]):
@@ -462,7 +493,11 @@ class HiFiGANResLayerConfig(LalamoConfig):
             )
             for kernel_size in kernel_sizes
         )
-        return HiFiGANResLayer(config=self, res_blocks=res_blocks)
+        return HiFiGANResLayer(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            res_blocks=res_blocks,
+        )
 
 
 class HiFiGANResLayer(LalamoModule[HiFiGANResLayerConfig]):
@@ -560,6 +595,7 @@ class CausalHiFiGANDecoderConfig(LalamoConfig):
 
         return CausalHiFiGANDecoder(
             config=self,
+            sharding_config=initializer.sharding_config,
             pre_conv=pre_conv,
             activations=tuple(activations),
             upsample_convs=tuple(upsample_convs),

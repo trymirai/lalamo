@@ -56,6 +56,9 @@ def assert_close(
     fraction_of_allowed_violations: float = 0.0,
     operation_name: str | None = None,
 ) -> None:
+    result = jnp.asarray(jax.device_get(result))
+    reference = jnp.asarray(jax.device_get(reference))
+
     atol = atol or _current_atol.get()
     rtol = rtol or _current_rtol.get()
     operation_label = operation_name if operation_name is not None else "assert_close"

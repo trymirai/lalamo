@@ -43,6 +43,7 @@ class CausalConv1dConfig(LalamoConfig):
 
         return CausalConv1d(
             config=self,
+            sharding_config=initializer.sharding_config,
             weights=weights,
             biases=biases,
             stride=stride,
@@ -143,6 +144,7 @@ class CausalTransposeConv1dConfig(LalamoConfig):
 
         return CausalTransposeConv1d(
             config=self,
+            sharding_config=initializer.sharding_config,
             weights=weights,
             biases=biases,
             in_channels=in_channels,
@@ -224,7 +226,11 @@ class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
 class Snake1dConfig(LalamoConfig):
     def init(self, initializer: Initializer, channels: int) -> "Snake1d":
         alpha = initializer.ones((channels,))
-        return Snake1d(config=self, alpha=alpha)
+        return Snake1d(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            alpha=alpha,
+        )
 
 
 class Snake1d(LalamoModule[Snake1dConfig]):

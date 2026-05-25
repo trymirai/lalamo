@@ -7,12 +7,12 @@ from einops import einsum
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
-from lalamo.module import ShardingAxis
+from lalamo.module import LogicalAxis
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.utils.sharding import make_sharding
 from tests.common import assert_close
+from tests.helpers import make_sharding, make_test_sharding_config
 
 CHANNELS = 4
 KERNEL_SIZE = 3
@@ -30,6 +30,7 @@ def _biases() -> jax.Array:
 def _conv(has_biases: bool = True) -> SeparableCausalConv:
     return SeparableCausalConv(
         config=SeparableCausalConvConfig(has_biases=has_biases),
+        sharding_config=make_test_sharding_config(),
         weights=_weights(),
         biases=_biases() if has_biases else None,
     )
@@ -65,7 +66,7 @@ def _sharded_sequence(values: Array) -> Array:
 
 
 def _sharded_sequences(values: Array) -> Array:
-    return jax.device_put(values, make_sharding((ShardingAxis.DATA, None, None)))
+    return jax.device_put(values, make_sharding((LogicalAxis.BATCH, None, None)))
 
 
 def test_separable_causal_conv_matches_reference_and_keeps_unsharded_features(fake_mesh: Mesh) -> None:
@@ -201,12 +202,16 @@ def test_separable_causal_conv_vmapped_over_inputs_matches_reference_and_keeps_d
     module = _conv()
     inputs = _sharded_sequences(jnp.arange(2 * 5 * CHANNELS, dtype=jnp.float32).reshape(2, 5, CHANNELS) / 10)
 
-    result = call_vmapped(module, inputs, added_sharding_axis=ShardingAxis.DATA)
+    result = call_vmapped(
+        module,
+        inputs,
+        added_sharding_axis=make_test_sharding_config().resolve_axis(LogicalAxis.BATCH),
+    )
     reference = jnp.stack([_reference(module, values) for values in jnp.asarray(jax.device_get(inputs))])
 
     _assert_close(result=result.outputs, reference=reference)
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
-    assert result.outputs.sharding == make_sharding((ShardingAxis.DATA, None, None))
+    assert result.outputs.sharding == make_sharding((LogicalAxis.BATCH, None, None))
 
 
 def test_separable_causal_conv_vmapped_gradient_under_explicit_mesh(fake_mesh: Mesh) -> None:
@@ -223,8 +228,8 @@ def test_separable_causal_conv_vmapped_gradient_under_explicit_mesh(fake_mesh: M
     assert result.biases.shape == (2, CHANNELS)
     _assert_named_sharding(result.weights.sharding, fake_mesh)
     _assert_named_sharding(result.biases.sharding, fake_mesh)
-    assert result.weights.sharding == make_sharding((ShardingAxis.DATA, None, None))
-    assert result.biases.sharding == make_sharding((ShardingAxis.DATA, None))
+    assert result.weights.sharding == make_sharding((LogicalAxis.BATCH, None, None))
+    assert result.biases.sharding == make_sharding((LogicalAxis.BATCH, None))
 
 
 def test_separable_causal_conv_export_load_roundtrips_with_replicated_parameters(fake_mesh: Mesh) -> None:
@@ -233,6 +238,7 @@ def test_separable_causal_conv_export_load_roundtrips_with_replicated_parameters
     bias_sharding = make_sharding((None,))
     template = SeparableCausalConv(
         config=original.config,
+        sharding_config=make_test_sharding_config(),
         weights=dummy_array(original.weights.shape, original.weights.dtype, weight_sharding),
         biases=dummy_array(original.biases.shape, original.biases.dtype, bias_sharding)
         if original.biases is not None

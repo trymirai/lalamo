@@ -21,7 +21,7 @@ from torch._tensor import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from lalamo.initializer import Initializer
-from lalamo.module import Keychain
+from lalamo.module import Keychain, ShardingConfig
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfig
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfig
@@ -336,7 +336,11 @@ def default_fish_audio_audio_decoder_config() -> "FishAudioAudioDecoderConfig_Fo
     return FishAudioAudioDecoderConfig_Foreign(dac_config=DictConfig(get_default_fishaudio_dac_config()))
 
 
-def load_fish_audio_audio_decoder(chkpt_path: Path, device: str = "cpu") -> "FishAudioAudioDecoder_Foreign":
+def load_fish_audio_audio_decoder(
+    chkpt_path: Path,
+    sharding_config: ShardingConfig,
+    device: str = "cpu",
+) -> "FishAudioAudioDecoder_Foreign":
     config = default_fish_audio_audio_decoder_config()
     dac_model = instantiate(config.dac_config)
     assert isinstance(dac_model, DAC)
@@ -351,7 +355,7 @@ def load_fish_audio_audio_decoder(chkpt_path: Path, device: str = "cpu") -> "Fis
     dac_model.eval()
     dac_model.to(device)
 
-    decoder = FishAudioAudioDecoder_Foreign(config=config, dac_model=dac_model)
+    decoder = FishAudioAudioDecoder_Foreign(config=config, sharding_config=sharding_config, dac_model=dac_model)
 
     return decoder
 
@@ -451,6 +455,7 @@ class FishAudioTextDecoderConfig_Foreign(TTSTextDecoderConfig):
     def load_model(
         self,
         path_to_model: str | Path,
+        sharding_config: ShardingConfig,
         device: str = "cpu",
         precision: torch.dtype = torch.bfloat16,
     ) -> "FishAudioTextDecoder_Foreign":
@@ -460,7 +465,7 @@ class FishAudioTextDecoderConfig_Foreign(TTSTextDecoderConfig):
             device=device,
             precision=precision,
         )
-        return FishAudioTextDecoder_Foreign(config=self, fish_model=fish_model)
+        return FishAudioTextDecoder_Foreign(config=self, sharding_config=sharding_config, fish_model=fish_model)
 
 
 class FishAudioTextDecoder_Foreign(TTSTextDecoder):
@@ -527,7 +532,7 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder):
         sampling_policy: SamplingPolicy | None = None,
         *,
         keychain: Keychain,  # noqa: ARG002
-    ) -> Int[Array, "num_codebooks generated_tokens"]:
+    ) -> Int[Array, "num_codebooks tokens"]:
         text_tokens_torch = jax_to_torch(text_tokens)
         sampling_params = sampling_params_from_policy(sampling_policy)
 

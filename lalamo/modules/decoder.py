@@ -11,8 +11,8 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, ShardingAxis
-from lalamo.utils.sharding import reshard_as
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, LogicalAxis
+from lalamo.utils.sharding import lookup_sharded_indices
 from lalamo.weight_matrix import GradientEstimator
 
 from .embedding import EmbeddingBase, EmbeddingConfig, EmbeddingForwardPassConfig
@@ -121,7 +121,7 @@ class PerLayerEmbedding(LalamoModule[PLEModelConfig]):
         keychain: Keychain,
     ) -> tuple[Float[Array, "batch suffix_tokens ple_dim"], ...]:
         config = self.config
-        token_ple = self.token_embedding[token_ids] * config.ple_embed_scale
+        token_ple = lookup_sharded_indices(self.token_embedding, token_ids) * config.ple_embed_scale
         token_ple = rearrange(
             token_ple,
             "batch tokens (layers ple_dim) -> batch tokens layers ple_dim",
@@ -132,7 +132,7 @@ class PerLayerEmbedding(LalamoModule[PLEModelConfig]):
             self.model_projection,
             inner_features,
             keychain=keychain,
-            added_sharding_axes=(ShardingAxis.DATA, None),
+            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
         model_ple = model_ple * config.model_projection_scale
         model_ple = rearrange(
@@ -167,6 +167,7 @@ class DecoderConfig(LalamoConfig):
             total_ple_dim = config.num_layers * config.ple_dim
             per_layer_embedding = PerLayerEmbedding(
                 config=config,
+                sharding_config=initializer.sharding_config,
                 token_embedding=initializer.normal(
                     1 / math.sqrt(config.ple_dim),
                     (config.ple_vocab_size, total_ple_dim),
@@ -184,6 +185,7 @@ class DecoderConfig(LalamoConfig):
 
         return Decoder(
             config=self,
+            sharding_config=initializer.sharding_config,
             embedding=embedding,
             transformer=transformer,
             per_layer_embedding=per_layer_embedding,
@@ -222,14 +224,11 @@ class Decoder(LalamoModule[DecoderConfig]):
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
             )
-        token_positions = reshard_as(token_positions, token_ids)
         embedding_keychain, ple_keychain, transformer_keychain, readout_keychain = keychain.split(4)
-        inner_features = call_vmapped_twice(
-            self.embedding.embed,
+        inner_features = self.embedding.embed(
             token_ids,
             forward_pass_config=forward_pass_config.embedding_forward_pass_config,
             keychain=embedding_keychain,
-            added_sharding_axes=(ShardingAxis.DATA, None),
         )
 
         if self.per_layer_embedding is not None:
@@ -256,7 +255,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             transformer_result.outputs,
             forward_pass_config=forward_pass_config.embedding_forward_pass_config,
             keychain=readout_keychain,
-            added_sharding_axes=(ShardingAxis.DATA, None),
+            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
 
         if return_activation_trace:

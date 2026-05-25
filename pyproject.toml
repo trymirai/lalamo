@@ -34,13 +34,11 @@ cuda = ["jax[cuda]>=0.10.0", "nvidia-cutlass-dsl>=4.4; platform_system == 'Linux
 tpu = ["jax[tpu]>=0.10.0"]
 pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
 fishaudio = ["torch>=2.8.0", "transformers>=5.5.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
-nanocodec = ["torch>=2.8.0"]
 server = ["fastapi>=0.135.3", "uvicorn>=0.44.0"]
 
 [dependency-groups]
 dev = [
     "accelerate>=1.7.0",
-    "autoawq>=0.2.9; platform_system == 'Linux' and platform_machine == 'x86_64'",
     "beartype>=0.19.0",
     "bidict>=0.23.1",
     "blobfile>=3.1.0",
@@ -72,6 +70,7 @@ dev = [
 
 [project.scripts]
 lalamo = "lalamo.main:app"
+estimate_distortion = "lalamo.compressed.data.estimate_distortion:main"
 
 [build-system]
 requires = ["setuptools>=65.5.0", "wheel"]
@@ -82,6 +81,9 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["lalamo*"]
 namespaces = false
+
+[tool.setuptools.package-data]
+"lalamo.compressed.data" = ["*.csv"]
 
 [tool.setuptools.dynamic]
 version = { attr = "lalamo.__version__" }
@@ -115,6 +117,7 @@ addopts = "--jaxtyping-packages=lalamo,lalamo_typechecking.typechecker"
 markers = [
     "fast: quick smoke tests",
     "gpu: requires a JAX GPU device",
+    "slow: expensive tests excluded from the fast path",
 ]
 
 [tool.pytest_env]

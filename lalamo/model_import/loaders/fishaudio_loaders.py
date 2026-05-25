@@ -5,11 +5,12 @@ import shutil
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import equinox as eqx
 from einops import rearrange
 from jax import numpy as jnp
+from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, Float
 from tokenizers import Tokenizer
 
@@ -39,6 +40,7 @@ from lalamo.modules.token_mixers.attention import Attention
 from lalamo.modules.transformer import Transformer
 from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.sharding import sharding_of, with_sharding
 from lalamo.utils.surgery import load_as_at
 
 from .common import load_full_precision
@@ -49,6 +51,9 @@ from .nanocodec_loaders import (
     load_snake1d,
 )
 from .torch_utils import fuse_weight_norm_conv1d_as_linear
+
+if TYPE_CHECKING:
+    from tiktoken.core import Encoding as TiktokenEncoding
 
 
 def _dense_mlp_projections(module: DenseMLP) -> tuple[Linear, Linear]:
@@ -114,6 +119,8 @@ def _permute_qkv_for_rope_rotate_half(
     """
     q_dim = num_heads * head_dim
     k_dim = num_groups * head_dim
+    replicated_sharding = NamedSharding(sharding_of(qkv_weight).mesh, PartitionSpec(*((None,) * qkv_weight.ndim)))
+    qkv_weight = with_sharding(qkv_weight, replicated_sharding)
 
     q_weight = qkv_weight[:q_dim, :]
     k_weight = qkv_weight[q_dim : q_dim + k_dim, :]
@@ -209,7 +216,10 @@ def load_transformer_block(
             num_groups=attn_module.config.num_groups,
             head_dim=attn_module.config.head_dim,
         )
-        new_weights = qkv_projection.weights.spec.compress(permuted_qkv_weights)
+        new_weights = qkv_projection.weights.spec.compress(
+            permuted_qkv_weights,
+            sharding_config=qkv_projection.weights.sharding_config,
+        )
         qkv_projection = eqx.tree_at(lambda m: (m.weights,), qkv_projection, (new_weights,))
         assert isinstance(qkv_projection, Linear)
 
@@ -823,6 +833,7 @@ def load_descript_audio_codec(dac_module: DescriptAudioCodec, state_dict: Mappin
 
     return DescriptAudioCodec(
         config=dac_module.config,
+        sharding_config=dac_module.sharding_config,
         quantizer=loaded_quantizer,
         decoder=loaded_decoder,
     )
@@ -925,7 +936,7 @@ def load_tokenizer_from_fishaudio_tiktoken(
     def _load_fishaudio_tiktoken_data(
         tiktoken_path: Path,
         special_tokens: dict[str, int],
-    ) -> tuple[TiktokenEncoding, FishAudioSpecialInferenceTokens]:
+    ) -> tuple["TiktokenEncoding", FishAudioSpecialInferenceTokens]:
         def load_tiktoken_bpe(tiktoken_bpe_file: Path) -> dict[bytes, int]:
             data = {}
             with open(tiktoken_bpe_file) as token_file:

@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -5,7 +6,7 @@ from lalamo.model_registry import ModelRegistry
 from lalamo.models import LanguageModel
 from lalamo.models.chat_codec import UserMessage
 from lalamo.models.language_model import GenerationConfig
-from lalamo.module import Keychain
+from lalamo.module import Keychain, LogicalAxis, ShardingConfig
 from tests.conftest import ConvertModel, RunLalamo, load_converted_model, strip_ansi_escape
 
 MODELS = ["google/gemma-3-1b-it", "mlx-community/LFM2-350M-8bit"]
@@ -22,7 +23,7 @@ def _assert_has_london_and_yes(texts: list[str]) -> None:
 
 def _load_language_model(convert_model: ConvertModel, model_repo: str) -> LanguageModel:
     converted_model_dir = convert_model(model_repo, cached=True)
-    model = load_converted_model(converted_model_dir)
+    model = load_converted_model(converted_model_dir, ShardingConfig.replicated())
     assert isinstance(model, LanguageModel)
     return model
 
@@ -42,12 +43,20 @@ def _generate_texts(model: LanguageModel, prompts: list[str]) -> list[str]:
     token_ids = jnp.asarray(
         [jnp.pad(prompt, (0, max_prompt_length - prompt.size), constant_values=0) for prompt in encoded_prompts],
     )
+    prompt_lengths = jax.device_put(
+        prompt_lengths,
+        model.sharding_config.resolve_sharding((LogicalAxis.BATCH,)),
+    )
+    token_ids = jax.device_put(
+        token_ids,
+        model.sharding_config.resolve_sharding((LogicalAxis.BATCH, None)),
+    )
     generated = model.generate_tokens(
         token_ids,
         generation_config=GenerationConfig(temperature=0.0),
         prompt_lengths_without_padding=prompt_lengths,
         max_output_length=64,
-        keychain=Keychain.init(0),
+        keychain=Keychain.init(0, sharding_config=model.sharding_config),
     )
     return [
         model.token_codec.decode_response(trim_at_stop_token(response_ids.tolist())).response
@@ -113,7 +122,7 @@ def test_converted_model_streams_reply(
             [UserMessage(CAPITAL_PROMPT)],
             generation_config=GenerationConfig(temperature=0.0),
             max_output_length=64,
-            keychain=Keychain.init(1),
+            keychain=Keychain.init(1, sharding_config=model.sharding_config),
         ),
     )
     assert "london" in capital_output.lower(), f"Expected 'london' in {capital_output!r}"
@@ -123,7 +132,7 @@ def test_converted_model_streams_reply(
             [UserMessage(APPLES_PROMPT)],
             generation_config=GenerationConfig(temperature=0.0),
             max_output_length=64,
-            keychain=Keychain.init(2),
+            keychain=Keychain.init(2, sharding_config=model.sharding_config),
         ),
     )
     assert "yes" in apples_output.lower(), f"Expected 'yes' in {apples_output!r}"

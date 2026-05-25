@@ -12,6 +12,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 import torch
+from jax.sharding import AxisType
 from jaxtyping import Array
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
@@ -29,6 +30,7 @@ from lalamo.modules.decoder import (
     DecoderResult,
 )
 from lalamo.utils.memory import get_available_bytes_on_default_device
+from lalamo.utils.sharding import ShardingConfig
 from tests.common import assert_close, checkify_forward
 from tests.helpers import si, unsi
 
@@ -37,6 +39,20 @@ if MLX_AVAILABLE:
     import mlx.core as mx
 
 FRACTION_OF_ALLOWED_VIOLATIONS = 0.03
+
+
+def _tracer_sharding_config() -> ShardingConfig:
+    devices = jax.devices()
+    first_device, *_ = devices
+    if first_device.platform == "cpu":
+        devices = devices[:1]
+    mesh = jax.make_mesh(
+        (len(devices),),
+        ("replica",),
+        axis_types=(AxisType.Auto,),
+        devices=devices,
+    )
+    return ShardingConfig(mesh=mesh)
 
 
 class DType(Enum):
@@ -440,13 +456,21 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
 
     configure_precision_for_tests()
 
-    token_ids = jnp.arange(0, test_spec.num_tokens, dtype=jnp.int32)[None, :]
-    token_positions = jnp.arange(
-        0,
-        test_spec.num_tokens * test_spec.token_stride,
-        test_spec.token_stride,
-        dtype=jnp.int32,
-    )[None, :]
+    sharding_config = _tracer_sharding_config()
+    batch_sequence_sharding = sharding_config.make_sharding((None, None))
+    token_ids = jax.device_put(
+        jnp.arange(0, test_spec.num_tokens, dtype=jnp.int32)[None, :],
+        batch_sequence_sharding,
+    )
+    token_positions = jax.device_put(
+        jnp.arange(
+            0,
+            test_spec.num_tokens * test_spec.token_stride,
+            test_spec.token_stride,
+            dtype=jnp.int32,
+        )[None, :],
+        batch_sequence_sharding,
+    )
 
     tracer = model_tracer.load(
         test_spec.model_repo,
@@ -461,11 +485,12 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
             import_dtype = test_spec.dtype.jax_dtype
         imported_model = import_model(
             test_spec.model_repo,
+            sharding_config=sharding_config,
             context_length=test_spec.num_tokens * test_spec.token_stride,
             dtype=import_dtype,
         )
         model = imported_model.model
-        keychain = Keychain.init(0)
+        keychain = Keychain.init(0, sharding_config=sharding_config)
         with jax.disable_jit():
             if isinstance(model, LanguageModel):
                 forward_pass_config = DecoderForwardPassConfig.for_tracer_tests()

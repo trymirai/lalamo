@@ -42,6 +42,7 @@ class TTSModelConfig(ModelConfig[TTSCodecConfig]):
         token_codec = self.token_codec_config.init(tokenizer)
         return TTSModel(
             config=self,
+            sharding_config=initializer.sharding_config,
             token_codec=token_codec,
             text_decoder=self.tts_config.text_decoder_config.init(initializer),
             audio_decoder=self.tts_config.audio_decoder_config.init(initializer),

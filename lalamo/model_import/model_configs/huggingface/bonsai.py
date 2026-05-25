@@ -49,6 +49,7 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
     vocab_size: int
     head_dim: int
 
+    # Bonsai's config.json doesn't include torch_dtype
     torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
     quantization: QuantizationConfigType = None
 

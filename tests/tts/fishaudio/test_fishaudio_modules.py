@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import cast
 
+import jax
 import torch
 from fish_speech.models.text2semantic.llama import DualARModelArgs
 from fish_speech.tokenizer import FishTokenizer
@@ -13,10 +14,11 @@ from lalamo.model_import.loaders.fishaudio_loaders import (
     load_transformer_block,
 )
 from lalamo.model_import.model_specs.fishaudio import FISHAUDIO_TTS_MODELS
-from lalamo.module import Keychain
+from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.torch_interop import torch_to_jax
 from tests.common import assert_close
+from tests.helpers import make_sharding, make_test_sharding_config
 from tests.tts.fishaudio.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
 )
@@ -50,22 +52,27 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     assert isinstance(config, DualARModelArgs)
 
     transformer_cfg, _ = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(config)
-    lalamo_transformer = transformer_cfg.init(EmptyInitializer(dtype=jnp.bfloat16))
+    lalamo_transformer = transformer_cfg.init(
+        EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config()),
+    )
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_model.state_dict())
     lalamo_transformer = load_transformer_block(lalamo_transformer, weights_dict)
 
-    batch_size = 1
+    batch_size = 2
     seq_length = 16
     model_dim = config.dim
 
     torch.manual_seed(42)
     embedded_input_torch = torch.randn(batch_size, seq_length, model_dim, dtype=torch.bfloat16)
-    embedded_input_lalamo = torch_to_jax(embedded_input_torch)
+    embedded_input_lalamo = jax.device_put(
+        torch_to_jax(embedded_input_torch),
+        make_sharding((LogicalAxis.BATCH, None, None)),
+    )
 
     max_seq_len = seq_length
     input_pos = torch.arange(max_seq_len, device=embedded_input_torch.device)
-    input_pos_lalamo = torch_to_jax(input_pos)[None, :]
+    input_pos_lalamo = jnp.broadcast_to(torch_to_jax(input_pos)[None, :], (batch_size, max_seq_len))
 
     causal_mask = cast("torch.Tensor", fish_model.causal_mask)
     freqs_cis_table = cast("torch.Tensor", fish_model.freqs_cis)
@@ -76,12 +83,15 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     fish_layer_result = fish_layer(embedded_input_torch, freqs_cis, mask, input_pos=input_pos)
 
     (rope,) = lalamo_transformer.ropes
-    pos_emb_lalamo = call_vmapped(rope, input_pos_lalamo)
+    pos_emb_lalamo = jax.device_put(
+        call_vmapped(rope, input_pos_lalamo),
+        make_sharding((LogicalAxis.BATCH, None, None)),
+    )
     lalamo_layer = lalamo_transformer.layers[0]
     lalamo_layer_result = lalamo_layer(
         embedded_input_lalamo,
         pos_emb_lalamo,
-        keychain=Keychain.init(0),
+        keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
     )
 
     fish_output_jax = torch_to_jax(fish_layer_result)

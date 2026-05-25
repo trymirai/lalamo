@@ -73,6 +73,7 @@ class DescriptAudioCodecConfig(TTSAudioDecoderConfig):
 
         return DescriptAudioCodec(
             config=self,
+            sharding_config=initializer.sharding_config,
             quantizer=quantizer,
             decoder=decoder,
         )

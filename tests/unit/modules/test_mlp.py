@@ -6,7 +6,7 @@ import pytest
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
-from lalamo.module import ForwardPassMode, Keychain
+from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
 from lalamo.modules.activations import Identity, SiLU
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.mlp import (
@@ -17,9 +17,9 @@ from lalamo.modules.mlp import (
     MLPForwardPassConfig,
     SoftmaxRouting,
 )
-from lalamo.utils.sharding import make_sharding
 from lalamo.weight_matrix import FullPrecisionSpec
 from tests.common import assert_close
+from tests.helpers import make_sharding, make_test_sharding_config
 
 MODEL_DIM = 4
 HIDDEN_DIM = 4
@@ -42,7 +42,8 @@ def _moe_array(shape: tuple[int, ...], *, offset: int = 0) -> jax.Array:
 def _linear(weights: Array, biases: Array | None, output_dims: tuple[int, ...]) -> Linear:
     return Linear(
         config=LinearConfig(),
-        weights=FullPrecisionSpec().compress(weights),
+        sharding_config=make_test_sharding_config(),
+        weights=FullPrecisionSpec().compress(weights, sharding_config=make_test_sharding_config()),
         biases=biases,
         output_dims=output_dims,
     )
@@ -60,6 +61,7 @@ def _dense_mlp(config: DenseMLPConfig | None = None) -> DenseMLP:
         )
     return DenseMLP(
         config=config,
+        sharding_config=make_test_sharding_config(),
         up_projection=_linear(
             _array((2 * HIDDEN_DIM, MODEL_DIM)),
             _array((2 * HIDDEN_DIM,), offset=100) if config.has_up_biases else None,
@@ -101,6 +103,7 @@ def _moe(
     expert_bias_sharding = make_sharding((None, None))
     return MixtureOfExperts(
         config=config,
+        sharding_config=make_test_sharding_config(),
         router=_linear(
             _moe_array((NUM_ROUTED_EXPERTS, MODEL_DIM)),
             _moe_array((NUM_ROUTED_EXPERTS,), offset=100),
@@ -108,6 +111,7 @@ def _moe(
         ),
         experts=DenseMLP(
             config=expert_config,
+            sharding_config=make_test_sharding_config(),
             up_projection=_linear(
                 _moe_array((mixture_size, 2 * HIDDEN_DIM, MODEL_DIM), offset=200),
                 jax.device_put(_moe_array((mixture_size, 2 * HIDDEN_DIM), offset=300), expert_bias_sharding),
@@ -213,6 +217,14 @@ def _sharded_vector(values: Array) -> Array:
     return jax.device_put(values, make_sharding((None,)))
 
 
+def _sharded_tokens(values: Array) -> Array:
+    return jax.device_put(values, make_sharding((LogicalAxis.BATCH, None, None)))
+
+
+def _sharded_lengths(values: Array) -> Array:
+    return jax.device_put(values, make_sharding((LogicalAxis.BATCH,)))
+
+
 def _moe_sequence_length(mode: ForwardPassMode) -> int:
     if mode == ForwardPassMode.SINGLE_TOKEN:
         return 1
@@ -223,7 +235,7 @@ def test_dense_mlp_call_unbatched_matches_reference_and_keeps_unsharded_features
     module = _dense_mlp()
     inputs = _sharded_vector(jnp.arange(MODEL_DIM, dtype=jnp.float32))
 
-    result = module.call_unbatched(inputs, keychain=Keychain.init(0))
+    result = module.call_unbatched(inputs, keychain=Keychain.init(0, sharding_config=make_test_sharding_config()))
 
     _assert_close(result=result, reference=_reference(module, inputs))
     _assert_named_sharding(result.sharding, fake_mesh)
@@ -248,7 +260,7 @@ def test_softmax_routing_call_unbatched_selects_top_k_and_normalizes_weights() -
 def test_routed_moe_matches_direct_reference(mode: ForwardPassMode) -> None:
     module = _moe(num_active_routed_experts=2)
     sequence_length = _moe_sequence_length(mode)
-    inputs = (
+    inputs = _sharded_tokens(
         jnp.arange(2 * sequence_length * MODEL_DIM, dtype=jnp.float32).reshape(
             2,
             sequence_length,
@@ -260,7 +272,7 @@ def test_routed_moe_matches_direct_reference(mode: ForwardPassMode) -> None:
     result = module(
         inputs,
         forward_pass_config=MLPForwardPassConfig(mode=mode, moe_chunk_size_ratio=0.5),
-        keychain=Keychain.init(7),
+        keychain=Keychain.init(7, sharding_config=make_test_sharding_config()),
     )
 
     _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
@@ -269,14 +281,14 @@ def test_routed_moe_matches_direct_reference(mode: ForwardPassMode) -> None:
 @pytest.mark.usefixtures("fake_mesh")
 def test_moe_prefill_with_shared_experts_and_padding_matches_direct_reference() -> None:
     module = _moe(num_active_routed_experts=2, num_shared_experts=2)
-    inputs = jnp.arange(2 * 3 * MODEL_DIM, dtype=jnp.float32).reshape(2, 3, MODEL_DIM) / 10
-    lengths_without_padding = jnp.array([3, 1], dtype=jnp.int32)
+    inputs = _sharded_tokens(jnp.arange(2 * 3 * MODEL_DIM, dtype=jnp.float32).reshape(2, 3, MODEL_DIM) / 10)
+    lengths_without_padding = _sharded_lengths(jnp.array([3, 1], dtype=jnp.int32))
 
     result = module(
         inputs,
         lengths_without_padding=lengths_without_padding,
         forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
-        keychain=Keychain.init(9),
+        keychain=Keychain.init(9, sharding_config=make_test_sharding_config()),
     )
 
     _assert_close(

@@ -9,6 +9,7 @@ from jaxtyping import Array, DTypeLike, PyTree
 from tokenizers import Tokenizer
 
 from lalamo.model import Model, ModelConfig
+from lalamo.utils.sharding import ShardingConfig
 
 from .initializer import EmptyInitializer
 from .module import LalamoModule
@@ -38,8 +39,9 @@ class CheckpointManager:
         base_config_class: type[ModelConfig],
         name: str,
         dtype: DTypeLike,
+        sharding_config: ShardingConfig,
     ) -> M:
-        initializer = EmptyInitializer(dtype)
+        initializer = EmptyInitializer(dtype, sharding_config)
         config_path = self._directory / name / "config.json"
         with open(config_path) as config_file:
             config_json = json.load(config_file)
