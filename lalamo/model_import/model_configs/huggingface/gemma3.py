@@ -2,8 +2,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
-import jax.numpy as jnp
-
 from lalamo.modules.activations import GELU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
@@ -77,7 +75,7 @@ class HFGemma3TextConfigRaw:
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         max_sequence_length = self.max_position_embeddings if context_length is None else context_length
-        input_scale = jnp.asarray(self.hidden_size**0.5).astype(jnp.bfloat16).item()
+        input_scale = self.hidden_size**0.5
         attention_scale = self.query_pre_attn_scalar**-0.5
         embedding_config = TiedEmbeddingConfig(
             input_scale=input_scale,
