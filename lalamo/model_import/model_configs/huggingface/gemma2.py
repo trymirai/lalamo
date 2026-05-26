@@ -51,9 +51,10 @@ class HFGemma2Config(HuggingFaceLMConfig):
 
     def to_decoder_config(
         self,
-        context_length: int | None,  # noqa: ARG002
+        context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
+        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
         embedding_input_scale = self.hidden_size**0.5
         attention_scale = self.query_pre_attn_scalar**-0.5
         embedding_config = TiedEmbeddingConfig(
@@ -62,7 +63,7 @@ class HFGemma2Config(HuggingFaceLMConfig):
         )
         rope_config = UnscaledRoPEConfig(
             base=self.rope_theta,
-            max_sequence_length=self.max_position_embeddings,
+            max_sequence_length=max_sequence_length,
             head_dim=self.head_dim,
         )
         rmsnorm_config = NormalizationConfig(
