@@ -73,6 +73,8 @@ class HFLlamaConfig(HuggingFaceLMConfig):
         context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
+        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
+        head_dim = self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
@@ -86,29 +88,29 @@ class HFLlamaConfig(HuggingFaceLMConfig):
         if self.rope_scaling is None:
             rope_config = UnscaledRoPEConfig(
                 base=self.rope_theta,
-                max_sequence_length=context_length or self.max_position_embeddings,
-                head_dim=self.head_dim or self.hidden_size // self.num_attention_heads,
+                max_sequence_length=max_sequence_length,
+                head_dim=head_dim,
             )
         elif isinstance(self.rope_scaling, YarnRopeScalingConfig):
             rope_config = YARNRoPEConfig(
                 base=self.rope_theta,
-                max_sequence_length=context_length or self.max_position_embeddings,
+                max_sequence_length=max_sequence_length,
                 scaling_factor=self.rope_scaling.factor,
                 original_context_length=self.rope_scaling.original_max_position_embeddings,
                 beta_fast=self.rope_scaling.beta_fast,
                 beta_slow=self.rope_scaling.beta_slow,
                 truncate=self.rope_scaling.truncate,
-                head_dim=self.head_dim or self.hidden_size // self.num_attention_heads,
+                head_dim=head_dim,
             )
         elif isinstance(self.rope_scaling, LlamaRopeScalingConfig):
             rope_config = LlamaRoPEConfig(
                 base=self.rope_theta,
-                max_sequence_length=context_length or self.max_position_embeddings,
+                max_sequence_length=max_sequence_length,
                 scaling_factor=self.rope_scaling.factor,
                 original_context_length=self.rope_scaling.original_max_position_embeddings,
                 low_frequency_factor=self.rope_scaling.low_freq_factor,
                 high_frequency_factor=self.rope_scaling.high_freq_factor,
-                head_dim=self.head_dim or self.hidden_size // self.num_attention_heads,
+                head_dim=head_dim,
             )
         else:
             raise ValueError("Unsupported rope_scaling configuration")
@@ -130,7 +132,7 @@ class HFLlamaConfig(HuggingFaceLMConfig):
             has_out_biases=False,
             num_heads=self.num_attention_heads,
             num_groups=self.num_key_value_heads,
-            head_dim=self.head_dim or self.hidden_size // self.num_attention_heads,
+            head_dim=head_dim,
             is_causal=True,
             scale=None,
             sliding_window_size=None,
@@ -157,7 +159,6 @@ class HFLlamaConfig(HuggingFaceLMConfig):
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            context_length=context_length or self.max_position_embeddings,
         )
         return DecoderConfig(
             embedding_config=embedding_config,

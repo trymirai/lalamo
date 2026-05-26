@@ -63,6 +63,7 @@ class HFQwen3Config(HuggingFaceLMConfig):
         context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
+        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
@@ -75,7 +76,7 @@ class HFQwen3Config(HuggingFaceLMConfig):
             )
         rope_config = UnscaledRoPEConfig(
             base=self.rope_theta,
-            max_sequence_length=context_length or self.max_position_embeddings,
+            max_sequence_length=max_sequence_length,
             head_dim=self.head_dim,
         )
         rmsnorm_config = NormalizationConfig(
@@ -128,7 +129,6 @@ class HFQwen3Config(HuggingFaceLMConfig):
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            context_length=context_length or self.max_position_embeddings,
         )
         return DecoderConfig(
             embedding_config=embedding_config,

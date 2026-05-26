@@ -20,6 +20,7 @@ defaults:
 env:
   GH_TOKEN: ${{ github.token }}
   PR_NUMBER: ${{ github.event.pull_request.number }}
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
 jobs:
   config:
@@ -89,7 +90,6 @@ jobs:
           {
             echo "[CI NOTICE] Pull tests failed."
             echo
-            echo "This usually indicates a compatibility break for pulled models."
             echo "Please consider bumping the major version for this release, and updating all the server-stored models."
             echo
             echo "<details><summary>Error output (last 200 lines)</summary>"

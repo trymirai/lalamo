@@ -6,7 +6,6 @@ from jaxtyping import Array, DTypeLike, Float, Int
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, field
-from lalamo.modules.token_mixers import AttentionConfig
 
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
@@ -40,10 +39,9 @@ class TransformerConfig(LalamoConfig):
     output_norm_config: NormalizationConfig
     model_dim: int
     hidden_dim: int
-    context_length: int
 
     def _init_ropes(self, initializer: Initializer) -> tuple[tuple[RoPE, ...], tuple[int, ...]]:
-        rope_cache: dict[tuple[RoPEConfig, int], int] = {}
+        rope_cache: dict[RoPEConfig, int] = {}
         ropes: list[RoPE] = []
         rope_indices: list[int] = []
         for layer_config in self.layer_configs:
@@ -52,22 +50,11 @@ class TransformerConfig(LalamoConfig):
                 rope_indices.append(-1)
                 continue
 
-            if not isinstance(layer_config.mixer_config, AttentionConfig):
-                raise TypeError("RoPE is only supported for attention layers.")
-            head_dim = rope_config.head_dim or layer_config.mixer_config.head_dim
-            cache_key = (rope_config, head_dim)
-            if cache_key not in rope_cache:
-                rope_cache[cache_key] = len(ropes)
-                ropes.append(rope_config.init(initializer, head_dim=head_dim))
-            rope_indices.append(rope_cache[cache_key])
+            if rope_config not in rope_cache:
+                rope_cache[rope_config] = len(ropes)
+                ropes.append(rope_config.init(initializer))
+            rope_indices.append(rope_cache[rope_config])
         return tuple(ropes), tuple(rope_indices)
-
-    def _kv_source_layer_indices(self) -> tuple[int, ...]:
-        result = []
-        for i, layer_config in enumerate(self.layer_configs):
-            if layer_config.kv_source_layer_index is None:
-                result.append(i)
-        return tuple(result)
 
     def init(self, initializer: Initializer) -> "Transformer":
         ropes, rope_indices = self._init_ropes(initializer)
@@ -76,7 +63,7 @@ class TransformerConfig(LalamoConfig):
             layer_config.init(
                 initializer,
                 model_dim=self.model_dim,
-                hidden_dim=layer_config.hidden_dim or self.hidden_dim,
+                hidden_dim=layer_config.hidden_dim if layer_config.hidden_dim is not None else self.hidden_dim,
             )
             for layer_config in self.layer_configs
         )
@@ -87,7 +74,11 @@ class TransformerConfig(LalamoConfig):
             sharding_config=initializer.sharding_config,
             ropes=ropes,
             rope_indices=rope_indices,
-            kv_source_layer_indices=self._kv_source_layer_indices(),
+            kv_source_layer_indices=tuple(
+                layer_index
+                for layer_index, layer_config in enumerate(self.layer_configs)
+                if layer_config.kv_source_layer_index is None
+            ),
             layers=layers,
             output_norm=output_norm,
         )

@@ -102,7 +102,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
             "at least one of dtype or torch_dtype must be specified"
         )
 
-        return jnp.dtype(self.dtype or self.torch_dtype)
+        return jnp.dtype(self.dtype if self.dtype is not None else self.torch_dtype)
 
     def to_decoder_config(
         self,
@@ -110,6 +110,8 @@ class HFLFM2Config(HuggingFaceLMConfig):
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         assert self.num_attention_heads == self.num_heads
+        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
+        head_dim = self.hidden_size // self.num_attention_heads
 
         if self.tie_embedding:
             embedding_config = TiedEmbeddingConfig(
@@ -124,8 +126,8 @@ class HFLFM2Config(HuggingFaceLMConfig):
 
         rope_config = UnscaledRoPEConfig(
             base=self.resolved_rope_theta,
-            max_sequence_length=context_length or self.max_position_embeddings,
-            head_dim=self.hidden_size // self.num_heads,
+            max_sequence_length=max_sequence_length,
+            head_dim=head_dim,
         )
 
         linear_config = LinearConfig()
@@ -144,7 +146,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
             key_norm_config=block_norm_config,
             num_heads=self.num_attention_heads,
             num_groups=self.num_key_value_heads,
-            head_dim=self.hidden_size // self.num_heads,
+            head_dim=head_dim,
             is_causal=True,
             scale=None,
             sliding_window_size=None,
@@ -200,7 +202,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
         )
 
         if not self.block_auto_adjust_ff_dim:
-            hidden_dim = self.intermediate_size or self.block_ff_dim
+            hidden_dim = self.block_ff_dim if self.intermediate_size is None else self.intermediate_size
         else:
             hidden_dim_adjusted = self.block_ff_dim * self.block_ffn_dim_multiplier * (2 / 3)
             hidden_dim = int(
@@ -212,7 +214,6 @@ class HFLFM2Config(HuggingFaceLMConfig):
             output_norm_config=output_norm_config,
             model_dim=self.hidden_size,
             hidden_dim=hidden_dim,
-            context_length=context_length or self.max_position_embeddings,
         )
 
         return DecoderConfig(

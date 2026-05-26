@@ -2150,7 +2150,7 @@ requires-dist = [
     { name = "tokenizers", specifier = ">=0.21.2" },
     { name = "torch", marker = "extra == 'fishaudio'", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "transformers", marker = "extra == 'fishaudio'", specifier = ">=5.5.0" },
-    { name = "typer", specifier = ">=0.15.1" },
+    { name = "typer", specifier = ">=0.15.1,<0.26" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.44.0" },
     { name = "xxhash", specifier = ">=3.5.0" },
 ]

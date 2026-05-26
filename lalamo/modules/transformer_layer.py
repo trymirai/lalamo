@@ -175,10 +175,6 @@ class TransformerLayerConfig(LalamoConfig):
     kv_source_layer_index: int | None = None
     rope_config: RoPEConfig | None = None
 
-    @property
-    def rope_dim(self) -> int | None:
-        return self.mixer_config.rope_dim
-
     def init(
         self,
         initializer: Initializer,
@@ -215,17 +211,11 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     pre_mixer_norm: Normalization | None
     mixer: TokenMixerBase
     post_mixer_norm: Normalization | None
-    pre_mlp_norm: Normalization | None
+    pre_mlp_norm: Normalization
     mlp: MLPBase
     post_mlp_norm: Normalization | None
     ple: PLELayer | None
     post_layer_scalar: Float[Array, "1"] | None
-
-    @property
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        if self.config.rope_config is None:
-            return PositionalEmbeddingSelector.NONE
-        return self.mixer.positional_embedding_selector
 
     @eqx.filter_jit
     def __call__(
@@ -305,14 +295,10 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             normalized_mixer_outputs = None
             mlp_inputs = inputs + mixer_outputs
 
-        normalized_mlp_inputs = (
-            call_vmapped_twice(
-                self.pre_mlp_norm,
-                mlp_inputs,
-                forward_pass_config=normalization_forward_pass_config,
-            )
-            if self.pre_mlp_norm is not None
-            else mlp_inputs
+        normalized_mlp_inputs = call_vmapped_twice(
+            self.pre_mlp_norm,
+            mlp_inputs,
+            forward_pass_config=normalization_forward_pass_config,
         )
         mlp_outputs = self.mlp(
             normalized_mlp_inputs,

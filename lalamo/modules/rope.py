@@ -56,15 +56,6 @@ class PositionalEmbeddings(Exportable, eqx.Module):
     def head_dim(self) -> int:
         return self.cosines.shape[-1]
 
-    def rotate_half(
-        self,
-        heads: Float[Array, "tokens head_channels"],
-    ) -> Float[Array, "tokens head_channels"]:
-        half_dim = self.head_dim // 2
-        x1 = heads[..., :half_dim]
-        x2 = heads[..., half_dim : self.head_dim]
-        return jnp.concatenate((-x2, x1), axis=-1)
-
     def apply(self, heads: Float[Array, "tokens head_channels"]) -> Float[Array, "tokens head_channels"]:
         head_dim = self.head_dim
         if heads.shape[-1] < head_dim:
@@ -76,7 +67,9 @@ class PositionalEmbeddings(Exportable, eqx.Module):
         cosines = self.cosines
         sines = self.sines
         rotated = heads[..., :head_dim]
-        rotated = rotated * cosines + self.rotate_half(rotated) * sines
+        half_dim = head_dim // 2
+        rotated_half = jnp.concatenate((-rotated[..., half_dim:], rotated[..., :half_dim]), axis=-1)
+        rotated = rotated * cosines + rotated_half * sines
         if heads.shape[-1] == head_dim:
             return rotated
         tail = heads[..., head_dim:]
@@ -87,8 +80,7 @@ class PositionalEmbeddings(Exportable, eqx.Module):
 class RoPEConfig(LalamoConfig, RegistryABC):
     base: float
     max_sequence_length: int
-    head_dim: int | None = field(default=None, kw_only=True)
-    partial_rotary_dim: int | None = field(default=None, kw_only=True)
+    head_dim: int
 
     @property
     def _attention_scaling_factor(self) -> float:
@@ -97,44 +89,14 @@ class RoPEConfig(LalamoConfig, RegistryABC):
     def _scale_inverse_frequencies(
         self,
         inverse_frequencies: Float[Array, " rotary_pairs"],
-        head_dim: int,  # noqa: ARG002
-        max_sequence_length: int,  # noqa: ARG002
     ) -> Float[Array, " rotary_pairs"]:
         return inverse_frequencies
 
-    def _mask_inverse_frequencies(
-        self,
-        inverse_frequencies: Float[Array, " rotary_pairs"],
-        head_dim: int,
-    ) -> Float[Array, " rotary_pairs"]:
-        if self.partial_rotary_dim is None or self.partial_rotary_dim >= head_dim:
-            return inverse_frequencies
-        rope_angles = self.partial_rotary_dim // 2
-        mask = jnp.arange(head_dim // 2) < rope_angles
-        return inverse_frequencies * mask
-
-    def init(
-        self,
-        initializer: Initializer,
-        head_dim: int | None = None,
-        num_timesteps: int | None = None,
-    ) -> "RoPE":
-        resolved_head_dim = head_dim or self.head_dim
-        if resolved_head_dim is None:
-            raise ValueError("RoPE head_dim must be specified either in the config or at init time.")
-        resolved_num_timesteps = num_timesteps or self.max_sequence_length
-        timesteps = jnp.arange(resolved_num_timesteps, dtype=jnp.float32)
-        channel_indices = jnp.arange(0, resolved_head_dim, 2, dtype=jnp.int32)
-        inverse_frequencies = 1.0 / (self.base ** (channel_indices.astype(jnp.float32) / resolved_head_dim))
-        inverse_frequencies = self._scale_inverse_frequencies(
-            inverse_frequencies,
-            resolved_head_dim,
-            self.max_sequence_length,
-        ).astype(jnp.float32)
-        inverse_frequencies = self._mask_inverse_frequencies(
-            inverse_frequencies,
-            resolved_head_dim,
-        ).astype(jnp.float32)
+    def init(self, initializer: Initializer) -> "RoPE":
+        timesteps = jnp.arange(self.max_sequence_length, dtype=jnp.float32)
+        channel_indices = jnp.arange(0, self.head_dim, 2, dtype=jnp.int32)
+        inverse_frequencies = 1.0 / (self.base ** (channel_indices.astype(jnp.float32) / self.head_dim))
+        inverse_frequencies = self._scale_inverse_frequencies(inverse_frequencies).astype(jnp.float32)
         outer_inverse_frequencies = jnp.outer(timesteps, inverse_frequencies)
         embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
         table_sharding = initializer.sharding_config.resolve_sharding((None, None))
@@ -158,16 +120,6 @@ class RoPE(LalamoModule[RoPEConfig]):
     sines: Float[Array, "tokens head_channels"] = field(trainable=False)
     cosines: Float[Array, "tokens head_channels"] = field(trainable=False)
 
-    @property
-    def head_dim(self) -> int:
-        _, result = self.sines.shape
-        return result
-
-    @property
-    def max_sequence_length(self) -> int:
-        result, _ = self.sines.shape
-        return result
-
     @eqx.filter_jit
     def __call__(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
         return PositionalEmbeddings(
@@ -190,8 +142,6 @@ class LlamaRoPEConfig(RoPEConfig):
     def _scale_inverse_frequencies(
         self,
         inverse_frequencies: Float[Array, " rotary_pairs"],
-        head_dim: int,  # noqa: ARG002
-        max_sequence_length: int,  # noqa: ARG002
     ) -> Float[Array, " rotary_pairs"]:
         low_frequency_wavelength = self.original_context_length / self.low_frequency_factor
         high_frequency_wavelength = self.original_context_length / self.high_frequency_factor
@@ -257,21 +207,19 @@ class YARNRoPEConfig(RoPEConfig):
     def _scale_inverse_frequencies(
         self,
         inverse_frequencies: Float[Array, " rotary_pairs"],
-        head_dim: int,
-        max_sequence_length: int,  # noqa: ARG002
     ) -> Float[Array, " rotary_pairs"]:
         scaled_frequencies = inverse_frequencies / self.scaling_factor
 
         low, high = self._find_correction_range(
             self.beta_fast,
             self.beta_slow,
-            head_dim,
+            self.head_dim,
             self.base,
             self.original_context_length,
             self.truncate,
         )
 
-        smoothing_factor = 1 - self._linear_ramp_factor(low, high, head_dim // 2)
+        smoothing_factor = 1 - self._linear_ramp_factor(low, high, self.head_dim // 2)
         return scaled_frequencies * (1 - smoothing_factor) + inverse_frequencies * smoothing_factor
 
     @property
@@ -286,7 +234,5 @@ class LinearScalingRoPEConfig(RoPEConfig):
     def _scale_inverse_frequencies(
         self,
         inverse_frequencies: Float[Array, " rotary_pairs"],
-        head_dim: int,  # noqa: ARG002
-        max_sequence_length: int,  # noqa: ARG002
     ) -> Float[Array, " rotary_pairs"]:
         return inverse_frequencies / self.scaling_factor

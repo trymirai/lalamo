@@ -2,8 +2,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
-import jax.numpy as jnp
-
 from lalamo.modules.activations import GELU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
@@ -18,10 +16,6 @@ from lalamo.modules.transformer_layer import TransformerLayerConfig
 from .common import HuggingFaceLMConfig, QuantizationConfigType
 
 __all__ = ["HFGemma3Config", "HFGemma3TextConfig"]
-
-
-def _round_to_bfloat16(x: float) -> float:
-    return jnp.asarray(x).astype(jnp.bfloat16).item()
 
 
 @dataclass(frozen=True)
@@ -80,7 +74,8 @@ class HFGemma3TextConfigRaw:
         context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        input_scale = _round_to_bfloat16(self.hidden_size**0.5)
+        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
+        input_scale = self.hidden_size**0.5
         attention_scale = self.query_pre_attn_scalar**-0.5
         embedding_config = TiedEmbeddingConfig(
             input_scale=input_scale,
@@ -114,7 +109,7 @@ class HFGemma3TextConfigRaw:
         elif self.rope_scaling is None:
             global_rope_config = UnscaledRoPEConfig(
                 base=self.rope_theta,
-                max_sequence_length=context_length or self.max_position_embeddings,
+                max_sequence_length=max_sequence_length,
                 head_dim=self.head_dim,
             )
         else:
@@ -122,7 +117,7 @@ class HFGemma3TextConfigRaw:
 
         local_rope_config = UnscaledRoPEConfig(
             base=self.rope_local_base_freq,
-            max_sequence_length=context_length or self.max_position_embeddings,
+            max_sequence_length=max_sequence_length,
             head_dim=self.head_dim,
         )
 
@@ -172,7 +167,6 @@ class HFGemma3TextConfigRaw:
             output_norm_config=rms_norm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            context_length=context_length or self.max_position_embeddings,
         )
 
         return DecoderConfig(

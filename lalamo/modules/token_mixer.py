@@ -114,10 +114,6 @@ class PositionalEmbeddingSelector(StrEnum):
 
 @dataclass(frozen=True)
 class TokenMixerConfig(LalamoConfig, RegistryABC):
-    @property
-    @abstractmethod
-    def rope_dim(self) -> int | None: ...
-
     @abstractmethod
     def init(
         self,

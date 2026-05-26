@@ -27,13 +27,11 @@ NUM_TIMESTEPS = 8
 
 def _rope(config: RoPEConfig | None = None) -> RoPE:
     if config is None:
-        config = UnscaledRoPEConfig(base=10_000.0, max_sequence_length=NUM_TIMESTEPS)
+        config = UnscaledRoPEConfig(base=10_000.0, max_sequence_length=NUM_TIMESTEPS, head_dim=HEAD_DIM)
     return config.init(
         RandomInitializer(
             default_dtype=jnp.float32, sharding_config=make_test_sharding_config(), key=jax.random.key(0)
         ),
-        head_dim=HEAD_DIM,
-        num_timesteps=NUM_TIMESTEPS,
     )
 
 
@@ -78,15 +76,24 @@ def _select_reference(table: Array, timesteps: Array) -> Array:
 @pytest.mark.parametrize(
     "config",
     [
-        pytest.param(UnscaledRoPEConfig(base=10_000.0, max_sequence_length=NUM_TIMESTEPS), id="unscaled"),
         pytest.param(
-            LinearScalingRoPEConfig(base=10_000.0, max_sequence_length=NUM_TIMESTEPS, scaling_factor=2.0),
+            UnscaledRoPEConfig(base=10_000.0, max_sequence_length=NUM_TIMESTEPS, head_dim=HEAD_DIM),
+            id="unscaled",
+        ),
+        pytest.param(
+            LinearScalingRoPEConfig(
+                base=10_000.0,
+                max_sequence_length=NUM_TIMESTEPS,
+                head_dim=HEAD_DIM,
+                scaling_factor=2.0,
+            ),
             id="linear-scaling",
         ),
         pytest.param(
             LlamaRoPEConfig(
                 base=10_000.0,
                 max_sequence_length=NUM_TIMESTEPS,
+                head_dim=HEAD_DIM,
                 scaling_factor=4.0,
                 original_context_length=NUM_TIMESTEPS,
                 low_frequency_factor=1.0,
@@ -98,6 +105,7 @@ def _select_reference(table: Array, timesteps: Array) -> Array:
             YARNRoPEConfig(
                 base=10_000.0,
                 max_sequence_length=NUM_TIMESTEPS,
+                head_dim=HEAD_DIM,
                 scaling_factor=2.0,
                 original_context_length=NUM_TIMESTEPS,
                 beta_fast=32.0,

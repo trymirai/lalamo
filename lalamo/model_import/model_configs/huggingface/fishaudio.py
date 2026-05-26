@@ -121,7 +121,6 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         output_norm_config=norm_config_pre,
         model_dim=input_dim,
         hidden_dim=config["intermediate_size"],
-        context_length=config["block_size"],
     )
 
 
@@ -328,7 +327,6 @@ class FishAudioConfig(ForeignTTSConfig):
             output_norm_config=norm_config,
             model_dim=dim,
             hidden_dim=intermediate_size,
-            context_length=self.max_seq_len,
         )
         linear_out_cfg = LinearConfig()
 

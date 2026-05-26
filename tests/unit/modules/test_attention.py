@@ -58,7 +58,6 @@ def _attention(*, logit_soft_cap: float | None = None) -> Attention:
             has_qkv_biases=False,
             has_out_biases=False,
             gate_projection_config=None,
-            use_rope=False,
         ),
         sharding_config=make_test_sharding_config(),
         qkv_projection=_linear(_weights((3 * qkv_dim, MODEL_DIM)), (qkv_dim, qkv_dim, qkv_dim)),

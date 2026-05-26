@@ -55,7 +55,7 @@ class HFLlambaConfig(HuggingFaceLMConfig):
 
     def to_decoder_config(
         self,
-        context_length: int | None,
+        context_length: int | None,  # noqa: ARG002
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         if self.tie_embeddings:
@@ -127,7 +127,6 @@ class HFLlambaConfig(HuggingFaceLMConfig):
             output_norm_config=rmsnorm_config,
             model_dim=self.d_model,
             hidden_dim=self.mlp_cfg.intermediate_size,
-            context_length=context_length or 4096,
         )
 
         return DecoderConfig(

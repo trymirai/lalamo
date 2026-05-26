@@ -22,7 +22,8 @@ dependencies = [
     "thefuzz>=0.22.1",
     "tokamax>=0.0.12",
     "tokenizers>=0.21.2",
-    "typer>=0.15.1",
+    # TODO: Remove the upper bound after Typer 0.26 context handling is supported.
+    "typer>=0.15.1,<0.26",
     "xxhash>=3.5.0",
 ]
 readme = { file = "README.md", content-type = "text/markdown" }
