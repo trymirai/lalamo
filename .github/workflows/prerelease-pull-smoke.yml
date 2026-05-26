@@ -20,6 +20,7 @@ defaults:
 env:
   GH_TOKEN: ${{ github.token }}
   PR_NUMBER: ${{ github.event.pull_request.number }}
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
 jobs:
   config:

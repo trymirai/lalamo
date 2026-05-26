@@ -87,7 +87,6 @@ def decoder() -> Decoder:
         output_norm_config=norm_config,
         model_dim=model_dim,
         hidden_dim=hidden_dim,
-        context_length=context_length,
     )
     decoder_config = DecoderConfig(
         embedding_config=TiedEmbeddingConfig(

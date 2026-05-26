@@ -2,7 +2,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Literal, Self
 
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
@@ -23,6 +23,12 @@ __all__ = ["HFQwen35Config"]
 
 
 @dataclass(frozen=True)
+class Qwen35RopeParameters:
+    rope_theta: float
+    partial_rotary_factor: float
+
+
+@dataclass(frozen=True)
 class HFQwen35Config(HuggingFaceLMConfig):
     model_type: Literal["qwen3_5", "qwen3_5_moe"]
     hidden_size: int
@@ -33,7 +39,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
     rms_norm_eps: float
     tie_word_embeddings: bool
     vocab_size: int
-    rope_parameters: dict[str, Any]
+    rope_parameters: Qwen35RopeParameters
 
     head_dim: int
     attention_bias: bool
@@ -49,12 +55,10 @@ class HFQwen35Config(HuggingFaceLMConfig):
     num_experts: int | None = None
     num_experts_per_tok: int | None = None
     moe_intermediate_size: int | None = None
-    shared_expert_intermediate_size: int | None = None
 
     torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
     eos_token_id: int | list[int] = field(default_factory=list)
     quantization: QuantizationConfigType | None = None
-    quantization_config: QuantizationConfigType | None = None
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
@@ -67,16 +71,12 @@ class HFQwen35Config(HuggingFaceLMConfig):
         merged = {**text_config, **config}
         return cls._converter.structure(merged, cls)
 
-    @property
-    def is_moe(self) -> bool:
-        return self.model_type == "qwen3_5_moe"
-
     def to_decoder_config(
         self,
         context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        quantization = self.quantization or self.quantization_config
+        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
@@ -87,13 +87,12 @@ class HFQwen35Config(HuggingFaceLMConfig):
                 input_scale=None,
                 logit_soft_cap=None,
             )
-        is_mlx = isinstance(quantization, MLXQuantizationConfig)
+        is_mlx = isinstance(self.quantization, MLXQuantizationConfig)
 
-        partial_rotary_factor = float(self.rope_parameters["partial_rotary_factor"])
         rope_config = UnscaledRoPEConfig(
-            base=float(self.rope_parameters["rope_theta"]),
-            max_sequence_length=context_length or self.max_position_embeddings,
-            head_dim=int(self.head_dim * partial_rotary_factor),
+            base=self.rope_parameters.rope_theta,
+            max_sequence_length=max_sequence_length,
+            head_dim=int(self.head_dim * self.rope_parameters.partial_rotary_factor),
         )
 
         # Qwen3.5 RMSNorm computes (1 + weight) * norm(x). HF stores raw weights,
@@ -114,15 +113,10 @@ class HFQwen35Config(HuggingFaceLMConfig):
 
         linear_config = LinearConfig()
 
-        if self.is_moe:
+        if self.model_type == "qwen3_5_moe":
             assert self.num_experts is not None
             assert self.num_experts_per_tok is not None
             assert self.moe_intermediate_size is not None
-            assert self.shared_expert_intermediate_size is not None
-            assert self.shared_expert_intermediate_size == self.moe_intermediate_size, (
-                f"shared_expert_intermediate_size ({self.shared_expert_intermediate_size}) "
-                f"must equal moe_intermediate_size ({self.moe_intermediate_size})"
-            )
             experts_config = DenseMLPConfig(
                 linear_config=linear_config,
                 activation=SiLU(),
@@ -207,7 +201,6 @@ class HFQwen35Config(HuggingFaceLMConfig):
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=hidden_dim,
-            context_length=context_length or self.max_position_embeddings,
         )
 
         return DecoderConfig(

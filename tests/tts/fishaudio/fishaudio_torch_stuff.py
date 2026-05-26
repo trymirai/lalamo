@@ -183,7 +183,6 @@ class ConfigMapping:
             output_norm_config=norm_config,
             model_dim=config.dim,
             hidden_dim=config.intermediate_size,
-            context_length=config.max_seq_len,
         )
         linear_out_cfg = LinearConfig()
 

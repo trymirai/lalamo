@@ -177,7 +177,6 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             output_norm_config=transformer_norm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            context_length=context_length or self.max_position_embeddings,
         )
 
         prediction_head_dense_config = LinearConfig()

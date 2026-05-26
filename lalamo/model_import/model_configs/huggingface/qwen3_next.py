@@ -72,6 +72,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
         context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
+        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
@@ -87,7 +88,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
             raise NotImplementedError("rope_scaling is not supported yet")
         rope_config = UnscaledRoPEConfig(
             base=self.rope_theta,
-            max_sequence_length=context_length or self.max_position_embeddings,
+            max_sequence_length=max_sequence_length,
             head_dim=int(self.head_dim * self.partial_rotary_factor),
         )
 
@@ -133,14 +134,10 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                 expert_hidden_dim=self.moe_intermediate_size,
             )
 
-        layer_types = [
-            ("full_attention" if (i + 1) % self.full_attention_interval == 0 else "linear_attention")
-            for i in range(self.num_hidden_layers)
-        ]
-
         layer_configs = []
-        for layer_idx, layer_type in enumerate(layer_types):
-            if layer_type == "linear_attention":
+        for layer_idx in range(self.num_hidden_layers):
+            is_linear_attention = (layer_idx + 1) % self.full_attention_interval != 0
+            if is_linear_attention:
                 mixer_config = DeltaNetConfig(
                     in_proj_config=linear_config,
                     conv_config=SeparableCausalConvConfig(
@@ -196,7 +193,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                 pre_mlp_norm_config=rmsnorm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
-                rope_config=rope_config if layer_type != "linear_attention" else None,
+                rope_config=None if is_linear_attention else rope_config,
             )
             layer_configs.append(transformer_layer_config)
 
@@ -205,7 +202,6 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            context_length=context_length or self.max_position_embeddings,
         )
 
         return DecoderConfig(

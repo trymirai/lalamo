@@ -58,7 +58,7 @@ class HFMistralConfig(HuggingFaceLMConfig):
                 logit_soft_cap=None,
             )
 
-        head_dim = self.head_dim or self.hidden_size // self.num_attention_heads
+        head_dim = self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads
 
         rope_config = UnscaledRoPEConfig(
             base=self.rope_theta,
@@ -119,7 +119,6 @@ class HFMistralConfig(HuggingFaceLMConfig):
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            context_length=context_length or self.max_position_embeddings,
         )
 
         return DecoderConfig(

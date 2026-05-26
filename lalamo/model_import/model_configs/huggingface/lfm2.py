@@ -212,7 +212,6 @@ class HFLFM2Config(HuggingFaceLMConfig):
             output_norm_config=output_norm_config,
             model_dim=self.hidden_size,
             hidden_dim=hidden_dim,
-            context_length=context_length or self.max_position_embeddings,
         )
 
         return DecoderConfig(

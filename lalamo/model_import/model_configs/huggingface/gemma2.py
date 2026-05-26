@@ -51,7 +51,7 @@ class HFGemma2Config(HuggingFaceLMConfig):
 
     def to_decoder_config(
         self,
-        context_length: int | None,
+        context_length: int | None,  # noqa: ARG002
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         embedding_input_scale = self.hidden_size**0.5
@@ -116,7 +116,6 @@ class HFGemma2Config(HuggingFaceLMConfig):
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            context_length=context_length or self.max_position_embeddings,
         )
         return DecoderConfig(
             embedding_config=embedding_config,

@@ -185,7 +185,6 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            context_length=context_length or self.max_position_embeddings,
         )
 
         return DecoderConfig(

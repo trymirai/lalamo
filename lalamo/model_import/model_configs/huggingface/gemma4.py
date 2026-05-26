@@ -110,11 +110,11 @@ class HFGemma4TextConfig:
         full_attention_params = self.rope_parameters.full_attention
         sliding_attention_params = self.rope_parameters.sliding_attention
         full_partial_rotary_factor = full_attention_params.partial_rotary_factor or 1.0
+        full_rotary_dim = int(full_partial_rotary_factor * self.global_head_dim)
         global_rope_config = UnscaledRoPEConfig(
             base=full_attention_params.rope_theta,
             max_sequence_length=max_seq_len,
-            head_dim=self.global_head_dim,
-            partial_rotary_dim=int(full_partial_rotary_factor * self.global_head_dim),
+            head_dim=full_rotary_dim,
         )
         local_rope_config = UnscaledRoPEConfig(
             base=sliding_attention_params.rope_theta,
@@ -213,7 +213,6 @@ class HFGemma4TextConfig:
             output_norm_config=rms_norm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            context_length=max_seq_len,
         )
 
         return DecoderConfig(
