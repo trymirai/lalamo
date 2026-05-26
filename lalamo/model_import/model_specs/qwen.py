@@ -1,6 +1,7 @@
 from lalamo.model_import.model_configs import (
     HFQwen2Config,
     HFQwen3Config,
+    HFQwen3NextConfig,
     HFQwen35Config,
 )
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
@@ -8,6 +9,18 @@ from lalamo.model_import.model_specs.output_parser_regexes import OPTIONAL_THINK
 from lalamo.model_import.origins import HuggingFaceOrigin
 
 __all__ = ["QWEN_MODELS"]
+
+
+QWEN25 = [
+    LanguageModelSpec(
+        vendor="Alibaba",
+        family="Qwen2.5",
+        name="Qwen2.5-0.5B-Instruct",
+        size="0.5B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-0.5B-Instruct"),
+        config_type=HFQwen2Config,
+    ),
+]
 
 
 def _qwen3_mlx_model_spec(
@@ -215,6 +228,19 @@ QWEN3 = [
         name="Qwen3-32B-MLX-8bit",
         size="32B",
         base_repo="Qwen/Qwen3-32B",
+    ),
+]
+
+
+QWEN3_NEXT = [
+    LanguageModelSpec(
+        vendor="Alibaba",
+        family="Qwen3-Next",
+        name="Qwen3-Next-80B-A3B-Instruct",
+        size="80B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-Next-80B-A3B-Instruct"),
+        config_type=HFQwen3NextConfig,
+        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
     ),
 ]
 
@@ -450,4 +476,4 @@ QWEN36 = [
 ]
 
 
-QWEN_MODELS = QWEN25_CODER + QWEN3 + QWEN35 + QWEN36
+QWEN_MODELS = QWEN25 + QWEN25_CODER + QWEN3 + QWEN3_NEXT + QWEN35 + QWEN36

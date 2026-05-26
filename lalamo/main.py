@@ -35,8 +35,11 @@ from lalamo.commands import (
     PullCallbacks,
     _suggest_similar_models,
 )
+from lalamo.commands import compare_traces as _compare_traces
 from lalamo.commands import convert as _convert
 from lalamo.commands import pull as _pull
+from lalamo.commands import trace as _trace
+from lalamo.commands import trace_tokenization as _trace_tokenization
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
@@ -468,6 +471,158 @@ def pull(
         partial(CliPullCallbacks),
         overwrite=overwrite,
     )
+
+
+@app.command(help="Trace a converted model.")
+def trace(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    output_path: Annotated[
+        Path | None,
+        Option(
+            help="Path to save the trace to.",
+            show_default="${MODEL_PATH}/traces.safetensors",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        Option(
+            help="Overwrite existing trace file.",
+        ),
+    ] = False,
+    message: Annotated[
+        str | None,
+        Option(
+            help="Text message to use as prompt when recording trace.",
+        ),
+    ] = None,
+    input_trace_path: Annotated[
+        Path | None,
+        Option(
+            help="Existing trace file whose token ids and positions should be replayed.",
+        ),
+    ] = None,
+) -> None:
+    if output_path is None:
+        output_path = model_path / "traces.safetensors"
+
+    if output_path.exists():
+        if not overwrite and not Confirm().ask(
+            rf"⚠️ Output [cyan]{output_path}[/cyan] already exists."
+            r" Do you want to overwrite it?",
+        ):
+            raise Exit
+        output_path.unlink()
+
+    if input_trace_path is None:
+        if message is None:
+            err_console.print("Pass --message when recording a new trace.")
+            raise Exit(1)
+        messages = (UserMessage(message),)
+    else:
+        if message is not None:
+            err_console.print("--message cannot be used with --input-trace-path.")
+            raise Exit(1)
+        messages = ()
+
+    console.print(f"🔍 Tracing [cyan]{model_path}[/cyan]")
+    _trace(model_path, output_path, messages, input_trace_path)
+    console.print(f"💾 Trace saved to [cyan]{output_path}[/cyan]")
+
+
+@app.command("trace-tokenization", help="Trace converted model tokenization.")
+def trace_tokenization(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    output_path: Annotated[
+        Path | None,
+        Option(
+            help="Path to save the tokenization trace to.",
+            show_default="${MODEL_PATH}/tokenization-trace.safetensors",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        Option(
+            help="Overwrite existing trace file.",
+        ),
+    ] = False,
+    message: Annotated[
+        str | None,
+        Option(
+            help="Text message to use as prompt when recording trace.",
+        ),
+    ] = None,
+) -> None:
+    if message is None:
+        err_console.print("Pass --message when recording a tokenization trace.")
+        raise Exit(1)
+
+    if output_path is None:
+        output_path = model_path / "tokenization-trace.safetensors"
+
+    if output_path.exists():
+        if not overwrite and not Confirm().ask(
+            rf"⚠️ Output [cyan]{output_path}[/cyan] already exists."
+            r" Do you want to overwrite it?",
+        ):
+            raise Exit
+        output_path.unlink()
+
+    console.print(f"🔍 Tracing tokenization for [cyan]{model_path}[/cyan]")
+    _trace_tokenization(model_path, output_path, [UserMessage(message)])
+    console.print(f"💾 Tokenization trace saved to [cyan]{output_path}[/cyan]")
+
+
+@app.command("compare-traces", help="Compare two activation trace files.")
+def compare_traces(
+    reference_path: Annotated[
+        Path,
+        Argument(
+            help="Reference trace file.",
+            metavar="REFERENCE_TRACE",
+        ),
+    ],
+    result_path: Annotated[
+        Path,
+        Argument(
+            help="Result trace file.",
+            metavar="RESULT_TRACE",
+        ),
+    ],
+) -> None:
+    comparison = _compare_traces(reference_path, result_path)
+    failed_results = comparison.failed_results
+
+    console.print(
+        f"Compared [cyan]{len(comparison.results)}[/cyan] shared arrays; [cyan]{len(failed_results)}[/cyan] failed."
+    )
+    if comparison.reference_only_paths:
+        console.print(f"Missing result arrays: [cyan]{len(comparison.reference_only_paths)}[/cyan]")
+        for path in comparison.reference_only_paths:
+            console.print(f"  {path}")
+    if comparison.result_only_paths:
+        console.print(f"Result-only arrays ignored: [cyan]{len(comparison.result_only_paths)}[/cyan]")
+        for path in comparison.result_only_paths:
+            console.print(f"  {path}")
+
+    if not comparison.passed:
+        table = Table("Path", "Failure")
+        for result in failed_results:
+            table.add_row(result.path, result.message)
+        if failed_results:
+            console.print(table)
+        raise Exit(1)
 
 
 def _model_size_string_to_int(

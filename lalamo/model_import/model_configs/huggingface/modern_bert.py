@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 from lalamo.modules.activations import GELU, Activation, SiLU
 from lalamo.modules.classifier import (
@@ -85,13 +85,11 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
         if len(self.label2id) != len(self.id2label):
             raise ValueError("Length of label2id and id2label is expected to be the same")
 
-    def calculate_sliding_windows(self, num_layers: int, global_attn_every_n_layers: int) -> tuple[None, ...]:
-        result: list[Any] = [None] * num_layers
+    def calculate_sliding_windows(self, num_layers: int, global_attn_every_n_layers: int) -> tuple[int | None, ...]:
+        result: list[int | None] = [None] * num_layers
         for index in range(len(result)):
             if index % global_attn_every_n_layers != 0:
                 result[index] = self.local_attention
-            else:
-                pass
         return tuple(result)
 
     def to_classifier_config(

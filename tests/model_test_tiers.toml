@@ -26,6 +26,7 @@ standard = [
   "mistralai/Devstral-Small-2505",
   "openai/gpt-oss-20b",
   "Nanbeige/Nanbeige4.1-3B",
+  "Qwen/Qwen2.5-0.5B-Instruct",
   "Qwen/Qwen2.5-Coder-0.5B-Instruct",
   "Qwen/Qwen3-0.6B",
   "Qwen/Qwen3-0.6B-MLX-4bit",
@@ -108,6 +109,7 @@ extra = [
   "Qwen/Qwen3-14B-MLX-8bit",
   "Qwen/Qwen3-32B-MLX-4bit",
   "Qwen/Qwen3-32B-MLX-8bit",
+  "Qwen/Qwen3-Next-80B-A3B-Instruct",
   "trymirai/health-related-router",
 ]
 
