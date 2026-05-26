@@ -175,10 +175,6 @@ class TransformerLayerConfig(LalamoConfig):
     kv_source_layer_index: int | None = None
     rope_config: RoPEConfig | None = None
 
-    @property
-    def rope_dim(self) -> int | None:
-        return self.mixer_config.rope_dim
-
     def init(
         self,
         initializer: Initializer,

@@ -321,7 +321,6 @@ def _import_classifier(
     model_config = ClassifierModelConfig(
         token_codec_config=token_codec_config,
         classifier_config=classifier_config,
-        output_labels=classifier_config.output_labels,
     )
     with _load_checkpoint(model_spec, progress_callback) as checkpoint:
         return _load_model(

@@ -128,6 +128,6 @@ class Normalization(LalamoModule[NormalizationConfig]):
                     scale=self.scales,
                     offset=self.biases,
                     epsilon=self.config.epsilon,
-                    scale_offset=self.config.scale_offset or 0.0,
+                    scale_offset=self.config.scale_offset if self.config.scale_offset is not None else 0.0,
                     subtract_mean=self.config.subtract_mean,
                 )

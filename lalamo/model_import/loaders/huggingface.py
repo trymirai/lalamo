@@ -313,7 +313,7 @@ def _load_packed_mlx_matrix(
     # MLX HF layout: weight [rows, packed_cols], scales [rows, num_groups].
     packed_in = packed_weights.shape[-1]
     num_groups = scales.shape[-1]
-    for bits in (4, 8):
+    for bits in (1, 4, 8):
         if packed_in * (32 // bits) == expected_grouped_channels:
             break
     else:
@@ -329,7 +329,7 @@ def _load_packed_mlx_matrix(
     scale_values = jax.device_put(scales.astype(template.dtype), weight_sharding)
     bias_values = jax.device_put(deq_biases.astype(template.dtype), weight_sharding)
 
-    spec = MLXSpec(bits=_supported_quantization_bits(bits), group_size=group_size, layout=layout)
+    spec = MLXSpec(bits=bits, group_size=group_size, layout=layout)
     return spec.from_packed_parameters(
         packed_weights=pack_uint_to_uint8(weight_values, bits, sharding_config=sharding_config),
         scales=scale_values,
@@ -525,6 +525,25 @@ def load_moe(
 
         # Combine up and gate for our format: (num_experts, hidden*2, model_dim)
         combined_up_gate_weights = jnp.concatenate([up_weights, gate_weights], axis=1)
+        if num_shared > 0:
+            if num_shared != 1:
+                raise ValueError("Single shared expert path found but num_shared_experts != 1.")
+            shared_expert_path = path / "shared_expert"
+            shared_up_gate_weights = jnp.concatenate(
+                [
+                    weights_dict[shared_expert_path / "up_proj.weight"],
+                    weights_dict[shared_expert_path / "gate_proj.weight"],
+                ],
+                axis=0,
+            )
+            combined_up_gate_weights = jnp.concatenate(
+                [combined_up_gate_weights, shared_up_gate_weights[None, ...]],
+                axis=0,
+            )
+            down_weights = jnp.concatenate(
+                [down_weights, weights_dict[shared_expert_path / "down_proj.weight"][None, ...]],
+                axis=0,
+            )
 
         up_projection = _update_linear(
             module.experts.up_projection,
