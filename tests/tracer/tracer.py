@@ -12,26 +12,22 @@ import jax
 import jax.numpy as jnp
 import pytest
 import torch
-from jax.sharding import AxisType
 from jaxtyping import Array
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
 from lalamo import ClassifierModel, LanguageModel
 from lalamo.model_import.common import import_model
-from lalamo.module import Keychain
 from lalamo.modules.classifier import (
     ClassifierActivationTrace,
-    ClassifierForwardPassConfig,
     ClassifierResult,
 )
 from lalamo.modules.decoder import (
     DecoderActivationTrace,
-    DecoderForwardPassConfig,
     DecoderResult,
 )
+from lalamo.tracer import record_checked_token_trace, trace_sharding_config
 from lalamo.utils.memory import get_available_bytes_on_default_device
-from lalamo.utils.sharding import ShardingConfig
-from tests.common import assert_close, checkify_forward
+from tests.common import assert_close
 from tests.helpers import si, unsi
 
 MLX_AVAILABLE = importlib.util.find_spec("mlx")
@@ -39,20 +35,6 @@ if MLX_AVAILABLE:
     import mlx.core as mx
 
 FRACTION_OF_ALLOWED_VIOLATIONS = 0.03
-
-
-def _tracer_sharding_config() -> ShardingConfig:
-    devices = jax.devices()
-    first_device, *_ = devices
-    if first_device.platform == "cpu":
-        devices = devices[:1]
-    mesh = jax.make_mesh(
-        (len(devices),),
-        ("replica",),
-        axis_types=(AxisType.Auto,),
-        devices=devices,
-    )
-    return ShardingConfig(mesh=mesh)
 
 
 class DType(Enum):
@@ -397,8 +379,14 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         hf_token_positions = self.from_jax(result.activation_trace.token_positions)
         hf_hidden_states, hf_last_norm_output, hf_output_logits = self.forward(hf_input_ids, hf_token_positions)
 
+        if len(hf_hidden_states) == len(result.activation_trace.layer_results) + 1:
+            hf_layer_inputs_by_layer = hf_hidden_states[:-1]
+        else:
+            assert len(hf_hidden_states) == len(result.activation_trace.layer_results)
+            hf_layer_inputs_by_layer = hf_hidden_states
+
         for i, (hf_layer_inputs, layer_result) in enumerate(
-            zip(hf_hidden_states, result.activation_trace.layer_results, strict=False),
+            zip(hf_layer_inputs_by_layer, result.activation_trace.layer_results, strict=True),
         ):
             layer_activation_trace = layer_result.activation_trace
             assert layer_activation_trace is not None
@@ -456,7 +444,7 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
 
     configure_precision_for_tests()
 
-    sharding_config = _tracer_sharding_config()
+    sharding_config = trace_sharding_config()
     batch_sequence_sharding = sharding_config.make_sharding((None, None))
     token_ids = jax.device_put(
         jnp.arange(0, test_spec.num_tokens, dtype=jnp.int32)[None, :],
@@ -490,31 +478,9 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
             dtype=import_dtype,
         )
         model = imported_model.model
-        keychain = Keychain.init(0, sharding_config=sharding_config)
-        with jax.disable_jit():
-            if isinstance(model, LanguageModel):
-                forward_pass_config = DecoderForwardPassConfig.for_tracer_tests()
-                err, inference_results = checkify_forward(model.decoder)(
-                    token_ids=token_ids,
-                    token_positions=token_positions,
-                    return_updated_state=True,
-                    return_activation_trace=True,
-                    forward_pass_config=forward_pass_config,
-                    keychain=keychain,
-                )
-                err.throw()
-            elif isinstance(model, ClassifierModel):
-                forward_pass_config = ClassifierForwardPassConfig.for_tracer_tests()
-                err, inference_results = checkify_forward(model.classifier)(
-                    token_ids=token_ids,
-                    token_positions=token_positions,
-                    return_activation_trace=True,
-                    forward_pass_config=forward_pass_config,
-                    keychain=keychain,
-                )
-                err.throw()
-            else:
-                raise TypeError(f"Unsupported model type for tracing: {type(model).__name__}")
+        if not isinstance(model, (LanguageModel, ClassifierModel)):
+            raise TypeError(f"Unsupported model type for tracing: {type(model).__name__}")
+        inference_results = record_checked_token_trace(model, token_ids, token_positions)
 
         tracer.match_activations(inference_results)
     finally:

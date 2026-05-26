@@ -485,6 +485,72 @@ class HFDecoderTracer(
         assert isinstance(result, DecoderResult)
         return self.from_jax(result.activation_trace.output_norm[None, ...])
 
+    def _position_embeddings(
+        self,
+        attention: HFAttention | Gemma3Attention | HFDeltaNetAttention,
+        position_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        if Qwen3NextGatedDeltaNet is not None and isinstance(
+            attention,
+            (Qwen3NextGatedDeltaNet, Qwen3_5GatedDeltaNet),
+        ):
+            return None
+        layer_type = "sliding_attention" if getattr(attention, "is_sliding", False) else "full_attention"
+        return _rope_forward(
+            self.text_model.rotary_emb, torch.empty((), dtype=torch.float32), position_ids, layer_type, self.device
+        )
+
+    @torch.no_grad()
+    def export_trace(self, token_ids: Array, token_positions: Array) -> dict[str, Array]:
+        torch_token_ids = self.from_jax(token_ids)
+        torch_token_positions = self.from_jax(token_positions)
+        hidden_states = self.embedding(torch_token_ids)
+        arrays = {
+            "activation_trace.token_ids": token_ids,
+            "activation_trace.token_positions": token_positions,
+        }
+
+        for layer_index, layer in enumerate(self.iterate_layers()):
+            path = f"activation_trace.layer_results.{layer_index}"
+            activation_path = f"{path}.activation_trace"
+            arrays[f"{activation_path}.inputs"] = self.to_jax(hidden_states)
+
+            pre_mixer_norm = self.rmsnorm(self.layer_pre_attention_norm(layer), hidden_states)
+            attention = self.layer_attention(layer)
+            mixer = self.attention(
+                attention, pre_mixer_norm, self._position_embeddings(attention, torch_token_positions)
+            )
+            arrays[f"{activation_path}.pre_mixer_norm"] = self.to_jax(pre_mixer_norm)
+            arrays[f"{activation_path}.mixer"] = self.to_jax(mixer)
+
+            post_mixer_norm = self.layer_post_attention_norm(layer)
+            if post_mixer_norm is None:
+                mlp_inputs = hidden_states + mixer
+            else:
+                normalized_mixer = self.rmsnorm(post_mixer_norm, mixer)
+                arrays[f"{activation_path}.post_mixer_norm"] = self.to_jax(normalized_mixer)
+                mlp_inputs = hidden_states + normalized_mixer
+
+            pre_mlp_norm = self.rmsnorm(self.layer_pre_mlp_norm(layer), mlp_inputs)
+            mlp = self.mlp(self.layer_mlp(layer), pre_mlp_norm)
+            arrays[f"{activation_path}.mlp_inputs"] = self.to_jax(mlp_inputs)
+            arrays[f"{activation_path}.pre_mlp_norm"] = self.to_jax(pre_mlp_norm)
+            arrays[f"{activation_path}.mlp"] = self.to_jax(mlp)
+
+            post_mlp_norm = self.layer_post_mlp_norm(layer)
+            if post_mlp_norm is None:
+                hidden_states = mlp_inputs + mlp
+            else:
+                normalized_mlp = self.rmsnorm(post_mlp_norm, mlp)
+                arrays[f"{activation_path}.post_mlp_norm"] = self.to_jax(normalized_mlp)
+                hidden_states = mlp_inputs + normalized_mlp
+            arrays[f"{path}.outputs"] = self.to_jax(hidden_states)
+
+        output_norm = self.rmsnorm(self.output_norm(), hidden_states)
+        arrays["activation_trace.output_norm"] = self.to_jax(output_norm)
+        arrays["logits"] = self.to_jax(self.readout(output_norm))
+        return arrays
+
     @classmethod
     def load(cls, model_repo: str, dtype: DType | None) -> Self:
         hf_model, device = _load_hf_model(AutoModelForCausalLM, model_repo, dtype)

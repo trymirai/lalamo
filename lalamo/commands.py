@@ -1,6 +1,6 @@
 import shutil
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -21,6 +21,17 @@ from lalamo.model_import.common import (
     import_model,
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
+from lalamo.models.chat_codec import Message
+from lalamo.safetensors import safe_write
+from lalamo.trace_comparator import TraceComparison, compare_trace_files
+from lalamo.tracer import (
+    export_trace_result,
+    load_traceable_model,
+    load_traceable_token_codec,
+    record_message_trace_with_tokenization,
+    record_saved_token_trace,
+    record_tokenization_trace,
+)
 from lalamo.utils.sharding import ShardingConfig
 
 
@@ -207,3 +218,47 @@ def convert(
     imported_model.model.save(output_dir)
 
     callbacks.finished_saving_model()
+
+
+def trace(
+    model_path: Path,
+    output_path: Path,
+    messages: Iterable[Message],
+    input_trace_path: Path | None = None,
+) -> None:
+    if output_path.exists():
+        raise RuntimeError(f"{output_path=} already exists, refusing to overwrite!")
+
+    messages = tuple(messages)
+    model = load_traceable_model(model_path)
+    if input_trace_path is None:
+        trace_result, tokenization_trace = record_message_trace_with_tokenization(model, messages)
+        metadata = tokenization_trace.metadata
+    else:
+        if messages:
+            raise ValueError("messages cannot be used with input_trace_path")
+        trace_result, metadata = record_saved_token_trace(model, input_trace_path)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wb") as fd:
+        safe_write(fd, export_trace_result(trace_result), metadata=metadata)
+
+
+def trace_tokenization(
+    model_path: Path,
+    output_path: Path,
+    messages: Iterable[Message],
+) -> None:
+    if output_path.exists():
+        raise RuntimeError(f"{output_path=} already exists, refusing to overwrite!")
+
+    token_codec = load_traceable_token_codec(model_path)
+    tokenization_trace = record_tokenization_trace(token_codec, messages)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wb") as fd:
+        safe_write(fd, tokenization_trace.arrays, metadata=tokenization_trace.metadata)
+
+
+def compare_traces(reference_path: Path, result_path: Path) -> TraceComparison:
+    return compare_trace_files(reference_path, result_path)
