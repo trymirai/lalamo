@@ -22,6 +22,7 @@ dependencies = [
     "thefuzz>=0.22.1",
     "tokamax>=0.0.12",
     "tokenizers>=0.21.2",
+    # TODO: Remove the upper bound after Typer 0.26 context handling is supported.
     "typer>=0.15.1,<0.26",
     "xxhash>=3.5.0",
 ]
