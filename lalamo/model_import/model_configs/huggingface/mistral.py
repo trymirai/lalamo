@@ -47,6 +47,7 @@ class HFMistralConfig(HuggingFaceLMConfig):
         context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
+        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
@@ -62,7 +63,7 @@ class HFMistralConfig(HuggingFaceLMConfig):
 
         rope_config = UnscaledRoPEConfig(
             base=self.rope_theta,
-            max_sequence_length=context_length or self.max_position_embeddings,
+            max_sequence_length=max_sequence_length,
             head_dim=head_dim,
         )
 

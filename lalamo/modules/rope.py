@@ -89,7 +89,6 @@ class RoPEConfig(LalamoConfig, RegistryABC):
     def _scale_inverse_frequencies(
         self,
         inverse_frequencies: Float[Array, " rotary_pairs"],
-        head_dim: int,  # noqa: ARG002
     ) -> Float[Array, " rotary_pairs"]:
         return inverse_frequencies
 
@@ -97,10 +96,7 @@ class RoPEConfig(LalamoConfig, RegistryABC):
         timesteps = jnp.arange(self.max_sequence_length, dtype=jnp.float32)
         channel_indices = jnp.arange(0, self.head_dim, 2, dtype=jnp.int32)
         inverse_frequencies = 1.0 / (self.base ** (channel_indices.astype(jnp.float32) / self.head_dim))
-        inverse_frequencies = self._scale_inverse_frequencies(
-            inverse_frequencies,
-            self.head_dim,
-        ).astype(jnp.float32)
+        inverse_frequencies = self._scale_inverse_frequencies(inverse_frequencies).astype(jnp.float32)
         outer_inverse_frequencies = jnp.outer(timesteps, inverse_frequencies)
         embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
         table_sharding = initializer.sharding_config.resolve_sharding((None, None))
@@ -146,7 +142,6 @@ class LlamaRoPEConfig(RoPEConfig):
     def _scale_inverse_frequencies(
         self,
         inverse_frequencies: Float[Array, " rotary_pairs"],
-        head_dim: int,  # noqa: ARG002
     ) -> Float[Array, " rotary_pairs"]:
         low_frequency_wavelength = self.original_context_length / self.low_frequency_factor
         high_frequency_wavelength = self.original_context_length / self.high_frequency_factor
@@ -212,20 +207,19 @@ class YARNRoPEConfig(RoPEConfig):
     def _scale_inverse_frequencies(
         self,
         inverse_frequencies: Float[Array, " rotary_pairs"],
-        head_dim: int,
     ) -> Float[Array, " rotary_pairs"]:
         scaled_frequencies = inverse_frequencies / self.scaling_factor
 
         low, high = self._find_correction_range(
             self.beta_fast,
             self.beta_slow,
-            head_dim,
+            self.head_dim,
             self.base,
             self.original_context_length,
             self.truncate,
         )
 
-        smoothing_factor = 1 - self._linear_ramp_factor(low, high, head_dim // 2)
+        smoothing_factor = 1 - self._linear_ramp_factor(low, high, self.head_dim // 2)
         return scaled_frequencies * (1 - smoothing_factor) + inverse_frequencies * smoothing_factor
 
     @property
@@ -240,6 +234,5 @@ class LinearScalingRoPEConfig(RoPEConfig):
     def _scale_inverse_frequencies(
         self,
         inverse_frequencies: Float[Array, " rotary_pairs"],
-        head_dim: int,  # noqa: ARG002
     ) -> Float[Array, " rotary_pairs"]:
         return inverse_frequencies / self.scaling_factor

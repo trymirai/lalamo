@@ -20,10 +20,6 @@ from .common import HuggingFaceLMConfig, QuantizationConfigType
 __all__ = ["HFGemma3Config", "HFGemma3TextConfig"]
 
 
-def _round_to_bfloat16(x: float) -> float:
-    return jnp.asarray(x).astype(jnp.bfloat16).item()
-
-
 @dataclass(frozen=True)
 class GemmaRoPEScalingConfig:
     factor: float
@@ -80,7 +76,8 @@ class HFGemma3TextConfigRaw:
         context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        input_scale = _round_to_bfloat16(self.hidden_size**0.5)
+        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
+        input_scale = jnp.asarray(self.hidden_size**0.5).astype(jnp.bfloat16).item()
         attention_scale = self.query_pre_attn_scalar**-0.5
         embedding_config = TiedEmbeddingConfig(
             input_scale=input_scale,
@@ -114,7 +111,7 @@ class HFGemma3TextConfigRaw:
         elif self.rope_scaling is None:
             global_rope_config = UnscaledRoPEConfig(
                 base=self.rope_theta,
-                max_sequence_length=context_length or self.max_position_embeddings,
+                max_sequence_length=max_sequence_length,
                 head_dim=self.head_dim,
             )
         else:
@@ -122,7 +119,7 @@ class HFGemma3TextConfigRaw:
 
         local_rope_config = UnscaledRoPEConfig(
             base=self.rope_local_base_freq,
-            max_sequence_length=context_length or self.max_position_embeddings,
+            max_sequence_length=max_sequence_length,
             head_dim=self.head_dim,
         )
 

@@ -106,19 +106,21 @@ class HFGemma4TextConfig:
             gate_clipping=None,
         )
 
-        max_seq_len = context_length or self.max_position_embeddings
+        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
         full_attention_params = self.rope_parameters.full_attention
         sliding_attention_params = self.rope_parameters.sliding_attention
-        full_partial_rotary_factor = full_attention_params.partial_rotary_factor or 1.0
+        full_partial_rotary_factor = (
+            1.0 if full_attention_params.partial_rotary_factor is None else full_attention_params.partial_rotary_factor
+        )
         full_rotary_dim = int(full_partial_rotary_factor * self.global_head_dim)
         global_rope_config = UnscaledRoPEConfig(
             base=full_attention_params.rope_theta,
-            max_sequence_length=max_seq_len,
+            max_sequence_length=max_sequence_length,
             head_dim=full_rotary_dim,
         )
         local_rope_config = UnscaledRoPEConfig(
             base=sliding_attention_params.rope_theta,
-            max_sequence_length=max_seq_len,
+            max_sequence_length=max_sequence_length,
             head_dim=self.head_dim,
         )
 

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
-from lalamo.modules.activations import GELU, Activation, SiLU
+from lalamo.modules.activations import GELU
 from lalamo.modules.classifier import (
     ClassifierConfig,
     PoolingType,
@@ -23,18 +23,6 @@ from .common import (
 )
 
 __all__ = ["ModernBERTConfig"]
-
-
-def activation_from_str(activation: str) -> Activation:
-    match activation:
-        case "gelu":
-            return GELU(approximate=False)
-        case "gelu_new" | "gelu_pytorch_tanh":
-            return GELU(approximate=True)
-        case "silu":
-            return SiLU()
-        case _:
-            raise ValueError(f"Unsupported activation for ModernBERT: {activation!r}")
 
 
 @dataclass(frozen=True)
@@ -85,19 +73,18 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
         if len(self.label2id) != len(self.id2label):
             raise ValueError("Length of label2id and id2label is expected to be the same")
 
-    def calculate_sliding_windows(self, num_layers: int, global_attn_every_n_layers: int) -> tuple[None, ...]:
-        result: list[Any] = [None] * num_layers
-        for index in range(len(result)):
-            if index % global_attn_every_n_layers != 0:
-                result[index] = self.local_attention
-            else:
-                pass
-        return tuple(result)
+    def calculate_sliding_windows(self) -> tuple[int | None, ...]:
+        return tuple(
+            None if layer_index % self.global_attn_every_n_layers == 0 else self.local_attention
+            for layer_index in range(self.num_hidden_layers)
+        )
 
     def to_classifier_config(
         self,
         context_length: int | None,
     ) -> ClassifierConfig:
+        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
+        head_dim = self.hidden_size // self.num_attention_heads
         embedding_config = TiedEmbeddingConfig(
             input_scale=None,
             logit_soft_cap=None,
@@ -111,16 +98,16 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
 
         global_rope_config = UnscaledRoPEConfig(
             base=self.global_rope_theta,
-            max_sequence_length=context_length or self.max_position_embeddings,
-            head_dim=self.hidden_size // self.num_attention_heads,
+            max_sequence_length=max_sequence_length,
+            head_dim=head_dim,
         )
         local_rope_config = UnscaledRoPEConfig(
             base=self.local_rope_theta,
-            max_sequence_length=context_length or self.max_position_embeddings,
-            head_dim=self.hidden_size // self.num_attention_heads,
+            max_sequence_length=max_sequence_length,
+            head_dim=head_dim,
         )
 
-        sliding_window_sizes = self.calculate_sliding_windows(self.num_hidden_layers, self.global_attn_every_n_layers)
+        sliding_window_sizes = self.calculate_sliding_windows()
 
         transformer_norm_config = NormalizationConfig(
             epsilon=self.norm_eps,
@@ -129,7 +116,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             subtract_mean=True,
         )
         linear_config = LinearConfig()
-        activation = activation_from_str(self.hidden_activation)
+        activation = GELU(approximate=False)
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=activation,
@@ -155,7 +142,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
                 has_out_biases=False,
                 num_heads=self.num_attention_heads,
                 num_groups=self.num_attention_heads,
-                head_dim=self.hidden_size // self.num_attention_heads,
+                head_dim=head_dim,
                 scale=None,
                 is_causal=False,
                 sliding_window_size=sliding_window_size,
@@ -186,7 +173,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=True,
         )
-        prediction_head_activation = activation_from_str(self.classifier_activation)
+        prediction_head_activation = GELU(approximate=False)
         prediction_head_readout_config = LinearConfig()
         prediction_head_config = PredictionHeadConfig(
             dense_config=prediction_head_dense_config,

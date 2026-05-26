@@ -137,7 +137,7 @@ def _stable_reduction_attention_kernel(
         raise ValueError("attention_tile_size must be at least 1.")
 
     original_dtype = queries.dtype
-    accumulation_dtype = accumulation_dtype or original_dtype
+    accumulation_dtype = original_dtype if accumulation_dtype is None else accumulation_dtype
 
     num_queries, num_heads, head_dim = queries.shape
     num_keys, num_groups, _ = keys.shape

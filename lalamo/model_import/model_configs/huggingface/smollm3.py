@@ -53,6 +53,8 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
         context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
+        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
+        head_dim = self.hidden_size // self.num_attention_heads
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
@@ -66,8 +68,8 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
 
         rope_config = UnscaledRoPEConfig(
             base=self.rope_theta,
-            max_sequence_length=context_length or self.max_position_embeddings,
-            head_dim=self.hidden_size // self.num_attention_heads,
+            max_sequence_length=max_sequence_length,
+            head_dim=head_dim,
         )
 
         rmsnorm_config = NormalizationConfig(
@@ -79,7 +81,6 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
 
         linear_config = LinearConfig()
 
-        layer_head_dim = self.hidden_size // self.num_attention_heads
         if len(self.no_rope_layers) < self.num_hidden_layers:
             raise ValueError(
                 "SmolLM3 requires no_rope_layers to be a per-layer mask with at least num_hidden_layers entries, "
@@ -98,7 +99,7 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
             has_out_biases=self.attention_bias,
             num_heads=self.num_attention_heads,
             num_groups=self.num_key_value_heads,
-            head_dim=layer_head_dim,
+            head_dim=head_dim,
             is_causal=True,
             scale=None,
             sliding_window_size=None,
