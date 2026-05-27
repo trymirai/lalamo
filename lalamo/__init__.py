@@ -26,7 +26,7 @@ from lalamo.models.chat_codec import (
     UserMessage,
 )
 
-__version__ = "0.11.0"
+__version__ = "0.11.1"
 
 __all__ = [
     "AssistantMessage",
