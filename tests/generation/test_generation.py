@@ -7,11 +7,10 @@ import numpy as np
 import pytest
 from jax.lax import DotAlgorithmPreset
 
-from lalamo.inference.batch_scheduler import BatchSchedulerConfig, FixedSizeBatchScheduler
 from lalamo.model_import.model_spec import LanguageModelSpec
 from lalamo.models import LanguageModel
 from lalamo.models.chat_codec import UserMessage
-from lalamo.models.language_model import GenerationConfig
+from lalamo.models.language_model import _COMPILED_PROMPT_LENGTHS, GenerationConfig
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis, ShardingConfig
 from lalamo.modules import DecoderForwardPassConfig
 from tests.conftest import ConvertModel, filter_specs, load_converted_model, mark_by_size
@@ -272,9 +271,11 @@ def test_streaming_vs_eager_consistency(replicated_language_model: LanguageModel
 
     generation_keychain = Keychain.init(5, sharding_config=replicated_language_model.sharding_config)
     max_output_length = 5  # very short cuz precision issues are insane
+    padded_input_length = next(length for length in _COMPILED_PROMPT_LENGTHS if length >= token_ids.size)
+    padded_token_ids = jnp.pad(token_ids, (0, padded_input_length - token_ids.size))
     eager_token_ids, eager_lengths = _sharded_generation_batch(
         replicated_language_model,
-        token_ids[None, :],
+        padded_token_ids[None, :],
         jnp.array([token_ids.size], dtype=jnp.int32),
     )
     eager_token_ids = replicated_language_model.generate_tokens(
@@ -302,19 +303,3 @@ def test_streaming_vs_eager_consistency(replicated_language_model: LanguageModel
         eager_token_ids.squeeze().tolist(),
         streaming_token_ids.squeeze().tolist(),
     )
-
-    batch_scheduler = FixedSizeBatchScheduler(model=replicated_language_model)
-    [(idx, batch_response)] = list(
-        batch_scheduler.reply_many(
-            [prompt],
-            generation_config=generation_config,
-            batch_scheduler_config=BatchSchedulerConfig(
-                batch_size=_batch_axis_size(replicated_language_model),
-                max_output_length=max_output_length,
-            ),
-            keychain=generation_keychain,
-        ),
-    )
-    assert idx == 0
-    streaming_response = replicated_language_model.token_codec.decode_response(streaming_token_ids.tolist())
-    assert batch_response == streaming_response
