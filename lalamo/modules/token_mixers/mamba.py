@@ -244,7 +244,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         )
 
         return Mamba2Result(
-            outputs=output[None, :],
+            outputs=output[None, :].astype(inputs.dtype),
             state=SSMStateLayer(new_conv_state, new_ssm_state),
         )
 
@@ -704,7 +704,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             updated_state = None
 
         return Mamba2Result(
-            outputs=outputs,
+            outputs=outputs.astype(inputs.dtype),
             state=updated_state,
         )
 
