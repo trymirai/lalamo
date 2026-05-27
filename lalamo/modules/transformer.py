@@ -136,11 +136,13 @@ class Transformer(LalamoModule[TransformerConfig]):
         has_kv_sharing = len(self.kv_source_layer_indices) < len(self.layers)
         must_return_state = return_updated_state or has_kv_sharing
 
+        residual_dtype = inner_features.dtype
         layer_keychains = keychain.split(len(self.layers))
         updated_states: dict[int, StateLayerBase | None] = {}
         layer_results = []
 
         for layer_index, (layer, layer_keychain) in enumerate(zip(self.layers, layer_keychains, strict=True)):
+            assert inner_features.dtype == residual_dtype
             rope_index = self.rope_indices[layer_index]
             positional_embeddings = rope_embeddings[rope_index] if rope_index >= 0 else None
 
@@ -174,6 +176,7 @@ class Transformer(LalamoModule[TransformerConfig]):
             if kv_source_layer_index is None:
                 updated_states[layer_index] = layer_result.updated_state
 
+        assert inner_features.dtype == residual_dtype
         normalized_outputs = call_vmapped_twice(
             self.output_norm,
             inner_features,

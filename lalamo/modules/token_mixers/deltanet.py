@@ -510,7 +510,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         else:
             updated_state = None
 
-        return TokenMixerResult(outputs, updated_state)
+        return TokenMixerResult(outputs.astype(inputs.dtype), updated_state)
 
     def init_static_state(self, capacity: int, dtype: DTypeLike) -> SSMStateLayer:  # noqa: ARG002
         return SSMStateLayer.init(

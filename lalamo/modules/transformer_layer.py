@@ -295,6 +295,8 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             normalized_mixer_outputs = None
             mlp_inputs = inputs + mixer_outputs
 
+        assert mlp_inputs.dtype == inputs.dtype
+
         normalized_mlp_inputs = call_vmapped_twice(
             self.pre_mlp_norm,
             mlp_inputs,
@@ -343,6 +345,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         else:
             activation_trace = None
 
+        assert outputs.dtype == inputs.dtype
         return TransformerLayerResult(
             outputs=outputs,
             updated_state=updated_state,
