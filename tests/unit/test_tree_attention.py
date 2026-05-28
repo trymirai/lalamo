@@ -156,6 +156,26 @@ def test_build_tree_attention_mask_prefix_plus_draft() -> None:
     assert jnp.array_equal(mask, expected)
 
 
+def test_decoder_defaults_to_float32_residual_stream(decoder: Decoder) -> None:
+    forward_pass_config = DecoderForwardPassConfig()
+    assert forward_pass_config.embedding_forward_pass_config.activation_dtype == jnp.bfloat16
+
+    result = decoder(
+        jnp.array([[1, 2, 3]], dtype=jnp.int32),
+        jnp.array([[0, 1, 2]], dtype=jnp.int32),
+        return_activation_trace=True,
+        forward_pass_config=forward_pass_config,
+        keychain=Keychain.init(80, sharding_config=make_test_sharding_config()),
+    )
+
+    assert result.activation_trace is not None
+    (layer_result,) = result.activation_trace.layer_results
+    assert layer_result.activation_trace is not None
+    assert layer_result.activation_trace.inputs.dtype == jnp.float32
+    assert layer_result.outputs.dtype == jnp.float32
+    assert result.activation_trace.output_norm.dtype == jnp.float32
+
+
 def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
     prefix_token_ids = jnp.array([[1, 2, 3]], dtype=jnp.int32)
     prefix_positions = jnp.array([[0, 1, 2]], dtype=jnp.int32)

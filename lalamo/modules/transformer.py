@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import equinox as eqx
+import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
@@ -117,6 +118,8 @@ class Transformer(LalamoModule[TransformerConfig]):
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
             )
+        residual_dtype = jnp.float32
+        inner_features = inner_features.astype(residual_dtype)
         state_by_layer = (
             {layer_index: state[state_index] for state_index, layer_index in enumerate(self.kv_source_layer_indices)}
             if state is not None
@@ -136,7 +139,6 @@ class Transformer(LalamoModule[TransformerConfig]):
         has_kv_sharing = len(self.kv_source_layer_indices) < len(self.layers)
         must_return_state = return_updated_state or has_kv_sharing
 
-        residual_dtype = inner_features.dtype
         layer_keychains = keychain.split(len(self.layers))
         updated_states: dict[int, StateLayerBase | None] = {}
         layer_results = []
