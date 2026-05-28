@@ -130,6 +130,13 @@ def chat(
             show_default="model default",
         ),
     ] = None,
+    thinking: Annotated[
+        bool,
+        Option(
+            "--thinking/--no-thinking",
+            help="Enable model thinking when the chat template supports it.",
+        ),
+    ] = False,
 ) -> None:
     generation_config: GenerationConfig | None = None
     with Progress(
@@ -159,6 +166,7 @@ def chat(
                     messages,
                     generation_config=generation_config,
                     max_output_length=max_tokens,
+                    enable_thinking=thinking,
                     keychain=Keychain.init(turn_index + 1, sharding_config=model.sharding_config),
                 ):
                     console.print(token, end="")
@@ -172,6 +180,7 @@ def chat(
                 [UserMessage(message)],
                 generation_config=generation_config,
                 max_output_length=max_tokens,
+                enable_thinking=thinking,
                 keychain=Keychain.init(1, sharding_config=model.sharding_config),
             ):
                 console.print(token, end="")
