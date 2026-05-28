@@ -84,9 +84,10 @@ def unpack_int32(packed_weights: Array, bits: int) -> Array:
     assert packed_weights.dtype in (jnp.int32, jnp.uint32)
     assert 32 % bits == 0
 
-    shifts = jnp.arange(0, 32, bits)
-    mask = (2**bits) - 1
-    unpacked = jnp.bitwise_and(jnp.right_shift(packed_weights[:, :, None], shifts[None, None, :]), mask)
+    shifts = jnp.arange(0, 32, bits, dtype=jnp.uint32)
+    mask = jnp.asarray((2**bits) - 1, dtype=jnp.uint32)
+    packed_unsigned = packed_weights.astype(jnp.uint32)
+    unpacked = jnp.bitwise_and(jnp.right_shift(packed_unsigned[:, :, None], shifts[None, None, :]), mask)
     return rearrange(
         unpacked,
         "rows packed_groups packed_values -> rows (packed_groups packed_values)",

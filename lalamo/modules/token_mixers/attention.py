@@ -77,6 +77,14 @@ def _soft_capped_attention_kernel(
     scale: float | None,
     logit_soft_cap: float | None,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
+    original_dtype = queries.dtype
+    attention_dtype = jnp.float32
+    queries = queries.astype(attention_dtype)
+    keys = keys.astype(attention_dtype)
+    values = values.astype(attention_dtype)
+    if bias is not None:
+        bias = bias.astype(attention_dtype)
+
     if logit_soft_cap is None:
         return jax.nn.dot_product_attention(
             queries,
@@ -85,7 +93,7 @@ def _soft_capped_attention_kernel(
             bias=bias,
             mask=mask,
             scale=scale,
-        )
+        ).astype(original_dtype)
 
     _, num_heads, head_dim = queries.shape
     _, num_groups, _ = keys.shape
@@ -118,7 +126,7 @@ def _soft_capped_attention_kernel(
         attention_weights,
         values,
         "heads dst_tokens src_tokens, src_tokens heads channels -> dst_tokens heads channels",
-    )
+    ).astype(original_dtype)
 
 
 def _stable_reduction_attention_kernel(
@@ -188,7 +196,7 @@ def _stable_reduction_attention_kernel(
             "heads queries (tiles tokens) -> tiles heads queries tokens",
             tiles=num_tiles,
             tokens=tile_size,
-        )
+        ).astype(accumulation_dtype)
 
     scores = einsum(
         queries,
@@ -286,15 +294,17 @@ def _attention_kernel(
                 raise RuntimeError("cuDNN attention does not support logit soft-capping.")
             if mask is not None:
                 mask = jnp.broadcast_to(mask, (queries.shape[1], *mask.shape))
+            original_dtype = queries.dtype
+            attention_dtype = jnp.float32
             return jax.nn.dot_product_attention(
-                queries,
-                keys,
-                values,
-                bias=bias,
+                queries.astype(attention_dtype),
+                keys.astype(attention_dtype),
+                values.astype(attention_dtype),
+                bias=None if bias is None else bias.astype(attention_dtype),
                 mask=mask,
                 scale=scale,
                 implementation="cudnn",
-            )
+            ).astype(original_dtype)
         case AttentionImplementation.TOKAMAX:
             return tokamax_attention()
         case AttentionImplementation.STABLE_REDUCTION:

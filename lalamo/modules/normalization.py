@@ -84,9 +84,10 @@ class Normalization(LalamoModule[NormalizationConfig]):
     ) -> Float[Array, " channels"]:
         upcasted_inputs = inputs.astype(accumulation_precision)
 
-        scales = self.scales
         if self.config.upcast_mode == UpcastMode.FULL_LAYER:
-            scales = scales.astype(jnp.float32)
+            scales = self.scales.astype(jnp.float32)
+        else:
+            scales = self.scales.astype(inputs.dtype)
 
         if self.config.scale_offset is not None:
             scales += self.config.scale_offset
@@ -104,7 +105,7 @@ class Normalization(LalamoModule[NormalizationConfig]):
         result = normalized_x * scales
 
         if self.biases is not None:
-            result += self.biases
+            result = result + self.biases.astype(result.dtype)
 
         return result.astype(inputs.dtype)
 
