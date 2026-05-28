@@ -6,6 +6,7 @@ core = [
   "mlx-community/Qwen3.5-0.8B-MLX-4bit",
   "LiquidAI/LFM2.5-350M",
   "cartesia-ai/Llamba-1B",
+  "google/gemma-4-E2B-it",
 ]
 standard = [
   "mlx-community/LFM2-350M-8bit",
@@ -20,6 +21,9 @@ standard = [
   "google/gemma-3-1b-it",
   "mlx-community/gemma-3-1b-it-4bit",
   "google/gemma-3-4b-it",
+  "google/gemma-4-E2B",
+  "google/gemma-4-E4B",
+  "google/gemma-4-E4B-it",
   "mlx-community/gemma-3-27b-it-4bit",
   "HuggingFaceTB/SmolLM2-1.7B-Instruct",
   "HuggingFaceTB/SmolLM3-3B",
@@ -39,7 +43,6 @@ standard = [
   "Qwen/Qwen3.6-27B",
   "Qwen/Qwen3.6-35B-A3B",
   "prism-ml/Bonsai-4B-mlx-1bit",
-  "google/gemma-4-E2B-it",
   "ibm-granite/granite-3.3-2b-instruct",
 ]
 extra = [
@@ -65,9 +68,10 @@ extra = [
   "google/gemma-3-27b-it",
   "mlx-community/gemma-3-27b-it-8bit",
   "google/functiongemma-270m-it",
-  "google/gemma-4-E2B",
-  "google/gemma-4-E4B",
-  "google/gemma-4-E4B-it",
+  "google/gemma-4-31B",
+  "google/gemma-4-31B-it",
+  "google/gemma-4-26B-A4B",
+  "google/gemma-4-26B-A4B-it",
   "mlx-community/SmolLM3-3B-4bit",
   "mlx-community/SmolLM3-3B-8bit",
   "POLARIS-Project/Polaris-4B-Preview",

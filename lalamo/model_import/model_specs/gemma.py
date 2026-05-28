@@ -10,6 +10,20 @@ __all__ = ["GEMMA_MODELS"]
 
 GEMMA4_BASE_CHAT_TEMPLATE = "{{ bos_token or '' }}{% for message in messages %}{{ message.content }}{% endfor %}"
 
+
+def _gemma4_model_spec(repo_name: str, size: str) -> LanguageModelSpec:
+    chat_template = FileSpec("chat_template.jinja") if repo_name.endswith("-it") else GEMMA4_BASE_CHAT_TEMPLATE
+    return LanguageModelSpec(
+        vendor="Google",
+        family="Gemma-4",
+        name=repo_name.lower(),
+        size=size,
+        origin=HuggingFaceOrigin(repo=f"google/{repo_name}"),
+        config_type=HFGemma4Config,
+        configs=ConfigMap(chat_template=chat_template),
+    )
+
+
 GEMMA3 = [
     LanguageModelSpec(
         vendor="Google",
@@ -105,42 +119,14 @@ GEMMA3 = [
 ]
 
 GEMMA4 = [
-    LanguageModelSpec(
-        vendor="Google",
-        family="Gemma-4",
-        name="gemma-4-e2b",
-        size="5B",
-        origin=HuggingFaceOrigin(repo="google/gemma-4-E2B"),
-        config_type=HFGemma4Config,
-        configs=ConfigMap(chat_template=GEMMA4_BASE_CHAT_TEMPLATE),
-    ),
-    LanguageModelSpec(
-        vendor="Google",
-        family="Gemma-4",
-        name="gemma-4-e2b-it",
-        size="5B",
-        origin=HuggingFaceOrigin(repo="google/gemma-4-E2B-it"),
-        config_type=HFGemma4Config,
-        configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
-    ),
-    LanguageModelSpec(
-        vendor="Google",
-        family="Gemma-4",
-        name="gemma-4-e4b",
-        size="8B",
-        origin=HuggingFaceOrigin(repo="google/gemma-4-E4B"),
-        config_type=HFGemma4Config,
-        configs=ConfigMap(chat_template=GEMMA4_BASE_CHAT_TEMPLATE),
-    ),
-    LanguageModelSpec(
-        vendor="Google",
-        family="Gemma-4",
-        name="gemma-4-e4b-it",
-        size="8B",
-        origin=HuggingFaceOrigin(repo="google/gemma-4-E4B-it"),
-        config_type=HFGemma4Config,
-        configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
-    ),
+    _gemma4_model_spec("gemma-4-E2B", "2B"),
+    _gemma4_model_spec("gemma-4-E2B-it", "2B"),
+    _gemma4_model_spec("gemma-4-E4B", "4B"),
+    _gemma4_model_spec("gemma-4-E4B-it", "4B"),
+    _gemma4_model_spec("gemma-4-31B", "31B"),
+    _gemma4_model_spec("gemma-4-31B-it", "31B"),
+    _gemma4_model_spec("gemma-4-26B-A4B", "26B"),
+    _gemma4_model_spec("gemma-4-26B-A4B-it", "26B"),
 ]
 
 GEMMA_MODELS = GEMMA3 + GEMMA4

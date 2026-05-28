@@ -277,6 +277,38 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
 
         return jax.tree_util.tree_map(slice_leaf, self)
 
+    def take_mixture(self, index: Int[Array, ""]) -> Self:
+        if self.mixture_size is None:
+            raise ValueError("DenseMLP.take_mixture() requires a mixture DenseMLP.")
+        return jax.tree_util.tree_map(
+            lambda leaf: _take_moe_expert_leaf(leaf, index, self.sharding_config),
+            self,
+        )
+
+    def call_weighted_mixture_unbatched(
+        self,
+        inputs: Float[Array, " channels"],
+        active_indices: Int[Array, " active_experts"],
+        active_weights: Float[Array, " active_experts"],
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> Float[Array, " channels"]:
+        def apply_one(
+            index: Int[Array, ""],
+            weight: Float[Array, ""],
+            *,
+            keychain: Keychain,
+        ) -> Float[Array, " channels"]:
+            output = self.take_mixture(index).call_unbatched(
+                inputs,
+                forward_pass_config,
+                keychain=keychain,
+            )
+            return output * weight.astype(output.dtype)
+
+        return call_vmapped(apply_one, active_indices, active_weights, keychain=keychain).sum(axis=0)
+
 
 class RoutingMap(eqx.Module):
     expert_mask: Bool[Array, "*batch_and_tokens experts"]
@@ -444,37 +476,13 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         num_active = self.config.num_active_routed_experts + self.config.num_shared_experts
         active_indices = jnp.flatnonzero(expert_mask, size=num_active)
         active_weights = expert_weights[active_indices]
-        expert_vmapped_keys = expert_keychain.broadcast((num_active,)).vmapped_keys
-        expert_batch_keys = jax.random.split(expert_keychain.batch_key, num_active)
-
-        def apply_one(
-            idx: Int[Array, ""],
-            weight: Float[Array, ""],
-            expert_vmapped_key: Key[Array, ""],
-            expert_batch_key: Key[Array, ""],
-        ) -> Float[Array, " channels"]:
-            selected_expert_keychain = Keychain(
-                vmapped_keys=expert_vmapped_key,
-                batch_key=expert_batch_key,
-                sharding_config=expert_keychain.sharding_config,
-            )
-            selected_expert = jax.tree_util.tree_map(
-                lambda leaf: _take_moe_expert_leaf(leaf, idx, self.sharding_config),
-                self.experts,
-            )
-            return (
-                selected_expert.call_unbatched(
-                    token_input,
-                    forward_pass_config,
-                    keychain=selected_expert_keychain,
-                )
-                * weight
-            )
-
-        return call_vmapped(
-            lambda expert_inputs: apply_one(*expert_inputs),
-            (active_indices, active_weights, expert_vmapped_keys, expert_batch_keys),
-        ).sum(axis=0)
+        return self.experts.call_weighted_mixture_unbatched(
+            token_input,
+            active_indices,
+            active_weights,
+            forward_pass_config,
+            keychain=expert_keychain,
+        )
 
     @eqx.filter_jit
     def call_decode_mode(
