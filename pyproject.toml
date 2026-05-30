@@ -33,9 +33,6 @@ dynamic = ["version"]
 cpu = ["jax[cpu]>=0.10.0"]
 cuda = [
     "jax[cuda]>=0.10.0",
-    # 9.21.1+ fails during Tokamax fallback on CUDA 12.9 images with system cuDNN on LD_LIBRARY_PATH.
-    "nvidia-cudnn-cu12==9.21.0.82; platform_system == 'Linux'",
-    "nvidia-cutlass-dsl>=4.4; platform_system == 'Linux'",
 ]
 tpu = ["jax[tpu]>=0.10.0"]
 pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
