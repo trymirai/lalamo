@@ -277,11 +277,19 @@ def _attention_kernel(
             if head_dim > 128 or head_dim % 8 != 0:
                 warnings.warn(
                     "cuDNN attention requires head_dim <= 128 and divisible by 8; "
-                    f"got head_dim={head_dim}. Falling back to Tokamax attention.",
+                    f"got head_dim={head_dim}. Falling back to standard (jax/xla) attention.",
                     RuntimeWarning,
                     stacklevel=2,
                 )
-                return tokamax_attention()
+                return _soft_capped_attention_kernel(
+                    queries,
+                    keys,
+                    values,
+                    bias=bias,
+                    mask=mask,
+                    scale=scale,
+                    logit_soft_cap=logit_soft_cap,
+                )
             if logit_soft_cap is not None:
                 raise RuntimeError("cuDNN attention does not support logit soft-capping.")
             if mask is not None:
