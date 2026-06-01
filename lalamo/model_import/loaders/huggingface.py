@@ -739,6 +739,7 @@ def load_attention(
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     reorder_q_proj_gate: bool = True,
 ) -> Attention:
+    qkv_sublayers = ["q_proj"] if module.config.is_kv_sharing else ["q_proj", "k_proj", "v_proj"]
     if module.gate_projection is not None:
         num_heads, head_dim = module.config.num_heads, module.config.head_dim
         q_overrides, gate_weights = _extract_gate_weights(
@@ -753,7 +754,7 @@ def load_attention(
             module.qkv_projection,
             {**weights_dict, **q_overrides},
             path,
-            sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
+            sublayers_to_fuse=qkv_sublayers,
             implementation=implementation,
         )
 
@@ -768,7 +769,7 @@ def load_attention(
             module.qkv_projection,
             weights_dict,
             path,
-            sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
+            sublayers_to_fuse=qkv_sublayers,
             implementation=implementation,
         )
         gate_projection = None

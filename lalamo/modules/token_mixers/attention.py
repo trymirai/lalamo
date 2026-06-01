@@ -336,6 +336,7 @@ class AttentionConfig(TokenMixerConfig):
     gate_projection_config: LinearConfig | None = None
     # Scale-free RMS normalization on values
     normalize_values: bool = False
+    is_kv_sharing: bool = False
 
     def init(
         self,
@@ -343,11 +344,14 @@ class AttentionConfig(TokenMixerConfig):
         model_dim: int,
     ) -> "Attention":
         q_output_dim = self.num_heads * self.head_dim
-        output_dims = (
-            q_output_dim,
-            self.num_groups * self.head_dim,
-            self.num_groups * self.head_dim,
-        )
+        if self.is_kv_sharing:
+            output_dims = (q_output_dim,)
+        else:
+            output_dims = (
+                q_output_dim,
+                self.num_groups * self.head_dim,
+                self.num_groups * self.head_dim,
+            )
         qkv_projection = self.qkv_projection_config.init(
             initializer,
             input_dim=model_dim,
@@ -379,7 +383,7 @@ class AttentionConfig(TokenMixerConfig):
         else:
             query_norm = None
 
-        if self.key_norm_config is not None:
+        if self.key_norm_config is not None and not self.is_kv_sharing:
             key_norm = self.key_norm_config.init(
                 initializer,
                 input_dim=self.head_dim,
@@ -475,12 +479,17 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         keychain: Keychain,
     ) -> AttentionResult:
         qkv_keychain, gate_keychain, out_keychain = keychain.split(3)
-        queries, keys, values = call_vmapped(
+        assert reuse_cache == self.config.is_kv_sharing, "reuse_cache must match AttentionConfig.is_kv_sharing"
+        projections = call_vmapped(
             self.qkv_projection,
             inputs,
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=qkv_keychain,
         )
+        if self.config.is_kv_sharing:
+            (queries,) = projections
+        else:
+            queries, keys, values = projections
         if self.gate_projection is not None:
             (gate,) = call_vmapped(
                 self.gate_projection,
@@ -495,12 +504,14 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             queries, self.config.num_heads, self.query_norm, positional_embeddings, forward_pass_config
         )
 
-        prefix_length = 0 if state is None else state.current_prefix_length()
+        num_suffix_tokens, _, _ = queries.shape
         if reuse_cache:
             if state is None:
                 raise ValueError("a KV-sharing layer must receive the source layer's cache as `state`")
+            prefix_length = state.current_prefix_length() - num_suffix_tokens
             updated_state = state
         else:
+            prefix_length = 0 if state is None else state.current_prefix_length()
             keys = self._prepare_heads(
                 keys, self.config.num_groups, self.key_norm, positional_embeddings, forward_pass_config
             )
@@ -524,7 +535,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 updated_state = state.extend(keys, values, added_length=length_without_padding)
 
         queries = queries.astype(updated_state.keys.dtype)
-        num_suffix_tokens, _, _ = queries.shape
         if attention_parent_indices is not None:
             mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices)
         else:
