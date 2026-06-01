@@ -23,7 +23,7 @@ from lalamo.modules import (
     UnscaledRoPEConfig,
     UpcastMode,
 )
-from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.kv_cache import build_tree_attention_mask, tree_ancestor_mask
 from lalamo.utils.sharding import ShardingConfig
 from tests.common import assert_close
@@ -220,9 +220,13 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
 
 @pytest.mark.parametrize("decoder", [(None, 0)], indirect=True, ids=["shared_kv"])
 def test_kv_sharing_layer_projects_queries_only(decoder: Decoder) -> None:
-    assert decoder.transformer.layers[0].mixer.qkv_projection.output_dims == (8, 8, 8)
-    assert decoder.transformer.layers[1].mixer.qkv_projection.output_dims == (8,)
-    assert decoder.transformer.layers[1].mixer.key_norm is None
+    owner = decoder.transformer.layers[0].mixer
+    shared = decoder.transformer.layers[1].mixer
+    assert isinstance(owner, Attention)
+    assert isinstance(shared, Attention)
+    assert owner.qkv_projection.output_dims == (8, 8, 8)
+    assert shared.qkv_projection.output_dims == (8,)
+    assert shared.key_norm is None
 
 
 def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:

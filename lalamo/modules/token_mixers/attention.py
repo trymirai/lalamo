@@ -486,10 +486,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=qkv_keychain,
         )
-        if self.config.is_kv_sharing:
-            (queries,) = projections
-        else:
-            queries, keys, values = projections
+        queries = projections[0]
         if self.gate_projection is not None:
             (gate,) = call_vmapped(
                 self.gate_projection,
@@ -511,6 +508,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             prefix_length = state.current_prefix_length() - num_suffix_tokens
             updated_state = state
         else:
+            _, keys, values = projections
             prefix_length = 0 if state is None else state.current_prefix_length()
             keys = self._prepare_heads(
                 keys, self.config.num_groups, self.key_norm, positional_embeddings, forward_pass_config
