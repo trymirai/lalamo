@@ -592,6 +592,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
+        reuse_cache: bool = False,  # unused; KV sharing only applies to attention
         precision: DTypeLike = jnp.float32,
         *,
         keychain: Keychain,
