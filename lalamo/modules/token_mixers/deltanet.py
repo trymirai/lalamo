@@ -83,7 +83,7 @@ class DeltaNetConfig(TokenMixerConfig):
             ),
             has_biases=False,
         )
-        conv = self.conv_config.init(initializer, conv_dim, self.kernel_size, dtype=jnp.float32)
+        conv = self.conv_config.init(initializer, conv_dim, self.kernel_size)
         out_proj = self.out_proj_config.init(
             initializer,
             input_dim=value_dim,
@@ -91,8 +91,8 @@ class DeltaNetConfig(TokenMixerConfig):
             has_biases=False,
         )
         norm = self.norm_config.init(initializer, self.value_head_dim)
-        dt_bias = initializer.zeros((self.num_heads,), dtype=jnp.float32)
-        a_log = initializer.zeros((self.num_heads,), dtype=jnp.float32)
+        dt_bias = initializer.zeros((self.num_heads,))
+        a_log = initializer.zeros((self.num_heads,))
         return DeltaNet(
             config=self,
             sharding_config=initializer.sharding_config,
@@ -459,7 +459,9 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         value = value.reshape(num_tokens, self.config.num_heads, self.config.value_head_dim)
 
         # since we work with exponentials, we (possibly?) uplift dtype to make sure numbers are nice
-        decay_factor = -jnp.exp(self.a_log) * jax.nn.softplus(decay_input + self.dt_bias)
+        decay_factor = -jnp.exp(self.a_log.astype(jnp.float32)) * jax.nn.softplus(
+            decay_input + self.dt_bias.astype(jnp.float32),
+        )
 
         repeat_factor = self.config.num_heads // self.config.num_groups
         if repeat_factor > 1:

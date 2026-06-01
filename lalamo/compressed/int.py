@@ -424,7 +424,6 @@ class IntMatrix(EmbeddingMatrix[IntSpec]):
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> "IntMatrix": ...
@@ -561,7 +560,6 @@ class IntMatrixForTraining(IntMatrix):
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> IntMatrix:
@@ -575,19 +573,16 @@ class IntMatrixForTraining(IntMatrix):
         packed_weights = load_as(
             self._packed_quantized_weights,
             exported_data.arrays[prefix / "weights"],
-            allow_dtype_cast=False,
         )
         scales = load_as(
             self.scales,
             exported_data.arrays[prefix / "scales"],
-            allow_dtype_cast=allow_dtype_cast,
         )
         packed_zero_points = self._packed_quantized_zero_points
         if packed_zero_points is not None:
             packed_zero_points = load_as(
                 packed_zero_points,
                 exported_data.arrays[prefix / "zero_points"],
-                allow_dtype_cast=False,
             )
         return self.spec.from_packed_parameters(
             packed_weights=packed_weights,
@@ -646,7 +641,6 @@ class IntMatrixForInference(IntMatrix):
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> IntMatrix:
@@ -660,19 +654,16 @@ class IntMatrixForInference(IntMatrix):
         packed_weights = load_as(
             self.packed_weights,
             exported_data.arrays[prefix / "weights"],
-            allow_dtype_cast=False,
         )
         scales = load_as(
             self.scales,
             exported_data.arrays[prefix / "scales"],
-            allow_dtype_cast=allow_dtype_cast,
         )
         packed_zero_points = self._packed_quantized_zero_points
         if packed_zero_points is not None:
             packed_zero_points = load_as(
                 packed_zero_points,
                 exported_data.arrays[prefix / "zero_points"],
-                allow_dtype_cast=False,
             )
         return IntMatrixForInference(
             spec=self.spec,

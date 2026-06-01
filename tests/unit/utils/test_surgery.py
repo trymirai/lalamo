@@ -64,13 +64,6 @@ def test_load_as_rejects_mismatches(template: PyTree, value: PyTree, error: type
         load_as(template, value)
 
 
-def test_load_as_casts_array_dtype_when_allowed() -> None:
-    result = load_as(jnp.zeros((2, 3), dtype=jnp.float32), jnp.ones((2, 3), dtype=jnp.float16), allow_dtype_cast=True)
-
-    assert result.dtype == jnp.float32
-    assert jnp.all(result == 1)
-
-
 def test_load_as_treats_weight_matrices_as_leaf_nodes() -> None:
     template = {"matrix": _matrix()}
     value = {"matrix": _matrix(fill_value=1)}
@@ -111,17 +104,6 @@ def test_load_as_uses_template_replicated_sharding_without_host_roundtrip(fake_m
     assert result.sharding != source_sharding
     assert jnp.array_equal(result, value)
     del fake_mesh
-
-
-def test_load_as_casts_weight_matrix_dtype_when_allowed() -> None:
-    template = _matrix(dtype=jnp.float32)
-    value = _matrix(dtype=jnp.float16, fill_value=1)
-
-    result = load_as(template, value, allow_dtype_cast=True)
-
-    assert isinstance(result, FullPrecisionMatrix)
-    assert result.dtype == jnp.float32
-    assert jnp.all(result.weights == 1)
 
 
 def test_map_nodes_of_type_updates_only_selected_nodes() -> None:

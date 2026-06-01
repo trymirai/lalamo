@@ -6,6 +6,7 @@ import equinox as eqx
 import jax.tree_util as jtu
 from jax import Array as JaxArray
 from jax import ShapeDtypeStruct
+from jax import numpy as jnp
 from jax.sharding import Mesh, NamedSharding
 from jaxtyping import Array, DTypeLike
 
@@ -23,12 +24,18 @@ type OutShardingRule = Callable[[tuple[NamedSharding, ...]], NamedSharding]
 
 def dummy_array(
     shape: int | tuple[int, ...],
-    dtype: DTypeLike,
+    dtype: DTypeLike | None,
     sharding: NamedSharding,
 ) -> Array:
     if isinstance(shape, int):
         shape = (shape,)
-    return cast("Array", ShapeDtypeStruct(shape=shape, dtype=dtype, sharding=sharding))
+
+    weak = False
+    if dtype is None:
+        dtype = jnp.bfloat16
+        weak = True
+
+    return cast("Array", ShapeDtypeStruct(shape=shape, dtype=dtype, weak_type=weak, sharding=sharding))
 
 
 def preserve_first_input_sharding(input_shardings: tuple[NamedSharding, ...]) -> NamedSharding:

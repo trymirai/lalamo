@@ -121,7 +121,6 @@ def load_snake1d(
         lambda m: (m.alpha,),
         module,
         (alpha,),
-        allow_dtype_cast=True,
     )
 
 
@@ -153,7 +152,6 @@ def load_half_snake(
         lambda m: (m.snake,),
         module,
         (snake,),
-        allow_dtype_cast=True,
     )
 
 
@@ -207,7 +205,6 @@ def load_causal_conv1d(
         lambda m: (m.weights, m.biases),
         module,
         (weight, bias),
-        allow_dtype_cast=True,
     )
 
 
@@ -253,7 +250,6 @@ def load_causal_transpose_conv1d(
         lambda m: (m.weights, m.biases),
         module,
         (weight_jax, bias),
-        allow_dtype_cast=True,
     )
 
 
@@ -313,7 +309,6 @@ def load_residual_block(
         lambda m: (m.input_activation, m.skip_activation, m.input_conv, m.skip_conv),
         module,
         (input_activation, skip_activation, input_conv, skip_conv),
-        allow_dtype_cast=True,
     )
 
 
@@ -350,7 +345,6 @@ def load_hifigan_res_block(
         lambda m: (m.res_blocks,),
         module,
         (res_blocks,),
-        allow_dtype_cast=True,
     )
 
 
@@ -386,7 +380,6 @@ def load_hifigan_res_layer(
         lambda m: (m.res_blocks,),
         module,
         (res_blocks,),
-        allow_dtype_cast=True,
     )
 
 
@@ -498,7 +491,6 @@ def load_causal_hifigan_decoder(
         ),
         module,
         (pre_conv, activations, upsample_convs, res_layers, post_activation, post_conv),
-        allow_dtype_cast=True,
     )
 
 
@@ -551,5 +543,4 @@ def load_nanocodec(
         lambda m: (m.decoder,),
         module,
         (decoder,),
-        allow_dtype_cast=True,
     )

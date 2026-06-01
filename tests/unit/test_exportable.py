@@ -38,7 +38,6 @@ class CustomLeaf(Exportable, eqx.Module):
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,  # noqa: ARG002
         *,
         prefix: ParameterPath | None = None,
     ) -> Self:
@@ -153,16 +152,6 @@ def test_load_exported_rejects_dtype_mismatch_by_default() -> None:
 
     with pytest.raises(ValueError, match="dtype"):
         skeleton.load_exported(exported)
-
-
-def test_load_exported_casts_dtype_when_allowed() -> None:
-    skeleton = Leaf(weight=jnp.zeros((2,), dtype=jnp.float32), bias=None)
-    exported = ExportResults(arrays={"weight": jnp.ones((2,), dtype=jnp.float16)}, metadata={})
-
-    restored = skeleton.load_exported(exported, allow_dtype_cast=True)
-
-    assert restored.weight.dtype == jnp.float32
-    assert jnp.array_equal(restored.weight, jnp.ones((2,), dtype=jnp.float32))
 
 
 def test_load_exported_preserves_template_sharding() -> None:

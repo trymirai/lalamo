@@ -147,11 +147,11 @@ class Mamba2Config(TokenMixerConfig):
             has_biases=self.has_out_biases,
         )
 
-        conv = self.conv_config.init(initializer, self.conv_dim, self.kernel_size, dtype=jnp.float32)
+        conv = self.conv_config.init(initializer, self.conv_dim, self.kernel_size)
 
-        skip_connection_weight = initializer.normal(1.0, (self.num_heads,), dtype=jnp.float32)
+        skip_connection_weight = initializer.normal(1.0, (self.num_heads,))
 
-        gate_bias = initializer.zeros((self.inner_dim,), dtype=jnp.float32)
+        gate_bias = initializer.zeros((self.inner_dim,))
 
         return Mamba2(
             config=self,

@@ -59,7 +59,7 @@ class Model[
         self.token_codec.tokenizer.save(str(directory / "tokenizer.json"))
 
     @classmethod
-    def load(cls, directory: Path | str, sharding_config: ShardingConfig, dtype: DTypeLike = jnp.bfloat16) -> Self:
+    def load(cls, directory: Path | str, sharding_config: ShardingConfig, dtype: DTypeLike | None = None) -> Self:
         directory = Path(directory)
         with (directory / "config.json").open() as config_file:
             config = ModelConfig.from_json(json.load(config_file))
@@ -70,15 +70,13 @@ class Model[
             decoded_metadata = {}
             if metadata is not None:
                 decoded_metadata = {key: json.loads(value) for key, value in metadata.items()}
-
-            template = config.init(tokenizer, EmptyInitializer(dtype, sharding_config))
+            template = config.init(tokenizer, EmptyInitializer(dtype or jnp.bfloat16, sharding_config))
             result = Exportable.load_exported(
                 template,
                 ExportResults(
                     arrays=arrays,
                     metadata=decoded_metadata,
                 ),
-                allow_dtype_cast=True,
             )
 
         assert isinstance(result, cls)

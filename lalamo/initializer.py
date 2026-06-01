@@ -28,7 +28,7 @@ __all__ = [
 
 @dataclass
 class Initializer(ABC):
-    default_dtype: DTypeLike
+    default_dtype: DTypeLike | None
     sharding_config: ShardingConfig
 
     def _partition_to_sharding(

@@ -160,7 +160,6 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
             _tts_audio_decoder,
             tts_model,
             (loaded_audio_decoder,),
-            allow_dtype_cast=True,
         )
 
     @classmethod

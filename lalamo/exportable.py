@@ -45,7 +45,6 @@ class Exportable:
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> Self:
@@ -59,11 +58,11 @@ class Exportable:
             path = prefix / jax_path
 
             if isinstance(subtree, Exportable):
-                return subtree.load_exported(exported_data, allow_dtype_cast=allow_dtype_cast, prefix=path)
+                return subtree.load_exported(exported_data, prefix=path)
             if not isinstance(subtree, (jax.Array, ShapeDtypeStruct)):
                 return subtree
 
-            return load_as(subtree, exported_data.arrays[path], allow_dtype_cast=allow_dtype_cast)
+            return load_as(subtree, exported_data.arrays[path])
 
         return jtu.tree_map_with_path(
             restore,

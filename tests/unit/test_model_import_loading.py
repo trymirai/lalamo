@@ -336,7 +336,7 @@ def test_foreign_config_load_initializes_model_with_requested_dtype_and_implemen
     assert loaded.module.matrix.dtype == jnp.bfloat16
 
 
-def test_model_export_load_uses_saved_weight_matrix_spec_with_shape_dtype_template(tmp_path: Path) -> None:
+def test_model_export_load_preserves_saved_dtype(tmp_path: Path) -> None:
     tokenizer = Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]"))
     config = TinyModelConfig(
         token_codec_config=ChatCodecConfig(
@@ -366,13 +366,7 @@ def test_model_export_load_uses_saved_weight_matrix_spec_with_shape_dtype_templa
 
     original.save(tmp_path)
     restored = TinyModel.load(tmp_path, sharding_config=make_test_sharding_config())
-    restored_float32 = TinyModel.load(
-        tmp_path,
-        dtype=jnp.float32,
-        sharding_config=make_test_sharding_config(),
-    )
 
     assert isinstance(restored.module.matrix, IntMatrixForInference)
     assert restored.module.matrix.spec == original.module.matrix.spec
-    assert restored.module.matrix.dtype == jnp.bfloat16
-    assert restored_float32.module.matrix.dtype == jnp.float32
+    assert restored.module.matrix.dtype == original.module.matrix.dtype

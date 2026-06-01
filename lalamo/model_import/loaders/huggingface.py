@@ -394,7 +394,6 @@ def load_mlp(
             _dense_mlp_projections,
             dense_module,
             (up_projection, down_projection),
-            allow_dtype_cast=True,
         )
 
     if isinstance(module, MixtureOfExperts):
@@ -485,7 +484,6 @@ def load_moe(
             lambda m: (m.up_projection, m.down_projection),
             module.experts,
             (up_projection, down_projection),
-            allow_dtype_cast=True,
         )
     elif (
         (experts_path / "gate_up_proj.weight") in weights_dict
@@ -568,7 +566,6 @@ def load_moe(
             lambda m: (m.up_projection, m.down_projection),
             module.experts,
             (up_projection, down_projection),
-            allow_dtype_cast=True,
         )
     else:
         # Collect expert weight paths: routed experts first, then shared experts.
@@ -637,7 +634,6 @@ def load_moe(
             lambda m: (m.up_projection, m.down_projection),
             module.experts,
             (up_projection, down_projection),
-            allow_dtype_cast=True,
         )
 
     gate = None
@@ -655,7 +651,6 @@ def load_moe(
         lambda m: (m.router, m.experts, m.gate),
         module,
         (router, experts, gate),
-        allow_dtype_cast=True,
     )
 
 
@@ -664,8 +659,7 @@ def load_rmsnorm(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Normalization:
-    scales = weights_dict[path / "weight"].astype(jnp.float32)
-    return load_as_at(lambda m: (m.scales,), module, (scales,), allow_dtype_cast=True)
+    return load_as_at(lambda m: (m.scales,), module, (weights_dict[path / "weight"],))
 
 
 def _load_optional_rmsnorm(
@@ -797,7 +791,6 @@ def load_attention(
         ),
         module,
         (qkv_projection, gate_projection, out_projection, query_norm, key_norm, sinks),
-        allow_dtype_cast=True,
     )
 
 
@@ -840,7 +833,6 @@ def _load_conv(
         lambda m: (m.weights, m.biases),
         conv_module,
         (conv_weight, conv_bias),
-        allow_dtype_cast=True,
     )
 
 
@@ -869,7 +861,6 @@ def load_mamba2(
         ),
         module,
         (in_projection, out_projection, conv, skip_connection_weight, gate_bias),
-        allow_dtype_cast=True,
     )
 
 
@@ -889,7 +880,6 @@ def load_short_conv(
         lambda m: (m.in_projection, m.out_projection, m.conv),
         module,
         (in_projection, out_projection, conv),
-        allow_dtype_cast=True,
     )
 
 
@@ -990,12 +980,12 @@ def load_delta_net_attention(
                 sharding_config=module.in_proj.weights.sharding_config,
             )
         in_proj = _update_linear(module.in_proj, new_weights, None)
-    conv = _load_conv(module.conv, weights_dict, path, permute_conv).astype(jnp.float32)
+    conv = _load_conv(module.conv, weights_dict, path, permute_conv)
     out_proj = load_linear(module.out_proj, weights_dict, path / "out_proj", implementation=implementation)
     norm = load_rmsnorm(module.norm, weights_dict, path / "norm")
 
-    dt_bias = weights_dict.get(path / "dt_bias", module.dt_bias).astype(jnp.float32)
-    a_log = weights_dict.get(path / "A_log", module.a_log).astype(jnp.float32)
+    dt_bias = weights_dict[path / "dt_bias"]
+    a_log = weights_dict[path / "A_log"]
 
     return load_as_at(
         lambda m: (
@@ -1008,7 +998,6 @@ def load_delta_net_attention(
         ),
         module,
         (in_proj, conv, out_proj, norm, dt_bias, a_log),
-        allow_dtype_cast=True,
     )
 
 
@@ -1106,7 +1095,6 @@ def load_transformer_layer(
             mlp,
             post_mlp_norm,
         ),
-        allow_dtype_cast=True,
     )
 
 
@@ -1342,7 +1330,6 @@ def load_huggingface_decoder(
         lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm),
         module,
         (embedding, decoder_layers, output_norm),
-        allow_dtype_cast=True,
     )
 
 
@@ -1388,7 +1375,6 @@ def load_huggingface_classifier(
             lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm),
             module,
             (qkv_projection, out_projection, query_norm, key_norm),
-            allow_dtype_cast=True,
         )
 
     def load_mlp_local(module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLPBase:
@@ -1409,7 +1395,6 @@ def load_huggingface_classifier(
             _dense_mlp_projections,
             dense_module,
             (up_projection, down_projection),
-            allow_dtype_cast=True,
         )
 
     def load_transformer_layer_local(
@@ -1449,7 +1434,6 @@ def load_huggingface_classifier(
                 mlp,
                 post_mlp_norm,
             ),
-            allow_dtype_cast=True,
         )
 
     base_path = ParameterPath()
@@ -1498,5 +1482,4 @@ def load_huggingface_classifier(
             head_norm,
             head_readout,
         ),
-        allow_dtype_cast=True,
     )

@@ -627,7 +627,6 @@ class LloydMaxMatrix(EmbeddingMatrix[LloydMaxSpec]):
     def _load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,  # noqa: ARG002
         *,
         implementation: CompressionImplementation,
         prefix: ParameterPath | None = None,
@@ -644,17 +643,14 @@ class LloydMaxMatrix(EmbeddingMatrix[LloydMaxSpec]):
             packed_bias_indices = load_as(
                 self._packed_bias_indices,
                 exported_data.arrays[prefix / "bias_indices"],
-                allow_dtype_cast=False,
             )
         packed_weight_indices = load_as(
             self._packed_weight_indices,
             exported_data.arrays[prefix / "weights"],
-            allow_dtype_cast=False,
         )
         packed_scales = load_as(
             self._packed_scales,
             exported_data.arrays[prefix / "scales"],
-            allow_dtype_cast=False,
         )
         if implementation == CompressionImplementation.INFERENCE:
             return LloydMaxMatrixForInference(
@@ -691,7 +687,6 @@ class LloydMaxMatrix(EmbeddingMatrix[LloydMaxSpec]):
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> "LloydMaxMatrix": ...
@@ -809,13 +804,11 @@ class LloydMaxMatrixForTraining(LloydMaxMatrix):
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> LloydMaxMatrix:
         return self._load_exported(
             exported_data,
-            allow_dtype_cast=allow_dtype_cast,
             implementation=CompressionImplementation.TRAINING,
             prefix=prefix,
         )
@@ -912,13 +905,11 @@ class LloydMaxMatrixForInference(LloydMaxMatrix):
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> LloydMaxMatrix:
         return self._load_exported(
             exported_data,
-            allow_dtype_cast=allow_dtype_cast,
             implementation=CompressionImplementation.INFERENCE,
             prefix=prefix,
         )

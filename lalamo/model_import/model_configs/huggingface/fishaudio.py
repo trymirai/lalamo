@@ -403,7 +403,6 @@ class FishAudioConfig(ForeignTTSConfig):
             _tts_decoders,
             tts_model,
             (loaded_text_decoder, loaded_audio_decoder),
-            allow_dtype_cast=True,
         )
 
     @classmethod
