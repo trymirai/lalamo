@@ -592,7 +592,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
-        reuse_cache: bool = False,  # unused; KV sharing only applies to attention
+        reuse_cache: bool = False,
         precision: DTypeLike = jnp.float32,
         *,
         keychain: Keychain,
@@ -601,6 +601,8 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             raise ValueError("Positional embeddings are not supported for Mamba2.")
         if attention_parent_indices is not None:
             raise ValueError("Attention parent indices are not supported for Mamba2.")
+        if reuse_cache:
+            raise ValueError("KV cache sharing is not supported for Mamba2.")
 
         if state is None:
             state = SSMStateLayer.init(
