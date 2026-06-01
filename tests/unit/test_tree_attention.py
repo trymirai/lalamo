@@ -30,7 +30,9 @@ from tests.common import assert_close
 from tests.helpers import make_test_sharding_config
 
 
-def build_decoder(kv_source_layer_indices: tuple[int | None, ...] = (None,)) -> Decoder:
+@pytest.fixture
+def decoder(request: pytest.FixtureRequest) -> Decoder:
+    kv_source_layer_indices: tuple[int | None, ...] = getattr(request, "param", (None,))
     precision = jnp.float32
     model_dim = 8
     hidden_dim = 16
@@ -163,9 +165,8 @@ def test_build_tree_attention_mask_prefix_plus_draft() -> None:
     assert jnp.array_equal(mask, expected)
 
 
-@pytest.mark.parametrize("kv_source_layer_indices", [(None,), (None, 0)], ids=["plain", "shared_kv"])
-def test_tree_attention_matches_sequential_chain(kv_source_layer_indices: tuple[int | None, ...]) -> None:
-    decoder = build_decoder(kv_source_layer_indices)
+@pytest.mark.parametrize("decoder", [(None,), (None, 0)], indirect=True, ids=["plain", "shared_kv"])
+def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
     prefix_token_ids = jnp.array([[1, 2, 3]], dtype=jnp.int32)
     prefix_positions = jnp.array([[0, 1, 2]], dtype=jnp.int32)
     chain_token_ids = jnp.array([4, 5, 6], dtype=jnp.int32)
@@ -217,15 +218,14 @@ def test_tree_attention_matches_sequential_chain(kv_source_layer_indices: tuple[
     )
 
 
-def test_kv_sharing_layer_projects_queries_only() -> None:
-    decoder = build_decoder(kv_source_layer_indices=(None, 0))
+@pytest.mark.parametrize("decoder", [(None, 0)], indirect=True, ids=["shared_kv"])
+def test_kv_sharing_layer_projects_queries_only(decoder: Decoder) -> None:
     assert decoder.transformer.layers[0].mixer.qkv_projection.output_dims == (8, 8, 8)
     assert decoder.transformer.layers[1].mixer.qkv_projection.output_dims == (8,)
     assert decoder.transformer.layers[1].mixer.key_norm is None
 
 
-def test_tree_attention_sibling_isolation() -> None:
-    decoder = build_decoder()
+def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
     prefix_token_ids = jnp.array([[1, 2]], dtype=jnp.int32)
     prefix_positions = jnp.array([[0, 1]], dtype=jnp.int32)
 
