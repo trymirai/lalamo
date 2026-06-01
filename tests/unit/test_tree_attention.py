@@ -23,7 +23,7 @@ from lalamo.modules import (
     UnscaledRoPEConfig,
     UpcastMode,
 )
-from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.kv_cache import build_tree_attention_mask, tree_ancestor_mask
 from lalamo.utils.sharding import ShardingConfig
 from tests.common import assert_close
@@ -31,7 +31,8 @@ from tests.helpers import make_test_sharding_config
 
 
 @pytest.fixture
-def decoder() -> Decoder:
+def decoder(request: pytest.FixtureRequest) -> Decoder:
+    kv_source_layer_indices: tuple[int | None, ...] = getattr(request, "param", (None,))
     precision = jnp.float32
     model_dim = 8
     hidden_dim = 16
@@ -43,22 +44,6 @@ def decoder() -> Decoder:
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         subtract_mean=False,
-    )
-    attention_config = AttentionConfig(
-        qkv_projection_config=LinearConfig(),
-        out_projection_config=LinearConfig(),
-        query_norm_config=None,
-        key_norm_config=None,
-        num_heads=2,
-        num_groups=2,
-        head_dim=4,
-        is_causal=True,
-        scale=None,
-        sliding_window_size=None,
-        logit_soft_cap=None,
-        has_sinks=False,
-        has_qkv_biases=False,
-        has_out_biases=False,
     )
     mlp_config = DenseMLPConfig(
         linear_config=LinearConfig(),
@@ -73,17 +58,41 @@ def decoder() -> Decoder:
         max_sequence_length=context_length,
         head_dim=4,
     )
-    layer_config = TransformerLayerConfig(
-        pre_mixer_norm_config=norm_config,
-        mixer_config=attention_config,
-        post_mixer_norm_config=None,
-        pre_mlp_norm_config=norm_config,
-        mlp_config=mlp_config,
-        post_mlp_norm_config=None,
-        rope_config=rope_config,
-    )
+
+    layer_configs = []
+    for kv_source in kv_source_layer_indices:
+        attention_config = AttentionConfig(
+            qkv_projection_config=LinearConfig(),
+            out_projection_config=LinearConfig(),
+            query_norm_config=None,
+            key_norm_config=None,
+            num_heads=2,
+            num_groups=2,
+            head_dim=4,
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
+            logit_soft_cap=None,
+            has_sinks=False,
+            has_qkv_biases=False,
+            has_out_biases=False,
+            is_kv_sharing=kv_source is not None,
+        )
+        layer_configs.append(
+            TransformerLayerConfig(
+                pre_mixer_norm_config=norm_config,
+                mixer_config=attention_config,
+                post_mixer_norm_config=None,
+                pre_mlp_norm_config=norm_config,
+                mlp_config=mlp_config,
+                post_mlp_norm_config=None,
+                rope_config=rope_config,
+                kv_source_layer_index=kv_source,
+            )
+        )
+
     transformer_config = TransformerConfig(
-        layer_configs=(layer_config,),
+        layer_configs=tuple(layer_configs),
         output_norm_config=norm_config,
         model_dim=model_dim,
         hidden_dim=hidden_dim,
@@ -156,6 +165,7 @@ def test_build_tree_attention_mask_prefix_plus_draft() -> None:
     assert jnp.array_equal(mask, expected)
 
 
+@pytest.mark.parametrize("decoder", [(None,), (None, 0)], indirect=True, ids=["plain", "shared_kv"])
 def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
     prefix_token_ids = jnp.array([[1, 2, 3]], dtype=jnp.int32)
     prefix_positions = jnp.array([[0, 1, 2]], dtype=jnp.int32)
@@ -201,12 +211,22 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
         forward_pass_config=single_token_forward_pass_config,
         keychain=Keychain.init(30, sharding_config=make_test_sharding_config()),
     )
-
     assert_close(
         result=tree_result.logits[0],
         reference=jnp.stack(sequential_logits),
         operation_name="tree attention chain vs sequential logits",
     )
+
+
+@pytest.mark.parametrize("decoder", [(None, 0)], indirect=True, ids=["shared_kv"])
+def test_kv_sharing_layer_projects_queries_only(decoder: Decoder) -> None:
+    owner = decoder.transformer.layers[0].mixer
+    shared = decoder.transformer.layers[1].mixer
+    assert isinstance(owner, Attention)
+    assert isinstance(shared, Attention)
+    assert owner.qkv_projection.output_dims == (8, 8, 8)
+    assert shared.qkv_projection.output_dims == (8,)
+    assert shared.key_norm is None
 
 
 def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:

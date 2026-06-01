@@ -193,6 +193,7 @@ class HFGemma4TextConfig:
                 scale=1.0,
                 sliding_window_size=sliding_window_size,
                 normalize_values=True,
+                is_kv_sharing=not owns_kv_cache,
             )
 
             transformer_layer_config = TransformerLayerConfig(

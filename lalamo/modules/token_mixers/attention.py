@@ -336,6 +336,7 @@ class AttentionConfig(TokenMixerConfig):
     gate_projection_config: LinearConfig | None = None
     # Scale-free RMS normalization on values
     normalize_values: bool = False
+    is_kv_sharing: bool = False
 
     def init(
         self,
@@ -343,11 +344,14 @@ class AttentionConfig(TokenMixerConfig):
         model_dim: int,
     ) -> "Attention":
         q_output_dim = self.num_heads * self.head_dim
-        output_dims = (
-            q_output_dim,
-            self.num_groups * self.head_dim,
-            self.num_groups * self.head_dim,
-        )
+        if self.is_kv_sharing:
+            output_dims = (q_output_dim,)
+        else:
+            output_dims = (
+                q_output_dim,
+                self.num_groups * self.head_dim,
+                self.num_groups * self.head_dim,
+            )
         qkv_projection = self.qkv_projection_config.init(
             initializer,
             input_dim=model_dim,
@@ -379,7 +383,7 @@ class AttentionConfig(TokenMixerConfig):
         else:
             query_norm = None
 
-        if self.key_norm_config is not None:
+        if self.key_norm_config is not None and not self.is_kv_sharing:
             key_norm = self.key_norm_config.init(
                 initializer,
                 input_dim=self.head_dim,
@@ -437,6 +441,30 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return self.sinks is not None
 
     @eqx.filter_jit
+    def _prepare_heads(
+        self,
+        projection: Float[Array, "tokens channels"],
+        num_heads: int,
+        norm: Normalization | None,
+        positional_embeddings: PositionalEmbeddings | None,
+        forward_pass_config: MixerForwardPassConfig,
+    ) -> Float[Array, "tokens heads head_channels"]:
+        heads = rearrange(
+            projection,
+            "tokens (heads head_channels) -> tokens heads head_channels",
+            heads=num_heads,
+            head_channels=self.config.head_dim,
+        )
+        if norm is not None:
+            heads = call_vmapped_twice(
+                norm,
+                heads,
+                forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+            )
+        if positional_embeddings is not None:
+            heads = call_vmapped(positional_embeddings.apply, heads, in_axes=1, out_axes=1)
+        return heads
+
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
@@ -446,16 +474,19 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
+        reuse_cache: bool = False,
         *,
         keychain: Keychain,
     ) -> AttentionResult:
         qkv_keychain, gate_keychain, out_keychain = keychain.split(3)
-        queries, keys, values = call_vmapped(
+        assert reuse_cache == self.config.is_kv_sharing, "reuse_cache must match AttentionConfig.is_kv_sharing"
+        projections = call_vmapped(
             self.qkv_projection,
             inputs,
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=qkv_keychain,
         )
+        queries = projections[0]
         if self.gate_projection is not None:
             (gate,) = call_vmapped(
                 self.gate_projection,
@@ -466,60 +497,42 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         else:
             gate = None
 
-        queries = rearrange(
-            queries,
-            "tokens (heads head_channels) -> tokens heads head_channels",
-            heads=self.config.num_heads,
-            head_channels=self.config.head_dim,
+        queries = self._prepare_heads(
+            queries, self.config.num_heads, self.query_norm, positional_embeddings, forward_pass_config
         )
-        keys = rearrange(
-            keys,
-            "tokens (groups head_channels) -> tokens groups head_channels",
-            groups=self.config.num_groups,
-            head_channels=self.config.head_dim,
-        )
-        values = rearrange(
-            values,
-            "tokens (groups head_channels) -> tokens groups head_channels",
-            groups=self.config.num_groups,
-            head_channels=self.config.head_dim,
-        )
-        if self.query_norm is not None:
-            queries = call_vmapped_twice(
-                self.query_norm,
-                queries,
-                forward_pass_config=forward_pass_config.normalization_forward_pass_config,
-            )
-        if self.key_norm is not None:
-            keys = call_vmapped_twice(
-                self.key_norm,
-                keys,
-                forward_pass_config=forward_pass_config.normalization_forward_pass_config,
-            )
-        if self.config.normalize_values:
-            values = _rms_normalize(
-                values,
-                eps=1e-6,
-                forward_pass_config=forward_pass_config.normalization_forward_pass_config,
-            )
 
-        if positional_embeddings is not None:
-            queries = call_vmapped(positional_embeddings.apply, queries, in_axes=1, out_axes=1)
-            keys = call_vmapped(positional_embeddings.apply, keys, in_axes=1, out_axes=1)
-
-        prefix_length = 0 if state is None else state.current_prefix_length()
-        if state is None:
-            updated_state = DynamicKVCacheLayer.init(
-                self.has_sinks,
-                keys.astype(values.dtype),
-                values,
-                length=length_without_padding,
-            )
+        num_suffix_tokens, _, _ = queries.shape
+        if reuse_cache:
+            if state is None:
+                raise ValueError("a KV-sharing layer must receive the source layer's cache as `state`")
+            prefix_length = state.current_prefix_length() - num_suffix_tokens
+            updated_state = state
         else:
-            updated_state = state.extend(keys, values, added_length=length_without_padding)
+            _, keys, values = projections
+            prefix_length = 0 if state is None else state.current_prefix_length()
+            keys = self._prepare_heads(
+                keys, self.config.num_groups, self.key_norm, positional_embeddings, forward_pass_config
+            )
+            values = rearrange(
+                values,
+                "tokens (groups head_channels) -> tokens groups head_channels",
+                groups=self.config.num_groups,
+                head_channels=self.config.head_dim,
+            )
+            if self.config.normalize_values:
+                values = _rms_normalize(
+                    values,
+                    eps=1e-6,
+                    forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+                )
+            if state is None:
+                updated_state = DynamicKVCacheLayer.init(
+                    self.has_sinks, keys.astype(values.dtype), values, length=length_without_padding
+                )
+            else:
+                updated_state = state.extend(keys, values, added_length=length_without_padding)
 
         queries = queries.astype(updated_state.keys.dtype)
-        num_suffix_tokens, _, _ = queries.shape
         if attention_parent_indices is not None:
             mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices)
         else:
