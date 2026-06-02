@@ -454,7 +454,7 @@ class ShapeDtypeSpec(WeightMatrixSpec):
             weights.shape,
             weights.dtype,
             sharding,
-            weak_type=getattr(weights, "weak_type", False),
+            weak_type=weights.weak_type,
         )
         return ShapeDtypeMatrix(
             spec=self,
@@ -507,7 +507,7 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
             self.dummy_weights.shape,
             self.dummy_weights.dtype,
             self.sharding_config.resolve_sharding((None,) * len(self.dummy_weights.shape)),
-            weak_type=getattr(self.dummy_weights, "weak_type", False),
+            weak_type=self.dummy_weights.weak_type,
         )
 
     def load_exported(

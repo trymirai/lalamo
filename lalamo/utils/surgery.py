@@ -37,7 +37,7 @@ def _path_name(path: tuple[object, ...]) -> str:
 
 def _shape_dtype(value: Array | ShapeDtypeStruct) -> ShapeDtypeStruct:
     # Compatibility checks ignore sharding because values are resharded after dtype/shape validation.
-    return ShapeDtypeStruct(value.shape, value.dtype, weak_type=getattr(value, "weak_type", False))
+    return ShapeDtypeStruct(value.shape, value.dtype, weak_type=value.weak_type)
 
 
 def _check_array_compatible(

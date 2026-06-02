@@ -81,7 +81,7 @@ def _apply_dummy_array_sharding(
 ) -> object:
     if not is_dummy_array(value):
         return value
-    return dummy_array(value.shape, value.dtype, sharding, weak_type=getattr(value, "weak_type", False))
+    return dummy_array(value.shape, value.dtype, sharding, weak_type=value.weak_type)
 
 
 def _concretize_dummy_array_mesh(value: object, input_shardings: tuple[NamedSharding, ...]) -> object:
@@ -98,7 +98,7 @@ def _concretize_dummy_array_mesh(value: object, input_shardings: tuple[NamedShar
         value.shape,
         value.dtype,
         NamedSharding(first_input_sharding.mesh, sharding.spec),
-        weak_type=getattr(value, "weak_type", False),
+        weak_type=value.weak_type,
     )
 
 

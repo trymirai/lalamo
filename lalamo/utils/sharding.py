@@ -114,7 +114,7 @@ def with_sharding(array: Array, sharding: NamedSharding) -> Array:
     if isinstance(array, ShapeDtypeStruct):
         from lalamo.utils.dummy_array import dummy_array  # noqa: PLC0415
 
-        return dummy_array(array.shape, array.dtype, sharding, weak_type=getattr(array, "weak_type", False))
+        return dummy_array(array.shape, array.dtype, sharding, weak_type=array.weak_type)
     return jax.device_put(array, sharding)
 
 

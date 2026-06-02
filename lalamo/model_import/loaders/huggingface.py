@@ -659,7 +659,8 @@ def load_rmsnorm(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Normalization:
-    return load_as_at(lambda m: (m.scales,), module, (weights_dict[path / "weight"],))
+    scales = weights_dict[path / "weight"].astype(module.scales.dtype)
+    return load_as_at(lambda m: (m.scales,), module, (scales,))
 
 
 def _load_optional_rmsnorm(
