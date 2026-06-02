@@ -80,8 +80,8 @@ def _mlx_weights(path: ParameterPath) -> Mapping[str, Array]:
     unpacked_weights = jnp.arange(OUTPUT_DIM * INPUT_DIM, dtype=jnp.int32).reshape(OUTPUT_DIM, INPUT_DIM)
     return {
         path / "weight": _pack_int32(unpacked_weights, bits=8),
-        path / "scales": jnp.ones((OUTPUT_DIM, NUM_GROUPS), dtype=jnp.float32),
-        path / "biases": jnp.zeros((OUTPUT_DIM, NUM_GROUPS), dtype=jnp.float32),
+        path / "scales": jnp.ones((OUTPUT_DIM, NUM_GROUPS), dtype=jnp.bfloat16),
+        path / "biases": jnp.zeros((OUTPUT_DIM, NUM_GROUPS), dtype=jnp.bfloat16),
     }
 
 
@@ -91,7 +91,7 @@ def _awq_weights(path: ParameterPath) -> Mapping[str, Array]:
     return {
         path / "qweight": _pack_int32(unpacked_weights, bits=8),
         path / "qzeros": _pack_int32(unpacked_zero_points, bits=8),
-        path / "scales": jnp.ones((NUM_GROUPS, OUTPUT_DIM), dtype=jnp.float32),
+        path / "scales": jnp.ones((NUM_GROUPS, OUTPUT_DIM), dtype=jnp.bfloat16),
     }
 
 
@@ -99,7 +99,7 @@ def _symmetric_awq_weights(path: ParameterPath) -> Mapping[str, Array]:
     unpacked_weights = jnp.arange(INPUT_DIM * OUTPUT_DIM, dtype=jnp.int32).reshape(INPUT_DIM, OUTPUT_DIM) + 128
     return {
         path / "qweight": _pack_int32(unpacked_weights, bits=8),
-        path / "scales": jnp.ones((NUM_GROUPS, OUTPUT_DIM), dtype=jnp.float32),
+        path / "scales": jnp.ones((NUM_GROUPS, OUTPUT_DIM), dtype=jnp.bfloat16),
     }
 
 

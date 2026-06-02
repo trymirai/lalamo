@@ -8,7 +8,7 @@ from jax import Array, ShapeDtypeStruct
 from jaxtyping import DTypeLike, PyTree
 
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.weight_matrix import FullPrecisionMatrix, ShapeDtypeMatrix, WeightMatrix
+from lalamo.weight_matrix import ShapeDtypeMatrix, WeightMatrix
 
 __all__ = [
     "load_as",
@@ -54,11 +54,7 @@ def _check_weight_matrix_compatible(
         raise ValueError(
             f"Expected WeightMatrix {_path_name(path)} to have shape {template_leaf.shape}, got {value_leaf.shape}",
         )
-    if (
-        isinstance(template_leaf, ShapeDtypeMatrix)
-        and template_leaf.dummy_weights.weak_type
-        and isinstance(value_leaf, FullPrecisionMatrix)
-    ):
+    if isinstance(template_leaf, ShapeDtypeMatrix) and template_leaf.dummy_weights.weak_type:
         return
     if template_leaf.dtype != value_leaf.dtype:
         raise ValueError(
