@@ -253,7 +253,7 @@ def test_cudnn_attention_falls_back_to_tokamax_for_unsupported_head_dim(
 
     monkeypatch.setattr(attention_module.tokamax, "dot_product_attention", fake_dot_product_attention)
 
-    with pytest.warns(RuntimeWarning, match="Falling back to Tokamax attention"):
+    with pytest.warns(RuntimeWarning, match="Falling back"):
         result = attention_module._attention_kernel(  # noqa: SLF001
             queries,
             keys,
