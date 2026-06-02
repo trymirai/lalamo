@@ -41,7 +41,7 @@ from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
-from lalamo.models import GenerationConfig, LanguageModel, TTSModel
+from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, TTSModel
 from lalamo.models.chat_codec import Message, UserMessage
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
@@ -174,6 +174,32 @@ def chat(
     ):
         console.print(token, end="")
     console.print()
+
+
+@app.command(help="Classify text with a converted classifier model.")
+def classify(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the classifier model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    text: Annotated[
+        str,
+        Argument(
+            help="Text to classify.",
+            metavar="TEXT",
+        ),
+    ],
+) -> None:
+    model = ClassifierModel.load(model_path, ShardingConfig.replicated())
+    scores = model.classify_chat(
+        [UserMessage(text)],
+        keychain=Keychain.init(0, sharding_config=model.sharding_config),
+    )
+    for label, score in scores.items():
+        console.print(f"{label}: {score}")
 
 
 @dataclass
