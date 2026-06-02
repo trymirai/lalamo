@@ -55,9 +55,9 @@ class NormalizationConfig(LalamoConfig):
     has_biases: bool = False
 
     def init(self, initializer: Initializer, input_dim: int) -> "Normalization":
-        scales = initializer.ones((input_dim,))
+        scales = initializer.ones((input_dim,), dtype=jnp.float32)
         if self.has_biases:
-            biases = initializer.zeros((input_dim,))
+            biases = initializer.zeros((input_dim,), dtype=jnp.float32)
         else:
             biases = None
         return Normalization(

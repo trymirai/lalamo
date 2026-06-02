@@ -91,8 +91,8 @@ class DeltaNetConfig(TokenMixerConfig):
             has_biases=False,
         )
         norm = self.norm_config.init(initializer, self.value_head_dim)
-        dt_bias = initializer.zeros((self.num_heads,))
-        a_log = initializer.zeros((self.num_heads,))
+        dt_bias = initializer.zeros((self.num_heads,), dtype=jnp.float32)
+        a_log = initializer.zeros((self.num_heads,), dtype=jnp.float32)
         return DeltaNet(
             config=self,
             sharding_config=initializer.sharding_config,
@@ -428,11 +428,11 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=in_keychain,
         )
-        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = (x.astype(jnp.float32) for x in projections)
+        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = projections
         assert proj_query.shape[0] == num_tokens
 
         mixed_qkv = jnp.concatenate([proj_query, proj_key, proj_value], axis=-1)
-        beta = jax.nn.sigmoid(beta_logits)
+        beta = jax.nn.sigmoid(beta_logits.astype(jnp.float32))
 
         if state is None:
             state = SSMStateLayer.init(
@@ -440,26 +440,22 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
                 self.conv_dim,
                 (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
             )
-        ssm_dtype = state.ssm_state.dtype
-
         conv_output, updated_conv_state = self.conv(
             mixed_qkv,
             length_without_padding,
             state.conv_state,
-            return_updated_state=return_updated_state,
+            return_updated_state,
             precision=ConvPrecision.MATCH_WEIGHTS,
         )
+        conv_output = jax.nn.silu(conv_output).astype(mixed_qkv.dtype)
         assert conv_output.shape[0] == num_tokens
-        conv_output = jax.nn.silu(conv_output).astype(ssm_dtype)
-        beta = beta.astype(ssm_dtype)
-        decay_input = decay_input.astype(ssm_dtype)
-        gate = gate.astype(ssm_dtype)
+        decay_input = decay_input.astype(jnp.float32)
 
         query, key, value = jnp.split(conv_output, [self.key_dim, 2 * self.key_dim], axis=-1)
 
-        query = query.reshape(num_tokens, self.config.num_groups, self.config.head_dim)
-        key = key.reshape(num_tokens, self.config.num_groups, self.config.head_dim)
-        value = value.reshape(num_tokens, self.config.num_heads, self.config.value_head_dim)
+        query = query.reshape(num_tokens, self.config.num_groups, self.config.head_dim).astype(jnp.float32)
+        key = key.reshape(num_tokens, self.config.num_groups, self.config.head_dim).astype(jnp.float32)
+        value = value.reshape(num_tokens, self.config.num_heads, self.config.value_head_dim).astype(jnp.float32)
 
         # since we work with exponentials, we (possibly?) uplift dtype to make sure numbers are nice
         decay_factor = -jnp.exp(self.a_log.astype(jnp.float32)) * jax.nn.softplus(
@@ -493,7 +489,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             length_without_padding,
             forward_pass_config,
         )
-        core_attn_out = core_result.outputs
+        core_attn_out = core_result.outputs.astype(mixed_qkv.dtype)
         final_state = core_result.final_state
 
         def norm_gate(x: Float[Array, " channels"], gate: Float[Array, " channels"]) -> Float[Array, " channels"]:

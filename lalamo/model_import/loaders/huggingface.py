@@ -802,6 +802,7 @@ def _load_conv(
     permute_conv: bool,
 ) -> SeparableCausalConv:
     parameter_dtype = jnp.bfloat16 if conv_module.weights.weak_type else conv_module.weights.dtype
+
     weight_path = _first_path(
         weights_dict,
         (path / "conv1d" / "weight", path / "conv_weight", path / "conv.weight"),
@@ -851,8 +852,8 @@ def load_mamba2(
     out_projection = load_linear(module.out_projection, weights_dict, path / "out_proj", implementation=implementation)
     conv = _load_conv(module.conv, weights_dict, path, permute_conv)
 
-    skip_connection_weight = weights_dict.get(path / "D", module.skip_connection_weight)
-    gate_bias = weights_dict.get(path / "z_bias", module.gate_bias)
+    skip_connection_weight = weights_dict.get(path / "D", module.skip_connection_weight).astype(jnp.float32)
+    gate_bias = weights_dict.get(path / "z_bias", module.gate_bias).astype(jnp.float32)
 
     return load_as_at(
         lambda m: (

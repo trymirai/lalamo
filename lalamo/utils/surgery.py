@@ -3,13 +3,12 @@ from typing import overload
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jax.tree_util as jtu
 from jax import Array, ShapeDtypeStruct
 from jaxtyping import DTypeLike, PyTree
 
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.weight_matrix import WeightMatrix
+from lalamo.weight_matrix import FullPrecisionMatrix, ShapeDtypeMatrix, WeightMatrix
 
 __all__ = [
     "load_as",
@@ -35,21 +34,15 @@ def _path_name(path: tuple[object, ...]) -> str:
     return f" at path {jtu.keystr(path)}"
 
 
-def _shape_dtype(value: Array | ShapeDtypeStruct) -> ShapeDtypeStruct:
-    # Compatibility checks ignore sharding because values are resharded after dtype/shape validation.
-    return ShapeDtypeStruct(value.shape, value.dtype, weak_type=value.weak_type)
-
-
 def _check_array_compatible(
     template_leaf: Array | ShapeDtypeStruct,
     value_leaf: Array | ShapeDtypeStruct,
 ) -> DTypeLike:
-    def check_shape_compatibility(template: Array, value: Array) -> Array:
-        # Stack requires exact shape equality while still using JAX's dtype promotion rules.
-        return jnp.stack([value, template])
-
-    with jax.numpy_dtype_promotion("strict"):
-        return jax.eval_shape(check_shape_compatibility, _shape_dtype(template_leaf), _shape_dtype(value_leaf)).dtype
+    if template_leaf.shape != value_leaf.shape:
+        raise ValueError(f"Expected array to have shape {template_leaf.shape}, got {value_leaf.shape}")
+    if template_leaf.weak_type:
+        return value_leaf.dtype
+    return template_leaf.dtype
 
 
 def _check_weight_matrix_compatible(
@@ -61,6 +54,12 @@ def _check_weight_matrix_compatible(
         raise ValueError(
             f"Expected WeightMatrix {_path_name(path)} to have shape {template_leaf.shape}, got {value_leaf.shape}",
         )
+    if (
+        isinstance(template_leaf, ShapeDtypeMatrix)
+        and template_leaf.dummy_weights.weak_type
+        and isinstance(value_leaf, FullPrecisionMatrix)
+    ):
+        return
     if template_leaf.dtype != value_leaf.dtype:
         raise ValueError(
             f"Expected WeightMatrix {_path_name(path)} to have dtype {template_leaf.dtype}, got {value_leaf.dtype}",

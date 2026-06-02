@@ -7,10 +7,10 @@ from einops import einsum
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
+from lalamo.initializer import EmptyInitializer
 from lalamo.module import LogicalAxis
-from lalamo.modules.token_mixers.convolutions import SeparableCausalConv, SeparableCausalConvConfig
+from lalamo.modules.token_mixers.convolutions import ConvPrecision, SeparableCausalConv, SeparableCausalConvConfig
 from lalamo.modules.utils import call_vmapped
-from lalamo.utils.dummy_array import dummy_array
 from tests.common import assert_close
 from tests.helpers import make_sharding, make_test_sharding_config
 
@@ -101,6 +101,35 @@ def test_separable_causal_conv_output_dtype_matches_input_dtype(fake_mesh: Mesh)
     assert result.outputs.dtype == inputs.dtype
     _assert_close(result=result.outputs, reference=_reference(module, inputs))
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
+
+
+def test_separable_causal_conv_match_weights_preserves_state_dtype(fake_mesh: Mesh) -> None:
+    module = _conv()
+    state = _sharded_sequence(
+        jnp.array([[10.0, 11.0, 12.0, 13.0], [14.0, 15.0, 16.0, 17.0]], dtype=jnp.bfloat16),
+    )
+    inputs = _sharded_sequence(jnp.arange(4 * CHANNELS, dtype=jnp.bfloat16).reshape(4, CHANNELS) / 10)
+
+    result = module(
+        inputs,
+        length_without_padding=2,
+        state=state,
+        return_updated_state=True,
+        precision=ConvPrecision.MATCH_WEIGHTS,
+    )
+
+    assert result.state is not None
+    assert result.outputs.dtype == module.weights.dtype
+    assert result.state.dtype == state.dtype
+    history = jnp.concatenate((state, inputs), axis=0).astype(module.weights.dtype)
+    windows = jnp.stack([history[token : token + module.kernel_size] for token in range(inputs.shape[0])])
+    reference = jnp.einsum("tkc,ck->tc", windows, module.weights)
+    assert module.biases is not None
+    reference = reference + module.biases
+    _assert_close(result=result.outputs, reference=reference)
+    _assert_close(result=result.state, reference=jnp.asarray(jax.device_get(inputs))[:2])
+    _assert_named_sharding(result.outputs.sharding, fake_mesh)
+    _assert_named_sharding(result.state.sharding, fake_mesh)
 
 
 def test_separable_causal_conv_updates_state_from_unpadded_suffix(fake_mesh: Mesh) -> None:
@@ -234,15 +263,10 @@ def test_separable_causal_conv_vmapped_gradient_under_explicit_mesh(fake_mesh: M
 
 def test_separable_causal_conv_export_load_roundtrips_with_replicated_parameters(fake_mesh: Mesh) -> None:
     original = _conv()
-    weight_sharding = make_sharding((None, None))
-    bias_sharding = make_sharding((None,))
-    template = SeparableCausalConv(
-        config=original.config,
-        sharding_config=make_test_sharding_config(),
-        weights=dummy_array(original.weights.shape, original.weights.dtype, weight_sharding),
-        biases=dummy_array(original.biases.shape, original.biases.dtype, bias_sharding)
-        if original.biases is not None
-        else None,
+    template = original.config.init(
+        EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config()),
+        input_dim=original.input_dim,
+        kernel_size=original.kernel_size,
     )
     inputs = _sharded_sequence(jnp.arange(5 * CHANNELS, dtype=jnp.float32).reshape(5, CHANNELS) / 10)
 
@@ -250,9 +274,11 @@ def test_separable_causal_conv_export_load_roundtrips_with_replicated_parameters
     result = restored(inputs)
 
     assert restored.weights.sharding == make_sharding((None, None))
+    assert restored.weights.dtype == jnp.float32
     assert restored.biases is not None
     assert template.biases is not None
     assert restored.biases.sharding == make_sharding((None,))
+    assert restored.biases.dtype == jnp.float32
     _assert_named_sharding(restored.weights.sharding, fake_mesh)
     _assert_named_sharding(restored.biases.sharding, fake_mesh)
     _assert_close(result=result.outputs, reference=original(inputs).outputs)

@@ -37,9 +37,9 @@ class SeparableCausalConvConfig(LalamoConfig):
         kernel_size: int,
     ) -> "SeparableCausalConv":
         scale = 1 / math.sqrt(kernel_size * input_dim)
-        weights = initializer.normal(scale, (input_dim, kernel_size))
+        weights = initializer.normal(scale, (input_dim, kernel_size), dtype=jnp.float32)
         if self.has_biases:
-            biases = initializer.zeros((input_dim,))
+            biases = initializer.zeros((input_dim,), dtype=jnp.float32)
         else:
             biases = None
         return SeparableCausalConv(
@@ -84,35 +84,42 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
     ) -> CausalConvResult:
         match precision:
             case ConvPrecision.MATCH_WEIGHTS:
-                dtype = self.weights.dtype
+                output_dtype = self.weights.dtype
             case ConvPrecision.MATCH_INPUTS:
-                dtype = inputs.dtype
+                output_dtype = inputs.dtype
 
-        inputs = inputs.astype(dtype)
+        state_dtype = inputs.dtype if state is None else state.dtype
+        inputs_for_state = inputs.astype(state_dtype)
 
-        num_suffix_tokens, input_dim = inputs.shape
+        num_suffix_tokens, input_dim = inputs_for_state.shape
 
         if state is None:
-            state = jnp.zeros_like(jnp.broadcast_to(inputs[:1], (self.kernel_size - 1, input_dim)))
+            state = jnp.zeros_like(jnp.broadcast_to(inputs_for_state[:1], (self.kernel_size - 1, input_dim)))
+        else:
+            state = state.astype(state_dtype)
 
         required_context = num_suffix_tokens + self.kernel_size - 1
 
-        inputs_with_history = _causal_conv_context(state, inputs)
+        inputs_with_history = _causal_conv_context(state, inputs_for_state)
         conv_outputs = _separable_causal_conv(
-            inputs_with_history[None, -required_context:, :],
-            self.weights.astype(dtype),
+            inputs_with_history[None, -required_context:, :].astype(output_dtype),
+            self.weights.astype(output_dtype),
         )
 
         results = conv_outputs.squeeze(0)
         if self.biases is not None:
-            results = results + self.biases.astype(dtype)
+            results = results + self.biases.astype(output_dtype)
 
         if return_updated_state:
             if length_without_padding is None:
                 length_without_padding = num_suffix_tokens
             length_without_padding = jnp.asarray(length_without_padding, dtype=jnp.int32)
             length_without_padding = jnp.clip(length_without_padding, 0, num_suffix_tokens)
-            updated_state = _updated_causal_conv_state(inputs_with_history, inputs, length_without_padding)
+            updated_state = _updated_causal_conv_state(
+                inputs_with_history,
+                inputs_for_state,
+                length_without_padding,
+            ).astype(state_dtype)
         else:
             updated_state = None
 
