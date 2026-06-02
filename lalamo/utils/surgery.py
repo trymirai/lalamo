@@ -3,9 +3,10 @@ from typing import overload
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jax.tree_util as jtu
 from jax import Array, ShapeDtypeStruct
-from jaxtyping import PyTree
+from jaxtyping import DTypeLike, PyTree
 
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.weight_matrix import WeightMatrix
@@ -34,10 +35,27 @@ def _path_name(path: tuple[object, ...]) -> str:
     return f" at path {jtu.keystr(path)}"
 
 
+def _shape_dtype(value: Array | ShapeDtypeStruct) -> ShapeDtypeStruct:
+    # Compatibility checks ignore sharding because values are resharded after dtype/shape validation.
+    return ShapeDtypeStruct(value.shape, value.dtype, weak_type=getattr(value, "weak_type", False))
+
+
 def _check_array_compatible(
+    template_leaf: Array | ShapeDtypeStruct,
+    value_leaf: Array | ShapeDtypeStruct,
+) -> DTypeLike:
+    def check_shape_compatibility(template: Array, value: Array) -> Array:
+        # Stack requires exact shape equality while still using JAX's dtype promotion rules.
+        return jnp.stack([value, template])
+
+    with jax.numpy_dtype_promotion("strict"):
+        return jax.eval_shape(check_shape_compatibility, _shape_dtype(template_leaf), _shape_dtype(value_leaf)).dtype
+
+
+def _check_weight_matrix_compatible(
     path: tuple[object, ...],
-    template_leaf: Array,
-    value_leaf: Array,
+    template_leaf: WeightMatrix,
+    value_leaf: WeightMatrix,
 ) -> None:
     if template_leaf.shape != value_leaf.shape:
         raise ValueError(
@@ -55,10 +73,10 @@ def _check_leaf_compatible(
     value_leaf: PyTree,
 ) -> None:
     if isinstance(template_leaf, WeightMatrix) and isinstance(value_leaf, WeightMatrix):
-        _check_array_compatible(path, template_leaf, value_leaf)
+        _check_weight_matrix_compatible(path, template_leaf, value_leaf)
         return
     if _is_array_like(template_leaf) and _is_array_like(value_leaf):
-        _check_array_compatible(path, template_leaf, value_leaf)
+        _check_array_compatible(template_leaf, value_leaf)
         return
     if type(template_leaf) is not type(value_leaf):
         raise TypeError(
@@ -72,9 +90,10 @@ def _load_leaf_as_template(template_leaf: PyTree, value_leaf: PyTree) -> PyTree:
     if _is_array_like(template_leaf) and _is_array_like(value_leaf):
         template_sharding = template_leaf.sharding
         assert template_sharding is not None
+        dtype = _check_array_compatible(template_leaf, value_leaf)
         if isinstance(value_leaf, ShapeDtypeStruct):
-            return dummy_array(value_leaf.shape, value_leaf.dtype, template_sharding)
-        return jax.device_put(value_leaf, template_sharding)
+            return dummy_array(value_leaf.shape, dtype, template_sharding)
+        return jax.device_put(value_leaf.astype(dtype), template_sharding)
     return value_leaf
 
 

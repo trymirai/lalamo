@@ -64,6 +64,14 @@ def test_load_as_rejects_mismatches(template: PyTree, value: PyTree, error: type
         load_as(template, value)
 
 
+def test_load_as_uses_strict_dtype_promotion_for_compatibility_check() -> None:
+    template = jnp.zeros((2, 3), dtype=jnp.float32)
+    value = jnp.ones((2, 3), dtype=jnp.float16)
+
+    with jax.numpy_dtype_promotion("standard"), pytest.raises(ValueError, match="dtype"):
+        load_as(template, value)
+
+
 def test_load_as_treats_weight_matrices_as_leaf_nodes() -> None:
     template = {"matrix": _matrix()}
     value = {"matrix": _matrix(fill_value=1)}

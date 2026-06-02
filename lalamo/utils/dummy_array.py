@@ -26,16 +26,17 @@ def dummy_array(
     shape: int | tuple[int, ...],
     dtype: DTypeLike | None,
     sharding: NamedSharding,
+    *,
+    weak_type: bool = False,
 ) -> Array:
     if isinstance(shape, int):
         shape = (shape,)
 
-    weak = False
     if dtype is None:
-        dtype = jnp.bfloat16
-        weak = True
+        dtype = jnp.float32
+        weak_type = True
 
-    return cast("Array", ShapeDtypeStruct(shape=shape, dtype=dtype, weak_type=weak, sharding=sharding))
+    return cast("Array", ShapeDtypeStruct(shape=shape, dtype=dtype, weak_type=weak_type, sharding=sharding))
 
 
 def preserve_first_input_sharding(input_shardings: tuple[NamedSharding, ...]) -> NamedSharding:
@@ -80,7 +81,7 @@ def _apply_dummy_array_sharding(
 ) -> object:
     if not is_dummy_array(value):
         return value
-    return dummy_array(value.shape, value.dtype, sharding)
+    return dummy_array(value.shape, value.dtype, sharding, weak_type=getattr(value, "weak_type", False))
 
 
 def _concretize_dummy_array_mesh(value: object, input_shardings: tuple[NamedSharding, ...]) -> object:
@@ -93,7 +94,12 @@ def _concretize_dummy_array_mesh(value: object, input_shardings: tuple[NamedShar
     if not isinstance(sharding, NamedSharding):
         raise TypeError(f"Expected dummy array output with NamedSharding, got {type(sharding).__name__}.")
     first_input_sharding, *_ = input_shardings
-    return dummy_array(value.shape, value.dtype, NamedSharding(first_input_sharding.mesh, sharding.spec))
+    return dummy_array(
+        value.shape,
+        value.dtype,
+        NamedSharding(first_input_sharding.mesh, sharding.spec),
+        weak_type=getattr(value, "weak_type", False),
+    )
 
 
 def supports_dummy_arrays[**Params, ResultT](

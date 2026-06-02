@@ -252,11 +252,15 @@ class TinyConfig(LalamoConfig):
             config=self,
             sharding_config=make_test_sharding_config(),
             matrix=initializer.weight_matrix(output_dim=4, input_dim=4),
+            fp8_values=initializer.zeros((4,)),
+            fp16_values=initializer.zeros((4,)),
         )
 
 
 class TinyModule(LalamoModule[TinyConfig]):
     matrix: WeightMatrix
+    fp8_values: Array
+    fp16_values: Array
 
 
 @dataclass(frozen=True)
@@ -303,6 +307,8 @@ class TinyForeignConfig(ForeignConfig[TinyModelConfig]):
                     implementation=implementation,
                     sharding_config=make_test_sharding_config(),
                 ),
+                fp8_values=model.module.fp8_values,
+                fp16_values=model.module.fp16_values,
             ),
         )
 
@@ -336,9 +342,8 @@ def test_foreign_config_load_initializes_model_with_requested_dtype_and_implemen
     assert loaded.module.matrix.dtype == jnp.bfloat16
 
 
-def test_model_export_load_preserves_saved_dtype(tmp_path: Path) -> None:
-    tokenizer = Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]"))
-    config = TinyModelConfig(
+def _tiny_model_config() -> TinyModelConfig:
+    return TinyModelConfig(
         token_codec_config=ChatCodecConfig(
             prompt_template="",
             output_parser_regex=None,
@@ -350,7 +355,17 @@ def test_model_export_load_preserves_saved_dtype(tmp_path: Path) -> None:
         ),
         module_config=TinyConfig(),
     )
-    original = TinyModel(
+
+
+def _tiny_model_with_dtypes(
+    tokenizer: Tokenizer,
+    *,
+    matrix_dtype: DTypeLike = jnp.float32,
+    fp8_values_dtype: DTypeLike = jnp.float8_e4m3fn,
+    fp16_values_dtype: DTypeLike = jnp.float16,
+) -> TinyModel:
+    config = _tiny_model_config()
+    return TinyModel(
         config=config,
         sharding_config=make_test_sharding_config(),
         token_codec=config.token_codec_config.init(tokenizer),
@@ -358,11 +373,18 @@ def test_model_export_load_preserves_saved_dtype(tmp_path: Path) -> None:
             config=TinyConfig(),
             sharding_config=make_test_sharding_config(),
             matrix=IntSpec(bits=8, group_size=2).compress(
-                jnp.arange(16, dtype=jnp.float32).reshape(4, 4),
+                jnp.arange(16, dtype=matrix_dtype).reshape(4, 4),
                 sharding_config=make_test_sharding_config(),
             ),
+            fp8_values=jnp.arange(4, dtype=fp8_values_dtype),
+            fp16_values=jnp.arange(4, dtype=fp16_values_dtype),
         ),
     )
+
+
+def test_model_export_load_with_weak_initializer_preserves_saved_float_dtypes(tmp_path: Path) -> None:
+    tokenizer = Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]"))
+    original = _tiny_model_with_dtypes(tokenizer)
 
     original.save(tmp_path)
     restored = TinyModel.load(tmp_path, sharding_config=make_test_sharding_config())
@@ -370,3 +392,36 @@ def test_model_export_load_preserves_saved_dtype(tmp_path: Path) -> None:
     assert isinstance(restored.module.matrix, IntMatrixForInference)
     assert restored.module.matrix.spec == original.module.matrix.spec
     assert restored.module.matrix.dtype == original.module.matrix.dtype
+    assert restored.module.fp8_values.dtype == jnp.float8_e4m3fn
+    assert restored.module.fp16_values.dtype == jnp.float16
+
+
+def test_model_export_load_with_strong_initializer_requires_saved_dtype_match(tmp_path: Path) -> None:
+    tokenizer = Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]"))
+    matching = _tiny_model_with_dtypes(
+        tokenizer,
+        matrix_dtype=jnp.float16,
+        fp8_values_dtype=jnp.float16,
+        fp16_values_dtype=jnp.float16,
+    )
+    matching_path = tmp_path / "matching"
+    matching.save(matching_path)
+
+    restored = TinyModel.load(matching_path, dtype=jnp.float16, sharding_config=make_test_sharding_config())
+
+    assert isinstance(restored.module.matrix, IntMatrixForInference)
+    assert restored.module.matrix.dtype == jnp.float16
+    assert restored.module.fp8_values.dtype == jnp.float16
+    assert restored.module.fp16_values.dtype == jnp.float16
+
+    mismatched = _tiny_model_with_dtypes(
+        tokenizer,
+        matrix_dtype=jnp.float16,
+        fp8_values_dtype=jnp.float8_e4m3fn,
+        fp16_values_dtype=jnp.float16,
+    )
+    mismatched_path = tmp_path / "mismatched"
+    mismatched.save(mismatched_path)
+
+    with pytest.raises(ValueError, match="dtype"):
+        TinyModel.load(mismatched_path, dtype=jnp.float16, sharding_config=make_test_sharding_config())

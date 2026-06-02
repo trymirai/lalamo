@@ -450,7 +450,12 @@ class ShapeDtypeSpec(WeightMatrixSpec):
         *mixture_dims, _output_dim, _input_dim = weights.shape
         logical_axes = Layout.OUTPUT_INPUT.weight_partition(len(mixture_dims), is_sharded=is_sharded)
         sharding = sharding_config.resolve_sharding(logical_axes)
-        dummy_weights = dummy_array(weights.shape, weights.dtype, sharding)
+        dummy_weights = dummy_array(
+            weights.shape,
+            weights.dtype,
+            sharding,
+            weak_type=getattr(weights, "weak_type", False),
+        )
         return ShapeDtypeMatrix(
             spec=self,
             sharding_config=sharding_config,
@@ -502,6 +507,7 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
             self.dummy_weights.shape,
             self.dummy_weights.dtype,
             self.sharding_config.resolve_sharding((None,) * len(self.dummy_weights.shape)),
+            weak_type=getattr(self.dummy_weights, "weak_type", False),
         )
 
     def load_exported(

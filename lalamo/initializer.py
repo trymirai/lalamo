@@ -92,7 +92,7 @@ class EmptyInitializer(Initializer):
     def _dummy_array(
         self,
         shape: tuple[int, ...],
-        dtype: DTypeLike,
+        dtype: DTypeLike | None,
         partition: tuple[LogicalAxis | None, ...] | None,
     ) -> Array:
         sharding = self._partition_to_sharding(shape, partition)

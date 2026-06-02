@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
 
-import jax.numpy as jnp
 from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 
@@ -70,7 +69,7 @@ class Model[
             decoded_metadata = {}
             if metadata is not None:
                 decoded_metadata = {key: json.loads(value) for key, value in metadata.items()}
-            template = config.init(tokenizer, EmptyInitializer(dtype or jnp.bfloat16, sharding_config))
+            template = config.init(tokenizer, EmptyInitializer(dtype, sharding_config))
             result = Exportable.load_exported(
                 template,
                 ExportResults(

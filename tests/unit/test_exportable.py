@@ -134,7 +134,7 @@ def test_load_exported_uses_prefix() -> None:
 def test_load_exported_reports_missing_array() -> None:
     skeleton = Leaf(weight=jnp.zeros((2,), dtype=jnp.float32), bias=None)
 
-    with pytest.raises(KeyError, match="weight"):
+    with pytest.raises(ValueError, match="weight"):
         skeleton.load_exported(ExportResults(arrays={}, metadata={}))
 
 

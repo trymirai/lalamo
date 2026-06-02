@@ -62,7 +62,10 @@ class Exportable:
             if not isinstance(subtree, (jax.Array, ShapeDtypeStruct)):
                 return subtree
 
-            return load_as(subtree, exported_data.arrays[path])
+            try:
+                return load_as(subtree, exported_data.arrays[path])
+            except Exception as e:
+                raise ValueError(f"Failed to load {path}: {e}") from e
 
         return jtu.tree_map_with_path(
             restore,
