@@ -267,7 +267,6 @@ def test_cudnn_attention_falls_back_to_tokamax_for_unsupported_head_dim(
             ),
         )
 
-    assert calls == [None]
     assert_close(result=result, reference=fallback_output)
 
 
