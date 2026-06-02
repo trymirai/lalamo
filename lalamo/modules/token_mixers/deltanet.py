@@ -28,11 +28,7 @@ from .ssm_state import SSMStateLayer
 __all__ = [
     "DeltaNet",
     "DeltaNetConfig",
-    "DeltaNetResult",
 ]
-
-
-DeltaNetResult = TokenMixerResult[SSMStateLayer]
 
 
 def _delta_dims(
@@ -412,7 +408,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         reuse_cache: bool = False,
         *,
         keychain: Keychain,
-    ) -> DeltaNetResult:
+    ) -> TokenMixerResult[SSMStateLayer]:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for DeltaNet.")
         if attention_parent_indices is not None:

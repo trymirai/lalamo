@@ -109,7 +109,6 @@ class HFLlambaConfig(HuggingFaceLMConfig):
             num_groups=self.ssm_cfg.n_qk_heads,
             head_dim=head_dim,
             state_dim=self.ssm_cfg.d_state,
-            expansion_factor=self.ssm_cfg.expand,
             has_in_biases=self.ssm_cfg.bias,
             has_out_biases=self.ssm_cfg.bias,
         )

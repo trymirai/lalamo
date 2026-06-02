@@ -176,14 +176,10 @@ class ClassifierConfig(LalamoConfig):
     embedding_norm_config: NormalizationConfig
     transformer_config: TransformerConfig
     prediction_head_config: PredictionHeadConfig
-    readout_config: LinearConfig
 
     vocab_size: int
     model_dim: int
     hidden_dim: int
-    attention_scale: float | None
-    num_layers: int
-    context_length: int
     num_labels: int
     classifier_pooling: PoolingType
     output_labels: tuple[str, ...] | None = None
