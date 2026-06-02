@@ -135,7 +135,8 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
 
         assert state.dtype == dtype
 
-        full_input = jnp.concatenate([state, token[None, :].astype(dtype)], axis=0)
+        token = token.astype(dtype)
+        full_input = jnp.concatenate([state, token[None, :]], axis=0)
         output = einsum(full_input, self.weights.astype(dtype), "kernel channels, channels kernel -> channels")
         if self.biases is not None:
             output = output + self.biases.astype(dtype)

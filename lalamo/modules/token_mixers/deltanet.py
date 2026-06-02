@@ -440,6 +440,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
                 self.conv_dim,
                 (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
             )
+        ssm_dtype = state.ssm_state.dtype
 
         conv_output, updated_conv_state = self.conv(
             mixed_qkv,
@@ -449,7 +450,10 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             precision=ConvPrecision.MATCH_WEIGHTS,
         )
         assert conv_output.shape[0] == num_tokens
-        conv_output = jax.nn.silu(conv_output)
+        conv_output = jax.nn.silu(conv_output).astype(ssm_dtype)
+        beta = beta.astype(ssm_dtype)
+        decay_input = decay_input.astype(ssm_dtype)
+        gate = gate.astype(ssm_dtype)
 
         query, key, value = jnp.split(conv_output, [self.key_dim, 2 * self.key_dim], axis=-1)
 
