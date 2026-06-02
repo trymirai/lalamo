@@ -59,11 +59,11 @@ def _check_weight_matrix_compatible(
 ) -> None:
     if template_leaf.shape != value_leaf.shape:
         raise ValueError(
-            f"Expected parameter{_path_name(path)} to have shape {template_leaf.shape}, got {value_leaf.shape}",
+            f"Expected WeightMatrix {_path_name(path)} to have shape {template_leaf.shape}, got {value_leaf.shape}",
         )
     if template_leaf.dtype != value_leaf.dtype:
         raise ValueError(
-            f"Expected parameter{_path_name(path)} to have dtype {template_leaf.dtype}, got {value_leaf.dtype}",
+            f"Expected WeightMatrix {_path_name(path)} to have dtype {template_leaf.dtype}, got {value_leaf.dtype}",
         )
 
 
