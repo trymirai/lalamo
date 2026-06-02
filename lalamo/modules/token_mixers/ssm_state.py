@@ -31,6 +31,6 @@ class SSMStateLayer(StateLayerBase):
         conv_dim: int,
         ssm_state_shape: tuple[int, ...],
     ) -> Self:
-        conv_state = jnp.zeros((kernel_size - 1, conv_dim), dtype=jnp.bfloat16)
+        conv_state = jnp.zeros((kernel_size - 1, conv_dim), dtype=jnp.float32)
         ssm_state = jnp.zeros(ssm_state_shape, dtype=jnp.float32)
         return cls(conv_state=conv_state, ssm_state=ssm_state)
