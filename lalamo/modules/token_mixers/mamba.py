@@ -111,7 +111,6 @@ class Mamba2Config(TokenMixerConfig):
     num_groups: int
     head_dim: int
     state_dim: int
-    expansion_factor: int
 
     has_in_biases: bool
     has_out_biases: bool

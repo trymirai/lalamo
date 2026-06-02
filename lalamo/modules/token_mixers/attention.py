@@ -431,10 +431,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return self.qkv_projection.input_dim
 
     @property
-    def group_size(self) -> int:
-        return self.config.num_heads // self.config.num_groups
-
-    @property
     def use_sliding_window(self) -> bool:
         return self.config.sliding_window_size is not None
 

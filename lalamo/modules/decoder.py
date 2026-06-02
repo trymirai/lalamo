@@ -152,7 +152,6 @@ class DecoderConfig(LalamoConfig):
     transformer_config: TransformerConfig
 
     vocab_size: int
-    pard_token: int | None = None
     ple_model_config: PLEModelConfig | None = None
 
     def init(self, initializer: Initializer) -> "Decoder":
