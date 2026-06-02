@@ -801,6 +801,7 @@ def _load_conv(
     path: ParameterPath,
     permute_conv: bool,
 ) -> SeparableCausalConv:
+    parameter_dtype = jnp.bfloat16 if conv_module.weights.weak_type else conv_module.weights.dtype
     weight_path = _first_path(
         weights_dict,
         (path / "conv1d" / "weight", path / "conv_weight", path / "conv.weight"),
@@ -817,6 +818,7 @@ def _load_conv(
             conv_weight = raw.squeeze(axis_to_squeeze)
         else:
             conv_weight = raw
+        conv_weight = conv_weight.astype(parameter_dtype)
     else:
         conv_weight = conv_module.weights
 
@@ -826,7 +828,7 @@ def _load_conv(
     )
 
     if bias_path is not None and conv_module.biases is not None:
-        conv_bias = weights_dict[bias_path]
+        conv_bias = weights_dict[bias_path].astype(parameter_dtype)
     else:
         conv_bias = conv_module.biases
 

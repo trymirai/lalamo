@@ -5,8 +5,7 @@ from pathlib import Path
 from typing import Any, Literal, Self
 
 import equinox as eqx
-from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike
+from jaxtyping import Array
 
 from lalamo.model import Model
 from lalamo.model_import.loaders.huggingface import (
@@ -232,10 +231,6 @@ class HFGemma4Config(HuggingFaceLMConfig):
     dtype: Literal["bfloat16", "float16", "float32"]
     model_type: Literal["gemma4"]
     eos_token_id: list[int]
-
-    @property
-    def default_dtype(self) -> DTypeLike:
-        return jnp.dtype(self.dtype)
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:

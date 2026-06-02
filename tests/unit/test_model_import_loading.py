@@ -283,10 +283,6 @@ class TinyModel(Model[ChatCodecConfig, TinyModelConfig, ChatCodec]):
 
 @dataclass(frozen=True)
 class TinyForeignConfig(ForeignConfig[TinyModelConfig]):
-    @property
-    def default_dtype(self) -> DTypeLike:
-        return jnp.float32
-
     def _load_weights(
         self,
         model: Model,

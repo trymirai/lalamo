@@ -4,8 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
 
-from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike
+from jaxtyping import Array
 
 from lalamo.model import Model
 from lalamo.model_import.loaders.fishaudio_loaders import (
@@ -411,11 +410,3 @@ class FishAudioConfig(ForeignTTSConfig):
         with open(json_path) as f:
             config = json.load(f)
         return cls(**config)
-
-    @property
-    def default_dtype(self) -> DTypeLike:
-        # NOTE: in reality FishAudio text-decoder is bf16 while audio-decoder if fp32.
-        # Currently lalamo weight manipulation pipeline does not support such
-        # mixed-model-mixed-weight configuration so we upcast everything to fp32
-        # as temporary solution
-        return jnp.dtype(getattr(self, "torch_dtype", "float32"))
