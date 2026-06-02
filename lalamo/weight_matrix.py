@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import ClassVar, Generic, Literal, Self, TypeVar, cast, overload
 
 import equinox as eqx
+import jax.tree_util as jtu
 from cattrs import GenConverter
 from jax import ShapeDtypeStruct
 from jax.lax import DotAlgorithmPreset, dot_general
@@ -526,6 +527,12 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
             sharding_config=self.sharding_config,
             is_sharded=self.is_sharded,
         )
+        if self.dummy_weights.weak_type:
+
+            def keep_weak(leaf: ShapeDtypeStruct) -> Array:
+                return dummy_array(leaf.shape, leaf.dtype, sharding_of(leaf), weak_type=True)
+
+            dummy_layer = cast("WeightMatrix", jtu.tree_map(keep_weak, dummy_layer))
         result = dummy_layer.load_exported(exported_data, prefix=prefix)
         return cast("Self", result)
 
