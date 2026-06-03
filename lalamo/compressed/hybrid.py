@@ -60,6 +60,7 @@ def _process_preconditioner_block(
         return block
     block = jax.device_put(block, sharding_config.resolve_sharding((None,) * block.ndim))
     signs = jax.device_put(signs, sharding_config.resolve_sharding((None,)))
+    signs = signs.astype(block.dtype)
     signed_block = block * signs[..., None] * signs[None, ...]
     return _hadamard_transform_output_axis(
         hadamard_transform(signed_block, block_size),
@@ -142,9 +143,11 @@ class IncoherenceSigns(eqx.Module):
             sharding_config.resolve_sharding((None,) * weights.ndim),
         )
         if self.input_signs is not None:
-            weights = hadamard_transform(weights * self.input_signs, block_size)
+            input_signs = self.input_signs.astype(weights.dtype)
+            weights = hadamard_transform(weights * input_signs, block_size)
         if self.output_signs is not None:
-            weights = _hadamard_transform_output_axis(weights * self.output_signs[..., None], block_size)
+            output_signs = self.output_signs.astype(weights.dtype)
+            weights = _hadamard_transform_output_axis(weights * output_signs[..., None], block_size)
         return jax.device_put(weights, input_sharding)
 
     def unprocess_weights(
@@ -173,7 +176,8 @@ class IncoherenceSigns(eqx.Module):
             sharding_config.resolve_sharding((None,) * weights.ndim),
         )
         restored = hadamard_transform(weights, block_size)
-        return jax.device_put(restored * self.input_signs, input_sharding)
+        input_signs = self.input_signs.astype(restored.dtype)
+        return jax.device_put(restored * input_signs, input_sharding)
 
     def unprocess_weight_output_axis(
         self,
@@ -189,7 +193,8 @@ class IncoherenceSigns(eqx.Module):
             sharding_config.resolve_sharding((None,) * weights.ndim),
         )
         restored = _hadamard_transform_output_axis(weights, block_size)
-        return jax.device_put(restored * self.output_signs[..., None], input_sharding)
+        output_signs = self.output_signs.astype(restored.dtype)
+        return jax.device_put(restored * output_signs[..., None], input_sharding)
 
     def input_transform(
         self,
@@ -203,6 +208,7 @@ class IncoherenceSigns(eqx.Module):
             signs = self.output_signs
         if signs is None:
             return vector
+        signs = signs.astype(vector.dtype)
         return hadamard_transform(vector * signs, block_size)
 
     def output_transform(
@@ -217,7 +223,8 @@ class IncoherenceSigns(eqx.Module):
             signs = self.input_signs
         if signs is None:
             return vector
-        return hadamard_transform(vector, block_size) * signs
+        transformed = hadamard_transform(vector, block_size)
+        return transformed * signs.astype(transformed.dtype)
 
 
 @dataclass(frozen=True)
