@@ -19,15 +19,13 @@ import math
 from dataclasses import dataclass
 
 import equinox as eqx
-import jax
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import LalamoConfig, LalamoModule, field
+from lalamo.module import LalamoConfig, LalamoModule
 from lalamo.utils.registry_abc import RegistryABC
-from lalamo.utils.sharding import lookup_sharded_indices
 
 __all__ = [
     "LinearScalingRoPEConfig",
@@ -92,40 +90,24 @@ class RoPEConfig(LalamoConfig, RegistryABC):
     ) -> Float[Array, " rotary_pairs"]:
         return inverse_frequencies
 
-    def init(self, initializer: Initializer) -> "RoPE":
-        timesteps = jnp.arange(self.max_sequence_length, dtype=jnp.float32)
+    def compute_positional_embeddings(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
         channel_indices = jnp.arange(0, self.head_dim, 2, dtype=jnp.int32)
         inverse_frequencies = 1.0 / (self.base ** (channel_indices.astype(jnp.float32) / self.head_dim))
         inverse_frequencies = self._scale_inverse_frequencies(inverse_frequencies).astype(jnp.float32)
-        outer_inverse_frequencies = jnp.outer(timesteps, inverse_frequencies)
+        outer_inverse_frequencies = jnp.outer(timesteps.astype(jnp.float32), inverse_frequencies)
         embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
-        table_sharding = initializer.sharding_config.resolve_sharding((None, None))
-        cosines = jax.device_put(
-            (jnp.cos(embeddings) * self._attention_scaling_factor).astype(jnp.float32),
-            table_sharding,
-        )
-        sines = jax.device_put(
-            (jnp.sin(embeddings) * self._attention_scaling_factor).astype(jnp.float32),
-            table_sharding,
-        )
-        return RoPE(
-            config=self,
-            sharding_config=initializer.sharding_config,
-            sines=sines,
-            cosines=cosines,
-        )
+        cosines = (jnp.cos(embeddings) * self._attention_scaling_factor).astype(jnp.float32)
+        sines = (jnp.sin(embeddings) * self._attention_scaling_factor).astype(jnp.float32)
+        return PositionalEmbeddings(cosines=cosines, sines=sines)
+
+    def init(self, initializer: Initializer) -> "RoPE":
+        return RoPE(config=self, sharding_config=initializer.sharding_config)
 
 
 class RoPE(LalamoModule[RoPEConfig]):
-    sines: Float[Array, "tokens head_channels"] = field(trainable=False)
-    cosines: Float[Array, "tokens head_channels"] = field(trainable=False)
-
     @eqx.filter_jit
     def __call__(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
-        return PositionalEmbeddings(
-            cosines=lookup_sharded_indices(self.cosines, timesteps),
-            sines=lookup_sharded_indices(self.sines, timesteps),
-        )
+        return self.config.compute_positional_embeddings(timesteps)
 
 
 class UnscaledRoPEConfig(RoPEConfig):

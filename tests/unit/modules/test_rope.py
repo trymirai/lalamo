@@ -5,7 +5,7 @@ import pytest
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
-from lalamo.initializer import RandomInitializer
+from lalamo.initializer import EmptyInitializer, RandomInitializer
 from lalamo.module import LogicalAxis
 from lalamo.modules.rope import (
     LinearScalingRoPEConfig,
@@ -17,7 +17,6 @@ from lalamo.modules.rope import (
     YARNRoPEConfig,
 )
 from lalamo.modules.utils import call_vmapped
-from lalamo.utils.dummy_array import dummy_array
 from tests.common import assert_close
 from tests.helpers import make_sharding, make_test_sharding_config
 
@@ -73,6 +72,10 @@ def _select_reference(table: Array, timesteps: Array) -> Array:
     return table[jnp.asarray(jax.device_get(timesteps))]
 
 
+def _full_table(rope: RoPE) -> PositionalEmbeddings:
+    return rope.config.compute_positional_embeddings(jnp.arange(NUM_TIMESTEPS, dtype=jnp.int32))
+
+
 @pytest.mark.parametrize(
     "config",
     [
@@ -117,14 +120,14 @@ def _select_reference(table: Array, timesteps: Array) -> Array:
     ],
 )
 def test_rope_config_init_produces_finite_tables(config: RoPEConfig) -> None:
-    rope = _rope(config)
+    embeddings = _full_table(_rope(config))
 
-    assert rope.sines.shape == (NUM_TIMESTEPS, HEAD_DIM)
-    assert rope.cosines.shape == (NUM_TIMESTEPS, HEAD_DIM)
-    assert rope.sines.dtype == jnp.float32
-    assert rope.cosines.dtype == jnp.float32
-    assert jnp.all(jnp.isfinite(rope.sines))
-    assert jnp.all(jnp.isfinite(rope.cosines))
+    assert embeddings.sines.shape == (NUM_TIMESTEPS, HEAD_DIM)
+    assert embeddings.cosines.shape == (NUM_TIMESTEPS, HEAD_DIM)
+    assert embeddings.sines.dtype == jnp.float32
+    assert embeddings.cosines.dtype == jnp.float32
+    assert jnp.all(jnp.isfinite(embeddings.sines))
+    assert jnp.all(jnp.isfinite(embeddings.cosines))
 
 
 def test_rope_selects_timesteps_under_jit() -> None:
@@ -133,8 +136,9 @@ def test_rope_selects_timesteps_under_jit() -> None:
 
     embeddings = eqx.filter_jit(lambda rope, timesteps: rope(timesteps))(rope, timesteps)
 
-    _assert_close(result=embeddings.sines, reference=_select_reference(rope.sines, timesteps))
-    _assert_close(result=embeddings.cosines, reference=_select_reference(rope.cosines, timesteps))
+    table = _full_table(rope)
+    _assert_close(result=embeddings.sines, reference=_select_reference(table.sines, timesteps))
+    _assert_close(result=embeddings.cosines, reference=_select_reference(table.cosines, timesteps))
 
 
 def test_rope_call_vmapped_over_batches_preserves_batch_sharding(fake_mesh: Mesh) -> None:
@@ -154,8 +158,9 @@ def test_rope_call_vmapped_over_batches_preserves_batch_sharding(fake_mesh: Mesh
         added_sharding_axis=make_test_sharding_config().resolve_axis(LogicalAxis.BATCH),
     )
 
-    _assert_close(result=embeddings.sines, reference=_select_reference(rope.sines, timesteps))
-    _assert_close(result=embeddings.cosines, reference=_select_reference(rope.cosines, timesteps))
+    table = _full_table(rope)
+    _assert_close(result=embeddings.sines, reference=_select_reference(table.sines, timesteps))
+    _assert_close(result=embeddings.cosines, reference=_select_reference(table.cosines, timesteps))
     _assert_named_sharding(embeddings.sines.sharding, fake_mesh)
     _assert_named_sharding(embeddings.cosines.sharding, fake_mesh)
     assert embeddings.sines.sharding == make_sharding((LogicalAxis.BATCH, None, None))
@@ -182,23 +187,16 @@ def test_positional_embeddings_apply_rejects_too_small_head_dim() -> None:
         embeddings.apply(jnp.zeros((2, HEAD_DIM - 1), dtype=jnp.float32))
 
 
-def test_rope_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
+def test_rope_exports_no_arrays_and_regenerates_from_config() -> None:
     original = _rope()
-    table_sharding = make_sharding((None, None))
-    template = RoPE(
-        config=original.config,
-        sharding_config=make_test_sharding_config(),
-        sines=dummy_array(original.sines.shape, original.sines.dtype, table_sharding),
-        cosines=dummy_array(original.cosines.shape, original.cosines.dtype, table_sharding),
-    )
     timesteps = jnp.array([0, 1, 3, 5], dtype=jnp.int32)
 
+    assert original.export().arrays == {}
+
+    template = original.config.init(EmptyInitializer(jnp.float32, make_test_sharding_config()))
     restored = template.load_exported(original.export())
     embeddings = restored(timesteps)
 
-    assert restored.sines.sharding == template.sines.sharding
-    assert restored.cosines.sharding == template.cosines.sharding
-    _assert_named_sharding(restored.sines.sharding, fake_mesh)
-    _assert_named_sharding(restored.cosines.sharding, fake_mesh)
-    _assert_close(result=embeddings.sines, reference=_select_reference(original.sines, timesteps))
-    _assert_close(result=embeddings.cosines, reference=_select_reference(original.cosines, timesteps))
+    table = _full_table(original)
+    _assert_close(result=embeddings.sines, reference=_select_reference(table.sines, timesteps))
+    _assert_close(result=embeddings.cosines, reference=_select_reference(table.cosines, timesteps))
