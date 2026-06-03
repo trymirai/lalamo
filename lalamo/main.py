@@ -17,12 +17,16 @@ from click import Parameter as ClickParameter
 from click import ParamType
 from rich import box
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.progress import (
+    MofNCompleteColumn,
     Progress,
     SpinnerColumn,
     TaskID,
     TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
 )
 from rich.prompt import Confirm
 from rich.table import Table
@@ -30,11 +34,14 @@ from typer import Argument, Exit, Option, Typer
 
 from lalamo.audio.utils import play_mono_audio
 from lalamo.commands import (
+    CollectTracesCallbacks,
+    CollectTracesEvent,
     ConversionCallbacks,
     DType,
     PullCallbacks,
     _suggest_similar_models,
 )
+from lalamo.commands import collect_traces as _collect_traces
 from lalamo.commands import convert as _convert
 from lalamo.commands import pull as _pull
 from lalamo.model_import import ModelSpec
@@ -316,6 +323,109 @@ class CliPullCallbacks(PullCallbacks):
 
         self.stack.close()
         console.print(f"🎉 Model successfully pulled to [cyan]{self.output_dir}[/cyan]!")
+
+
+@dataclass
+class CliCollectTracesCallbacks(CollectTracesCallbacks):
+    stack: ExitStack = field(default_factory=ExitStack)
+    live: Live | None = None
+    progress: Progress = field(init=False)
+    loading_task: TaskID | None = None
+    inference_task: TaskID | None = None
+
+    def loading_model(self) -> None:
+        self.live = self.stack.enter_context(Live(refresh_per_second=10))
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True,
+        )
+        self.live.update(self.progress, refresh=True)
+        self.loading_task = self.progress.add_task("🧠 [cyan]Loading model...[/cyan]")
+
+    def finished_loading_model(self) -> None:
+        assert self.loading_task is not None
+        self.progress.remove_task(self.loading_task)
+
+    def loading_dataset(self) -> None:
+        self.loading_task = self.progress.add_task("🗂️ [cyan]Loading dataset...[/cyan]")
+
+    def finished_loading_dataset(self) -> None:
+        assert self.loading_task is not None
+        assert self.live is not None
+        self.progress.remove_task(self.loading_task)
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        )
+        self.live.update(self.progress, refresh=True)
+        self.inference_task = self.progress.add_task(
+            "🔮 [cyan]Running inference...[/cyan]",
+            total=None,
+        )
+
+    def inference_progress(self, event: CollectTracesEvent) -> None:
+        assert self.inference_task is not None
+        self.progress.update(
+            self.inference_task,
+            completed=event.sequences_processed,
+            total=event.total_sequences,
+        )
+
+    def finished_inference(self) -> None:
+        assert self.inference_task is not None
+        self.progress.update(self.inference_task, description="✅ Completed")
+        self.stack.close()
+
+
+@app.command(help="Run model inference and collect traces for speculator training")
+def collect_traces(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    dataset_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the dataset with prompts",
+            metavar="DATASET_PATH",
+        ),
+    ],
+    output_path: Annotated[
+        Path,
+        Option(
+            help="File to save traces to",
+            metavar="OUTPUT_PATH",
+        ),
+    ],
+    max_input_length: Annotated[
+        int,
+        Option(help="Filter prompts that have more than this number of tokens in context"),
+    ] = 2048,
+    max_output_length: Annotated[
+        int,
+        Option(help="Maximum number of tokens to generate in one completion"),
+    ] = 4096,
+    batch_size: Annotated[
+        int,
+        Option(help="Number of sequences in one batch"),
+    ] = 1,
+) -> None:
+    _collect_traces(
+        model_path,
+        dataset_path,
+        output_path,
+        max_input_length,
+        max_output_length,
+        batch_size,
+        CliCollectTracesCallbacks,
+    )
 
 
 @app.command(help="Synthesize speech from given text utterance.")

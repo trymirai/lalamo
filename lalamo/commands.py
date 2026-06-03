@@ -1,15 +1,22 @@
 import shutil
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
+from itertools import batched, chain
 from pathlib import Path
+from typing import NamedTuple
 
+import jax
 import jax.numpy as jnp
 import requests
 import thefuzz.fuzz
 import thefuzz.process
 
+from lalamo.data import load_hf_parquet, shuffle_dataset
+from lalamo.data.huggingface_message import HFMessage
+from lalamo.data.lalamo_completions import LalamoCompletion, save_completions
+from lalamo.data.utils import get_prompt_ending_in_user_message, pad_sequences
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import (
     DownloadingFileEvent,
@@ -21,6 +28,9 @@ from lalamo.model_import.common import (
     import_model,
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
+from lalamo.models import LanguageModel
+from lalamo.models.chat_codec import Message
+from lalamo.module import Keychain
 from lalamo.utils.sharding import ShardingConfig
 
 
@@ -207,3 +217,134 @@ def convert(
     imported_model.model.save(output_dir)
 
     callbacks.finished_saving_model()
+
+
+class CollectTracesEvent(NamedTuple):
+    sequences_processed: int
+    total_sequences: int | None
+    tokens_generated: int
+
+
+def inference_collect_traces(
+    model: LanguageModel,
+    conversations: Iterable[Iterable[Message]],
+    batch_size: int = 1,
+    max_input_length: int = 2048,
+    max_output_length: int = 4096,
+    progress_callback: Callable[[CollectTracesEvent], None] | None = None,
+) -> Iterable[LalamoCompletion]:
+    prefixes = (
+        prefix
+        for conversation in conversations
+        if (prefix := get_prompt_ending_in_user_message(conversation)) is not None
+    )
+    tokenized_prefixes = map(model.token_codec.encode_request, prefixes)
+    filtered_prefixes = filter(lambda conv: len(conv) <= max_input_length, tokenized_prefixes)
+    tokens_generated = 0
+    sequences_processed = 0
+    key = jax.random.key(0)
+
+    for prefix_batch in batched(filtered_prefixes, batch_size):
+        next_key, batch_key = jax.random.split(key)
+        key = next_key
+        padded_prefixes, _ = pad_sequences(prefix_batch, 0, max_input_length)
+        prefix_lengths = jnp.asarray([len(prefix) for prefix in prefix_batch], dtype=jnp.int32)
+        generated_batch = model.generate_tokens(
+            padded_prefixes,
+            prompt_lengths_without_padding=prefix_lengths,
+            max_output_length=max_output_length,
+            keychain=Keychain(vmapped_keys=batch_key, batch_key=batch_key, sharding_config=model.sharding_config),
+        )
+        for row_index, prefix_token_ids in enumerate(prefix_batch):
+            token_ids = model.trim_at_eos(generated_batch.token_ids[row_index].tolist())
+            seqlen = len(token_ids)
+
+            tokens_generated += seqlen
+            sequences_processed += 1
+            token_ids = token_ids[:seqlen]
+
+            yield LalamoCompletion(
+                prefix_token_ids=prefix_token_ids,
+                completion_token_ids=token_ids,
+            )
+
+            if progress_callback is not None:
+                progress_callback(CollectTracesEvent(sequences_processed, None, tokens_generated))
+
+
+@dataclass
+class CollectTracesCallbacks:
+    model_path: Path
+    dataset_path: Path
+    output_path: Path
+    max_input_length: int
+    max_output_length: int
+    batch_size: int
+
+    def loading_model(self) -> None:
+        pass
+
+    def finished_loading_model(self) -> None:
+        pass
+
+    def loading_dataset(self) -> None:
+        pass
+
+    def finished_loading_dataset(self) -> None:
+        pass
+
+    def inference_progress(self, event: CollectTracesEvent) -> None:
+        pass
+
+    def finished_inference(self) -> None:
+        pass
+
+
+def collect_traces(
+    model_path: Path,
+    dataset_path: Path,
+    output_path: Path,
+    max_input_length: int = 2048,
+    max_output_length: int = 4096,
+    batch_size: int = 1,
+    callbacks_type: Callable[..., CollectTracesCallbacks] = CollectTracesCallbacks,
+) -> None:
+    callbacks = callbacks_type(
+        model_path,
+        dataset_path,
+        output_path,
+        max_input_length,
+        max_output_length,
+        batch_size,
+    )
+
+    callbacks.loading_model()
+    model = LanguageModel.load(model_path, ShardingConfig.replicated())
+    callbacks.finished_loading_model()
+
+    callbacks.loading_dataset()
+    dataframe = shuffle_dataset(load_hf_parquet(dataset_path))
+    conversations = dataframe.get_column("conversation")
+    dataset = iter(
+        [HFMessage.from_dict(message).as_message() for message in conversation] for conversation in conversations
+    )
+    dataset = chain([next(dataset)], dataset)
+    callbacks.finished_loading_dataset()
+
+    def progress_callback(event: CollectTracesEvent) -> None:
+        callbacks.inference_progress(event)
+
+    traces = inference_collect_traces(
+        model,
+        dataset,
+        batch_size,
+        max_input_length,
+        max_output_length,
+        progress_callback,
+    )
+
+    if output_path.exists():
+        raise RuntimeError(f"{output_path} must not exist.")
+    save_completions(output_path, traces)
+
+    callbacks.finished_inference()
