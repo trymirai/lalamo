@@ -250,7 +250,7 @@ def _load_awq_array(
         layout.weight_partition(unpacked_weights.ndim - 2, is_sharded=template.is_sharded),
     )
     weight_values = jax.device_put(unpacked_weights.T.astype(template.dtype), weight_sharding)
-    scale_values = jax.device_put(scales.T, weight_sharding)
+    scale_values = jax.device_put(scales.T.astype(template.dtype), weight_sharding)
     if unpacked_zeros is None:
         zero_point_values = None
     else:
@@ -327,8 +327,8 @@ def _load_packed_mlx_matrix(
         layout.weight_partition(unpacked_weights.ndim - 2, is_sharded=template.is_sharded),
     )
     weight_values = jax.device_put(unpacked_weights.astype(template.dtype), weight_sharding)
-    scale_values = jax.device_put(scales, weight_sharding)
-    bias_values = jax.device_put(deq_biases, weight_sharding)
+    scale_values = jax.device_put(scales.astype(template.dtype), weight_sharding)
+    bias_values = jax.device_put(deq_biases.astype(template.dtype), weight_sharding)
 
     spec = MLXSpec(bits=bits, group_size=group_size, layout=layout)
     return spec.from_packed_parameters(
