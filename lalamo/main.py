@@ -331,6 +331,7 @@ class CliCollectTracesCallbacks(CollectTracesCallbacks):
     live: Live | None = None
     progress: Progress = field(init=False)
     loading_task: TaskID | None = None
+    counting_task: TaskID | None = None
     inference_task: TaskID | None = None
 
     def loading_model(self) -> None:
@@ -354,6 +355,16 @@ class CliCollectTracesCallbacks(CollectTracesCallbacks):
         assert self.loading_task is not None
         assert self.live is not None
         self.progress.remove_task(self.loading_task)
+
+    def counting_prompts(self) -> None:
+        self.counting_task = self.progress.add_task("🔢 [cyan]Counting prompts...[/cyan]")
+
+    def finished_counting_prompts(self, _total_sequences: int) -> None:
+        assert self.counting_task is not None
+        self.progress.remove_task(self.counting_task)
+
+    def starting_inference(self, total_sequences: int) -> None:
+        assert self.live is not None
         self.progress = Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -364,7 +375,7 @@ class CliCollectTracesCallbacks(CollectTracesCallbacks):
         self.live.update(self.progress, refresh=True)
         self.inference_task = self.progress.add_task(
             "🔮 [cyan]Running inference...[/cyan]",
-            total=None,
+            total=total_sequences,
         )
 
     def inference_progress(self, event: CollectTracesEvent) -> None:

@@ -1,9 +1,9 @@
 import shutil
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
-from itertools import batched, chain
+from itertools import batched
 from pathlib import Path
 from typing import NamedTuple
 
@@ -225,26 +225,46 @@ class CollectTracesEvent(NamedTuple):
     tokens_generated: int
 
 
-def inference_collect_traces(
+def iter_hf_conversations(conversations: Iterable[Iterable[dict[str, str]]]) -> Iterator[list[Message]]:
+    return ([HFMessage.from_dict(message).as_message() for message in conversation] for conversation in conversations)
+
+
+def iter_collectable_prompt_token_ids(
     model: LanguageModel,
     conversations: Iterable[Iterable[Message]],
-    batch_size: int = 1,
-    max_input_length: int = 2048,
-    max_output_length: int = 4096,
-    progress_callback: Callable[[CollectTracesEvent], None] | None = None,
-) -> Iterable[LalamoCompletion]:
+    max_input_length: int,
+) -> Iterator[list[int]]:
     prefixes = (
         prefix
         for conversation in conversations
         if (prefix := get_prompt_ending_in_user_message(conversation)) is not None
     )
     tokenized_prefixes = map(model.token_codec.encode_request, prefixes)
-    filtered_prefixes = filter(lambda conv: len(conv) <= max_input_length, tokenized_prefixes)
+    return filter(lambda token_ids: len(token_ids) <= max_input_length, tokenized_prefixes)
+
+
+def count_collectable_prompt_token_ids(
+    model: LanguageModel,
+    conversations: Iterable[Iterable[Message]],
+    max_input_length: int,
+) -> int:
+    return sum(1 for _ in iter_collectable_prompt_token_ids(model, conversations, max_input_length))
+
+
+def inference_collect_traces(
+    model: LanguageModel,
+    conversations: Iterable[Iterable[Message]],
+    batch_size: int = 1,
+    max_input_length: int = 2048,
+    max_output_length: int = 4096,
+    total_sequences: int | None = None,
+    progress_callback: Callable[[CollectTracesEvent], None] | None = None,
+) -> Iterable[LalamoCompletion]:
     tokens_generated = 0
     sequences_processed = 0
     key = jax.random.key(0)
 
-    for prefix_batch in batched(filtered_prefixes, batch_size):
+    for prefix_batch in batched(iter_collectable_prompt_token_ids(model, conversations, max_input_length), batch_size):
         next_key, batch_key = jax.random.split(key)
         key = next_key
         padded_prefixes, _ = pad_sequences(prefix_batch, 0, max_input_length)
@@ -269,7 +289,7 @@ def inference_collect_traces(
             )
 
             if progress_callback is not None:
-                progress_callback(CollectTracesEvent(sequences_processed, None, tokens_generated))
+                progress_callback(CollectTracesEvent(sequences_processed, total_sequences, tokens_generated))
 
 
 @dataclass
@@ -291,6 +311,15 @@ class CollectTracesCallbacks:
         pass
 
     def finished_loading_dataset(self) -> None:
+        pass
+
+    def counting_prompts(self) -> None:
+        pass
+
+    def finished_counting_prompts(self, _total_sequences: int) -> None:
+        pass
+
+    def starting_inference(self, total_sequences: int) -> None:
         pass
 
     def inference_progress(self, event: CollectTracesEvent) -> None:
@@ -325,21 +354,27 @@ def collect_traces(
     callbacks.loading_dataset()
     dataframe = shuffle_dataset(load_hf_parquet(dataset_path))
     conversations = dataframe.get_column("conversation")
-    dataset = iter(
-        [HFMessage.from_dict(message).as_message() for message in conversation] for conversation in conversations
-    )
-    dataset = chain([next(dataset)], dataset)
     callbacks.finished_loading_dataset()
+
+    callbacks.counting_prompts()
+    total_sequences = count_collectable_prompt_token_ids(
+        model,
+        iter_hf_conversations(conversations),
+        max_input_length,
+    )
+    callbacks.finished_counting_prompts(total_sequences)
+    callbacks.starting_inference(total_sequences)
 
     def progress_callback(event: CollectTracesEvent) -> None:
         callbacks.inference_progress(event)
 
     traces = inference_collect_traces(
         model,
-        dataset,
+        iter_hf_conversations(conversations),
         batch_size,
         max_input_length,
         max_output_length,
+        total_sequences,
         progress_callback,
     )
 
