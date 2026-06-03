@@ -36,6 +36,7 @@ class RequestBody:
     max_completion_tokens: int = 8192
 
     generation_config: GenerationConfig | None = None
+    dtype: Literal["bfloat16", "float32"] | None = None
     seed: int | None = None
     enable_thinking: bool = True
 
@@ -44,6 +45,7 @@ class RequestBody:
             self.model == other.model
             and self.max_completion_tokens == other.max_completion_tokens
             and self.generation_config == other.generation_config
+            and self.dtype == other.dtype
             and (self.seed is None) == (other.seed is None)
             and self.enable_thinking == other.enable_thinking
         )
@@ -160,8 +162,8 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
     model = import_model(
         reference.model,
         sharding_config=ShardingConfig.replicated(),
+        dtype=jnp.dtype(reference.dtype),
     ).model
-
     if not isinstance(model, LanguageModel):
         raise RuntimeError(f"Expected a language model, got {type(model).__name__}")  # noqa: TRY004
 

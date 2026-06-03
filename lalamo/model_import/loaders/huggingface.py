@@ -988,8 +988,8 @@ def load_delta_net_attention(
     out_proj = load_linear(module.out_proj, weights_dict, path / "out_proj", implementation=implementation)
     norm = load_rmsnorm(module.norm, weights_dict, path / "norm")
 
-    dt_bias = weights_dict[path / "dt_bias"]
-    a_log = weights_dict[path / "A_log"]
+    dt_bias = weights_dict[path / "dt_bias"].astype(module.dt_bias)
+    a_log = weights_dict[path / "A_log"].astype(module.a_log)
 
     return load_as_at(
         lambda m: (
