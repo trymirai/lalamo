@@ -397,7 +397,7 @@ def convert(
         DType | None,
         Option(
             help="Dtype to use for activations and non-quantized weights.",
-            show_default="Native dtype of the model",
+            show_default="bfloat16",
         ),
     ] = None,
     output_dir: Annotated[

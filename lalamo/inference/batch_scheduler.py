@@ -999,11 +999,12 @@ class ContinuousBatchScheduler(BatchScheduler):
             raise RuntimeError("ContinuousBatchScheduler does not support sharded models.")
 
         block_size = min(self.block_size, max_output_length)
-        prefill_capacity = (
-            (padded_length + self.prefill_chunk_size - 1) // self.prefill_chunk_size
-        ) * self.prefill_chunk_size
-        state_capacity = prefill_capacity + max_output_length + 1
-        requested_prefill_batch_size = max(1, min(int(batch_size * self.prefill_batch_fraction + 1), batch_size))
+        state_capacity = padded_length + max_output_length + 1
+        requested_prefill_batch_size = (
+            batch_size
+            if sampling_policy.has_count_penalties
+            else max(1, min(int(batch_size * self.prefill_batch_fraction + 1), batch_size))
+        )
         prefill_batch_size = requested_prefill_batch_size
 
         prefills: PrefillSource = PrefillSource(

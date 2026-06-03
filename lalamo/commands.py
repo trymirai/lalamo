@@ -169,10 +169,11 @@ def convert(
         ConversionCallbacks,
     ] = ConversionCallbacks,
 ) -> None:
+    effective_dtype = dtype or DType.BFLOAT16
     callbacks = callbacks_type(
         model_spec,
         output_dir,
-        dtype,
+        effective_dtype,
         context_length,
     )
 
@@ -192,14 +193,10 @@ def convert(
             case FinishedInitializingModelEvent():
                 callbacks.finished_initializing_model()
 
-    import_dtype = None
-    if dtype is not None:
-        import_dtype = jnp.dtype(dtype.value)
-
     imported_model = import_model(
         model_spec,
         sharding_config=ShardingConfig.replicated(),
-        dtype=import_dtype,
+        dtype=jnp.dtype(effective_dtype.value),
         context_length=context_length,
         progress_callback=progress_callback,
     )
