@@ -219,16 +219,12 @@ def _load_foreign_config[ForeignConfigT: ForeignConfig](
     return model_spec.config_type.from_json(config_path)
 
 
-def _dtype_or_default(dtype: DTypeLike | None, foreign_config: ForeignConfig) -> DTypeLike:
-    return foreign_config.default_dtype if dtype is None else dtype
-
-
 def _load_model[ModelT: Model](
     expected_model_type: type[ModelT],
     foreign_config: ForeignConfig,
     model_config: ModelConfig,
     tokenizer: Tokenizer,
-    dtype: DTypeLike,
+    dtype: DTypeLike | None,
     weights_dict: Mapping[str, Array],
     progress_callback: Callable[[StatusEvent], None] | None = None,
     *,
@@ -279,7 +275,6 @@ def _import_language_model(
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> LanguageModel:
     foreign_decoder_config = _load_foreign_config(model_spec, progress_callback=progress_callback)
-    dtype = _dtype_or_default(dtype, foreign_decoder_config)
 
     tokenizer, token_codec_config = _import_chat_codec(model_spec, progress_callback=progress_callback)
     generation_config = _import_generation_config(model_spec, foreign_decoder_config, progress_callback)
@@ -314,7 +309,6 @@ def _import_classifier(
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> ClassifierModel:
     foreign_classifier_config = _load_foreign_config(model_spec, progress_callback=progress_callback)
-    dtype = _dtype_or_default(dtype, foreign_classifier_config)
 
     tokenizer, token_codec_config = _import_chat_codec(model_spec, progress_callback=progress_callback)
     classifier_config = foreign_classifier_config.to_classifier_config(context_length)
@@ -346,7 +340,6 @@ def _import_tts_model(
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> TTSModel:
     foreign_tts_config = _load_foreign_config(model_spec, progress_callback=progress_callback)
-    dtype = _dtype_or_default(dtype, foreign_tts_config)
     if isinstance(foreign_tts_config, FishAudioConfig):
         assert isinstance(model_spec.configs.tokenizer, FileSpec)
         tokenizer_path = model_spec.origin.resolve_file(model_spec.configs.tokenizer, progress_callback)

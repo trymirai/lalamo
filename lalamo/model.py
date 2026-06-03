@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
 
-import jax.numpy as jnp
 from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 
@@ -59,7 +58,7 @@ class Model[
         self.token_codec.tokenizer.save(str(directory / "tokenizer.json"))
 
     @classmethod
-    def load(cls, directory: Path | str, sharding_config: ShardingConfig, dtype: DTypeLike = jnp.bfloat16) -> Self:
+    def load(cls, directory: Path | str, sharding_config: ShardingConfig, dtype: DTypeLike | None = None) -> Self:
         directory = Path(directory)
         with (directory / "config.json").open() as config_file:
             config = ModelConfig.from_json(json.load(config_file))
@@ -70,7 +69,6 @@ class Model[
             decoded_metadata = {}
             if metadata is not None:
                 decoded_metadata = {key: json.loads(value) for key, value in metadata.items()}
-
             template = config.init(tokenizer, EmptyInitializer(dtype, sharding_config))
             result = Exportable.load_exported(
                 template,
@@ -78,7 +76,6 @@ class Model[
                     arrays=arrays,
                     metadata=decoded_metadata,
                 ),
-                allow_dtype_cast=True,
             )
 
         assert isinstance(result, cls)

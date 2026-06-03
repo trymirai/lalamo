@@ -514,8 +514,14 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         last_token_logits = prefill_results.last_token_logits[0]
         last_token_index = prefill_results.last_token_indices[0]
         state = prefill_results.state
-        sampling_keys = sampling_keychain.rolling_broadcast((max_output_length,)).vmapped_keys
-        decoding_keys = decoding_keychain.rolling_broadcast((max_output_length,)).vmapped_keys
+        sampling_keys = sampling_keychain.rolling_broadcast(
+            (max_output_length, 1),
+            mode=KeychainBroadcastMode.PREFIX,
+        ).vmapped_keys[:, 0]
+        decoding_keys = decoding_keychain.rolling_broadcast(
+            (max_output_length, 1),
+            mode=KeychainBroadcastMode.PREFIX,
+        ).vmapped_keys
         for sampling_key, decoding_key in zip(sampling_keys, decoding_keys, strict=True):
             processed_logits = sampling_policy.process_logits(last_token_logits.astype(jnp.float32))
             next_token_id = jax.random.categorical(sampling_key, processed_logits)

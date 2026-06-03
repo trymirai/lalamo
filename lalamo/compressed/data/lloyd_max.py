@@ -121,7 +121,8 @@ def _sample_values_to_lloyd_lut_values(
         sorted_weights = weights[sorted_indices]
         cumulative_weights = jnp.cumsum(sorted_weights)
         total_weight = cumulative_weights[-1]
-        center_weight_targets = (jnp.arange(num_levels) + 0.5) * total_weight / num_levels
+        level_positions = jnp.arange(num_levels, dtype=values.dtype) + jnp.asarray(0.5, dtype=values.dtype)
+        center_weight_targets = level_positions * total_weight / jnp.asarray(num_levels, dtype=values.dtype)
         center_indices = jnp.searchsorted(cumulative_weights, center_weight_targets, side="left", method="compare_all")
         center_indices = jnp.minimum(center_indices, values.size - 1)
         centers = sorted_values[center_indices]

@@ -125,6 +125,7 @@ markers = [
 env_files = [".env"]
 JAX_DEBUG_NANS = "True"
 JAX_DEBUG_KEY_REUSE = "False"
+JAX_NUMPY_DTYPE_PROMOTION = "strict"
 JAX_TRACEBACK_FILTERING = "off"
 TORCH_COMPILE_DISABLE = "1"
 XLA_FLAGS = "--xla_gpu_deterministic_ops=true"

@@ -4,9 +4,8 @@ from typing import ClassVar, Literal
 
 import cattrs
 import equinox as eqx
-import jax.numpy as jnp
 from cattrs.strategies import configure_tagged_union
-from jaxtyping import Array, DTypeLike
+from jaxtyping import Array
 
 from lalamo.model import Model
 from lalamo.model_import.loaders import (
@@ -106,10 +105,6 @@ class HuggingFaceLMConfig(ForeignLMConfig):
 
         return result
 
-    @property
-    def default_dtype(self) -> DTypeLike:
-        return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
-
     def _load_weights(
         self,
         model: Model,
@@ -128,10 +123,6 @@ class HuggingFaceLMConfig(ForeignLMConfig):
 
 @dataclass(frozen=True)
 class HuggingFaceClassifierConfig(ForeignClassifierConfig):
-    @property
-    def default_dtype(self) -> DTypeLike:
-        return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
-
     def _load_weights(
         self,
         model: Model,

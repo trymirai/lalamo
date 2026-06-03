@@ -28,7 +28,7 @@ __all__ = [
 
 @dataclass
 class Initializer(ABC):
-    default_dtype: DTypeLike
+    default_dtype: DTypeLike | None
     sharding_config: ShardingConfig
 
     def _partition_to_sharding(
@@ -92,7 +92,7 @@ class EmptyInitializer(Initializer):
     def _dummy_array(
         self,
         shape: tuple[int, ...],
-        dtype: DTypeLike,
+        dtype: DTypeLike | None,
         partition: tuple[LogicalAxis | None, ...] | None,
     ) -> Array:
         sharding = self._partition_to_sharding(shape, partition)

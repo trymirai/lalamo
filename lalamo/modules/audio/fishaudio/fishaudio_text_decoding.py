@@ -541,6 +541,7 @@ def _sample_with_previous_tokens(
     *,
     keychain: Keychain,
 ) -> Int[Array, ""]:
+    logits = logits.astype(jnp.float32)
     if previous_tokens is None:
         return sampling_policy(logits, keychain=keychain)
     if sampling_policy.repetition_penalty is None:

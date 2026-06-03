@@ -70,7 +70,7 @@ class ShortConvConfig(TokenMixerConfig):
             output_dims=(model_dim,) * 3,
             has_biases=False,
         )
-        conv = self.conv_config.init(initializer, model_dim, self.kernel_size, dtype=initializer.default_dtype)
+        conv = self.conv_config.init(initializer, model_dim, self.kernel_size)
         out_projection = self.out_projection_config.init(
             initializer,
             input_dim=model_dim,

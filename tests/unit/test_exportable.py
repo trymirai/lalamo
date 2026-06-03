@@ -38,7 +38,6 @@ class CustomLeaf(Exportable, eqx.Module):
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,  # noqa: ARG002
         *,
         prefix: ParameterPath | None = None,
     ) -> Self:
@@ -135,7 +134,7 @@ def test_load_exported_uses_prefix() -> None:
 def test_load_exported_reports_missing_array() -> None:
     skeleton = Leaf(weight=jnp.zeros((2,), dtype=jnp.float32), bias=None)
 
-    with pytest.raises(KeyError, match="weight"):
+    with pytest.raises(ValueError, match="weight"):
         skeleton.load_exported(ExportResults(arrays={}, metadata={}))
 
 
@@ -147,19 +146,11 @@ def test_load_exported_rejects_shape_mismatch() -> None:
         skeleton.load_exported(exported)
 
 
-def test_load_exported_rejects_dtype_mismatch_by_default() -> None:
+def test_load_exported_casts_to_strong_skeleton_dtype() -> None:
     skeleton = Leaf(weight=jnp.zeros((2,), dtype=jnp.float32), bias=None)
-    exported = ExportResults(arrays={"weight": jnp.ones((2,), dtype=jnp.float16)}, metadata={})
+    exported = ExportResults(arrays={"weight": jnp.ones((2,), dtype=jnp.bfloat16)}, metadata={})
 
-    with pytest.raises(ValueError, match="dtype"):
-        skeleton.load_exported(exported)
-
-
-def test_load_exported_casts_dtype_when_allowed() -> None:
-    skeleton = Leaf(weight=jnp.zeros((2,), dtype=jnp.float32), bias=None)
-    exported = ExportResults(arrays={"weight": jnp.ones((2,), dtype=jnp.float16)}, metadata={})
-
-    restored = skeleton.load_exported(exported, allow_dtype_cast=True)
+    restored = skeleton.load_exported(exported)
 
     assert restored.weight.dtype == jnp.float32
     assert jnp.array_equal(restored.weight, jnp.ones((2,), dtype=jnp.float32))

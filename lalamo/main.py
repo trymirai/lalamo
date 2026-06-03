@@ -144,36 +144,38 @@ def chat(
             generation_config = replace(model.config.generation_config, temperature=temperature)
         progress.remove_task(loading_task)
 
-    if message is None:
-        console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
-        messages: list[Message] = []
-        turn_index = 0
-        while True:
-            user_text = console.input("[cyan]user> [/cyan]")
-            messages.append(UserMessage(user_text))
+    with jax.set_mesh(model.sharding_config.mesh):
+        if message is None:
+            console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
+            messages: list[Message] = []
+            turn_index = 0
+            while True:
+                user_text = console.input("[cyan]user> [/cyan]")
+                messages.append(UserMessage(user_text))
 
-            console.print("[red]assistant> [/red]", end="")
-            response_text_parts = []
+                console.print("[red]assistant> [/red]", end="")
+                response_text_parts = []
+                for token in model.stream_reply_text(
+                    messages,
+                    generation_config=generation_config,
+                    max_output_length=max_tokens,
+                    keychain=Keychain.init(turn_index + 1, sharding_config=model.sharding_config),
+                ):
+                    console.print(token, end="")
+                    response_text_parts.append(token)
+                console.print()
+                messages.append(model.token_codec.parse_response("".join(response_text_parts)))
+                turn_index += 1
+
+        else:
             for token in model.stream_reply_text(
-                messages,
+                [UserMessage(message)],
                 generation_config=generation_config,
                 max_output_length=max_tokens,
-                keychain=Keychain.init(turn_index + 1, sharding_config=model.sharding_config),
+                keychain=Keychain.init(1, sharding_config=model.sharding_config),
             ):
                 console.print(token, end="")
-                response_text_parts.append(token)
             console.print()
-            messages.append(model.token_codec.parse_response("".join(response_text_parts)))
-            turn_index += 1
-
-    for token in model.stream_reply_text(
-        [UserMessage(message)],
-        generation_config=generation_config,
-        max_output_length=max_tokens,
-        keychain=Keychain.init(1, sharding_config=model.sharding_config),
-    ):
-        console.print(token, end="")
-    console.print()
 
 
 @app.command(help="Classify text with a converted classifier model.")
@@ -421,7 +423,7 @@ def convert(
         DType | None,
         Option(
             help="Dtype to use for activations and non-quantized weights.",
-            show_default="Native dtype of the model",
+            show_default="bfloat16",
         ),
     ] = None,
     output_dir: Annotated[

@@ -36,7 +36,7 @@ class RequestBody:
     max_completion_tokens: int = 8192
 
     generation_config: GenerationConfig | None = None
-    dtype: Literal["bfloat16", "float32"] = "bfloat16"
+    dtype: Literal["bfloat16", "float32"] | None = None
     seed: int | None = None
     enable_thinking: bool = True
 

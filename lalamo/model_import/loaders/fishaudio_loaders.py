@@ -186,7 +186,7 @@ def _load_rope_norm(
         return None
     norm = load_rmsnorm(module, weights_dict, path)
     permuted_scales = _permute_for_rope_rotate_half(norm.scales, 1, norm.scales.shape[0])
-    return load_as_at(lambda m: (m.scales,), norm, (permuted_scales,), allow_dtype_cast=True)
+    return load_as_at(lambda m: (m.scales,), norm, (permuted_scales,))
 
 
 def load_transformer_block(
@@ -237,7 +237,6 @@ def load_transformer_block(
             lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm),
             attn_module,
             (qkv_projection, out_projection, query_norm, key_norm),
-            allow_dtype_cast=True,
         )
 
     def load_mlp(
@@ -268,7 +267,6 @@ def load_transformer_block(
             _dense_mlp_projections,
             dense_module,
             (up_projection, down_projection),
-            allow_dtype_cast=True,
         )
 
     def load_transformer_layer_local(
@@ -337,7 +335,6 @@ def load_transformer_block(
                 mlp,
                 post_mlp_norm,
             ),
-            allow_dtype_cast=True,
         )
 
     base_path = ParameterPath() if path is None else path
@@ -361,7 +358,6 @@ def load_transformer_block(
             transformer_layers,
             output_norm,
         ),
-        allow_dtype_cast=True,
     )
 
 
@@ -418,7 +414,6 @@ def load_vector_quantize(
         lambda m: (m.codebook, m.out_proj),
         module,
         (codebook, out_proj),
-        allow_dtype_cast=True,
     )
 
 
@@ -452,7 +447,6 @@ def load_residual_vector_quantize(
         lambda m: (m.quantizers,),
         module,
         (quantizers,),
-        allow_dtype_cast=True,
     )
 
 
@@ -491,7 +485,6 @@ def load_convnext_block(
         lambda m: (m.weights, m.biases),
         module.depthwise_conv,
         (dwconv_weight, dwconv_bias),
-        allow_dtype_cast=True,
     )
 
     # Load norm (LayerNorm with weight and bias)
@@ -501,7 +494,6 @@ def load_convnext_block(
         lambda m: (m.scales, m.biases),
         module.norm,
         (norm_weight, norm_bias),
-        allow_dtype_cast=True,
     )
 
     pointwise_conv_step1 = load_linear_and_fuse_scaling(
@@ -521,7 +513,6 @@ def load_convnext_block(
         lambda m: (m.depthwise_conv, m.norm, m.pointwise_conv_step1, m.pointwise_conv_step2),
         module,
         (depthwise_conv, norm, pointwise_conv_step1, pointwise_conv_step2),
-        allow_dtype_cast=True,
     )
 
 
@@ -563,7 +554,6 @@ def load_upsampling_block(
         lambda m: (m.trans_conv, m.convnext),
         module,
         (trans_conv, convnext),
-        allow_dtype_cast=True,
     )
 
 
@@ -593,7 +583,6 @@ def load_upsampler(
         lambda m: (m.blocks,),
         module,
         (blocks,),
-        allow_dtype_cast=True,
     )
 
 
@@ -687,7 +676,6 @@ def load_downsample_rvq(
         lambda m: (m.semantic_quantizer, m.quantizer, m.upsampler, m.post_module),
         module,
         (semantic_quantizer, quantizer, upsampler, post_module),
-        allow_dtype_cast=True,
     )
 
 
@@ -721,7 +709,6 @@ def load_residual_unit(
         lambda m: (m.snake1, m.conv1, m.snake2, m.conv2),
         module,
         (snake1, conv1, snake2, conv2),
-        allow_dtype_cast=True,
     )
 
 
@@ -757,7 +744,6 @@ def load_audio_decoder_block(
         lambda m: (m.snake, m.trans_conv, m.res_unit1, m.res_unit2, m.res_unit3),
         module,
         (snake, trans_conv, res_unit1, res_unit2, res_unit3),
-        allow_dtype_cast=True,
     )
 
 
@@ -823,7 +809,6 @@ def load_audio_decoder(
         lambda m: (m.first_conv, m.decoder_blocks, m.final_snake, m.final_conv),
         module,
         (first_conv, decoder_blocks, final_snake, final_conv),
-        allow_dtype_cast=True,
     )
 
 
@@ -906,7 +891,6 @@ def load_fishaudio_text_decoder(
             codebook_embeddings,
             fast_model_projection,
         ),
-        allow_dtype_cast=True,
     )
 
 
@@ -922,7 +906,6 @@ def load_fishaudio_audio_decoder(
         lambda m: (m.quantizer, m.decoder),
         module,
         (loaded_quantizer, loaded_decoder),
-        allow_dtype_cast=True,
     )
 
 
