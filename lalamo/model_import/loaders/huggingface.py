@@ -803,7 +803,7 @@ def _load_conv(
 ) -> SeparableCausalConv:
     parameter_dtype = conv_module.weights.dtype
     if conv_module.weights.weak_type:
-        parameter_dtype = jnp.bfloat16
+        parameter_dtype = jnp.float32
 
     weight_path = _first_path(
         weights_dict,
