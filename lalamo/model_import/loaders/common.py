@@ -13,7 +13,9 @@ def load_full_precision(
 ) -> FullPrecisionMatrix:
     if not isinstance(template, ShapeDtypeMatrix):
         raise TypeError(f"Expected ShapeDtypeMatrix, got {type(template).__name__}.")
-    dtype = weights.dtype if template.dummy_weights.weak_type else template.dtype
+    dtype = template.dtype
+    if template.dummy_weights.weak_type:
+        dtype = weights.dtype
     return FullPrecisionSpec(layout=template.spec.layout).compress(
         weights.astype(dtype),
         sharding_config=template.sharding_config,
