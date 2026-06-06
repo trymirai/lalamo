@@ -6,6 +6,7 @@ from lalamo.model_import.model_configs import (
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.model_specs.output_parser_regexes import OPTIONAL_THINKING_OUTPUT_PARSER_REGEX
 from lalamo.model_import.origins import HuggingFaceOrigin
+from lalamo.models.language_model import GenerationConfig
 
 __all__ = ["QWEN_MODELS"]
 
@@ -29,6 +30,16 @@ def _qwen3_mlx_model_spec(
             tokenizer_config=FileSpec("tokenizer_config.json", base_repo),
             generation_config=FileSpec("generation_config.json", base_repo),
         ),
+    )
+
+
+def _qwen35_generation_config(*, temperature: float, repetition_penalty: float) -> GenerationConfig:
+    return GenerationConfig(
+        temperature=temperature,
+        top_k=40,
+        top_p=0.95,
+        repetition_penalty=repetition_penalty,
+        suffix_repetition_length=1024,
     )
 
 
@@ -229,7 +240,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         configs=ConfigMap(
-            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_config=_qwen35_generation_config(temperature=0.8, repetition_penalty=1.15),
         ),
     ),
     LanguageModelSpec(
@@ -243,7 +254,7 @@ QWEN35 = [
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-0.8B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-0.8B"),
-            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_config=_qwen35_generation_config(temperature=0.8, repetition_penalty=1.15),
         ),
     ),
     LanguageModelSpec(
@@ -257,7 +268,7 @@ QWEN35 = [
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-0.8B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-0.8B"),
-            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_config=_qwen35_generation_config(temperature=0.8, repetition_penalty=1.15),
         ),
     ),
     LanguageModelSpec(
@@ -269,7 +280,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         configs=ConfigMap(
-            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_config=_qwen35_generation_config(temperature=0.6, repetition_penalty=1.15),
         ),
     ),
     LanguageModelSpec(
@@ -283,7 +294,7 @@ QWEN35 = [
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-2B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-2B"),
-            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_config=_qwen35_generation_config(temperature=0.8, repetition_penalty=1.15),
         ),
     ),
     LanguageModelSpec(
@@ -297,7 +308,7 @@ QWEN35 = [
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-2B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-2B"),
-            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_config=_qwen35_generation_config(temperature=0.6, repetition_penalty=1.15),
         ),
     ),
     LanguageModelSpec(
@@ -309,7 +320,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         configs=ConfigMap(
-            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_config=_qwen35_generation_config(temperature=0.6, repetition_penalty=1.10),
         ),
     ),
     LanguageModelSpec(
@@ -323,7 +334,7 @@ QWEN35 = [
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-4B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-4B"),
-            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_config=_qwen35_generation_config(temperature=0.6, repetition_penalty=1.10),
         ),
     ),
     LanguageModelSpec(
@@ -337,7 +348,7 @@ QWEN35 = [
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-4B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-4B"),
-            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_config=_qwen35_generation_config(temperature=0.6, repetition_penalty=1.10),
         ),
     ),
     LanguageModelSpec(
