@@ -83,6 +83,7 @@ class ChatCodecConfig(TokenCodecConfig):
     assistant_role_name: str
     eos_token: str | None
     bos_token: str | None
+    end_of_thinking_tag: str | None
     default_system_prompt: str | None = None
 
     def init(self, tokenizer: Tokenizer) -> "ChatCodec":

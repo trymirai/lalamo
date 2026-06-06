@@ -359,6 +359,7 @@ def test_foreign_config_load_initializes_model_with_requested_dtype_and_implemen
                 assistant_role_name="assistant",
                 eos_token=None,
                 bos_token=None,
+                end_of_thinking_tag=None,
             ),
             module_config=TinyConfig(),
         ),
@@ -385,6 +386,7 @@ def _tiny_model_config() -> TinyModelConfig:
             assistant_role_name="assistant",
             eos_token=None,
             bos_token=None,
+            end_of_thinking_tag=None,
         ),
         module_config=TinyConfig(),
     )
