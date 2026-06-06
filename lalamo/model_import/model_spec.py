@@ -69,6 +69,7 @@ class ModelSpec[ForeignConfigBaseT: ForeignConfig](RegistryABC):
 class LanguageModelSpec(ModelSpec[ForeignLMConfig]):
     config_type: type[ForeignLMConfig]
     output_parser_regex: str | None = None
+    end_of_thinking_tag: str | None = None
     system_role_name: str = "system"
     user_role_name: str = "user"
     assistant_role_name: str = "assistant"
