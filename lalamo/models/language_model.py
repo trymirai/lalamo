@@ -1,6 +1,6 @@
 from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import NamedTuple
+from dataclasses import dataclass, fields, replace
+from typing import NamedTuple, Self
 
 import equinox as eqx
 import jax
@@ -82,6 +82,25 @@ class GenerationConfig:
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
     suffix_repetition_length: int | None = None
+
+    def override_with(self, other: Self) -> Self:
+        default_config = GenerationConfig()
+        merged_fields = {"stop_token_ids", "banned_tokens"}
+        overrides = {}
+        for config_field in fields(GenerationConfig):
+            field_name = config_field.name
+            ours = getattr(self, field_name)
+            theirs = getattr(other, field_name)
+            default = getattr(default_config, field_name)
+
+            if theirs == default:
+                continue
+            if field_name in merged_fields and ours != default:
+                overrides[field_name] = tuple(sorted({*ours, *theirs}))
+            else:
+                overrides[field_name] = theirs
+
+        return replace(self, **overrides)
 
     def default_policy(self) -> SamplingPolicy:
         return SamplingPolicy.init(

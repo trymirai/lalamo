@@ -37,6 +37,7 @@ class ConfigMap:
     tokenizer: FileSpec | None = field(default=FileSpec("tokenizer.json"))
     tokenizer_config: FileSpec = field(default=FileSpec("tokenizer_config.json"))
     generation_config: FileSpec | GenerationConfig | None = field(default=FileSpec("generation_config.json"))
+    generation_params_overrides: GenerationConfig | None = None
     chat_template: FileSpec | JSONFieldSpec | str | None = None
     system_prompt: FileSpec | str | None = None
 
