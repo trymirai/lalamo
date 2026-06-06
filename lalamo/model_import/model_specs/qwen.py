@@ -36,16 +36,6 @@ def _qwen3_mlx_model_spec(
     )
 
 
-def _qwen35_generation_config(*, temperature: float, repetition_penalty: float) -> GenerationConfig:
-    return GenerationConfig(
-        temperature=temperature,
-        top_k=40,
-        top_p=0.95,
-        repetition_penalty=repetition_penalty,
-        suffix_repetition_length=1024,
-    )
-
-
 QWEN25_CODER = [
     LanguageModelSpec(
         vendor="Alibaba",
@@ -251,7 +241,13 @@ QWEN35 = [
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         configs=ConfigMap(
-            generation_config=_qwen35_generation_config(temperature=0.8, repetition_penalty=1.15),
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_params_overrides=GenerationConfig(
+                temperature=0.8,
+                top_k=40,
+                repetition_penalty=1.15,
+                suffix_repetition_length=1024,
+            ),
         ),
     ),
     LanguageModelSpec(
@@ -266,7 +262,13 @@ QWEN35 = [
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-0.8B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-0.8B"),
-            generation_config=_qwen35_generation_config(temperature=0.8, repetition_penalty=1.15),
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_params_overrides=GenerationConfig(
+                temperature=0.8,
+                top_k=40,
+                repetition_penalty=1.15,
+                suffix_repetition_length=1024,
+            ),
         ),
     ),
     LanguageModelSpec(
@@ -281,7 +283,13 @@ QWEN35 = [
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-0.8B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-0.8B"),
-            generation_config=_qwen35_generation_config(temperature=0.8, repetition_penalty=1.15),
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_params_overrides=GenerationConfig(
+                temperature=0.8,
+                top_k=40,
+                repetition_penalty=1.15,
+                suffix_repetition_length=1024,
+            ),
         ),
     ),
     LanguageModelSpec(
@@ -294,7 +302,12 @@ QWEN35 = [
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         configs=ConfigMap(
-            generation_config=_qwen35_generation_config(temperature=0.6, repetition_penalty=1.15),
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_params_overrides=GenerationConfig(
+                top_k=40,
+                repetition_penalty=1.15,
+                suffix_repetition_length=1024,
+            ),
         ),
     ),
     LanguageModelSpec(
@@ -309,7 +322,13 @@ QWEN35 = [
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-2B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-2B"),
-            generation_config=_qwen35_generation_config(temperature=0.8, repetition_penalty=1.15),
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_params_overrides=GenerationConfig(
+                temperature=0.8,
+                top_k=40,
+                repetition_penalty=1.15,
+                suffix_repetition_length=1024,
+            ),
         ),
     ),
     LanguageModelSpec(
@@ -324,7 +343,12 @@ QWEN35 = [
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-2B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-2B"),
-            generation_config=_qwen35_generation_config(temperature=0.6, repetition_penalty=1.15),
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_params_overrides=GenerationConfig(
+                top_k=40,
+                repetition_penalty=1.15,
+                suffix_repetition_length=1024,
+            ),
         ),
     ),
     LanguageModelSpec(
@@ -337,7 +361,12 @@ QWEN35 = [
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         configs=ConfigMap(
-            generation_config=_qwen35_generation_config(temperature=0.6, repetition_penalty=1.10),
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_params_overrides=GenerationConfig(
+                top_k=40,
+                repetition_penalty=1.10,
+                suffix_repetition_length=1024,
+            ),
         ),
     ),
     LanguageModelSpec(
@@ -352,7 +381,12 @@ QWEN35 = [
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-4B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-4B"),
-            generation_config=_qwen35_generation_config(temperature=0.6, repetition_penalty=1.10),
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_params_overrides=GenerationConfig(
+                top_k=40,
+                repetition_penalty=1.10,
+                suffix_repetition_length=1024,
+            ),
         ),
     ),
     LanguageModelSpec(
@@ -367,7 +401,12 @@ QWEN35 = [
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-4B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-4B"),
-            generation_config=_qwen35_generation_config(temperature=0.6, repetition_penalty=1.10),
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+            generation_params_overrides=GenerationConfig(
+                top_k=40,
+                repetition_penalty=1.10,
+                suffix_repetition_length=1024,
+            ),
         ),
     ),
     LanguageModelSpec(

@@ -257,14 +257,18 @@ def _import_generation_config(
     match model_spec.configs.generation_config:
         case GenerationConfig() as generation_config:
             stop_token_ids = merge_token_ids(generation_config.stop_token_ids, stop_token_ids)
-            return replace(generation_config, stop_token_ids=stop_token_ids)
+            generation_config = replace(generation_config, stop_token_ids=stop_token_ids)
         case FileSpec() as file_spec:
             hf_generation_config_file = model_spec.origin.resolve_file(file_spec, progress_callback)
             hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)
             stop_token_ids = merge_token_ids(stop_token_ids, hf_generation_config.eos_token_id)
-            return _policy_from_hf_config(hf_generation_config, stop_token_ids=stop_token_ids)
+            generation_config = _policy_from_hf_config(hf_generation_config, stop_token_ids=stop_token_ids)
         case None:
-            return GenerationConfig(stop_token_ids)
+            generation_config = GenerationConfig(stop_token_ids)
+
+    if model_spec.configs.generation_params_overrides is None:
+        return generation_config
+    return generation_config.override_with(model_spec.configs.generation_params_overrides)
 
 
 def _import_language_model(
