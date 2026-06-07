@@ -1,9 +1,16 @@
 from collections.abc import Mapping
+from contextlib import ExitStack
+from pathlib import Path
 
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 
+from lalamo.initializer import EmptyInitializer
+from lalamo.model_import.common import _combine_weight_shards
+from lalamo.model_import.model_configs.huggingface.dflash import HFDFlashConfig
+from lalamo.model_import.origins import LocalOrigin, WeightFormat
 from lalamo.modules.dflash import DFlashAttention, DFlashDraftLayer, DFlashDraftModel
 from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at
 from lalamo.weight_matrix import CompressionImplementation
 
@@ -13,6 +20,7 @@ __all__ = [
     "load_dflash_attention",
     "load_dflash_draft_layer",
     "load_dflash_draft_model",
+    "load_hf_dflash_draft_model",
 ]
 
 
@@ -150,3 +158,35 @@ def load_dflash_draft_model(
             output_norm,
         ),
     )
+
+
+def load_hf_dflash_draft_model(
+    hf_model_dir: Path | str,
+    *,
+    sharding_config: ShardingConfig,
+    dtype: DTypeLike | None = None,
+    context_length: int | None = None,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> DFlashDraftModel:
+    hf_model_dir = Path(hf_model_dir)
+    config = HFDFlashConfig.from_json(hf_model_dir / "config.json")
+    draft_config = config.to_dflash_draft_config(context_length=context_length)
+    template = draft_config.init(EmptyInitializer(dtype, sharding_config))
+
+    weight_files = tuple(path.name for path in sorted(hf_model_dir.glob(f"*{WeightFormat.SAFETENSORS.value}")))
+    if not weight_files:
+        raise FileNotFoundError(f"DFlash HF directory does not contain safetensors weights: {hf_model_dir}")
+
+    origin = LocalOrigin(
+        root=str(hf_model_dir),
+        weight_files=weight_files,
+        weight_format=WeightFormat.SAFETENSORS,
+    )
+    with ExitStack() as stack:
+        weight_shards = tuple(stack.enter_context(weight_shard) for weight_shard in origin.get_weights())
+        checkpoint = _combine_weight_shards(weight_shards)
+        return load_dflash_draft_model(
+            template,
+            checkpoint.weights,
+            implementation=implementation,
+        )
