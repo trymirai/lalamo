@@ -1,6 +1,9 @@
 from .foreign_config import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig, ForeignTTSConfig
 from .huggingface import (
+    DFlashYarnRopeScalingConfig,
     HFBonsaiConfig,
+    HFDFlashConfig,
+    HFDFlashInnerConfig,
     HFGemma2Config,
     HFGemma3Config,
     HFGemma3TextConfig,
@@ -18,11 +21,14 @@ from .huggingface import (
 )
 
 __all__ = [
+    "DFlashYarnRopeScalingConfig",
     "ForeignClassifierConfig",
     "ForeignConfig",
     "ForeignLMConfig",
     "ForeignTTSConfig",
     "HFBonsaiConfig",
+    "HFDFlashConfig",
+    "HFDFlashInnerConfig",
     "HFGPTOssConfig",
     "HFGemma2Config",
     "HFGemma3Config",

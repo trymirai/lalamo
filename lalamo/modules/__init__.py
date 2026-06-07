@@ -17,6 +17,16 @@ from .decoder import (
     PerLayerEmbedding,
     PLEModelConfig,
 )
+from .dflash import (
+    DFlashAttention,
+    DFlashAttentionConfig,
+    DFlashDraftConfig,
+    DFlashDraftLayer,
+    DFlashDraftLayerConfig,
+    DFlashDraftModel,
+    DFlashDraftResult,
+    make_qwen3_dflash_draft_config,
+)
 from .embedding import (
     EmbeddingBase,
     EmbeddingConfig,
@@ -104,6 +114,13 @@ __all__ = [
     "ClassifierConfig",
     "ClassifierForwardPassConfig",
     "ClassifierResult",
+    "DFlashAttention",
+    "DFlashAttentionConfig",
+    "DFlashDraftConfig",
+    "DFlashDraftLayer",
+    "DFlashDraftLayerConfig",
+    "DFlashDraftModel",
+    "DFlashDraftResult",
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",
@@ -177,5 +194,6 @@ __all__ = [
     "UpcastMode",
     "YARNRoPEConfig",
     "build_tree_attention_mask",
+    "make_qwen3_dflash_draft_config",
     "tree_ancestor_mask",
 ]

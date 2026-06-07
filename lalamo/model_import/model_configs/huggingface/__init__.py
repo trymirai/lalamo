@@ -1,5 +1,6 @@
 from .bonsai import HFBonsaiConfig
 from .common import HuggingFaceLMConfig
+from .dflash import DFlashYarnRopeScalingConfig, HFDFlashConfig, HFDFlashInnerConfig
 from .gemma2 import HFGemma2Config
 from .gemma3 import HFGemma3Config, HFGemma3TextConfig
 from .gemma4 import HFGemma4Config
@@ -16,7 +17,10 @@ from .qwen3_next import HFQwen3NextConfig
 from .smollm3 import HFSmolLM3Config
 
 __all__ = [
+    "DFlashYarnRopeScalingConfig",
     "HFBonsaiConfig",
+    "HFDFlashConfig",
+    "HFDFlashInnerConfig",
     "HFGPTOssConfig",
     "HFGemma2Config",
     "HFGemma3Config",
