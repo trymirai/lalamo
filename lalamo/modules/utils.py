@@ -289,4 +289,4 @@ def apply_soft_capping(
     values: Float[Array, "..."],
     soft_cap: float,
 ) -> Float[Array, "..."]:
-    return jax.nn.tanh(values / soft_cap) * soft_cap
+    return jax.nn.tanh(values / (soft_cap * 0.5)) * soft_cap
