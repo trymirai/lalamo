@@ -33,9 +33,11 @@ from lalamo.commands import (
     ConversionCallbacks,
     DType,
     PullCallbacks,
+    SpeculatorConversionCallbacks,
     _suggest_similar_models,
 )
 from lalamo.commands import convert as _convert
+from lalamo.commands import convert_speculator as _convert_speculator
 from lalamo.commands import pull as _pull
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
@@ -60,6 +62,12 @@ app = Typer(
     add_completion=False,
     pretty_exceptions_show_locals=False,
 )
+speculator_app = Typer(
+    rich_markup_mode="rich",
+    add_completion=False,
+    pretty_exceptions_show_locals=False,
+)
+app.add_typer(speculator_app, name="speculator", help="Manage speculator artifacts.")
 
 
 class ModelParser(ParamType):
@@ -278,6 +286,68 @@ class CliConversionCallbacks(ConversionCallbacks):
 
 
 @dataclass
+class CliSpeculatorConversionCallbacks(SpeculatorConversionCallbacks):
+    overwrite: bool = False
+
+    stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
+    loading_task: TaskID | None = None
+    saving_task: TaskID | None = None
+
+    def started(self) -> None:
+        conversion_strs = [
+            f"🚀 Converting DFlash speculator from [cyan]{self.hf_model_dir}[/cyan]",
+        ]
+        if self.dtype is not None:
+            conversion_strs.append(
+                f" and loading floating-point weights as [cyan]{self.dtype.name.lower()}[/cyan]",
+            )
+        conversion_strs.append(".")
+        console.print("".join(conversion_strs))
+
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+            ),
+        )
+
+    def output_dir_exists(self) -> None:
+        if not self.overwrite and not Confirm().ask(
+            rf"⚠️ Output directory [cyan]{self.output_dir}[/cyan] already exists."
+            r" Do you want to overwrite it?",
+        ):
+            raise Exit
+
+        shutil.rmtree(self.output_dir)
+
+    def loading_model(self) -> None:
+        assert self.progress is not None
+
+        self.loading_task = self.progress.add_task("Initializing DFlash speculator...")
+
+    def finished_loading_model(self) -> None:
+        assert self.progress is not None
+        assert self.loading_task is not None
+
+        self.progress.remove_task(self.loading_task)
+
+    def saving_model(self) -> None:
+        assert self.progress is not None
+
+        self.saving_task = self.progress.add_task(f"💾 Saving the speculator to {self.output_dir}")
+
+    def finished_saving_model(self) -> None:
+        assert self.progress is not None
+        assert self.saving_task is not None
+
+        self.progress.remove_task(self.saving_task)
+        self.stack.close()
+        console.print(f"🧑‍🍳 Speculator successfully cooked and saved to [cyan]`{self.output_dir}`[/cyan]!")
+
+
+@dataclass
 class CliPullCallbacks(PullCallbacks):
     stack: ExitStack = field(default_factory=ExitStack)
     progress: Progress | None = None
@@ -456,6 +526,55 @@ def convert(
         dtype,
         context_length,
         partial(CliConversionCallbacks, overwrite=overwrite),
+    )
+
+
+@speculator_app.command("convert", help="Import and export a DFlash speculator into the local Lalamo format.")
+def speculator_convert(
+    hf_model_dir: Annotated[
+        Path,
+        Argument(
+            help="Path to a Hugging Face DFlash model directory.",
+            metavar="HF_MODEL_DIR",
+        ),
+    ],
+    dtype: Annotated[
+        DType | None,
+        Option(
+            help="Dtype to use for activations and non-quantized weights.",
+            show_default="bfloat16",
+        ),
+    ] = None,
+    output_dir: Annotated[
+        Path | None,
+        Option(
+            help="Directory to save the converted speculator to.",
+            show_default="Saves the converted speculator in the `models/<hf_model_dir_name>` directory",
+        ),
+    ] = None,
+    context_length: Annotated[
+        int | None,
+        Option(
+            help="Maximum supported context length. Used to configure RoPE.",
+            show_default="DFlash model's native maximum context length.",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        Option(
+            help="Overwrite existing speculator files.",
+        ),
+    ] = False,
+) -> None:
+    if output_dir is None:
+        output_dir = DEFAULT_OUTPUT_DIR / hf_model_dir.name
+
+    _convert_speculator(
+        hf_model_dir,
+        output_dir,
+        dtype,
+        context_length,
+        partial(CliSpeculatorConversionCallbacks, overwrite=overwrite),
     )
 
 
