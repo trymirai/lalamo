@@ -183,7 +183,4 @@ class DFlashSpeculator(Speculator[DFlashDraftState]):
             keychain=readout_keychain,
             added_sharding_axes=(batch_axis, None),
         )
-        return ChainProposal(
-            token_ids=jnp.argmax(draft_logits, axis=-1).astype(last_token_ids.dtype),
-            logits=draft_logits,
-        )
+        return ChainProposal(token_ids=jnp.argmax(draft_logits, axis=-1).astype(last_token_ids.dtype))

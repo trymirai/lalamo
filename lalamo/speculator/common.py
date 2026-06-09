@@ -12,7 +12,7 @@ from lalamo.module import ForwardPassMode, Keychain
 from lalamo.utils.sharding import ShardingConfig
 
 if TYPE_CHECKING:
-    from jaxtyping import Array, DTypeLike, Float, Int
+    from jaxtyping import Array, DTypeLike, Int
 
     from lalamo.models.language_model import PrefillResults
     from lalamo.modules.decoder import DecoderActivationTrace
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ChainProposal",
+    "NoSpeculator",
     "Proposal",
     "ProposalInputs",
     "Speculator",
@@ -50,7 +51,6 @@ class Proposal(Protocol):
 @dataclass(frozen=True)
 class ChainProposal(Proposal):
     token_ids: Int[Array, "batch proposal_tokens"]
-    logits: Float[Array, "batch proposal_tokens vocabulary"]
 
     def forward_inputs(
         self,
@@ -85,12 +85,11 @@ class ChainProposal(Proposal):
         return jnp.where(accepted_mask, proposal_indices, -1)
 
 
-class Speculator[SpeculatorStateT: eqx.Module](eqx.Module, ABC):
+class Speculator[SpeculatorStateT](eqx.Module, ABC):
     @property
     def requires_activation_trace(self) -> bool:
         return True
 
-    @abstractmethod
     def init_state(
         self,
         prefill_results: PrefillResults,
@@ -100,7 +99,6 @@ class Speculator[SpeculatorStateT: eqx.Module](eqx.Module, ABC):
         keychain: Keychain,
     ) -> SpeculatorStateT: ...
 
-    @abstractmethod
     def update_state(
         self,
         state: SpeculatorStateT,
@@ -121,6 +119,25 @@ class Speculator[SpeculatorStateT: eqx.Module](eqx.Module, ABC):
         *,
         keychain: Keychain,
     ) -> Proposal: ...
+
+
+class NoSpeculator(Speculator[None]):
+    @property
+    def requires_activation_trace(self) -> bool:
+        return False
+
+    def draft(
+        self,
+        state: None,
+        last_token_ids: Int[Array, " batch"],
+        last_token_indices: Int[Array, " batch"],
+        target_embedding: EmbeddingBase,
+        target_lm_head: EmbeddingBase,
+        *,
+        keychain: Keychain,
+    ) -> ChainProposal:
+        _ = (state, last_token_indices, keychain, target_embedding, target_lm_head)
+        return ChainProposal(token_ids=last_token_ids[:, None])
 
 
 def import_speculator(
