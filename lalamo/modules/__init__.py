@@ -24,7 +24,7 @@ from .dflash import (
     DFlashDraftLayer,
     DFlashDraftLayerConfig,
     DFlashDraftModel,
-    DFlashDraftResult,
+    DFlashDraftState,
     make_qwen3_dflash_draft_config,
 )
 from .embedding import (
@@ -120,7 +120,7 @@ __all__ = [
     "DFlashDraftLayer",
     "DFlashDraftLayerConfig",
     "DFlashDraftModel",
-    "DFlashDraftResult",
+    "DFlashDraftState",
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",

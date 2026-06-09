@@ -1,11 +1,11 @@
 from dataclasses import dataclass
+from typing import Self
 
 import equinox as eqx
 import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, Bool, Float, Int
 
-from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis
 from lalamo.modules.activations import Activation
@@ -24,7 +24,7 @@ __all__ = [
     "DFlashDraftLayer",
     "DFlashDraftLayerConfig",
     "DFlashDraftModel",
-    "DFlashDraftResult",
+    "DFlashDraftState",
     "make_qwen3_dflash_draft_config",
 ]
 
@@ -70,6 +70,45 @@ class DFlashAttentionConfig(LalamoConfig):
             query_norm=self.query_norm_config.init(initializer, self.head_dim),
             key_norm=self.key_norm_config.init(initializer, self.head_dim),
             rope=self.rope_config.init(initializer),
+        )
+
+
+class DFlashDraftLayerState(eqx.Module):
+    keys: Float[Array, "batch context_capacity groups head_channels"]
+    values: Float[Array, "batch context_capacity groups head_channels"]
+
+    @staticmethod
+    def init(
+        updates: "DFlashDraftLayerState",
+        context_capacity: int,
+    ) -> "DFlashDraftLayerState":
+        batch_size, _source_tokens, num_groups, head_dim = updates.keys.shape
+        keys = jnp.zeros(
+            (batch_size, context_capacity, num_groups, head_dim),
+            dtype=updates.keys.dtype,
+        )
+        values = jnp.zeros(
+            (batch_size, context_capacity, num_groups, head_dim),
+            dtype=updates.values.dtype,
+        )
+        return DFlashDraftLayerState(
+            keys=keys.at[:, : updates.keys.shape[1], :, :].set(updates.keys),
+            values=values.at[:, : updates.values.shape[1], :, :].set(updates.values),
+        )
+
+    def append(
+        self,
+        updates: Self,
+        context_lengths: Int[Array, " batch"],
+    ) -> Self:
+        batch_size, num_update_tokens, _num_groups, _head_dim = updates.keys.shape
+        batch_indices = jnp.arange(batch_size, dtype=context_lengths.dtype)[:, None]
+        update_offsets = jnp.arange(num_update_tokens, dtype=context_lengths.dtype)[None, :]
+        token_indices = context_lengths[:, None] + update_offsets
+
+        return DFlashDraftLayerState(
+            keys=self.keys.at[batch_indices, token_indices, :, :].set(updates.keys),
+            values=self.values.at[batch_indices, token_indices, :, :].set(updates.values),
         )
 
 
@@ -129,46 +168,97 @@ class DFlashAttention(LalamoModule[DFlashAttentionConfig]):
     def _attention_mask(
         self,
         attention_mask: Bool[Array, "query_tokens key_tokens"] | None,
+        token_positions: Int[Array, " key_tokens"],
         num_query_tokens: int,
-        num_key_tokens: int,
     ) -> Bool[Array, "query_tokens key_tokens"] | None:
         if self.config.sliding_window_size is None:
             return attention_mask
-        key_indices = jnp.arange(num_key_tokens, dtype=jnp.int32)
-        query_indices = jnp.arange(num_query_tokens, dtype=jnp.int32) + num_key_tokens - num_query_tokens
+        query_positions = token_positions[-num_query_tokens:]
         window_radius = self.config.sliding_window_size // 2
-        sliding_window_mask = (key_indices[None, :] >= query_indices[:, None] - window_radius) & (
-            key_indices[None, :] <= query_indices[:, None] + window_radius
+        sliding_window_mask = (token_positions[None, :] >= query_positions[:, None] - window_radius) & (
+            token_positions[None, :] <= query_positions[:, None] + window_radius
         )
         if attention_mask is None:
             return sliding_window_mask
         return attention_mask & sliding_window_mask
 
+    def _project_key_values(
+        self,
+        source_states: Float[Array, "tokens channels"],
+        forward_pass_config: TransformerForwardPassConfig,
+        *,
+        keychain: Keychain,
+    ) -> tuple[
+        Float[Array, "tokens groups head_channels"],
+        Float[Array, "tokens groups head_channels"],
+    ]:
+        key_projection, value_projection = call_vmapped(
+            self.key_value_projection,
+            source_states,
+            forward_pass_config=forward_pass_config.mixer_forward_pass_config.matmul_config,
+            keychain=keychain,
+        )
+        keys = self._reshape_keys_or_values(key_projection)
+        values = self._reshape_keys_or_values(value_projection)
+        return self._normalize_heads(self.key_norm, keys, forward_pass_config), values
+
+    @eqx.filter_jit
+    def project_context_unbatched(
+        self,
+        target_hidden: Float[Array, "context_tokens channels"],
+        token_positions: Int[Array, " context_tokens"],
+        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> tuple[
+        Float[Array, "context_tokens groups head_channels"],
+        Float[Array, "context_tokens groups head_channels"],
+    ]:
+        _query_keychain, key_value_keychain, _output_keychain = keychain.split(3)
+        keys, values = self._project_key_values(
+            target_hidden,
+            forward_pass_config,
+            keychain=key_value_keychain,
+        )
+        positional_embeddings = self.rope(token_positions).astype(
+            forward_pass_config.mixer_forward_pass_config.rope_dtype,
+        )
+        return self._apply_rope(keys, positional_embeddings), values
+
+    @eqx.filter_jit
+    def project_context(
+        self,
+        target_hidden: Float[Array, "batch context_tokens channels"],
+        token_positions: Int[Array, "batch context_tokens"],
+        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> DFlashDraftLayerState:
+        keys, values = call_vmapped(
+            self.project_context_unbatched,
+            target_hidden,
+            token_positions,
+            forward_pass_config=forward_pass_config,
+            keychain=keychain,
+            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
+        )
+        return DFlashDraftLayerState(keys=keys, values=values)
+
     @eqx.filter_jit
     def call_unbatched(
         self,
         hidden_states: Float[Array, "query_tokens channels"],
-        target_hidden: Float[Array, "context_tokens channels"],
+        context_keys: Float[Array, "context_capacity groups head_channels"],
+        context_values: Float[Array, "context_capacity groups head_channels"],
         token_positions: Int[Array, " key_tokens"],
         attention_mask: Bool[Array, "query_tokens key_tokens"] | None = None,
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
         *,
         keychain: Keychain,
     ) -> Float[Array, "query_tokens channels"]:
-        if hidden_states.ndim != 2:
-            raise ValueError(f"hidden_states must be 2D, got shape {hidden_states.shape}")
-        if target_hidden.ndim != 2:
-            raise ValueError(f"target_hidden must be 2D, got shape {target_hidden.shape}")
-
         query_keychain, key_value_keychain, output_keychain = keychain.split(3)
         num_query_tokens, _ = hidden_states.shape
-        source_states = jnp.concatenate([target_hidden, hidden_states], axis=0)
-        num_key_tokens, _ = source_states.shape
-        if token_positions.shape != (num_key_tokens,):
-            raise ValueError(
-                "token_positions must have one position per source token:"
-                f" expected {(num_key_tokens,)}, got {token_positions.shape}",
-            )
+        noise_token_positions = token_positions[-num_query_tokens:]
 
         (query_projection,) = call_vmapped(
             self.query_projection,
@@ -176,30 +266,24 @@ class DFlashAttention(LalamoModule[DFlashAttentionConfig]):
             forward_pass_config=forward_pass_config.mixer_forward_pass_config.matmul_config,
             keychain=query_keychain,
         )
-        key_projection, value_projection = call_vmapped(
-            self.key_value_projection,
-            source_states,
-            forward_pass_config=forward_pass_config.mixer_forward_pass_config.matmul_config,
+        noise_keys, noise_values = self._project_key_values(
+            hidden_states,
+            forward_pass_config,
             keychain=key_value_keychain,
         )
 
         queries = self._reshape_queries(query_projection)
-        keys = self._reshape_keys_or_values(key_projection)
-        values = self._reshape_keys_or_values(value_projection)
         queries = self._normalize_heads(self.query_norm, queries, forward_pass_config)
-        keys = self._normalize_heads(self.key_norm, keys, forward_pass_config)
 
-        positional_embeddings = self.rope(token_positions).astype(
+        noise_positional_embeddings = self.rope(noise_token_positions).astype(
             forward_pass_config.mixer_forward_pass_config.rope_dtype,
         )
-        query_positional_embeddings = PositionalEmbeddings(
-            cosines=positional_embeddings.cosines[-num_query_tokens:],
-            sines=positional_embeddings.sines[-num_query_tokens:],
-        )
-        queries = self._apply_rope(queries, query_positional_embeddings)
-        keys = self._apply_rope(keys, positional_embeddings)
+        queries = self._apply_rope(queries, noise_positional_embeddings)
+        noise_keys = self._apply_rope(noise_keys, noise_positional_embeddings)
+        keys = jnp.concatenate((context_keys, noise_keys), axis=0)
+        values = jnp.concatenate((context_values, noise_values), axis=0)
 
-        effective_mask = self._attention_mask(attention_mask, num_query_tokens, num_key_tokens)
+        effective_mask = self._attention_mask(attention_mask, token_positions, num_query_tokens)
         attention_output = _attention_kernel(
             queries,
             keys,
@@ -228,7 +312,7 @@ class DFlashAttention(LalamoModule[DFlashAttentionConfig]):
     def __call__(
         self,
         hidden_states: Float[Array, "batch query_tokens channels"],
-        target_hidden: Float[Array, "batch context_tokens channels"],
+        context_state: DFlashDraftLayerState,
         token_positions: Int[Array, "batch key_tokens"],
         attention_mask: Bool[Array, "batch query_tokens key_tokens"] | None = None,
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
@@ -240,7 +324,8 @@ class DFlashAttention(LalamoModule[DFlashAttentionConfig]):
             return call_vmapped(
                 self.call_unbatched,
                 hidden_states,
-                target_hidden,
+                context_state.keys,
+                context_state.values,
                 token_positions,
                 forward_pass_config=forward_pass_config,
                 keychain=keychain,
@@ -249,7 +334,8 @@ class DFlashAttention(LalamoModule[DFlashAttentionConfig]):
         return call_vmapped(
             self.call_unbatched,
             hidden_states,
-            target_hidden,
+            context_state.keys,
+            context_state.values,
             token_positions,
             attention_mask,
             forward_pass_config=forward_pass_config,
@@ -282,11 +368,27 @@ class DFlashDraftLayer(LalamoModule[DFlashDraftLayerConfig]):
     post_attention_norm: Normalization
     mlp: DenseMLP
 
+    def project_context(
+        self,
+        target_hidden: Float[Array, "batch context_tokens channels"],
+        token_positions: Int[Array, "batch context_tokens"],
+        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> DFlashDraftLayerState:
+        attention_keychain, _mlp_keychain = keychain.split(2)
+        return self.attention.project_context(
+            target_hidden,
+            token_positions,
+            forward_pass_config=forward_pass_config,
+            keychain=attention_keychain,
+        )
+
     @eqx.filter_jit
     def __call__(
         self,
         hidden_states: Float[Array, "batch query_tokens channels"],
-        target_hidden: Float[Array, "batch context_tokens channels"],
+        context_state: DFlashDraftLayerState,
         token_positions: Int[Array, "batch key_tokens"],
         attention_mask: Bool[Array, "batch query_tokens key_tokens"] | None = None,
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
@@ -302,7 +404,7 @@ class DFlashDraftLayer(LalamoModule[DFlashDraftLayerConfig]):
         )
         attention_outputs = self.attention(
             normalized_attention_inputs,
-            target_hidden,
+            context_state,
             token_positions,
             attention_mask,
             forward_pass_config=forward_pass_config,
@@ -356,8 +458,42 @@ class DFlashDraftConfig(LalamoConfig):
         )
 
 
-class DFlashDraftResult(Exportable, eqx.Module):
-    hidden_states: Float[Array, "batch query_tokens channels"]
+class DFlashDraftState(eqx.Module):
+    layer_states: tuple[DFlashDraftLayerState, ...]
+    context_lengths: Int[Array, " batch"]
+
+    @staticmethod
+    def init(
+        layer_updates: tuple[DFlashDraftLayerState, ...],
+        context_lengths: Int[Array, " batch"],
+        context_capacity: int,
+    ) -> "DFlashDraftState":
+        return DFlashDraftState(
+            layer_states=tuple(
+                DFlashDraftLayerState.init(
+                    layer_update,
+                    context_capacity,
+                )
+                for layer_update in layer_updates
+            ),
+            context_lengths=context_lengths,
+        )
+
+    def append(
+        self,
+        layer_updates: tuple[DFlashDraftLayerState, ...],
+        num_tokens_to_append: Int[Array, " batch"],
+    ) -> Self:
+        return DFlashDraftState(
+            layer_states=tuple(
+                layer_state.append(
+                    layer_update,
+                    self.context_lengths,
+                )
+                for layer_state, layer_update in zip(self.layer_states, layer_updates, strict=True)
+            ),
+            context_lengths=self.context_lengths + num_tokens_to_append,
+        )
 
 
 class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
@@ -371,60 +507,120 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
         return len(self.config.target_layer_ids) * self.config.model_dim
 
     @eqx.filter_jit
-    def __call__(
+    def project_target_features(
         self,
-        noise_embeddings: Float[Array, "batch query_tokens channels"],
-        target_features: Float[Array, "batch context_tokens target_channels"],
-        token_positions: Int[Array, "batch key_tokens"],
-        attention_mask: Bool[Array, "batch query_tokens key_tokens"] | None = None,
+        target_features: Float[Array, "batch tokens target_channels"],
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
         *,
         keychain: Keychain,
-    ) -> DFlashDraftResult:
-        if noise_embeddings.ndim != 3:
-            raise ValueError(f"noise_embeddings must be 3D, got shape {noise_embeddings.shape}")
-        if target_features.ndim != 3:
-            raise ValueError(f"target_features must be 3D, got shape {target_features.shape}")
-        if target_features.shape[-1] != self.target_feature_dim:
-            raise ValueError(
-                f"target_features must have feature dimension {self.target_feature_dim},"
-                f" got {target_features.shape[-1]}",
-            )
-
-        context_keychain, *layer_keychains = keychain.split(len(self.layers) + 1)
+    ) -> Float[Array, "batch tokens channels"]:
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
         (target_hidden,) = call_vmapped_twice(
             self.context_projection,
             target_features,
             forward_pass_config=forward_pass_config.mixer_forward_pass_config.matmul_config,
-            keychain=context_keychain,
+            keychain=keychain,
             added_sharding_axes=(batch_axis, None),
         )
-        target_hidden = call_vmapped_twice(
+        return call_vmapped_twice(
             self.context_norm,
             target_hidden,
             forward_pass_config=forward_pass_config.normalization_forward_pass_config,
             added_sharding_axes=(batch_axis, None),
         )
 
+    @eqx.filter_jit
+    def init_state(
+        self,
+        target_features: Float[Array, "batch tokens target_channels"],
+        token_positions: Int[Array, "batch tokens"],
+        context_lengths: Int[Array, " batch"],
+        context_capacity: int,
+        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> DFlashDraftState:
+        context_keychain, *layer_keychains = keychain.split(len(self.layers) + 1)
+        target_hidden = self.project_target_features(
+            target_features,
+            forward_pass_config,
+            keychain=context_keychain,
+        )
+        return DFlashDraftState.init(
+            tuple(
+                layer.project_context(
+                    target_hidden,
+                    token_positions,
+                    forward_pass_config=forward_pass_config,
+                    keychain=layer_keychain,
+                )
+                for layer, layer_keychain in zip(self.layers, layer_keychains, strict=True)
+            ),
+            context_lengths,
+            context_capacity,
+        )
+
+    @eqx.filter_jit
+    def append_state(
+        self,
+        state: DFlashDraftState,
+        target_features: Float[Array, "batch tokens target_channels"],
+        token_positions: Int[Array, "batch tokens"],
+        num_tokens_to_append: Int[Array, " batch"],
+        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> DFlashDraftState:
+        context_keychain, *layer_keychains = keychain.split(len(self.layers) + 1)
+        target_hidden = self.project_target_features(
+            target_features,
+            forward_pass_config,
+            keychain=context_keychain,
+        )
+        return state.append(
+            tuple(
+                layer.project_context(
+                    target_hidden,
+                    token_positions,
+                    forward_pass_config=forward_pass_config,
+                    keychain=layer_keychain,
+                )
+                for layer, layer_keychain in zip(self.layers, layer_keychains, strict=True)
+            ),
+            num_tokens_to_append,
+        )
+
+    @eqx.filter_jit
+    def __call__(
+        self,
+        noise_embeddings: Float[Array, "batch query_tokens channels"],
+        state: DFlashDraftState,
+        token_positions: Int[Array, "batch key_tokens"],
+        attention_mask: Bool[Array, "batch query_tokens key_tokens"] | None = None,
+        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> Float[Array, "batch query_tokens channels"]:
+        layer_keychains = keychain.split(len(self.layers))
+        batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
+
         hidden_states = noise_embeddings
-        for layer, layer_keychain in zip(self.layers, layer_keychains, strict=True):
+        for layer, layer_state, layer_keychain in zip(self.layers, state.layer_states, layer_keychains, strict=True):
             hidden_states = layer(
                 hidden_states,
-                target_hidden,
+                layer_state,
                 token_positions,
                 attention_mask,
                 forward_pass_config=forward_pass_config,
                 keychain=layer_keychain,
             )
 
-        hidden_states = call_vmapped_twice(
+        return call_vmapped_twice(
             self.output_norm,
             hidden_states,
             forward_pass_config=forward_pass_config.normalization_forward_pass_config,
             added_sharding_axes=(batch_axis, None),
         )
-        return DFlashDraftResult(hidden_states=hidden_states)
 
 
 def make_qwen3_dflash_draft_config(
