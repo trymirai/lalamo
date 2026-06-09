@@ -25,6 +25,7 @@ from lalamo.modules import (
 from lalamo.modules.token_mixer import State
 from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy
+from lalamo.speculator import NoSpeculator, Speculator, SpeculatorState
 
 __all__ = [
     "GenerationConfig",
@@ -41,6 +42,7 @@ class PrefillResults(NamedTuple):
     last_token_logits: Float[Array, "batch vocabulary"]
     last_token_indices: Int[Array, " batch"]
     state: State
+    speculator_state: SpeculatorState = None
 
 
 class Chunk(eqx.Module):
@@ -206,6 +208,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: DecoderForwardPassConfig | None = None,
         chunk_size: int = 512,
+        speculator: Speculator = NoSpeculator(),
         *,
         keychain: Keychain,
     ) -> PrefillResults:
@@ -237,16 +240,17 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         chunk_keychains = jax.tree.map(lambda *nodes: jnp.stack(nodes), *keychain.split(num_chunks))
 
         def apply_chunk(
-            state_and_logits: tuple[State, Float[Array, "batch vocabulary"]],
+            state_speculator_state_and_logits: tuple[State, SpeculatorState, Float[Array, "batch vocabulary"]],
             chunk_inputs: tuple[Chunk, Keychain],
-        ) -> tuple[tuple[State, Float[Array, "batch vocabulary"]], None]:
-            current_state, previous_logits = state_and_logits
+        ) -> tuple[tuple[State, SpeculatorState, Float[Array, "batch vocabulary"]], None]:
+            current_state, current_speculator_state, previous_logits = state_speculator_state_and_logits
             chunk, current_chunk_keychain = chunk_inputs
             decoder_result = self.decoder(
                 token_ids=chunk.tokens,
                 token_positions=chunk.indices,
                 state=current_state,
                 return_updated_state=True,
+                return_activation_trace=speculator.requires_activation_trace,
                 lengths_without_padding=chunk.sequence_ends,
                 forward_pass_config=forward_pass_config,
                 keychain=current_chunk_keychain,
@@ -258,12 +262,19 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             )
             return (
                 decoder_result.updated_state,
+                speculator.prefill_chunk(
+                    current_speculator_state,
+                    decoder_result,
+                    chunk.sequence_ends,
+                    state_capacity,
+                    keychain=current_chunk_keychain,
+                ),
                 jnp.where(chunk.is_last_token_inside[:, None], chunk_logits, previous_logits),
             ), None
 
-        (state, last_token_logits), _ = jax.lax.scan(
+        (state, speculator_state, last_token_logits), _ = jax.lax.scan(
             apply_chunk,
-            (state, logits_like),
+            (state, None, logits_like),
             (chunks, chunk_keychains),
         )
 
@@ -271,6 +282,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             last_token_logits=last_token_logits,
             last_token_indices=jnp.maximum(lengths_without_padding - 1, 0),
             state=state,
+            speculator_state=speculator_state,
         )
 
     @eqx.filter_jit

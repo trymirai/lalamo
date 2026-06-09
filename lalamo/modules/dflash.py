@@ -80,9 +80,10 @@ class DFlashDraftLayerState(eqx.Module):
     @staticmethod
     def init(
         updates: "DFlashDraftLayerState",
+        context_lengths: Int[Array, " batch"],
         context_capacity: int,
     ) -> "DFlashDraftLayerState":
-        batch_size, _source_tokens, num_groups, head_dim = updates.keys.shape
+        batch_size, num_update_tokens, num_groups, head_dim = updates.keys.shape
         keys = jnp.zeros(
             (batch_size, context_capacity, num_groups, head_dim),
             dtype=updates.keys.dtype,
@@ -91,24 +92,39 @@ class DFlashDraftLayerState(eqx.Module):
             (batch_size, context_capacity, num_groups, head_dim),
             dtype=updates.values.dtype,
         )
+        batch_indices = jnp.arange(batch_size, dtype=context_lengths.dtype)[:, None]
+        update_offsets = jnp.arange(num_update_tokens, dtype=context_lengths.dtype)[None, :]
+        valid_updates = update_offsets < context_lengths[:, None]
         return DFlashDraftLayerState(
-            keys=keys.at[:, : updates.keys.shape[1], :, :].set(updates.keys),
-            values=values.at[:, : updates.values.shape[1], :, :].set(updates.values),
+            keys=keys.at[batch_indices, update_offsets, :, :].set(
+                jnp.where(valid_updates[:, :, None, None], updates.keys, 0),
+            ),
+            values=values.at[batch_indices, update_offsets, :, :].set(
+                jnp.where(valid_updates[:, :, None, None], updates.values, 0),
+            ),
         )
 
     def append(
         self,
         updates: Self,
         context_lengths: Int[Array, " batch"],
+        num_tokens_to_append: Int[Array, " batch"],
     ) -> Self:
         batch_size, num_update_tokens, _num_groups, _head_dim = updates.keys.shape
         batch_indices = jnp.arange(batch_size, dtype=context_lengths.dtype)[:, None]
         update_offsets = jnp.arange(num_update_tokens, dtype=context_lengths.dtype)[None, :]
         token_indices = context_lengths[:, None] + update_offsets
+        valid_updates = update_offsets < num_tokens_to_append[:, None]
 
         return DFlashDraftLayerState(
-            keys=self.keys.at[batch_indices, token_indices, :, :].set(updates.keys),
-            values=self.values.at[batch_indices, token_indices, :, :].set(updates.values),
+            keys=self.keys.at[batch_indices, token_indices, :, :].set(
+                jnp.where(valid_updates[:, :, None, None], updates.keys, 0),
+                mode="drop",
+            ),
+            values=self.values.at[batch_indices, token_indices, :, :].set(
+                jnp.where(valid_updates[:, :, None, None], updates.values, 0),
+                mode="drop",
+            ),
         )
 
 
@@ -472,6 +488,7 @@ class DFlashDraftState(eqx.Module):
             layer_states=tuple(
                 DFlashDraftLayerState.init(
                     layer_update,
+                    context_lengths,
                     context_capacity,
                 )
                 for layer_update in layer_updates
@@ -489,6 +506,7 @@ class DFlashDraftState(eqx.Module):
                 layer_state.append(
                     layer_update,
                     self.context_lengths,
+                    num_tokens_to_append,
                 )
                 for layer_state, layer_update in zip(self.layer_states, layer_updates, strict=True)
             ),

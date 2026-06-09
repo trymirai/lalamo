@@ -216,6 +216,9 @@ class DynamicKVCacheLayer(KVCacheLayer):
 class StaticKVCacheLayer(KVCacheLayer):
     current_length: Int[Array, "*batch"]
 
+    def base_positions(self) -> Int[Array, " batch"]:
+        return self.current_length
+
     def current_prefix_length(self) -> Int[Array, ""]:
         self._raise_if_batched()
         return self.current_length

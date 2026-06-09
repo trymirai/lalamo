@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from lalamo.exportable import Exportable, ExportResults
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, LogicalAxis
-from lalamo.modules.decoder import DecoderActivationTrace
+from lalamo.modules.decoder import DecoderActivationTrace, DecoderResult
 from lalamo.modules.dflash import DFlashDraftConfig, DFlashDraftModel, DFlashDraftState
 from lalamo.modules.utils import call_vmapped_twice
 from lalamo.safetensors import safe_read, safe_write
@@ -21,7 +21,6 @@ from .common import ChainProposal, Speculator
 if TYPE_CHECKING:
     from jaxtyping import Array, DTypeLike, Float, Int
 
-    from lalamo.models.language_model import PrefillResults
     from lalamo.modules.embedding import EmbeddingBase
 
 __all__ = [
@@ -31,6 +30,10 @@ __all__ = [
 
 class DFlashSpeculator(Speculator[DFlashDraftState]):
     draft_model: DFlashDraftModel
+
+    @property
+    def max_proposal_tokens(self) -> int:
+        return self.draft_model.config.block_size
 
     def save(self, directory: Path | str) -> None:
         directory = Path(directory)
@@ -91,38 +94,32 @@ class DFlashSpeculator(Speculator[DFlashDraftState]):
             axis=-1,
         )
 
-    def init_state(
+    def prefill_chunk(
         self,
-        prefill_results: PrefillResults,
-        activation_trace: DecoderActivationTrace,
+        state: DFlashDraftState | None,
+        decoder_result: DecoderResult,
+        chunk_lengths: Int[Array, " batch"],
         context_capacity: int,
         *,
         keychain: Keychain,
     ) -> DFlashDraftState:
+        activation_trace = decoder_result.activation_trace
+        if activation_trace is None:
+            raise ValueError("DFlashSpeculator requires decoder activation traces.")
         target_features = self.extract_target_features(activation_trace)
-        context_lengths = prefill_results.last_token_indices + 1
-        return self.draft_model.init_state(
-            target_features,
-            activation_trace.token_positions,
-            context_lengths,
-            context_capacity,
-            keychain=keychain,
-        )
-
-    def update_state(
-        self,
-        state: DFlashDraftState,
-        activation_trace: DecoderActivationTrace,
-        num_tokens_to_append: Int[Array, " batch"],
-        *,
-        keychain: Keychain,
-    ) -> DFlashDraftState:
-        target_features = self.extract_target_features(activation_trace)
+        if state is None:
+            return self.draft_model.init_state(
+                target_features,
+                activation_trace.token_positions,
+                chunk_lengths,
+                context_capacity,
+                keychain=keychain,
+            )
         return self.draft_model.append_state(
             state,
             target_features,
             activation_trace.token_positions,
-            num_tokens_to_append,
+            chunk_lengths,
             keychain=keychain,
         )
 
@@ -131,7 +128,7 @@ class DFlashSpeculator(Speculator[DFlashDraftState]):
         state: DFlashDraftState,
         last_token_ids: Int[Array, " batch"],
         last_token_indices: Int[Array, " batch"],
-        target_embedding: EmbeddingBase, # bad :(
+        target_embedding: EmbeddingBase,
         target_lm_head: EmbeddingBase,
         *,
         keychain: Keychain,
@@ -149,7 +146,7 @@ class DFlashSpeculator(Speculator[DFlashDraftState]):
         block_token_ids = jnp.concatenate((last_token_ids[:, None], mask_token_ids), axis=1)
         noise_embeddings = target_embedding.embed(block_token_ids, keychain=embedding_keychain)
 
-        draft_offsets = jnp.arange(block_size, dtype=last_token_indices.dtype)[None, :]
+        draft_offsets = jnp.arange(block_size, dtype=last_token_indices.dtype)[None, :] + 1
         draft_positions = last_token_indices[:, None] + draft_offsets
         first_layer_state, *_ = state.layer_states
         _, context_capacity, _, _ = first_layer_state.keys.shape

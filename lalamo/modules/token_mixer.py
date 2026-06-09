@@ -32,6 +32,9 @@ __all__ = [
 
 
 class StateLayerBase(Exportable, eqx.Module):
+    def base_positions(self) -> Int[Array, " batch"]:
+        raise NotImplementedError("State layer does not expose base positions.")
+
     def rollback(
         self,
         base_positions: Int[Array, " batch"],
@@ -63,6 +66,10 @@ class State(tuple[StateLayerBase, ...]):
             )
             for state_layer in self
         )
+
+    def base_positions(self) -> Int[Array, " batch"]:
+        first_layer, *_ = self
+        return first_layer.base_positions()
 
 
 class AttentionImplementation(Enum):
