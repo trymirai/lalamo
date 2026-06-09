@@ -136,22 +136,22 @@ class DFlashSpeculator(Speculator[DFlashDraftState]):
         if activation_trace is None:
             return eqx.error_if(
                 state,
-                accepted.updates_speculator,
+                accepted.should_update_speculator_state,
                 "DFlashSpeculator requires decoder activation traces.",
             )
         target_features = self.extract_target_features(activation_trace)
-        batch_size, num_accepted_slots = accepted.indices.shape
+        batch_size, num_accepted_slots = accepted.accepted_node_indices.shape
         batch_indices = jnp.arange(batch_size, dtype=jnp.int32)[:, None]
-        accepted_slots = jnp.arange(num_accepted_slots, dtype=accepted.lengths.dtype)[None, :]
-        valid = (accepted_slots < accepted.lengths[:, None]) & accepted.updates_speculator
-        source_indices = jnp.clip(accepted.indices, 0, target_features.shape[1] - 1)
+        accepted_slots = jnp.arange(num_accepted_slots, dtype=accepted.num_accepted_nodes.dtype)[None, :]
+        valid = (accepted_slots < accepted.num_accepted_nodes[:, None]) & accepted.should_update_speculator_state
+        source_indices = jnp.clip(accepted.accepted_node_indices, 0, target_features.shape[1] - 1)
         selected_target_features = target_features[batch_indices, source_indices, :]
         selected_token_positions = activation_trace.token_positions[batch_indices, source_indices]
         return self.draft_model.append_state(
             state,
             jnp.where(valid[:, :, None], selected_target_features, 0),
             jnp.where(valid, selected_token_positions, 0),
-            jnp.where(accepted.updates_speculator, accepted.lengths, 0),
+            jnp.where(accepted.should_update_speculator_state, accepted.num_accepted_nodes, 0),
             keychain=keychain,
         )
 
@@ -216,5 +216,5 @@ class DFlashSpeculator(Speculator[DFlashDraftState]):
             token_ids=jnp.concatenate((last_token_ids[:, None], draft_token_ids), axis=1),
             token_positions=draft_positions,
             lengths=jnp.full((batch_size,), block_size, dtype=last_token_indices.dtype),
-            updates_speculator=jnp.asarray(True),
+            should_update_speculator_state=jnp.asarray(True),
         )

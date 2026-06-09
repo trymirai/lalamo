@@ -1,7 +1,6 @@
 from .common import (
     AcceptedProposal,
     ChainProposal,
-    CommittedTokens,
     NoSpeculator,
     Proposal,
     ProposalInputs,
@@ -14,7 +13,6 @@ from .dflash import DFlashSpeculator
 __all__ = [
     "AcceptedProposal",
     "ChainProposal",
-    "CommittedTokens",
     "DFlashSpeculator",
     "NoSpeculator",
     "Proposal",

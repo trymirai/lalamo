@@ -385,7 +385,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 token_ids=jnp.zeros((batch_size, max_proposal_tokens), dtype=prompt_token_ids.dtype),
                 token_positions=initial_positions,
                 lengths=jnp.zeros((batch_size,), dtype=prefill_results.last_token_indices.dtype),
-                updates_speculator=jnp.asarray(False),
+                should_update_speculator_state=jnp.asarray(False),
             ),
             stop_flags=jax.device_put(jnp.zeros(batch_size, dtype=jnp.bool_), batch_vector_sharding),
             sampling_policy=sampling_policy,
@@ -408,10 +408,8 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             sampled_token_ids = jax.vmap(jax.vmap(jax.random.categorical))(sampling_keys, processed_logits)
             active_mask = jnp.logical_not(state.stop_flags) & (state.num_generated_tokens < max_output_length)
             sampled_token_ids = jnp.where(active_mask[:, None], sampled_token_ids, stopped_token_ids[:, None])
-            accepted = state.pending_proposal.accept(sampled_token_ids, active_mask=active_mask)
-            committed = state.pending_proposal.committed_tokens(
+            accepted = state.pending_proposal.accept(
                 sampled_token_ids,
-                accepted,
                 max_output_length - state.num_generated_tokens,
                 eos_token_ids,
                 active_mask=active_mask,
@@ -419,7 +417,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
 
             pending_state = state.pending_decoder_result.updated_state
             assert pending_state is not None
-            target_state = pending_state.rollback(state.pending_base_positions, accepted.indices)
+            target_state = pending_state.rollback(state.pending_base_positions, accepted.accepted_node_indices)
             current_keychain = Keychain(
                 vmapped_keys=decoding_key,
                 batch_key=decoding_keychain.batch_key,
@@ -431,23 +429,20 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 accepted,
                 keychain=current_keychain,
             )
-            next_num_generated_tokens = state.num_generated_tokens + committed.lengths
-            next_stop_flags = state.stop_flags | committed.has_eos(eos_token_ids) | (
+            next_num_generated_tokens = state.num_generated_tokens + accepted.lengths
+            next_stop_flags = state.stop_flags | accepted.has_eos(eos_token_ids) | (
                 next_num_generated_tokens >= max_output_length
             )
 
-            last_slots = jnp.maximum(committed.lengths - 1, 0)
-            last_source_indices = jnp.clip(committed.source_indices[batch_indices, last_slots], 0, max_proposal_tokens - 1)
-            last_token_ids = committed.token_ids[batch_indices, last_slots]
-            last_token_ids = jnp.where(committed.lengths > 0, last_token_ids, stopped_token_ids)
-            last_token_indices = state.pending_proposal.token_positions[batch_indices, last_source_indices]
+            last_token_ids = accepted.last_token_ids(stopped_token_ids)
+            last_token_indices = accepted.last_token_indices()
 
             if use_count_penalties:
                 next_sampling_policy = call_vmapped(
                     lambda policy, token_id, should_count: policy.with_next_token_count(token_id, should_count),
                     state.sampling_policy,
                     last_token_ids,
-                    committed.lengths > 0,
+                    accepted.lengths > 0,
                 )
             else:
                 next_sampling_policy = state.sampling_policy
@@ -479,12 +474,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 top_k_token_logits = None
             else:
                 node_top_k_logits, node_top_k_token_ids = jax.lax.top_k(processed_logits, num_top_logits_to_return)
-                source_indices = jnp.clip(committed.source_indices, 0, max_proposal_tokens - 1)
-                valid_sources = committed.source_indices >= 0
-                top_k_token_ids = node_top_k_token_ids[batch_indices[:, None], source_indices]
-                top_k_token_logits = node_top_k_logits[batch_indices[:, None], source_indices]
-                top_k_token_ids = jnp.where(valid_sources[:, :, None], top_k_token_ids, 0)
-                top_k_token_logits = jnp.where(valid_sources[:, :, None], top_k_token_logits, 0)
+                top_k_token_ids, top_k_token_logits = accepted.gather_top_k(
+                    node_top_k_token_ids,
+                    node_top_k_logits,
+                )
 
             return (
                 DecodingState(
@@ -497,8 +490,8 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                     num_generated_tokens=next_num_generated_tokens,
                 ),
                 GenerationStepResults(
-                    token_ids=committed.token_ids,
-                    lengths=committed.lengths,
+                    token_ids=accepted.token_ids,
+                    lengths=accepted.lengths,
                     top_k_token_ids=top_k_token_ids,
                     top_k_token_logits=top_k_token_logits,
                 ),
