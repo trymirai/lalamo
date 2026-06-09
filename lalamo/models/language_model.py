@@ -18,6 +18,7 @@ from lalamo.modules import (
     Decoder,
     DecoderConfig,
     DecoderForwardPassConfig,
+    DecoderResult,
     ForwardPassMode,
     Keychain,
     KeychainBroadcastMode,
@@ -25,7 +26,7 @@ from lalamo.modules import (
 from lalamo.modules.token_mixer import State
 from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy
-from lalamo.speculator import NoSpeculator, Speculator, SpeculatorState
+from lalamo.speculator import ChainProposal, NoSpeculator, Proposal, Speculator, SpeculatorState
 
 __all__ = [
     "GenerationConfig",
@@ -42,7 +43,7 @@ class PrefillResults(NamedTuple):
     last_token_logits: Float[Array, "batch vocabulary"]
     last_token_indices: Int[Array, " batch"]
     state: State
-    speculator_state: SpeculatorState = None
+    speculator_state: SpeculatorState
 
 
 class Chunk(eqx.Module):
@@ -53,17 +54,19 @@ class Chunk(eqx.Module):
 
 
 class DecodingState(NamedTuple):
-    last_token_logits: Float[Array, "batch vocabulary"]
-    last_token_indices: Int[Array, " batch"]
-    state: State
+    pending_decoder_result: DecoderResult
+    pending_base_positions: Int[Array, " batch"]
+    pending_proposal: Proposal
     stop_flags: Bool[Array, " batch"]
     sampling_policy: SamplingPolicy
-
+    speculator_state: SpeculatorState
+    num_generated_tokens: Int[Array, " batch"]
 
 class GenerationStepResults(NamedTuple):
-    token_ids: Int[Array, " batch"]
-    top_k_token_ids: Int[Array, " batch k"] | None
-    top_k_token_logits: Float[Array, " batch k"] | None
+    token_ids: Int[Array, "batch tokens"]
+    lengths: Int[Array, " batch"]
+    top_k_token_ids: Int[Array, "batch tokens k"] | None
+    top_k_token_logits: Float[Array, "batch tokens k"] | None
 
 
 class GenerationResults(NamedTuple):
@@ -298,6 +301,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
         keychain: Keychain,
+        speculator: Speculator = NoSpeculator(),
     ) -> GenerationResults:
         if max_output_length < 1:
             raise ValueError("max_output_length must be at least 1.")
@@ -313,6 +317,8 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         if generation_config is not None:
             sampling_policy = generation_config.default_policy()
         use_count_penalties = sampling_policy.has_count_penalties
+        if not isinstance(speculator, NoSpeculator) and use_count_penalties:
+            raise ValueError("Speculator decoding only supports stateless sampling policies.")
         sampling_policy = sampling_policy.broadcast(batch_size)
 
         def shard_sampling_leaf(leaf: object) -> object:
@@ -355,85 +361,156 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             prompt_lengths_without_padding,
             prefill_forward_pass_config,
             keychain=prefill_keychain,
+            speculator=speculator,
         )
+
+        max_proposal_tokens = speculator.max_proposal_tokens
+        stopped_token_ids = jax.device_put(jnp.zeros(batch_size, dtype=jnp.int32), batch_vector_sharding)
+        batch_indices = jax.device_put(jnp.arange(batch_size, dtype=jnp.int32), batch_vector_sharding)
+        initial_logits = jnp.zeros(
+            (batch_size, max_proposal_tokens, self.decoder.vocab_size),
+            dtype=prefill_results.last_token_logits.dtype,
+        )
+        initial_positions = prefill_results.last_token_indices[:, None] + jnp.arange(
+            max_proposal_tokens,
+            dtype=prefill_results.last_token_indices.dtype,
+        )[None, :]
         initial_state = DecodingState(
-            last_token_logits=prefill_results.last_token_logits,
-            last_token_indices=prefill_results.last_token_indices,
-            state=prefill_results.state,
+            pending_decoder_result=DecoderResult(
+                logits=initial_logits.at[:, 0, :].set(prefill_results.last_token_logits),
+                updated_state=prefill_results.state,
+            ),
+            pending_base_positions=prefill_results.state.base_positions(),
+            pending_proposal=ChainProposal(
+                token_ids=jnp.zeros((batch_size, max_proposal_tokens), dtype=prompt_token_ids.dtype),
+                token_positions=initial_positions,
+                lengths=jnp.zeros((batch_size,), dtype=prefill_results.last_token_indices.dtype),
+                updates_speculator=jnp.asarray(False),
+            ),
             stop_flags=jax.device_put(jnp.zeros(batch_size, dtype=jnp.bool_), batch_vector_sharding),
             sampling_policy=sampling_policy,
+            speculator_state=prefill_results.speculator_state,
+            num_generated_tokens=jax.device_put(jnp.zeros(batch_size, dtype=jnp.int32), batch_vector_sharding),
         )
-        stopped_token_ids = jax.device_put(jnp.zeros(batch_size, dtype=jnp.int32), batch_vector_sharding)
-
-        def sample_token(
-            logits: Float[Array, " vocabulary"],
-            sample_key: Key[Array, ""],
-        ) -> Int[Array, ""]:
-            return jax.random.categorical(sample_key, logits)
 
         def loop_iteration(
             state: DecodingState,
-            step_keys: tuple[Key[Array, " batch"], Key[Array, "..."]],
+            step_keys: tuple[Key[Array, "batch nodes"], Key[Array, "..."]],
         ) -> tuple[DecodingState, GenerationStepResults]:
             sampling_keys, decoding_key = step_keys
             processed_logits = call_vmapped(
-                lambda policy, logits: policy.process_logits(logits),
+                lambda policy, logits: jax.vmap(lambda node_logits: policy.process_logits(node_logits.astype(jnp.float32)))(
+                    logits,
+                ),
                 state.sampling_policy,
-                state.last_token_logits.astype(jnp.float32),
+                state.pending_decoder_result.logits,
             )
-            next_token_ids = call_vmapped(sample_token, processed_logits, sampling_keys)
-            next_token_ids = jnp.where(state.stop_flags, stopped_token_ids, next_token_ids)
-            next_sampling_policy = call_vmapped(
-                lambda policy, token_id, should_count: policy.with_next_token_count(token_id, should_count),
-                state.sampling_policy,
-                next_token_ids,
-                jnp.logical_not(state.stop_flags),
+            sampled_token_ids = jax.vmap(jax.vmap(jax.random.categorical))(sampling_keys, processed_logits)
+            active_mask = jnp.logical_not(state.stop_flags) & (state.num_generated_tokens < max_output_length)
+            sampled_token_ids = jnp.where(active_mask[:, None], sampled_token_ids, stopped_token_ids[:, None])
+            accepted = state.pending_proposal.accept(sampled_token_ids, active_mask=active_mask)
+            committed = state.pending_proposal.committed_tokens(
+                sampled_token_ids,
+                accepted,
+                max_output_length - state.num_generated_tokens,
+                eos_token_ids,
+                active_mask=active_mask,
             )
+
+            pending_state = state.pending_decoder_result.updated_state
+            assert pending_state is not None
+            target_state = pending_state.rollback(state.pending_base_positions, accepted.indices)
+            current_keychain = Keychain(
+                vmapped_keys=decoding_key,
+                batch_key=decoding_keychain.batch_key,
+                sharding_config=decoding_keychain.sharding_config,
+            )
+            next_speculator_state = speculator.update_state(
+                state.speculator_state,
+                state.pending_decoder_result,
+                accepted,
+                keychain=current_keychain,
+            )
+            next_num_generated_tokens = state.num_generated_tokens + committed.lengths
+            next_stop_flags = state.stop_flags | committed.has_eos(eos_token_ids) | (
+                next_num_generated_tokens >= max_output_length
+            )
+
+            last_slots = jnp.maximum(committed.lengths - 1, 0)
+            last_source_indices = jnp.clip(committed.source_indices[batch_indices, last_slots], 0, max_proposal_tokens - 1)
+            last_token_ids = committed.token_ids[batch_indices, last_slots]
+            last_token_ids = jnp.where(committed.lengths > 0, last_token_ids, stopped_token_ids)
+            last_token_indices = state.pending_proposal.token_positions[batch_indices, last_source_indices]
+
+            if use_count_penalties:
+                next_sampling_policy = call_vmapped(
+                    lambda policy, token_id, should_count: policy.with_next_token_count(token_id, should_count),
+                    state.sampling_policy,
+                    last_token_ids,
+                    committed.lengths > 0,
+                )
+            else:
+                next_sampling_policy = state.sampling_policy
+
+            proposal = speculator.draft(
+                next_speculator_state,
+                last_token_ids,
+                last_token_indices,
+                self.decoder.embedding,
+                self.decoder.embedding,
+                keychain=current_keychain,
+            )
+            proposal_inputs = proposal.forward_inputs()
+            decoder_result = self.decoder(
+                token_ids=proposal_inputs.token_ids,
+                token_positions=proposal_inputs.token_positions,
+                state=target_state,
+                return_updated_state=True,
+                return_activation_trace=speculator.requires_activation_trace,
+                lengths_without_padding=proposal_inputs.lengths_without_padding,
+                attention_parent_indices=proposal_inputs.attention_parent_indices,
+                forward_pass_config=decode_forward_pass_config,
+                keychain=current_keychain,
+            )
+            assert decoder_result.updated_state is not None
 
             if num_top_logits_to_return is None:
                 top_k_token_ids = None
                 top_k_token_logits = None
             else:
-                top_k_token_logits, top_k_token_ids = jax.lax.top_k(processed_logits, num_top_logits_to_return)
-
-            next_token_indices = state.last_token_indices + 1
-            next_stop_flags = state.stop_flags | jnp.any(next_token_ids[:, None] == eos_token_ids[None, :], axis=-1)
-            decoder_result = self.decoder(
-                token_ids=next_token_ids[:, None],
-                token_positions=next_token_indices[:, None],
-                state=state.state,
-                return_updated_state=True,
-                forward_pass_config=decode_forward_pass_config,
-                keychain=Keychain(
-                    vmapped_keys=decoding_key,
-                    batch_key=decoding_keychain.batch_key,
-                    sharding_config=decoding_keychain.sharding_config,
-                ),
-            )
-            assert decoder_result.updated_state is not None
+                node_top_k_logits, node_top_k_token_ids = jax.lax.top_k(processed_logits, num_top_logits_to_return)
+                source_indices = jnp.clip(committed.source_indices, 0, max_proposal_tokens - 1)
+                valid_sources = committed.source_indices >= 0
+                top_k_token_ids = node_top_k_token_ids[batch_indices[:, None], source_indices]
+                top_k_token_logits = node_top_k_logits[batch_indices[:, None], source_indices]
+                top_k_token_ids = jnp.where(valid_sources[:, :, None], top_k_token_ids, 0)
+                top_k_token_logits = jnp.where(valid_sources[:, :, None], top_k_token_logits, 0)
 
             return (
                 DecodingState(
-                    last_token_logits=decoder_result.logits[:, 0, :].astype(jnp.float32),
-                    last_token_indices=next_token_indices,
-                    state=decoder_result.updated_state,
+                    pending_decoder_result=decoder_result,
+                    pending_base_positions=target_state.base_positions(),
+                    pending_proposal=proposal,
                     stop_flags=next_stop_flags,
                     sampling_policy=next_sampling_policy,
+                    speculator_state=next_speculator_state,
+                    num_generated_tokens=next_num_generated_tokens,
                 ),
                 GenerationStepResults(
-                    token_ids=next_token_ids,
+                    token_ids=committed.token_ids,
+                    lengths=committed.lengths,
                     top_k_token_ids=top_k_token_ids,
                     top_k_token_logits=top_k_token_logits,
                 ),
             )
 
         sampling_keys = sampling_keychain.rolling_broadcast(
-            (max_output_length, batch_size),
+            (max_output_length, batch_size, max_proposal_tokens),
             mode=KeychainBroadcastMode.PREFIX,
         ).vmapped_keys
         sampling_keys = jax.device_put(
             sampling_keys,
-            self.sharding_config.make_sharding((None, batch_axis)),
+            self.sharding_config.make_sharding((None, batch_axis, None)),
         )
         decoding_keys = decoding_keychain.rolling_broadcast(
             (max_output_length, *decoding_keychain.vmapped_keys.shape),
@@ -441,13 +518,43 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         ).vmapped_keys
         _, generated = jax.lax.scan(loop_iteration, initial_state, (sampling_keys, decoding_keys))
 
-        token_ids = rearrange(generated.token_ids, "step batch -> batch step")
+        step_token_ids = generated.token_ids
+        step_lengths = generated.lengths
+        flat_token_ids = rearrange(step_token_ids, "step batch tokens -> batch (step tokens)")
+        flat_valid = rearrange(
+            jnp.arange(max_proposal_tokens, dtype=jnp.int32)[None, None, :] < step_lengths[:, :, None],
+            "step batch tokens -> batch (step tokens)",
+        )
+        output_positions = jnp.cumsum(flat_valid.astype(jnp.int32), axis=1) - 1
+        output_positions = jnp.where(flat_valid, output_positions, max_output_length)
+        token_ids = jnp.zeros((batch_size, max_output_length), dtype=flat_token_ids.dtype)
+        token_ids = token_ids.at[batch_indices[:, None], output_positions].set(flat_token_ids, mode="drop")
+
         if num_top_logits_to_return is None:
             top_k_token_ids = None
             top_k_token_logits = None
         else:
-            top_k_token_ids = rearrange(generated.top_k_token_ids, "step batch k -> batch step k")
-            top_k_token_logits = rearrange(generated.top_k_token_logits, "step batch k -> batch step k")
+            flat_top_k_token_ids = rearrange(
+                generated.top_k_token_ids,
+                "step batch tokens k -> batch (step tokens) k",
+            )
+            flat_top_k_token_logits = rearrange(
+                generated.top_k_token_logits,
+                "step batch tokens k -> batch (step tokens) k",
+            )
+            top_k_token_ids = jnp.zeros((batch_size, max_output_length, num_top_logits_to_return), dtype=jnp.int32)
+            top_k_token_logits = jnp.zeros(
+                (batch_size, max_output_length, num_top_logits_to_return),
+                dtype=flat_top_k_token_logits.dtype,
+            )
+            top_k_token_ids = top_k_token_ids.at[batch_indices[:, None], output_positions, :].set(
+                flat_top_k_token_ids,
+                mode="drop",
+            )
+            top_k_token_logits = top_k_token_logits.at[batch_indices[:, None], output_positions, :].set(
+                flat_top_k_token_logits,
+                mode="drop",
+            )
 
         return GenerationResults(
             token_ids=token_ids,

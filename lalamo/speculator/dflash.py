@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Self, cast
 
+import equinox as eqx
 import jax.numpy as jnp
 
 from lalamo.exportable import Exportable, ExportResults
@@ -16,7 +17,7 @@ from lalamo.safetensors import safe_read, safe_write
 from lalamo.utils.json import JSON
 from lalamo.utils.sharding import ShardingConfig
 
-from .common import ChainProposal, Speculator
+from .common import AcceptedProposal, ChainProposal, Speculator
 
 if TYPE_CHECKING:
     from jaxtyping import Array, DTypeLike, Float, Int
@@ -123,6 +124,37 @@ class DFlashSpeculator(Speculator[DFlashDraftState]):
             keychain=keychain,
         )
 
+    def update_state(
+        self,
+        state: DFlashDraftState,
+        decoder_result: DecoderResult,
+        accepted: AcceptedProposal,
+        *,
+        keychain: Keychain,
+    ) -> DFlashDraftState:
+        activation_trace = decoder_result.activation_trace
+        if activation_trace is None:
+            return eqx.error_if(
+                state,
+                accepted.updates_speculator,
+                "DFlashSpeculator requires decoder activation traces.",
+            )
+        target_features = self.extract_target_features(activation_trace)
+        batch_size, num_accepted_slots = accepted.indices.shape
+        batch_indices = jnp.arange(batch_size, dtype=jnp.int32)[:, None]
+        accepted_slots = jnp.arange(num_accepted_slots, dtype=accepted.lengths.dtype)[None, :]
+        valid = (accepted_slots < accepted.lengths[:, None]) & accepted.updates_speculator
+        source_indices = jnp.clip(accepted.indices, 0, target_features.shape[1] - 1)
+        selected_target_features = target_features[batch_indices, source_indices, :]
+        selected_token_positions = activation_trace.token_positions[batch_indices, source_indices]
+        return self.draft_model.append_state(
+            state,
+            jnp.where(valid[:, :, None], selected_target_features, 0),
+            jnp.where(valid, selected_token_positions, 0),
+            jnp.where(accepted.updates_speculator, accepted.lengths, 0),
+            keychain=keychain,
+        )
+
     def draft(
         self,
         state: DFlashDraftState,
@@ -180,4 +212,9 @@ class DFlashSpeculator(Speculator[DFlashDraftState]):
             added_sharding_axes=(batch_axis, None),
         )
         draft_token_ids = jnp.argmax(draft_logits, axis=-1).astype(last_token_ids.dtype)
-        return ChainProposal(token_ids=jnp.concatenate((last_token_ids[:, None], draft_token_ids), axis=1))
+        return ChainProposal(
+            token_ids=jnp.concatenate((last_token_ids[:, None], draft_token_ids), axis=1),
+            token_positions=draft_positions,
+            lengths=jnp.full((batch_size,), block_size, dtype=last_token_indices.dtype),
+            updates_speculator=jnp.asarray(True),
+        )
