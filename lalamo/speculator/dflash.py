@@ -131,7 +131,7 @@ class DFlashSpeculator(Speculator[DFlashDraftState]):
         state: DFlashDraftState,
         last_token_ids: Int[Array, " batch"],
         last_token_indices: Int[Array, " batch"],
-        target_embedding: EmbeddingBase,
+        target_embedding: EmbeddingBase, # bad :(
         target_lm_head: EmbeddingBase,
         *,
         keychain: Keychain,
@@ -175,12 +175,12 @@ class DFlashSpeculator(Speculator[DFlashDraftState]):
             attention_mask,
             keychain=draft_keychain,
         )
-        draft_hidden_states = draft_hidden_states[:, 1:, :]
         batch_axis = self.draft_model.sharding_config.resolve_axis(LogicalAxis.BATCH)
         draft_logits = call_vmapped_twice(
             target_lm_head.readout,
-            draft_hidden_states,
+            draft_hidden_states[:, 1:, :],
             keychain=readout_keychain,
             added_sharding_axes=(batch_axis, None),
         )
-        return ChainProposal(token_ids=jnp.argmax(draft_logits, axis=-1).astype(last_token_ids.dtype))
+        draft_token_ids = jnp.argmax(draft_logits, axis=-1).astype(last_token_ids.dtype)
+        return ChainProposal(token_ids=jnp.concatenate((last_token_ids[:, None], draft_token_ids), axis=1))

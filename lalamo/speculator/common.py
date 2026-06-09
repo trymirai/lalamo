@@ -76,12 +76,18 @@ class ChainProposal(Proposal):
         self,
         sampled_token_ids: Int[Array, "batch proposal_tokens"],
     ) -> Int[Array, "batch max_slots"]:
-        accepted_mask = jnp.cumprod(self.token_ids == sampled_token_ids, axis=1).astype(jnp.bool_)
         _, num_proposal_tokens = self.token_ids.shape
         proposal_indices = jnp.broadcast_to(
             jnp.arange(num_proposal_tokens, dtype=jnp.int32)[None, :],
             self.token_ids.shape,
         )
+        if sampled_token_ids.shape[1] == 1:
+            return proposal_indices
+
+        draft_matches = self.token_ids[:, 1:] == sampled_token_ids[:, :-1]
+        draft_accepted_mask = jnp.cumprod(draft_matches, axis=1).astype(jnp.bool_)
+        root_mask = jnp.ones_like(self.token_ids[:, :1], dtype=jnp.bool_)
+        accepted_mask = jnp.concatenate((root_mask, draft_accepted_mask), axis=1)
         return jnp.where(accepted_mask, proposal_indices, -1)
 
 
