@@ -349,6 +349,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             pending_activation_trace=pending_activation_trace,
         )
 
+    @eqx.filter_jit
     def decode_generation_step(
         self,
         state: DecodingState,
