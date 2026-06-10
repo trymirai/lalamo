@@ -2,10 +2,10 @@ from .common import (
     AcceptedProposal,
     ChainProposal,
     NoSpeculator,
+    NoSpeculatorState,
     Proposal,
     ProposalInputs,
     Speculator,
-    SpeculatorState,
     import_speculator,
 )
 from .dflash import DFlashSpeculator
@@ -15,9 +15,9 @@ __all__ = [
     "ChainProposal",
     "DFlashSpeculator",
     "NoSpeculator",
+    "NoSpeculatorState",
     "Proposal",
     "ProposalInputs",
     "Speculator",
-    "SpeculatorState",
     "import_speculator",
 ]

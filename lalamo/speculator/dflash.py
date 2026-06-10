@@ -1,27 +1,22 @@
-from __future__ import annotations
-
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Self, cast
+from typing import Self, cast
 
 import jax.numpy as jnp
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable, ExportResults
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.decoder import DecoderActivationTrace, DecoderResult
 from lalamo.modules.dflash import DFlashDraftConfig, DFlashDraftModel, DFlashDraftState
+from lalamo.modules.embedding import EmbeddingBase
 from lalamo.modules.utils import call_vmapped_twice
 from lalamo.safetensors import safe_read, safe_write
 from lalamo.utils.json import JSON
 from lalamo.utils.sharding import ShardingConfig
 
 from .common import AcceptedProposal, ChainProposal, Speculator
-
-if TYPE_CHECKING:
-    from jaxtyping import Array, DTypeLike, Float, Int
-
-    from lalamo.modules.embedding import EmbeddingBase
 
 __all__ = [
     "DFlashSpeculator",

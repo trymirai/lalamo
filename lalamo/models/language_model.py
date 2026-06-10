@@ -28,7 +28,7 @@ from lalamo.modules import (
 from lalamo.modules.token_mixer import State
 from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy
-from lalamo.speculator import ChainProposal, NoSpeculator, Proposal, Speculator, SpeculatorState
+from lalamo.speculator import ChainProposal, NoSpeculator, Proposal, Speculator
 
 __all__ = [
     "GenerationConfig",
@@ -45,7 +45,7 @@ class PrefillResults(NamedTuple):
     last_token_logits: Float[Array, "batch vocabulary"]
     last_token_indices: Int[Array, " batch"]
     state: State
-    speculator_state: SpeculatorState
+    speculator_state: eqx.Module
     pending_activation_trace: DecoderActivationTrace | None
 
 
@@ -62,7 +62,7 @@ class DecodingState(NamedTuple):
     pending_proposal: Proposal
     stop_flags: Bool[Array, " batch"]
     sampling_policy: SamplingPolicy
-    speculator_state: SpeculatorState
+    speculator_state: eqx.Module
     num_generated_tokens: Int[Array, " batch"]
 
     @classmethod
@@ -299,10 +299,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             return jnp.pad(array, pad_widths)
 
         def apply_chunk(
-            state_speculator_state_and_logits: tuple[State, SpeculatorState, Float[Array, "batch vocabulary"]],
+            state_speculator_state_and_logits: tuple[State, eqx.Module, Float[Array, "batch vocabulary"]],
             chunk_inputs: tuple[Chunk, Keychain],
         ) -> tuple[
-            tuple[State, SpeculatorState, Float[Array, "batch vocabulary"]],
+            tuple[State, eqx.Module, Float[Array, "batch vocabulary"]],
             DecoderActivationTrace | None,
         ]:
             current_state, current_speculator_state, previous_logits = state_speculator_state_and_logits

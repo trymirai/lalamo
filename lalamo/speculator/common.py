@@ -1,41 +1,34 @@
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import ClassVar
 
 import equinox as eqx
 import jax.numpy as jnp
+from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.module import ForwardPassMode, Keychain
+from lalamo.modules.decoder import DecoderResult
+from lalamo.modules.embedding import EmbeddingBase
 from lalamo.utils.sharding import ShardingConfig
-
-if TYPE_CHECKING:
-    from jaxtyping import Array, Bool, DTypeLike, Float, Int
-
-    from lalamo.modules.decoder import DecoderResult
-    from lalamo.modules.embedding import EmbeddingBase
 
 __all__ = [
     "AcceptedProposal",
     "ChainProposal",
     "NoSpeculator",
+    "NoSpeculatorState",
     "Proposal",
     "ProposalInputs",
     "Speculator",
-    "SpeculatorState",
     "import_speculator",
 ]
-
-type SpeculatorState = eqx.Module | None
 
 
 class ProposalInputs(eqx.Module):
     token_ids: Int[Array, "batch nodes"]
     token_positions: Int[Array, "batch nodes"]
     lengths_without_padding: Int[Array, " batch"]
-    forward_pass_mode: ForwardPassMode = eqx.field(static=True)
     attention_parent_indices: Int[Array, "batch nodes"] | None = None
+    forward_pass_mode: ForwardPassMode = eqx.field(static=True, default=ForwardPassMode.MULTI_TOKEN)
 
 
 class AcceptedProposal(eqx.Module):
@@ -45,9 +38,6 @@ class AcceptedProposal(eqx.Module):
     lengths: Int[Array, " batch"]
     accepted_node_indices: Int[Array, "batch nodes"]
     num_accepted_nodes: Int[Array, " batch"]
-
-    def num_tokens(self) -> Int[Array, " batch"]:
-        return self.lengths
 
     def last_token_ids(
         self,
@@ -89,12 +79,11 @@ class AcceptedProposal(eqx.Module):
         )
 
 
-@runtime_checkable
-class Proposal(Protocol):
-    def forward_inputs(
-        self,
-    ) -> ProposalInputs: ...
+class Proposal(eqx.Module, ABC):
+    @abstractmethod
+    def forward_inputs(self) -> ProposalInputs: ...
 
+    @abstractmethod
     def accept(
         self,
         sampled_token_ids: Int[Array, "batch nodes"],
@@ -104,14 +93,12 @@ class Proposal(Protocol):
     ) -> AcceptedProposal: ...
 
 
-class ChainProposal(eqx.Module):
+class ChainProposal(Proposal):
     token_ids: Int[Array, "batch proposal_slots"]
     token_positions: Int[Array, "batch proposal_slots"]
     lengths: Int[Array, " batch"]
 
-    def forward_inputs(
-        self,
-    ) -> ProposalInputs:
+    def forward_inputs(self) -> ProposalInputs:
         _, num_proposal_slots = self.token_ids.shape
         forward_pass_mode = ForwardPassMode.MULTI_TOKEN
         if num_proposal_slots == 1:
@@ -191,10 +178,8 @@ class ChainProposal(eqx.Module):
         )
 
 
-class Speculator[SpeculatorStateT: SpeculatorState](eqx.Module, ABC):
-    @property
-    def requires_activation_trace(self) -> bool:
-        return True
+class Speculator[SpeculatorStateT: eqx.Module](eqx.Module, ABC):
+    requires_activation_trace: ClassVar[bool] = True
 
     @property
     def max_proposal_tokens(self) -> int:
@@ -243,22 +228,25 @@ class Speculator[SpeculatorStateT: SpeculatorState](eqx.Module, ABC):
     ) -> Proposal: ...
 
 
-class NoSpeculator(Speculator[None]):
-    @property
-    def requires_activation_trace(self) -> bool:
-        return False
+class NoSpeculatorState(eqx.Module):
+    pass
+
+
+class NoSpeculator(Speculator[NoSpeculatorState]):
+    requires_activation_trace: ClassVar[bool] = False
 
     def init_state(
         self,
         batch_size: int,
         context_capacity: int,
         dtype: DTypeLike,
-    ) -> None:
+    ) -> NoSpeculatorState:
         _ = (batch_size, context_capacity, dtype)
+        return NoSpeculatorState()
 
     def draft(
         self,
-        state: None,
+        state: NoSpeculatorState,
         last_token_ids: Int[Array, " batch"],
         last_token_indices: Int[Array, " batch"],
         target_embedding: EmbeddingBase,
