@@ -79,10 +79,13 @@ class DecodingState(NamedTuple):
             (batch_size, max_proposal_tokens, vocab_size),
             dtype=prefill_results.last_token_logits.dtype,
         )
-        initial_positions = prefill_results.last_token_indices[:, None] + jnp.arange(
-            max_proposal_tokens,
-            dtype=prefill_results.last_token_indices.dtype,
-        )[None, :]
+        initial_positions = (
+            prefill_results.last_token_indices[:, None]
+            + jnp.arange(
+                max_proposal_tokens,
+                dtype=prefill_results.last_token_indices.dtype,
+            )[None, :]
+        )
         return cls(
             pending_decoder_result=DecoderResult(
                 logits=initial_logits.at[:, 0, :].set(prefill_results.last_token_logits),
@@ -100,6 +103,7 @@ class DecodingState(NamedTuple):
             speculator_state=prefill_results.speculator_state,
             num_generated_tokens=jnp.zeros((batch_size,), dtype=jnp.int32),
         )
+
 
 class GenerationStepResults(NamedTuple):
     token_ids: Int[Array, "batch tokens"]
@@ -409,8 +413,8 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             keychain=current_keychain,
         )
         next_num_generated_tokens = state.num_generated_tokens + accepted.lengths
-        next_stop_flags = state.stop_flags | accepted.has_eos(eos_token_ids) | (
-            next_num_generated_tokens >= max_output_length
+        next_stop_flags = (
+            state.stop_flags | accepted.has_eos(eos_token_ids) | (next_num_generated_tokens >= max_output_length)
         )
 
         last_token_ids = accepted.last_token_ids(stopped_token_ids)

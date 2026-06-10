@@ -303,5 +303,3 @@ class NoSpeculator(Speculator[NoSpeculatorState, NoSpeculatorConfig]):
             token_positions=last_token_indices[:, None] + 1,
             lengths=jnp.ones_like(last_token_indices),
         )
-
-
