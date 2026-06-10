@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from jax import Array
-from jaxtyping import Bool, Float, Int, Key, Shaped
+from jaxtyping import Bool, DTypeLike, Float, Int, Key, Shaped
 from tokenizers import Tokenizer
 
 from lalamo.initializer import Initializer
@@ -63,6 +63,42 @@ class DecodingState(NamedTuple):
     sampling_policy: SamplingPolicy
     speculator_state: SpeculatorState
     num_generated_tokens: Int[Array, " batch"]
+
+    @classmethod
+    def from_prefill(
+        cls,
+        prefill_results: PrefillResults,
+        sampling_policy: SamplingPolicy,
+        speculator: Speculator,
+        token_dtype: DTypeLike,
+    ) -> "DecodingState":
+        batch_size, vocab_size = prefill_results.last_token_logits.shape
+        max_proposal_tokens = speculator.max_proposal_tokens
+        initial_logits = jnp.zeros(
+            (batch_size, max_proposal_tokens, vocab_size),
+            dtype=prefill_results.last_token_logits.dtype,
+        )
+        initial_positions = prefill_results.last_token_indices[:, None] + jnp.arange(
+            max_proposal_tokens,
+            dtype=prefill_results.last_token_indices.dtype,
+        )[None, :]
+        return cls(
+            pending_decoder_result=DecoderResult(
+                logits=initial_logits.at[:, 0, :].set(prefill_results.last_token_logits),
+                updated_state=prefill_results.state,
+                activation_trace=prefill_results.pending_activation_trace,
+            ),
+            pending_base_positions=prefill_results.state.base_positions(),
+            pending_proposal=ChainProposal(
+                token_ids=jnp.zeros((batch_size, max_proposal_tokens), dtype=token_dtype),
+                token_positions=initial_positions,
+                lengths=jnp.zeros((batch_size,), dtype=prefill_results.last_token_indices.dtype),
+            ),
+            stop_flags=jnp.zeros((batch_size,), dtype=jnp.bool_),
+            sampling_policy=sampling_policy,
+            speculator_state=prefill_results.speculator_state,
+            num_generated_tokens=jnp.zeros((batch_size,), dtype=jnp.int32),
+        )
 
 class GenerationStepResults(NamedTuple):
     token_ids: Int[Array, "batch tokens"]
@@ -313,7 +349,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             pending_activation_trace=pending_activation_trace,
         )
 
-    def _decode_generation_step(
+    def decode_generation_step(
         self,
         state: DecodingState,
         step_keys: tuple[Key[Array, "batch nodes"], Key[Array, "..."]],
@@ -504,7 +540,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         prefill_keychain, sampling_keychain, decoding_keychain = keychain.split(3)
         prefill_results = self.prefill_tokens(
             prompt_token_ids,
-            prompt_length + max_output_length + 1,
+            prompt_length + max_output_length + speculator.max_proposal_tokens,
             prompt_lengths_without_padding,
             prefill_forward_pass_config,
             keychain=prefill_keychain,
@@ -513,37 +549,22 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
 
         max_proposal_tokens = speculator.max_proposal_tokens
         batch_indices = jax.device_put(jnp.arange(batch_size, dtype=jnp.int32), batch_vector_sharding)
-        initial_logits = jnp.zeros(
-            (batch_size, max_proposal_tokens, self.decoder.vocab_size),
-            dtype=prefill_results.last_token_logits.dtype,
+        initial_state = DecodingState.from_prefill(
+            prefill_results,
+            sampling_policy,
+            speculator,
+            prompt_token_ids.dtype,
         )
-        initial_positions = prefill_results.last_token_indices[:, None] + jnp.arange(
-            max_proposal_tokens,
-            dtype=prefill_results.last_token_indices.dtype,
-        )[None, :]
-        initial_state = DecodingState(
-            pending_decoder_result=DecoderResult(
-                logits=initial_logits.at[:, 0, :].set(prefill_results.last_token_logits),
-                updated_state=prefill_results.state,
-                activation_trace=prefill_results.pending_activation_trace,
-            ),
-            pending_base_positions=prefill_results.state.base_positions(),
-            pending_proposal=ChainProposal(
-                token_ids=jnp.zeros((batch_size, max_proposal_tokens), dtype=prompt_token_ids.dtype),
-                token_positions=initial_positions,
-                lengths=jnp.zeros((batch_size,), dtype=prefill_results.last_token_indices.dtype),
-            ),
-            stop_flags=jax.device_put(jnp.zeros(batch_size, dtype=jnp.bool_), batch_vector_sharding),
-            sampling_policy=sampling_policy,
-            speculator_state=prefill_results.speculator_state,
-            num_generated_tokens=jax.device_put(jnp.zeros(batch_size, dtype=jnp.int32), batch_vector_sharding),
+        initial_state = initial_state._replace(
+            stop_flags=jax.device_put(initial_state.stop_flags, batch_vector_sharding),
+            num_generated_tokens=jax.device_put(initial_state.num_generated_tokens, batch_vector_sharding),
         )
 
         def loop_iteration(
             state: DecodingState,
             step_keys: tuple[Key[Array, "batch nodes"], Key[Array, "..."]],
         ) -> tuple[DecodingState, GenerationStepResults]:
-            return self._decode_generation_step(
+            return self.decode_generation_step(
                 state,
                 step_keys,
                 max_output_length,
@@ -555,10 +576,13 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 speculator,
             )
 
-        sampling_keys = sampling_keychain.rolling_broadcast(
-            (max_output_length, batch_size, max_proposal_tokens),
-            mode=KeychainBroadcastMode.PREFIX,
-        ).vmapped_keys
+        sampling_keys = rearrange(
+            sampling_keychain.rolling_broadcast(
+                (max_output_length, max_proposal_tokens, batch_size),
+                mode=KeychainBroadcastMode.PREFIX,
+            ).vmapped_keys,
+            "step nodes batch -> step batch nodes",
+        )
         sampling_keys = jax.device_put(
             sampling_keys,
             self.sharding_config.make_sharding((None, batch_axis, None)),
@@ -699,7 +723,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         prefill_keychain, sampling_keychain, decoding_keychain = keychain.split(3)
         prefill_results = self.prefill_tokens(
             batched_token_ids,
-            padded_input_length + max_output_length + 1,
+            padded_input_length + max_output_length + speculator.max_proposal_tokens,
             length_without_padding,
             prefill_forward_pass_config,
             keychain=prefill_keychain,
@@ -707,41 +731,20 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         )
 
         max_proposal_tokens = speculator.max_proposal_tokens
-        initial_logits = jnp.zeros(
-            (1, max_proposal_tokens, self.decoder.vocab_size),
-            dtype=prefill_results.last_token_logits.dtype,
+        state = DecodingState.from_prefill(prefill_results, sampling_policy, speculator, prompt_token_ids.dtype)
+        sampling_keys = rearrange(
+            sampling_keychain.rolling_broadcast(
+                (max_output_length, max_proposal_tokens, 1),
+                mode=KeychainBroadcastMode.PREFIX,
+            ).vmapped_keys,
+            "step nodes batch -> step batch nodes",
         )
-        initial_positions = prefill_results.last_token_indices[:, None] + jnp.arange(
-            max_proposal_tokens,
-            dtype=prefill_results.last_token_indices.dtype,
-        )[None, :]
-        state = DecodingState(
-            pending_decoder_result=DecoderResult(
-                logits=initial_logits.at[:, 0, :].set(prefill_results.last_token_logits),
-                updated_state=prefill_results.state,
-                activation_trace=prefill_results.pending_activation_trace,
-            ),
-            pending_base_positions=prefill_results.state.base_positions(),
-            pending_proposal=ChainProposal(
-                token_ids=jnp.zeros((1, max_proposal_tokens), dtype=prompt_token_ids.dtype),
-                token_positions=initial_positions,
-                lengths=jnp.zeros((1,), dtype=prefill_results.last_token_indices.dtype),
-            ),
-            stop_flags=jnp.zeros((1,), dtype=jnp.bool_),
-            sampling_policy=sampling_policy,
-            speculator_state=prefill_results.speculator_state,
-            num_generated_tokens=jnp.zeros((1,), dtype=jnp.int32),
-        )
-        sampling_keys = sampling_keychain.rolling_broadcast(
-            (max_output_length, 1, max_proposal_tokens),
-            mode=KeychainBroadcastMode.PREFIX,
-        ).vmapped_keys
         decoding_keys = decoding_keychain.rolling_broadcast(
             (max_output_length, *decoding_keychain.vmapped_keys.shape),
             mode=KeychainBroadcastMode.PREFIX,
         ).vmapped_keys
         for sampling_key, decoding_key in zip(sampling_keys, decoding_keys, strict=True):
-            state, generated = self._decode_generation_step(
+            state, generated = self.decode_generation_step(
                 state,
                 (sampling_key, decoding_key),
                 max_output_length,
