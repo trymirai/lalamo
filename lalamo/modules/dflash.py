@@ -2,9 +2,10 @@ from dataclasses import dataclass
 from typing import Self
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, Bool, Float, Int
+from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis
@@ -76,33 +77,6 @@ class DFlashAttentionConfig(LalamoConfig):
 class DFlashDraftLayerState(eqx.Module):
     keys: Float[Array, "batch context_capacity groups head_channels"]
     values: Float[Array, "batch context_capacity groups head_channels"]
-
-    @staticmethod
-    def init(
-        updates: "DFlashDraftLayerState",
-        context_lengths: Int[Array, " batch"],
-        context_capacity: int,
-    ) -> "DFlashDraftLayerState":
-        batch_size, num_update_tokens, num_groups, head_dim = updates.keys.shape
-        keys = jnp.zeros(
-            (batch_size, context_capacity, num_groups, head_dim),
-            dtype=updates.keys.dtype,
-        )
-        values = jnp.zeros(
-            (batch_size, context_capacity, num_groups, head_dim),
-            dtype=updates.values.dtype,
-        )
-        batch_indices = jnp.arange(batch_size, dtype=context_lengths.dtype)[:, None]
-        update_offsets = jnp.arange(num_update_tokens, dtype=context_lengths.dtype)[None, :]
-        valid_updates = update_offsets < context_lengths[:, None]
-        return DFlashDraftLayerState(
-            keys=keys.at[batch_indices, update_offsets, :, :].set(
-                jnp.where(valid_updates[:, :, None, None], updates.keys, 0),
-            ),
-            values=values.at[batch_indices, update_offsets, :, :].set(
-                jnp.where(valid_updates[:, :, None, None], updates.values, 0),
-            ),
-        )
 
     def append(
         self,
@@ -478,24 +452,6 @@ class DFlashDraftState(eqx.Module):
     layer_states: tuple[DFlashDraftLayerState, ...]
     context_lengths: Int[Array, " batch"]
 
-    @staticmethod
-    def init(
-        layer_updates: tuple[DFlashDraftLayerState, ...],
-        context_lengths: Int[Array, " batch"],
-        context_capacity: int,
-    ) -> "DFlashDraftState":
-        return DFlashDraftState(
-            layer_states=tuple(
-                DFlashDraftLayerState.init(
-                    layer_update,
-                    context_lengths,
-                    context_capacity,
-                )
-                for layer_update in layer_updates
-            ),
-            context_lengths=context_lengths,
-        )
-
     def append(
         self,
         layer_updates: tuple[DFlashDraftLayerState, ...],
@@ -547,35 +503,33 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
             added_sharding_axes=(batch_axis, None),
         )
 
-    @eqx.filter_jit
-    def init_state(
+    def empty_state(
         self,
-        target_features: Float[Array, "batch tokens target_channels"],
-        token_positions: Int[Array, "batch tokens"],
-        context_lengths: Int[Array, " batch"],
+        batch_size: int,
         context_capacity: int,
-        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
-        *,
-        keychain: Keychain,
+        dtype: DTypeLike,
     ) -> DFlashDraftState:
-        context_keychain, *layer_keychains = keychain.split(len(self.layers) + 1)
-        target_hidden = self.project_target_features(
-            target_features,
-            forward_pass_config,
-            keychain=context_keychain,
-        )
-        return DFlashDraftState.init(
-            tuple(
-                layer.project_context(
-                    target_hidden,
-                    token_positions,
-                    forward_pass_config=forward_pass_config,
-                    keychain=layer_keychain,
-                )
-                for layer, layer_keychain in zip(self.layers, layer_keychains, strict=True)
-            ),
-            context_lengths,
-            context_capacity,
+        cache_sharding = self.sharding_config.resolve_sharding((LogicalAxis.BATCH, None, None, None))
+        lengths_sharding = self.sharding_config.resolve_sharding((LogicalAxis.BATCH,))
+
+        def empty_layer_state(attention_config: DFlashAttentionConfig) -> DFlashDraftLayerState:
+            cache = jax.device_put(
+                jnp.zeros(
+                    (
+                        batch_size,
+                        context_capacity,
+                        attention_config.num_key_value_heads,
+                        attention_config.head_dim,
+                    ),
+                    dtype=dtype,
+                ),
+                cache_sharding,
+            )
+            return DFlashDraftLayerState(keys=cache, values=cache)
+
+        return DFlashDraftState(
+            layer_states=tuple(empty_layer_state(layer.attention.config) for layer in self.layers),
+            context_lengths=jax.device_put(jnp.zeros((batch_size,), dtype=jnp.int32), lengths_sharding),
         )
 
     @eqx.filter_jit

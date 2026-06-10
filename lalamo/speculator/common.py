@@ -45,7 +45,6 @@ class AcceptedProposal(eqx.Module):
     lengths: Int[Array, " batch"]
     accepted_node_indices: Int[Array, "batch nodes"]
     num_accepted_nodes: Int[Array, " batch"]
-    should_update_speculator_state: Bool[Array, ""]
 
     def num_tokens(self) -> Int[Array, " batch"]:
         return self.lengths
@@ -109,7 +108,6 @@ class ChainProposal(eqx.Module):
     token_ids: Int[Array, "batch proposal_slots"]
     token_positions: Int[Array, "batch proposal_slots"]
     lengths: Int[Array, " batch"]
-    should_update_speculator_state: Bool[Array, ""]
 
     def forward_inputs(
         self,
@@ -148,7 +146,10 @@ class ChainProposal(eqx.Module):
         draft_output_mask = output_slots < num_accepted_drafts[:, None]
         draft_token_ids = jnp.pad(self.token_ids[:, 1:], ((0, 0), (0, 1)))
         draft_token_positions = jnp.pad(self.token_positions[:, 1:], ((0, 0), (0, 1)))
-        draft_eos_hits = draft_output_mask & jnp.any(draft_token_ids[:, :, None] == eos_token_ids[None, None, :], axis=-1)
+        draft_eos_hits = draft_output_mask & jnp.any(
+            draft_token_ids[:, :, None] == eos_token_ids[None, None, :],
+            axis=-1,
+        )
         draft_eos_counts = jnp.cumsum(draft_eos_hits.astype(jnp.int32), axis=1)
         after_draft_eos = (draft_eos_counts - draft_eos_hits.astype(jnp.int32)) > 0
         draft_output_mask = draft_output_mask & jnp.logical_not(after_draft_eos)
@@ -187,7 +188,6 @@ class ChainProposal(eqx.Module):
                 -1,
             ),
             num_accepted_nodes=num_accepted_nodes,
-            should_update_speculator_state=self.should_update_speculator_state,
         )
 
 
@@ -200,16 +200,24 @@ class Speculator[SpeculatorStateT: SpeculatorState](eqx.Module, ABC):
     def max_proposal_tokens(self) -> int:
         return 1
 
+    @abstractmethod
+    def init_state(
+        self,
+        batch_size: int,
+        context_capacity: int,
+        dtype: DTypeLike,
+    ) -> SpeculatorStateT: ...
+
     def prefill_chunk(
         self,
-        state: SpeculatorStateT | None,
+        state: SpeculatorStateT,
         decoder_result: DecoderResult,
         chunk_lengths: Int[Array, " batch"],
-        context_capacity: int,
         *,
         keychain: Keychain,
-    ) -> SpeculatorStateT | None:
-        pass
+    ) -> SpeculatorStateT:
+        _ = (decoder_result, chunk_lengths, keychain)
+        return state
 
     def update_state(
         self,
@@ -218,8 +226,9 @@ class Speculator[SpeculatorStateT: SpeculatorState](eqx.Module, ABC):
         accepted: AcceptedProposal,
         *,
         keychain: Keychain,
-    ) -> SpeculatorStateT | None:
-        pass
+    ) -> SpeculatorStateT:
+        _ = (decoder_result, accepted, keychain)
+        return state
 
     @abstractmethod
     def draft(
@@ -239,6 +248,14 @@ class NoSpeculator(Speculator[None]):
     def requires_activation_trace(self) -> bool:
         return False
 
+    def init_state(
+        self,
+        batch_size: int,
+        context_capacity: int,
+        dtype: DTypeLike,
+    ) -> None:
+        _ = (batch_size, context_capacity, dtype)
+
     def draft(
         self,
         state: None,
@@ -254,7 +271,6 @@ class NoSpeculator(Speculator[None]):
             token_ids=last_token_ids[:, None],
             token_positions=last_token_indices[:, None] + 1,
             lengths=jnp.ones_like(last_token_indices),
-            should_update_speculator_state=jnp.asarray(True),
         )
 
 
