@@ -674,6 +674,30 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         keychain: Keychain,
         speculator: Speculator = NoSpeculator(),
     ) -> Iterable[Int[Array, ""]]:
+        for block_token_ids in self.stream_token_blocks(
+            prompt_token_ids,
+            generation_config=generation_config,
+            max_output_length=max_output_length,
+            eos_token_ids=eos_token_ids,
+            prefill_forward_pass_config=prefill_forward_pass_config,
+            decode_forward_pass_config=decode_forward_pass_config,
+            keychain=keychain,
+            speculator=speculator,
+        ):
+            yield from block_token_ids
+
+    def stream_token_blocks(
+        self,
+        prompt_token_ids: Int[Array, " prompt_tokens"],
+        generation_config: GenerationConfig | None = None,
+        max_output_length: int = 8192,
+        eos_token_ids: Int[Array, " eos_tokens"] | None = None,
+        prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
+        decode_forward_pass_config: DecoderForwardPassConfig | None = None,
+        *,
+        keychain: Keychain,
+        speculator: Speculator = NoSpeculator(),
+    ) -> Iterable[Int[Array, " block_tokens"]]:
         if max_output_length < 1:
             raise ValueError("max_output_length must be at least 1.")
         if prefill_forward_pass_config is None:
@@ -755,10 +779,12 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 decoding_keychain,
                 speculator,
             )
-            for token_id in generated.token_ids[0, : int(generated.lengths[0].item())]:
-                yield token_id
-                if bool(jnp.any(token_id == stop_token_ids).item()):
-                    return
+            block_token_ids = generated.token_ids[0, : int(generated.lengths[0].item())]
+            eos_hits = jnp.any(block_token_ids[:, None] == stop_token_ids[None, :], axis=-1)
+            if bool(jnp.any(eos_hits).item()):
+                yield block_token_ids[: int(jnp.argmax(eos_hits).item()) + 1]
+                return
+            yield block_token_ids
             if bool(state.stop_flags[0].item()):
                 return
 

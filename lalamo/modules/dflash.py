@@ -92,11 +92,11 @@ class DFlashDraftLayerState(eqx.Module):
 
         return DFlashDraftLayerState(
             keys=self.keys.at[batch_indices, token_indices, :, :].set(
-                jnp.where(valid_updates[:, :, None, None], updates.keys, 0),
+                jnp.where(valid_updates[:, :, None, None], updates.keys.astype(self.keys.dtype), 0),
                 mode="drop",
             ),
             values=self.values.at[batch_indices, token_indices, :, :].set(
-                jnp.where(valid_updates[:, :, None, None], updates.values, 0),
+                jnp.where(valid_updates[:, :, None, None], updates.values.astype(self.values.dtype), 0),
                 mode="drop",
             ),
         )
@@ -270,8 +270,8 @@ class DFlashAttention(LalamoModule[DFlashAttentionConfig]):
         )
         queries = self._apply_rope(queries, noise_positional_embeddings)
         noise_keys = self._apply_rope(noise_keys, noise_positional_embeddings)
-        keys = jnp.concatenate((context_keys, noise_keys), axis=0)
-        values = jnp.concatenate((context_values, noise_values), axis=0)
+        keys = jnp.concatenate((context_keys, noise_keys.astype(context_keys.dtype)), axis=0)
+        values = jnp.concatenate((context_values, noise_values.astype(context_values.dtype)), axis=0)
 
         effective_mask = self._attention_mask(attention_mask, token_positions, num_query_tokens)
         attention_output = _attention_kernel(
@@ -289,7 +289,7 @@ class DFlashAttention(LalamoModule[DFlashAttentionConfig]):
             "tokens heads head_channels -> tokens (heads head_channels)",
             heads=self.config.num_heads,
             head_channels=self.config.head_dim,
-        )
+        ).astype(hidden_states.dtype)
         (result,) = call_vmapped(
             self.output_projection,
             attention_output,
