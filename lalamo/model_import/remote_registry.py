@@ -146,6 +146,7 @@ def fetch_available_models() -> list[RegistryModel]:
                 },
             ],
         },
+        headers={"content-type": "application/json"},
         timeout=30,
     )
     response.raise_for_status()

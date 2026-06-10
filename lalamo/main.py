@@ -93,14 +93,15 @@ class RemoteModelParser(ParamType):
             error_message = f"Failed to fetch model list from SDK. Check your internet connection.\n\nError: {e}"
             return self.fail(error_message, param, ctx)
 
-        repo_to_model = {m.repo_id: m for m in available_models}
-        model_spec = repo_to_model.get(value)
-        if model_spec is None:
-            error_message = f'Model "{value}" not found.'
-            error_message += _suggest_similar_models(value, list(repo_to_model))
-            return self.fail(error_message, param, ctx)
+        model_by_artifact_repo = {model.artifact_repo_id: model for model in available_models}
+        model_spec = model_by_artifact_repo.get(value)
+        if model_spec is not None:
+            return model_spec
 
-        return model_spec
+        identifiers = sorted(model_by_artifact_repo)
+        error_message = f'Model "{value}" not found.'
+        error_message += _suggest_similar_models(value, identifiers)
+        return self.fail(error_message, param, ctx)
 
 
 def _error(message: str) -> None:
@@ -607,7 +608,7 @@ def pull(
     ] = False,
 ) -> None:
     if output_dir is None:
-        output_dir = DEFAULT_OUTPUT_DIR / PurePosixPath(model_spec.repo_id).name
+        output_dir = DEFAULT_OUTPUT_DIR / PurePosixPath(model_spec.artifact_repo_id).name
 
     _pull(
         model_spec,
