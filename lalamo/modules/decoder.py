@@ -89,6 +89,23 @@ class DecoderActivationTrace(Exportable, eqx.Module):
 
     output_norm: Float[Array, "batch suffix_tokens channels"]
 
+    def without_states(self) -> "DecoderActivationTrace":
+        return DecoderActivationTrace(
+            token_ids=self.token_ids,
+            token_positions=self.token_positions,
+            state=None,
+            rope_embeddings=None,
+            layer_results=tuple(
+                TransformerLayerResult(
+                    outputs=layer_result.outputs,
+                    updated_state=None,
+                    activation_trace=None,
+                )
+                for layer_result in self.layer_results
+            ),
+            output_norm=self.output_norm,
+        )
+
 
 class DecoderResult(Exportable, eqx.Module):
     logits: Float[Array, "batch suffix_tokens vocabulary"]
