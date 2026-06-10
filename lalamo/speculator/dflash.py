@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
+from tokenizers import Tokenizer
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LogicalAxis
@@ -22,10 +23,11 @@ __all__ = [
 class DFlashSpeculatorConfig(SpeculatorConfig):
     draft_config: DFlashDraftConfig
 
-    def init(self, initializer: Initializer) -> "DFlashSpeculator":
+    def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "DFlashSpeculator":
         return DFlashSpeculator(
             config=self,
             sharding_config=initializer.sharding_config,
+            token_codec=self.token_codec_config.init(tokenizer),
             draft_model=self.draft_config.init(initializer),
         )
 
