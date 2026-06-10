@@ -259,10 +259,12 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: DecoderForwardPassConfig | None = None,
         chunk_size: int = 512,
-        speculator: Speculator = NoSpeculator(),
+        speculator: Speculator | None = None,
         *,
         keychain: Keychain,
     ) -> PrefillResults:
+        if speculator is None:
+            speculator = NoSpeculator.build(self.sharding_config)
         batch_size, sequence_length = token_ids.shape
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
         batch_vector_sharding = self.sharding_config.make_sharding((batch_axis,))
@@ -495,10 +497,12 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
         keychain: Keychain,
-        speculator: Speculator = NoSpeculator(),
+        speculator: Speculator | None = None,
     ) -> GenerationResults:
         if max_output_length < 1:
             raise ValueError("max_output_length must be at least 1.")
+        if speculator is None:
+            speculator = NoSpeculator.build(self.sharding_config)
         if prefill_forward_pass_config is None:
             prefill_forward_pass_config = DecoderForwardPassConfig.for_inference()
         if decode_forward_pass_config is None:
@@ -701,7 +705,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
         keychain: Keychain,
-        speculator: Speculator = NoSpeculator(),
+        speculator: Speculator | None = None,
     ) -> Iterable[Int[np.ndarray, ""]]:
         for block_token_ids in self.stream_token_blocks(
             prompt_token_ids,
@@ -725,10 +729,12 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
         keychain: Keychain,
-        speculator: Speculator = NoSpeculator(),
+        speculator: Speculator | None = None,
     ) -> Iterable[Int[np.ndarray, " block_tokens"]]:
         if max_output_length < 1:
             raise ValueError("max_output_length must be at least 1.")
+        if speculator is None:
+            speculator = NoSpeculator.build(self.sharding_config)
         if prefill_forward_pass_config is None:
             prefill_forward_pass_config = DecoderForwardPassConfig.for_inference()
         if decode_forward_pass_config is None:
@@ -831,7 +837,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
         keychain: Keychain,
-        speculator: Speculator = NoSpeculator(),
+        speculator: Speculator | None = None,
     ) -> Iterable[str]:
         token_ids = jnp.asarray(self.token_codec.encode_request(messages), dtype=jnp.int32)
         response_token_ids: list[int] = []

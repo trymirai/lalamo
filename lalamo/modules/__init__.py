@@ -25,7 +25,6 @@ from .dflash import (
     DFlashDraftLayerConfig,
     DFlashDraftModel,
     DFlashDraftState,
-    make_qwen3_dflash_draft_config,
 )
 from .embedding import (
     EmbeddingBase,
@@ -194,6 +193,5 @@ __all__ = [
     "UpcastMode",
     "YARNRoPEConfig",
     "build_tree_attention_mask",
-    "make_qwen3_dflash_draft_config",
     "tree_ancestor_mask",
 ]

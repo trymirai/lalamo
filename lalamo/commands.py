@@ -22,7 +22,7 @@ from lalamo.model_import.common import (
 )
 from lalamo.model_import.loaders.dflash_loader import load_hf_dflash_draft_model
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
-from lalamo.speculator.dflash import DFlashSpeculator
+from lalamo.speculator.dflash import DFlashSpeculator, DFlashSpeculatorConfig
 from lalamo.utils.sharding import ShardingConfig
 
 
@@ -271,5 +271,10 @@ def convert_speculator(
     callbacks.finished_loading_model()
 
     callbacks.saving_model()
-    DFlashSpeculator(draft_model=draft_model).save(output_dir)
+    speculator = DFlashSpeculator(
+        config=DFlashSpeculatorConfig(draft_config=draft_model.config),
+        sharding_config=draft_model.sharding_config,
+        draft_model=draft_model,
+    )
+    speculator.save(output_dir)
     callbacks.finished_saving_model()

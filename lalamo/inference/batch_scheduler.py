@@ -4,7 +4,7 @@ import time
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from itertools import batched
 
@@ -371,7 +371,7 @@ class PrefillSource:
     chunk_size: int
     state_capacity: int
     sampling_policy_template: SamplingPolicy
-    speculator: Speculator = field(default_factory=NoSpeculator)
+    speculator: Speculator
     cursor: int = 0
 
     @property
@@ -667,7 +667,7 @@ class BlockContinuousDecoder(eqx.Module):
 @dataclass(frozen=True)
 class BatchScheduler(ABC):
     model: LanguageModel
-    speculator: Speculator = field(default_factory=NoSpeculator)
+    speculator: Speculator | None = None
 
     @abstractmethod
     def generate_tokens_many(
@@ -927,11 +927,14 @@ class ContinuousBatchScheduler(BatchScheduler):
         if any(axis is not None for axis in self.model.sharding_config.logical_to_physical.values()):
             raise RuntimeError("ContinuousBatchScheduler does not support sharded models.")
 
-        if not isinstance(self.speculator, NoSpeculator) and sampling_policy.has_count_penalties:
+        speculator = self.speculator
+        if speculator is None:
+            speculator = NoSpeculator.build(self.model.sharding_config)
+        if not isinstance(speculator, NoSpeculator) and sampling_policy.has_count_penalties:
             raise ValueError("Speculator decoding only supports stateless sampling policies.")
 
         block_size = min(self.block_size, max_output_length)
-        state_capacity = padded_length + max_output_length + self.speculator.max_proposal_tokens
+        state_capacity = padded_length + max_output_length + speculator.max_proposal_tokens
         requested_prefill_batch_size = (
             batch_size
             if sampling_policy.has_count_penalties
@@ -947,7 +950,7 @@ class ContinuousBatchScheduler(BatchScheduler):
             chunk_size=self.prefill_chunk_size,
             state_capacity=state_capacity,
             sampling_policy_template=sampling_policy,
-            speculator=self.speculator,
+            speculator=speculator,
         )
 
         # make sure the key used is the same as the one in FixedBatchScheduler
@@ -958,7 +961,7 @@ class ContinuousBatchScheduler(BatchScheduler):
             model=self.model,
             sampling_policy=sampling_policy,
             decoding_batch_key=decoding_keychain.batch_key,
-            speculator=self.speculator,
+            speculator=speculator,
         )
 
         jitted_decode = eqx.filter_jit(decoder.decode_block, donate="all")

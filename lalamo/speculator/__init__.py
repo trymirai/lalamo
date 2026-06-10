@@ -2,22 +2,25 @@ from .common import (
     AcceptedProposal,
     ChainProposal,
     NoSpeculator,
+    NoSpeculatorConfig,
     NoSpeculatorState,
     Proposal,
     ProposalInputs,
     Speculator,
-    import_speculator,
+    SpeculatorConfig,
 )
-from .dflash import DFlashSpeculator
+from .dflash import DFlashSpeculator, DFlashSpeculatorConfig
 
 __all__ = [
     "AcceptedProposal",
     "ChainProposal",
     "DFlashSpeculator",
+    "DFlashSpeculatorConfig",
     "NoSpeculator",
+    "NoSpeculatorConfig",
     "NoSpeculatorState",
     "Proposal",
     "ProposalInputs",
     "Speculator",
-    "import_speculator",
+    "SpeculatorConfig",
 ]

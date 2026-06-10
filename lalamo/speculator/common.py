@@ -1,25 +1,32 @@
+import json
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Self
 
 import equinox as eqx
 import jax.numpy as jnp
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
-from lalamo.module import ForwardPassMode, Keychain
+from lalamo.exportable import Exportable, ExportResults
+from lalamo.initializer import EmptyInitializer, Initializer
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule
 from lalamo.modules.decoder import DecoderResult
 from lalamo.modules.embedding import EmbeddingBase
+from lalamo.safetensors import safe_read, safe_write
+from lalamo.utils.registry_abc import RegistryABC
 from lalamo.utils.sharding import ShardingConfig
 
 __all__ = [
     "AcceptedProposal",
     "ChainProposal",
     "NoSpeculator",
+    "NoSpeculatorConfig",
     "NoSpeculatorState",
     "Proposal",
     "ProposalInputs",
     "Speculator",
-    "import_speculator",
+    "SpeculatorConfig",
 ]
 
 
@@ -178,12 +185,60 @@ class ChainProposal(Proposal):
         )
 
 
-class Speculator[SpeculatorStateT: eqx.Module](eqx.Module, ABC):
+@dataclass(frozen=True)
+class SpeculatorConfig(LalamoConfig, RegistryABC):
+    @abstractmethod
+    def init(self, initializer: Initializer) -> "Speculator": ...
+
+
+class Speculator[SpeculatorStateT: eqx.Module, ConfigT: SpeculatorConfig](LalamoModule[ConfigT], ABC):
     requires_activation_trace: ClassVar[bool] = True
 
     @property
     def max_proposal_tokens(self) -> int:
         return 1
+
+    def save(self, directory: Path | str) -> None:
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+
+        exported_speculator = Exportable.export(self)
+        metadata = None
+        if exported_speculator.metadata:
+            metadata = {key: json.dumps(value) for key, value in exported_speculator.metadata.items()}
+
+        with (directory / "model.safetensors").open("wb") as weights_file:
+            safe_write(
+                weights_file,
+                exported_speculator.arrays,
+                metadata=metadata,
+            )
+
+        with (directory / "config.json").open("w") as config_file:
+            json.dump(self.config.to_json(), config_file, indent=4)
+
+    @classmethod
+    def load(cls, directory: Path | str, sharding_config: ShardingConfig, dtype: DTypeLike | None = None) -> Self:
+        directory = Path(directory)
+        with (directory / "config.json").open() as config_file:
+            config = SpeculatorConfig.from_json(json.load(config_file))
+
+        with (directory / "model.safetensors").open("rb") as weights_file:
+            metadata, arrays = safe_read(weights_file)
+            decoded_metadata = {}
+            if metadata is not None:
+                decoded_metadata = {key: json.loads(value) for key, value in metadata.items()}
+            template = config.init(EmptyInitializer(dtype, sharding_config))
+            result = Exportable.load_exported(
+                template,
+                ExportResults(
+                    arrays=arrays,
+                    metadata=decoded_metadata,
+                ),
+            )
+
+        assert isinstance(result, cls)
+        return result
 
     @abstractmethod
     def init_state(
@@ -232,8 +287,18 @@ class NoSpeculatorState(eqx.Module):
     pass
 
 
-class NoSpeculator(Speculator[NoSpeculatorState]):
+@dataclass(frozen=True)
+class NoSpeculatorConfig(SpeculatorConfig):
+    def init(self, initializer: Initializer) -> "NoSpeculator":
+        return NoSpeculator(config=self, sharding_config=initializer.sharding_config)
+
+
+class NoSpeculator(Speculator[NoSpeculatorState, NoSpeculatorConfig]):
     requires_activation_trace: ClassVar[bool] = False
+
+    @classmethod
+    def build(cls, sharding_config: ShardingConfig) -> "Speculator":
+        return cls(config=NoSpeculatorConfig(), sharding_config=sharding_config)
 
     def init_state(
         self,
@@ -262,21 +327,3 @@ class NoSpeculator(Speculator[NoSpeculatorState]):
         )
 
 
-def import_speculator(
-    speculator_dir: Path | str,
-    *,
-    sharding_config: ShardingConfig,
-    dtype: DTypeLike | None = None,
-) -> Speculator:
-    from .dflash import DFlashSpeculator  # noqa: PLC0415
-
-    speculator_dir = Path(speculator_dir)
-    if not speculator_dir.exists():
-        raise FileNotFoundError(f"Speculator directory does not exist: {speculator_dir}")
-    if not speculator_dir.is_dir():
-        raise ValueError(f"Speculator path is not a directory: {speculator_dir}")
-    return DFlashSpeculator.load(
-        speculator_dir,
-        sharding_config=sharding_config,
-        dtype=dtype,
-    )

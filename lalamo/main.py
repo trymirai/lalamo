@@ -51,7 +51,7 @@ from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, TTSM
 from lalamo.models.chat_codec import Message, UserMessage
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
-from lalamo.speculator import NoSpeculator, Speculator, import_speculator
+from lalamo.speculator import Speculator
 from lalamo.utils.memory import get_available_bytes_on_default_device
 from lalamo.utils.sharding import ShardingConfig
 
@@ -121,7 +121,7 @@ def _stream_reply_with_stats(
     generation_config: GenerationConfig | None,
     max_tokens: int,
     keychain: Keychain,
-    speculator: Speculator,
+    speculator: Speculator | None,
     *,
     enable_thinking: bool,
 ) -> str:
@@ -208,7 +208,7 @@ def chat(
     ] = False,
 ) -> None:
     generation_config: GenerationConfig | None = None
-    speculator: Speculator = NoSpeculator()
+    speculator: Speculator | None = None
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -218,7 +218,7 @@ def chat(
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
         model = LanguageModel.load(model_path, ShardingConfig.replicated())
         if speculator_path is not None:
-            speculator = import_speculator(speculator_path, sharding_config=ShardingConfig.replicated())
+            speculator = Speculator.load(speculator_path, ShardingConfig.replicated())
         if temperature is not None:
             generation_config = replace(model.config.generation_config, temperature=temperature)
         progress.remove_task(loading_task)

@@ -1,81 +1,41 @@
-import json
-from pathlib import Path
-from typing import Self, cast
+from dataclasses import dataclass
 
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.exportable import Exportable, ExportResults
-from lalamo.initializer import EmptyInitializer
+from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.decoder import DecoderActivationTrace, DecoderResult
 from lalamo.modules.dflash import DFlashDraftConfig, DFlashDraftModel, DFlashDraftState
 from lalamo.modules.embedding import EmbeddingBase
 from lalamo.modules.utils import call_vmapped_twice
-from lalamo.safetensors import safe_read, safe_write
-from lalamo.utils.json import JSON
-from lalamo.utils.sharding import ShardingConfig
 
-from .common import AcceptedProposal, ChainProposal, Speculator
+from .common import AcceptedProposal, ChainProposal, Speculator, SpeculatorConfig
 
 __all__ = [
     "DFlashSpeculator",
+    "DFlashSpeculatorConfig",
 ]
 
 
-class DFlashSpeculator(Speculator[DFlashDraftState]):
+@dataclass(frozen=True)
+class DFlashSpeculatorConfig(SpeculatorConfig):
+    draft_config: DFlashDraftConfig
+
+    def init(self, initializer: Initializer) -> "DFlashSpeculator":
+        return DFlashSpeculator(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            draft_model=self.draft_config.init(initializer),
+        )
+
+
+class DFlashSpeculator(Speculator[DFlashDraftState, DFlashSpeculatorConfig]):
     draft_model: DFlashDraftModel
 
     @property
     def max_proposal_tokens(self) -> int:
         return self.draft_model.config.block_size
-
-    def save(self, directory: Path | str) -> None:
-        directory = Path(directory)
-        directory.mkdir(parents=True, exist_ok=True)
-
-        exported_model = Exportable.export(self.draft_model)
-        metadata = None
-        if exported_model.metadata:
-            metadata = {key: json.dumps(value) for key, value in exported_model.metadata.items()}
-
-        with (directory / "model.safetensors").open("wb") as weights_file:
-            safe_write(
-                weights_file,
-                exported_model.arrays,
-                metadata=metadata,
-            )
-
-        with (directory / "config.json").open("w") as config_file:
-            json.dump(self.draft_model.config.to_json(), config_file, indent=4)
-
-    @classmethod
-    def load(
-        cls,
-        directory: Path | str,
-        sharding_config: ShardingConfig,
-        dtype: DTypeLike | None = None,
-    ) -> Self:
-        directory = Path(directory)
-        with (directory / "config.json").open() as config_file:
-            config = DFlashDraftConfig.from_json(json.load(config_file))
-
-        with (directory / "model.safetensors").open("rb") as weights_file:
-            metadata, arrays = safe_read(weights_file)
-            decoded_metadata: dict[str, JSON] = {}
-            if metadata is not None:
-                decoded_metadata = {key: cast("JSON", json.loads(value)) for key, value in metadata.items()}
-            template = config.init(EmptyInitializer(dtype, sharding_config))
-            result = Exportable.load_exported(
-                template,
-                ExportResults(
-                    arrays=arrays,
-                    metadata=decoded_metadata,
-                ),
-            )
-
-        assert isinstance(result, DFlashDraftModel)
-        return cls(draft_model=result)
 
     def extract_target_features(
         self,

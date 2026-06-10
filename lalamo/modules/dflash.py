@@ -9,10 +9,9 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis
-from lalamo.modules.activations import Activation
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.mlp import DenseMLP, DenseMLPConfig
-from lalamo.modules.normalization import Normalization, NormalizationConfig, UpcastMode
+from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings, RoPE, RoPEConfig
 from lalamo.modules.token_mixers.attention import _attention_kernel
 from lalamo.modules.transformer_layer import TransformerForwardPassConfig
@@ -26,7 +25,6 @@ __all__ = [
     "DFlashDraftLayerConfig",
     "DFlashDraftModel",
     "DFlashDraftState",
-    "make_qwen3_dflash_draft_config",
 ]
 
 
@@ -593,77 +591,3 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
             forward_pass_config=forward_pass_config.normalization_forward_pass_config,
             added_sharding_axes=(batch_axis, None),
         )
-
-
-def make_qwen3_dflash_draft_config(
-    *,
-    model_dim: int,
-    hidden_dim: int,
-    block_size: int,
-    mask_token_id: int,
-    target_layer_ids: tuple[int, ...],
-    num_target_layers: int,
-    vocab_size: int,
-    num_heads: int,
-    num_key_value_heads: int,
-    head_dim: int,
-    num_layers: int,
-    rms_norm_eps: float,
-    rope_config: RoPEConfig,
-    layer_sliding_window_sizes: tuple[int | None, ...],
-    attention_bias: bool,
-    activation: Activation,
-) -> DFlashDraftConfig:
-    if len(layer_sliding_window_sizes) != num_layers:
-        raise ValueError(
-            f"Expected {num_layers} sliding-window entries, got {len(layer_sliding_window_sizes)}",
-        )
-    linear_config = LinearConfig()
-    norm_config = NormalizationConfig(
-        epsilon=rms_norm_eps,
-        scale_offset=None,
-        upcast_mode=UpcastMode.ONLY_NORMALIZATION,
-        subtract_mean=False,
-    )
-    mlp_config = DenseMLPConfig(
-        linear_config=linear_config,
-        activation=activation,
-        has_up_biases=False,
-        has_down_biases=False,
-        gate_clipping=None,
-        up_clipping=None,
-    )
-    layer_configs = tuple(
-        DFlashDraftLayerConfig(
-            attention_config=DFlashAttentionConfig(
-                linear_config=linear_config,
-                query_norm_config=norm_config,
-                key_norm_config=norm_config,
-                rope_config=rope_config,
-                num_heads=num_heads,
-                num_key_value_heads=num_key_value_heads,
-                head_dim=head_dim,
-                has_attention_biases=attention_bias,
-                has_output_biases=attention_bias,
-                sliding_window_size=sliding_window_size,
-                scale=head_dim**-0.5,
-            ),
-            input_norm_config=norm_config,
-            post_attention_norm_config=norm_config,
-            mlp_config=mlp_config,
-        )
-        for sliding_window_size in layer_sliding_window_sizes
-    )
-    return DFlashDraftConfig(
-        model_dim=model_dim,
-        hidden_dim=hidden_dim,
-        block_size=block_size,
-        mask_token_id=mask_token_id,
-        target_layer_ids=target_layer_ids,
-        num_target_layers=num_target_layers,
-        vocab_size=vocab_size,
-        context_projection_config=linear_config,
-        context_norm_config=norm_config,
-        layer_configs=layer_configs,
-        output_norm_config=norm_config,
-    )
