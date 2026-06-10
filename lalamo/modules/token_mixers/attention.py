@@ -303,9 +303,7 @@ def _attention_kernel(
             if mask is not None:
                 mask = jnp.broadcast_to(mask, (queries.shape[1], *mask.shape))
             original_dtype = queries.dtype
-            attention_dtype = values.dtype
-            if attention_dtype not in (jnp.dtype(jnp.bfloat16), jnp.dtype(jnp.float16)):
-                attention_dtype = jnp.dtype(jnp.bfloat16)
+            attention_dtype = jnp.float32
             return jax.nn.dot_product_attention(
                 queries.astype(attention_dtype),
                 keys.astype(attention_dtype),
