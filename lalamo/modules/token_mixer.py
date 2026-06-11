@@ -35,12 +35,8 @@ class StateLayerBase(Exportable, eqx.Module):
     def base_positions(self) -> Int[Array, " batch"]:
         raise NotImplementedError("State layer does not expose base positions.")
 
-    def rollback(
-        self,
-        base_positions: Int[Array, " batch"],
-        accepted_indices: Int[Array, "batch max_slots"],
-    ) -> Self:
-        raise NotImplementedError("State layer does not support rollback.")
+    def truncate(self, new_lengths: Int[Array, " batch"]) -> Self:
+        raise NotImplementedError("State layer does not support truncation.")
 
 
 @register_pytree_node_class
@@ -54,18 +50,8 @@ class State(tuple[StateLayerBase, ...]):
     def tree_unflatten(cls, aux_data: None, children: tuple[StateLayerBase, ...]) -> Self:  # noqa: ARG003
         return cls(children)
 
-    def rollback(
-        self,
-        base_positions: Int[Array, " batch"],
-        accepted_indices: Int[Array, "batch max_slots"],
-    ) -> Self:
-        return State(
-            state_layer.rollback(
-                base_positions,
-                accepted_indices,
-            )
-            for state_layer in self
-        )
+    def truncate(self, new_lengths: Int[Array, " batch"]) -> Self:
+        return State(state_layer.truncate(new_lengths) for state_layer in self)
 
     def base_positions(self) -> Int[Array, " batch"]:
         first_layer, *_ = self

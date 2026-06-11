@@ -302,23 +302,12 @@ class StaticKVCacheLayer(KVCacheLayer):
             current_length=updated_sequence_length,
         )
 
-    def rollback(
-        self,
-        base_positions: Int[Array, " batch"],
-        accepted_indices: Int[Array, "batch max_slots"],
-    ) -> "StaticKVCacheLayer":
-        _, max_slots = accepted_indices.shape
-        slots = jnp.arange(max_slots, dtype=jnp.int32)
-        batch_indices = jnp.arange(self.keys.shape[0], dtype=jnp.int32)[:, None]
-        dst = base_positions[:, None] + slots[None, :]
-        src = base_positions[:, None] + accepted_indices
-        valid = accepted_indices >= 0
-        src = jnp.where(valid, src, dst)
+    def truncate(self, new_lengths: Int[Array, " batch"]) -> "StaticKVCacheLayer":
         return StaticKVCacheLayer(
             has_sinks=self.has_sinks,
-            keys=self.keys.at[batch_indices, dst].set(self.keys[batch_indices, src]),
-            values=self.values.at[batch_indices, dst].set(self.values[batch_indices, src]),
-            current_length=base_positions + jnp.sum(valid, axis=1),
+            keys=self.keys,
+            values=self.values,
+            current_length=new_lengths,
         )
 
     @classmethod

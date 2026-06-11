@@ -15,6 +15,7 @@ from lalamo.models.raw_text_codec import RawTextCodec, RawTextCodecConfig
 from lalamo.module import ForwardPassMode, Keychain
 from lalamo.modules.decoder import DecoderResult
 from lalamo.modules.embedding import EmbeddingBase
+from lalamo.modules.token_mixer import State
 from lalamo.utils.sharding import ShardingConfig
 
 __all__ = [
@@ -98,6 +99,14 @@ class Proposal(eqx.Module, ABC):
         eos_token_ids: Int[Array, " eos_tokens"],
         active_mask: Bool[Array, " batch"] | None = None,
     ) -> AcceptedProposal: ...
+
+    @abstractmethod
+    def rollback_state(
+        self,
+        state: State,
+        base_positions: Int[Array, " batch"],
+        accepted: AcceptedProposal,
+    ) -> State: ...
 
 
 class ChainProposal(Proposal):
@@ -183,6 +192,14 @@ class ChainProposal(Proposal):
             ),
             num_accepted_nodes=num_accepted_nodes,
         )
+
+    def rollback_state(
+        self,
+        state: State,
+        base_positions: Int[Array, " batch"],
+        accepted: AcceptedProposal,
+    ) -> State:
+        return state.truncate(base_positions + accepted.num_accepted_nodes)
 
 
 @dataclass(frozen=True)

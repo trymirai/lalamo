@@ -400,7 +400,11 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
 
         pending_state = state.pending_decoder_result.updated_state
         assert pending_state is not None
-        target_state = pending_state.rollback(state.pending_base_positions, accepted.accepted_node_indices)
+        target_state = state.pending_proposal.rollback_state(
+            pending_state,
+            state.pending_base_positions,
+            accepted,
+        )
         current_keychain = Keychain(
             vmapped_keys=decoding_key,
             batch_key=decoding_keychain.batch_key,
