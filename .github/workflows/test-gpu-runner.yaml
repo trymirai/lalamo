@@ -3,7 +3,7 @@ on: workflow_dispatch
 
 jobs:
   test-gpu:
-    runs-on: [self-hosted, linux, gpu, l40s]
+    runs-on: arc-l40s
     steps:
       - run: |
           echo "=== GPU ==="
