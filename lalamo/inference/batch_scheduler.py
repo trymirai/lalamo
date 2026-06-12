@@ -12,16 +12,16 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from einops import rearrange
 from jax.errors import JaxRuntimeError
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key, Shaped
 
 from lalamo.models.chat_codec import AssistantMessage, Message
 from lalamo.models.language_model import DecodingState, GenerationConfig, LanguageModel, PrefillResults
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
-from lalamo.modules import DecoderForwardPassConfig, State
+from lalamo.modules import DecoderForwardPassConfig
 from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy
+from lalamo.speculator import NoSpeculator, Speculator
 
 __all__ = [
     "BatchScheduler",
@@ -371,6 +371,7 @@ class PrefillSource:
     chunk_size: int
     state_capacity: int
     sampling_policy_template: SamplingPolicy
+    speculator: Speculator
     cursor: int = 0
 
     @property
@@ -432,6 +433,7 @@ class PrefillSource:
             state_capacity=self.state_capacity,
             lengths_without_padding=lengths_without_padding_array,
             chunk_size=self.chunk_size,
+            speculator=self.speculator,
             keychain=prefill_keychain,
         )
         sampling_policy = self.sampling_policy_template.broadcast(self.prefill_batch_size)
@@ -471,26 +473,9 @@ class PrefillSource:
         return replace(self, cursor=self.cursor + num_designated), batch
 
 
-def append_block_tokens(
-    token_buffer: Int[Array, "num_lines max_output"],
-    num_generated: Int[Array, " num_lines"],
-    block_tokens: Int[Array, "block_size num_lines"],
-) -> tuple[Int[Array, "num_lines max_output"], Int[Array, " num_lines"]]:
-    num_lines, _ = token_buffer.shape
-    block_size, _ = block_tokens.shape
-    offsets = num_generated[:, None] + jnp.arange(block_size)
-    new_buffer = token_buffer.at[jnp.arange(num_lines)[:, None], offsets].set(block_tokens.T, mode="drop")
-    return new_buffer, num_generated + block_size
-
-
 class BlockContinuousState(eqx.Module):
-    last_token_logits: Float[Array, "num_lines vocab"]
-    last_token_indices: Int[Array, " num_lines"]
-    kv_state: State
-    sampling_policy: SamplingPolicy
-    stop_flags: Bool[Array, " num_lines"]
+    decoding_state: DecodingState
     token_buffer: Int[Array, "num_lines max_output"]
-    num_generated: Int[Array, " num_lines"]
     sampling_keys: Key[Array, " num_lines"]
     decoding_keys: Key[Array, " num_lines"]
     in_batch_index_to_sequence_id: Int[Array, " num_lines"]
@@ -504,57 +489,28 @@ class BlockContinuousState(eqx.Module):
                 raise RuntimeError(f"BlockContinuousState leaf has first dim {leaf.shape[0]} != num_lines={num_lines}")
 
     @staticmethod
-    def init(
+    def from_decoding_state(
+        prefill_decoding_state: DecodingState,
         num_lines: int,
         max_output_length: int,
-        state_capacity: int,
-        model: LanguageModel,
-        sampling_policy_template: SamplingPolicy,
+        key: Key[Array, ""],
     ) -> "BlockContinuousState":
-        batch_axis = model.sharding_config.resolve_axis(LogicalAxis.BATCH)
-        batch_token_sharding = model.sharding_config.make_sharding((batch_axis, None))
-        batch_vector_sharding = model.sharding_config.make_sharding((batch_axis,))
-        if sampling_policy_template.has_count_penalties:
-            sampling_policy_template = sampling_policy_template.with_empty_token_counts(model.decoder.vocab_size)
-        sampling_policy = sampling_policy_template.broadcast(num_lines)
+        def empty_line_values(leaf: Shaped[Array, "prefill_bs ..."]) -> Shaped[Array, "num_lines ..."]:
+            _, *line_dims = leaf.shape
+            return jnp.zeros((num_lines, *line_dims), dtype=leaf.dtype)
 
-        def shard_sampling_leaf(leaf: object) -> object:
-            if not isinstance(leaf, jax.Array):
-                return leaf
-            if leaf.ndim > 0 and leaf.shape[0] == num_lines:
-                sharding_axes = (batch_axis, *((None,) * (leaf.ndim - 1)))
-            else:
-                sharding_axes = (None,) * leaf.ndim
-            leaf_sharding = model.sharding_config.make_sharding(sharding_axes)
-            return jax.device_put(leaf, leaf_sharding)
-
-        sampling_policy = jax.tree.map(shard_sampling_leaf, sampling_policy)
-
+        decoding_state: DecodingState = jax.tree.map(empty_line_values, prefill_decoding_state)
+        sampling_key, decoding_key = jax.random.split(key)
         return BlockContinuousState(
-            last_token_logits=jax.device_put(
-                jnp.zeros((num_lines, model.decoder.vocab_size), dtype=jnp.float32),
-                batch_token_sharding,
-            ),
-            last_token_indices=jax.device_put(jnp.zeros(num_lines, dtype=jnp.int32), batch_vector_sharding),
-            kv_state=model.decoder.init_static_state(
-                num_lines,
-                state_capacity,
-                model.decoder.embedding.embedding_matrix.dtype,
-            ),
-            sampling_policy=sampling_policy,
-            stop_flags=jax.device_put(jnp.ones(num_lines, dtype=bool), batch_vector_sharding),
-            token_buffer=jax.device_put(
-                jnp.zeros((num_lines, max_output_length), dtype=jnp.int32),
-                batch_token_sharding,
-            ),
-            num_generated=jax.device_put(jnp.zeros(num_lines, dtype=jnp.int32), batch_vector_sharding),
-            sampling_keys=jax.device_put(jax.random.split(jax.random.key(0), num_lines), batch_vector_sharding),
-            decoding_keys=jax.device_put(jax.random.split(jax.random.key(1), num_lines), batch_vector_sharding),
-            in_batch_index_to_sequence_id=jax.device_put(jnp.zeros(num_lines, dtype=jnp.int32), batch_vector_sharding),
+            decoding_state=decoding_state._replace(stop_flags=jnp.ones(num_lines, dtype=bool)),
+            token_buffer=jnp.zeros((num_lines, max_output_length), dtype=jnp.int32),
+            sampling_keys=jax.random.split(sampling_key, num_lines),
+            decoding_keys=jax.random.split(decoding_key, num_lines),
+            in_batch_index_to_sequence_id=jnp.zeros(num_lines, dtype=jnp.int32),
         )
 
     def empty_lines(self) -> list[int]:
-        stopped = np.asarray(self.stop_flags)
+        stopped = np.asarray(self.decoding_state.stop_flags)
         (num_lines,) = self.in_batch_index_to_sequence_id.shape
         return [idx for idx in range(num_lines) if stopped[idx]]
 
@@ -571,7 +527,15 @@ class BlockContinuousState(eqx.Module):
             )
 
     def is_empty(self) -> bool:
-        return bool(jnp.all(self.stop_flags))
+        return bool(jnp.all(self.decoding_state.stop_flags))
+
+
+type BlockStepCarry = tuple[
+    DecodingState,
+    Int[Array, "num_lines max_output"],
+    Key[Array, " num_lines"],
+    Key[Array, " num_lines"],
+]
 
 
 class BlockContinuousDecoder(eqx.Module):
@@ -580,6 +544,7 @@ class BlockContinuousDecoder(eqx.Module):
     language_model: LanguageModel
     sampling_policy_template: SamplingPolicy
     decoding_batch_key: Key[Array, ""]
+    speculator: Speculator
 
     @classmethod
     def init(
@@ -589,6 +554,7 @@ class BlockContinuousDecoder(eqx.Module):
         model: LanguageModel,
         sampling_policy: SamplingPolicy,
         decoding_batch_key: Key[Array, ""],
+        speculator: Speculator,
     ) -> "BlockContinuousDecoder":
         return cls(
             block_size=block_size,
@@ -596,84 +562,21 @@ class BlockContinuousDecoder(eqx.Module):
             language_model=model,
             sampling_policy_template=sampling_policy,
             decoding_batch_key=decoding_batch_key,
+            speculator=speculator,
         )
 
-    def _step(
-        self,
-        carry: tuple[DecodingState, Key[Array, " num_lines"], Key[Array, " num_lines"]],
-        eos_token_ids: Int[Array, " eos_tokens"],
-    ) -> tuple[tuple[DecodingState, Key[Array, " num_lines"], Key[Array, " num_lines"]], Int[Array, " num_lines"]]:
-        decode_state, sampling_keys, decoding_keys = carry
-
-        split_sampling_keys = jax.vmap(jax.random.split)(sampling_keys)
-        next_sampling_keys = split_sampling_keys[:, 0]
-        sample_keys = split_sampling_keys[:, 1]
-        split_decoding_keys = jax.vmap(jax.random.split)(decoding_keys)
-        next_decoding_keys = split_decoding_keys[:, 0]
-        decoder_keys = split_decoding_keys[:, 1]
-
-        processed_logits = call_vmapped(
-            lambda policy, logits: policy.process_logits(logits),
-            decode_state.sampling_policy,
-            decode_state.last_token_logits.astype(jnp.float32),
+    def initial_decoding_state(self, batch: PrefillBatch) -> DecodingState:
+        return DecodingState.from_prefill(
+            batch.prefill_results,
+            batch.sampling_policy,
+            self.speculator,
+            jnp.int32,
         )
-        next_token_ids = jax.vmap(jax.random.categorical)(sample_keys, processed_logits)
-        next_token_ids = jnp.where(decode_state.stop_flags, 0, next_token_ids)
-        next_sampling_policy = call_vmapped(
-            lambda policy, token_id, should_count: policy.with_next_token_count(token_id, should_count),
-            decode_state.sampling_policy,
-            next_token_ids,
-            jnp.logical_not(decode_state.stop_flags),
-        )
-
-        next_token_indices = decode_state.last_token_indices + 1
-        stop_flags = jnp.logical_or(
-            decode_state.stop_flags,
-            jnp.any(next_token_ids[:, None] == eos_token_ids[None, :], axis=-1),
-        )
-
-        decoder_result = self.language_model.decoder(
-            token_ids=next_token_ids[:, None],
-            token_positions=next_token_indices[:, None],
-            state=decode_state.state,
-            return_updated_state=True,
-            forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
-            keychain=Keychain(
-                vmapped_keys=decoder_keys,
-                batch_key=self.decoding_batch_key,
-                sharding_config=self.language_model.sharding_config,
-            ),
-        )
-        assert decoder_result.updated_state is not None
-        new_decode_state = DecodingState(
-            last_token_logits=rearrange(decoder_result.logits, "num_lines 1 vocab -> num_lines vocab").astype(
-                jnp.float32,
-            ),
-            last_token_indices=next_token_indices,
-            state=decoder_result.updated_state,
-            stop_flags=stop_flags,
-            sampling_policy=next_sampling_policy,
-        )
-        return (new_decode_state, next_sampling_keys, next_decoding_keys), next_token_ids
 
     def fill_lines(self, state: BlockContinuousState, batch: PrefillBatch) -> BlockContinuousState:
-        (prefill_batch_size,) = batch.prefill_results.last_token_indices.shape
-        prefill_state = DecodingState(
-            last_token_logits=batch.prefill_results.last_token_logits,
-            last_token_indices=batch.prefill_results.last_token_indices,
-            state=batch.prefill_results.state,
-            stop_flags=jnp.zeros(prefill_batch_size, dtype=bool),
-            sampling_policy=batch.sampling_policy,
-        )
-        current_decode_state = DecodingState(
-            last_token_logits=state.last_token_logits,
-            last_token_indices=state.last_token_indices,
-            state=state.kv_state,
-            stop_flags=state.stop_flags,
-            sampling_policy=state.sampling_policy,
-        )
+        prefill_decoding_state = self.initial_decoding_state(batch)
 
-        empty_lines = state.stop_flags
+        empty_lines = state.decoding_state.stop_flags
         lines_passed = jnp.sum(batch.mask)
         source_idx = jnp.cumsum(empty_lines, dtype=jnp.int32) - 1
         need_updating = jnp.logical_and(empty_lines, source_idx < lines_passed)
@@ -684,17 +587,12 @@ class BlockContinuousDecoder(eqx.Module):
         ) -> Shaped[Array, "num_lines ..."]:
             return jax.vmap(jnp.where)(need_updating, new, old)
 
-        gathered_prefill_state = jax.tree.map(lambda value: value[source_idx], prefill_state)
-        new_decode_state = jax.tree.map(apply_updates, gathered_prefill_state, current_decode_state)
+        gathered_prefill_state = jax.tree.map(lambda value: value[source_idx], prefill_decoding_state)
+        new_decoding_state = jax.tree.map(apply_updates, gathered_prefill_state, state.decoding_state)
 
         return BlockContinuousState(
-            last_token_logits=new_decode_state.last_token_logits,
-            last_token_indices=new_decode_state.last_token_indices,
-            kv_state=new_decode_state.state,
-            sampling_policy=new_decode_state.sampling_policy,
-            stop_flags=new_decode_state.stop_flags,
-            token_buffer=state.token_buffer,
-            num_generated=apply_updates(jnp.zeros_like(state.num_generated), state.num_generated),
+            decoding_state=new_decoding_state,
+            token_buffer=apply_updates(jnp.zeros_like(state.token_buffer), state.token_buffer),
             sampling_keys=apply_updates(batch.sampling_keys[source_idx], state.sampling_keys),
             decoding_keys=apply_updates(batch.decoding_keys[source_idx], state.decoding_keys),
             in_batch_index_to_sequence_id=apply_updates(
@@ -705,32 +603,63 @@ class BlockContinuousDecoder(eqx.Module):
 
     def decode_block(self, state: BlockContinuousState) -> tuple[BlockContinuousState, Bool[Array, " num_lines"]]:
         eos_token_ids = jnp.asarray(self.language_model.config.generation_config.stop_token_ids, dtype=jnp.int32)
-        initial_decode_state = DecodingState(
-            last_token_logits=state.last_token_logits,
-            last_token_indices=state.last_token_indices,
-            state=state.kv_state,
-            stop_flags=state.stop_flags,
-            sampling_policy=state.sampling_policy,
-        )
-        (new_decode_state, new_sampling_keys, new_decoding_keys), block_tokens = jax.lax.scan(
-            lambda carry, _: self._step(carry, eos_token_ids),
-            (initial_decode_state, state.sampling_keys, state.decoding_keys),
+        decode_forward_pass_config = DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN)
+        max_proposal_tokens = self.speculator.max_proposal_tokens
+        (num_lines,) = state.in_batch_index_to_sequence_id.shape
+        line_indices = jnp.arange(num_lines, dtype=jnp.int32)
+        proposal_slots = jnp.arange(max_proposal_tokens, dtype=jnp.int32)
+
+        def step(carry: BlockStepCarry, _: None) -> tuple[BlockStepCarry, None]:
+            decoding_state, token_buffer, sampling_keys, decoding_keys = carry
+            split_sampling_keys = jax.vmap(lambda key: jax.random.split(key, max_proposal_tokens + 1))(sampling_keys)
+            next_sampling_keys = split_sampling_keys[:, 0]
+            node_sampling_keys = split_sampling_keys[:, 1:]
+            split_decoding_keys = jax.vmap(jax.random.split)(decoding_keys)
+            next_decoding_keys = split_decoding_keys[:, 0]
+            step_decoding_keys = split_decoding_keys[:, 1]
+
+            new_decoding_state, step_results = self.language_model.decode_generation_step(
+                decoding_state,
+                (node_sampling_keys, step_decoding_keys),
+                self.max_output_length,
+                eos_token_ids,
+                self.sampling_policy_template.has_count_penalties,
+                None,
+                decode_forward_pass_config,
+                Keychain(
+                    vmapped_keys=step_decoding_keys,
+                    batch_key=self.decoding_batch_key,
+                    sharding_config=self.language_model.sharding_config,
+                ),
+                self.speculator,
+            )
+
+            output_positions = decoding_state.num_generated_tokens[:, None] + proposal_slots[None, :]
+            output_positions = jnp.where(
+                proposal_slots[None, :] < step_results.lengths[:, None],
+                output_positions,
+                self.max_output_length,
+            )
+            new_token_buffer = token_buffer.at[line_indices[:, None], output_positions].set(
+                step_results.token_ids,
+                mode="drop",
+            )
+            return (new_decoding_state, new_token_buffer, next_sampling_keys, next_decoding_keys), None
+
+        (new_decoding_state, new_token_buffer, new_sampling_keys, new_decoding_keys), _ = jax.lax.scan(
+            step,
+            (state.decoding_state, state.token_buffer, state.sampling_keys, state.decoding_keys),
             None,
             length=self.block_size,
         )
-
-        new_buffer, new_num_generated = append_block_tokens(state.token_buffer, state.num_generated, block_tokens)
-        combined_stop = jnp.logical_or(new_decode_state.stop_flags, new_num_generated >= self.max_output_length)
-        completed_mask = jnp.logical_and(jnp.logical_not(state.stop_flags), combined_stop)
+        completed_mask = jnp.logical_and(
+            jnp.logical_not(state.decoding_state.stop_flags),
+            new_decoding_state.stop_flags,
+        )
 
         return BlockContinuousState(
-            last_token_logits=new_decode_state.last_token_logits,
-            last_token_indices=new_decode_state.last_token_indices,
-            kv_state=new_decode_state.state,
-            sampling_policy=new_decode_state.sampling_policy,
-            stop_flags=combined_stop,
-            token_buffer=new_buffer,
-            num_generated=new_num_generated,
+            decoding_state=new_decoding_state,
+            token_buffer=new_token_buffer,
             sampling_keys=new_sampling_keys,
             decoding_keys=new_decoding_keys,
             in_batch_index_to_sequence_id=state.in_batch_index_to_sequence_id,
@@ -740,6 +669,7 @@ class BlockContinuousDecoder(eqx.Module):
 @dataclass(frozen=True)
 class BatchScheduler(ABC):
     model: LanguageModel
+    speculator: Speculator | None = None
 
     @abstractmethod
     def generate_tokens_many(
@@ -928,6 +858,7 @@ class FixedSizeBatchScheduler(BatchScheduler):
                     max_output_length=batch_scheduler_config.max_output_length,
                     num_top_logits_to_return=batch_scheduler_config.num_top_logits_to_return,
                     keychain=batch_keychain,
+                    speculator=self.speculator,
                 )
                 for local_idx, sequence_id in enumerate(batch_indices):
                     yield (
@@ -998,8 +929,14 @@ class ContinuousBatchScheduler(BatchScheduler):
         if any(axis is not None for axis in self.model.sharding_config.logical_to_physical.values()):
             raise RuntimeError("ContinuousBatchScheduler does not support sharded models.")
 
+        speculator = self.speculator
+        if speculator is None:
+            speculator = NoSpeculator.build(self.model.sharding_config)
+        if not isinstance(speculator, NoSpeculator) and sampling_policy.has_count_penalties:
+            raise ValueError("Speculator decoding only supports stateless sampling policies.")
+
         block_size = min(self.block_size, max_output_length)
-        state_capacity = padded_length + max_output_length + 1
+        state_capacity = padded_length + max_output_length + speculator.max_proposal_tokens
         requested_prefill_batch_size = (
             batch_size
             if sampling_policy.has_count_penalties
@@ -1015,6 +952,7 @@ class ContinuousBatchScheduler(BatchScheduler):
             chunk_size=self.prefill_chunk_size,
             state_capacity=state_capacity,
             sampling_policy_template=sampling_policy,
+            speculator=speculator,
         )
 
         # make sure the key used is the same as the one in FixedBatchScheduler
@@ -1025,21 +963,19 @@ class ContinuousBatchScheduler(BatchScheduler):
             model=self.model,
             sampling_policy=sampling_policy,
             decoding_batch_key=decoding_keychain.batch_key,
-        )
-        state = BlockContinuousState.init(
-            num_lines=batch_size,
-            max_output_length=max_output_length,
-            state_capacity=state_capacity,
-            model=self.model,
-            sampling_policy_template=sampling_policy,
+            speculator=speculator,
         )
 
         jitted_decode = eqx.filter_jit(decoder.decode_block, donate="all")
         jitted_fill_lines = eqx.filter_jit(decoder.fill_lines, donate="all")
 
-        empty_lines = state.empty_lines()
-
-        prefills, partially_prefilled_batch = prefills.request(len(empty_lines), decoder.language_model)
+        prefills, partially_prefilled_batch = prefills.request(batch_size, decoder.language_model)
+        state = BlockContinuousState.from_decoding_state(
+            decoder.initial_decoding_state(partially_prefilled_batch),
+            num_lines=batch_size,
+            max_output_length=max_output_length,
+            key=decoding_keychain.batch_key,
+        )
 
         jitted_fill_lines = jitted_fill_lines.lower(  # type: ignore[missing-attribute]
             state,

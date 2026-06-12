@@ -9,7 +9,9 @@ import jax.numpy as jnp
 import requests
 import thefuzz.fuzz
 import thefuzz.process
+from tokenizers import Tokenizer
 
+from lalamo.audio.utils import dummy_char_level_tokenizer_config
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import (
     DownloadingFileEvent,
@@ -20,7 +22,10 @@ from lalamo.model_import.common import (
     StatusEvent,
     import_model,
 )
+from lalamo.model_import.loaders.dflash_loader import load_hf_dflash_draft_model
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
+from lalamo.models.raw_text_codec import RawTextCodecConfig
+from lalamo.speculator.dflash import DFlashSpeculator, DFlashSpeculatorConfig
 from lalamo.utils.sharding import ShardingConfig
 
 
@@ -203,4 +208,82 @@ def convert(
     callbacks.saving_model()
     imported_model.model.save(output_dir)
 
+    callbacks.finished_saving_model()
+
+
+@dataclass
+class SpeculatorConversionCallbacks:
+    hf_model_dir: Path
+    output_dir: Path
+    dtype: DType | None
+    context_length: int | None
+
+    def started(self) -> None:
+        pass
+
+    def output_dir_exists(self) -> None:
+        raise RuntimeError(f"{self.output_dir=} already exists, refusing to overwrite!")
+
+    def loading_model(self) -> None:
+        pass
+
+    def finished_loading_model(self) -> None:
+        pass
+
+    def saving_model(self) -> None:
+        pass
+
+    def finished_saving_model(self) -> None:
+        pass
+
+
+def convert_speculator(
+    hf_model_dir: Path,
+    output_dir: Path,
+    dtype: DType | None = None,
+    context_length: int | None = None,
+    callbacks_type: Callable[
+        [
+            Path,
+            Path,
+            DType | None,
+            int | None,
+        ],
+        SpeculatorConversionCallbacks,
+    ] = SpeculatorConversionCallbacks,
+) -> None:
+    effective_dtype = dtype or DType.BFLOAT16
+    callbacks = callbacks_type(
+        hf_model_dir,
+        output_dir,
+        effective_dtype,
+        context_length,
+    )
+
+    if output_dir.exists():
+        callbacks.output_dir_exists()
+
+    callbacks.started()
+    callbacks.loading_model()
+    draft_model = load_hf_dflash_draft_model(
+        hf_model_dir,
+        sharding_config=ShardingConfig.replicated(),
+        dtype=jnp.dtype(effective_dtype.value),
+        context_length=context_length,
+    )
+    callbacks.finished_loading_model()
+
+    callbacks.saving_model()
+    tokenizer = Tokenizer.from_str(dummy_char_level_tokenizer_config())
+    config = DFlashSpeculatorConfig(
+        token_codec_config=RawTextCodecConfig(),
+        draft_config=draft_model.config,
+    )
+    speculator = DFlashSpeculator(
+        config=config,
+        sharding_config=draft_model.sharding_config,
+        token_codec=config.token_codec_config.init(tokenizer),
+        draft_model=draft_model,
+    )
+    speculator.save(output_dir)
     callbacks.finished_saving_model()

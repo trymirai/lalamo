@@ -17,13 +17,6 @@ __all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
 def tree_ancestor_mask(
     parent_indices: Int[Array, " nodes"],
 ) -> Bool[Array, "nodes nodes"]:
-    """Ancestor matrix from parent_indices.
-
-    Root is at index 0 with ``parent_indices[0] == -1``; other nodes must have
-    ``parent_indices[i] < i`` so a single forward sweep sees the parent's row
-    already closed. For the root the ``parent >= 0`` guard zeroes out the
-    ``maximum(parent, 0)`` self-lookup, preserving eye[0].
-    """
     (num_nodes,) = parent_indices.shape
     initial = jnp.eye(num_nodes, dtype=jnp.bool)
 
@@ -45,7 +38,6 @@ def build_tree_attention_mask(
     parent_indices: Int[Array, " nodes"],
     has_sinks: bool,
 ) -> Bool[Array, "nodes total_capacity"]:
-    """Tree attention mask: each draft node attends to prefix + ancestors + self."""
     prefix_length = jnp.asarray(prefix_length, dtype=jnp.int32)
     (num_nodes,) = parent_indices.shape
 
@@ -224,6 +216,9 @@ class DynamicKVCacheLayer(KVCacheLayer):
 class StaticKVCacheLayer(KVCacheLayer):
     current_length: Int[Array, "*batch"]
 
+    def base_positions(self) -> Int[Array, " batch"]:
+        return self.current_length
+
     def current_prefix_length(self) -> Int[Array, ""]:
         self._raise_if_batched()
         return self.current_length
@@ -305,6 +300,14 @@ class StaticKVCacheLayer(KVCacheLayer):
             keys=updated_keys,
             values=updated_values,
             current_length=updated_sequence_length,
+        )
+
+    def truncate(self, new_lengths: Int[Array, " batch"]) -> "StaticKVCacheLayer":
+        return StaticKVCacheLayer(
+            has_sinks=self.has_sinks,
+            keys=self.keys,
+            values=self.values,
+            current_length=new_lengths,
         )
 
     @classmethod
