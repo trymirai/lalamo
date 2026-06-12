@@ -8,7 +8,7 @@ from einops import rearrange
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, SpeculatorState
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.mlp import DenseMLP, DenseMLPConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
@@ -446,7 +446,7 @@ class DFlashDraftConfig(LalamoConfig):
         )
 
 
-class DFlashDraftState(eqx.Module):
+class DFlashDraftState(SpeculatorState):
     layer_states: tuple[DFlashDraftLayerState, ...]
     context_lengths: Int[Array, " batch"]
 

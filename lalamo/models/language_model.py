@@ -14,7 +14,7 @@ from tokenizers import Tokenizer
 from lalamo.initializer import Initializer
 from lalamo.model import Model, ModelConfig
 from lalamo.models.chat_codec import AssistantMessage, ChatCodec, ChatCodecConfig, Message
-from lalamo.module import LogicalAxis
+from lalamo.module import LogicalAxis, SpeculatorState
 from lalamo.modules import (
     Decoder,
     DecoderActivationTrace,
@@ -45,7 +45,7 @@ class PrefillResults(NamedTuple):
     last_token_logits: Float[Array, "batch vocabulary"]
     last_token_indices: Int[Array, " batch"]
     state: State
-    speculator_state: eqx.Module
+    speculator_state: SpeculatorState
     pending_activation_trace: DecoderActivationTrace | None
 
 
@@ -62,7 +62,7 @@ class DecodingState(NamedTuple):
     pending_proposal: Proposal
     stop_flags: Bool[Array, " batch"]
     sampling_policy: SamplingPolicy
-    speculator_state: eqx.Module
+    speculator_state: SpeculatorState
     num_generated_tokens: Int[Array, " batch"]
 
     @classmethod
@@ -263,12 +263,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: DecoderForwardPassConfig | None = None,
         chunk_size: int = 512,
-        speculator: Speculator | None = None,
         *,
+        speculator: Speculator,
         keychain: Keychain,
     ) -> PrefillResults:
-        if speculator is None:
-            speculator = NoSpeculator.build(self.sharding_config)
         batch_size, sequence_length = token_ids.shape
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
         batch_vector_sharding = self.sharding_config.make_sharding((batch_axis,))
@@ -305,10 +303,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             return jnp.pad(array, pad_widths)
 
         def apply_chunk(
-            state_speculator_state_and_logits: tuple[State, eqx.Module, Float[Array, "batch vocabulary"]],
+            state_speculator_state_and_logits: tuple[State, SpeculatorState, Float[Array, "batch vocabulary"]],
             chunk_inputs: tuple[Chunk, Keychain],
         ) -> tuple[
-            tuple[State, eqx.Module, Float[Array, "batch vocabulary"]],
+            tuple[State, SpeculatorState, Float[Array, "batch vocabulary"]],
             DecoderActivationTrace | None,
         ]:
             current_state, current_speculator_state, previous_logits = state_speculator_state_and_logits

@@ -1,3 +1,5 @@
+from lalamo.module import SpeculatorState
+
 from .common import (
     AcceptedProposal,
     ChainProposal,
@@ -23,4 +25,5 @@ __all__ = [
     "ProposalInputs",
     "Speculator",
     "SpeculatorConfig",
+    "SpeculatorState",
 ]

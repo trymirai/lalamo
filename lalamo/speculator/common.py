@@ -12,7 +12,7 @@ from lalamo.audio.utils import dummy_char_level_tokenizer_config
 from lalamo.initializer import Initializer
 from lalamo.model import Model, ModelConfig
 from lalamo.models.raw_text_codec import RawTextCodec, RawTextCodecConfig
-from lalamo.module import ForwardPassMode, Keychain
+from lalamo.module import ForwardPassMode, Keychain, SpeculatorState
 from lalamo.modules.decoder import DecoderResult
 from lalamo.modules.embedding import EmbeddingBase
 from lalamo.modules.token_mixer import State
@@ -208,7 +208,7 @@ class SpeculatorConfig(ModelConfig[RawTextCodecConfig]):
     def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "Speculator": ...
 
 
-class Speculator[SpeculatorStateT: eqx.Module, ConfigT: SpeculatorConfig](
+class Speculator[SpeculatorStateT: SpeculatorState, ConfigT: SpeculatorConfig](
     Model[RawTextCodecConfig, ConfigT, RawTextCodec],
     ABC,
 ):
@@ -263,7 +263,7 @@ class Speculator[SpeculatorStateT: eqx.Module, ConfigT: SpeculatorConfig](
     ) -> Proposal: ...
 
 
-class NoSpeculatorState(eqx.Module):
+class NoSpeculatorState(SpeculatorState):
     pass
 
 
