@@ -30,7 +30,7 @@ class DFlashYarnRopeScalingConfig:
     beta_slow: float
     original_max_position_embeddings: int
     rope_type: Literal["yarn"]
-    truncate: bool | None = None
+    truncate: bool = False
     type: Literal["yarn"] | None = None
     mscale: float | None = None
     mscale_all_dim: float | None = None
