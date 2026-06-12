@@ -489,21 +489,23 @@ class BlockContinuousState(eqx.Module):
                 raise RuntimeError(f"BlockContinuousState leaf has first dim {leaf.shape[0]} != num_lines={num_lines}")
 
     @staticmethod
-    def empty_like(
+    def from_decoding_state(
         prefill_decoding_state: DecodingState,
         num_lines: int,
         max_output_length: int,
+        key: Key[Array, ""],
     ) -> "BlockContinuousState":
         def empty_line_values(leaf: Shaped[Array, "prefill_bs ..."]) -> Shaped[Array, "num_lines ..."]:
             _, *line_dims = leaf.shape
             return jnp.zeros((num_lines, *line_dims), dtype=leaf.dtype)
 
         decoding_state: DecodingState = jax.tree.map(empty_line_values, prefill_decoding_state)
+        sampling_key, decoding_key = jax.random.split(key)
         return BlockContinuousState(
-            decoding_state=decoding_state._replace(stop_flags=jnp.ones(num_lines, dtype=jnp.bool_)),
+            decoding_state=decoding_state._replace(stop_flags=jnp.ones(num_lines, dtype=bool)),
             token_buffer=jnp.zeros((num_lines, max_output_length), dtype=jnp.int32),
-            sampling_keys=jax.random.split(jax.random.key(0), num_lines),
-            decoding_keys=jax.random.split(jax.random.key(1), num_lines),
+            sampling_keys=jax.random.split(sampling_key, num_lines),
+            decoding_keys=jax.random.split(decoding_key, num_lines),
             in_batch_index_to_sequence_id=jnp.zeros(num_lines, dtype=jnp.int32),
         )
 
@@ -968,10 +970,11 @@ class ContinuousBatchScheduler(BatchScheduler):
         jitted_fill_lines = eqx.filter_jit(decoder.fill_lines, donate="all")
 
         prefills, partially_prefilled_batch = prefills.request(batch_size, decoder.language_model)
-        state = BlockContinuousState.empty_like(
+        state = BlockContinuousState.from_decoding_state(
             decoder.initial_decoding_state(partially_prefilled_batch),
             num_lines=batch_size,
             max_output_length=max_output_length,
+            key=decoding_keychain.batch_key,
         )
 
         jitted_fill_lines = jitted_fill_lines.lower(  # type: ignore[missing-attribute]

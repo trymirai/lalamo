@@ -142,7 +142,7 @@ class DFlashSpeculator(Speculator[DFlashDraftState, DFlashSpeculatorConfig]):
         )
         token_positions = jnp.concatenate((context_positions, draft_positions), axis=1)
         context_mask = context_slots < state.context_lengths[:, None]
-        draft_mask = jnp.ones((batch_size, block_size), dtype=jnp.bool_)
+        draft_mask = jnp.ones((batch_size, block_size), dtype=bool)
         key_mask = jnp.concatenate((context_mask, draft_mask), axis=1)
         attention_mask = jnp.broadcast_to(
             key_mask[:, None, :],

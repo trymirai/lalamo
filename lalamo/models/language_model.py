@@ -98,7 +98,7 @@ class DecodingState(NamedTuple):
                 token_positions=initial_positions,
                 lengths=jnp.zeros((batch_size,), dtype=prefill_results.last_token_indices.dtype),
             ),
-            stop_flags=jnp.zeros((batch_size,), dtype=jnp.bool_),
+            stop_flags=jnp.zeros((batch_size,), dtype=bool),
             sampling_policy=sampling_policy,
             speculator_state=prefill_results.speculator_state,
             num_generated_tokens=jnp.zeros((batch_size,), dtype=jnp.int32),
@@ -106,10 +106,10 @@ class DecodingState(NamedTuple):
 
 
 class GenerationStepResults(NamedTuple):
-    token_ids: Int[Array, "batch tokens"]
+    token_ids: Int[Array, "batch accepted_tokens"]
     lengths: Int[Array, " batch"]
-    top_k_token_ids: Int[Array, "batch tokens k"] | None
-    top_k_token_logits: Float[Array, "batch tokens k"] | None
+    top_k_token_ids: Int[Array, "batch accepted_tokens k"] | None
+    top_k_token_logits: Float[Array, "batch accepted_tokens k"] | None
 
 
 type GenerationLoopCarry = tuple[
@@ -620,10 +620,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
 
         def loop_body(carry: GenerationLoopCarry) -> GenerationLoopCarry:
             state, step_index, token_ids, top_k_token_ids, top_k_token_logits = carry
-            step_keys = (
-                jax.lax.dynamic_index_in_dim(sampling_keys, step_index, keepdims=False),
-                jax.lax.dynamic_index_in_dim(decoding_keys, step_index, keepdims=False),
-            )
+            step_keys = (sampling_keys[step_index], decoding_keys[step_index])
             output_offsets = state.num_generated_tokens
             state, step_results = self.decode_generation_step(
                 state,

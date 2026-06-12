@@ -138,7 +138,7 @@ class ChainProposal(Proposal):
         draft_slots = jnp.arange(num_proposal_slots - 1, dtype=self.lengths.dtype)[None, :]
         draft_valid = draft_slots < jnp.maximum(self.lengths[:, None] - 1, 0)
         draft_matches = self.token_ids[:, 1:] == sampled_token_ids[:, :-1]
-        accepted_draft_mask = jnp.cumprod((draft_matches & draft_valid).astype(jnp.int32), axis=1).astype(jnp.bool_)
+        accepted_draft_mask = jnp.cumprod((draft_matches & draft_valid).astype(jnp.int32), axis=1).astype(bool)
         num_accepted_drafts = jnp.sum(accepted_draft_mask.astype(self.lengths.dtype), axis=1)
         num_accepted_nodes = jnp.where(self.lengths > 0, num_accepted_drafts + 1, 0)
         if active_mask is not None:
