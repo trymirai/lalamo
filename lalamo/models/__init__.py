@@ -1,5 +1,5 @@
 from .classifier import ClassifierModel, ClassifierModelConfig
-from .language_model import GenerationConfig, GenerationResults, LanguageModel, LanguageModelConfig
+from .language_model import GenerationConfig, GenerationResults, LanguageModel, LanguageModelConfig, StreamedReply
 from .tts_model import TTSConfig, TTSGenerationResult, TTSModel, TTSModelConfig
 
 __all__ = [
@@ -9,6 +9,7 @@ __all__ = [
     "GenerationResults",
     "LanguageModel",
     "LanguageModelConfig",
+    "StreamedReply",
     "TTSConfig",
     "TTSGenerationResult",
     "TTSModel",

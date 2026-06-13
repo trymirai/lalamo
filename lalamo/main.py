@@ -10,7 +10,6 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated
 
 import jax
-import jax.numpy as jnp
 import jax.profiler
 import requests
 import soundfile as sf
@@ -47,7 +46,7 @@ from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
-from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, TTSModel
+from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, StreamedReply, TTSModel
 from lalamo.models.chat_codec import Message, UserMessage
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
@@ -115,7 +114,7 @@ def _error(message: str) -> None:
     raise Exit(1)
 
 
-def _stream_reply_with_stats(
+def _render_streamed_reply(
     model: LanguageModel,
     messages: list[Message],
     generation_config: GenerationConfig | None,
@@ -125,40 +124,34 @@ def _stream_reply_with_stats(
     *,
     enable_thinking: bool,
 ) -> str:
-    prompt_token_ids = jnp.asarray(
-        model.token_codec.encode_request(messages, enable_thinking=enable_thinking),
-        dtype=jnp.int32,
-    )
-    response_token_ids: list[int] = []
-    response_text = ""
-    num_steps = 0
     start_time = time.perf_counter()
 
-    def render() -> Group:
+    def render(reply: StreamedReply | None) -> Group:
         elapsed_seconds = time.perf_counter() - start_time
-        num_tokens = len(response_token_ids)
+        num_tokens = reply.num_tokens if reply is not None else 0
+        num_steps = reply.num_steps if reply is not None else 0
         throughput = num_tokens / elapsed_seconds if elapsed_seconds > 0 else 0.0
         tokens_per_step = num_tokens / num_steps if num_steps > 0 else 0.0
         return Group(
-            Text.assemble(("assistant> ", "red"), response_text),
+            Text.assemble(("assistant> ", "red"), reply.text if reply is not None else ""),
             Text(
                 f"⚡ {throughput:.1f} tok/s · {tokens_per_step:.2f} tok/step · {num_tokens} tokens",
                 style="dim",
             ),
         )
 
-    with Live(render(), console=console, refresh_per_second=8, vertical_overflow="visible") as live:
-        for block_token_ids in model.stream_token_blocks(
-            prompt_token_ids,
+    response_text = ""
+    with Live(render(None), console=console, refresh_per_second=8, vertical_overflow="visible") as live:
+        for reply in model.stream_reply(
+            messages,
             generation_config=generation_config,
             max_output_length=max_tokens,
             keychain=keychain,
             speculator=speculator,
+            enable_thinking=enable_thinking,
         ):
-            num_steps += 1
-            response_token_ids.extend(int(token_id.item()) for token_id in block_token_ids)
-            response_text = model.token_codec.decode_tokens(response_token_ids, hide_invalid_utf_chars=True)
-            live.update(render())
+            response_text = reply.text
+            live.update(render(reply))
     return response_text
 
 
@@ -232,7 +225,7 @@ def chat(
                 user_text = console.input("[cyan]user> [/cyan]")
                 messages.append(UserMessage(user_text))
 
-                response_text = _stream_reply_with_stats(
+                response_text = _render_streamed_reply(
                     model,
                     messages,
                     generation_config,
@@ -245,7 +238,7 @@ def chat(
                 turn_index += 1
 
         else:
-            _stream_reply_with_stats(
+            _render_streamed_reply(
                 model,
                 [UserMessage(message)],
                 generation_config,

@@ -35,6 +35,7 @@ __all__ = [
     "GenerationResults",
     "LanguageModel",
     "LanguageModelConfig",
+    "StreamedReply",
 ]
 
 
@@ -125,6 +126,12 @@ class GenerationResults(NamedTuple):
     token_ids: Int[Array, "batch response_tokens"]
     top_k_token_ids: Int[Array, "batch response_tokens k"] | None
     top_k_token_logits: Float[Array, "batch response_tokens k"] | None
+
+
+class StreamedReply(NamedTuple):
+    text: str
+    num_tokens: int
+    num_steps: int
 
 
 @dataclass(frozen=True)
@@ -831,7 +838,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             if stopped:
                 return
 
-    def stream_reply_text(
+    def stream_reply(
         self,
         messages: Iterable[Message],
         generation_config: GenerationConfig | None = None,
@@ -841,20 +848,25 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         *,
         keychain: Keychain,
         speculator: Speculator | None = None,
-    ) -> Iterable[str]:
-        token_ids = jnp.asarray(self.token_codec.encode_request(messages), dtype=jnp.int32)
+        enable_thinking: bool = True,
+    ) -> Iterable[StreamedReply]:
+        token_ids = jnp.asarray(
+            self.token_codec.encode_request(messages, enable_thinking=enable_thinking),
+            dtype=jnp.int32,
+        )
         response_token_ids: list[int] = []
-        previous_text = ""
-        for token_id in self.stream_tokens(
-            token_ids,
-            generation_config=generation_config,
-            max_output_length=max_output_length,
-            prefill_forward_pass_config=prefill_forward_pass_config,
-            decode_forward_pass_config=decode_forward_pass_config,
-            keychain=keychain,
-            speculator=speculator,
+        for num_steps, block_token_ids in enumerate(
+            self.stream_token_blocks(
+                token_ids,
+                generation_config=generation_config,
+                max_output_length=max_output_length,
+                prefill_forward_pass_config=prefill_forward_pass_config,
+                decode_forward_pass_config=decode_forward_pass_config,
+                keychain=keychain,
+                speculator=speculator,
+            ),
+            start=1,
         ):
-            response_token_ids.append(int(token_id.item()))
-            current_text = self.token_codec.decode_tokens(response_token_ids, hide_invalid_utf_chars=True)
-            yield current_text[len(previous_text) :]
-            previous_text = current_text
+            response_token_ids.extend(int(token_id) for token_id in block_token_ids)
+            text = self.token_codec.decode_tokens(response_token_ids, hide_invalid_utf_chars=True)
+            yield StreamedReply(text=text, num_tokens=len(response_token_ids), num_steps=num_steps)
