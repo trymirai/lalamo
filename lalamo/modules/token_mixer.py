@@ -32,8 +32,8 @@ __all__ = [
 
 
 class StateLayerBase(Exportable, eqx.Module):
-    def base_positions(self) -> Int[Array, " batch"]:
-        raise NotImplementedError("State layer does not expose base positions.")
+    def committed_length(self) -> Int[Array, " batch"]:
+        raise NotImplementedError("State layer does not expose its committed length.")
 
     def truncate(self, new_lengths: Int[Array, " batch"]) -> Self:
         raise NotImplementedError("State layer does not support truncation.")
@@ -53,9 +53,9 @@ class State(tuple[StateLayerBase, ...]):
     def truncate(self, new_lengths: Int[Array, " batch"]) -> Self:
         return State(state_layer.truncate(new_lengths) for state_layer in self)
 
-    def base_positions(self) -> Int[Array, " batch"]:
+    def committed_length(self) -> Int[Array, " batch"]:
         first_layer, *_ = self
-        return first_layer.base_positions()
+        return first_layer.committed_length()
 
 
 class AttentionImplementation(Enum):

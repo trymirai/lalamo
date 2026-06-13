@@ -104,7 +104,7 @@ class Proposal(eqx.Module, ABC):
     def rollback_state(
         self,
         state: State,
-        base_positions: Int[Array, " batch"],
+        committed_length: Int[Array, " batch"],
         accepted: AcceptedProposal,
     ) -> State: ...
 
@@ -196,10 +196,10 @@ class ChainProposal(Proposal):
     def rollback_state(
         self,
         state: State,
-        base_positions: Int[Array, " batch"],
+        committed_length: Int[Array, " batch"],
         accepted: AcceptedProposal,
     ) -> State:
-        return state.truncate(base_positions + accepted.num_accepted_nodes)
+        return state.truncate(committed_length + accepted.num_accepted_nodes)
 
 
 @dataclass(frozen=True)

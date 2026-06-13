@@ -58,7 +58,7 @@ class Chunk(eqx.Module):
 
 class DecodingState(NamedTuple):
     pending_decoder_result: DecoderResult
-    pending_base_positions: Int[Array, " batch"]
+    pending_committed_length: Int[Array, " batch"]
     pending_proposal: Proposal
     stop_flags: Bool[Array, " batch"]
     sampling_policy: SamplingPolicy
@@ -92,7 +92,7 @@ class DecodingState(NamedTuple):
                 updated_state=prefill_results.state,
                 activation_trace=prefill_results.pending_activation_trace,
             ),
-            pending_base_positions=prefill_results.state.base_positions(),
+            pending_committed_length=prefill_results.state.committed_length(),
             pending_proposal=ChainProposal(
                 token_ids=jnp.zeros((batch_size, max_proposal_tokens), dtype=token_dtype),
                 token_positions=initial_positions,
@@ -400,7 +400,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         assert pending_state is not None
         target_state = state.pending_proposal.rollback_state(
             pending_state,
-            state.pending_base_positions,
+            state.pending_committed_length,
             accepted,
         )
         current_keychain = Keychain(
@@ -475,7 +475,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                     updated_state=decoder_result.updated_state,
                     activation_trace=pending_activation_trace,
                 ),
-                pending_base_positions=target_state.base_positions(),
+                pending_committed_length=target_state.committed_length(),
                 pending_proposal=proposal,
                 stop_flags=next_stop_flags,
                 sampling_policy=next_sampling_policy,
