@@ -277,6 +277,40 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
 
         return jax.tree_util.tree_map(slice_leaf, self)
 
+    def take_mixture(self, index: Int[Array, ""]) -> Self:
+        if self.mixture_size is None:
+            raise ValueError("DenseMLP.take_mixture() requires a mixture DenseMLP.")
+        return jax.tree_util.tree_map(
+            lambda leaf: _take_moe_expert_leaf(leaf, index, self.sharding_config),
+            self,
+        )
+
+    def call_weighted_mixture_unbatched(
+        self,
+        inputs: Float[Array, " channels"],
+        active_indices: Int[Array, " active_experts"],
+        active_weights: Float[Array, " active_experts"],
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> Float[Array, " channels"]:
+        def apply_one(
+            index: Int[Array, ""],
+            weight: Float[Array, ""],
+            *,
+            keychain: Keychain,
+        ) -> Float[Array, " channels"]:
+            return (
+                self.take_mixture(index).call_unbatched(
+                    inputs,
+                    forward_pass_config,
+                    keychain=keychain,
+                )
+                * weight
+            )
+
+        return call_vmapped(apply_one, active_indices, active_weights, keychain=keychain).sum(axis=0)
+
 
 class RoutingMap(eqx.Module):
     expert_mask: Bool[Array, "*batch_and_tokens experts"]

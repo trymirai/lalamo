@@ -375,30 +375,14 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_activations(self, result: InferenceResult) -> None:
+    def match_end_to_end(self, result: InferenceResult) -> None:
         assert result.activation_trace is not None
-        for i, (label, rope_fn) in enumerate(self.rope_fns()):
-            self.match_rope(result.activation_trace, i, rope_fn, label)
-        self.match_embedding(result.activation_trace)
-
-        for i, ref_layer in enumerate(self.iterate_layers()):
-            self.match_layer(ref_layer, i, result.activation_trace)
-
-        self.match_rmsnorm(
-            result.activation_trace.layer_results[-1].outputs,
-            result.activation_trace.output_norm,
-            self.output_norm(),
-            "Output RMSNorm",
-        )
-
-        self.match_readout(result)
-
         hf_input_ids = self.from_jax(result.activation_trace.token_ids)
         hf_token_positions = self.from_jax(result.activation_trace.token_positions)
         hf_hidden_states, hf_last_norm_output, hf_output_logits = self.forward(hf_input_ids, hf_token_positions)
 
         for i, (hf_layer_inputs, layer_result) in enumerate(
-            zip(hf_hidden_states, result.activation_trace.layer_results, strict=False),
+            zip(hf_hidden_states, result.activation_trace.layer_results, strict=True),
         ):
             layer_activation_trace = layer_result.activation_trace
             assert layer_activation_trace is not None
@@ -427,6 +411,25 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
             operation_name="End2End Token Probabilities",
         )
 
+    def match_activations(self, result: InferenceResult) -> None:
+        assert result.activation_trace is not None
+        for i, (label, rope_fn) in enumerate(self.rope_fns()):
+            self.match_rope(result.activation_trace, i, rope_fn, label)
+        self.match_embedding(result.activation_trace)
+
+        for i, ref_layer in enumerate(self.iterate_layers()):
+            self.match_layer(ref_layer, i, result.activation_trace)
+
+        self.match_rmsnorm(
+            result.activation_trace.layer_results[-1].outputs,
+            result.activation_trace.output_norm,
+            self.output_norm(),
+            "Output RMSNorm",
+        )
+
+        self.match_readout(result)
+        self.match_end_to_end(result)
+
     @classmethod
     @abstractmethod
     def load(cls, model_repo: str, dtype: DType | None) -> Self: ...
@@ -441,17 +444,30 @@ def configure_precision_for_tests() -> None:
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
 
+def _available_bytes_for_trace() -> int | None:
+    if "LALAMO_MEMORY_FOR_TRACE" in os.environ:
+        return unsi(os.environ["LALAMO_MEMORY_FOR_TRACE"])
+
+    default_device_bytes = get_available_bytes_on_default_device()
+    if default_device_bytes is None:
+        return None
+    return default_device_bytes * len(jax.local_devices())
+
+
 def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> None:
     if test_spec.minimum_memory_for_trace is not None:
-        if "LALAMO_MEMORY_FOR_TRACE" in os.environ:
-            default_device_bytes = unsi(os.environ["LALAMO_MEMORY_FOR_TRACE"])
-        else:
-            default_device_bytes = get_available_bytes_on_default_device()
+        available_bytes = _available_bytes_for_trace()
+        if available_bytes is None:
+            pytest.skip(
+                f"test requires known memory of at least {si(test_spec.minimum_memory_for_trace)}; "
+                "set LALAMO_MEMORY_FOR_TRACE to run it",
+            )
+        assert available_bytes is not None
 
-        if default_device_bytes is not None and test_spec.minimum_memory_for_trace > default_device_bytes:
+        if test_spec.minimum_memory_for_trace > available_bytes:
             pytest.skip(
                 f"test requires {si(test_spec.minimum_memory_for_trace)}"
-                f" but default device has only {si(default_device_bytes)} of memory",
+                f" but trace devices have only {si(available_bytes)} of memory",
             )
 
     configure_precision_for_tests()

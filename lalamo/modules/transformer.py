@@ -10,6 +10,8 @@ from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, fie
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 from .token_mixer import State, StateLayerBase
+from .token_mixers.attention import Attention, AttentionConfig, AttentionProjectionMode
+from .token_mixers.kv_cache import BorrowedKVCacheLayer, ExtendableKVCacheLayer, KVCacheLayer
 from .transformer_layer import (
     TransformerForwardPassConfig,
     TransformerLayer,
@@ -39,6 +41,89 @@ class TransformerConfig(LalamoConfig):
     output_norm_config: NormalizationConfig
     model_dim: int
     hidden_dim: int
+    kv_source_per_layer: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        num_layers = len(self.layer_configs)
+        if self.kv_source_per_layer:
+            if len(self.kv_source_per_layer) != num_layers:
+                raise ValueError(
+                    f"kv_source_per_layer must have {num_layers} entries, got {len(self.kv_source_per_layer)}.",
+                )
+        else:
+            object.__setattr__(self, "kv_source_per_layer", tuple(range(num_layers)))
+
+        for layer_index, source_index in enumerate(self.kv_source_per_layer):
+            if source_index < 0 or source_index >= num_layers:
+                raise ValueError(
+                    f"Layer {layer_index} has invalid KV source layer {source_index};"
+                    f" expected a layer in [0, {num_layers}).",
+                )
+            if source_index > layer_index:
+                raise ValueError(f"Layer {layer_index} cannot borrow a KV cache from later layer {source_index}.")
+            if self.kv_source_per_layer[source_index] != source_index:
+                raise ValueError(
+                    f"Layer {layer_index} borrows from layer {source_index},"
+                    " but borrowed layers must point to a KV source layer.",
+                )
+
+            mixer_config = self.layer_configs[layer_index].mixer_config
+            if source_index == layer_index:
+                if (
+                    isinstance(mixer_config, AttentionConfig)
+                    and mixer_config.projection_mode is AttentionProjectionMode.BORROWED_Q
+                ):
+                    raise ValueError(f"Layer {layer_index} owns its KV cache but uses borrowed_q projection.")
+                continue
+
+            if not isinstance(mixer_config, AttentionConfig):
+                raise TypeError(
+                    f"Layer {layer_index} borrows a KV cache but its mixer is {type(mixer_config).__name__}.",
+                )
+            if mixer_config.projection_mode is not AttentionProjectionMode.BORROWED_Q:
+                raise ValueError(
+                    f"Layer {layer_index} borrows a KV cache and must use borrowed_q projection,"
+                    f" got {mixer_config.projection_mode.value}.",
+                )
+            source_mixer_config = self.layer_configs[source_index].mixer_config
+            if not isinstance(source_mixer_config, AttentionConfig):
+                raise TypeError(
+                    f"Layer {layer_index} borrows from layer {source_index},"
+                    f" but its source mixer is {type(source_mixer_config).__name__}.",
+                )
+            if source_mixer_config.projection_mode is AttentionProjectionMode.BORROWED_Q:
+                raise ValueError(f"Layer {layer_index} borrows from layer {source_index}, but the source is borrowed.")
+
+            if mixer_config.head_dim != source_mixer_config.head_dim:
+                raise ValueError(
+                    f"Layer {layer_index} head_dim {mixer_config.head_dim} does not match"
+                    f" source layer {source_index} head_dim {source_mixer_config.head_dim}.",
+                )
+            if mixer_config.num_groups != source_mixer_config.num_groups:
+                raise ValueError(
+                    f"Layer {layer_index} num_groups {mixer_config.num_groups} does not match"
+                    f" source layer {source_index} num_groups {source_mixer_config.num_groups}.",
+                )
+            if mixer_config.has_sinks != source_mixer_config.has_sinks:
+                raise ValueError(f"Layer {layer_index} and source layer {source_index} disagree on sink tokens.")
+            if mixer_config.is_causal != source_mixer_config.is_causal:
+                raise ValueError(f"Layer {layer_index} and source layer {source_index} disagree on causality.")
+            if mixer_config.sliding_window_size != source_mixer_config.sliding_window_size:
+                raise ValueError(f"Layer {layer_index} and source layer {source_index} disagree on sliding window.")
+            if self.layer_configs[layer_index].rope_config != self.layer_configs[source_index].rope_config:
+                raise ValueError(f"Layer {layer_index} and source layer {source_index} disagree on RoPE config.")
+
+    @property
+    def kv_cache_source_layers(self) -> tuple[int, ...]:
+        return tuple(
+            layer_index
+            for layer_index, source_index in enumerate(self.kv_source_per_layer)
+            if layer_index == source_index
+        )
+
+    @property
+    def kv_cache_width(self) -> int:
+        return len(self.kv_cache_source_layers)
 
     def _init_ropes(self, initializer: Initializer) -> tuple[tuple[RoPE, ...], tuple[int, ...]]:
         rope_cache: dict[RoPEConfig, int] = {}
@@ -74,11 +159,6 @@ class TransformerConfig(LalamoConfig):
             sharding_config=initializer.sharding_config,
             ropes=ropes,
             rope_indices=rope_indices,
-            kv_source_layer_indices=tuple(
-                layer_index
-                for layer_index, layer_config in enumerate(self.layer_configs)
-                if layer_config.kv_source_layer_index is None
-            ),
             layers=layers,
             output_norm=output_norm,
         )
@@ -87,7 +167,6 @@ class TransformerConfig(LalamoConfig):
 class Transformer(LalamoModule[TransformerConfig]):
     ropes: tuple[RoPE, ...]
     rope_indices: tuple[int, ...] = field(static=True)
-    kv_source_layer_indices: tuple[int, ...] = field(static=True)
     layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
 
@@ -117,11 +196,15 @@ class Transformer(LalamoModule[TransformerConfig]):
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
             )
-        state_by_layer = (
-            {layer_index: state[state_index] for state_index, layer_index in enumerate(self.kv_source_layer_indices)}
-            if state is not None
-            else {}
-        )
+        kv_source_per_layer = self.config.kv_source_per_layer
+        kv_cache_source_layers = self.config.kv_cache_source_layers
+        if state is None:
+            state_by_layer: dict[int, StateLayerBase] = {}
+        else:
+            if len(state) != self.config.kv_cache_width:
+                raise ValueError(f"state must contain {self.config.kv_cache_width} KV cache layers, got {len(state)}.")
+            state_by_layer = dict(zip(kv_cache_source_layers, state, strict=True))
+
         mixer_forward_pass_config = forward_pass_config.mixer_forward_pass_config
         rope_embeddings = tuple(
             call_vmapped(
@@ -133,8 +216,8 @@ class Transformer(LalamoModule[TransformerConfig]):
             )
             for rope in self.ropes
         )
-        has_kv_sharing = len(self.kv_source_layer_indices) < len(self.layers)
-        must_return_state = return_updated_state or has_kv_sharing
+        has_kv_sharing = self.config.kv_cache_width < len(self.layers)
+        must_return_source_state = return_updated_state or has_kv_sharing
 
         residual_dtype = inner_features.dtype
         layer_keychains = keychain.split(len(self.layers))
@@ -148,20 +231,42 @@ class Transformer(LalamoModule[TransformerConfig]):
 
             per_layer_input = per_layer_inputs[layer_index] if per_layer_inputs is not None else None
 
-            kv_source_layer_index = layer.config.kv_source_layer_index
-            if kv_source_layer_index is None:
-                effective_state = state_by_layer.get(layer_index)
+            source_layer_index = kv_source_per_layer[layer_index]
+            borrows_kv = source_layer_index != layer_index
+            if borrows_kv:
+                source_state = updated_states.get(source_layer_index, state_by_layer.get(source_layer_index))
+                if source_state is None:
+                    raise ValueError(
+                        f"Layer {layer_index} borrows state from layer {source_layer_index}, but it is missing.",
+                    )
+                if not isinstance(layer.mixer, Attention):
+                    raise TypeError(
+                        f"Layer {layer_index} borrows a KV cache but its mixer is {type(layer.mixer).__name__}.",
+                    )
+                if not isinstance(source_state, KVCacheLayer):
+                    raise TypeError(
+                        f"Layer {layer_index} borrows state from layer {source_layer_index},"
+                        f" but got {type(source_state).__name__}.",
+                    )
+                effective_state = BorrowedKVCacheLayer.from_cache(source_state)
             else:
-                effective_state = updated_states.get(
-                    kv_source_layer_index,
-                    state_by_layer.get(kv_source_layer_index),
-                )
+                source_state = state_by_layer.get(layer_index)
+                if (
+                    source_state is not None
+                    and isinstance(layer.mixer, Attention)
+                    and not isinstance(source_state, ExtendableKVCacheLayer)
+                ):
+                    raise TypeError(
+                        f"Attention layer {layer_index} expected an extendable KV cache state,"
+                        f" got {type(source_state).__name__}.",
+                    )
+                effective_state = source_state
 
             layer_result = layer(
                 inner_features,
                 positional_embeddings,
                 state=effective_state,
-                return_updated_state=must_return_state,
+                return_updated_state=must_return_source_state and not borrows_kv,
                 return_activation_trace=return_layer_results,
                 lengths_without_padding=lengths_without_padding,
                 forward_pass_config=forward_pass_config,
@@ -173,7 +278,7 @@ class Transformer(LalamoModule[TransformerConfig]):
             inner_features = layer_result.outputs
             layer_results.append(layer_result)
 
-            if kv_source_layer_index is None:
+            if not borrows_kv and layer_result.updated_state is not None:
                 updated_states[layer_index] = layer_result.updated_state
 
         assert inner_features.dtype == residual_dtype
@@ -185,7 +290,7 @@ class Transformer(LalamoModule[TransformerConfig]):
 
         if return_updated_state:
             compact_state_layers = []
-            for layer_index in self.kv_source_layer_indices:
+            for layer_index in kv_cache_source_layers:
                 layer_state = updated_states[layer_index]
                 if layer_state is None:
                     raise ValueError(f"Layer {layer_index} did not return an updated state.")
@@ -203,5 +308,5 @@ class Transformer(LalamoModule[TransformerConfig]):
     def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> State:
         return State(
             self.layers[layer_index].init_static_state(batch_size, capacity, dtype)
-            for layer_index in self.kv_source_layer_indices
+            for layer_index in self.config.kv_cache_source_layers
         )

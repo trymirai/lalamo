@@ -49,6 +49,7 @@ from .rope import (
     LinearScalingRoPEConfig,
     LlamaRoPEConfig,
     PositionalEmbeddings,
+    ProportionalRoPEConfig,
     RoPE,
     RoPEConfig,
     UnscaledRoPEConfig,
@@ -67,6 +68,7 @@ from .token_mixer import (
 from .token_mixers import (
     Attention,
     AttentionConfig,
+    AttentionProjectionMode,
     DeltaNet,
     DeltaNetConfig,
     Mamba2,
@@ -77,7 +79,9 @@ from .token_mixers import (
     ShortConvConfig,
 )
 from .token_mixers.kv_cache import (
+    BorrowedKVCacheLayer,
     DynamicKVCacheLayer,
+    ExtendableKVCacheLayer,
     KVCacheLayer,
     StaticKVCacheLayer,
     build_tree_attention_mask,
@@ -85,6 +89,8 @@ from .token_mixers.kv_cache import (
 )
 from .transformer import Transformer, TransformerConfig, TransformerForwardPassConfig, TransformerResult
 from .transformer_layer import (
+    Gemma4MoEBlock,
+    Gemma4MoEBlockConfig,
     PLELayer,
     PLELayerConfig,
     TransformerLayer,
@@ -99,6 +105,8 @@ __all__ = [
     "Attention",
     "AttentionConfig",
     "AttentionImplementation",
+    "AttentionProjectionMode",
+    "BorrowedKVCacheLayer",
     "Classifier",
     "ClassifierActivationTrace",
     "ClassifierConfig",
@@ -117,7 +125,10 @@ __all__ = [
     "EmbeddingBase",
     "EmbeddingConfig",
     "EmbeddingForwardPassConfig",
+    "ExtendableKVCacheLayer",
     "ForwardPassMode",
+    "Gemma4MoEBlock",
+    "Gemma4MoEBlockConfig",
     "Identity",
     "KVCacheLayer",
     "Keychain",
@@ -146,6 +157,7 @@ __all__ = [
     "PerLayerEmbedding",
     "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
+    "ProportionalRoPEConfig",
     "RoPE",
     "RoPEConfig",
     "RoutingFunction",

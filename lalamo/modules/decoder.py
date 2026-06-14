@@ -142,6 +142,7 @@ class PerLayerEmbedding(LalamoModule[PLEModelConfig]):
             ple_dim=config.ple_dim,
         )
         model_ple = jax.vmap(jax.vmap(jax.vmap(self.projection_norm)))(model_ple)
+        token_ple = token_ple.astype(model_ple.dtype)
         combined = (model_ple + token_ple) * config.input_scale
         return tuple(combined[:, :, layer_index, :] for layer_index in range(config.num_layers))
 
