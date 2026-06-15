@@ -77,14 +77,15 @@ def test_stream_is_prefix_of_generate(language_model: LanguageModel, dflash_spec
             speculator=dflash_speculator,
         )
         streamed = [
-            int(token_id.item())
-            for token_id in language_model.stream_tokens(
+            int(token_id)
+            for block in language_model.stream_tokens(
                 prompt_token_ids,
                 generation_config=GREEDY_CONFIG,
                 max_output_length=8,
                 keychain=Keychain.init(0, sharding_config=language_model.sharding_config),
                 speculator=dflash_speculator,
             )
+            for token_id in block
         ]
 
     assert len(streamed) > 0

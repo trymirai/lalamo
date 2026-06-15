@@ -710,30 +710,6 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         *,
         keychain: Keychain,
         speculator: Speculator | None = None,
-    ) -> Iterable[Int[np.ndarray, ""]]:
-        for block_token_ids in self.stream_token_blocks(
-            prompt_token_ids,
-            generation_config=generation_config,
-            max_output_length=max_output_length,
-            eos_token_ids=eos_token_ids,
-            prefill_forward_pass_config=prefill_forward_pass_config,
-            decode_forward_pass_config=decode_forward_pass_config,
-            keychain=keychain,
-            speculator=speculator,
-        ):
-            yield from block_token_ids
-
-    def stream_token_blocks(
-        self,
-        prompt_token_ids: Int[Array, " prompt_tokens"],
-        generation_config: GenerationConfig | None = None,
-        max_output_length: int = 8192,
-        eos_token_ids: Int[Array, " eos_tokens"] | None = None,
-        prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
-        decode_forward_pass_config: DecoderForwardPassConfig | None = None,
-        *,
-        keychain: Keychain,
-        speculator: Speculator | None = None,
     ) -> Iterable[Int[np.ndarray, " block_tokens"]]:
         if max_output_length < 1:
             raise ValueError("max_output_length must be at least 1.")
@@ -844,7 +820,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         )
         response_token_ids: list[int] = []
         for num_steps, block_token_ids in enumerate(
-            self.stream_token_blocks(
+            self.stream_tokens(
                 token_ids,
                 generation_config=generation_config,
                 max_output_length=max_output_length,

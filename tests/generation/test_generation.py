@@ -289,7 +289,7 @@ def test_streaming_vs_eager_consistency(replicated_language_model: LanguageModel
     ).token_ids
     eager_token_ids = _take_first_batch_row(replicated_language_model, eager_token_ids)
 
-    streaming_token_generator = replicated_language_model.stream_tokens(
+    streaming_blocks = replicated_language_model.stream_tokens(
         token_ids,
         generation_config=generation_config,
         max_output_length=max_output_length,
@@ -297,7 +297,7 @@ def test_streaming_vs_eager_consistency(replicated_language_model: LanguageModel
         decode_forward_pass_config=decode_forward_pass_config,
         keychain=generation_keychain,
     )
-    streaming_token_ids = jnp.array(list(streaming_token_generator))
+    streaming_token_ids = jnp.asarray(np.concatenate(list(streaming_blocks)))
 
     assert jnp.array_equal(eager_token_ids, streaming_token_ids), (
         eager_token_ids.squeeze().tolist(),
