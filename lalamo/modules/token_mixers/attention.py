@@ -302,17 +302,15 @@ def _attention_kernel(
                 raise RuntimeError("cuDNN attention does not support logit soft-capping.")
             if mask is not None:
                 mask = jnp.broadcast_to(mask, (queries.shape[1], *mask.shape))
-            original_dtype = queries.dtype
-            attention_dtype = jnp.float32
             return jax.nn.dot_product_attention(
-                queries.astype(attention_dtype),
-                keys.astype(attention_dtype),
-                values.astype(attention_dtype),
-                bias=None if bias is None else bias.astype(attention_dtype),
+                queries,
+                keys,
+                values,
+                bias=bias,
                 mask=mask,
                 scale=scale,
                 implementation="cudnn",
-            ).astype(original_dtype)
+            ).astype(queries.dtype)
         case AttentionImplementation.TOKAMAX:
             return tokamax_attention()
         case AttentionImplementation.STABLE_REDUCTION:
