@@ -582,10 +582,6 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             speculator,
             prompt_token_ids.dtype,
         )
-        initial_state = initial_state._replace(
-            stop_flags=jax.device_put(initial_state.stop_flags, batch_vector_sharding),
-            num_generated_tokens=jax.device_put(initial_state.num_generated_tokens, batch_vector_sharding),
-        )
 
         sampling_keys = rearrange(
             sampling_keychain.rolling_broadcast(
@@ -811,7 +807,6 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             (max_output_length, *decoding_keychain.vmapped_keys.shape),
             mode=KeychainBroadcastMode.PREFIX,
         ).vmapped_keys
-        host_stop_token_ids = np.asarray(stop_token_ids)
 
         for sampling_key, decoding_key in zip(sampling_keys, decoding_keys, strict=True):
             state, generated = self.decode_generation_step(
@@ -828,12 +823,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             num_tokens, step_token_ids, stopped = jax.device_get(
                 (generated.lengths[0], generated.token_ids[0], state.stop_flags[0]),
             )
-            block_token_ids = step_token_ids[:num_tokens]
-            eos_hits = np.isin(block_token_ids, host_stop_token_ids)
-            if eos_hits.any():
-                yield block_token_ids[: int(np.argmax(eos_hits)) + 1]
-                return
-            yield block_token_ids
+            yield step_token_ids[:num_tokens]
             if stopped:
                 return
 
