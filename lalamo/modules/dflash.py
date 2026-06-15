@@ -85,18 +85,19 @@ class DFlashDraftLayerState(eqx.Module):
         batch_size, num_update_tokens, _num_groups, _head_dim = updates.keys.shape
         batch_indices = jnp.arange(batch_size, dtype=context_lengths.dtype)[:, None]
         update_offsets = jnp.arange(num_update_tokens, dtype=context_lengths.dtype)[None, :]
-        token_indices = context_lengths[:, None] + update_offsets
-        valid_updates = update_offsets < num_tokens_to_append[:, None]
+        destination_indices = context_lengths[:, None] + update_offsets
+        is_valid = update_offsets < num_tokens_to_append[:, None]
+
+        def scattered(
+            buffer: Float[Array, "batch context_capacity groups head_channels"],
+            update: Float[Array, "batch update_tokens groups head_channels"],
+        ) -> Float[Array, "batch context_capacity groups head_channels"]:
+            masked_update = jnp.where(is_valid[:, :, None, None], update.astype(buffer.dtype), 0)
+            return buffer.at[batch_indices, destination_indices].set(masked_update, mode="drop")
 
         return DFlashDraftLayerState(
-            keys=self.keys.at[batch_indices, token_indices, :, :].set(
-                jnp.where(valid_updates[:, :, None, None], updates.keys.astype(self.keys.dtype), 0),
-                mode="drop",
-            ),
-            values=self.values.at[batch_indices, token_indices, :, :].set(
-                jnp.where(valid_updates[:, :, None, None], updates.values.astype(self.values.dtype), 0),
-                mode="drop",
-            ),
+            keys=scattered(self.keys, updates.keys),
+            values=scattered(self.values, updates.values),
         )
 
 
@@ -107,21 +108,6 @@ class DFlashAttention(LalamoModule[DFlashAttentionConfig]):
     query_norm: Normalization
     key_norm: Normalization
     rope: RoPE
-
-    @property
-    def model_dim(self) -> int:
-        return self.query_projection.input_dim
-
-    def _reshape_queries(
-        self,
-        queries: Float[Array, "tokens channels"],
-    ) -> Float[Array, "tokens heads head_channels"]:
-        return rearrange(
-            queries,
-            "tokens (heads head_channels) -> tokens heads head_channels",
-            heads=self.config.num_heads,
-            head_channels=self.config.head_dim,
-        )
 
     def _reshape_keys_or_values(
         self,
@@ -260,7 +246,12 @@ class DFlashAttention(LalamoModule[DFlashAttentionConfig]):
             keychain=key_value_keychain,
         )
 
-        queries = self._reshape_queries(query_projection)
+        queries = rearrange(
+            query_projection,
+            "tokens (heads head_channels) -> tokens heads head_channels",
+            heads=self.config.num_heads,
+            head_channels=self.config.head_dim,
+        )
         queries = self._normalize_heads(self.query_norm, queries, forward_pass_config)
 
         noise_positional_embeddings = self.rope(noise_token_positions).astype(
@@ -307,18 +298,6 @@ class DFlashAttention(LalamoModule[DFlashAttentionConfig]):
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch query_tokens channels"]:
-        batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
-        if attention_mask is None:
-            return call_vmapped(
-                self.call_unbatched,
-                hidden_states,
-                context_state.keys,
-                context_state.values,
-                token_positions,
-                forward_pass_config=forward_pass_config,
-                keychain=keychain,
-                added_sharding_axis=batch_axis,
-            )
         return call_vmapped(
             self.call_unbatched,
             hidden_states,
@@ -328,7 +307,7 @@ class DFlashAttention(LalamoModule[DFlashAttentionConfig]):
             attention_mask,
             forward_pass_config=forward_pass_config,
             keychain=keychain,
-            added_sharding_axis=batch_axis,
+            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )
 
 
@@ -473,10 +452,6 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
     context_norm: Normalization
     layers: tuple[DFlashDraftLayer, ...]
     output_norm: Normalization
-
-    @property
-    def target_feature_dim(self) -> int:
-        return len(self.config.target_layer_ids) * self.config.model_dim
 
     @eqx.filter_jit
     def project_target_features(
