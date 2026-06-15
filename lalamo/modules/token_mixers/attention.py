@@ -570,6 +570,10 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             logit_soft_cap=self.config.logit_soft_cap,
             forward_pass_config=forward_pass_config,
         )
+        attention_output = jax.sharding.reshard(
+            attention_output,
+            self.sharding_config.make_sharding((None, None, None)),
+        )
         attention_output = rearrange(
             attention_output,
             "tokens heads head_channels -> tokens (heads head_channels)",
