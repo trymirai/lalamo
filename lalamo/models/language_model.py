@@ -95,7 +95,7 @@ class DecodingState(NamedTuple):
             ),
             pending_committed_length=prefill_results.state.committed_length(),
             pending_proposal=ChainProposal(
-                token_ids=jnp.zeros((batch_size, max_proposal_tokens), dtype=token_dtype),
+                token_ids=jnp.full((batch_size, max_proposal_tokens), -1, dtype=token_dtype),
                 token_positions=initial_positions,
                 lengths=jnp.zeros((batch_size,), dtype=prefill_results.last_token_indices.dtype),
             ),
@@ -396,12 +396,11 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         sampled_token_ids = jax.vmap(jax.vmap(jax.random.categorical))(sampling_keys, processed_logits)
         active_mask = jnp.logical_not(state.stop_flags) & (state.num_generated_tokens < max_output_length)
         sampled_token_ids = jnp.where(active_mask[:, None], sampled_token_ids, stopped_token_ids[:, None])
-        accepted = state.pending_proposal.accept(
-            sampled_token_ids,
-            max_output_length - state.num_generated_tokens,
-            eos_token_ids,
-            active_mask=active_mask,
+        remaining_budget = max_output_length - state.num_generated_tokens
+        accepted = (
+            state.pending_proposal.accept(sampled_token_ids).trim_at_eos(eos_token_ids).where_active(active_mask)
         )
+        accepted = accepted.with_lengths(jnp.minimum(accepted.lengths, remaining_budget))
 
         pending_state = state.pending_decoder_result.updated_state
         assert pending_state is not None

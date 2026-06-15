@@ -64,11 +64,47 @@ class AcceptedProposal(eqx.Module):
         token_positions = self.token_positions[batch_indices, slots]
         return jnp.where(self.lengths > 0, token_positions - 1, 0)
 
+    def with_lengths(self, new_lengths: Int[Array, " batch"]) -> "AcceptedProposal":
+        emitted = jnp.arange(self.token_ids.shape[1], dtype=jnp.int32)[None, :] < new_lengths[:, None]
+        return AcceptedProposal(
+            token_ids=jnp.where(emitted, self.token_ids, 0),
+            token_positions=jnp.where(emitted, self.token_positions, 0),
+            source_indices=jnp.where(emitted, self.source_indices, -1),
+            lengths=new_lengths,
+            accepted_node_indices=self.accepted_node_indices,
+            num_accepted_nodes=self.num_accepted_nodes,
+        )
+
     def has_eos(self, eos_token_ids: Int[Array, " eos_tokens"]) -> Bool[Array, " batch"]:
-        slots = jnp.arange(self.token_ids.shape[1], dtype=self.lengths.dtype)[None, :]
-        valid = slots < self.lengths[:, None]
-        eos_hits = jnp.any(self.token_ids[:, :, None] == eos_token_ids[None, None, :], axis=-1)
-        return jnp.any(valid & eos_hits, axis=1)
+        slots = jnp.arange(self.token_ids.shape[1], dtype=jnp.int32)[None, :]
+        is_eos = jnp.any(self.token_ids[:, :, None] == eos_token_ids[None, None, :], axis=-1)
+        return jnp.any((slots < self.lengths[:, None]) & is_eos, axis=1)
+
+    def trim_at_eos(self, eos_token_ids: Int[Array, " eos_tokens"]) -> "AcceptedProposal":
+        slots = jnp.arange(self.token_ids.shape[1], dtype=jnp.int32)[None, :]
+        is_eos = jnp.any(self.token_ids[:, :, None] == eos_token_ids[None, None, :], axis=-1)
+        eos_hits = (slots < self.lengths[:, None]) & is_eos
+        eos_length = (jnp.argmax(eos_hits, axis=1) + 1).astype(self.lengths.dtype)
+        new_lengths = jnp.where(jnp.any(eos_hits, axis=1), jnp.minimum(self.lengths, eos_length), self.lengths)
+        return self.with_lengths(new_lengths)
+
+    def where_active(self, active_mask: Bool[Array, " batch"]) -> "AcceptedProposal":
+        slots = jnp.arange(self.token_ids.shape[1], dtype=jnp.int32)[None, :]
+        lengths = jnp.where(active_mask, self.lengths, 0)
+        num_accepted_nodes = jnp.where(active_mask, self.num_accepted_nodes, 0)
+        emitted = slots < lengths[:, None]
+        return AcceptedProposal(
+            token_ids=jnp.where(emitted, self.token_ids, 0),
+            token_positions=jnp.where(emitted, self.token_positions, 0),
+            source_indices=jnp.where(emitted, self.source_indices, -1),
+            lengths=lengths,
+            accepted_node_indices=jnp.where(
+                slots < num_accepted_nodes[:, None],
+                jnp.broadcast_to(slots, self.token_ids.shape),
+                -1,
+            ),
+            num_accepted_nodes=num_accepted_nodes,
+        )
 
     def gather_top_k(
         self,
@@ -92,13 +128,7 @@ class Proposal(eqx.Module, ABC):
     def forward_inputs(self) -> ProposalInputs: ...
 
     @abstractmethod
-    def accept(
-        self,
-        sampled_token_ids: Int[Array, "batch nodes"],
-        remaining_lengths: Int[Array, " batch"],
-        eos_token_ids: Int[Array, " eos_tokens"],
-        active_mask: Bool[Array, " batch"] | None = None,
-    ) -> AcceptedProposal: ...
+    def accept(self, sampled_token_ids: Int[Array, "batch nodes"]) -> AcceptedProposal: ...
 
     @abstractmethod
     def rollback_state(
@@ -126,70 +156,21 @@ class ChainProposal(Proposal):
             forward_pass_mode=forward_pass_mode,
         )
 
-    def accept(
-        self,
-        sampled_token_ids: Int[Array, "batch nodes"],
-        remaining_lengths: Int[Array, " batch"],
-        eos_token_ids: Int[Array, " eos_tokens"],
-        active_mask: Bool[Array, " batch"] | None = None,
-    ) -> AcceptedProposal:
-        batch_size, num_proposal_slots = self.token_ids.shape
-        proposal_slots = jnp.arange(num_proposal_slots, dtype=self.lengths.dtype)[None, :]
-        draft_slots = jnp.arange(num_proposal_slots - 1, dtype=self.lengths.dtype)[None, :]
-        draft_valid = draft_slots < jnp.maximum(self.lengths[:, None] - 1, 0)
-        draft_matches = self.token_ids[:, 1:] == sampled_token_ids[:, :-1]
-        accepted_draft_mask = jnp.cumprod((draft_matches & draft_valid).astype(jnp.int32), axis=1).astype(bool)
-        num_accepted_drafts = jnp.sum(accepted_draft_mask.astype(self.lengths.dtype), axis=1)
-        num_accepted_nodes = jnp.where(self.lengths > 0, num_accepted_drafts + 1, 0)
-        if active_mask is not None:
-            num_accepted_nodes = jnp.where(active_mask, num_accepted_nodes, 0)
-        accepted_node_mask = proposal_slots < num_accepted_nodes[:, None]
+    def accept(self, sampled_token_ids: Int[Array, "batch nodes"]) -> AcceptedProposal:
+        _, nodes = self.token_ids.shape
+        slots = jnp.arange(nodes, dtype=self.lengths.dtype)[None, :]
+        matches = self.token_ids[:, 1:] == sampled_token_ids[:, :-1]
+        num_emitted = jnp.sum(jnp.cumprod(matches.astype(jnp.int32), axis=1).astype(self.lengths.dtype), axis=1) + 1
+        num_accepted_nodes = jnp.where(self.lengths > 0, num_emitted, 0)
 
-        output_slots = proposal_slots
-        draft_output_mask = output_slots < num_accepted_drafts[:, None]
-        draft_token_ids = jnp.pad(self.token_ids[:, 1:], ((0, 0), (0, 1)))
-        draft_token_positions = jnp.pad(self.token_positions[:, 1:], ((0, 0), (0, 1)))
-        draft_eos_hits = draft_output_mask & jnp.any(
-            draft_token_ids[:, :, None] == eos_token_ids[None, None, :],
-            axis=-1,
-        )
-        draft_eos_counts = jnp.cumsum(draft_eos_hits.astype(jnp.int32), axis=1)
-        after_draft_eos = (draft_eos_counts - draft_eos_hits.astype(jnp.int32)) > 0
-        draft_output_mask = draft_output_mask & jnp.logical_not(after_draft_eos)
-        has_draft_eos = jnp.any(draft_eos_hits, axis=1)
-
-        bonus_source_indices = jnp.minimum(num_accepted_drafts, num_proposal_slots - 1).astype(jnp.int32)
-        batch_indices = jnp.arange(batch_size, dtype=jnp.int32)
-        bonus_token_ids = sampled_token_ids[batch_indices, bonus_source_indices]
-        bonus_token_positions = self.token_positions[batch_indices, bonus_source_indices] + 1
-        bonus_mask = output_slots == num_accepted_drafts[:, None]
-        bonus_mask = bonus_mask & jnp.logical_not(has_draft_eos[:, None])
-
-        token_ids = jnp.where(draft_output_mask, draft_token_ids, 0)
-        token_ids = jnp.where(bonus_mask, bonus_token_ids[:, None], token_ids)
-        token_positions = jnp.where(draft_output_mask, draft_token_positions, 0)
-        token_positions = jnp.where(bonus_mask, bonus_token_positions[:, None], token_positions)
-        source_indices = jnp.where(draft_output_mask, output_slots.astype(jnp.int32), -1)
-        source_indices = jnp.where(bonus_mask, bonus_source_indices[:, None], source_indices)
-
-        valid_without_capacity = draft_output_mask | bonus_mask
-        eos_hits = jnp.any(token_ids[:, :, None] == eos_token_ids[None, None, :], axis=-1)
-        eos_counts = jnp.cumsum((valid_without_capacity & eos_hits).astype(jnp.int32), axis=1)
-        before_or_at_first_eos = (eos_counts - (valid_without_capacity & eos_hits).astype(jnp.int32)) == 0
-        valid = valid_without_capacity & before_or_at_first_eos & (output_slots < remaining_lengths[:, None])
-        if active_mask is not None:
-            valid = valid & active_mask[:, None]
-
+        emitted = slots < num_emitted[:, None]
+        node_indices = slots.astype(jnp.int32)
         return AcceptedProposal(
-            token_ids=jnp.where(valid, token_ids, 0),
-            token_positions=jnp.where(valid, token_positions, 0),
-            source_indices=jnp.where(valid, source_indices, -1),
-            lengths=jnp.sum(valid.astype(self.lengths.dtype), axis=1),
-            accepted_node_indices=jnp.where(
-                accepted_node_mask,
-                jnp.broadcast_to(output_slots.astype(jnp.int32), self.token_ids.shape),
-                -1,
-            ),
+            token_ids=jnp.where(emitted, sampled_token_ids, 0),
+            token_positions=jnp.where(emitted, self.token_positions + 1, 0),
+            source_indices=jnp.where(emitted, node_indices, -1),
+            lengths=num_emitted,
+            accepted_node_indices=jnp.where(slots < num_accepted_nodes[:, None], node_indices, -1),
             num_accepted_nodes=num_accepted_nodes,
         )
 

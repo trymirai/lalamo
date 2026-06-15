@@ -18,12 +18,12 @@ def accept(
     remaining_lengths: int = 16,
     active: bool = True,
 ) -> AcceptedProposal:
-    return proposal.accept(
-        sampled_token_ids=jnp.asarray([sampled_token_ids], dtype=jnp.int32),
-        remaining_lengths=jnp.asarray([remaining_lengths], dtype=jnp.int32),
-        eos_token_ids=jnp.asarray(eos_token_ids or [99999], dtype=jnp.int32),
-        active_mask=None if active else jnp.asarray([False]),
+    result = (
+        proposal.accept(jnp.asarray([sampled_token_ids], dtype=jnp.int32))
+        .trim_at_eos(jnp.asarray(eos_token_ids or [], dtype=jnp.int32))
+        .where_active(jnp.asarray([active]))
     )
+    return result.with_lengths(jnp.minimum(result.lengths, jnp.asarray([remaining_lengths], dtype=jnp.int32)))
 
 
 def test_full_chain_accepted_with_bonus() -> None:
