@@ -4,6 +4,7 @@ from .gemma2 import HFGemma2Config
 from .gemma3 import HFGemma3Config, HFGemma3TextConfig
 from .gemma4 import HFGemma4Config
 from .gpt_oss import HFGPTOssConfig
+from .granite import HFGraniteConfig
 from .lfm2 import HFLFM2Config
 from .llama import HFLlamaConfig
 from .llamba import HFLlambaConfig
@@ -22,6 +23,7 @@ __all__ = [
     "HFGemma3Config",
     "HFGemma3TextConfig",
     "HFGemma4Config",
+    "HFGraniteConfig",
     "HFLFM2Config",
     "HFLlamaConfig",
     "HFLlambaConfig",
