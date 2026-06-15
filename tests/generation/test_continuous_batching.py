@@ -1,5 +1,6 @@
 import random
 
+import jax
 import pytest
 
 from lalamo.inference.batch_scheduler import (
@@ -29,6 +30,8 @@ _FUZZ_PROMPTS = (
     "One short word please.",
 )
 
+_DP_NUM_DEVICES = 2
+
 
 @pytest.fixture(scope="module", params=_FUZZ_MODEL_REPOS, ids=_FUZZ_MODEL_REPOS)
 def fuzz_language_model(request: pytest.FixtureRequest, _convert_model_session: ConvertModel) -> LanguageModel:
@@ -36,6 +39,64 @@ def fuzz_language_model(request: pytest.FixtureRequest, _convert_model_session: 
     model = LanguageModel.load(model_dir, sharding_config=ShardingConfig.replicated())
     assert isinstance(model, LanguageModel)
     return model
+
+
+@pytest.fixture(scope="module", params=_FUZZ_MODEL_REPOS, ids=_FUZZ_MODEL_REPOS)
+def fuzz_language_model_dp(request: pytest.FixtureRequest, _convert_model_session: ConvertModel) -> LanguageModel:
+    devices = jax.devices()[:_DP_NUM_DEVICES]
+    if len(devices) < _DP_NUM_DEVICES:
+        pytest.skip(f"requires >= {_DP_NUM_DEVICES} JAX devices for data-parallel test")
+    model_dir = _convert_model_session(request.param, cached=True)
+    model = LanguageModel.load(model_dir, sharding_config=ShardingConfig.data_parallel(devices=devices))
+    assert isinstance(model, LanguageModel)
+    return model
+
+
+def _assert_continuous_matches_fixed(
+    model: LanguageModel,
+    *,
+    seed: int,
+    num_prompts: int,
+    batch_size: int,
+    block_size: int,
+    max_output_length: int,
+    padded_length: int,
+) -> None:
+    rng = random.Random(seed)
+    prompts = [[UserMessage(rng.choice(_FUZZ_PROMPTS))] for _ in range(num_prompts)]
+    tokenized = [model.token_codec.encode_request(prompt) for prompt in prompts]
+
+    generation_config = GenerationConfig(
+        temperature=0.0,
+        frequency_penalty=0.5,
+        stop_token_ids=model.config.generation_config.stop_token_ids,
+    )
+    batch_scheduler_config = BatchSchedulerConfig(
+        batch_size=batch_size,
+        max_output_length=max_output_length,
+        padded_length=padded_length,
+    )
+
+    fixed_results = dict(
+        FixedSizeBatchScheduler(model=model).generate_tokens_many(
+            tokenized,
+            generation_config=generation_config,
+            batch_scheduler_config=batch_scheduler_config,
+        ),
+    )
+    continuous_results = dict(
+        ContinuousBatchScheduler(model=model, block_size=block_size).generate_tokens_many(
+            tokenized,
+            generation_config=generation_config,
+            batch_scheduler_config=batch_scheduler_config,
+        ),
+    )
+
+    assert fixed_results.keys() == continuous_results.keys() == set(range(num_prompts))
+    for seq_id in range(num_prompts):
+        fixed_ids = model.trim_at_eos(fixed_results[seq_id].token_ids.tolist())
+        continuous_ids = model.trim_at_eos(continuous_results[seq_id].token_ids.tolist())
+        assert fixed_ids == continuous_ids, f"seq {seq_id}: fixed={fixed_ids[:20]} continuous={continuous_ids[:20]}"
 
 
 @pytest.mark.parametrize(
@@ -68,41 +129,43 @@ def test_continuous_vs_fixed_fuzz(
     max_output_length: int,
     padded_length: int,
 ) -> None:
-    rng = random.Random(seed)
-    prompts = [[UserMessage(rng.choice(_FUZZ_PROMPTS))] for _ in range(num_prompts)]
-    tokenized = [fuzz_language_model.token_codec.encode_request(prompt) for prompt in prompts]
-
-    generation_config = GenerationConfig(
-        temperature=0.0,
-        frequency_penalty=0.5,
-        stop_token_ids=fuzz_language_model.config.generation_config.stop_token_ids,
-    )
-    batch_scheduler_config = BatchSchedulerConfig(
+    _assert_continuous_matches_fixed(
+        fuzz_language_model,
+        seed=seed,
+        num_prompts=num_prompts,
         batch_size=batch_size,
+        block_size=block_size,
         max_output_length=max_output_length,
         padded_length=padded_length,
     )
 
-    fixed_results = dict(
-        FixedSizeBatchScheduler(model=fuzz_language_model).generate_tokens_many(
-            tokenized,
-            generation_config=generation_config,
-            batch_scheduler_config=batch_scheduler_config,
-        ),
-    )
-    continuous_results = dict(
-        ContinuousBatchScheduler(
-            model=fuzz_language_model,
-            block_size=block_size,
-        ).generate_tokens_many(
-            tokenized,
-            generation_config=generation_config,
-            batch_scheduler_config=batch_scheduler_config,
-        ),
-    )
 
-    assert fixed_results.keys() == continuous_results.keys() == set(range(num_prompts))
-    for seq_id in range(num_prompts):
-        fixed_ids = fuzz_language_model.trim_at_eos(fixed_results[seq_id].token_ids.tolist())
-        continuous_ids = fuzz_language_model.trim_at_eos(continuous_results[seq_id].token_ids.tolist())
-        assert fixed_ids == continuous_ids, f"seq {seq_id}: fixed={fixed_ids[:20]} continuous={continuous_ids[:20]}"
+@pytest.mark.parametrize(
+    ("seed", "num_prompts", "batch_size", "block_size", "max_output_length", "padded_length"),
+    [
+        # (under-filled batch)               batch_size divisible by DP mesh
+        (1, 1, 4, 8, 10, 48),
+        # (heavy refill)                     many churns across the sharded batch axis
+        (3, 12, 2, 4, 14, 56),
+        # (multi-block)                      several decode blocks with refills
+        (7, 8, 4, 4, 13, 80),
+    ],
+)
+def test_continuous_vs_fixed_dp(
+    fuzz_language_model_dp: LanguageModel,
+    seed: int,
+    num_prompts: int,
+    batch_size: int,
+    block_size: int,
+    max_output_length: int,
+    padded_length: int,
+) -> None:
+    _assert_continuous_matches_fixed(
+        fuzz_language_model_dp,
+        seed=seed,
+        num_prompts=num_prompts,
+        batch_size=batch_size,
+        block_size=block_size,
+        max_output_length=max_output_length,
+        padded_length=padded_length,
+    )

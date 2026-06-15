@@ -22,6 +22,7 @@ from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
 from lalamo.modules import DecoderForwardPassConfig, State
 from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy
+from lalamo.utils.sharding import sharding_of
 
 __all__ = [
     "BatchScheduler",
@@ -479,7 +480,11 @@ def append_block_tokens(
     num_lines, _ = token_buffer.shape
     block_size, _ = block_tokens.shape
     offsets = num_generated[:, None] + jnp.arange(block_size)
-    new_buffer = token_buffer.at[jnp.arange(num_lines)[:, None], offsets].set(block_tokens.T, mode="drop")
+    new_buffer = token_buffer.at[jnp.arange(num_lines)[:, None], offsets].set(
+        block_tokens.T,
+        mode="drop",
+        out_sharding=sharding_of(token_buffer),
+    )
     return new_buffer, num_generated + block_size
 
 
@@ -564,10 +569,11 @@ class BlockContinuousState(eqx.Module):
     ) -> Iterator[tuple[int, GeneratedSequence]]:
         completed = np.asarray(completed_mask)
         sequence_ids = np.asarray(self.in_batch_index_to_sequence_id)
+        token_buffer = np.asarray(self.token_buffer)
         for line in np.flatnonzero(completed):
             yield (
                 int(sequence_ids[line]),
-                GeneratedSequence(token_ids=self.token_buffer[line]),
+                GeneratedSequence(token_ids=jnp.asarray(token_buffer[line])),
             )
 
     def is_empty(self) -> bool:
@@ -673,10 +679,22 @@ class BlockContinuousDecoder(eqx.Module):
             sampling_policy=state.sampling_policy,
         )
 
-        empty_lines = state.stop_flags
-        lines_passed = jnp.sum(batch.mask)
+        sharding_config = self.language_model.sharding_config
+        batch_axis = sharding_config.resolve_axis(LogicalAxis.BATCH)
+        replicated_vector = sharding_config.make_sharding((None,))
+        batch_vector = sharding_config.make_sharding((batch_axis,))
+
+        empty_lines = jax.device_put(state.stop_flags, replicated_vector)
+        lines_passed = jnp.sum(jax.device_put(batch.mask, replicated_vector))
         source_idx = jnp.cumsum(empty_lines, dtype=jnp.int32) - 1
-        need_updating = jnp.logical_and(empty_lines, source_idx < lines_passed)
+        need_updating = jax.device_put(
+            jnp.logical_and(empty_lines, source_idx < lines_passed),
+            batch_vector,
+        )
+
+        def gather_rows(value: Shaped[Array, "prefill_bs ..."]) -> Shaped[Array, "num_lines ..."]:
+            out_sharding = sharding_config.make_sharding((batch_axis, *((None,) * (value.ndim - 1))))
+            return value.at[source_idx].get(out_sharding=out_sharding)
 
         def apply_updates(
             new: Shaped[Array, "num_lines ..."],
@@ -684,7 +702,7 @@ class BlockContinuousDecoder(eqx.Module):
         ) -> Shaped[Array, "num_lines ..."]:
             return jax.vmap(jnp.where)(need_updating, new, old)
 
-        gathered_prefill_state = jax.tree.map(lambda value: value[source_idx], prefill_state)
+        gathered_prefill_state = jax.tree.map(gather_rows, prefill_state)
         new_decode_state = jax.tree.map(apply_updates, gathered_prefill_state, current_decode_state)
 
         return BlockContinuousState(
@@ -695,10 +713,10 @@ class BlockContinuousDecoder(eqx.Module):
             stop_flags=new_decode_state.stop_flags,
             token_buffer=state.token_buffer,
             num_generated=apply_updates(jnp.zeros_like(state.num_generated), state.num_generated),
-            sampling_keys=apply_updates(batch.sampling_keys[source_idx], state.sampling_keys),
-            decoding_keys=apply_updates(batch.decoding_keys[source_idx], state.decoding_keys),
+            sampling_keys=apply_updates(gather_rows(batch.sampling_keys), state.sampling_keys),
+            decoding_keys=apply_updates(gather_rows(batch.decoding_keys), state.decoding_keys),
             in_batch_index_to_sequence_id=apply_updates(
-                batch.sequence_ids[source_idx],
+                gather_rows(batch.sequence_ids),
                 state.in_batch_index_to_sequence_id,
             ),
         )
@@ -929,19 +947,30 @@ class FixedSizeBatchScheduler(BatchScheduler):
                     num_top_logits_to_return=batch_scheduler_config.num_top_logits_to_return,
                     keychain=batch_keychain,
                 )
+                host_token_ids = np.asarray(batch_results.token_ids)
+                host_top_k_token_ids = (
+                    np.asarray(batch_results.top_k_token_ids)
+                    if batch_results.top_k_token_ids is not None
+                    else None
+                )
+                host_top_k_token_logits = (
+                    np.asarray(batch_results.top_k_token_logits)
+                    if batch_results.top_k_token_logits is not None
+                    else None
+                )
                 for local_idx, sequence_id in enumerate(batch_indices):
                     yield (
                         sequence_id,
                         GeneratedSequence(
-                            token_ids=batch_results.token_ids[local_idx],
+                            token_ids=jnp.asarray(host_token_ids[local_idx]),
                             top_k_token_ids=(
-                                batch_results.top_k_token_ids[local_idx]
-                                if batch_results.top_k_token_ids is not None
+                                jnp.asarray(host_top_k_token_ids[local_idx])
+                                if host_top_k_token_ids is not None
                                 else None
                             ),
                             top_k_token_logits=(
-                                batch_results.top_k_token_logits[local_idx]
-                                if batch_results.top_k_token_logits is not None
+                                jnp.asarray(host_top_k_token_logits[local_idx])
+                                if host_top_k_token_logits is not None
                                 else None
                             ),
                         ),
@@ -995,8 +1024,26 @@ class ContinuousBatchScheduler(BatchScheduler):
         batch_size = batch_scheduler_config.batch_size
         max_output_length = batch_scheduler_config.max_output_length
         padded_length = batch_scheduler_config.padded_length
-        if any(axis is not None for axis in self.model.sharding_config.logical_to_physical.values()):
-            raise RuntimeError("ContinuousBatchScheduler does not support sharded models.")
+        unsupported_sharding = {
+            axis: physical
+            for axis, physical in self.model.sharding_config.logical_to_physical.items()
+            if axis is not LogicalAxis.BATCH and physical is not None
+        }
+        if unsupported_sharding:
+            raise RuntimeError(
+                "ContinuousBatchScheduler supports only data-parallel (BATCH) sharding; "
+                f"got non-batch sharding {unsupported_sharding}.",
+            )
+        batch_axis = self.model.sharding_config.resolve_axis(LogicalAxis.BATCH)
+        if batch_axis is None:
+            batch_axis_size = 1
+        else:
+            batch_axis_size = self.model.sharding_config.mesh.shape[batch_axis]
+        if batch_size % batch_axis_size != 0:
+            raise ValueError(
+                f"Batch size {batch_size} must be divisible by sharding axis {batch_axis!r} "
+                f"of size {batch_axis_size}.",
+            )
 
         block_size = min(self.block_size, max_output_length)
         state_capacity = padded_length + max_output_length + 1
@@ -1005,7 +1052,10 @@ class ContinuousBatchScheduler(BatchScheduler):
             if sampling_policy.has_count_penalties
             else max(1, min(int(batch_size * self.prefill_batch_fraction + 1), batch_size))
         )
-        prefill_batch_size = requested_prefill_batch_size
+        prefill_batch_size = min(
+            batch_size,
+            ((requested_prefill_batch_size + batch_axis_size - 1) // batch_axis_size) * batch_axis_size,
+        )
 
         prefills: PrefillSource = PrefillSource(
             tokenized_messages=tokenized,
