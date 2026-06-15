@@ -112,7 +112,6 @@ class DFlashSpeculator(Speculator[DFlashDraftState, DFlashSpeculatorConfig]):
         last_token_ids: Int[Array, " batch"],
         last_token_indices: Int[Array, " batch"],
         target_embedding: EmbeddingBase,
-        target_lm_head: EmbeddingBase,
         *,
         keychain: Keychain,
     ) -> ChainProposal:
@@ -157,7 +156,7 @@ class DFlashSpeculator(Speculator[DFlashDraftState, DFlashSpeculatorConfig]):
         )
         batch_axis = self.draft_model.sharding_config.resolve_axis(LogicalAxis.BATCH)
         draft_logits = call_vmapped_twice(
-            target_lm_head.readout,
+            target_embedding.readout,
             draft_hidden_states[:, 1:, :],
             keychain=readout_keychain,
             added_sharding_axes=(batch_axis, None),

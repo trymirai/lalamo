@@ -238,7 +238,6 @@ class Speculator[SpeculatorStateT: SpeculatorState, ConfigT: SpeculatorConfig](
         last_token_ids: Int[Array, " batch"],
         last_token_indices: Int[Array, " batch"],
         target_embedding: EmbeddingBase,
-        target_lm_head: EmbeddingBase,
         *,
         keychain: Keychain,
     ) -> Proposal: ...
@@ -291,11 +290,10 @@ class NoSpeculator(Speculator[NoSpeculatorState, NoSpeculatorConfig]):
         last_token_ids: Int[Array, " batch"],
         last_token_indices: Int[Array, " batch"],
         target_embedding: EmbeddingBase,
-        target_lm_head: EmbeddingBase,
         *,
         keychain: Keychain,
     ) -> ChainProposal:
-        _ = (state, keychain, target_embedding, target_lm_head)
+        _ = (state, keychain, target_embedding)
         return ChainProposal(
             token_ids=last_token_ids[:, None],
             token_positions=last_token_indices[:, None] + 1,

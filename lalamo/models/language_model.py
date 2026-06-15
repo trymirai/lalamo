@@ -443,7 +443,6 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             last_token_ids,
             last_token_indices,
             self.decoder.embedding,
-            self.decoder.embedding,
             keychain=current_keychain,
         )
         proposal_inputs = proposal.forward_inputs()
