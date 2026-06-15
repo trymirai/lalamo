@@ -96,8 +96,12 @@ class DFlashSpeculator(Speculator[DFlashDraftState, DFlashSpeculatorConfig]):
         accepted_slots = jnp.arange(num_accepted_slots, dtype=accepted.num_accepted_nodes.dtype)[None, :]
         valid = accepted_slots < accepted.num_accepted_nodes[:, None]
         source_indices = jnp.clip(accepted.accepted_node_indices, 0, target_features.shape[1] - 1)
-        selected_target_features = target_features[batch_indices, source_indices, :]
-        selected_token_positions = activation_trace.token_positions[batch_indices, source_indices]
+        selected_target_features = target_features.at[batch_indices, source_indices, :].get(
+            out_sharding=self.sharding_config.resolve_sharding((LogicalAxis.BATCH, None, None)),
+        )
+        selected_token_positions = activation_trace.token_positions.at[batch_indices, source_indices].get(
+            out_sharding=self.sharding_config.resolve_sharding((LogicalAxis.BATCH, None)),
+        )
         return self.draft_model.append_state(
             state,
             jnp.where(valid[:, :, None], selected_target_features, 0),

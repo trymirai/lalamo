@@ -4,6 +4,7 @@ from functools import cache
 from typing import ClassVar
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 from tokenizers import Tokenizer
@@ -54,15 +55,24 @@ class AcceptedProposal(eqx.Module):
         batch_size, _ = self.token_ids.shape
         batch_indices = jnp.arange(batch_size, dtype=jnp.int32)
         slots = jnp.maximum(self.lengths - 1, 0)
-        token_ids = self.token_ids[batch_indices, slots]
+        lengths_sharding = jax.typeof(self.lengths).sharding
+        if lengths_sharding.mesh.empty:
+            token_ids = self.token_ids[batch_indices, slots]
+        else:
+            token_ids = self.token_ids.at[batch_indices, slots].get(out_sharding=lengths_sharding)
+        stopped_token_ids = jnp.zeros_like(self.lengths, dtype=stopped_token_ids.dtype) + stopped_token_ids
         return jnp.where(self.lengths > 0, token_ids, stopped_token_ids)
 
     def last_token_indices(self) -> Int[Array, " batch"]:
         batch_size, _ = self.token_positions.shape
         batch_indices = jnp.arange(batch_size, dtype=jnp.int32)
         slots = jnp.maximum(self.lengths - 1, 0)
-        token_positions = self.token_positions[batch_indices, slots]
-        return jnp.where(self.lengths > 0, token_positions - 1, 0)
+        lengths_sharding = jax.typeof(self.lengths).sharding
+        if lengths_sharding.mesh.empty:
+            token_positions = self.token_positions[batch_indices, slots]
+        else:
+            token_positions = self.token_positions.at[batch_indices, slots].get(out_sharding=lengths_sharding)
+        return jnp.where(self.lengths > 0, token_positions - 1, jnp.zeros_like(token_positions))
 
     def with_lengths(self, new_lengths: Int[Array, " batch"]) -> "AcceptedProposal":
         emitted = jnp.arange(self.token_ids.shape[1], dtype=jnp.int32)[None, :] < new_lengths[:, None]

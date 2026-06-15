@@ -76,10 +76,11 @@ class DecodingState(NamedTuple):
     ) -> "DecodingState":
         batch_size, vocab_size = prefill_results.last_token_logits.shape
         max_proposal_tokens = speculator.max_proposal_tokens
-        initial_logits = jnp.zeros(
-            (batch_size, max_proposal_tokens, vocab_size),
-            dtype=prefill_results.last_token_logits.dtype,
+        initial_logits = jnp.zeros_like(
+            prefill_results.last_token_logits[:, None, :],
+            shape=(batch_size, max_proposal_tokens, vocab_size),
         )
+        initial_logits = initial_logits.at[:, 0, :].set(prefill_results.last_token_logits)
         initial_positions = (
             prefill_results.last_token_indices[:, None]
             + jnp.arange(
@@ -89,20 +90,20 @@ class DecodingState(NamedTuple):
         )
         return cls(
             pending_decoder_result=DecoderResult(
-                logits=initial_logits.at[:, 0, :].set(prefill_results.last_token_logits),
+                logits=initial_logits,
                 updated_state=prefill_results.state,
                 activation_trace=prefill_results.pending_activation_trace,
             ),
             pending_committed_length=prefill_results.state.committed_length(),
             pending_proposal=ChainProposal(
-                token_ids=jnp.full((batch_size, max_proposal_tokens), -1, dtype=token_dtype),
+                token_ids=jnp.full_like(initial_positions, -1, dtype=token_dtype),
                 token_positions=initial_positions,
-                lengths=jnp.zeros((batch_size,), dtype=prefill_results.last_token_indices.dtype),
+                lengths=jnp.zeros_like(prefill_results.last_token_indices),
             ),
-            stop_flags=jnp.zeros((batch_size,), dtype=bool),
+            stop_flags=jnp.zeros_like(prefill_results.last_token_indices, dtype=bool),
             sampling_policy=sampling_policy,
             speculator_state=prefill_results.speculator_state,
-            num_generated_tokens=jnp.zeros((batch_size,), dtype=jnp.int32),
+            num_generated_tokens=jnp.zeros_like(prefill_results.last_token_indices, dtype=jnp.int32),
         )
 
 
@@ -599,19 +600,25 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         ).vmapped_keys
 
         proposal_slots = jnp.arange(max_proposal_tokens, dtype=jnp.int32)
-        initial_token_ids = jnp.zeros((batch_size, max_output_length), dtype=prompt_token_ids.dtype)
+        initial_token_ids = jnp.zeros_like(
+            prompt_token_ids,
+            shape=(batch_size, max_output_length),
+        )
+        batch_response_sharding = jax.typeof(initial_token_ids).sharding
         if num_top_logits_to_return is None:
             initial_top_k_token_ids = None
             initial_top_k_token_logits = None
         else:
-            initial_top_k_token_ids = jnp.zeros(
-                (batch_size, max_output_length, num_top_logits_to_return),
+            initial_top_k_token_ids = jnp.zeros_like(
+                initial_token_ids[:, :, None],
+                shape=(batch_size, max_output_length, num_top_logits_to_return),
                 dtype=jnp.int32,
             )
-            initial_top_k_token_logits = jnp.zeros(
-                (batch_size, max_output_length, num_top_logits_to_return),
+            initial_top_k_token_logits = jnp.zeros_like(
+                initial_top_k_token_ids,
                 dtype=jnp.float32,
             )
+            batch_top_k_sharding = jax.typeof(initial_top_k_token_ids).sharding
 
         def loop_condition(carry: GenerationLoopCarry) -> Bool[Array, ""]:
             state, step_index, *_ = carry
@@ -640,6 +647,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             token_ids = token_ids.at[batch_indices[:, None], output_positions].set(
                 step_results.token_ids,
                 mode="drop",
+                out_sharding=batch_response_sharding,
             )
             if num_top_logits_to_return is not None:
                 assert step_results.top_k_token_ids is not None
@@ -649,10 +657,12 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 top_k_token_ids = top_k_token_ids.at[batch_indices[:, None], output_positions, :].set(
                     step_results.top_k_token_ids,
                     mode="drop",
+                    out_sharding=batch_top_k_sharding,
                 )
                 top_k_token_logits = top_k_token_logits.at[batch_indices[:, None], output_positions, :].set(
                     step_results.top_k_token_logits,
                     mode="drop",
+                    out_sharding=batch_top_k_sharding,
                 )
             return (state, step_index + 1, token_ids, top_k_token_ids, top_k_token_logits)
 

@@ -81,6 +81,7 @@ class DFlashDraftLayerState(eqx.Module):
         updates: Self,
         context_lengths: Int[Array, " batch"],
         num_tokens_to_append: Int[Array, " batch"],
+        cache_sharding: jax.sharding.Sharding,
     ) -> Self:
         batch_size, num_update_tokens, _num_groups, _head_dim = updates.keys.shape
         batch_indices = jnp.arange(batch_size, dtype=context_lengths.dtype)[:, None]
@@ -93,7 +94,11 @@ class DFlashDraftLayerState(eqx.Module):
             update: Float[Array, "batch update_tokens groups head_channels"],
         ) -> Float[Array, "batch context_capacity groups head_channels"]:
             masked_update = jnp.where(is_valid[:, :, None, None], update.astype(buffer.dtype), 0)
-            return buffer.at[batch_indices, destination_indices].set(masked_update, mode="drop")
+            return buffer.at[batch_indices, destination_indices].set(
+                masked_update,
+                mode="drop",
+                out_sharding=cache_sharding,
+            )
 
         return DFlashDraftLayerState(
             keys=scattered(self.keys, updates.keys),
@@ -433,6 +438,7 @@ class DFlashDraftState(SpeculatorState):
         self,
         layer_updates: tuple[DFlashDraftLayerState, ...],
         num_tokens_to_append: Int[Array, " batch"],
+        cache_sharding: jax.sharding.Sharding,
     ) -> Self:
         return DFlashDraftState(
             layer_states=tuple(
@@ -440,6 +446,7 @@ class DFlashDraftState(SpeculatorState):
                     layer_update,
                     self.context_lengths,
                     num_tokens_to_append,
+                    cache_sharding,
                 )
                 for layer_state, layer_update in zip(self.layer_states, layer_updates, strict=True)
             ),
@@ -522,6 +529,7 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
             forward_pass_config,
             keychain=context_keychain,
         )
+        cache_sharding = self.sharding_config.resolve_sharding((LogicalAxis.BATCH, None, None, None))
         return state.append(
             tuple(
                 layer.project_context(
@@ -533,6 +541,7 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
                 for layer, layer_keychain in zip(self.layers, layer_keychains, strict=True)
             ),
             num_tokens_to_append,
+            cache_sharding,
         )
 
     @eqx.filter_jit
@@ -560,8 +569,12 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
             last_token_indices[:, None] + jnp.arange(1, block_size + 1, dtype=last_token_indices.dtype)[None, :]
         )
         token_positions = jnp.concatenate((context_positions, draft_positions), axis=1)
+        draft_key_mask = jnp.broadcast_to(
+            jnp.ones_like(state.context_lengths[:, None], dtype=bool),
+            (batch_size, block_size),
+        )
         key_mask = jnp.concatenate(
-            (context_slots < state.context_lengths[:, None], jnp.ones((batch_size, block_size), dtype=bool)),
+            (context_slots < state.context_lengths[:, None], draft_key_mask),
             axis=1,
         )
         attention_mask = jnp.broadcast_to(
