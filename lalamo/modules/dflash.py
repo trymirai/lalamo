@@ -538,14 +538,36 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
     @eqx.filter_jit
     def __call__(
         self,
-        noise_embeddings: Float[Array, "batch query_tokens channels"],
+        noise_embeddings: Float[Array, "batch block channels"],
         state: DFlashDraftState,
-        token_positions: Int[Array, "batch key_tokens"],
-        attention_mask: Bool[Array, "batch query_tokens key_tokens"] | None = None,
+        last_token_indices: Int[Array, " batch"],
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
         *,
         keychain: Keychain,
-    ) -> Float[Array, "batch query_tokens channels"]:
+    ) -> Float[Array, "batch block channels"]:
+        block_size = self.config.block_size
+        batch_size, _, _ = noise_embeddings.shape
+        first_layer_state, *_ = state.layer_states
+        _, context_capacity, _, _ = first_layer_state.keys.shape
+        context_slots = jnp.arange(context_capacity, dtype=state.context_lengths.dtype)[None, :]
+        context_positions = (
+            last_token_indices[:, None]
+            - state.context_lengths[:, None]
+            + 1
+            + context_slots.astype(last_token_indices.dtype)
+        )
+        draft_positions = (
+            last_token_indices[:, None] + jnp.arange(1, block_size + 1, dtype=last_token_indices.dtype)[None, :]
+        )
+        token_positions = jnp.concatenate((context_positions, draft_positions), axis=1)
+        key_mask = jnp.concatenate(
+            (context_slots < state.context_lengths[:, None], jnp.ones((batch_size, block_size), dtype=bool)),
+            axis=1,
+        )
+        attention_mask = jnp.broadcast_to(
+            key_mask[:, None, :], (batch_size, block_size, context_capacity + block_size)
+        )
+
         layer_keychains = keychain.split(len(self.layers))
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
 

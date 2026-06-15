@@ -116,44 +116,18 @@ class DFlashSpeculator(Speculator[DFlashDraftState, DFlashSpeculatorConfig]):
         keychain: Keychain,
     ) -> ChainProposal:
         block_size = self.draft_model.config.block_size
-
         (batch_size,) = last_token_ids.shape
         embedding_keychain, draft_keychain, readout_keychain = keychain.split(3)
-        num_draft_tokens = block_size - 1
+
         mask_token_ids = jnp.full(
-            (batch_size, num_draft_tokens),
+            (batch_size, block_size - 1),
             self.draft_model.config.mask_token_id,
             dtype=last_token_ids.dtype,
         )
-        block_token_ids = jnp.concatenate((last_token_ids[:, None], mask_token_ids), axis=1)
-        noise_embeddings = target_embedding.embed(block_token_ids, keychain=embedding_keychain)
+        noise_block = jnp.concatenate((last_token_ids[:, None], mask_token_ids), axis=1)
+        noise_embeddings = target_embedding.embed(noise_block, keychain=embedding_keychain)
 
-        draft_offsets = jnp.arange(block_size, dtype=last_token_indices.dtype)[None, :] + 1
-        draft_positions = last_token_indices[:, None] + draft_offsets
-        first_layer_state, *_ = state.layer_states
-        _, context_capacity, _, _ = first_layer_state.keys.shape
-        context_slots = jnp.arange(context_capacity, dtype=state.context_lengths.dtype)[None, :]
-        context_positions = (
-            last_token_indices[:, None]
-            - state.context_lengths[:, None]
-            + 1
-            + context_slots.astype(last_token_indices.dtype)
-        )
-        token_positions = jnp.concatenate((context_positions, draft_positions), axis=1)
-        context_mask = context_slots < state.context_lengths[:, None]
-        draft_mask = jnp.ones((batch_size, block_size), dtype=bool)
-        key_mask = jnp.concatenate((context_mask, draft_mask), axis=1)
-        attention_mask = jnp.broadcast_to(
-            key_mask[:, None, :],
-            (batch_size, block_size, context_capacity + block_size),
-        )
-        draft_hidden_states = self.draft_model(
-            noise_embeddings,
-            state,
-            token_positions,
-            attention_mask,
-            keychain=draft_keychain,
-        )
+        draft_hidden_states = self.draft_model(noise_embeddings, state, last_token_indices, keychain=draft_keychain)
         batch_axis = self.draft_model.sharding_config.resolve_axis(LogicalAxis.BATCH)
         draft_logits = call_vmapped_twice(
             target_embedding.readout,
@@ -162,6 +136,9 @@ class DFlashSpeculator(Speculator[DFlashDraftState, DFlashSpeculatorConfig]):
             added_sharding_axes=(batch_axis, None),
         )
         draft_token_ids = jnp.argmax(draft_logits, axis=-1).astype(last_token_ids.dtype)
+        draft_positions = (
+            last_token_indices[:, None] + jnp.arange(1, block_size + 1, dtype=last_token_indices.dtype)[None, :]
+        )
         return ChainProposal(
             token_ids=jnp.concatenate((last_token_ids[:, None], draft_token_ids), axis=1),
             token_positions=draft_positions,
