@@ -47,8 +47,6 @@ class HFGraniteConfig(HuggingFaceLMConfig):
     attention_multiplier: float
     logits_scaling: float
 
-    head_dim: int | None = None
-
     def to_decoder_config(
         self,
         context_length: int | None,
@@ -56,7 +54,7 @@ class HFGraniteConfig(HuggingFaceLMConfig):
     ) -> DecoderConfig:
         assert self.rope_scaling is None, "Granite with rope scaling is not supported"
         max_sequence_length = self.max_position_embeddings if context_length is None else context_length
-        head_dim = self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads
+        head_dim = self.hidden_size // self.num_attention_heads
 
         assert self.tie_word_embeddings, "Granite always ties word embeddings"
         embedding_config = TiedEmbeddingConfig(
