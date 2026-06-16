@@ -2,9 +2,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
+import equinox as eqx
 from jaxtyping import Array
 
 from lalamo.model import Model
+from lalamo.model_import.loaders import fold_residual_scaling
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
@@ -120,23 +122,6 @@ class HFGraniteConfig(HuggingFaceLMConfig):
             vocab_size=self.vocab_size,
         )
 
-    def _scaled_weights(self, weights_dict: Mapping[str, Array]) -> dict[str, Array]:
-        scaled = dict(weights_dict)
-
-        norm_key = "model.norm.weight"
-        if norm_key in scaled:
-            scaled[norm_key] = scaled[norm_key] / self.logits_scaling
-
-        for i in range(self.num_hidden_layers):
-            for proj_key in (
-                f"model.layers.{i}.self_attn.o_proj.weight",
-                f"model.layers.{i}.mlp.down_proj.weight",
-            ):
-                if proj_key in scaled:
-                    scaled[proj_key] = scaled[proj_key] * self.residual_multiplier
-
-        return scaled
-
     def _load_weights(
         self,
         model: Model,
@@ -144,8 +129,10 @@ class HFGraniteConfig(HuggingFaceLMConfig):
         *,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> Model:
-        return super()._load_weights(
-            model,
-            self._scaled_weights(weights_dict),
-            implementation=implementation,
+        model = super()._load_weights(model, weights_dict, implementation=implementation)
+        decoder = fold_residual_scaling(
+            model.decoder,
+            residual_multiplier=self.residual_multiplier,
+            logits_scaling=self.logits_scaling,
         )
+        return eqx.tree_at(lambda m: m.decoder, model, decoder)

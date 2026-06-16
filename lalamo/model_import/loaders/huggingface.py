@@ -1277,6 +1277,24 @@ def _decoder_load_layout(weights_dict: Mapping[str, Array], base_path: Parameter
     return standard_layout
 
 
+def _residual_projection_weights(decoder: Decoder) -> tuple[Array, ...]:
+    return tuple(
+        projection.weights.weights
+        for layer in decoder.transformer.layers
+        for projection in (layer.mixer.out_projection, layer.mlp.down_projection)
+    )
+
+
+def fold_residual_scaling(decoder: Decoder, *, residual_multiplier: float, logits_scaling: float) -> Decoder:
+    scaled_projections = tuple(weights * residual_multiplier for weights in _residual_projection_weights(decoder))
+    decoder = load_as_at(_residual_projection_weights, decoder, scaled_projections)
+    return eqx.tree_at(
+        lambda d: d.transformer.output_norm.scales,
+        decoder,
+        decoder.transformer.output_norm.scales / logits_scaling,
+    )
+
+
 def load_huggingface_decoder(
     module: Decoder,
     weights_dict: Mapping[str, Array],
