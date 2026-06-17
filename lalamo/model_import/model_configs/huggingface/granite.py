@@ -2,11 +2,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-import equinox as eqx
-from jaxtyping import Array
-
-from lalamo.model import Model
-from lalamo.model_import.loaders import fold_residual_scaling
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
@@ -17,7 +12,6 @@ from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer import TransformerConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
-from lalamo.weight_matrix import CompressionImplementation
 
 from .common import HuggingFaceLMConfig
 
@@ -122,17 +116,5 @@ class HFGraniteConfig(HuggingFaceLMConfig):
             vocab_size=self.vocab_size,
         )
 
-    def _load_weights(
-        self,
-        model: Model,
-        weights_dict: Mapping[str, Array],
-        *,
-        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-    ) -> Model:
-        model = super()._load_weights(model, weights_dict, implementation=implementation)
-        decoder = fold_residual_scaling(
-            model.decoder,
-            residual_multiplier=self.residual_multiplier,
-            logits_scaling=self.logits_scaling,
-        )
-        return eqx.tree_at(lambda m: m.decoder, model, decoder)
+    def _residual_scaling(self) -> tuple[float, float]:
+        return self.residual_multiplier, self.logits_scaling

@@ -1285,7 +1285,7 @@ def _residual_projection_weights(decoder: Decoder) -> tuple[Array, ...]:
     )
 
 
-def fold_residual_scaling(decoder: Decoder, *, residual_multiplier: float, logits_scaling: float) -> Decoder:
+def _fold_residual_scaling(decoder: Decoder, *, residual_multiplier: float, logits_scaling: float) -> Decoder:
     scaled_projections = tuple(weights * residual_multiplier for weights in _residual_projection_weights(decoder))
     decoder = load_as_at(_residual_projection_weights, decoder, scaled_projections)
     return eqx.tree_at(
@@ -1301,6 +1301,8 @@ def load_huggingface_decoder(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     reorder_q_proj_gate: bool = True,
+    residual_multiplier: float = 1.0,
+    logits_scaling: float = 1.0,
 ) -> Decoder:
     if any(key.startswith("model.language_model.") for key in weights_dict):
         weights_dict = {k.replace("model.language_model.", "model.", 1): v for k, v in weights_dict.items()}
@@ -1350,11 +1352,18 @@ def load_huggingface_decoder(
         for i, layer in enumerate(module.transformer.layers)
     )
     output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, layout.decoder_path / layout.norm_key)
-    return load_as_at(
+    decoder = load_as_at(
         lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm),
         module,
         (embedding, decoder_layers, output_norm),
     )
+    if residual_multiplier != 1.0 or logits_scaling != 1.0:
+        decoder = _fold_residual_scaling(
+            decoder,
+            residual_multiplier=residual_multiplier,
+            logits_scaling=logits_scaling,
+        )
+    return decoder
 
 
 def load_huggingface_classifier(

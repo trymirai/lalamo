@@ -105,6 +105,9 @@ class HuggingFaceLMConfig(ForeignLMConfig):
 
         return result
 
+    def _residual_scaling(self) -> tuple[float, float]:
+        return 1.0, 1.0
+
     def _load_weights(
         self,
         model: Model,
@@ -113,10 +116,13 @@ class HuggingFaceLMConfig(ForeignLMConfig):
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> Model:
         assert isinstance(model, LanguageModel)
+        residual_multiplier, logits_scaling = self._residual_scaling()
         decoder = load_huggingface_decoder(
             module=model.decoder,
             weights_dict=weights_dict,
             implementation=implementation,
+            residual_multiplier=residual_multiplier,
+            logits_scaling=logits_scaling,
         )
         return eqx.tree_at(lambda m: (m.decoder,), model, (decoder,))
 
