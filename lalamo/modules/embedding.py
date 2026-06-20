@@ -35,6 +35,7 @@ __all__ = [
 class EmbeddingConfig(LalamoConfig, RegistryABC):
     input_scale: float | None
     logit_soft_cap: float | None
+    logit_scale: float = 1.0
 
     @abstractmethod
     def init(
@@ -135,6 +136,8 @@ class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
             forward_pass_config=forward_pass_config.matmul_config,
         )
         logits = logits.astype(forward_pass_config.logit_dtype)
+        if self.config.logit_scale != 1.0:
+            logits = logits * self.config.logit_scale
         if self.config.logit_soft_cap is not None:
             logits = apply_soft_capping(logits, self.config.logit_soft_cap)
         return logits

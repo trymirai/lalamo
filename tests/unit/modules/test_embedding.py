@@ -62,7 +62,7 @@ def _output_embedding_matrix(*, offset: int = 100) -> FullPrecisionMatrix:
 
 def _tied_embedding() -> TiedEmbedding:
     return TiedEmbedding(
-        config=TiedEmbeddingConfig(input_scale=1.5, logit_soft_cap=2.0),
+        config=TiedEmbeddingConfig(input_scale=1.5, logit_soft_cap=2.0, logit_scale=0.75),
         sharding_config=make_test_sharding_config(),
         embedding=_input_embedding_matrix(),
     )
@@ -70,7 +70,7 @@ def _tied_embedding() -> TiedEmbedding:
 
 def _untied_embedding() -> UntiedEmbedding:
     return UntiedEmbedding(
-        config=UntiedEmbeddingConfig(input_scale=1.5, logit_soft_cap=2.0),
+        config=UntiedEmbeddingConfig(input_scale=1.5, logit_soft_cap=2.0, logit_scale=0.75),
         sharding_config=make_test_sharding_config(),
         input_embedding=_input_embedding_matrix(),
         output_embedding=_output_embedding_matrix(),
@@ -118,6 +118,8 @@ def _readout_reference(
             forward_pass_config=forward_pass_config.matmul_config,
         )
     logits = logits.astype(forward_pass_config.logit_dtype)
+    if module.config.logit_scale != 1.0:
+        logits = logits * module.config.logit_scale
     if module.config.logit_soft_cap is not None:
         logits = apply_soft_capping(logits, module.config.logit_soft_cap)
     return logits

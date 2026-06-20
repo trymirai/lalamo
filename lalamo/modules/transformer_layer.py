@@ -36,6 +36,7 @@ __all__ = [
     "TransformerLayerActivationTrace",
     "TransformerLayerConfig",
     "TransformerLayerResult",
+    "TransformerLayerUpdateParameterization",
 ]
 
 
@@ -162,6 +163,12 @@ class PLELayer(LalamoModule[PLELayerConfig]):
 
 
 @dataclass(frozen=True)
+class TransformerLayerUpdateParameterization(LalamoConfig):
+    mixer_update_scale: float = 1.0
+    mlp_update_scale: float = 1.0
+
+
+@dataclass(frozen=True)
 class TransformerLayerConfig(LalamoConfig):
     pre_mixer_norm_config: NormalizationConfig | None
     mixer_config: TokenMixerConfig
@@ -169,6 +176,9 @@ class TransformerLayerConfig(LalamoConfig):
     pre_mlp_norm_config: NormalizationConfig
     mlp_config: MLPConfig
     post_mlp_norm_config: NormalizationConfig | None
+    update_parameterization: TransformerLayerUpdateParameterization = dataclass_field(
+        default_factory=TransformerLayerUpdateParameterization,
+    )
     hidden_dim: int | None = None
     ple_config: PLELayerConfig | None = None
     has_post_layer_scalar: bool = False
@@ -291,10 +301,15 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 mixer_outputs,
                 forward_pass_config=normalization_forward_pass_config,
             )
-            mlp_inputs = inputs + normalized_mixer_outputs
+            mixer_update = normalized_mixer_outputs
         else:
             normalized_mixer_outputs = None
-            mlp_inputs = inputs + mixer_outputs
+            mixer_update = mixer_outputs
+
+        update_parameterization = self.config.update_parameterization
+        if update_parameterization.mixer_update_scale != 1.0:
+            mixer_update = mixer_update * update_parameterization.mixer_update_scale
+        mlp_inputs = inputs + mixer_update
 
         assert mlp_inputs.dtype == inputs.dtype
 
@@ -315,10 +330,14 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 mlp_outputs,
                 forward_pass_config=normalization_forward_pass_config,
             )
-            outputs = mlp_inputs + normalized_mlp_outputs
+            mlp_update = normalized_mlp_outputs
         else:
             normalized_mlp_outputs = None
-            outputs = mlp_inputs + mlp_outputs
+            mlp_update = mlp_outputs
+
+        if update_parameterization.mlp_update_scale != 1.0:
+            mlp_update = mlp_update * update_parameterization.mlp_update_scale
+        outputs = mlp_inputs + mlp_update
 
         if self.ple is not None and per_layer_input is not None:
             outputs = self.ple(

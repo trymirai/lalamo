@@ -1277,32 +1277,12 @@ def _decoder_load_layout(weights_dict: Mapping[str, Array], base_path: Parameter
     return standard_layout
 
 
-def _residual_projection_weights(decoder: Decoder) -> tuple[Array, ...]:
-    return tuple(
-        projection.weights.weights
-        for layer in decoder.transformer.layers
-        for projection in (layer.mixer.out_projection, layer.mlp.down_projection)
-    )
-
-
-def _fold_residual_scaling(decoder: Decoder, *, residual_multiplier: float, logits_scaling: float) -> Decoder:
-    scaled_projections = tuple(weights * residual_multiplier for weights in _residual_projection_weights(decoder))
-    decoder = load_as_at(_residual_projection_weights, decoder, scaled_projections)
-    return eqx.tree_at(
-        lambda d: d.transformer.output_norm.scales,
-        decoder,
-        decoder.transformer.output_norm.scales / logits_scaling,
-    )
-
-
 def load_huggingface_decoder(
     module: Decoder,
     weights_dict: Mapping[str, Array],
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     reorder_q_proj_gate: bool = True,
-    residual_multiplier: float = 1.0,
-    logits_scaling: float = 1.0,
 ) -> Decoder:
     if any(key.startswith("model.language_model.") for key in weights_dict):
         weights_dict = {k.replace("model.language_model.", "model.", 1): v for k, v in weights_dict.items()}
@@ -1352,18 +1332,11 @@ def load_huggingface_decoder(
         for i, layer in enumerate(module.transformer.layers)
     )
     output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, layout.decoder_path / layout.norm_key)
-    decoder = load_as_at(
+    return load_as_at(
         lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm),
         module,
         (embedding, decoder_layers, output_norm),
     )
-    if residual_multiplier != 1.0 or logits_scaling != 1.0:
-        decoder = _fold_residual_scaling(
-            decoder,
-            residual_multiplier=residual_multiplier,
-            logits_scaling=logits_scaling,
-        )
-    return decoder
 
 
 def load_huggingface_classifier(

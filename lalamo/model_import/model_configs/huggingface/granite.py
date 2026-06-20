@@ -11,7 +11,7 @@ from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer import TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig, TransformerLayerUpdateParameterization
 
 from .common import HuggingFaceLMConfig
 
@@ -56,6 +56,7 @@ class HFGraniteConfig(HuggingFaceLMConfig):
         embedding_config = TiedEmbeddingConfig(
             input_scale=self.embedding_multiplier,
             logit_soft_cap=None,
+            logit_scale=1.0 / self.logits_scaling,
         )
 
         rope_config = UnscaledRoPEConfig(
@@ -102,6 +103,10 @@ class HFGraniteConfig(HuggingFaceLMConfig):
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
+            update_parameterization=TransformerLayerUpdateParameterization(
+                mixer_update_scale=self.residual_multiplier,
+                mlp_update_scale=self.residual_multiplier,
+            ),
             rope_config=rope_config,
         )
         transformer_config = TransformerConfig(
@@ -115,6 +120,3 @@ class HFGraniteConfig(HuggingFaceLMConfig):
             transformer_config=transformer_config,
             vocab_size=self.vocab_size,
         )
-
-    def _residual_scaling(self) -> tuple[float, float]:
-        return self.residual_multiplier, self.logits_scaling
