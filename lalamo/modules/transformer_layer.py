@@ -327,14 +327,12 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             keychain=mlp_keychain,
         )
         if self.post_mlp_norm is not None:
-            normalized_mlp_outputs = call_vmapped_twice(
+            mlp_update = call_vmapped_twice(
                 self.post_mlp_norm,
                 mlp_outputs,
                 forward_pass_config=normalization_forward_pass_config,
             )
-            mlp_update = normalized_mlp_outputs
         else:
-            normalized_mlp_outputs = None
             mlp_update = mlp_outputs
 
         outputs = mlp_inputs + mlp_update * jax.lax.stop_gradient(mlp_update_scale)
@@ -360,7 +358,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 mlp_inputs=mlp_inputs,
                 pre_mlp_norm=normalized_mlp_inputs,
                 mlp=mlp_outputs,
-                post_mlp_norm=normalized_mlp_outputs,
+                post_mlp_norm=mlp_update,
             )
         else:
             activation_trace = None
