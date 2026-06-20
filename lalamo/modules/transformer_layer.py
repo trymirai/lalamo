@@ -304,16 +304,14 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             normalized_mixer_outputs = None
             mixer_update = mixer_outputs
 
-        update_parameterization = self.config.update_parameterization
-        if update_parameterization is None:
+        if self.config.update_parameterization is None:
             mixer_update_scale = 1.0
             mlp_update_scale = 1.0
         else:
-            mixer_update_scale = update_parameterization.mixer_update_scale
-            mlp_update_scale = update_parameterization.mlp_update_scale
+            mixer_update_scale = self.config.update_parameterization.mixer_update_scale
+            mlp_update_scale = self.config.update_parameterization.mlp_update_scale
 
-        mixer_update = mixer_update * jax.lax.stop_gradient(mixer_update_scale)
-        mlp_inputs = inputs + mixer_update
+        mlp_inputs = inputs + mixer_update * jax.lax.stop_gradient(mixer_update_scale)
 
         assert mlp_inputs.dtype == inputs.dtype
 
@@ -339,8 +337,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             normalized_mlp_outputs = None
             mlp_update = mlp_outputs
 
-        mlp_update = mlp_update * jax.lax.stop_gradient(mlp_update_scale)
-        outputs = mlp_inputs + mlp_update
+        outputs = mlp_inputs + mlp_update * jax.lax.stop_gradient(mlp_update_scale)
 
         if self.ple is not None and per_layer_input is not None:
             outputs = self.ple(
