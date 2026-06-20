@@ -118,8 +118,7 @@ def _readout_reference(
             forward_pass_config=forward_pass_config.matmul_config,
         )
     logits = logits.astype(forward_pass_config.logit_dtype)
-    if module.config.logit_scale != 1.0:
-        logits = logits * module.config.logit_scale
+    logits = logits * module.config.logit_scale
     if module.config.logit_soft_cap is not None:
         logits = apply_soft_capping(logits, module.config.logit_soft_cap)
     return logits

@@ -4,6 +4,7 @@ from dataclasses import field as dataclass_field
 from typing import Self
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int
@@ -136,8 +137,7 @@ class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
             forward_pass_config=forward_pass_config.matmul_config,
         )
         logits = logits.astype(forward_pass_config.logit_dtype)
-        if self.config.logit_scale != 1.0:
-            logits = logits * self.config.logit_scale
+        logits = logits * jax.lax.stop_gradient(self.config.logit_scale)
         if self.config.logit_soft_cap is not None:
             logits = apply_soft_capping(logits, self.config.logit_soft_cap)
         return logits
