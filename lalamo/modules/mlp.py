@@ -549,6 +549,14 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         routed_token_indices = routed_assignment_indices // num_active_routed_experts
         routed_expert_indices = routed_expert_indices[routed_assignment_indices]
         routed_weights = active_expert_weights.ravel()[routed_assignment_indices]
+        # Padded (token, expert) pairs are routed to the sentinel expert id ``num_routed_experts`` and
+        # dropped from the ragged_dot groups, but ragged_dot still emits nonzero rows for that ungrouped
+        # tail. Zero their routing weights so padded tokens contribute nothing to the scatter below.
+        routed_weights = jnp.where(
+            routed_expert_indices < self.config.num_routed_experts,
+            routed_weights,
+            0.0,
+        )
         routed_group_sizes = with_sharding(routed_group_sizes, make_sharding((ShardingAxis.EXPERT,)))
 
         routed_input_source = with_sharding(flattened_inputs, make_sharding((None, None)))
