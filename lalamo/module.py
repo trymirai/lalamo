@@ -125,7 +125,6 @@ class Keychain(eqx.Module):
         mode: KeychainBroadcastMode = KeychainBroadcastMode.AUTO,
         sharding_axes: tuple[str | None, ...] | None = None,
     ) -> Self:
-
         prefix_shape, suffix_shape = _broadcast_prefix_and_suffix(self.vmapped_keys.shape, shape, mode)
         combined_shape = prefix_shape + suffix_shape
 
