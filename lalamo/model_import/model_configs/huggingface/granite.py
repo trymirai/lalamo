@@ -15,6 +15,7 @@ from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer import TransformerConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.utils.lazy_collections import MappedValues
 from lalamo.weight_matrix import CompressionImplementation
 
 from .common import HuggingFaceLMConfig
@@ -122,22 +123,25 @@ class HFGraniteConfig(HuggingFaceLMConfig):
             vocab_size=self.vocab_size,
         )
 
-    def _scaled_weights(self, weights_dict: Mapping[str, Array]) -> dict[str, Array]:
-        scaled = dict(weights_dict)
+    def _scaled_weights(self, weights_dict: Mapping[str, Array]) -> MappedValues[str, Array, Array]:
+        final_norm_suffixes = ("model.norm.weight", "language_model.norm.weight")
+        residual_scaled_suffixes = tuple(
+            f"layers.{i}.{projection}.{parameter}"
+            for i in range(self.num_hidden_layers)
+            for projection in ("self_attn.o_proj", "mlp.down_proj")
+            for parameter in ("weight", "bias")
+        )
 
-        norm_key = "model.norm.weight"
-        if norm_key in scaled:
-            scaled[norm_key] = scaled[norm_key] / self.logits_scaling
+        def scale_weight(key: str, weight: Array) -> Array:
+            if key.endswith(final_norm_suffixes):
+                return weight / self.logits_scaling
 
-        for i in range(self.num_hidden_layers):
-            for proj_key in (
-                f"model.layers.{i}.self_attn.o_proj.weight",
-                f"model.layers.{i}.mlp.down_proj.weight",
-            ):
-                if proj_key in scaled:
-                    scaled[proj_key] = scaled[proj_key] * self.residual_multiplier
+            if key.endswith(residual_scaled_suffixes):
+                return weight * self.residual_multiplier
 
-        return scaled
+            return weight
+
+        return MappedValues(weights_dict, scale_weight)
 
     def _load_weights(
         self,
