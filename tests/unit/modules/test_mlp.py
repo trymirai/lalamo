@@ -649,6 +649,31 @@ def test_routed_moe_output_dtype_matches_input_dtype(fake_mesh: Mesh, mode: Forw
     assert result.dtype == inputs.dtype
 
 
+def test_moe_prefill_routed_only_with_padding_zeroes_padded_tokens(fake_mesh: Mesh) -> None:
+    # Regression for the padded-token leak: padded (token, expert) pairs are routed to the sentinel
+    # expert and dropped from the ragged_dot groups, but ragged_dot still emits nonzero rows for that
+    # ungrouped tail. Their routing weights must be zeroed so padded positions stay exactly zero. This
+    # bug lives in the routed path alone and does not require shared experts to reproduce.
+    assert fake_mesh is not None
+    module = _routed_only_moe(num_active_routed_experts=2)
+    inputs = jnp.arange(2 * 3 * MODEL_DIM, dtype=jnp.float32).reshape(2, 3, MODEL_DIM) / 10
+    lengths_without_padding = jnp.array([3, 1], dtype=jnp.int32)
+
+    result = module(
+        inputs,
+        lengths_without_padding=lengths_without_padding,
+        forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
+        keychain=Keychain.init(9),
+    )
+
+    _assert_close(
+        result=result,
+        reference=_routed_moe_reference(module, inputs, lengths_without_padding=lengths_without_padding),
+    )
+    # Padded positions (batch 1, tokens 1 and 2) must be exactly zero, not merely close.
+    assert jnp.all(jnp.asarray(jax.device_get(result))[1, 1:] == 0)
+
+
 def test_moe_prefill_with_shared_experts_and_padding_matches_direct_reference(fake_mesh: Mesh) -> None:
     assert fake_mesh is not None
     module = _moe(num_active_routed_experts=2, num_shared_experts=2)
