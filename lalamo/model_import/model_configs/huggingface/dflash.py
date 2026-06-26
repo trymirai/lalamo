@@ -97,16 +97,10 @@ class HFDFlashConfig:
             head_dim=self.head_dim,
         )
 
-    def _layer_types(self) -> tuple[Literal["full_attention", "sliding_attention"], ...]:
-        if len(self.layer_types) != self.num_hidden_layers:
-            raise ValueError(
-                f"Expected {self.num_hidden_layers} layer_types entries, got {len(self.layer_types)}",
-            )
-        return self.layer_types
-
     def _layer_sliding_window_sizes(self) -> tuple[int | None, ...]:
-        layer_types = self._layer_types()
-        has_sliding_attention = any(layer_type == "sliding_attention" for layer_type in layer_types)
+        assert len(self.layer_types) == self.num_hidden_layers
+
+        has_sliding_attention = any(layer_type == "sliding_attention" for layer_type in self.layer_types)
         if has_sliding_attention and not self.use_sliding_window:
             raise ValueError("DFlash config has sliding_attention layers but use_sliding_window is false")
         if self.use_sliding_window and not has_sliding_attention:
@@ -115,7 +109,9 @@ class HFDFlashConfig:
             raise ValueError("DFlash config has sliding_attention layers but does not define sliding_window")
         if not has_sliding_attention and self.sliding_window is not None:
             raise ValueError("DFlash config defines sliding_window without sliding_attention layers")
-        return tuple(self.sliding_window if layer_type == "sliding_attention" else None for layer_type in layer_types)
+        return tuple(
+            self.sliding_window if layer_type == "sliding_attention" else None for layer_type in self.layer_types
+        )
 
     def to_dflash_draft_config(self, context_length: int | None = None) -> DFlashDraftConfig:
         assert self.dflash_config.target_layer_ids
