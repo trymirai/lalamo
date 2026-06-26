@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import requests
 import thefuzz.fuzz
 import thefuzz.process
+from huggingface_hub import snapshot_download
 from tokenizers import Tokenizer
 
 from lalamo.audio.utils import dummy_char_level_tokenizer_config
@@ -213,7 +214,7 @@ def convert(
 
 @dataclass
 class SpeculatorConversionCallbacks:
-    hf_model_dir: Path
+    hf_repo_id: str
     output_dir: Path
     dtype: DType | None
     context_length: int | None
@@ -238,13 +239,13 @@ class SpeculatorConversionCallbacks:
 
 
 def convert_speculator(
-    hf_model_dir: Path,
+    hf_repo_id: str,
     output_dir: Path,
     dtype: DType | None = None,
     context_length: int | None = None,
     callbacks_type: Callable[
         [
-            Path,
+            str,
             Path,
             DType | None,
             int | None,
@@ -254,7 +255,7 @@ def convert_speculator(
 ) -> None:
     effective_dtype = dtype or DType.BFLOAT16
     callbacks = callbacks_type(
-        hf_model_dir,
+        hf_repo_id,
         output_dir,
         effective_dtype,
         context_length,
@@ -265,6 +266,12 @@ def convert_speculator(
 
     callbacks.started()
     callbacks.loading_model()
+    hf_model_dir = Path(
+        snapshot_download(
+            hf_repo_id,
+            allow_patterns=["config.json", "*.safetensors"],
+        ),
+    )
     draft_model = load_hf_dflash_draft_model(
         hf_model_dir,
         sharding_config=ShardingConfig.replicated(),

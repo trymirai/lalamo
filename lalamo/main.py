@@ -359,7 +359,7 @@ class CliSpeculatorConversionCallbacks(SpeculatorConversionCallbacks):
 
     def started(self) -> None:
         conversion_strs = [
-            f"🚀 Converting DFlash speculator from [cyan]{self.hf_model_dir}[/cyan]",
+            f"🚀 Converting DFlash speculator from [cyan]{self.hf_repo_id}[/cyan]",
         ]
         if self.dtype is not None:
             conversion_strs.append(
@@ -594,11 +594,11 @@ def convert(
 
 @speculator_app.command("convert", help="Import and export a DFlash speculator into the local Lalamo format.")
 def speculator_convert(
-    hf_model_dir: Annotated[
-        Path,
+    hf_repo_id: Annotated[
+        str,
         Argument(
-            help="Path to a Hugging Face DFlash model directory.",
-            metavar="HF_MODEL_DIR",
+            help="Hugging Face DFlash model repository ID.",
+            metavar="HF_REPO_ID",
         ),
     ],
     dtype: Annotated[
@@ -612,7 +612,7 @@ def speculator_convert(
         Path | None,
         Option(
             help="Directory to save the converted speculator to.",
-            show_default="Saves the converted speculator in the `models/<hf_model_dir_name>` directory",
+            show_default="Saves the converted speculator in the `models/<hf_repo_name>` directory",
         ),
     ] = None,
     context_length: Annotated[
@@ -630,10 +630,10 @@ def speculator_convert(
     ] = False,
 ) -> None:
     if output_dir is None:
-        output_dir = DEFAULT_OUTPUT_DIR / hf_model_dir.name
+        output_dir = DEFAULT_OUTPUT_DIR / PurePosixPath(hf_repo_id).name
 
     _convert_speculator(
-        hf_model_dir,
+        hf_repo_id,
         output_dir,
         dtype,
         context_length,
