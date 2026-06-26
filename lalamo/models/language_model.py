@@ -118,6 +118,7 @@ type GenerationLoopCarry = tuple[
     DecodingState,
     Int[Array, ""],
     Int[Array, "batch max_output"],
+    Int[Array, "batch max_output"],
     Int[Array, "batch max_output k"] | None,
     Float[Array, "batch max_output k"] | None,
 ]
@@ -125,6 +126,7 @@ type GenerationLoopCarry = tuple[
 
 class GenerationResults(NamedTuple):
     token_ids: Int[Array, "batch response_tokens"]
+    step_lengths: Int[Array, "batch generation_steps"]
     top_k_token_ids: Int[Array, "batch response_tokens k"] | None
     top_k_token_logits: Float[Array, "batch response_tokens k"] | None
 
@@ -605,6 +607,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             shape=(batch_size, max_output_length),
         )
         batch_response_sharding = jax.typeof(initial_token_ids).sharding
+        initial_step_lengths = jnp.zeros_like(
+            prompt_lengths_without_padding[:, None],
+            shape=(batch_size, max_output_length),
+        )
         if num_top_logits_to_return is None:
             initial_top_k_token_ids = None
             initial_top_k_token_logits = None
@@ -625,7 +631,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             return (step_index < max_output_length) & jnp.logical_not(jnp.all(state.stop_flags))
 
         def loop_body(carry: GenerationLoopCarry) -> GenerationLoopCarry:
-            state, step_index, token_ids, top_k_token_ids, top_k_token_logits = carry
+            state, step_index, token_ids, step_lengths, top_k_token_ids, top_k_token_logits = carry
             step_keys = (sampling_keys[step_index], decoding_keys[step_index])
             output_offsets = state.num_generated_tokens
             state, step_results = self.decode_generation_step(
@@ -649,6 +655,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 mode="drop",
                 out_sharding=batch_response_sharding,
             )
+            step_lengths = step_lengths.at[:, step_index].set(
+                step_results.lengths,
+                out_sharding=batch_response_sharding,
+            )
             if num_top_logits_to_return is not None:
                 assert step_results.top_k_token_ids is not None
                 assert step_results.top_k_token_logits is not None
@@ -664,15 +674,16 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                     mode="drop",
                     out_sharding=batch_top_k_sharding,
                 )
-            return (state, step_index + 1, token_ids, top_k_token_ids, top_k_token_logits)
+            return (state, step_index + 1, token_ids, step_lengths, top_k_token_ids, top_k_token_logits)
 
-        (_, _, token_ids, top_k_token_ids, top_k_token_logits) = jax.lax.while_loop(
+        (_, _, token_ids, step_lengths, top_k_token_ids, top_k_token_logits) = jax.lax.while_loop(
             loop_condition,
             loop_body,
             (
                 initial_state,
                 jnp.zeros((), dtype=jnp.int32),
                 initial_token_ids,
+                initial_step_lengths,
                 initial_top_k_token_ids,
                 initial_top_k_token_logits,
             ),
@@ -680,6 +691,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
 
         return GenerationResults(
             token_ids=token_ids,
+            step_lengths=step_lengths,
             top_k_token_ids=top_k_token_ids,
             top_k_token_logits=top_k_token_logits,
         )
