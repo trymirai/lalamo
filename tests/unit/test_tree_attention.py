@@ -8,6 +8,7 @@ import pytest
 from lalamo.initializer import RandomInitializer
 from lalamo.modules import (
     AttentionImplementation,
+    BorrowedKVCacheLayer,
     Decoder,
     DecoderConfig,
     DecoderForwardPassConfig,
@@ -68,7 +69,7 @@ def decoder(request: pytest.FixtureRequest) -> Decoder:
         if kv_source == layer_index:
             projection_mode = AttentionProjectionMode.QKV
         else:
-            projection_mode = AttentionProjectionMode.BORROWED_Q
+            projection_mode = AttentionProjectionMode.BORROWED_KV
         attention_config = AttentionConfig(
             qkv_projection_config=LinearConfig(),
             out_projection_config=LinearConfig(),
@@ -208,7 +209,7 @@ def test_transformer_config_derives_kv_cache_layout(decoder: Decoder) -> None:
         mixer_config=replace(
             attention_config,
             key_norm_config=None,
-            projection_mode=AttentionProjectionMode.BORROWED_Q,
+            projection_mode=AttentionProjectionMode.BORROWED_KV,
         ),
     )
     transformer_config = replace(
@@ -241,7 +242,7 @@ def test_transformer_config_rejects_invalid_projection_modes(decoder: Decoder) -
     attention_config = layer_config.mixer_config
     assert isinstance(attention_config, AttentionConfig)
 
-    with pytest.raises(ValueError, match="must use borrowed_q"):
+    with pytest.raises(ValueError, match="must use borrowed KV"):
         replace(
             decoder.config.transformer_config,
             layer_configs=(layer_config, layer_config),
@@ -253,7 +254,7 @@ def test_transformer_config_rejects_invalid_projection_modes(decoder: Decoder) -
         mixer_config=replace(
             attention_config,
             key_norm_config=None,
-            projection_mode=AttentionProjectionMode.BORROWED_Q,
+            projection_mode=AttentionProjectionMode.BORROWED_KV,
         ),
     )
     with pytest.raises(ValueError, match="owns its KV cache"):
@@ -410,6 +411,51 @@ def test_tree_attention_mask_static_matches_dynamic() -> None:
     assert jnp.array_equal(dynamic_mask, static_mask)
 
 
+def test_borrowed_dynamic_cache_uses_logical_length_for_right_padding() -> None:
+    keys = jnp.zeros((5, 1, 1), dtype=jnp.float32)
+    cache = DynamicKVCacheLayer.init(
+        has_sinks=False,
+        keys=keys,
+        values=keys,
+        length=jnp.array(3, dtype=jnp.int32),
+    )
+    borrowed_cache = BorrowedKVCacheLayer.from_cache(cache)
+
+    mask = borrowed_cache.attention_mask(
+        suffix_length=5,
+        suffix_length_without_padding=jnp.array(3, dtype=jnp.int32),
+        is_causal=True,
+    )
+
+    expected_mask = jnp.array(
+        [
+            [True, False, False, False, False],
+            [True, True, False, False, False],
+            [True, True, True, False, False],
+            [True, True, True, False, False],
+            [True, True, True, False, False],
+        ],
+        dtype=jnp.bool,
+    )
+    assert jnp.array_equal(mask, expected_mask)
+
+
+def test_dynamic_kv_cache_rejects_padded_extension() -> None:
+    keys = jnp.zeros((5, 1, 1), dtype=jnp.float32)
+    cache = DynamicKVCacheLayer.init(
+        has_sinks=False,
+        keys=keys,
+        values=keys,
+        length=jnp.array(3, dtype=jnp.int32),
+    )
+
+    with pytest.raises(eqx.EquinoxRuntimeError, match="padded initialization"):
+        cache.extend(
+            jnp.ones((1, 1, 1), dtype=jnp.float32),
+            jnp.ones((1, 1, 1), dtype=jnp.float32),
+        ).keys.block_until_ready()
+
+
 def test_shared_kv_runtime_uses_compact_state(decoder: Decoder) -> None:
     layer_config = decoder.config.transformer_config.layer_configs[0]
     attention_config = layer_config.mixer_config
@@ -419,7 +465,7 @@ def test_shared_kv_runtime_uses_compact_state(decoder: Decoder) -> None:
         mixer_config=replace(
             attention_config,
             key_norm_config=None,
-            projection_mode=AttentionProjectionMode.BORROWED_Q,
+            projection_mode=AttentionProjectionMode.BORROWED_KV,
         ),
     )
     decoder_config = replace(

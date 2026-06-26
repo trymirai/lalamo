@@ -7,10 +7,8 @@ from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
-import pytest
 
-from lalamo.initializer import EmptyInitializer, Initializer, RandomInitializer
-from lalamo.model_import.loaders.huggingface import load_gemma4_moe_block
+from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.model_configs.huggingface.gemma4 import (
     Gemma4RopeParameters,
     HFGemma4Config,
@@ -20,20 +18,12 @@ from lalamo.model_import.model_configs.huggingface.gemma4 import (
 from lalamo.model_import.model_spec import FileSpec
 from lalamo.model_import.model_specs.gemma import GEMMA_MODELS
 from lalamo.modules import (
-    GELU,
     AttentionConfig,
     AttentionProjectionMode,
     DenseMLPConfig,
-    Gemma4MoEBlock,
-    Gemma4MoEBlockConfig,
     Keychain,
-    LinearConfig,
     MixtureOfExpertsConfig,
-    NormalizationConfig,
     ProportionalRoPEConfig,
-    SoftmaxRouting,
-    TransformerForwardPassConfig,
-    UpcastMode,
 )
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import LogicalAxis
@@ -59,6 +49,10 @@ def _gemma4_text_config(
     use_double_wide_mlp: bool = True,
     attention_k_eq_v: bool = False,
     enable_moe_block: bool = False,
+    num_global_key_value_heads: int | None = None,
+    num_experts: int | None = None,
+    top_k_experts: int | None = None,
+    moe_intermediate_size: int | None = None,
 ) -> HFGemma4TextConfig:
     return HFGemma4TextConfig(
         hidden_size=8,
@@ -70,7 +64,7 @@ def _gemma4_text_config(
         attention_bias=False,
         num_attention_heads=2,
         num_key_value_heads=1,
-        num_global_key_value_heads=1,
+        num_global_key_value_heads=num_global_key_value_heads,
         head_dim=4,
         global_head_dim=4,
         max_position_embeddings=128,
@@ -86,51 +80,10 @@ def _gemma4_text_config(
         tie_word_embeddings=True,
         attention_k_eq_v=attention_k_eq_v,
         enable_moe_block=enable_moe_block,
-        num_experts=4 if enable_moe_block else None,
-        top_k_experts=2 if enable_moe_block else None,
-        moe_intermediate_size=6 if enable_moe_block else None,
+        num_experts=num_experts,
+        top_k_experts=top_k_experts,
+        moe_intermediate_size=moe_intermediate_size,
     )
-
-
-def _gemma4_moe_block(
-    *,
-    num_experts: int = 4,
-    num_active_experts: int = 2,
-    expert_hidden_dim: int = 5,
-    model_dim: int = 4,
-    initializer: Initializer | None = None,
-) -> Gemma4MoEBlock:
-    if initializer is None:
-        initializer = EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config())
-    linear_config = LinearConfig()
-    norm_config = NormalizationConfig(
-        epsilon=1e-6,
-        scale_offset=None,
-        upcast_mode=UpcastMode.FULL_LAYER,
-        subtract_mean=False,
-    )
-    expert_config = DenseMLPConfig(
-        linear_config=linear_config,
-        activation=GELU(),
-        has_up_biases=False,
-        has_down_biases=False,
-        gate_clipping=None,
-        up_clipping=None,
-    )
-    return Gemma4MoEBlockConfig(
-        moe_config=MixtureOfExpertsConfig(
-            expert_config=expert_config,
-            router_config=linear_config,
-            routing_function=SoftmaxRouting(),
-            num_routed_experts=num_experts,
-            num_active_routed_experts=num_active_experts,
-            router_has_biases=False,
-            num_shared_experts=0,
-            expert_hidden_dim=expert_hidden_dim,
-        ),
-        norm_config=norm_config,
-        router_norm_epsilon=1e-6,
-    ).init(initializer, model_dim=model_dim)
 
 
 def test_gemma4_shared_kv_uses_compact_state_and_ple() -> None:
@@ -147,7 +100,7 @@ def test_gemma4_shared_kv_uses_compact_state_and_ple() -> None:
     assert isinstance(source_layer.mixer_config, AttentionConfig)
     assert isinstance(borrowed_layer.mixer_config, AttentionConfig)
     assert source_layer.mixer_config.projection_mode is AttentionProjectionMode.QKV
-    assert borrowed_layer.mixer_config.projection_mode is AttentionProjectionMode.BORROWED_Q
+    assert borrowed_layer.mixer_config.projection_mode is AttentionProjectionMode.BORROWED_KV
     assert borrowed_layer.mixer_config.key_norm_config is None
     assert borrowed_layer.hidden_dim == 32
     assert source_layer.has_post_layer_scalar
@@ -161,6 +114,7 @@ def test_gemma4_dense_big_models_disable_ple_share_qk_values_and_keep_layer_scal
         num_kv_shared_layers=0,
         use_double_wide_mlp=False,
         attention_k_eq_v=True,
+        num_global_key_value_heads=1,
     ).to_decoder_config(context_length=None, metadata_dict={})
     layer_configs = decoder_config.transformer_config.layer_configs
     sliding_attention = layer_configs[0].mixer_config
@@ -171,7 +125,7 @@ def test_gemma4_dense_big_models_disable_ple_share_qk_values_and_keep_layer_scal
     assert isinstance(sliding_attention, AttentionConfig)
     assert isinstance(full_attention, AttentionConfig)
     assert sliding_attention.projection_mode is AttentionProjectionMode.QKV
-    assert full_attention.projection_mode is AttentionProjectionMode.QK_SHARED_VALUE
+    assert full_attention.projection_mode is AttentionProjectionMode.KEY_SAME_AS_VALUE
     assert full_attention.qkv_output_dims == (8, 4)
     assert layer_configs[0].has_post_layer_scalar
 
@@ -229,10 +183,13 @@ def test_gemma4_moe_config_parses_hf_fields(tmp_path: Path) -> None:
             vocab_size_per_layer_input=0,
             num_kv_shared_layers=0,
             use_double_wide_mlp=False,
+            attention_k_eq_v=True,
+            num_global_key_value_heads=1,
         ),
     )
     text_config.update(
         eos_token_id=1,
+        attention_k_eq_v=True,
         enable_moe_block=True,
         num_experts=4,
         top_k_experts=2,
@@ -248,12 +205,17 @@ def test_gemma4_moe_config_parses_hf_fields(tmp_path: Path) -> None:
 
     config = HFGemma4Config.from_json(config_path)
     decoder_config = config.to_decoder_config(context_length=None, metadata_dict={})
-    moe_config = decoder_config.transformer_config.layer_configs[0].gemma4_moe_config
+    layer_config = decoder_config.transformer_config.layer_configs[0]
+    moe_config = layer_config.parallel_mlp_config
 
-    assert moe_config is not None
-    assert moe_config.moe_config.num_routed_experts == 4
-    assert moe_config.moe_config.num_active_routed_experts == 2
-    assert moe_config.moe_config.expert_hidden_dim == 6
+    assert isinstance(layer_config.mlp_config, DenseMLPConfig)
+    assert isinstance(moe_config, MixtureOfExpertsConfig)
+    assert moe_config.num_routed_experts == 4
+    assert moe_config.num_active_routed_experts == 2
+    assert moe_config.num_shared_experts == 0
+    assert moe_config.expert_hidden_dim == 6
+    assert layer_config.mlp_branch_output_norm_config is not None
+    assert layer_config.parallel_mlp_branch_output_norm_config is not None
 
 
 def test_gemma4_specs_have_chat_templates() -> None:
@@ -336,6 +298,7 @@ def test_gemma4_no_ple_loader_still_loads_layer_scalar() -> None:
             num_kv_shared_layers=0,
             use_double_wide_mlp=False,
             attention_k_eq_v=True,
+            num_global_key_value_heads=1,
         ),
         dtype="bfloat16",
         model_type="gemma4",
@@ -351,7 +314,7 @@ def test_gemma4_no_ple_loader_still_loads_layer_scalar() -> None:
     assert decoder.transformer.layers[0].post_layer_scalar is not None
 
     base = ParameterPath("model")
-    weights = {
+    weights: dict[str, Array] = {
         base / "layers" / i / "layer_scalar": jnp.array([i + 1], dtype=jnp.bfloat16)
         for i in range(len(decoder.transformer.layers))
     }
@@ -368,67 +331,100 @@ def test_gemma4_no_ple_loader_still_loads_layer_scalar() -> None:
     assert loaded.transformer.layers[1].post_layer_scalar.item() == 2.0
 
 
-def test_load_gemma4_moe_block_uses_hf_weight_paths() -> None:
-    block = _gemma4_moe_block()
-    path = ParameterPath("model.layers.0")
-    gate_up = jnp.arange(4 * 10 * 4, dtype=jnp.float32).reshape(4, 10, 4)
-    weights: dict[str, Array] = {
-        path / "router" / "proj" / "weight": jnp.ones((4, 4), dtype=jnp.float32),
-        path / "router" / "scale": jnp.arange(4, dtype=jnp.float32),
-        path / "router" / "per_expert_scale": jnp.arange(4, dtype=jnp.float32),
-        path / "experts" / "gate_up_proj": gate_up,
-        path / "experts" / "down_proj": jnp.ones((4, 4, 5), dtype=jnp.float32),
-        path / "pre_feedforward_layernorm_2" / "weight": jnp.ones((4,), dtype=jnp.float32),
-        path / "post_feedforward_layernorm_1" / "weight": jnp.ones((4,), dtype=jnp.float32) * 2,
-        path / "post_feedforward_layernorm_2" / "weight": jnp.ones((4,), dtype=jnp.float32) * 3,
-    }
-
-    loaded = load_gemma4_moe_block(block, weights, path)
-
-    expected_up_gate = jnp.concatenate([gate_up[:, 5:, :], gate_up[:, :5, :]], axis=1)
-    assert jnp.array_equal(loaded.moe.router.weights.decompress(), weights[path / "router" / "proj" / "weight"])
-    assert jnp.array_equal(loaded.router_scale, weights[path / "router" / "scale"])
-    assert jnp.array_equal(loaded.per_expert_scale, weights[path / "router" / "per_expert_scale"])
-    assert jnp.array_equal(loaded.moe.experts.up_projection.weights.decompress(), expected_up_gate)
-    assert jnp.array_equal(
-        loaded.moe.experts.down_projection.weights.decompress(),
-        weights[path / "experts" / "down_proj"],
-    )
-    assert jnp.array_equal(loaded.pre_moe_norm.scales, weights[path / "pre_feedforward_layernorm_2" / "weight"])
-    assert jnp.array_equal(loaded.post_dense_norm.scales, weights[path / "post_feedforward_layernorm_1" / "weight"])
-    assert jnp.array_equal(loaded.post_moe_norm.scales, weights[path / "post_feedforward_layernorm_2" / "weight"])
-
-
-def test_gemma4_moe_casts_loaded_scale_dtypes_under_strict_promotion() -> None:
-    sharding_config = make_test_sharding_config()
-    block = _gemma4_moe_block(
-        initializer=RandomInitializer(
-            default_dtype=jnp.float32,
-            sharding_config=sharding_config,
-            key=jax.random.key(0),
+def test_gemma4_moe_weight_baking_creates_standard_moe_paths() -> None:
+    hf_config = HFGemma4Config(
+        text_config=_gemma4_text_config(
+            hidden_size_per_layer_input=0,
+            vocab_size_per_layer_input=0,
+            num_kv_shared_layers=0,
+            use_double_wide_mlp=False,
+            attention_k_eq_v=True,
+            enable_moe_block=True,
+            num_global_key_value_heads=1,
+            num_experts=4,
+            top_k_experts=2,
+            moe_intermediate_size=6,
         ),
+        dtype="bfloat16",
+        model_type="gemma4",
+        eos_token_id=[1],
     )
-    block = replace(
-        block,
-        router_scale=block.router_scale.astype(jnp.bfloat16),
-        per_expert_scale=block.per_expert_scale.astype(jnp.bfloat16),
+    text_config = hf_config.text_config
+    assert text_config.num_experts is not None
+    assert text_config.moe_intermediate_size is not None
+
+    base = ParameterPath("model")
+    weights: dict[str, Array] = {}
+    for layer_idx in range(text_config.num_hidden_layers):
+        layer_path = base / "layers" / layer_idx
+        mlp_path = layer_path / "mlp"
+        dense_hidden_dim = text_config.intermediate_size
+        routed_hidden_dim = text_config.moe_intermediate_size
+        weights.update(
+            {
+                layer_path / "pre_feedforward_layernorm" / "weight": jnp.arange(1, 9, dtype=jnp.float32),
+                layer_path / "pre_feedforward_layernorm_2" / "weight": jnp.arange(11, 19, dtype=jnp.float32),
+                layer_path / "post_feedforward_layernorm_1" / "weight": jnp.arange(21, 29, dtype=jnp.float32),
+                layer_path / "post_feedforward_layernorm_2" / "weight": jnp.arange(31, 39, dtype=jnp.float32),
+                layer_path / "router" / "proj" / "weight": jnp.arange(32, dtype=jnp.float32).reshape(4, 8),
+                layer_path / "router" / "scale": jnp.arange(41, 49, dtype=jnp.float32),
+                layer_path / "router" / "per_expert_scale": jnp.arange(51, 55, dtype=jnp.float32),
+                layer_path / "experts" / "gate_up_proj": jnp.arange(
+                    4 * 2 * routed_hidden_dim * 8,
+                    dtype=jnp.float32,
+                ).reshape(4, 2 * routed_hidden_dim, 8),
+                layer_path / "experts" / "down_proj": jnp.arange(
+                    4 * 8 * routed_hidden_dim,
+                    dtype=jnp.float32,
+                ).reshape(4, 8, routed_hidden_dim),
+                mlp_path / "up_proj" / "weight": jnp.arange(dense_hidden_dim * 8, dtype=jnp.float32).reshape(
+                    dense_hidden_dim,
+                    8,
+                ),
+                mlp_path / "gate_proj" / "weight": jnp.arange(dense_hidden_dim * 8, dtype=jnp.float32).reshape(
+                    dense_hidden_dim,
+                    8,
+                )
+                + 1000,
+                mlp_path / "down_proj" / "weight": jnp.arange(8 * dense_hidden_dim, dtype=jnp.float32).reshape(
+                    8,
+                    dense_hidden_dim,
+                ),
+            },
+        )
+
+    baked = hf_config._weights_with_baked_gemma4_moe(weights)  # noqa: SLF001
+    layer_path = base / "layers" / 0
+    mlp_path = layer_path / "mlp"
+    parallel_mlp_path = layer_path / "parallel_mlp"
+    pre_dense_scale = weights[layer_path / "pre_feedforward_layernorm" / "weight"]
+    pre_moe_scale = weights[layer_path / "pre_feedforward_layernorm_2" / "weight"]
+    post_dense_scale = weights[layer_path / "post_feedforward_layernorm_1" / "weight"]
+    post_moe_scale = weights[layer_path / "post_feedforward_layernorm_2" / "weight"]
+    per_expert_scale = weights[layer_path / "router" / "per_expert_scale"]
+
+    router_multiplier = weights[layer_path / "router" / "scale"] * jnp.asarray(
+        8**-0.5,
+        dtype=jnp.float32,
     )
-
-    outputs = block(
-        jnp.ones((1, 1, 4), dtype=jnp.float32),
-        jnp.ones((1, 1, 4), dtype=jnp.float32),
-        TransformerForwardPassConfig(),
-        keychain=Keychain.init(1, sharding_config=sharding_config),
+    expected_router = weights[layer_path / "router" / "proj" / "weight"] * router_multiplier[None, :]
+    assert jnp.array_equal(baked[parallel_mlp_path / "router" / "weight"], expected_router)
+    assert jnp.array_equal(
+        baked[layer_path / "pre_feedforward_layernorm" / "weight"],
+        jnp.ones((8,), dtype=jnp.float32),
     )
+    assert jnp.array_equal(baked[layer_path / "post_feedforward_layernorm_1" / "weight"], post_dense_scale)
+    assert jnp.array_equal(baked[layer_path / "post_feedforward_layernorm_2" / "weight"], post_moe_scale)
 
-    assert outputs.dtype == jnp.float32
+    routed_gate_up = weights[layer_path / "experts" / "gate_up_proj"] * pre_moe_scale[None, None, :]
+    assert jnp.array_equal(baked[parallel_mlp_path / "experts" / "gate_up_proj.weight"], routed_gate_up)
 
+    expected_routed_down = weights[layer_path / "experts" / "down_proj"] * per_expert_scale[:, None, None]
+    assert jnp.array_equal(baked[parallel_mlp_path / "experts" / "down_proj.weight"], expected_routed_down)
 
-def test_gemma4_moe_router_keeps_expert_axis_unsharded() -> None:
-    block = _gemma4_moe_block()
-    initializer = EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config())
-    sharded_router = LinearConfig().init(initializer, 4, (4,), has_biases=False)
-
-    assert not block.moe.router.weights.is_sharded
-    with pytest.raises(ValueError, match="expert axis"):
-        replace(block, moe=replace(block.moe, router=sharded_router))
+    expected_dense_up = weights[mlp_path / "up_proj" / "weight"] * pre_dense_scale[None, :]
+    expected_dense_gate = weights[mlp_path / "gate_proj" / "weight"] * pre_dense_scale[None, :]
+    assert jnp.array_equal(baked[mlp_path / "up_proj" / "weight"], expected_dense_up)
+    assert jnp.array_equal(baked[mlp_path / "gate_proj" / "weight"], expected_dense_gate)
+    assert jnp.array_equal(baked[mlp_path / "down_proj" / "weight"], weights[mlp_path / "down_proj" / "weight"])
+    assert (mlp_path / "shared_expert" / "up_proj.weight") not in baked

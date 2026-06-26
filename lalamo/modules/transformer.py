@@ -10,7 +10,7 @@ from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, fie
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 from .token_mixer import State, StateLayerBase
-from .token_mixers.attention import Attention, AttentionConfig, AttentionProjectionMode
+from .token_mixers.attention import Attention, AttentionConfig
 from .token_mixers.kv_cache import BorrowedKVCacheLayer, ExtendableKVCacheLayer, KVCacheLayer
 from .transformer_layer import (
     TransformerForwardPassConfig,
@@ -69,20 +69,17 @@ class TransformerConfig(LalamoConfig):
 
             mixer_config = self.layer_configs[layer_index].mixer_config
             if source_index == layer_index:
-                if (
-                    isinstance(mixer_config, AttentionConfig)
-                    and mixer_config.projection_mode is AttentionProjectionMode.BORROWED_Q
-                ):
-                    raise ValueError(f"Layer {layer_index} owns its KV cache but uses borrowed_q projection.")
+                if isinstance(mixer_config, AttentionConfig) and mixer_config.projection_mode.is_borrowed:
+                    raise ValueError(f"Layer {layer_index} owns its KV cache but uses borrowed KV projection.")
                 continue
 
             if not isinstance(mixer_config, AttentionConfig):
                 raise TypeError(
                     f"Layer {layer_index} borrows a KV cache but its mixer is {type(mixer_config).__name__}.",
                 )
-            if mixer_config.projection_mode is not AttentionProjectionMode.BORROWED_Q:
+            if not mixer_config.projection_mode.is_borrowed:
                 raise ValueError(
-                    f"Layer {layer_index} borrows a KV cache and must use borrowed_q projection,"
+                    f"Layer {layer_index} borrows a KV cache and must use borrowed KV projection,"
                     f" got {mixer_config.projection_mode.value}.",
                 )
             source_mixer_config = self.layer_configs[source_index].mixer_config
@@ -91,7 +88,7 @@ class TransformerConfig(LalamoConfig):
                     f"Layer {layer_index} borrows from layer {source_index},"
                     f" but its source mixer is {type(source_mixer_config).__name__}.",
                 )
-            if source_mixer_config.projection_mode is AttentionProjectionMode.BORROWED_Q:
+            if source_mixer_config.projection_mode.is_borrowed:
                 raise ValueError(f"Layer {layer_index} borrows from layer {source_index}, but the source is borrowed.")
 
             if mixer_config.head_dim != source_mixer_config.head_dim:

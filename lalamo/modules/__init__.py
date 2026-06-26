@@ -89,8 +89,6 @@ from .token_mixers.kv_cache import (
 )
 from .transformer import Transformer, TransformerConfig, TransformerForwardPassConfig, TransformerResult
 from .transformer_layer import (
-    Gemma4MoEBlock,
-    Gemma4MoEBlockConfig,
     PLELayer,
     PLELayerConfig,
     TransformerLayer,
@@ -127,8 +125,6 @@ __all__ = [
     "EmbeddingForwardPassConfig",
     "ExtendableKVCacheLayer",
     "ForwardPassMode",
-    "Gemma4MoEBlock",
-    "Gemma4MoEBlockConfig",
     "Identity",
     "KVCacheLayer",
     "Keychain",

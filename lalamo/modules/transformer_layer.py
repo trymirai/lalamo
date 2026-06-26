@@ -5,7 +5,6 @@ from typing import Self
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from einops import rearrange
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int
 
@@ -16,7 +15,7 @@ from lalamo.weight_matrix import GradientEstimator
 
 from .activations import Activation
 from .linear import Linear, LinearConfig
-from .mlp import MixtureOfExperts, MixtureOfExpertsConfig, MLPBase, MLPConfig, MLPForwardPassConfig, SoftmaxRouting
+from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig, NormalizationForwardPassConfig
 from .rope import PositionalEmbeddings, RoPEConfig
 from .token_mixer import (
@@ -30,8 +29,6 @@ from .token_mixers.kv_cache import BorrowedKVCacheLayer
 from .utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
-    "Gemma4MoEBlock",
-    "Gemma4MoEBlockConfig",
     "PLELayer",
     "PLELayerConfig",
     "PositionalEmbeddingSelector",
@@ -166,155 +163,6 @@ class PLELayer(LalamoModule[PLELayerConfig]):
 
 
 @dataclass(frozen=True)
-class Gemma4MoEBlockConfig(LalamoConfig):
-    moe_config: MixtureOfExpertsConfig
-    norm_config: NormalizationConfig
-    router_norm_epsilon: float
-
-    def init(self, initializer: Initializer, model_dim: int) -> "Gemma4MoEBlock":
-        moe = self.moe_config.init(initializer, model_dim, hidden_dim=0)
-        return Gemma4MoEBlock(
-            config=self,
-            sharding_config=initializer.sharding_config,
-            moe=moe,
-            pre_moe_norm=self.norm_config.init(initializer, model_dim),
-            post_dense_norm=self.norm_config.init(initializer, model_dim),
-            post_moe_norm=self.norm_config.init(initializer, model_dim),
-            router_scale=initializer.ones((model_dim,), dtype=moe.router.weights.dtype),
-            per_expert_scale=initializer.ones((moe.config.num_routed_experts,), dtype=moe.router.weights.dtype),
-        )
-
-
-class Gemma4MoEBlock(LalamoModule[Gemma4MoEBlockConfig]):
-    moe: MixtureOfExperts
-    pre_moe_norm: Normalization
-    post_dense_norm: Normalization
-    post_moe_norm: Normalization
-    router_scale: Float[Array, " channels"]
-    per_expert_scale: Float[Array, " experts"]
-
-    @property
-    def model_dim(self) -> int:
-        return self.moe.model_dim
-
-    @property
-    def num_experts(self) -> int:
-        return self.moe.config.num_routed_experts
-
-    @property
-    def num_active_experts(self) -> int:
-        return self.moe.config.num_active_routed_experts
-
-    def __post_init__(self) -> None:
-        if self.moe.router.weights.is_sharded:
-            raise ValueError("Gemma 4 router must not shard the expert axis before top_k.")
-        if self.moe.router.has_biases:
-            raise ValueError("Gemma 4 router does not use biases.")
-        if not isinstance(self.moe.config.routing_function, SoftmaxRouting):
-            raise TypeError("Gemma 4 MoE uses softmax routing.")
-        if self.moe.config.num_shared_experts != 0 or self.moe.gate is not None:
-            raise ValueError("Gemma 4 MoE uses only routed experts.")
-        if self.router_scale.shape != (self.model_dim,):
-            raise ValueError(f"router_scale must have shape {(self.model_dim,)}, got {self.router_scale.shape}.")
-        if self.per_expert_scale.shape != (self.num_experts,):
-            raise ValueError(
-                f"per_expert_scale must have shape {(self.num_experts,)}, got {self.per_expert_scale.shape}.",
-            )
-
-    def _active_experts(
-        self,
-        router_input: Float[Array, " channels"],
-        forward_pass_config: MLPForwardPassConfig,
-        *,
-        keychain: Keychain,
-    ) -> tuple[Float[Array, " active_experts"], Int[Array, " active_experts"]]:
-        router_input_dtype = router_input.dtype
-        router_input = router_input.astype(jnp.float32)
-        router_input = router_input * jax.lax.rsqrt(
-            jnp.mean(jnp.square(router_input)) + self.config.router_norm_epsilon,
-        )
-        router_input = router_input.astype(router_input_dtype)
-        router_input = router_input * self.router_scale.astype(router_input.dtype) * (self.model_dim**-0.5)
-        (router_logits,) = self.moe.router(
-            router_input,
-            forward_pass_config=forward_pass_config.matmul_config,
-            keychain=keychain,
-        )
-        routing = self.moe.config.routing_function.call_unbatched(router_logits, num_active=self.num_active_experts)
-        active_indices = jnp.flatnonzero(routing.expert_mask, size=self.num_active_experts)
-        active_weights = routing.expert_weights[active_indices]
-        expert_scales = self.per_expert_scale.astype(active_weights.dtype)
-        return active_weights * expert_scales[active_indices], active_indices
-
-    def __call__(
-        self,
-        residual_inputs: Float[Array, "batch suffix_tokens channels"],
-        dense_outputs: Float[Array, "batch suffix_tokens channels"],
-        forward_pass_config: TransformerForwardPassConfig,
-        *,
-        keychain: Keychain,
-    ) -> Float[Array, "batch suffix_tokens channels"]:
-        normalization_forward_pass_config = forward_pass_config.normalization_forward_pass_config
-        dense_outputs = call_vmapped_twice(
-            self.post_dense_norm,
-            dense_outputs,
-            forward_pass_config=normalization_forward_pass_config,
-        )
-        expert_inputs = call_vmapped_twice(
-            self.pre_moe_norm,
-            residual_inputs,
-            forward_pass_config=normalization_forward_pass_config,
-        )
-
-        flattened_router_inputs = rearrange(
-            residual_inputs,
-            "batch suffix_tokens channels -> (batch suffix_tokens) channels",
-        )
-        flattened_expert_inputs = rearrange(
-            expert_inputs,
-            "batch suffix_tokens channels -> (batch suffix_tokens) channels",
-        )
-
-        def apply_one_token(
-            router_input: Float[Array, " channels"],
-            expert_input: Float[Array, " channels"],
-            *,
-            keychain: Keychain,
-        ) -> Float[Array, " channels"]:
-            router_keychain, expert_keychain = keychain.split()
-            active_weights, active_indices = self._active_experts(
-                router_input,
-                forward_pass_config.mlp_forward_pass_config,
-                keychain=router_keychain,
-            )
-            return self.moe.experts.call_weighted_mixture_unbatched(
-                expert_input,
-                active_indices,
-                active_weights,
-                forward_pass_config.mlp_forward_pass_config,
-                keychain=expert_keychain,
-            )
-
-        flattened_outputs = call_vmapped(
-            apply_one_token,
-            flattened_router_inputs,
-            flattened_expert_inputs,
-            keychain=keychain,
-        )
-        moe_outputs = rearrange(
-            flattened_outputs,
-            "(batch suffix_tokens) channels -> batch suffix_tokens channels",
-            batch=residual_inputs.shape[0],
-        )
-        moe_outputs = call_vmapped_twice(
-            self.post_moe_norm,
-            moe_outputs,
-            forward_pass_config=normalization_forward_pass_config,
-        )
-        return dense_outputs + moe_outputs
-
-
-@dataclass(frozen=True)
 class TransformerLayerConfig(LalamoConfig):
     pre_mixer_norm_config: NormalizationConfig | None
     mixer_config: TokenMixerConfig
@@ -322,9 +170,11 @@ class TransformerLayerConfig(LalamoConfig):
     pre_mlp_norm_config: NormalizationConfig
     mlp_config: MLPConfig
     post_mlp_norm_config: NormalizationConfig | None
+    mlp_branch_output_norm_config: NormalizationConfig | None = None
+    parallel_mlp_config: MLPConfig | None = None
+    parallel_mlp_branch_output_norm_config: NormalizationConfig | None = None
     hidden_dim: int | None = None
     ple_config: PLELayerConfig | None = None
-    gemma4_moe_config: Gemma4MoEBlockConfig | None = None
     has_post_layer_scalar: bool = False
     rope_config: RoPEConfig | None = None
 
@@ -343,9 +193,21 @@ class TransformerLayerConfig(LalamoConfig):
         )
         pre_mlp_norm = self.pre_mlp_norm_config.init(initializer, model_dim)
         mlp = self.mlp_config.init(initializer, model_dim, hidden_dim)
+        mlp_branch_output_norm = (
+            self.mlp_branch_output_norm_config.init(initializer, model_dim)
+            if self.mlp_branch_output_norm_config
+            else None
+        )
+        parallel_mlp = (
+            self.parallel_mlp_config.init(initializer, model_dim, hidden_dim) if self.parallel_mlp_config else None
+        )
+        parallel_mlp_branch_output_norm = (
+            self.parallel_mlp_branch_output_norm_config.init(initializer, model_dim)
+            if self.parallel_mlp_branch_output_norm_config
+            else None
+        )
         post_mlp_norm = self.post_mlp_norm_config.init(initializer, model_dim) if self.post_mlp_norm_config else None
         ple = self.ple_config.init(initializer, model_dim) if self.ple_config else None
-        gemma4_moe = self.gemma4_moe_config.init(initializer, model_dim) if self.gemma4_moe_config else None
         post_layer_scalar = initializer.ones((1,)) if self.has_post_layer_scalar else None
         return TransformerLayer(
             config=self,
@@ -355,9 +217,11 @@ class TransformerLayerConfig(LalamoConfig):
             post_mixer_norm=post_mixer_norm,
             pre_mlp_norm=pre_mlp_norm,
             mlp=mlp,
+            mlp_branch_output_norm=mlp_branch_output_norm,
+            parallel_mlp=parallel_mlp,
+            parallel_mlp_branch_output_norm=parallel_mlp_branch_output_norm,
             post_mlp_norm=post_mlp_norm,
             ple=ple,
-            gemma4_moe=gemma4_moe,
             post_layer_scalar=post_layer_scalar,
         )
 
@@ -368,9 +232,11 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     post_mixer_norm: Normalization | None
     pre_mlp_norm: Normalization
     mlp: MLPBase
+    mlp_branch_output_norm: Normalization | None
+    parallel_mlp: MLPBase | None
+    parallel_mlp_branch_output_norm: Normalization | None
     post_mlp_norm: Normalization | None
     ple: PLELayer | None
-    gemma4_moe: Gemma4MoEBlock | None
     post_layer_scalar: Float[Array, "1"] | None
 
     @eqx.filter_jit
@@ -393,7 +259,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 f"Inputs to decoder layers must be a 3D arrays of size (batch_size, sequence_length, hidden_dim),"
                 f" got {inputs.shape}",
             )
-        mixer_keychain, mlp_keychain, moe_keychain, ple_keychain = keychain.split(4)
+        mixer_keychain, mlp_keychain, parallel_mlp_keychain, ple_keychain = keychain.split(4)
         normalization_forward_pass_config = forward_pass_config.normalization_forward_pass_config
 
         if self.pre_mixer_norm is not None:
@@ -465,13 +331,26 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             forward_pass_config=forward_pass_config.mlp_forward_pass_config,
             keychain=mlp_keychain,
         )
-        if self.gemma4_moe is not None:
-            mlp_outputs = self.gemma4_moe(
-                mlp_inputs,
+        if self.mlp_branch_output_norm is not None:
+            mlp_outputs = call_vmapped_twice(
+                self.mlp_branch_output_norm,
                 mlp_outputs,
-                forward_pass_config=forward_pass_config,
-                keychain=moe_keychain,
+                forward_pass_config=normalization_forward_pass_config,
             )
+        if self.parallel_mlp is not None:
+            parallel_mlp_outputs = self.parallel_mlp(
+                normalized_mlp_inputs,
+                lengths_without_padding=lengths_without_padding,
+                forward_pass_config=forward_pass_config.mlp_forward_pass_config,
+                keychain=parallel_mlp_keychain,
+            )
+            if self.parallel_mlp_branch_output_norm is not None:
+                parallel_mlp_outputs = call_vmapped_twice(
+                    self.parallel_mlp_branch_output_norm,
+                    parallel_mlp_outputs,
+                    forward_pass_config=normalization_forward_pass_config,
+                )
+            mlp_outputs = mlp_outputs + parallel_mlp_outputs
         if self.post_mlp_norm is not None:
             normalized_mlp_outputs = call_vmapped_twice(
                 self.post_mlp_norm,

@@ -16,12 +16,12 @@ from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding
 from lalamo.modules.linear import Linear
 from lalamo.modules.mlp import DenseMLP, MixtureOfExperts, MLPBase
 from lalamo.modules.normalization import Normalization
-from lalamo.modules.token_mixers.attention import Attention, AttentionConfig, AttentionProjectionMode
+from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv
 from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
 from lalamo.modules.token_mixers.mamba import Mamba2, Mamba2Config
 from lalamo.modules.token_mixers.short_conv import ShortConv, ShortConvConfig
-from lalamo.modules.transformer_layer import Gemma4MoEBlock, TransformerLayer
+from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at
@@ -408,62 +408,6 @@ def load_mlp(
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
 
-def load_gemma4_moe_block(
-    module: Gemma4MoEBlock,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-    *,
-    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-) -> Gemma4MoEBlock:
-    router = load_linear(module.moe.router, weights_dict, path / "router" / "proj", implementation=implementation)
-
-    gate_up_weights = weights_dict[path / "experts" / "gate_up_proj"]
-    down_weights = weights_dict[path / "experts" / "down_proj"]
-    _, gate_up_dim, _ = gate_up_weights.shape
-    if gate_up_dim % 2 != 0:
-        raise ValueError(f"Gemma 4 gate/up projection has odd hidden dim {gate_up_weights.shape}.")
-    gate_dim = gate_up_dim // 2
-    up_projection = _update_linear(
-        module.moe.experts.up_projection,
-        load_full_precision(
-            module.moe.experts.up_projection.weights,
-            jnp.concatenate([gate_up_weights[:, gate_dim:, :], gate_up_weights[:, :gate_dim, :]], axis=1),
-        ),
-        None,
-    )
-    down_projection = _update_linear(
-        module.moe.experts.down_projection,
-        load_full_precision(module.moe.experts.down_projection.weights, down_weights),
-        None,
-    )
-    experts = load_as_at(
-        lambda m: (m.up_projection, m.down_projection),
-        module.moe.experts,
-        (up_projection, down_projection),
-    )
-    moe = load_as_at(lambda m: (m.router, m.experts), module.moe, (router, experts))
-
-    return load_as_at(
-        lambda m: (
-            m.moe,
-            m.pre_moe_norm,
-            m.post_dense_norm,
-            m.post_moe_norm,
-            m.router_scale,
-            m.per_expert_scale,
-        ),
-        module,
-        (
-            moe,
-            load_rmsnorm(module.pre_moe_norm, weights_dict, path / "pre_feedforward_layernorm_2"),
-            load_rmsnorm(module.post_dense_norm, weights_dict, path / "post_feedforward_layernorm_1"),
-            load_rmsnorm(module.post_moe_norm, weights_dict, path / "post_feedforward_layernorm_2"),
-            weights_dict[path / "router" / "scale"],
-            weights_dict[path / "router" / "per_expert_scale"],
-        ),
-    )
-
-
 def load_moe(
     module: MixtureOfExperts,
     weights_dict: Mapping[str, Array],
@@ -573,8 +517,7 @@ def load_moe(
             # Infer the weight key suffix
             suffix = gate_up_key[len(gate_up_path) :]
             gate_up_weights = weights_dict[gate_up_key]
-            down_key = str(down_path) + suffix
-            down_weights = weights_dict[ParameterPath(down_key)]
+            down_weights = weights_dict[down_path + suffix]
 
         # gate_up_proj is [num_experts, intermediate_size*2, hidden_size] - split into gate and up
         intermediate_size_2 = gate_up_weights.shape[1]
@@ -793,15 +736,7 @@ def load_attention(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> Attention:
-    match module.projection_mode:
-        case AttentionProjectionMode.QKV:
-            qkv_sublayers = ["q_proj", "k_proj", "v_proj"]
-        case AttentionProjectionMode.QK_SHARED_VALUE:
-            qkv_sublayers = ["q_proj", "k_proj"]
-        case AttentionProjectionMode.BORROWED_Q:
-            qkv_sublayers = ["q_proj"]
-        case _:
-            raise ValueError(f"Unsupported attention projection mode: {module.projection_mode}")
+    qkv_sublayers = list(module.projection_mode.huggingface_sublayers)
 
     if module.gate_projection is not None:
         num_heads, head_dim = module.config.num_heads, module.config.head_dim
@@ -1145,12 +1080,29 @@ def load_transformer_layer(
         down_proj_key,
         implementation=implementation,
     )
-    gemma4_moe = (
-        load_gemma4_moe_block(module.gemma4_moe, weights_dict, mixer_path, implementation=implementation)
-        if module.gemma4_moe is not None
+    mlp_branch_output_norm = _load_optional_rmsnorm(
+        module.mlp_branch_output_norm,
+        weights_dict,
+        mlp_path / "post_feedforward_layernorm_1",
+    )
+    parallel_mlp = (
+        load_mlp(
+            module.parallel_mlp,
+            weights_dict,
+            mlp_path / "parallel_mlp",
+            up_proj_key,
+            gate_proj_key,
+            down_proj_key,
+            implementation=implementation,
+        )
+        if module.parallel_mlp is not None
         else None
     )
-
+    parallel_mlp_branch_output_norm = _load_optional_rmsnorm(
+        module.parallel_mlp_branch_output_norm,
+        weights_dict,
+        mlp_path / "post_feedforward_layernorm_2",
+    )
     post_mlp_norm = _load_optional_rmsnorm(module.post_mlp_norm, weights_dict, mlp_path / "post_feedforward_layernorm")
 
     return load_as_at(
@@ -1160,7 +1112,9 @@ def load_transformer_layer(
             m.post_mixer_norm,
             m.pre_mlp_norm,
             m.mlp,
-            m.gemma4_moe,
+            m.mlp_branch_output_norm,
+            m.parallel_mlp,
+            m.parallel_mlp_branch_output_norm,
             m.post_mlp_norm,
         ),
         module,
@@ -1170,7 +1124,9 @@ def load_transformer_layer(
             post_attention_norm,
             pre_mlp_norm,
             mlp,
-            gemma4_moe,
+            mlp_branch_output_norm,
+            parallel_mlp,
+            parallel_mlp_branch_output_norm,
             post_mlp_norm,
         ),
     )

@@ -342,8 +342,31 @@ AttentionResult = TokenMixerResult[KVCacheLayer]
 
 class AttentionProjectionMode(Enum):
     QKV = "qkv"
-    QK_SHARED_VALUE = "qk_shared_value"
-    BORROWED_Q = "borrowed_q"
+    KEY_SAME_AS_VALUE = "key_same_as_value"
+    BORROWED_KV = "q_borrowed_kv"
+
+    @property
+    def is_borrowed(self) -> bool:
+        return self is AttentionProjectionMode.BORROWED_KV
+
+    @property
+    def huggingface_sublayers(self) -> tuple[str, ...]:
+        if self is AttentionProjectionMode.QKV:
+            return ("q_proj", "k_proj", "v_proj")
+        if self is AttentionProjectionMode.KEY_SAME_AS_VALUE:
+            return ("q_proj", "k_proj")
+        if self is AttentionProjectionMode.BORROWED_KV:
+            return ("q_proj",)
+        raise ValueError(f"Unknown attention projection mode {self!r}.")
+
+    def qkv_output_dims(self, query_dim: int, kv_dim: int) -> tuple[int, ...]:
+        if self is AttentionProjectionMode.QKV:
+            return (query_dim, kv_dim, kv_dim)
+        if self is AttentionProjectionMode.KEY_SAME_AS_VALUE:
+            return (query_dim, kv_dim)
+        if self is AttentionProjectionMode.BORROWED_KV:
+            return (query_dim,)
+        raise ValueError(f"Unknown attention projection mode {self!r}.")
 
 
 @dataclass(frozen=True)
@@ -371,22 +394,14 @@ class AttentionConfig(TokenMixerConfig):
     projection_mode: AttentionProjectionMode = AttentionProjectionMode.QKV
 
     def __post_init__(self) -> None:
-        if self.projection_mode is AttentionProjectionMode.BORROWED_Q and self.key_norm_config is not None:
+        if self.projection_mode.is_borrowed and self.key_norm_config is not None:
             raise ValueError("Borrowed KV-cache attention must not configure key normalization.")
 
     @property
     def qkv_output_dims(self) -> tuple[int, ...]:
         q_output_dim = self.num_heads * self.head_dim
         kv_output_dim = self.num_groups * self.head_dim
-        match self.projection_mode:
-            case AttentionProjectionMode.QKV:
-                return (q_output_dim, kv_output_dim, kv_output_dim)
-            case AttentionProjectionMode.QK_SHARED_VALUE:
-                return (q_output_dim, kv_output_dim)
-            case AttentionProjectionMode.BORROWED_Q:
-                return (q_output_dim,)
-            case _:
-                raise ValueError(f"Unknown attention projection mode {self.projection_mode!r}.")
+        return self.projection_mode.qkv_output_dims(q_output_dim, kv_output_dim)
 
     def init(
         self,
@@ -504,33 +519,13 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 f" ({self.config.num_heads} * {self.config.head_dim}), got {self.out_projection.input_dim}.",
             )
 
-        expected_q = self.config.num_heads * self.config.head_dim
-        expected_kv = self.config.num_groups * self.config.head_dim
-        match self.qkv_projection.output_dims:
-            case (q_output_dim,):
-                projection_mode = AttentionProjectionMode.BORROWED_Q
-            case (q_output_dim, k_output_dim):
-                projection_mode = AttentionProjectionMode.QK_SHARED_VALUE
-                if k_output_dim != expected_kv:
-                    raise ValueError(f"Key projection output dimension must be {expected_kv}, got {k_output_dim}.")
-            case (q_output_dim, k_output_dim, v_output_dim):
-                projection_mode = AttentionProjectionMode.QKV
-                if k_output_dim != expected_kv:
-                    raise ValueError(f"Key projection output dimension must be {expected_kv}, got {k_output_dim}.")
-                if v_output_dim != expected_kv:
-                    raise ValueError(f"Value projection output dimension must be {expected_kv}, got {v_output_dim}.")
-            case _:
-                raise ValueError(
-                    f"QKV projection must have 1, 2, or 3 outputs, got {self.qkv_projection.output_dims}.",
-                )
-        if q_output_dim != expected_q:
-            raise ValueError(f"Query projection output dimension must be {expected_q}, got {q_output_dim}.")
-        if projection_mode is not self.config.projection_mode:
+        expected_qkv_output_dims = self.config.qkv_output_dims
+        if self.qkv_projection.output_dims != expected_qkv_output_dims:
             raise ValueError(
-                f"QKV projection mode {projection_mode.value} does not match"
-                f" config mode {self.config.projection_mode.value}.",
+                f"QKV projection output dims {self.qkv_projection.output_dims}"
+                f" do not match config output dims {expected_qkv_output_dims}.",
             )
-        if projection_mode is AttentionProjectionMode.BORROWED_Q and self.key_norm is not None:
+        if self.config.projection_mode.is_borrowed and self.key_norm is not None:
             raise ValueError("Borrowed KV-cache attention must not have key normalization.")
 
         if self.query_norm is not None and self.query_norm.input_dim != self.config.head_dim:
@@ -547,6 +542,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             if self.gate_projection is None:
                 raise ValueError("gate_projection must be provided when gate_projection_config is set.")
             (gate_output_dim,) = self.gate_projection.output_dims
+            expected_q = self.config.num_heads * self.config.head_dim
             if gate_output_dim != expected_q:
                 raise ValueError(f"Gate projection output dimension must be {expected_q}, got {gate_output_dim}.")
         elif self.gate_projection is not None:
@@ -583,6 +579,17 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             heads = call_vmapped(positional_embeddings.apply, heads, in_axes=1, out_axes=1)
         return heads
 
+    def _prepare_kv_projection(
+        self,
+        projection: Float[Array, "tokens channels"],
+    ) -> Float[Array, "tokens groups head_channels"]:
+        return rearrange(
+            projection,
+            "tokens (groups head_channels) -> tokens groups head_channels",
+            groups=self.config.num_groups,
+            head_channels=self.config.head_dim,
+        )
+
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
@@ -609,39 +616,25 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             raise ValueError("reuse_cache must match borrowed KV cache state.")
 
         if reuse_cache:
-            if len(qkv_outputs) != 1:
-                raise ValueError("Borrowed KV-cache attention must use a query-only projection.")
+            if not self.projection_mode.is_borrowed:
+                raise ValueError("Borrowed KV-cache attention requires borrowed KV projection.")
             (raw_queries,) = qkv_outputs
             assert isinstance(state, BorrowedKVCacheLayer)
             updated_state = state
             prefix_length = updated_state.tree_prefix_length(num_suffix_tokens, length_without_padding)
         else:
-            match qkv_outputs:
-                case (raw_queries,):
-                    raise ValueError("Query-only attention requires a borrowed KV cache.")
-                case (raw_queries, raw_keys):
-                    keys = rearrange(
-                        raw_keys,
-                        "tokens (groups head_channels) -> tokens groups head_channels",
-                        groups=self.config.num_groups,
-                        head_channels=self.config.head_dim,
-                    )
-                    values = keys
-                case (raw_queries, raw_keys, raw_values):
-                    keys = rearrange(
-                        raw_keys,
-                        "tokens (groups head_channels) -> tokens groups head_channels",
-                        groups=self.config.num_groups,
-                        head_channels=self.config.head_dim,
-                    )
-                    values = rearrange(
-                        raw_values,
-                        "tokens (groups head_channels) -> tokens groups head_channels",
-                        groups=self.config.num_groups,
-                        head_channels=self.config.head_dim,
-                    )
-                case _:
-                    raise ValueError(f"QKV projection must return 1, 2, or 3 outputs, got {len(qkv_outputs)}.")
+            if self.projection_mode.is_borrowed:
+                raise ValueError("Borrowed KV-cache attention requires a borrowed KV cache.")
+            if self.projection_mode is AttentionProjectionMode.KEY_SAME_AS_VALUE:
+                raw_queries, raw_keys = qkv_outputs
+                keys = self._prepare_kv_projection(raw_keys)
+                values = keys
+            elif self.projection_mode is AttentionProjectionMode.QKV:
+                raw_queries, raw_keys, raw_values = qkv_outputs
+                keys = self._prepare_kv_projection(raw_keys)
+                values = self._prepare_kv_projection(raw_values)
+            else:
+                raise ValueError(f"Unknown attention projection mode {self.projection_mode!r}.")
 
             if self.key_norm is not None:
                 keys = call_vmapped_twice(
