@@ -5,6 +5,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
+from jax.sharding import NamedSharding
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
@@ -81,7 +82,7 @@ class DFlashDraftLayerState(eqx.Module):
         updates: Self,
         context_lengths: Int[Array, " batch"],
         num_tokens_to_append: Int[Array, " batch"],
-        cache_sharding: jax.sharding.Sharding,
+        cache_sharding: NamedSharding,
     ) -> Self:
         batch_size, num_update_tokens, _num_groups, _head_dim = updates.keys.shape
         batch_indices = jnp.arange(batch_size, dtype=context_lengths.dtype)[:, None]
@@ -438,7 +439,7 @@ class DFlashDraftState(SpeculatorState):
         self,
         layer_updates: tuple[DFlashDraftLayerState, ...],
         num_tokens_to_append: Int[Array, " batch"],
-        cache_sharding: jax.sharding.Sharding,
+        cache_sharding: NamedSharding,
     ) -> Self:
         return DFlashDraftState(
             layer_states=tuple(
