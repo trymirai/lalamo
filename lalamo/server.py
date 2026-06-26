@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import json
 import os
 import random
@@ -108,6 +109,13 @@ def _load_resident_model(model_path: str, dtype: str | None) -> LanguageModel:
     cached = _model_cache.get(cache_key)
     if cached is not None:
         return cached
+
+    # A different model/dtype: drop the previously resident model and free its
+    # device buffers before loading the new one, so multiple full models don't
+    # accumulate in VRAM (preserves the prior one-model-at-a-time footprint).
+    if _model_cache:
+        _model_cache.clear()
+        gc.collect()
 
     model = import_model(
         model_path,

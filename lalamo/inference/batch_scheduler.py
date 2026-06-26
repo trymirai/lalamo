@@ -41,10 +41,12 @@ PROMPT_SIZE_BUCKETS: tuple[int, ...] = tuple(256 * 4**i for i in range(8))
 MIN_BATCHES_PER_BUCKET: int = 10
 MAX_BOUNDARY_BATCH_PADDING_FRACTION: float = 0.05
 
-# Cache of auto-batch probe results, keyed by (id(model), vram_bytes) -> {padded_length: batch_size}.
-# Lets a resident server skip re-running the expensive probe (throwaway compiles + forwards) for
-# shapes it has already measured. Keyed on model identity so a different/reloaded model re-probes.
-_PROBE_CACHE: dict[tuple[int, int], dict[int, int]] = {}
+# Cache of auto-batch probe results, keyed by (id(model), vram_bytes, max_output_length) ->
+# {padded_length: batch_size}. Lets a resident server skip re-running the expensive probe (throwaway
+# compiles + forwards) for shapes it has already measured. Keyed on model identity so a
+# different/reloaded model re-probes, and on max_output_length since the KV/buffer memory the probe
+# sizes against scales with it (state_capacity = padded_length + max_output_length + 1).
+_PROBE_CACHE: dict[tuple[int, int, int], dict[int, int]] = {}
 
 
 @dataclass(frozen=True)
@@ -820,7 +822,9 @@ class BatchScheduler(ABC):
                     jax.block_until_ready(first_result)
 
             max_vram = _memory_budget_for_auto_batching(vram_bytes)
-            probe_cache = _PROBE_CACHE.setdefault((id(self.model), max_vram), {})
+            probe_cache = _PROBE_CACHE.setdefault(
+                (id(self.model), max_vram, batch_scheduler_config.max_output_length), {}
+            )
             sequences_per_bucket, batch_size_per_bucket = bucket_sequences(
                 tokenized,
                 memory_probe,
