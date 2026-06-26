@@ -220,7 +220,7 @@ def test_transformer_config_derives_kv_cache_layout(decoder: Decoder) -> None:
 
     assert transformer_config.kv_source_per_layer == (0, 0, 2, 2)
     assert transformer_config.kv_cache_source_layers == (0, 2)
-    assert transformer_config.kv_cache_width == 2
+    assert len(transformer_config.kv_cache_source_layers) == 2
 
 
 @pytest.mark.parametrize("kv_source_per_layer", [(1, 1), (0, 0, 1)])

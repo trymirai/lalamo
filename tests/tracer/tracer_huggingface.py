@@ -204,7 +204,7 @@ def _load_hf_model(
 
     if device_map_env is not None:
         device_map = device_map_env
-    if needs_device_map:
+    elif needs_device_map:
         device_map = "auto"
 
     if device_map == "auto":
@@ -480,14 +480,10 @@ class HFDecoderTracer(
 
         return (tuple(hf_hidden_states), hf_last_norm_output, hf_outputs.logits)
 
-    @property
-    def is_gemma4_text_model(self) -> bool:
-        config = getattr(self.text_model, "config", None)
-        return getattr(config, "model_type", None) == "gemma4_text"
-
     @torch.no_grad()
     def match_activations(self, result: InferenceResult) -> None:
-        if self.is_gemma4_text_model:
+        text_config = getattr(self.text_model, "config", None)
+        if getattr(text_config, "model_type", None) == "gemma4_text":
             # HF Gemma 4 component calls require shared_kv_states and PLE inputs built by the full model loop.
             assert result.activation_trace is not None
             for i, (label, rope_fn) in enumerate(self.rope_fns()):

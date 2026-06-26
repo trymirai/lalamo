@@ -39,16 +39,19 @@ from .common import HuggingFaceLMConfig
 __all__ = ["HFGemma4Config"]
 
 
-def _checkpoint_base(weights_dict: Mapping[str, Array]) -> ParameterPath:
-    if any(key.startswith("model.language_model.") for key in weights_dict):
-        return ParameterPath("model") / "language_model"
-    if any(key.startswith("language_model.") for key in weights_dict):
-        return ParameterPath("language_model")
-    return ParameterPath("model")
+def _checkpoint_path(weights_dict: Mapping[str, Array], suffix: ParameterPath) -> ParameterPath:
+    matches = tuple(ParameterPath(key) for key in weights_dict if key == suffix or key.endswith(f".{suffix}"))
+    if len(matches) == 0:
+        raise KeyError(f"Could not find Gemma 4 checkpoint tensor ending with {suffix}.")
+    if len(matches) > 1:
+        raise KeyError(f"Ambiguous Gemma 4 checkpoint tensor suffix {suffix}: {matches}.")
+    (path,) = matches
+    return path
 
 
-def _scale_input_columns(weights: Array, scales: Array) -> Array:
-    return weights * scales.astype(weights.dtype)
+def _checkpoint_module_path(weights_dict: Mapping[str, Array], suffix: ParameterPath) -> ParameterPath:
+    weight_path = _checkpoint_path(weights_dict, suffix / "weight")
+    return ParameterPath(weight_path.removesuffix(".weight"))
 
 
 def _validate_gate_up_projection(weights: Array) -> None:
@@ -70,13 +73,6 @@ class RopeParameters:
 class Gemma4RopeParameters:
     full_attention: RopeParameters
     sliding_attention: RopeParameters
-
-
-@dataclass(frozen=True)
-class Gemma4MoEParameters:
-    num_experts: int
-    top_k_experts: int
-    intermediate_size: int
 
 
 @dataclass(frozen=True)
@@ -110,28 +106,6 @@ class HFGemma4TextConfig:
     top_k_experts: int | None = None
     moe_intermediate_size: int | None = None
 
-    @property
-    def global_attention_key_same_as_value(self) -> bool:
-        return self.attention_k_eq_v
-
-    def moe_parameters(self) -> Gemma4MoEParameters | None:
-        if not self.enable_moe_block:
-            return None
-
-        moe_fields = (self.num_experts, self.top_k_experts, self.moe_intermediate_size)
-        if any(value is None for value in moe_fields):
-            raise ValueError("Gemma 4 MoE config requires num_experts, top_k_experts, and moe_intermediate_size.")
-
-        num_experts, top_k_experts, moe_intermediate_size = moe_fields
-        assert num_experts is not None
-        assert top_k_experts is not None
-        assert moe_intermediate_size is not None
-        return Gemma4MoEParameters(
-            num_experts=num_experts,
-            top_k_experts=top_k_experts,
-            intermediate_size=moe_intermediate_size,
-        )
-
     def kv_source_per_layer(self) -> tuple[int, ...]:
         first_kv_shared = self.num_hidden_layers - self.num_kv_shared_layers
         last_of_type: dict[str, int] = {}
@@ -157,18 +131,6 @@ class HFGemma4TextConfig:
         context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        if not (0 <= self.num_kv_shared_layers <= self.num_hidden_layers):
-            raise ValueError(
-                f"num_kv_shared_layers must be in [0, {self.num_hidden_layers}], got {self.num_kv_shared_layers}.",
-            )
-        if len(self.layer_types) != self.num_hidden_layers:
-            raise ValueError(
-                f"layer_types length must equal num_hidden_layers,"
-                f" got {len(self.layer_types)} and {self.num_hidden_layers}.",
-            )
-        if not self.tie_word_embeddings:
-            raise ValueError("Gemma-4 import only supports tied word embeddings.")
-
         embedding_config = TiedEmbeddingConfig(
             input_scale=jnp.array(self.hidden_size**0.5, dtype=jnp.bfloat16).item(),
             logit_soft_cap=self.final_logit_softcapping,
@@ -260,7 +222,6 @@ class HFGemma4TextConfig:
             ple_layer_config = None
             ple_model_config = None
 
-        moe_parameters = self.moe_parameters()
         kv_source_per_layer = self.kv_source_per_layer()
 
         layer_configs = []
@@ -274,22 +235,30 @@ class HFGemma4TextConfig:
             owns_kv_cache = kv_source == i
             if not owns_kv_cache:
                 projection_mode = AttentionProjectionMode.BORROWED_KV
-            elif is_global and self.global_attention_key_same_as_value:
+            elif is_global and self.attention_k_eq_v:
                 projection_mode = AttentionProjectionMode.KEY_SAME_AS_VALUE
             else:
                 projection_mode = AttentionProjectionMode.QKV
 
             layer_intermediate = self.layer_intermediate_size(owns_kv_cache=owns_kv_cache)
-            if moe_parameters is not None:
+            if self.enable_moe_block:
+                if None in (self.num_experts, self.top_k_experts, self.moe_intermediate_size):
+                    raise ValueError(
+                        "Gemma 4 MoE config requires num_experts, top_k_experts, and moe_intermediate_size."
+                    )
+                assert self.num_experts is not None
+                assert self.top_k_experts is not None
+                assert self.moe_intermediate_size is not None
+
                 parallel_mlp_config = MixtureOfExpertsConfig(
                     expert_config=dense_mlp_config,
                     router_config=linear_config,
                     routing_function=SoftmaxRouting(),
-                    num_routed_experts=moe_parameters.num_experts,
-                    num_active_routed_experts=moe_parameters.top_k_experts,
+                    num_routed_experts=self.num_experts,
+                    num_active_routed_experts=self.top_k_experts,
                     router_has_biases=False,
                     num_shared_experts=0,
-                    expert_hidden_dim=moe_parameters.intermediate_size,
+                    expert_hidden_dim=self.moe_intermediate_size,
                 )
                 mlp_branch_output_norm_config = rms_norm_config
                 parallel_mlp_branch_output_norm_config = rms_norm_config
@@ -398,45 +367,59 @@ class HFGemma4Config(HuggingFaceLMConfig):
         return eqx.tree_at(lambda m: (m.decoder,), model, (decoder,))
 
     def _weights_with_baked_gemma4_moe(self, weights_dict: Mapping[str, Array]) -> Mapping[str, Array]:
-        moe_parameters = self.text_config.moe_parameters()
-        if moe_parameters is None:
+        if not self.text_config.enable_moe_block:
             return weights_dict
 
         baked_weights = dict(weights_dict)
-        base = _checkpoint_base(weights_dict)
 
         for layer_idx in range(self.text_config.num_hidden_layers):
-            layer_path = base / "layers" / layer_idx
+            layer_suffix = ParameterPath("layers") / layer_idx
+            pre_dense_norm_path = _checkpoint_module_path(
+                weights_dict,
+                layer_suffix / "pre_feedforward_layernorm",
+            )
+            layer_path = ParameterPath(pre_dense_norm_path.removesuffix(".pre_feedforward_layernorm"))
             mlp_path = layer_path / "mlp"
             parallel_mlp_path = layer_path / "parallel_mlp"
 
-            pre_dense_scale = weights_dict[layer_path / "pre_feedforward_layernorm" / "weight"]
-            pre_moe_scale = weights_dict[layer_path / "pre_feedforward_layernorm_2" / "weight"]
+            pre_dense_scale = weights_dict[pre_dense_norm_path / "weight"]
+            pre_moe_scale = weights_dict[
+                _checkpoint_path(weights_dict, layer_suffix / "pre_feedforward_layernorm_2" / "weight")
+            ]
 
-            router_weight = weights_dict[layer_path / "router" / "proj" / "weight"]
-            router_scale = weights_dict[layer_path / "router" / "scale"]
+            router_weight = weights_dict[_checkpoint_path(weights_dict, layer_suffix / "router" / "proj" / "weight")]
+            router_scale = weights_dict[_checkpoint_path(weights_dict, layer_suffix / "router" / "scale")]
             router_multiplier = router_scale.astype(router_weight.dtype) * jnp.asarray(
                 self.text_config.hidden_size**-0.5,
                 dtype=router_weight.dtype,
             )
             baked_weights[parallel_mlp_path / "router" / "weight"] = router_weight * router_multiplier[None, :]
 
-            routed_gate_up = _scale_input_columns(weights_dict[layer_path / "experts" / "gate_up_proj"], pre_moe_scale)
+            routed_gate_up_weights = weights_dict[
+                _checkpoint_path(weights_dict, layer_suffix / "experts" / "gate_up_proj")
+            ]
+            routed_gate_up = routed_gate_up_weights * pre_moe_scale.astype(routed_gate_up_weights.dtype)
             _validate_gate_up_projection(routed_gate_up)
             baked_weights[parallel_mlp_path / "experts" / "gate_up_proj.weight"] = routed_gate_up
 
-            routed_down = weights_dict[layer_path / "experts" / "down_proj"]
-            per_expert_scale = weights_dict[layer_path / "router" / "per_expert_scale"]
+            routed_down = weights_dict[_checkpoint_path(weights_dict, layer_suffix / "experts" / "down_proj")]
+            per_expert_scale = weights_dict[
+                _checkpoint_path(weights_dict, layer_suffix / "router" / "per_expert_scale")
+            ]
             routed_down = routed_down * per_expert_scale.astype(routed_down.dtype)[:, None, None]
             baked_weights[parallel_mlp_path / "experts" / "down_proj.weight"] = routed_down
 
-            baked_weights[mlp_path / "up_proj" / "weight"] = _scale_input_columns(
-                weights_dict[mlp_path / "up_proj" / "weight"],
-                pre_dense_scale,
+            dense_up_weights = weights_dict[
+                _checkpoint_path(weights_dict, layer_suffix / "mlp" / "up_proj" / "weight")
+            ]
+            dense_gate_weights = weights_dict[
+                _checkpoint_path(weights_dict, layer_suffix / "mlp" / "gate_proj" / "weight")
+            ]
+            baked_weights[mlp_path / "up_proj" / "weight"] = dense_up_weights * pre_dense_scale.astype(
+                dense_up_weights.dtype,
             )
-            baked_weights[mlp_path / "gate_proj" / "weight"] = _scale_input_columns(
-                weights_dict[mlp_path / "gate_proj" / "weight"],
-                pre_dense_scale,
+            baked_weights[mlp_path / "gate_proj" / "weight"] = dense_gate_weights * pre_dense_scale.astype(
+                dense_gate_weights.dtype,
             )
             baked_weights[layer_path / "pre_feedforward_layernorm" / "weight"] = jnp.ones_like(pre_dense_scale)
 
@@ -449,33 +432,30 @@ class HFGemma4Config(HuggingFaceLMConfig):
         *,
         implementation: CompressionImplementation,
     ) -> Decoder:
-        base = _checkpoint_base(weights_dict)
-
         new_per_layer_embedding = model.per_layer_embedding
         if model.per_layer_embedding is not None:
             new_per_layer_embedding = replace(
                 model.per_layer_embedding,
                 token_embedding=load_as(
                     model.per_layer_embedding.token_embedding,
-                    weights_dict[base / "embed_tokens_per_layer" / "weight"],
+                    weights_dict[_checkpoint_path(weights_dict, ParameterPath("embed_tokens_per_layer") / "weight")],
                 ),
                 model_projection=load_linear(
                     model.per_layer_embedding.model_projection,
                     weights_dict,
-                    base / "per_layer_model_projection",
+                    _checkpoint_module_path(weights_dict, ParameterPath("per_layer_model_projection")),
                     implementation=implementation,
                 ),
                 projection_norm=load_rmsnorm(
                     model.per_layer_embedding.projection_norm,
                     weights_dict,
-                    base / "per_layer_projection_norm",
+                    _checkpoint_module_path(weights_dict, ParameterPath("per_layer_projection_norm")),
                 ),
             )
 
-        layers_base = base / "layers"
         new_layers = []
         for i, layer in enumerate(model.transformer.layers):
-            layer_path = layers_base / i
+            layer_suffix = ParameterPath("layers") / i
             layer_updates: dict[str, Any] = {}
             if layer.ple is not None:
                 layer_updates["ple"] = replace(
@@ -483,21 +463,25 @@ class HFGemma4Config(HuggingFaceLMConfig):
                     gate=load_linear(
                         layer.ple.gate,
                         weights_dict,
-                        layer_path / "per_layer_input_gate",
+                        _checkpoint_module_path(weights_dict, layer_suffix / "per_layer_input_gate"),
                         implementation=implementation,
                     ),
                     projection=load_linear(
                         layer.ple.projection,
                         weights_dict,
-                        layer_path / "per_layer_projection",
+                        _checkpoint_module_path(weights_dict, layer_suffix / "per_layer_projection"),
                         implementation=implementation,
                     ),
-                    norm=load_rmsnorm(layer.ple.norm, weights_dict, layer_path / "post_per_layer_input_norm"),
+                    norm=load_rmsnorm(
+                        layer.ple.norm,
+                        weights_dict,
+                        _checkpoint_module_path(weights_dict, layer_suffix / "post_per_layer_input_norm"),
+                    ),
                 )
             if layer.post_layer_scalar is not None:
                 layer_updates["post_layer_scalar"] = load_as(
                     layer.post_layer_scalar,
-                    weights_dict[layer_path / "layer_scalar"],
+                    weights_dict[_checkpoint_path(weights_dict, layer_suffix / "layer_scalar")],
                 )
             new_layers.append(replace(layer, **layer_updates) if layer_updates else layer)
 

@@ -58,13 +58,6 @@ def build_tree_attention_mask(
     """Tree attention mask: each draft node attends to prefix + ancestors + self."""
     prefix_length = jnp.asarray(prefix_length, dtype=jnp.int32)
     (num_nodes,) = parent_indices.shape
-    if num_nodes == 0:
-        raise ValueError("parent_indices must contain at least one node.")
-    prefix_length = eqx.error_if(
-        prefix_length,
-        (prefix_length < 0) | (prefix_length + num_nodes > total_capacity),
-        "Tree attention prefix_length and parent_indices must fit within total_capacity.",
-    )
 
     col_indices = jnp.arange(total_capacity, dtype=jnp.int32)
     prefix_mask = col_indices[None, :] < prefix_length

@@ -10,7 +10,7 @@ from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, fie
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 from .token_mixer import State, StateLayerBase
-from .token_mixers.attention import Attention, AttentionConfig
+from .token_mixers.attention import Attention, AttentionConfig, AttentionProjectionMode
 from .token_mixers.kv_cache import BorrowedKVCacheLayer, ExtendableKVCacheLayer, KVCacheLayer
 from .transformer_layer import (
     TransformerForwardPassConfig,
@@ -69,7 +69,10 @@ class TransformerConfig(LalamoConfig):
 
             mixer_config = self.layer_configs[layer_index].mixer_config
             if source_index == layer_index:
-                if isinstance(mixer_config, AttentionConfig) and mixer_config.projection_mode.is_borrowed:
+                if (
+                    isinstance(mixer_config, AttentionConfig)
+                    and mixer_config.projection_mode is AttentionProjectionMode.BORROWED_KV
+                ):
                     raise ValueError(f"Layer {layer_index} owns its KV cache but uses borrowed KV projection.")
                 continue
 
@@ -77,7 +80,7 @@ class TransformerConfig(LalamoConfig):
                 raise TypeError(
                     f"Layer {layer_index} borrows a KV cache but its mixer is {type(mixer_config).__name__}.",
                 )
-            if not mixer_config.projection_mode.is_borrowed:
+            if mixer_config.projection_mode is not AttentionProjectionMode.BORROWED_KV:
                 raise ValueError(
                     f"Layer {layer_index} borrows a KV cache and must use borrowed KV projection,"
                     f" got {mixer_config.projection_mode.value}.",
@@ -88,7 +91,7 @@ class TransformerConfig(LalamoConfig):
                     f"Layer {layer_index} borrows from layer {source_index},"
                     f" but its source mixer is {type(source_mixer_config).__name__}.",
                 )
-            if source_mixer_config.projection_mode.is_borrowed:
+            if source_mixer_config.projection_mode is AttentionProjectionMode.BORROWED_KV:
                 raise ValueError(f"Layer {layer_index} borrows from layer {source_index}, but the source is borrowed.")
 
             if mixer_config.head_dim != source_mixer_config.head_dim:
@@ -117,10 +120,6 @@ class TransformerConfig(LalamoConfig):
             for layer_index, source_index in enumerate(self.kv_source_per_layer)
             if layer_index == source_index
         )
-
-    @property
-    def kv_cache_width(self) -> int:
-        return len(self.kv_cache_source_layers)
 
     def _init_ropes(self, initializer: Initializer) -> tuple[tuple[RoPE, ...], tuple[int, ...]]:
         rope_cache: dict[RoPEConfig, int] = {}
@@ -198,8 +197,10 @@ class Transformer(LalamoModule[TransformerConfig]):
         if state is None:
             state_by_layer: dict[int, StateLayerBase] = {}
         else:
-            if len(state) != self.config.kv_cache_width:
-                raise ValueError(f"state must contain {self.config.kv_cache_width} KV cache layers, got {len(state)}.")
+            if len(state) != len(kv_cache_source_layers):
+                raise ValueError(
+                    f"state must contain {len(kv_cache_source_layers)} KV cache layers, got {len(state)}."
+                )
             state_by_layer = dict(zip(kv_cache_source_layers, state, strict=True))
 
         mixer_forward_pass_config = forward_pass_config.mixer_forward_pass_config
@@ -213,7 +214,7 @@ class Transformer(LalamoModule[TransformerConfig]):
             )
             for rope in self.ropes
         )
-        has_kv_sharing = self.config.kv_cache_width < len(self.layers)
+        has_kv_sharing = len(kv_cache_source_layers) < len(self.layers)
         must_return_source_state = return_updated_state or has_kv_sharing
 
         residual_dtype = inner_features.dtype

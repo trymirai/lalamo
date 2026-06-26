@@ -590,7 +590,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         )
         stop_token_ids = self.config.generation_config.stop_token_ids
         if generation_config is not None:
-            stop_token_ids = generation_config.stop_token_ids
+            stop_token_ids = self.config.generation_config.override_with(generation_config).stop_token_ids
         stop_token_ids_set = set(stop_token_ids)
         response_token_ids: list[int] = []
         previous_text = ""

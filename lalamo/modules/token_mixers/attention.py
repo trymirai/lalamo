@@ -345,20 +345,6 @@ class AttentionProjectionMode(Enum):
     KEY_SAME_AS_VALUE = "key_same_as_value"
     BORROWED_KV = "q_borrowed_kv"
 
-    @property
-    def is_borrowed(self) -> bool:
-        return self is AttentionProjectionMode.BORROWED_KV
-
-    @property
-    def huggingface_sublayers(self) -> tuple[str, ...]:
-        if self is AttentionProjectionMode.QKV:
-            return ("q_proj", "k_proj", "v_proj")
-        if self is AttentionProjectionMode.KEY_SAME_AS_VALUE:
-            return ("q_proj", "k_proj")
-        if self is AttentionProjectionMode.BORROWED_KV:
-            return ("q_proj",)
-        raise ValueError(f"Unknown attention projection mode {self!r}.")
-
     def qkv_output_dims(self, query_dim: int, kv_dim: int) -> tuple[int, ...]:
         if self is AttentionProjectionMode.QKV:
             return (query_dim, kv_dim, kv_dim)
@@ -394,7 +380,7 @@ class AttentionConfig(TokenMixerConfig):
     projection_mode: AttentionProjectionMode = AttentionProjectionMode.QKV
 
     def __post_init__(self) -> None:
-        if self.projection_mode.is_borrowed and self.key_norm_config is not None:
+        if self.projection_mode is AttentionProjectionMode.BORROWED_KV and self.key_norm_config is not None:
             raise ValueError("Borrowed KV-cache attention must not configure key normalization.")
 
     @property
@@ -493,10 +479,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
     def has_sinks(self) -> bool:
         return self.sinks is not None
 
-    @property
-    def projection_mode(self) -> AttentionProjectionMode:
-        return self.config.projection_mode
-
     def __post_init__(self) -> None:
         if self.qkv_projection.has_biases != self.config.has_qkv_biases:
             raise ValueError(
@@ -525,7 +507,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 f"QKV projection output dims {self.qkv_projection.output_dims}"
                 f" do not match config output dims {expected_qkv_output_dims}.",
             )
-        if self.config.projection_mode.is_borrowed and self.key_norm is not None:
+        if self.config.projection_mode is AttentionProjectionMode.BORROWED_KV and self.key_norm is not None:
             raise ValueError("Borrowed KV-cache attention must not have key normalization.")
 
         if self.query_norm is not None and self.query_norm.input_dim != self.config.head_dim:
@@ -615,26 +597,27 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         if reuse_cache != using_borrowed_cache:
             raise ValueError("reuse_cache must match borrowed KV cache state.")
 
+        projection_mode = self.config.projection_mode
         if reuse_cache:
-            if not self.projection_mode.is_borrowed:
+            if projection_mode is not AttentionProjectionMode.BORROWED_KV:
                 raise ValueError("Borrowed KV-cache attention requires borrowed KV projection.")
             (raw_queries,) = qkv_outputs
             assert isinstance(state, BorrowedKVCacheLayer)
             updated_state = state
             prefix_length = updated_state.tree_prefix_length(num_suffix_tokens, length_without_padding)
         else:
-            if self.projection_mode.is_borrowed:
+            if projection_mode is AttentionProjectionMode.BORROWED_KV:
                 raise ValueError("Borrowed KV-cache attention requires a borrowed KV cache.")
-            if self.projection_mode is AttentionProjectionMode.KEY_SAME_AS_VALUE:
+            if projection_mode is AttentionProjectionMode.KEY_SAME_AS_VALUE:
                 raw_queries, raw_keys = qkv_outputs
                 keys = self._prepare_kv_projection(raw_keys)
                 values = keys
-            elif self.projection_mode is AttentionProjectionMode.QKV:
+            elif projection_mode is AttentionProjectionMode.QKV:
                 raw_queries, raw_keys, raw_values = qkv_outputs
                 keys = self._prepare_kv_projection(raw_keys)
                 values = self._prepare_kv_projection(raw_values)
             else:
-                raise ValueError(f"Unknown attention projection mode {self.projection_mode!r}.")
+                raise ValueError(f"Unknown attention projection mode {projection_mode!r}.")
 
             if self.key_norm is not None:
                 keys = call_vmapped_twice(

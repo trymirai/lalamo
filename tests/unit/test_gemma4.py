@@ -93,7 +93,7 @@ def test_gemma4_shared_kv_uses_compact_state_and_ple() -> None:
     assert decoder_config.ple_model_config is not None
     assert transformer_config.kv_source_per_layer == (0, 1, 0, 1)
     assert transformer_config.kv_cache_source_layers == (0, 1)
-    assert transformer_config.kv_cache_width == 2
+    assert len(transformer_config.kv_cache_source_layers) == 2
 
     source_layer = transformer_config.layer_configs[0]
     borrowed_layer = transformer_config.layer_configs[2]

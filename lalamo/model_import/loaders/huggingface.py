@@ -16,7 +16,7 @@ from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding
 from lalamo.modules.linear import Linear
 from lalamo.modules.mlp import DenseMLP, MixtureOfExperts, MLPBase
 from lalamo.modules.normalization import Normalization
-from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
+from lalamo.modules.token_mixers.attention import Attention, AttentionConfig, AttentionProjectionMode
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv
 from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
 from lalamo.modules.token_mixers.mamba import Mamba2, Mamba2Config
@@ -736,7 +736,13 @@ def load_attention(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> Attention:
-    qkv_sublayers = list(module.projection_mode.huggingface_sublayers)
+    match module.config.projection_mode:
+        case AttentionProjectionMode.QKV:
+            qkv_sublayers = ["q_proj", "k_proj", "v_proj"]
+        case AttentionProjectionMode.KEY_SAME_AS_VALUE:
+            qkv_sublayers = ["q_proj", "k_proj"]
+        case AttentionProjectionMode.BORROWED_KV:
+            qkv_sublayers = ["q_proj"]
 
     if module.gate_projection is not None:
         num_heads, head_dim = module.config.num_heads, module.config.head_dim
