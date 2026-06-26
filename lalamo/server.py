@@ -96,6 +96,30 @@ class Batch:
 gpu_lock = asyncio.Lock()
 creation_lock = asyncio.Lock()
 
+# Keep the imported+loaded model resident across /batches requests so that
+# import_model (the full safetensors reload) and the warm eqx.filter_jit caches
+# are paid once instead of per request. Keyed on the parameters that change the
+# loaded weights/structure; a different model/dtype reloads.
+_model_cache: dict[tuple[str, str], LanguageModel] = {}
+
+
+def _load_resident_model(model_path: str, dtype: str | None) -> LanguageModel:
+    cache_key = (model_path, str(dtype))
+    cached = _model_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    model = import_model(
+        model_path,
+        sharding_config=ShardingConfig.replicated(),
+        dtype=jnp.dtype(dtype),
+    ).model
+    if not isinstance(model, LanguageModel):
+        raise RuntimeError(f"Expected a language model, got {type(model).__name__}")  # noqa: TRY004
+
+    _model_cache[cache_key] = model
+    return model
+
 
 def active_batch_ids() -> set[str]:
     if not hasattr(app.state, "active_batch_ids"):
@@ -159,13 +183,7 @@ def validate_requests(
 def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
     reference, *_ = requests
 
-    model = import_model(
-        reference.model,
-        sharding_config=ShardingConfig.replicated(),
-        dtype=jnp.dtype(reference.dtype),
-    ).model
-    if not isinstance(model, LanguageModel):
-        raise RuntimeError(f"Expected a language model, got {type(model).__name__}")  # noqa: TRY004
+    model = _load_resident_model(reference.model, reference.dtype)
 
     dataset = [[hf_message.as_message() for hf_message in request.messages] for request in requests]
 
