@@ -30,7 +30,6 @@ from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import ProportionalRoPEConfig, UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig, AttentionProjectionMode
 from lalamo.modules.transformer_layer import TransformerLayerConfig
-from lalamo.utils.lazy_collections import LazyDict
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import CompressionImplementation
@@ -327,108 +326,17 @@ class HFGemma4Config(HuggingFaceLMConfig):
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> Model:
         assert isinstance(model, LanguageModel)
-        decoder_weights = self._patched_checkpoint_weights(weights_dict)
         decoder = load_huggingface_decoder(
             module=model.decoder,
-            weights_dict=decoder_weights,
+            weights_dict=weights_dict,
             implementation=implementation,
         )
         decoder = self._load_gemma4_weights(
             decoder,
-            decoder_weights,
+            weights_dict,
             implementation=implementation,
         )
         return eqx.tree_at(lambda m: (m.decoder,), model, (decoder,))
-
-    def _patched_checkpoint_weights(
-        self,
-        weights_dict: Mapping[str, Array],
-    ) -> Mapping[str, Array]:
-        if not self.text_config.enable_moe_block:
-            return weights_dict
-
-        patches: dict[str, Array] = {}
-        patched_keys: set[str] = set(weights_dict)
-        source_to_target_suffixes = tuple(
-            (f"layers.{layer_idx}.{source}", f"layers.{layer_idx}.{target}")
-            for layer_idx in range(self.text_config.num_hidden_layers)
-            for source, target in (
-                ("router.proj.weight", "parallel_mlp.router.weight"),
-                ("experts.gate_up_proj", "parallel_mlp.experts.gate_up_proj.weight"),
-                ("experts.down_proj", "parallel_mlp.experts.down_proj.weight"),
-            )
-        )
-
-        for key in weights_dict:
-            for source_suffix, target_suffix in source_to_target_suffixes:
-                if key.endswith(source_suffix):
-                    patched_keys.add(key.removesuffix(source_suffix) + target_suffix)
-
-        def get_weight(key: str) -> Array:
-            if key in patches:
-                return patches[key]
-            for layer_idx in range(self.text_config.num_hidden_layers):
-                pre_dense_norm_suffix = f"layers.{layer_idx}.pre_feedforward_layernorm.weight"
-                pre_moe_norm_suffix = f"layers.{layer_idx}.pre_feedforward_layernorm_2.weight"
-                router_weight_suffix = f"layers.{layer_idx}.router.proj.weight"
-                router_scale_suffix = f"layers.{layer_idx}.router.scale"
-                per_expert_scale_suffix = f"layers.{layer_idx}.router.per_expert_scale"
-                routed_gate_up_suffix = f"layers.{layer_idx}.experts.gate_up_proj"
-                routed_down_suffix = f"layers.{layer_idx}.experts.down_proj"
-                dense_up_suffix = f"layers.{layer_idx}.mlp.up_proj.weight"
-                dense_gate_suffix = f"layers.{layer_idx}.mlp.gate_proj.weight"
-
-                if key.endswith(pre_dense_norm_suffix):
-                    return jnp.ones_like(weights_dict[key])
-
-                if key.endswith(dense_up_suffix):
-                    prefix = key.removesuffix(dense_up_suffix)
-                    dense_up_weights = weights_dict[key]
-                    pre_dense_scale = weights_dict[prefix + pre_dense_norm_suffix]
-                    return dense_up_weights * pre_dense_scale.astype(dense_up_weights.dtype)
-
-                if key.endswith(dense_gate_suffix):
-                    prefix = key.removesuffix(dense_gate_suffix)
-                    dense_gate_weights = weights_dict[key]
-                    pre_dense_scale = weights_dict[prefix + pre_dense_norm_suffix]
-                    return dense_gate_weights * pre_dense_scale.astype(dense_gate_weights.dtype)
-
-                router_target_suffix = f"layers.{layer_idx}.parallel_mlp.router.weight"
-                if key.endswith(router_target_suffix):
-                    prefix = key.removesuffix(router_target_suffix)
-                    router_weight = weights_dict[prefix + router_weight_suffix]
-                    router_scale = weights_dict[prefix + router_scale_suffix]
-                    router_multiplier = router_scale.astype(router_weight.dtype) * jnp.asarray(
-                        self.text_config.hidden_size**-0.5,
-                        dtype=router_weight.dtype,
-                    )
-                    patched = router_weight * router_multiplier[None, :]
-                    patches[key] = patched
-                    return patched
-
-                gate_up_target_suffix = f"layers.{layer_idx}.parallel_mlp.experts.gate_up_proj.weight"
-                if key.endswith(gate_up_target_suffix):
-                    prefix = key.removesuffix(gate_up_target_suffix)
-                    routed_gate_up_weights = weights_dict[prefix + routed_gate_up_suffix]
-                    pre_moe_scale = weights_dict[prefix + pre_moe_norm_suffix]
-                    routed_gate_up = routed_gate_up_weights * pre_moe_scale.astype(routed_gate_up_weights.dtype)
-                    assert routed_gate_up.ndim == 3
-                    _, gate_up_dim, _ = routed_gate_up.shape
-                    assert gate_up_dim % 2 == 0
-                    patches[key] = routed_gate_up
-                    return routed_gate_up
-
-                down_target_suffix = f"layers.{layer_idx}.parallel_mlp.experts.down_proj.weight"
-                if key.endswith(down_target_suffix):
-                    prefix = key.removesuffix(down_target_suffix)
-                    routed_down = weights_dict[prefix + routed_down_suffix]
-                    per_expert_scale = weights_dict[prefix + per_expert_scale_suffix]
-                    patched = routed_down * per_expert_scale.astype(routed_down.dtype)[:, None, None]
-                    patches[key] = patched
-                    return patched
-            return weights_dict[key]
-
-        return LazyDict(patched_keys, get_weight)
 
     def _load_gemma4_weights(
         self,
@@ -437,69 +345,32 @@ class HFGemma4Config(HuggingFaceLMConfig):
         *,
         implementation: CompressionImplementation,
     ) -> Decoder:
-        expected_suffixes: set[str] = set()
+        def key(suffix: str) -> str:
+            [match] = [key for key in weights_dict if key.endswith(suffix)]
+            return match
+
+        def path(suffix: str) -> ParameterPath:
+            return ParameterPath(key(f"{suffix}.weight").removesuffix(".weight"))
+
         new_per_layer_embedding = model.per_layer_embedding
-        if model.per_layer_embedding is not None:
-            expected_suffixes.update(
-                {
-                    "embed_tokens_per_layer.weight",
-                    "per_layer_model_projection.weight",
-                    "per_layer_projection_norm.weight",
-                },
-            )
-
-        for i, layer in enumerate(model.transformer.layers):
-            if layer.ple is not None:
-                expected_suffixes.update(
-                    {
-                        f"layers.{i}.per_layer_input_gate.weight",
-                        f"layers.{i}.per_layer_projection.weight",
-                        f"layers.{i}.post_per_layer_input_norm.weight",
-                    },
-                )
-            if layer.post_layer_scalar is not None:
-                expected_suffixes.add(f"layers.{i}.layer_scalar")
-
-        suffix_aliases: dict[str, str] = {}
-        for suffix in expected_suffixes:
-            matching_keys = tuple(key for key in weights_dict if key.endswith(suffix))
-            if not matching_keys:
-                continue
-            assert len(matching_keys) == 1
-            (weight_key,) = matching_keys
-            suffix_aliases[suffix] = weight_key
-
-        if suffix_aliases:
-
-            def get_gemma4_weight(key: str) -> Array:
-                if key in suffix_aliases:
-                    return weights_dict[suffix_aliases[key]]
-                return weights_dict[key]
-
-            gemma4_weights = LazyDict(
-                set(weights_dict) | set(suffix_aliases),
-                get_gemma4_weight,
-            )
-        else:
-            gemma4_weights = weights_dict
 
         if model.per_layer_embedding is not None:
             new_per_layer_embedding = replace(
                 model.per_layer_embedding,
                 token_embedding=load_as(
                     model.per_layer_embedding.token_embedding,
-                    gemma4_weights[ParameterPath("embed_tokens_per_layer") / "weight"],
+                    weights_dict[key("embed_tokens_per_layer.weight")],
                 ),
                 model_projection=load_linear(
                     model.per_layer_embedding.model_projection,
-                    gemma4_weights,
-                    ParameterPath("per_layer_model_projection"),
+                    weights_dict,
+                    path("per_layer_model_projection"),
                     implementation=implementation,
                 ),
                 projection_norm=load_rmsnorm(
                     model.per_layer_embedding.projection_norm,
-                    gemma4_weights,
-                    ParameterPath("per_layer_projection_norm"),
+                    weights_dict,
+                    path("per_layer_projection_norm"),
                 ),
             )
 
@@ -512,26 +383,26 @@ class HFGemma4Config(HuggingFaceLMConfig):
                     layer.ple,
                     gate=load_linear(
                         layer.ple.gate,
-                        gemma4_weights,
-                        layer_path / "per_layer_input_gate",
+                        weights_dict,
+                        path(layer_path / "per_layer_input_gate"),
                         implementation=implementation,
                     ),
                     projection=load_linear(
                         layer.ple.projection,
-                        gemma4_weights,
-                        layer_path / "per_layer_projection",
+                        weights_dict,
+                        path(layer_path / "per_layer_projection"),
                         implementation=implementation,
                     ),
                     norm=load_rmsnorm(
                         layer.ple.norm,
-                        gemma4_weights,
-                        layer_path / "post_per_layer_input_norm",
+                        weights_dict,
+                        path(layer_path / "post_per_layer_input_norm"),
                     ),
                 )
             if layer.post_layer_scalar is not None:
                 layer_updates["post_layer_scalar"] = load_as(
                     layer.post_layer_scalar,
-                    gemma4_weights[layer_path / "layer_scalar"],
+                    weights_dict[key(layer_path / "layer_scalar")],
                 )
             new_layers.append(replace(layer, **layer_updates) if layer_updates else layer)
 

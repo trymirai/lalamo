@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 
 from lalamo.initializer import EmptyInitializer
+from lalamo.model_import.loaders import huggingface as hf_loaders
 from lalamo.model_import.model_configs.huggingface.gemma4 import (
     Gemma4RopeParameters,
     HFGemma4Config,
@@ -20,9 +21,12 @@ from lalamo.model_import.model_specs.gemma import GEMMA_MODELS
 from lalamo.modules import (
     AttentionConfig,
     AttentionProjectionMode,
+    DenseMLP,
     DenseMLPConfig,
     Keychain,
+    MixtureOfExperts,
     MixtureOfExpertsConfig,
+    ParallelMLP,
     ParallelMLPConfig,
     ProportionalRoPEConfig,
 )
@@ -329,7 +333,7 @@ def test_gemma4_no_ple_loader_still_loads_layer_scalar() -> None:
     assert loaded.transformer.layers[1].post_layer_scalar.item() == 2.0
 
 
-def test_gemma4_moe_weight_patching_creates_standard_moe_paths() -> None:
+def test_gemma4_parallel_mlp_loader_bakes_static_scales() -> None:
     hf_config = HFGemma4Config(
         text_config=_gemma4_text_config(
             hidden_size_per_layer_input=0,
@@ -347,54 +351,62 @@ def test_gemma4_moe_weight_patching_creates_standard_moe_paths() -> None:
         model_type="gemma4",
         eos_token_id=[1],
     )
-    text_config = hf_config.text_config
-    assert text_config.num_experts is not None
-    assert text_config.moe_intermediate_size is not None
+    decoder = hf_config.to_decoder_config(context_length=None, metadata_dict={}).init(
+        EmptyInitializer(
+            default_dtype=jnp.float32,
+            sharding_config=make_test_sharding_config(),
+        ),
+    )
+    layer = decoder.transformer.layers[0]
+    assert isinstance(layer.mlp, ParallelMLP)
 
     checkpoint_prefix = ParameterPath("checkpoint")
-    weights: dict[str, Array] = {}
-    for layer_idx in range(text_config.num_hidden_layers):
-        layer_path = checkpoint_prefix / "layers" / layer_idx
-        mlp_path = layer_path / "mlp"
-        dense_hidden_dim = text_config.intermediate_size
-        routed_hidden_dim = text_config.moe_intermediate_size
-        weights.update(
-            {
-                layer_path / "pre_feedforward_layernorm" / "weight": jnp.arange(1, 9, dtype=jnp.float32),
-                layer_path / "pre_feedforward_layernorm_2" / "weight": jnp.arange(11, 19, dtype=jnp.float32),
-                layer_path / "post_feedforward_layernorm_1" / "weight": jnp.arange(21, 29, dtype=jnp.float32),
-                layer_path / "post_feedforward_layernorm_2" / "weight": jnp.arange(31, 39, dtype=jnp.float32),
-                layer_path / "router" / "proj" / "weight": jnp.arange(32, dtype=jnp.float32).reshape(4, 8),
-                layer_path / "router" / "scale": jnp.arange(41, 49, dtype=jnp.float32),
-                layer_path / "router" / "per_expert_scale": jnp.arange(51, 55, dtype=jnp.float32),
-                layer_path / "experts" / "gate_up_proj": jnp.arange(
-                    4 * 2 * routed_hidden_dim * 8,
-                    dtype=jnp.float32,
-                ).reshape(4, 2 * routed_hidden_dim, 8),
-                layer_path / "experts" / "down_proj": jnp.arange(
-                    4 * 8 * routed_hidden_dim,
-                    dtype=jnp.float32,
-                ).reshape(4, 8, routed_hidden_dim),
-                mlp_path / "up_proj" / "weight": jnp.arange(dense_hidden_dim * 8, dtype=jnp.float32).reshape(
-                    dense_hidden_dim,
-                    8,
-                ),
-                mlp_path / "gate_proj" / "weight": jnp.arange(dense_hidden_dim * 8, dtype=jnp.float32).reshape(
-                    dense_hidden_dim,
-                    8,
-                )
-                + 1000,
-                mlp_path / "down_proj" / "weight": jnp.arange(8 * dense_hidden_dim, dtype=jnp.float32).reshape(
-                    8,
-                    dense_hidden_dim,
-                ),
-            },
-        )
-
-    patched_weights = hf_config._patched_checkpoint_weights(weights)  # noqa: SLF001
     layer_path = checkpoint_prefix / "layers" / 0
     mlp_path = layer_path / "mlp"
-    parallel_mlp_path = layer_path / "parallel_mlp"
+    weights: dict[str, Array] = {
+        layer_path / "input_layernorm" / "weight": jnp.ones((8,), dtype=jnp.float32),
+        layer_path / "self_attn" / "q_proj" / "weight": jnp.zeros((8, 8), dtype=jnp.float32),
+        layer_path / "self_attn" / "k_proj" / "weight": jnp.zeros((4, 8), dtype=jnp.float32),
+        layer_path / "self_attn" / "v_proj" / "weight": jnp.zeros((4, 8), dtype=jnp.float32),
+        layer_path / "self_attn" / "o_proj" / "weight": jnp.zeros((8, 8), dtype=jnp.float32),
+        layer_path / "self_attn" / "q_norm" / "weight": jnp.ones((4,), dtype=jnp.float32),
+        layer_path / "self_attn" / "k_norm" / "weight": jnp.ones((4,), dtype=jnp.float32),
+        layer_path / "post_attention_layernorm" / "weight": jnp.ones((8,), dtype=jnp.float32),
+        layer_path / "pre_feedforward_layernorm" / "weight": jnp.arange(1, 9, dtype=jnp.float32),
+        layer_path / "pre_feedforward_layernorm_2" / "weight": jnp.arange(11, 19, dtype=jnp.float32),
+        layer_path / "post_feedforward_layernorm_1" / "weight": jnp.arange(21, 29, dtype=jnp.float32),
+        layer_path / "post_feedforward_layernorm_2" / "weight": jnp.arange(31, 39, dtype=jnp.float32),
+        layer_path / "post_feedforward_layernorm" / "weight": jnp.ones((8,), dtype=jnp.float32),
+        layer_path / "router" / "proj" / "weight": jnp.arange(32, dtype=jnp.float32).reshape(4, 8),
+        layer_path / "router" / "scale": jnp.arange(41, 49, dtype=jnp.float32),
+        layer_path / "router" / "per_expert_scale": jnp.arange(51, 55, dtype=jnp.float32),
+        layer_path / "experts" / "gate_up_proj": jnp.arange(4 * 12 * 8, dtype=jnp.float32).reshape(4, 12, 8),
+        layer_path / "experts" / "down_proj": jnp.arange(4 * 8 * 6, dtype=jnp.float32).reshape(4, 8, 6),
+        mlp_path / "up_proj" / "weight": jnp.arange(16 * 8, dtype=jnp.float32).reshape(16, 8),
+        mlp_path / "gate_proj" / "weight": jnp.arange(16 * 8, dtype=jnp.float32).reshape(16, 8) + 1000,
+        mlp_path / "down_proj" / "weight": jnp.arange(8 * 16, dtype=jnp.float32).reshape(8, 16),
+    }
+
+    loaded_layer = hf_loaders.load_transformer_layer(
+        layer,
+        weights,
+        layer_path,
+        layer_path,
+        "self_attn",
+        "mlp",
+        "input_layernorm",
+        "post_attention_layernorm",
+        "up_proj",
+        "gate_proj",
+        "down_proj",
+        permute_conv=False,
+        implementation=CompressionImplementation.INFERENCE,
+    )
+    loaded_mlp = loaded_layer.mlp
+    assert isinstance(loaded_mlp, ParallelMLP)
+    assert isinstance(loaded_mlp.primary_mlp, DenseMLP)
+    assert isinstance(loaded_mlp.parallel_mlp, MixtureOfExperts)
+
     pre_dense_scale = weights[layer_path / "pre_feedforward_layernorm" / "weight"]
     pre_moe_scale = weights[layer_path / "pre_feedforward_layernorm_2" / "weight"]
     post_dense_scale = weights[layer_path / "post_feedforward_layernorm_1" / "weight"]
@@ -406,26 +418,23 @@ def test_gemma4_moe_weight_patching_creates_standard_moe_paths() -> None:
         dtype=jnp.float32,
     )
     expected_router = weights[layer_path / "router" / "proj" / "weight"] * router_multiplier[None, :]
-    assert jnp.array_equal(patched_weights[parallel_mlp_path / "router" / "weight"], expected_router)
-    assert jnp.array_equal(
-        patched_weights[layer_path / "pre_feedforward_layernorm" / "weight"],
-        jnp.ones((8,), dtype=jnp.float32),
-    )
-    assert jnp.array_equal(patched_weights[layer_path / "post_feedforward_layernorm_1" / "weight"], post_dense_scale)
-    assert jnp.array_equal(patched_weights[layer_path / "post_feedforward_layernorm_2" / "weight"], post_moe_scale)
+    assert jnp.array_equal(loaded_layer.pre_mlp_norm.scales, jnp.ones((8,), dtype=jnp.float32))
+    assert jnp.array_equal(loaded_mlp.primary_output_norm.scales, post_dense_scale)
+    assert jnp.array_equal(loaded_mlp.parallel_output_norm.scales, post_moe_scale)
+    assert jnp.array_equal(loaded_mlp.parallel_mlp.router.weights.decompress(), expected_router)
 
     routed_gate_up = weights[layer_path / "experts" / "gate_up_proj"] * pre_moe_scale[None, None, :]
-    assert jnp.array_equal(patched_weights[parallel_mlp_path / "experts" / "gate_up_proj.weight"], routed_gate_up)
+    expected_expert_up_gate = jnp.concatenate([routed_gate_up[:, 6:, :], routed_gate_up[:, :6, :]], axis=1)
+    assert jnp.array_equal(loaded_mlp.parallel_mlp.experts.up_projection.weights.decompress(), expected_expert_up_gate)
 
     expected_routed_down = weights[layer_path / "experts" / "down_proj"] * per_expert_scale[:, None, None]
-    assert jnp.array_equal(patched_weights[parallel_mlp_path / "experts" / "down_proj.weight"], expected_routed_down)
+    assert jnp.array_equal(loaded_mlp.parallel_mlp.experts.down_projection.weights.decompress(), expected_routed_down)
 
     expected_dense_up = weights[mlp_path / "up_proj" / "weight"] * pre_dense_scale[None, :]
     expected_dense_gate = weights[mlp_path / "gate_proj" / "weight"] * pre_dense_scale[None, :]
-    assert jnp.array_equal(patched_weights[mlp_path / "up_proj" / "weight"], expected_dense_up)
-    assert jnp.array_equal(patched_weights[mlp_path / "gate_proj" / "weight"], expected_dense_gate)
+    expected_dense_up_gate = jnp.concatenate([expected_dense_up, expected_dense_gate], axis=0)
+    assert jnp.array_equal(loaded_mlp.primary_mlp.up_projection.weights.decompress(), expected_dense_up_gate)
     assert jnp.array_equal(
-        patched_weights[mlp_path / "down_proj" / "weight"],
+        loaded_mlp.primary_mlp.down_projection.weights.decompress(),
         weights[mlp_path / "down_proj" / "weight"],
     )
-    assert (mlp_path / "shared_expert" / "up_proj.weight") not in patched_weights
