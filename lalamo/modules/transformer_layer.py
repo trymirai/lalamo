@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from typing import Self
 
@@ -170,9 +170,6 @@ class TransformerLayerConfig(LalamoConfig):
     pre_mlp_norm_config: NormalizationConfig
     mlp_config: MLPConfig
     post_mlp_norm_config: NormalizationConfig | None
-    mlp_branch_output_norm_config: NormalizationConfig | None = None
-    parallel_mlp_config: MLPConfig | None = None
-    parallel_mlp_branch_output_norm_config: NormalizationConfig | None = None
     hidden_dim: int | None = None
     ple_config: PLELayerConfig | None = None
     has_post_layer_scalar: bool = False
@@ -193,19 +190,6 @@ class TransformerLayerConfig(LalamoConfig):
         )
         pre_mlp_norm = self.pre_mlp_norm_config.init(initializer, model_dim)
         mlp = self.mlp_config.init(initializer, model_dim, hidden_dim)
-        mlp_branch_output_norm = (
-            self.mlp_branch_output_norm_config.init(initializer, model_dim)
-            if self.mlp_branch_output_norm_config
-            else None
-        )
-        parallel_mlp = (
-            self.parallel_mlp_config.init(initializer, model_dim, hidden_dim) if self.parallel_mlp_config else None
-        )
-        parallel_mlp_branch_output_norm = (
-            self.parallel_mlp_branch_output_norm_config.init(initializer, model_dim)
-            if self.parallel_mlp_branch_output_norm_config
-            else None
-        )
         post_mlp_norm = self.post_mlp_norm_config.init(initializer, model_dim) if self.post_mlp_norm_config else None
         ple = self.ple_config.init(initializer, model_dim) if self.ple_config else None
         post_layer_scalar = initializer.ones((1,)) if self.has_post_layer_scalar else None
@@ -217,9 +201,6 @@ class TransformerLayerConfig(LalamoConfig):
             post_mixer_norm=post_mixer_norm,
             pre_mlp_norm=pre_mlp_norm,
             mlp=mlp,
-            mlp_branch_output_norm=mlp_branch_output_norm,
-            parallel_mlp=parallel_mlp,
-            parallel_mlp_branch_output_norm=parallel_mlp_branch_output_norm,
             post_mlp_norm=post_mlp_norm,
             ple=ple,
             post_layer_scalar=post_layer_scalar,
@@ -232,9 +213,6 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     post_mixer_norm: Normalization | None
     pre_mlp_norm: Normalization
     mlp: MLPBase
-    mlp_branch_output_norm: Normalization | None
-    parallel_mlp: MLPBase | None
-    parallel_mlp_branch_output_norm: Normalization | None
     post_mlp_norm: Normalization | None
     ple: PLELayer | None
     post_layer_scalar: Float[Array, "1"] | None
@@ -259,7 +237,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 f"Inputs to decoder layers must be a 3D arrays of size (batch_size, sequence_length, hidden_dim),"
                 f" got {inputs.shape}",
             )
-        mixer_keychain, mlp_keychain, parallel_mlp_keychain, ple_keychain = keychain.split(4)
+        mixer_keychain, mlp_keychain, ple_keychain = keychain.split(3)
         normalization_forward_pass_config = forward_pass_config.normalization_forward_pass_config
 
         if self.pre_mixer_norm is not None:
@@ -325,32 +303,16 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             mlp_inputs,
             forward_pass_config=normalization_forward_pass_config,
         )
+        mlp_forward_pass_config = replace(
+            forward_pass_config.mlp_forward_pass_config,
+            normalization_forward_pass_config=normalization_forward_pass_config,
+        )
         mlp_outputs = self.mlp(
             normalized_mlp_inputs,
             lengths_without_padding=lengths_without_padding,
-            forward_pass_config=forward_pass_config.mlp_forward_pass_config,
+            forward_pass_config=mlp_forward_pass_config,
             keychain=mlp_keychain,
         )
-        if self.mlp_branch_output_norm is not None:
-            mlp_outputs = call_vmapped_twice(
-                self.mlp_branch_output_norm,
-                mlp_outputs,
-                forward_pass_config=normalization_forward_pass_config,
-            )
-        if self.parallel_mlp is not None:
-            parallel_mlp_outputs = self.parallel_mlp(
-                normalized_mlp_inputs,
-                lengths_without_padding=lengths_without_padding,
-                forward_pass_config=forward_pass_config.mlp_forward_pass_config,
-                keychain=parallel_mlp_keychain,
-            )
-            if self.parallel_mlp_branch_output_norm is not None:
-                parallel_mlp_outputs = call_vmapped_twice(
-                    self.parallel_mlp_branch_output_norm,
-                    parallel_mlp_outputs,
-                    forward_pass_config=normalization_forward_pass_config,
-                )
-            mlp_outputs = mlp_outputs + parallel_mlp_outputs
         if self.post_mlp_norm is not None:
             normalized_mlp_outputs = call_vmapped_twice(
                 self.post_mlp_norm,

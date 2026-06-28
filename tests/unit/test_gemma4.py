@@ -23,6 +23,7 @@ from lalamo.modules import (
     DenseMLPConfig,
     Keychain,
     MixtureOfExpertsConfig,
+    ParallelMLPConfig,
     ProportionalRoPEConfig,
 )
 from lalamo.utils.parameter_path import ParameterPath
@@ -77,7 +78,6 @@ def _gemma4_text_config(
         vocab_size_per_layer_input=vocab_size_per_layer_input,
         num_kv_shared_layers=num_kv_shared_layers,
         use_double_wide_mlp=use_double_wide_mlp,
-        tie_word_embeddings=True,
         attention_k_eq_v=attention_k_eq_v,
         enable_moe_block=enable_moe_block,
         num_experts=num_experts,
@@ -92,8 +92,6 @@ def test_gemma4_shared_kv_uses_compact_state_and_ple() -> None:
 
     assert decoder_config.ple_model_config is not None
     assert transformer_config.kv_source_per_layer == (0, 1, 0, 1)
-    assert transformer_config.kv_cache_source_layers == (0, 1)
-    assert len(transformer_config.kv_cache_source_layers) == 2
 
     source_layer = transformer_config.layer_configs[0]
     borrowed_layer = transformer_config.layer_configs[2]
@@ -206,16 +204,16 @@ def test_gemma4_moe_config_parses_hf_fields(tmp_path: Path) -> None:
     config = HFGemma4Config.from_json(config_path)
     decoder_config = config.to_decoder_config(context_length=None, metadata_dict={})
     layer_config = decoder_config.transformer_config.layer_configs[0]
-    moe_config = layer_config.parallel_mlp_config
+    parallel_mlp_config = layer_config.mlp_config
+    assert isinstance(parallel_mlp_config, ParallelMLPConfig)
+    moe_config = parallel_mlp_config.parallel_mlp_config
 
-    assert isinstance(layer_config.mlp_config, DenseMLPConfig)
+    assert isinstance(parallel_mlp_config.primary_mlp_config, DenseMLPConfig)
     assert isinstance(moe_config, MixtureOfExpertsConfig)
     assert moe_config.num_routed_experts == 4
     assert moe_config.num_active_routed_experts == 2
     assert moe_config.num_shared_experts == 0
     assert moe_config.expert_hidden_dim == 6
-    assert layer_config.mlp_branch_output_norm_config is not None
-    assert layer_config.parallel_mlp_branch_output_norm_config is not None
 
 
 def test_gemma4_specs_have_chat_templates() -> None:
@@ -243,14 +241,14 @@ def test_gemma4_ple_loader_casts_checkpoint_tensors_to_model_dtype() -> None:
     )
     assert decoder.per_layer_embedding is not None
 
-    base = ParameterPath("model")
+    checkpoint_prefix = ParameterPath("checkpoint")
     weights: dict[str, Array] = {
-        base / "embed_tokens_per_layer" / "weight": jnp.ones((16, 8), dtype=jnp.bfloat16),
-        base / "per_layer_model_projection" / "weight": jnp.ones((8, 8), dtype=jnp.bfloat16),
-        base / "per_layer_projection_norm" / "weight": jnp.ones((2,), dtype=jnp.bfloat16),
+        checkpoint_prefix / "embed_tokens_per_layer" / "weight": jnp.ones((16, 8), dtype=jnp.bfloat16),
+        checkpoint_prefix / "per_layer_model_projection" / "weight": jnp.ones((8, 8), dtype=jnp.bfloat16),
+        checkpoint_prefix / "per_layer_projection_norm" / "weight": jnp.ones((2,), dtype=jnp.bfloat16),
     }
     for i in range(4):
-        layer_path = base / "layers" / i
+        layer_path = checkpoint_prefix / "layers" / i
         weights.update(
             {
                 layer_path / "per_layer_input_gate" / "weight": jnp.ones((2, 8), dtype=jnp.bfloat16),
@@ -313,9 +311,9 @@ def test_gemma4_no_ple_loader_still_loads_layer_scalar() -> None:
     assert decoder.per_layer_embedding is None
     assert decoder.transformer.layers[0].post_layer_scalar is not None
 
-    base = ParameterPath("model")
+    checkpoint_prefix = ParameterPath("checkpoint")
     weights: dict[str, Array] = {
-        base / "layers" / i / "layer_scalar": jnp.array([i + 1], dtype=jnp.bfloat16)
+        checkpoint_prefix / "layers" / i / "layer_scalar": jnp.array([i + 1], dtype=jnp.bfloat16)
         for i in range(len(decoder.transformer.layers))
     }
 
@@ -331,7 +329,7 @@ def test_gemma4_no_ple_loader_still_loads_layer_scalar() -> None:
     assert loaded.transformer.layers[1].post_layer_scalar.item() == 2.0
 
 
-def test_gemma4_moe_weight_baking_creates_standard_moe_paths() -> None:
+def test_gemma4_moe_weight_patching_creates_standard_moe_paths() -> None:
     hf_config = HFGemma4Config(
         text_config=_gemma4_text_config(
             hidden_size_per_layer_input=0,
@@ -353,10 +351,10 @@ def test_gemma4_moe_weight_baking_creates_standard_moe_paths() -> None:
     assert text_config.num_experts is not None
     assert text_config.moe_intermediate_size is not None
 
-    base = ParameterPath("model")
+    checkpoint_prefix = ParameterPath("checkpoint")
     weights: dict[str, Array] = {}
     for layer_idx in range(text_config.num_hidden_layers):
-        layer_path = base / "layers" / layer_idx
+        layer_path = checkpoint_prefix / "layers" / layer_idx
         mlp_path = layer_path / "mlp"
         dense_hidden_dim = text_config.intermediate_size
         routed_hidden_dim = text_config.moe_intermediate_size
@@ -393,8 +391,8 @@ def test_gemma4_moe_weight_baking_creates_standard_moe_paths() -> None:
             },
         )
 
-    baked = hf_config._weights_with_baked_gemma4_moe(weights)  # noqa: SLF001
-    layer_path = base / "layers" / 0
+    patched_weights = hf_config._patched_checkpoint_weights(weights)  # noqa: SLF001
+    layer_path = checkpoint_prefix / "layers" / 0
     mlp_path = layer_path / "mlp"
     parallel_mlp_path = layer_path / "parallel_mlp"
     pre_dense_scale = weights[layer_path / "pre_feedforward_layernorm" / "weight"]
@@ -408,23 +406,26 @@ def test_gemma4_moe_weight_baking_creates_standard_moe_paths() -> None:
         dtype=jnp.float32,
     )
     expected_router = weights[layer_path / "router" / "proj" / "weight"] * router_multiplier[None, :]
-    assert jnp.array_equal(baked[parallel_mlp_path / "router" / "weight"], expected_router)
+    assert jnp.array_equal(patched_weights[parallel_mlp_path / "router" / "weight"], expected_router)
     assert jnp.array_equal(
-        baked[layer_path / "pre_feedforward_layernorm" / "weight"],
+        patched_weights[layer_path / "pre_feedforward_layernorm" / "weight"],
         jnp.ones((8,), dtype=jnp.float32),
     )
-    assert jnp.array_equal(baked[layer_path / "post_feedforward_layernorm_1" / "weight"], post_dense_scale)
-    assert jnp.array_equal(baked[layer_path / "post_feedforward_layernorm_2" / "weight"], post_moe_scale)
+    assert jnp.array_equal(patched_weights[layer_path / "post_feedforward_layernorm_1" / "weight"], post_dense_scale)
+    assert jnp.array_equal(patched_weights[layer_path / "post_feedforward_layernorm_2" / "weight"], post_moe_scale)
 
     routed_gate_up = weights[layer_path / "experts" / "gate_up_proj"] * pre_moe_scale[None, None, :]
-    assert jnp.array_equal(baked[parallel_mlp_path / "experts" / "gate_up_proj.weight"], routed_gate_up)
+    assert jnp.array_equal(patched_weights[parallel_mlp_path / "experts" / "gate_up_proj.weight"], routed_gate_up)
 
     expected_routed_down = weights[layer_path / "experts" / "down_proj"] * per_expert_scale[:, None, None]
-    assert jnp.array_equal(baked[parallel_mlp_path / "experts" / "down_proj.weight"], expected_routed_down)
+    assert jnp.array_equal(patched_weights[parallel_mlp_path / "experts" / "down_proj.weight"], expected_routed_down)
 
     expected_dense_up = weights[mlp_path / "up_proj" / "weight"] * pre_dense_scale[None, :]
     expected_dense_gate = weights[mlp_path / "gate_proj" / "weight"] * pre_dense_scale[None, :]
-    assert jnp.array_equal(baked[mlp_path / "up_proj" / "weight"], expected_dense_up)
-    assert jnp.array_equal(baked[mlp_path / "gate_proj" / "weight"], expected_dense_gate)
-    assert jnp.array_equal(baked[mlp_path / "down_proj" / "weight"], weights[mlp_path / "down_proj" / "weight"])
-    assert (mlp_path / "shared_expert" / "up_proj.weight") not in baked
+    assert jnp.array_equal(patched_weights[mlp_path / "up_proj" / "weight"], expected_dense_up)
+    assert jnp.array_equal(patched_weights[mlp_path / "gate_proj" / "weight"], expected_dense_gate)
+    assert jnp.array_equal(
+        patched_weights[mlp_path / "down_proj" / "weight"],
+        weights[mlp_path / "down_proj" / "weight"],
+    )
+    assert (mlp_path / "shared_expert" / "up_proj.weight") not in patched_weights

@@ -119,13 +119,9 @@ GEMMA3 = [
 ]
 
 GEMMA4 = [
-    _gemma4_model_spec("gemma-4-E2B", "2B"),
     _gemma4_model_spec("gemma-4-E2B-it", "2B"),
-    _gemma4_model_spec("gemma-4-E4B", "4B"),
     _gemma4_model_spec("gemma-4-E4B-it", "4B"),
-    _gemma4_model_spec("gemma-4-31B", "31B"),
     _gemma4_model_spec("gemma-4-31B-it", "31B"),
-    _gemma4_model_spec("gemma-4-26B-A4B", "26B"),
     _gemma4_model_spec("gemma-4-26B-A4B-it", "26B"),
 ]
 

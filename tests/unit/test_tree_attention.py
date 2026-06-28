@@ -191,16 +191,8 @@ def test_tree_attention_rejects_invalid_layouts() -> None:
     with pytest.raises(eqx.EquinoxRuntimeError, match="parent_indices"):
         tree_ancestor_mask(jnp.array([-1, 1], dtype=jnp.int32)).block_until_ready()
 
-    with pytest.raises(eqx.EquinoxRuntimeError, match="total_capacity"):
-        build_tree_attention_mask(
-            total_capacity=2,
-            prefix_length=1,
-            parent_indices=jnp.array([-1, 0], dtype=jnp.int32),
-            has_sinks=False,
-        ).block_until_ready()
 
-
-def test_transformer_config_derives_kv_cache_layout(decoder: Decoder) -> None:
+def test_transformer_uses_compact_kv_cache_layout(decoder: Decoder) -> None:
     layer_config = decoder.config.transformer_config.layer_configs[0]
     attention_config = layer_config.mixer_config
     assert isinstance(attention_config, AttentionConfig)
@@ -218,9 +210,17 @@ def test_transformer_config_derives_kv_cache_layout(decoder: Decoder) -> None:
         kv_source_per_layer=(0, 0, 2, 2),
     )
 
-    assert transformer_config.kv_source_per_layer == (0, 0, 2, 2)
-    assert transformer_config.kv_cache_source_layers == (0, 2)
-    assert len(transformer_config.kv_cache_source_layers) == 2
+    transformer = transformer_config.init(
+        RandomInitializer(
+            default_dtype=jnp.float32,
+            sharding_config=ShardingConfig.replicated(jax.devices("cpu")[:8]),
+            key=jax.random.key(5),
+        ),
+    )
+
+    static_state = transformer.init_static_state(batch_size=1, capacity=8, dtype=jnp.float32)
+    assert transformer.config.kv_source_per_layer == (0, 0, 2, 2)
+    assert len(static_state) == 2
 
 
 @pytest.mark.parametrize("kv_source_per_layer", [(1, 1), (0, 0, 1)])

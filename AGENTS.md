@@ -18,6 +18,7 @@
 - AI Assistant never resorts to quick hacks or stubs to make something work. Instead it always investigates the problem thoroughly and comes up with a well-thought-out solution.
 - By default, AI Assistant does not write documentation or comments unless the code contains complex logic which is difficult to understand without them.
 - AI Assistant strives for simplicity and maintainability. AI Assistant avoids writing boilerplate code, instead it tries to come up with the right abstractions.
+- AI Assistant inlines trivial helpers/properties and keeps simple implementation details at the use site.
 - AI Assistant prefers functional programming style, namely:
   * Avoids mutable state.
   * Avoids modifying objects in-place.
@@ -26,15 +27,17 @@
   * Strives to make invalid state unrepresentable.
 - AI Assistant tries to write code in the way that makes bugs hard to make and easy to spot.
 - AI Assistant writes the code so that assumptions about invariants are as explicit as possible.
+- AI Assistant uses user-facing exceptions for user-actionable errors; use `assert`s for broken configs, unsupported conversion internals, and checkpoint-layout invariants.
 - AI Assistant leverages strong typing as much as possible, for example, it always uses enums instead of literals.
 - AI Assistant uses good descriptive variable names that make it easy to understand the purpose of the variable without looking at the code that uses it.
 - AI Assistant does not manually parse things such as JSON configs. Instead it first models a schema using types, and then uses a serialisation library such as Cattrs, Pydantic, or Serde to handle serialization and deserialization and validation.
+- When adapting checkpoint weights, prefer lazy mapping/patching.
 
 # Testing guidelines
 - AI Assistant strives for simplicity and minimalism when writing tests.
 - AI Assistant avoids extensive mocking and stubbing.
 - AI Assistant focuses on testing core functionality, and does not test minor details such as property accessors.
-- AI Assistant avoids boilerplate in the testing code, and tries to come up with the right generic abstractions.
+- AI Assistant avoids tests whose only purpose is to preserve a trivial helper/property.
 - AI Assistant should run the tests via `uv run pytest -m fast -n=4` after finishing any non-trivial changes.
 - AI Assistant runs pyrefly and ruff checks after every edit to make sure there are no type errors and linter warnings.
 
@@ -165,7 +168,7 @@ class Banana:
     width: float
 
     @staticmethod
-    def build(cls, *, is_green: bool):
+    def init(cls, *, is_green: bool):
         ...
 ```
 
@@ -222,4 +225,76 @@ def test_decode_one_token():
 def test_decode_one_token():
     skip_on_gpu("Flaky on GPU due to torch/jax precision inconsistencies.")
     ...
+```
+
+```python
+# Bad: a one-use helper hides the actual shape operation.
+def _prepare_kv_projection(
+    self,
+    projection: Float[Array, "tokens channels"],
+) -> Float[Array, "tokens groups head_channels"]:
+    return rearrange(
+        projection,
+        "tokens (groups head_channels) -> tokens groups head_channels",
+        groups=self.config.num_groups,
+        head_channels=self.config.head_dim,
+    )
+
+keys = self._prepare_kv_projection(raw_keys)
+
+# Good: the implementation detail is visible where it matters.
+keys = rearrange(
+    raw_keys,
+    "tokens (groups head_channels) -> tokens groups head_channels",
+    groups=self.config.num_groups,
+    head_channels=self.config.head_dim,
+)
+```
+
+```python
+# Bad: a trivial property exists only to name a simple formula.
+@property
+def qkv_output_dims(self) -> tuple[int, ...]:
+    query_dim = self.num_heads * self.head_dim
+    kv_dim = self.num_groups * self.head_dim
+    return self.projection_mode.qkv_output_dims(query_dim, kv_dim)
+
+qkv_projection = self.qkv_projection_config.init(
+    initializer,
+    input_dim=model_dim,
+    output_dims=self.qkv_output_dims,
+)
+
+# Good: the projection-mode shape is explicit at the construction site.
+query_dim = self.num_heads * self.head_dim
+kv_dim = self.num_groups * self.head_dim
+if self.projection_mode is AttentionProjectionMode.QKV:
+    qkv_output_dims = (query_dim, kv_dim, kv_dim)
+elif self.projection_mode is AttentionProjectionMode.KEY_SAME_AS_VALUE:
+    qkv_output_dims = (query_dim, kv_dim)
+else:
+    qkv_output_dims = (query_dim,)
+
+qkv_projection = self.qkv_projection_config.init(
+    initializer,
+    input_dim=model_dim,
+    output_dims=qkv_output_dims,
+)
+```
+
+```python
+# Bad: friendly errors for impossible internal checkpoint/config states.
+def _validate_gate_up_projection(weights: Array) -> None:
+    if weights.ndim != 3:
+        raise ValueError(f"Expected batched gate/up projection weights, got shape {weights.shape}.")
+    _, gate_up_dim, _ = weights.shape
+    if gate_up_dim % 2 != 0:
+        raise ValueError(f"Gemma 4 gate/up projection has odd hidden dim {weights.shape}.")
+
+_validate_gate_up_projection(routed_gate_up)
+
+# Good: concise assertions state the developer invariant at the use site.
+assert routed_gate_up.ndim == 3
+_, gate_up_dim, _ = routed_gate_up.shape
+assert gate_up_dim % 2 == 0
 ```

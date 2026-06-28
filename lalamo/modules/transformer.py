@@ -41,19 +41,20 @@ class TransformerConfig(LalamoConfig):
     output_norm_config: NormalizationConfig
     model_dim: int
     hidden_dim: int
-    kv_source_per_layer: tuple[int, ...] = ()
+    kv_source_per_layer: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
-        num_layers = len(self.layer_configs)
-        if self.kv_source_per_layer:
-            if len(self.kv_source_per_layer) != num_layers:
-                raise ValueError(
-                    f"kv_source_per_layer must have {num_layers} entries, got {len(self.kv_source_per_layer)}.",
-                )
-        else:
-            object.__setattr__(self, "kv_source_per_layer", tuple(range(num_layers)))
+        kv_source_per_layer = self.kv_source_per_layer
+        if kv_source_per_layer is None:
+            return
 
-        for layer_index, source_index in enumerate(self.kv_source_per_layer):
+        num_layers = len(self.layer_configs)
+        if len(kv_source_per_layer) != num_layers:
+            raise ValueError(
+                f"kv_source_per_layer must have {num_layers} entries, got {len(kv_source_per_layer)}.",
+            )
+
+        for layer_index, source_index in enumerate(kv_source_per_layer):
             if source_index < 0 or source_index >= num_layers:
                 raise ValueError(
                     f"Layer {layer_index} has invalid KV source layer {source_index};"
@@ -61,7 +62,7 @@ class TransformerConfig(LalamoConfig):
                 )
             if source_index > layer_index:
                 raise ValueError(f"Layer {layer_index} cannot borrow a KV cache from later layer {source_index}.")
-            if self.kv_source_per_layer[source_index] != source_index:
+            if kv_source_per_layer[source_index] != source_index:
                 raise ValueError(
                     f"Layer {layer_index} borrows from layer {source_index},"
                     " but borrowed layers must point to a KV source layer.",
@@ -112,14 +113,6 @@ class TransformerConfig(LalamoConfig):
                 raise ValueError(f"Layer {layer_index} and source layer {source_index} disagree on sliding window.")
             if self.layer_configs[layer_index].rope_config != self.layer_configs[source_index].rope_config:
                 raise ValueError(f"Layer {layer_index} and source layer {source_index} disagree on RoPE config.")
-
-    @property
-    def kv_cache_source_layers(self) -> tuple[int, ...]:
-        return tuple(
-            layer_index
-            for layer_index, source_index in enumerate(self.kv_source_per_layer)
-            if layer_index == source_index
-        )
 
     def _init_ropes(self, initializer: Initializer) -> tuple[tuple[RoPE, ...], tuple[int, ...]]:
         rope_cache: dict[RoPEConfig, int] = {}
@@ -193,7 +186,11 @@ class Transformer(LalamoModule[TransformerConfig]):
                 f" got {token_positions.shape}",
             )
         kv_source_per_layer = self.config.kv_source_per_layer
-        kv_cache_source_layers = self.config.kv_cache_source_layers
+        if kv_source_per_layer is None:
+            kv_source_per_layer = tuple(range(len(self.layers)))
+        kv_cache_source_layers = tuple(
+            layer_index for layer_index, source_index in enumerate(kv_source_per_layer) if layer_index == source_index
+        )
         if state is None:
             state_by_layer: dict[int, StateLayerBase] = {}
         else:
@@ -304,7 +301,16 @@ class Transformer(LalamoModule[TransformerConfig]):
         )
 
     def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> State:
+        kv_source_per_layer = self.config.kv_source_per_layer
+        if kv_source_per_layer is None:
+            kv_cache_source_layers = range(len(self.layers))
+        else:
+            kv_cache_source_layers = (
+                layer_index
+                for layer_index, source_index in enumerate(kv_source_per_layer)
+                if layer_index == source_index
+            )
         return State(
             self.layers[layer_index].init_static_state(batch_size, capacity, dtype)
-            for layer_index in self.config.kv_cache_source_layers
+            for layer_index in kv_cache_source_layers
         )

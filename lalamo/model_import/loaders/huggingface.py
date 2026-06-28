@@ -14,7 +14,7 @@ from lalamo.modules.classifier import Classifier
 from lalamo.modules.decoder import Decoder
 from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding
 from lalamo.modules.linear import Linear
-from lalamo.modules.mlp import DenseMLP, MixtureOfExperts, MLPBase
+from lalamo.modules.mlp import DenseMLP, MixtureOfExperts, MLPBase, ParallelMLP
 from lalamo.modules.normalization import Normalization
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig, AttentionProjectionMode
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv
@@ -42,6 +42,10 @@ def _update_linear(module: Linear, weights: WeightMatrix, biases: Array | None) 
 
 def _dense_mlp_projections(module: DenseMLP) -> tuple[Linear, Linear]:
     return module.up_projection, module.down_projection
+
+
+def _parallel_mlp_parts(module: ParallelMLP) -> tuple[MLPBase, Normalization, MLPBase, Normalization]:
+    return module.primary_mlp, module.primary_output_norm, module.parallel_mlp, module.parallel_output_norm
 
 
 def _first_path(weights_dict: Mapping[str, Array], paths: Sequence[ParameterPath]) -> ParameterPath | None:
@@ -406,6 +410,52 @@ def load_mlp(
         return load_moe(module, weights_dict, path, implementation=implementation)
 
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
+
+
+def load_parallel_mlp(
+    module: ParallelMLP,
+    weights_dict: Mapping[str, Array],
+    layer_path: ParameterPath,
+    primary_mlp_key: str,
+    up_proj_key: str,
+    gate_proj_key: str,
+    down_proj_key: str,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> ParallelMLP:
+    primary_mlp = load_mlp(
+        module.primary_mlp,
+        weights_dict,
+        layer_path / primary_mlp_key,
+        up_proj_key,
+        gate_proj_key,
+        down_proj_key,
+        implementation=implementation,
+    )
+    primary_output_norm = load_rmsnorm(
+        module.primary_output_norm,
+        weights_dict,
+        layer_path / "post_feedforward_layernorm_1",
+    )
+    parallel_mlp = load_mlp(
+        module.parallel_mlp,
+        weights_dict,
+        layer_path / "parallel_mlp",
+        up_proj_key,
+        gate_proj_key,
+        down_proj_key,
+        implementation=implementation,
+    )
+    parallel_output_norm = load_rmsnorm(
+        module.parallel_output_norm,
+        weights_dict,
+        layer_path / "post_feedforward_layernorm_2",
+    )
+    return load_as_at(
+        _parallel_mlp_parts,
+        module,
+        (primary_mlp, primary_output_norm, parallel_mlp, parallel_output_norm),
+    )
 
 
 def load_moe(
@@ -1077,38 +1127,27 @@ def load_transformer_layer(
         post_attention_norm = None
         pre_mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, mlp_path / pre_mlp_norm_key)
 
-    mlp = load_mlp(
-        module.mlp,
-        weights_dict,
-        mlp_path / mlp_key,
-        up_proj_key,
-        gate_proj_key,
-        down_proj_key,
-        implementation=implementation,
-    )
-    mlp_branch_output_norm = _load_optional_rmsnorm(
-        module.mlp_branch_output_norm,
-        weights_dict,
-        mlp_path / "post_feedforward_layernorm_1",
-    )
-    parallel_mlp = (
-        load_mlp(
-            module.parallel_mlp,
+    if isinstance(module.mlp, ParallelMLP):
+        mlp = load_parallel_mlp(
+            module.mlp,
             weights_dict,
-            mlp_path / "parallel_mlp",
+            mlp_path,
+            mlp_key,
             up_proj_key,
             gate_proj_key,
             down_proj_key,
             implementation=implementation,
         )
-        if module.parallel_mlp is not None
-        else None
-    )
-    parallel_mlp_branch_output_norm = _load_optional_rmsnorm(
-        module.parallel_mlp_branch_output_norm,
-        weights_dict,
-        mlp_path / "post_feedforward_layernorm_2",
-    )
+    else:
+        mlp = load_mlp(
+            module.mlp,
+            weights_dict,
+            mlp_path / mlp_key,
+            up_proj_key,
+            gate_proj_key,
+            down_proj_key,
+            implementation=implementation,
+        )
     post_mlp_norm = _load_optional_rmsnorm(module.post_mlp_norm, weights_dict, mlp_path / "post_feedforward_layernorm")
 
     return load_as_at(
@@ -1118,9 +1157,6 @@ def load_transformer_layer(
             m.post_mixer_norm,
             m.pre_mlp_norm,
             m.mlp,
-            m.mlp_branch_output_norm,
-            m.parallel_mlp,
-            m.parallel_mlp_branch_output_norm,
             m.post_mlp_norm,
         ),
         module,
@@ -1130,9 +1166,6 @@ def load_transformer_layer(
             post_attention_norm,
             pre_mlp_norm,
             mlp,
-            mlp_branch_output_norm,
-            parallel_mlp,
-            parallel_mlp_branch_output_norm,
             post_mlp_norm,
         ),
     )

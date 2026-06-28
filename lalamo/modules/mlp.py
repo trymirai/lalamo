@@ -29,6 +29,7 @@ from lalamo.weight_matrix import GradientEstimator, MatmulConfig
 
 from .activations import Activation
 from .linear import Linear, LinearConfig
+from .normalization import Normalization, NormalizationConfig, NormalizationForwardPassConfig
 from .utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
@@ -39,6 +40,8 @@ __all__ = [
     "MLPForwardPassConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "ParallelMLP",
+    "ParallelMLPConfig",
     "RoutingFunction",
     "SoftmaxRouting",
 ]
@@ -84,11 +87,15 @@ def _take_moe_expert_leaf(leaf: object, index: Int[Array, ""], sharding_config: 
 class MLPForwardPassConfig:
     mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN
     moe_chunk_size_ratio: float = 0.2
+    normalization_forward_pass_config: NormalizationForwardPassConfig = dataclass_field(
+        default_factory=NormalizationForwardPassConfig,
+    )
     matmul_config: MatmulConfig = dataclass_field(default_factory=MatmulConfig)
 
     @classmethod
     def for_tracer_tests(cls) -> Self:
         return cls(
+            normalization_forward_pass_config=NormalizationForwardPassConfig.for_tracer_tests(),
             matmul_config=MatmulConfig.for_tracer_tests(),
         )
 
@@ -100,6 +107,7 @@ class MLPForwardPassConfig:
     ) -> Self:
         return cls(
             mode=mode,
+            normalization_forward_pass_config=NormalizationForwardPassConfig.for_inference(),
             matmul_config=MatmulConfig.for_inference(precision),
         )
 
@@ -110,6 +118,7 @@ class MLPForwardPassConfig:
         precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
     ) -> Self:
         return cls(
+            normalization_forward_pass_config=NormalizationForwardPassConfig.for_training(),
             matmul_config=MatmulConfig.for_training(gradient_estimator, precision),
         )
 
@@ -718,3 +727,87 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             "(batch suffix_tokens) channels -> batch suffix_tokens channels",
             batch=batch_size,
         )
+
+
+@dataclass(frozen=True)
+class ParallelMLPConfig(MLPConfig):
+    primary_mlp_config: MLPConfig
+    primary_output_norm_config: NormalizationConfig
+    parallel_mlp_config: MLPConfig
+    parallel_output_norm_config: NormalizationConfig
+
+    def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> "ParallelMLP":
+        return ParallelMLP(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            primary_mlp=self.primary_mlp_config.init(initializer, model_dim, hidden_dim),
+            primary_output_norm=self.primary_output_norm_config.init(initializer, model_dim),
+            parallel_mlp=self.parallel_mlp_config.init(initializer, model_dim, hidden_dim),
+            parallel_output_norm=self.parallel_output_norm_config.init(initializer, model_dim),
+        )
+
+
+class ParallelMLP(MLPBase[ParallelMLPConfig]):
+    primary_mlp: MLPBase
+    primary_output_norm: Normalization
+    parallel_mlp: MLPBase
+    parallel_output_norm: Normalization
+
+    def __post_init__(self) -> None:
+        if self.primary_mlp.model_dim != self.parallel_mlp.model_dim:
+            raise ValueError(
+                f"Parallel MLP branches must share model_dim, got"
+                f" {self.primary_mlp.model_dim} and {self.parallel_mlp.model_dim}.",
+            )
+        if self.primary_output_norm.input_dim != self.primary_mlp.model_dim:
+            raise ValueError(
+                f"Primary branch output norm input_dim must be {self.primary_mlp.model_dim},"
+                f" got {self.primary_output_norm.input_dim}.",
+            )
+        if self.parallel_output_norm.input_dim != self.parallel_mlp.model_dim:
+            raise ValueError(
+                f"Parallel branch output norm input_dim must be {self.parallel_mlp.model_dim},"
+                f" got {self.parallel_output_norm.input_dim}.",
+            )
+
+    @property
+    def model_dim(self) -> int:
+        return self.primary_mlp.model_dim
+
+    @property
+    def hidden_dim(self) -> int:
+        return self.primary_mlp.hidden_dim
+
+    @eqx.filter_jit
+    def __call__(
+        self,
+        inputs: Float[Array, "batch suffix_tokens channels"],
+        lengths_without_padding: Int[Array, " batch"] | None = None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> Float[Array, "batch suffix_tokens channels"]:
+        primary_keychain, parallel_keychain = keychain.split()
+        primary_outputs = self.primary_mlp(
+            inputs,
+            lengths_without_padding=lengths_without_padding,
+            forward_pass_config=forward_pass_config,
+            keychain=primary_keychain,
+        )
+        primary_outputs = call_vmapped_twice(
+            self.primary_output_norm,
+            primary_outputs,
+            forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+        )
+        parallel_outputs = self.parallel_mlp(
+            inputs,
+            lengths_without_padding=lengths_without_padding,
+            forward_pass_config=forward_pass_config,
+            keychain=parallel_keychain,
+        )
+        parallel_outputs = call_vmapped_twice(
+            self.parallel_output_norm,
+            parallel_outputs,
+            forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+        )
+        return primary_outputs + parallel_outputs

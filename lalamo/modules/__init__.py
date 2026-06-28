@@ -35,6 +35,8 @@ from .mlp import (
     MLPBase,
     MLPConfig,
     MLPForwardPassConfig,
+    ParallelMLP,
+    ParallelMLPConfig,
     RoutingFunction,
     SoftmaxRouting,
 )
@@ -150,6 +152,8 @@ __all__ = [
     "PLELayer",
     "PLELayerConfig",
     "PLEModelConfig",
+    "ParallelMLP",
+    "ParallelMLPConfig",
     "PerLayerEmbedding",
     "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
