@@ -1,14 +1,9 @@
-from __future__ import annotations
-
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
 import pytest
-
-if TYPE_CHECKING:
-    from jaxtyping import Array
+from jaxtyping import Array
 
 from lalamo.modules.token_mixers.chunked_delta import chunk_delta_forward
 from tests.common import assert_close
