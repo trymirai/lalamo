@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 
 import einops
 import jax
 import jax.numpy as jnp
-
-if TYPE_CHECKING:
-    from jaxtyping import Array, Float
+from jaxtyping import Array, Float
 
 
 class ChunkKernelResult(NamedTuple):
@@ -53,6 +51,7 @@ def _single_head(
     Float[Array, "value_channels key_channels"],
     Float[Array, "key_channels key_channels"],
 ]:
+    """Closed-form intra-chunk pass for one head: (outputs, correction_vecs, end_state, end_prop)."""
     chunk_size, key_channels = keys.shape
     beta = beta.astype(jnp.float32)
     queries = queries.astype(jnp.float32)
@@ -120,9 +119,7 @@ def chunk_delta_forward(
             chunk_beta,
         )
 
-    # Keep the dense chunk_size x chunk_size intermediates scoped to one chunk.
-    chunk_outputs, correction_vecs, end_state, end_prop = jax.lax.map(
-        per_chunk,
+    chunk_outputs, correction_vecs, end_state, end_prop = jax.vmap(per_chunk, in_axes=0)(
         (queries, keys, values, decay_factor, beta),
     )
     return ChunkKernelResult(
