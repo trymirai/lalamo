@@ -32,6 +32,7 @@ __all__ = [
     "ContinuousBatchScheduler",
     "FixedSizeBatchScheduler",
     "GeneratedSequence",
+    "clear_probe_cache",
     "estimate_batchsize_for_memory_budget",
 ]
 
@@ -41,12 +42,13 @@ PROMPT_SIZE_BUCKETS: tuple[int, ...] = tuple(256 * 4**i for i in range(8))
 MIN_BATCHES_PER_BUCKET: int = 10
 MAX_BOUNDARY_BATCH_PADDING_FRACTION: float = 0.05
 
-# Cache of auto-batch probe results, keyed by (id(model), vram_bytes, max_output_length) ->
-# {padded_length: batch_size}. Lets a resident server skip re-running the expensive probe (throwaway
-# compiles + forwards) for shapes it has already measured. Keyed on model identity so a
-# different/reloaded model re-probes, and on max_output_length since the KV/buffer memory the probe
-# sizes against scales with it (state_capacity = padded_length + max_output_length + 1).
+# Auto-batch probe results {(id(model), vram, max_output_length): {padded_length: batch_size}}: lets a
+# resident server skip the throwaway probe compiles. Keyed on max_output_length since state_capacity scales with it.
 _PROBE_CACHE: dict[tuple[int, int, int], dict[int, int]] = {}
+
+
+def clear_probe_cache() -> None:
+    _PROBE_CACHE.clear()
 
 
 @dataclass(frozen=True)
@@ -226,7 +228,7 @@ def bucket_sequences[T: TokenSequence](
     max_vram: int,
     starting_batch_size: int = 2,
     min_batches_per_bucket: int = MIN_BATCHES_PER_BUCKET,
-    probe_cache: dict[int, int] | None = None,
+    probe_cache: dict[int, int],
 ) -> tuple[dict[int, list[tuple[int, T]]], dict[int, int]]:
     sequences_per_bucket = bucket_by_length(tokenized)
     sorted_lengths = sorted(sequences_per_bucket.keys(), reverse=True)
@@ -235,10 +237,8 @@ def bucket_sequences[T: TokenSequence](
     num_steps = 3
 
     for idx, padded_length in enumerate(sorted_lengths):
-        # Reuse a previously measured batch size for this padded_length when available.
-        # The auto-batch probe runs throwaway compile+forward passes that dominate per-request
-        # latency on a resident server; the result only depends on (model, padded_length, vram).
-        if probe_cache is not None and padded_length in probe_cache:
+        # Reuse a cached batch size for this padded_length (the probe's throwaway compiles dominate latency).
+        if padded_length in probe_cache:
             estimated = probe_cache[padded_length]
         else:
             estimated = estimate_batchsize_for_memory_budget(
@@ -247,8 +247,7 @@ def bucket_sequences[T: TokenSequence](
                 starting_batchsize=estimated,
                 num_steps=num_steps,
             )
-            if probe_cache is not None:
-                probe_cache[padded_length] = estimated
+            probe_cache[padded_length] = estimated
 
         # 1 estimator step suffices for each consecutive estimation, since we will already have
         # ~80% VRAM allocation ratio by starting from the last batchsize estimate, and 1 step is enough

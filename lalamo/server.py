@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from jax import numpy as jnp
 
 from lalamo.data.huggingface_message import HFMessage
-from lalamo.inference.batch_scheduler import BatchSchedulerConfig, ContinuousBatchScheduler
+from lalamo.inference.batch_scheduler import BatchSchedulerConfig, ContinuousBatchScheduler, clear_probe_cache
 from lalamo.model_import.common import import_model
 from lalamo.models import GenerationConfig, LanguageModel
 from lalamo.module import Keychain
@@ -97,24 +97,20 @@ class Batch:
 gpu_lock = asyncio.Lock()
 creation_lock = asyncio.Lock()
 
-# Keep the imported+loaded model resident across /batches requests so that
-# import_model (the full safetensors reload) and the warm eqx.filter_jit caches
-# are paid once instead of per request. Keyed on the parameters that change the
-# loaded weights/structure; a different model/dtype reloads.
-_model_cache: dict[tuple[str, str], LanguageModel] = {}
+# Resident model across /batches requests: pay the safetensors reload + jit warmup once, not per request.
+_model_cache: dict[tuple[str, str | None], LanguageModel] = {}
 
 
 def _load_resident_model(model_path: str, dtype: str | None) -> LanguageModel:
-    cache_key = (model_path, str(dtype))
+    cache_key = (model_path, dtype)
     cached = _model_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    # A different model/dtype: drop the previously resident model and free its
-    # device buffers before loading the new one, so multiple full models don't
-    # accumulate in VRAM (preserves the prior one-model-at-a-time footprint).
+    # Free the old model's device buffers before importing the new one (avoid two full models in VRAM).
     if _model_cache:
         _model_cache.clear()
+        clear_probe_cache()  # its entries are id(model)-keyed and must not outlive this model
         gc.collect()
 
     model = import_model(
