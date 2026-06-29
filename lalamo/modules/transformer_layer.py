@@ -269,7 +269,6 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 length_without_padding=length_without_padding,
                 forward_pass_config=forward_pass_config.mixer_forward_pass_config,
                 attention_parent_indices=parent_indices,
-                reuse_cache=isinstance(state, BorrowedKVCacheLayer),
                 keychain=keychain,
             )
 

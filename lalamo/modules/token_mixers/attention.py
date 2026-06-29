@@ -502,7 +502,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
-        reuse_cache: bool = False,
         *,
         keychain: Keychain,
     ) -> AttentionResult:
@@ -514,47 +513,33 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=qkv_keychain,
         )
-        using_borrowed_cache = isinstance(state, BorrowedKVCacheLayer)
-        if reuse_cache != using_borrowed_cache:
-            raise ValueError("reuse_cache must match borrowed KV cache state.")
-
-        projection_mode = self.config.projection_mode
+        borrows_kv = isinstance(state, BorrowedKVCacheLayer)
         kv_projection_pattern = "tokens (groups head_channels) -> tokens groups head_channels"
-        if reuse_cache:
-            if projection_mode is not AttentionProjectionMode.BORROWED_KV:
-                raise ValueError("Borrowed KV-cache attention requires borrowed KV projection.")
-            (raw_queries,) = qkv_outputs
-            assert isinstance(state, BorrowedKVCacheLayer)
+        raw_queries, *raw_kv_projections = qkv_outputs
+
+        if borrows_kv:
+            assert self.config.projection_mode is AttentionProjectionMode.BORROWED_KV
             updated_state = state
             prefix_length = updated_state.tree_prefix_length(num_suffix_tokens, length_without_padding)
         else:
-            if projection_mode is AttentionProjectionMode.BORROWED_KV:
-                raise ValueError("Borrowed KV-cache attention requires a borrowed KV cache.")
-            if projection_mode is AttentionProjectionMode.KEY_SAME_AS_VALUE:
-                raw_queries, raw_keys = qkv_outputs
-                keys = rearrange(
-                    raw_keys,
+            assert self.config.projection_mode is not AttentionProjectionMode.BORROWED_KV
+            projected_kv = tuple(
+                rearrange(
+                    projection,
                     kv_projection_pattern,
                     groups=self.config.num_groups,
                     head_channels=self.config.head_dim,
                 )
-                values = keys
-            elif projection_mode is AttentionProjectionMode.QKV:
-                raw_queries, raw_keys, raw_values = qkv_outputs
-                keys = rearrange(
-                    raw_keys,
-                    kv_projection_pattern,
-                    groups=self.config.num_groups,
-                    head_channels=self.config.head_dim,
-                )
-                values = rearrange(
-                    raw_values,
-                    kv_projection_pattern,
-                    groups=self.config.num_groups,
-                    head_channels=self.config.head_dim,
-                )
-            else:
-                raise ValueError(f"Unknown attention projection mode {projection_mode!r}.")
+                for projection in raw_kv_projections
+            )
+            match projected_kv:
+                case (keys,):
+                    assert self.config.projection_mode is AttentionProjectionMode.KEY_SAME_AS_VALUE
+                    values = keys
+                case (keys, values):
+                    pass
+                case _:
+                    raise TypeError(f"Invalid KV projection shape for {self.config.projection_mode!r}.")
 
             if self.key_norm is not None:
                 keys = call_vmapped_twice(
@@ -562,37 +547,25 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                     keys,
                     forward_pass_config=forward_pass_config.normalization_forward_pass_config,
                 )
+            if positional_embeddings is not None:
+                keys = call_vmapped(positional_embeddings.apply, keys, in_axes=1, out_axes=1)
+
             if self.config.normalize_values:
                 values = _rms_normalize(
                     values,
                     eps=1e-6,
                     forward_pass_config=forward_pass_config.normalization_forward_pass_config,
                 )
-            if positional_embeddings is not None:
-                keys = call_vmapped(positional_embeddings.apply, keys, in_axes=1, out_axes=1)
 
             if state is None:
                 prefix_length = int(self.has_sinks)
                 updated_state = DynamicKVCacheLayer.init(
                     self.has_sinks, keys.astype(values.dtype), values, length=length_without_padding
                 )
-            elif isinstance(state, ExtendableKVCacheLayer):
+            else:
+                assert isinstance(state, ExtendableKVCacheLayer)
                 prefix_length = state.current_prefix_length()
                 updated_state = state.extend(keys, values, added_length=length_without_padding)
-            else:
-                raise TypeError(
-                    f"Attention state must be extendable or borrowed KV cache, got {type(state).__name__}.",
-                )
-
-        if self.gate_projection is not None:
-            (gate,) = call_vmapped(
-                self.gate_projection,
-                inputs,
-                forward_pass_config=forward_pass_config.matmul_config,
-                keychain=gate_keychain,
-            )
-        else:
-            gate = None
 
         queries = self._prepare_heads(
             raw_queries,
@@ -634,8 +607,16 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             heads=self.config.num_heads,
             head_channels=self.config.head_dim,
         )
-        if gate is not None:
+
+        if self.gate_projection is not None:
+            (gate,) = call_vmapped(
+                self.gate_projection,
+                inputs,
+                forward_pass_config=forward_pass_config.matmul_config,
+                keychain=gate_keychain,
+            )
             attention_output = attention_output * jax.nn.sigmoid(gate)
+
         (result,) = call_vmapped(
             self.out_projection,
             attention_output,
@@ -643,7 +624,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             keychain=out_keychain,
         )
 
-        if not return_updated_state or using_borrowed_cache:
+        if not return_updated_state or borrows_kv:
             updated_state = None
 
         return AttentionResult(

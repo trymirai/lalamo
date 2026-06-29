@@ -334,7 +334,6 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
-        reuse_cache: bool = False,
         *,
         keychain: Keychain,
     ) -> TokenMixerResult[SSMStateLayer]:
@@ -342,8 +341,6 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             raise ValueError("Positional embeddings are not supported for DeltaNet.")
         if attention_parent_indices is not None:
             raise ValueError("Attention parent indices are not supported for DeltaNet.")
-        if reuse_cache:
-            raise ValueError("KV cache sharing is not supported for DeltaNet.")
 
         in_keychain, out_keychain = keychain.split()
         num_tokens, *_ = inputs.shape

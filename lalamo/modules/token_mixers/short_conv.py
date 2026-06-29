@@ -109,7 +109,6 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
-        reuse_cache: bool = False,
         *,
         keychain: Keychain,
     ) -> TokenMixerResult[ShortConvStateLayer]:
@@ -117,8 +116,6 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
             raise ValueError("Positional embeddings are not supported for ShortConv.")
         if attention_parent_indices is not None:
             raise ValueError("Attention parent indices are not supported for ShortConv.")
-        if reuse_cache:
-            raise ValueError("KV cache sharing is not supported for ShortConv.")
 
         in_keychain, out_keychain = keychain.split()
         pre_conv_gate, post_conv_gate, x = call_vmapped(
