@@ -67,31 +67,13 @@ def _reference(
     decay_factor: Array,
     beta: Array,
 ) -> tuple[Array, Array, Array, Array]:
-    def per_chunk(
-        chunk_queries: Array,
-        chunk_keys: Array,
-        chunk_values: Array,
-        chunk_decay: Array,
-        chunk_beta: Array,
-    ) -> tuple[Array, Array, Array, Array]:
-        return jax.vmap(_reference_single_head, in_axes=(1, 1, 1, 1, 1))(
-            chunk_queries,
-            chunk_keys,
-            chunk_values,
-            chunk_decay,
-            chunk_beta,
-        )
-
     queries, keys, values, decay_factor, beta = (
         array.astype(jnp.float64) for array in (queries, keys, values, decay_factor, beta)
     )
-    outputs, correction_vecs, end_state, end_prop = jax.vmap(per_chunk, in_axes=(0, 0, 0, 0, 0))(
-        queries,
-        keys,
-        values,
-        decay_factor,
-        beta,
-    )
+    outputs, correction_vecs, end_state, end_prop = jax.vmap(
+        jax.vmap(_reference_single_head, in_axes=1),
+        in_axes=0,
+    )(queries, keys, values, decay_factor, beta)
     return (
         jnp.transpose(outputs, (0, 2, 1, 3)),
         jnp.transpose(correction_vecs, (0, 2, 1, 3)),
@@ -120,10 +102,6 @@ def _make_inputs(
     return queries, keys, values, decay_factor, beta
 
 
-def _assert_close(result: Array, reference: Array) -> None:
-    assert_close(result=result, reference=reference.astype(jnp.float32), rtol=1e-4, atol=1e-5)
-
-
 @pytest.mark.usefixtures("enable_x64")
 @pytest.mark.parametrize("chunk_size", [32, 64, 128])
 def test_chunk_delta_matches_reference(chunk_size: int) -> None:
@@ -138,7 +116,10 @@ def test_chunk_delta_matches_reference(chunk_size: int) -> None:
     expected_outputs, expected_correction_vecs, expected_end_state, expected_end_prop = _reference(*inputs)
     result = chunk_delta_forward(*inputs)
 
-    _assert_close(result.chunk_outputs, expected_outputs)
-    _assert_close(result.correction_vecs, expected_correction_vecs)
-    _assert_close(result.end_state, expected_end_state)
-    _assert_close(result.end_prop, expected_end_prop)
+    for actual, expected in (
+        (result.chunk_outputs, expected_outputs),
+        (result.correction_vecs, expected_correction_vecs),
+        (result.end_state, expected_end_state),
+        (result.end_prop, expected_end_prop),
+    ):
+        assert_close(result=actual, reference=expected.astype(jnp.float32), rtol=1e-4, atol=1e-5)

@@ -1,5 +1,3 @@
-"""Closed-form DeltaNet intra-chunk recurrence."""
-
 from typing import NamedTuple
 
 import einops
@@ -37,12 +35,12 @@ def _single_head(
     values = values.astype(jnp.float32)
 
     cumulative_decay = jnp.cumsum(decay_factor.astype(jnp.float32), axis=0)
-    final_decay = cumulative_decay[-1]
+    *_, final_decay = cumulative_decay
     pair_decay = cumulative_decay[:, None] - cumulative_decay[None, :]
 
     # Mask before exp so unused upper-triangle entries cannot overflow.
     lower_decay = jnp.exp(jnp.tril(pair_decay, -1))
-    key_dot_key = jnp.matmul(keys, keys.T)
+    key_dot_key = keys @ keys.T
     eye_chunk = jnp.eye(chunk_size, dtype=jnp.float32)
     state_matrix = eye_chunk + jnp.tril(beta[:, None] * lower_decay * key_dot_key, -1)
 
@@ -51,26 +49,23 @@ def _single_head(
     )
 
     inclusive_decay = jnp.exp(jnp.tril(pair_decay, 0))
-    query_dot_key = jnp.matmul(queries, keys.T)
+    query_dot_key = queries @ keys.T
     attention = jnp.tril(inclusive_decay * query_dot_key, 0)
-    chunk_outputs = jnp.matmul(attention, update_values)
+    chunk_outputs = attention @ update_values
 
     end_state_weights = jnp.exp(final_decay - cumulative_decay)
-    # The end-state outer product spans a wide dynamic range, so accumulate in true fp32.
     with use_dot_algorithm_preset(DotAlgorithmPreset.F32_F32_F32):
-        end_state = jnp.matmul(update_values.T, keys * end_state_weights[:, None])
+        end_state = update_values.T @ (keys * end_state_weights[:, None])
 
     prop_matrix = eye_chunk + jnp.tril(beta[:, None] * key_dot_key, -1)
-    prop_updates = jax.scipy.linalg.solve_triangular(
-        prop_matrix, beta[:, None] * keys, lower=True, unit_diagonal=True
-    )
+    prop_updates = jax.scipy.linalg.solve_triangular(prop_matrix, beta[:, None] * keys, lower=True, unit_diagonal=True)
 
-    key_dot_query = jnp.matmul(keys, queries.T)
+    key_dot_query = keys @ queries.T
     past_key_dot_query = jnp.triu(key_dot_query, 0)
-    correction = queries - jnp.matmul(past_key_dot_query.T, prop_updates)
+    correction = queries - past_key_dot_query.T @ prop_updates
     correction = jnp.exp(cumulative_decay)[:, None] * correction
 
-    end_prop = jnp.exp(final_decay) * (jnp.eye(key_channels, dtype=jnp.float32) - jnp.matmul(prop_updates.T, keys))
+    end_prop = jnp.exp(final_decay) * (jnp.eye(key_channels, dtype=jnp.float32) - prop_updates.T @ keys)
     return chunk_outputs, correction, end_state, end_prop
 
 
