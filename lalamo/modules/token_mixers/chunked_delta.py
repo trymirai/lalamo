@@ -20,8 +20,8 @@ def _single_head(
     queries: Float[Array, "chunk_size key_channels"],
     keys: Float[Array, "chunk_size key_channels"],
     values: Float[Array, "chunk_size value_channels"],
-    decay_factor: Array,
-    beta: Array,
+    decay_factor: Float[Array, " chunk_size"],
+    beta: Float[Array, " chunk_size"],
 ) -> tuple[
     Float[Array, "chunk_size value_channels"],
     Float[Array, "chunk_size key_channels"],
@@ -60,9 +60,7 @@ def _single_head(
     prop_matrix = eye_chunk + jnp.tril(beta[:, None] * key_dot_key, -1)
     prop_updates = jax.scipy.linalg.solve_triangular(prop_matrix, beta[:, None] * keys, lower=True, unit_diagonal=True)
 
-    key_dot_query = keys @ queries.T
-    past_key_dot_query = jnp.triu(key_dot_query, 0)
-    correction = queries - past_key_dot_query.T @ prop_updates
+    correction = queries - jnp.tril(query_dot_key, 0) @ prop_updates
     correction = jnp.exp(cumulative_decay)[:, None] * correction
 
     end_prop = jnp.exp(final_decay) * (jnp.eye(key_channels, dtype=jnp.float32) - prop_updates.T @ keys)
