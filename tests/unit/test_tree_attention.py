@@ -325,3 +325,15 @@ def test_borrowed_dynamic_cache_preserves_sparse_padding_mask() -> None:
     mask = borrowed_cache.attention_mask(suffix_length=1, is_causal=True, suffix_length_without_padding=1)
 
     assert jnp.array_equal(mask, jnp.array([[True, True, True, False, False, True]], dtype=jnp.bool))
+
+
+def test_borrowed_tree_mask_keeps_sparse_suffix() -> None:
+    keys = jnp.zeros((5, 1, 1), dtype=jnp.float32)
+    cache = DynamicKVCacheLayer.init(has_sinks=False, keys=keys, values=keys, length=jnp.array(3, dtype=jnp.int32))
+    cache = cache.extend(jnp.ones((1, 1, 1), dtype=jnp.float32), jnp.ones((1, 1, 1), dtype=jnp.float32))
+    borrowed_cache = BorrowedKVCacheLayer.from_cache(cache)
+
+    prefix_length = borrowed_cache.tree_prefix_length(suffix_length=1, suffix_length_without_padding=1)
+    mask = borrowed_cache.tree_attention_mask(prefix_length, jnp.array([-1], dtype=jnp.int32))
+
+    assert jnp.array_equal(mask, jnp.array([[True, True, True, False, False, True]], dtype=jnp.bool))

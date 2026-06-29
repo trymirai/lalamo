@@ -46,16 +46,18 @@ def build_tree_attention_mask(
     prefix_length: Int[Array, ""] | int,
     parent_indices: Int[Array, " nodes"],
     has_sinks: bool,
+    key_positions: Int[Array, " total_capacity"] | None = None,
 ) -> Bool[Array, "nodes total_capacity"]:
     """Tree attention mask: each draft node attends to prefix + ancestors + self."""
     prefix_length = jnp.asarray(prefix_length, dtype=jnp.int32)
     (num_nodes,) = parent_indices.shape
 
-    col_indices = jnp.arange(total_capacity, dtype=jnp.int32)
-    prefix_mask = col_indices[None, :] < prefix_length
+    if key_positions is None:
+        key_positions = jnp.arange(total_capacity, dtype=jnp.int32)
+    prefix_mask = key_positions[None, :] < prefix_length
 
     ancestor_matrix = tree_ancestor_mask(parent_indices)
-    draft_offsets = col_indices - prefix_length
+    draft_offsets = key_positions - prefix_length
     in_draft = (draft_offsets >= 0) & (draft_offsets < num_nodes)
     clamped = jnp.clip(draft_offsets, 0, num_nodes - 1)
     draft_mask = ancestor_matrix[:, clamped] & in_draft[None, :]
@@ -141,7 +143,7 @@ class KVCacheLayer(StateLayerBase):
     ) -> Bool[Array, "nodes tokens"]:
         self._raise_if_batched()
         total, _, _ = self.keys.shape
-        mask = build_tree_attention_mask(total, prefix_length, parent_indices, self.has_sinks)
+        mask = build_tree_attention_mask(total, prefix_length, parent_indices, self.has_sinks, self._key_positions())
         padding_mask = self.padding_mask
         if padding_mask is not None:
             mask = mask & padding_mask[None, :]
