@@ -170,52 +170,65 @@ class ExtendableKVCacheLayer(KVCacheLayer):
 
 
 class BorrowedKVCacheLayer(KVCacheLayer):
-    current_length: Int[Array, "*batch"] | None = None
+    borrowed_padding_mask: Bool[Array, "*batch tokens"] | None = None
+    use_padding_positions: bool = eqx.field(static=True, default=False)
 
     @classmethod
     def from_cache(cls, cache: KVCacheLayer) -> "BorrowedKVCacheLayer":
         if isinstance(cache, BorrowedKVCacheLayer):
             raise TypeError("Cannot borrow a KV cache from an already borrowed cache.")
         if isinstance(cache, StaticKVCacheLayer):
-            return cls(
-                has_sinks=cache.has_sinks,
-                keys=cache.keys,
-                values=cache.values,
-                current_length=cache.current_length,
+            capacity = cache.keys.shape[-3]
+            borrowed_padding_mask = (
+                jnp.arange(capacity, dtype=jnp.int32) < jnp.asarray(cache.current_length)[..., None]
             )
-        padding_mask = cache.padding_mask
+            use_padding_positions = False
+        else:
+            borrowed_padding_mask = cache.padding_mask
+            use_padding_positions = borrowed_padding_mask is not None
         return cls(
             has_sinks=cache.has_sinks,
             keys=cache.keys,
             values=cache.values,
-            current_length=None if padding_mask is None else jnp.sum(padding_mask.astype(jnp.int32), axis=-1),
+            borrowed_padding_mask=borrowed_padding_mask,
+            use_padding_positions=use_padding_positions,
         )
 
     @property
     def padding_mask(self) -> Bool[Array, " tokens"] | None:
         self._raise_if_batched()
-        if self.current_length is None:
-            return None
-        return jnp.arange(self.capacity, dtype=jnp.int32) < self.current_length
-
-    @property
-    def capacity(self) -> int:
-        self._raise_if_batched()
-        result, _, _ = self.keys.shape
-        return result
+        return self.borrowed_padding_mask
 
     def current_prefix_length(self) -> Int[Array, ""] | int:
         self._raise_if_batched()
-        if self.current_length is None:
+        padding_mask = self.padding_mask
+        if padding_mask is None:
             return self.keys.shape[0]
-        return self.current_length
+        return jnp.sum(padding_mask.astype(jnp.int32))
+
+    def _key_positions(self) -> Int[Array, " tokens"]:
+        if not self.use_padding_positions:
+            return super()._key_positions()
+        assert self.borrowed_padding_mask is not None
+        return jnp.cumsum(self.borrowed_padding_mask.astype(jnp.int32)) - 1
+
+    def _query_positions(
+        self,
+        suffix_length: int,
+        suffix_length_without_padding: Int[Array, ""] | int,
+    ) -> Int[Array, " suffix_tokens"]:
+        if not self.use_padding_positions:
+            return super()._query_positions(suffix_length, suffix_length_without_padding)
+        num_tokens, _, _ = self.keys.shape
+        query_physical_indices = num_tokens - suffix_length + jnp.arange(suffix_length, dtype=jnp.int32)
+        return self._key_positions()[query_physical_indices]
 
     def tree_prefix_length(
         self,
         suffix_length: int,
         suffix_length_without_padding: Int[Array, ""] | int | None = None,
     ) -> Int[Array, ""] | int:
-        if self.current_length is None or suffix_length_without_padding is None:
+        if self.padding_mask is None or suffix_length_without_padding is None:
             added_length = suffix_length
         else:
             added_length = suffix_length_without_padding
@@ -283,20 +296,20 @@ class DynamicKVCacheLayer(ExtendableKVCacheLayer):
         updated_values = jnp.concatenate([self.values, added_values], axis=0)
 
         added_padded_length, _, _ = added_keys.shape
+        if self.padding_mask is None and added_length is None:
+            return DynamicKVCacheLayer(self.has_sinks, updated_keys, updated_values)
+
+        if added_length is None:
+            added_length = added_padded_length
         if self.padding_mask is not None:
-            updated_keys = eqx.error_if(
-                updated_keys,
-                ~jnp.all(self.padding_mask),
-                "Dynamic KV cache cannot be extended after padded initialization. Use StaticKVCacheLayer.",
-            )
-        if added_length is not None:
-            added_length = jnp.asarray(added_length, dtype=jnp.int32)
-            updated_keys = eqx.error_if(
-                updated_keys,
-                added_length != added_padded_length,
-                "Dynamic KV cache cannot be extended with padded KV tokens. Use StaticKVCacheLayer.",
-            )
-        return DynamicKVCacheLayer(self.has_sinks, updated_keys, updated_values)
+            old_padding_mask = self.padding_mask
+        else:
+            old_num_tokens, _, _ = self.keys.shape
+            old_padding_mask = jnp.ones(old_num_tokens, dtype=jnp.bool)
+
+        added_padding_mask = jnp.arange(added_padded_length, dtype=jnp.int32) < added_length
+        updated_padding_mask = jnp.concatenate([old_padding_mask, added_padding_mask], axis=0)
+        return DynamicKVCacheLayer(self.has_sinks, updated_keys, updated_values, updated_padding_mask)
 
 
 class StaticKVCacheLayer(ExtendableKVCacheLayer):

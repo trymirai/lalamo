@@ -451,13 +451,11 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
         decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
-        enable_thinking: bool = True,
         keychain: Keychain,
     ) -> AssistantMessage:
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
-        request_token_ids = self.token_codec.encode_request(messages, enable_thinking=enable_thinking)
         token_ids = jax.device_put(
-            jnp.asarray(request_token_ids, dtype=jnp.int32)[None, :],
+            jnp.asarray(self.token_codec.encode_request(messages), dtype=jnp.int32)[None, :],
             self.sharding_config.make_sharding((batch_axis, None)),
         )
         response_ids = self.generate_tokens(
@@ -468,10 +466,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             decode_forward_pass_config=decode_forward_pass_config,
             keychain=keychain,
         ).token_ids[0]
-        return self.token_codec.decode_response(
-            self.trim_at_eos(response_ids.tolist()),
-            expect_thinking=enable_thinking,
-        )
+        return self.token_codec.decode_response(self.trim_at_eos(response_ids.tolist()))
 
     def stream_tokens(
         self,
@@ -582,16 +577,9 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
         decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
-        enable_thinking: bool = True,
         keychain: Keychain,
     ) -> Iterable[str]:
-        token_ids = jnp.asarray(
-            self.token_codec.encode_request(messages, enable_thinking=enable_thinking), dtype=jnp.int32
-        )
-        stop_token_ids = self.config.generation_config.stop_token_ids
-        if generation_config is not None:
-            stop_token_ids = self.config.generation_config.override_with(generation_config).stop_token_ids
-        stop_token_ids_set = set(stop_token_ids)
+        token_ids = jnp.asarray(self.token_codec.encode_request(messages), dtype=jnp.int32)
         response_token_ids: list[int] = []
         previous_text = ""
         for token_id in self.stream_tokens(
@@ -602,10 +590,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             decode_forward_pass_config=decode_forward_pass_config,
             keychain=keychain,
         ):
-            decoded_token_id = int(token_id.item())
-            if decoded_token_id in stop_token_ids_set:
-                return
-            response_token_ids.append(decoded_token_id)
+            response_token_ids.append(int(token_id.item()))
             current_text = self.token_codec.decode_tokens(response_token_ids, hide_invalid_utf_chars=True)
             yield current_text[len(previous_text) :]
             previous_text = current_text

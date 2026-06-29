@@ -197,14 +197,11 @@ def _load_hf_model(
     device_map: str | torch.device = device
     max_memory: dict[int | str, str] | None = None
     device_map_env = os.getenv("LALAMO_HF_DEVICE_MAP")
-    normalized_repo = model_repo.lower().replace("-", "_")
-    needs_device_map = (
-        "qwen3_next" in normalized_repo or "gemma_4_31b" in normalized_repo or "gemma_4_26b_a4b" in normalized_repo
-    )
+    is_qwen3_next = "qwen3_next" in model_repo.lower().replace("-", "_")
 
     if device_map_env is not None:
         device_map = device_map_env
-    elif needs_device_map:
+    if is_qwen3_next:
         device_map = "auto"
 
     if device_map == "auto":
@@ -218,8 +215,7 @@ def _load_hf_model(
             if bytes_limit is not None:
                 safe_bytes = int(bytes_limit * 0.9)
                 safe_gib = max(1, safe_bytes // gib)
-                max_memory = dict.fromkeys(range(len(gpu_devices)), f"{safe_gib}GiB")
-                max_memory["cpu"] = "1000GiB"
+                max_memory = {0: f"{safe_gib}GiB", "cpu": "1000GiB"}
 
     model_kwargs: dict[str, Any] = {
         "dtype": dtype.torch_dtype if dtype is not None else None,
@@ -231,7 +227,7 @@ def _load_hf_model(
 
     # Workaround: transformers 5.5.0 ignores `dtype` for composite configs
     # (e.g. Qwen3.5 VLM where text_config.dtype overrides the user-specified dtype).
-    if dtype is not None and device_map != "auto":
+    if dtype is not None:
         model = model.to(dtype.torch_dtype)
 
     return model, device
@@ -482,22 +478,6 @@ class HFDecoderTracer(
 
     @torch.no_grad()
     def match_activations(self, result: InferenceResult) -> None:
-        text_config = getattr(self.text_model, "config", None)
-        if getattr(text_config, "model_type", None) == "gemma4_text":
-            # HF Gemma 4 component calls require shared_kv_states and PLE inputs built by the full model loop.
-            assert result.activation_trace is not None
-            for i, (label, rope_fn) in enumerate(self.rope_fns()):
-                self.match_rope(result.activation_trace, i, rope_fn, label)
-            self.match_embedding(result.activation_trace)
-            self.match_rmsnorm(
-                result.activation_trace.layer_results[-1].outputs,
-                result.activation_trace.output_norm,
-                self.output_norm(),
-                "Output RMSNorm",
-            )
-            self.match_end_to_end(result)
-            return None
-
         return super().match_activations(result)
 
     def normalized_output(self, result: InferenceResult) -> Tensor:

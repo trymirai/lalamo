@@ -1,13 +1,9 @@
-from dataclasses import replace
-
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
 
 from lalamo.initializer import RandomInitializer
 from lalamo.modules import (
-    AttentionImplementation,
     BorrowedKVCacheLayer,
     Decoder,
     DecoderConfig,
@@ -39,8 +35,8 @@ from tests.helpers import make_test_sharding_config
 def decoder(request: pytest.FixtureRequest) -> Decoder:
     kv_source_per_layer: tuple[int, ...] = getattr(request, "param", (0,))
     precision = jnp.float32
-    model_dim = 16
-    hidden_dim = 32
+    model_dim = 8
+    hidden_dim = 16
     vocab_size = 32
     context_length = 16
 
@@ -61,7 +57,7 @@ def decoder(request: pytest.FixtureRequest) -> Decoder:
     rope_config = UnscaledRoPEConfig(
         base=10_000.0,
         max_sequence_length=context_length,
-        head_dim=8,
+        head_dim=4,
     )
 
     layer_configs = []
@@ -77,7 +73,7 @@ def decoder(request: pytest.FixtureRequest) -> Decoder:
             key_norm_config=None,
             num_heads=2,
             num_groups=2,
-            head_dim=8,
+            head_dim=4,
             is_causal=True,
             scale=None,
             sliding_window_size=None,
@@ -119,19 +115,6 @@ def decoder(request: pytest.FixtureRequest) -> Decoder:
             default_dtype=precision,
             sharding_config=ShardingConfig.replicated(jax.devices("cpu")[:8]),
             key=jax.random.key(4),
-        ),
-    )
-
-
-def _standard_single_token_config() -> DecoderForwardPassConfig:
-    transformer_config = TransformerForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN)
-    return DecoderForwardPassConfig(
-        transformer_forward_pass_config=replace(
-            transformer_config,
-            mixer_forward_pass_config=replace(
-                transformer_config.mixer_forward_pass_config,
-                attention_implementation=AttentionImplementation.STANDARD,
-            ),
         ),
     )
 
@@ -187,84 +170,6 @@ def test_build_tree_attention_mask_prefix_plus_draft() -> None:
     assert jnp.array_equal(mask, expected)
 
 
-def test_tree_attention_rejects_invalid_layouts() -> None:
-    with pytest.raises(eqx.EquinoxRuntimeError, match="parent_indices"):
-        tree_ancestor_mask(jnp.array([-1, 1], dtype=jnp.int32)).block_until_ready()
-
-
-def test_transformer_uses_compact_kv_cache_layout(decoder: Decoder) -> None:
-    layer_config = decoder.config.transformer_config.layer_configs[0]
-    attention_config = layer_config.mixer_config
-    assert isinstance(attention_config, AttentionConfig)
-    borrowed_layer_config = replace(
-        layer_config,
-        mixer_config=replace(
-            attention_config,
-            key_norm_config=None,
-            projection_mode=AttentionProjectionMode.BORROWED_KV,
-        ),
-    )
-    transformer_config = replace(
-        decoder.config.transformer_config,
-        layer_configs=(layer_config, borrowed_layer_config, layer_config, borrowed_layer_config),
-        kv_source_per_layer=(0, 0, 2, 2),
-    )
-
-    transformer = transformer_config.init(
-        RandomInitializer(
-            default_dtype=jnp.float32,
-            sharding_config=ShardingConfig.replicated(jax.devices("cpu")[:8]),
-            key=jax.random.key(5),
-        ),
-    )
-
-    static_state = transformer.init_static_state(batch_size=1, capacity=8, dtype=jnp.float32)
-    assert transformer.config.kv_source_per_layer == (0, 0, 2, 2)
-    assert len(static_state) == 2
-
-
-@pytest.mark.parametrize("kv_source_per_layer", [(1, 1), (0, 0, 1)])
-def test_transformer_config_rejects_invalid_kv_cache_layout(
-    decoder: Decoder,
-    kv_source_per_layer: tuple[int, ...],
-) -> None:
-    layer_config = decoder.config.transformer_config.layer_configs[0]
-    with pytest.raises(ValueError):
-        replace(
-            decoder.config.transformer_config,
-            layer_configs=(layer_config,) * len(kv_source_per_layer),
-            kv_source_per_layer=kv_source_per_layer,
-        )
-
-
-def test_transformer_config_rejects_invalid_projection_modes(decoder: Decoder) -> None:
-    layer_config = decoder.config.transformer_config.layer_configs[0]
-    attention_config = layer_config.mixer_config
-    assert isinstance(attention_config, AttentionConfig)
-
-    with pytest.raises(ValueError, match="must use borrowed KV"):
-        replace(
-            decoder.config.transformer_config,
-            layer_configs=(layer_config, layer_config),
-            kv_source_per_layer=(0, 0),
-        )
-
-    borrowed_layer_config = replace(
-        layer_config,
-        mixer_config=replace(
-            attention_config,
-            key_norm_config=None,
-            projection_mode=AttentionProjectionMode.BORROWED_KV,
-        ),
-    )
-    with pytest.raises(ValueError, match="owns its KV cache"):
-        replace(
-            decoder.config.transformer_config,
-            layer_configs=(borrowed_layer_config,),
-            kv_source_per_layer=(0,),
-        )
-
-
 @pytest.mark.parametrize("decoder", [(0,), (0, 0)], indirect=True, ids=["plain", "shared_kv"])
 def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
     prefix_token_ids = jnp.array([[1, 2, 3]], dtype=jnp.int32)
@@ -273,9 +178,9 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
     forward_pass_config = DecoderForwardPassConfig(
         embedding_forward_pass_config=EmbeddingForwardPassConfig(activation_dtype=jnp.float32),
     )
-    single_token_forward_pass_config = replace(
-        _standard_single_token_config(),
+    single_token_forward_pass_config = DecoderForwardPassConfig(
         embedding_forward_pass_config=EmbeddingForwardPassConfig(activation_dtype=jnp.float32),
+        transformer_forward_pass_config=TransformerForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
     )
 
     prefix_result = decoder(
@@ -324,8 +229,8 @@ def test_kv_sharing_layer_projects_queries_only(decoder: Decoder) -> None:
     shared = decoder.transformer.layers[1].mixer
     assert isinstance(owner, Attention)
     assert isinstance(shared, Attention)
-    assert owner.qkv_projection.output_dims == (16, 16, 16)
-    assert shared.qkv_projection.output_dims == (16,)
+    assert owner.qkv_projection.output_dims == (8, 8, 8)
+    assert shared.qkv_projection.output_dims == (8,)
     assert shared.key_norm is None
 
 
@@ -347,7 +252,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         jnp.array([[10]], dtype=jnp.int32),
         jnp.array([[2]], dtype=jnp.int32),
         state=state_a,
-        forward_pass_config=_standard_single_token_config(),
+        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(50, sharding_config=make_test_sharding_config()),
     )
     logits_a = result_a.logits[0, 0]
@@ -357,7 +262,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         jnp.array([[20]], dtype=jnp.int32),
         jnp.array([[2]], dtype=jnp.int32),
         state=state_b,
-        forward_pass_config=_standard_single_token_config(),
+        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(60, sharding_config=make_test_sharding_config()),
     )
     logits_b = result_b.logits[0, 0]
@@ -367,7 +272,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         jnp.array([[2, 2]], dtype=jnp.int32),
         state=prefix_result.updated_state,
         attention_parent_indices=jnp.array([[-1, -1]], dtype=jnp.int32),
-        forward_pass_config=_standard_single_token_config(),
+        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(70, sharding_config=make_test_sharding_config()),
     )
 
@@ -411,123 +316,12 @@ def test_tree_attention_mask_static_matches_dynamic() -> None:
     assert jnp.array_equal(dynamic_mask, static_mask)
 
 
-def test_borrowed_dynamic_cache_uses_logical_length_for_right_padding() -> None:
+def test_borrowed_dynamic_cache_preserves_sparse_padding_mask() -> None:
     keys = jnp.zeros((5, 1, 1), dtype=jnp.float32)
-    cache = DynamicKVCacheLayer.init(
-        has_sinks=False,
-        keys=keys,
-        values=keys,
-        length=jnp.array(3, dtype=jnp.int32),
-    )
+    cache = DynamicKVCacheLayer.init(has_sinks=False, keys=keys, values=keys, length=jnp.array(3, dtype=jnp.int32))
+    cache = cache.extend(jnp.ones((1, 1, 1), dtype=jnp.float32), jnp.ones((1, 1, 1), dtype=jnp.float32))
     borrowed_cache = BorrowedKVCacheLayer.from_cache(cache)
 
-    mask = borrowed_cache.attention_mask(
-        suffix_length=5,
-        suffix_length_without_padding=jnp.array(3, dtype=jnp.int32),
-        is_causal=True,
-    )
+    mask = borrowed_cache.attention_mask(suffix_length=1, is_causal=True, suffix_length_without_padding=1)
 
-    expected_mask = jnp.array(
-        [
-            [True, False, False, False, False],
-            [True, True, False, False, False],
-            [True, True, True, False, False],
-            [True, True, True, False, False],
-            [True, True, True, False, False],
-        ],
-        dtype=jnp.bool,
-    )
-    assert jnp.array_equal(mask, expected_mask)
-
-
-def test_dynamic_kv_cache_rejects_padded_extension() -> None:
-    keys = jnp.zeros((5, 1, 1), dtype=jnp.float32)
-    cache = DynamicKVCacheLayer.init(
-        has_sinks=False,
-        keys=keys,
-        values=keys,
-        length=jnp.array(3, dtype=jnp.int32),
-    )
-
-    with pytest.raises(eqx.EquinoxRuntimeError, match="padded initialization"):
-        cache.extend(
-            jnp.ones((1, 1, 1), dtype=jnp.float32),
-            jnp.ones((1, 1, 1), dtype=jnp.float32),
-        ).keys.block_until_ready()
-
-
-def test_shared_kv_runtime_uses_compact_state(decoder: Decoder) -> None:
-    layer_config = decoder.config.transformer_config.layer_configs[0]
-    attention_config = layer_config.mixer_config
-    assert isinstance(attention_config, AttentionConfig)
-    borrowed_layer_config = replace(
-        layer_config,
-        mixer_config=replace(
-            attention_config,
-            key_norm_config=None,
-            projection_mode=AttentionProjectionMode.BORROWED_KV,
-        ),
-    )
-    decoder_config = replace(
-        decoder.config,
-        transformer_config=replace(
-            decoder.config.transformer_config,
-            layer_configs=(layer_config, borrowed_layer_config, layer_config, borrowed_layer_config),
-            kv_source_per_layer=(0, 0, 2, 2),
-        ),
-    )
-    shared_decoder = decoder_config.init(
-        RandomInitializer(
-            default_dtype=jnp.float32,
-            sharding_config=ShardingConfig.replicated(jax.devices("cpu")[:8]),
-            key=jax.random.key(80),
-        ),
-    )
-
-    result = shared_decoder(
-        jnp.array([[1, 2]], dtype=jnp.int32),
-        jnp.array([[0, 1]], dtype=jnp.int32),
-        return_updated_state=True,
-        keychain=Keychain.init(81, sharding_config=make_test_sharding_config()),
-    )
-    assert result.updated_state is not None
-    assert len(result.updated_state) == 2
-
-    static_state = shared_decoder.init_static_state(batch_size=2, capacity=8, dtype=jnp.bfloat16)
-    assert len(static_state) == 2
-    static_followup = shared_decoder(
-        jnp.array([[3], [4]], dtype=jnp.int32),
-        jnp.array([[0], [0]], dtype=jnp.int32),
-        state=static_state,
-        return_updated_state=True,
-        forward_pass_config=_standard_single_token_config(),
-        keychain=Keychain.init(83, sharding_config=make_test_sharding_config()),
-    )
-    assert static_followup.updated_state is not None
-    assert len(static_followup.updated_state) == 2
-
-    followup = shared_decoder(
-        jnp.array([[3]], dtype=jnp.int32),
-        jnp.array([[2]], dtype=jnp.int32),
-        state=result.updated_state,
-        return_updated_state=True,
-        forward_pass_config=_standard_single_token_config(),
-        keychain=Keychain.init(82, sharding_config=make_test_sharding_config()),
-    )
-    assert followup.updated_state is not None
-    assert len(followup.updated_state) == 2
-
-
-def test_static_kv_cache_rejects_capacity_overrun() -> None:
-    cache = StaticKVCacheLayer(
-        has_sinks=False,
-        keys=jnp.zeros((5, 1, 1), dtype=jnp.float32),
-        values=jnp.zeros((5, 1, 1), dtype=jnp.float32),
-        current_length=jnp.array(4, dtype=jnp.int32),
-    )
-
-    with pytest.raises(eqx.EquinoxRuntimeError, match="capacity"):
-        cache.extend(
-            jnp.ones((3, 1, 1), dtype=jnp.float32),
-            jnp.ones((3, 1, 1), dtype=jnp.float32),
-        ).current_length.block_until_ready()
+    assert jnp.array_equal(mask, jnp.array([[True, True, True, False, False, True]], dtype=jnp.bool))
