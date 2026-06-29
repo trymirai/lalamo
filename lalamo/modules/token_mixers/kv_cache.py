@@ -42,18 +42,15 @@ def tree_ancestor_mask(
 
 @eqx.filter_jit
 def build_tree_attention_mask(
-    total_capacity: int,
     prefix_length: Int[Array, ""] | int,
     parent_indices: Int[Array, " nodes"],
     has_sinks: bool,
-    key_positions: Int[Array, " total_capacity"] | None = None,
-) -> Bool[Array, "nodes total_capacity"]:
+    key_positions: Int[Array, " keys"],
+) -> Bool[Array, "nodes keys"]:
     """Tree attention mask: each draft node attends to prefix + ancestors + self."""
     prefix_length = jnp.asarray(prefix_length, dtype=jnp.int32)
     (num_nodes,) = parent_indices.shape
 
-    if key_positions is None:
-        key_positions = jnp.arange(total_capacity, dtype=jnp.int32)
     prefix_mask = key_positions[None, :] < prefix_length
 
     ancestor_matrix = tree_ancestor_mask(parent_indices)
@@ -142,8 +139,7 @@ class KVCacheLayer(StateLayerBase):
         parent_indices: Int[Array, " nodes"],
     ) -> Bool[Array, "nodes tokens"]:
         self._raise_if_batched()
-        total, _, _ = self.keys.shape
-        mask = build_tree_attention_mask(total, prefix_length, parent_indices, self.has_sinks, self._key_positions())
+        mask = build_tree_attention_mask(prefix_length, parent_indices, self.has_sinks, self._key_positions())
         padding_mask = self.padding_mask
         if padding_mask is not None:
             mask = mask & padding_mask[None, :]

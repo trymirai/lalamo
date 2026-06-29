@@ -153,10 +153,10 @@ def test_tree_ancestor_mask_fork() -> None:
 def test_build_tree_attention_mask_prefix_plus_draft() -> None:
     parent_indices = jnp.array([-1, 0, 0], dtype=jnp.int32)
     mask = build_tree_attention_mask(
-        total_capacity=5,
         prefix_length=2,
         parent_indices=parent_indices,
         has_sinks=False,
+        key_positions=jnp.arange(5, dtype=jnp.int32),
     )
 
     expected = jnp.array(
