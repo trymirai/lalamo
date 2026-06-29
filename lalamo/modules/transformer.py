@@ -170,14 +170,14 @@ class Transformer(LalamoModule[TransformerConfig]):
             if borrows_kv:
                 source_state = updated_states.get(source_layer_index, state_by_layer.get(source_layer_index))
                 assert isinstance(source_state, KVCacheLayer)
-                effective_state = BorrowedKVCacheLayer.from_cache(source_state)
+                layer_state = BorrowedKVCacheLayer.from_cache(source_state)
             else:
-                effective_state = state_by_layer.get(layer_index)
+                layer_state = state_by_layer.get(layer_index)
                 assert (
                     not isinstance(layer.mixer, Attention)
-                    or effective_state is None
+                    or layer_state is None
                     or isinstance(
-                        effective_state,
+                        layer_state,
                         ExtendableKVCacheLayer,
                     )
                 )
@@ -185,7 +185,7 @@ class Transformer(LalamoModule[TransformerConfig]):
             layer_result = layer(
                 inner_features,
                 positional_embeddings,
-                state=effective_state,
+                state=layer_state,
                 return_updated_state=must_return_source_state and not borrows_kv,
                 return_activation_trace=return_layer_results,
                 lengths_without_padding=lengths_without_padding,

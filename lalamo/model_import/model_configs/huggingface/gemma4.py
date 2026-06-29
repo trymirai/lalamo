@@ -2,7 +2,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Literal, Self
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -377,34 +377,37 @@ class HFGemma4Config(HuggingFaceLMConfig):
         new_layers = []
         for i, layer in enumerate(model.transformer.layers):
             layer_path = ParameterPath("layers") / i
-            layer_updates: dict[str, Any] = {}
-            if layer.ple is not None:
-                layer_updates["ple"] = replace(
-                    layer.ple,
+            ple = layer.ple
+            if ple is not None:
+                ple = replace(
+                    ple,
                     gate=load_linear(
-                        layer.ple.gate,
+                        ple.gate,
                         weights_dict,
                         path(layer_path / "per_layer_input_gate"),
                         implementation=implementation,
                     ),
                     projection=load_linear(
-                        layer.ple.projection,
+                        ple.projection,
                         weights_dict,
                         path(layer_path / "per_layer_projection"),
                         implementation=implementation,
                     ),
                     norm=load_rmsnorm(
-                        layer.ple.norm,
+                        ple.norm,
                         weights_dict,
                         path(layer_path / "post_per_layer_input_norm"),
                     ),
                 )
-            if layer.post_layer_scalar is not None:
-                layer_updates["post_layer_scalar"] = load_as(
-                    layer.post_layer_scalar,
+
+            post_layer_scalar = layer.post_layer_scalar
+            if post_layer_scalar is not None:
+                post_layer_scalar = load_as(
+                    post_layer_scalar,
                     weights_dict[key(layer_path / "layer_scalar")],
                 )
-            new_layers.append(replace(layer, **layer_updates) if layer_updates else layer)
+
+            new_layers.append(replace(layer, ple=ple, post_layer_scalar=post_layer_scalar))
 
         return replace(
             model,

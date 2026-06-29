@@ -28,6 +28,12 @@
 - AI Assistant tries to write code in the way that makes bugs hard to make and easy to spot.
 - AI Assistant writes the code so that assumptions about invariants are as explicit as possible.
 - AI Assistant uses user-facing exceptions for user-actionable errors; use `assert`s for broken configs, unsupported conversion internals, and checkpoint-layout invariants.
+- Hot-path runtime checks:
+  * Do not use `eqx.error_if` in JIT/model forward/kernel paths unless the path is cold or explicitly debug-only.
+  * Treat `eqx.error_if` as a performance hazard, not a harmless assert.
+  * Prefer making invalid state impossible before entering the compiled path.
+  * For Python-side construction/config validation, use normal `assert` or `ValueError`.
+  * For compiled hot paths, avoid dynamic validation unless correctness absolutely requires it and the cost is measured and accepted.
 - AI Assistant leverages strong typing as much as possible, for example, it always uses enums instead of literals.
 - AI Assistant uses good descriptive variable names that make it easy to understand the purpose of the variable without looking at the code that uses it.
 - AI Assistant does not manually parse things such as JSON configs. Instead it first models a schema using types, and then uses a serialisation library such as Cattrs, Pydantic, or Serde to handle serialization and deserialization and validation.

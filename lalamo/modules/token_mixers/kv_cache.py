@@ -27,14 +27,6 @@ def tree_ancestor_mask(
     (num_nodes,) = parent_indices.shape
     if num_nodes == 0:
         raise ValueError("parent_indices must contain at least one node.")
-    node_indices = jnp.arange(num_nodes, dtype=parent_indices.dtype)
-    valid_parents = (parent_indices == -1) | ((parent_indices >= 0) & (parent_indices < node_indices))
-    parent_indices = eqx.error_if(
-        parent_indices,
-        ~jnp.all(valid_parents),
-        "Tree parent_indices must use -1 for roots and otherwise point to an earlier node.",
-    )
-
     initial = jnp.eye(num_nodes, dtype=jnp.bool)
 
     def step(mask: Bool[Array, "nodes nodes"], i: Int[Array, ""]) -> tuple[Bool[Array, "nodes nodes"], None]:
@@ -346,14 +338,10 @@ class StaticKVCacheLayer(ExtendableKVCacheLayer):
 
         if added_length is None:
             added_length = num_added_tokens
-        added_length = eqx.error_if(
-            jnp.asarray(added_length, dtype=self.current_length.dtype),
-            (added_length < 0)
-            | (added_length > num_added_tokens)
-            | (self.current_length + added_length > self.capacity)
-            | (self.current_length + num_added_tokens > self.capacity),
-            "Static KV cache extension exceeds capacity or uses invalid added_length.",
-        )
+        if isinstance(added_length, int):
+            assert 0 <= added_length <= num_added_tokens
+        assert num_added_tokens <= self.capacity
+        added_length = jnp.asarray(added_length, dtype=self.current_length.dtype)
 
         added_keys = added_keys.astype(self.keys.dtype)
         added_values = added_values.astype(self.values.dtype)
