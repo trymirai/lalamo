@@ -103,8 +103,7 @@ _model_cache: dict[tuple[str, str | None], LanguageModel] = {}
 
 def _load_resident_model(model_path: str, dtype: str | None) -> LanguageModel:
     cache_key = (model_path, dtype)
-    cached = _model_cache.get(cache_key)
-    if cached is not None:
+    if (cached := _model_cache.get(cache_key)) is not None:
         return cached
 
     # Free the old model's device buffers before importing the new one (avoid two full models in VRAM).
@@ -116,10 +115,10 @@ def _load_resident_model(model_path: str, dtype: str | None) -> LanguageModel:
     model = import_model(
         model_path,
         sharding_config=ShardingConfig.replicated(),
-        dtype=jnp.dtype(dtype),
+        dtype=jnp.dtype(dtype) if dtype is not None else None,
     ).model
     if not isinstance(model, LanguageModel):
-        raise RuntimeError(f"Expected a language model, got {type(model).__name__}")  # noqa: TRY004
+        raise TypeError(f"Expected a language model, got {type(model).__name__}")
 
     _model_cache[cache_key] = model
     return model
