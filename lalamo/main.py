@@ -114,47 +114,6 @@ def _error(message: str) -> None:
     raise Exit(1)
 
 
-def _render_streamed_reply(
-    model: LanguageModel,
-    messages: list[Message],
-    generation_config: GenerationConfig | None,
-    max_tokens: int,
-    keychain: Keychain,
-    speculator: Speculator | None,
-    *,
-    enable_thinking: bool,
-) -> str:
-    start_time = time.perf_counter()
-
-    def render(reply: StreamedReply | None) -> Group:
-        elapsed_seconds = time.perf_counter() - start_time
-        num_tokens = reply.num_tokens if reply is not None else 0
-        num_steps = reply.num_steps if reply is not None else 0
-        throughput = num_tokens / elapsed_seconds if elapsed_seconds > 0 else 0.0
-        tokens_per_step = num_tokens / num_steps if num_steps > 0 else 0.0
-        return Group(
-            Text.assemble(("assistant> ", "red"), reply.text if reply is not None else ""),
-            Text(
-                f"⚡ {throughput:.1f} tok/s · {tokens_per_step:.2f} tok/step · {num_tokens} tokens",
-                style="dim",
-            ),
-        )
-
-    response_text = ""
-    with Live(render(None), console=console, refresh_per_second=8, vertical_overflow="visible") as live:
-        for reply in model.stream_reply(
-            messages,
-            generation_config=generation_config,
-            max_output_length=max_tokens,
-            keychain=keychain,
-            speculator=speculator,
-            enable_thinking=enable_thinking,
-        ):
-            response_text = reply.text
-            live.update(render(reply))
-    return response_text
-
-
 @app.command(help="Chat with a converted model.")
 def chat(
     model_path: Annotated[
@@ -216,6 +175,37 @@ def chat(
             generation_config = replace(model.config.generation_config, temperature=temperature)
         progress.remove_task(loading_task)
 
+    def render_streamed_reply(messages: list[Message], keychain: Keychain) -> str:
+        start_time = time.perf_counter()
+
+        def render(reply: StreamedReply | None) -> Group:
+            elapsed_seconds = time.perf_counter() - start_time
+            num_tokens = reply.num_tokens if reply is not None else 0
+            num_steps = reply.num_steps if reply is not None else 0
+            throughput = num_tokens / elapsed_seconds if elapsed_seconds > 0 else 0.0
+            tokens_per_step = num_tokens / num_steps if num_steps > 0 else 0.0
+            return Group(
+                Text.assemble(("assistant> ", "red"), reply.text if reply is not None else ""),
+                Text(
+                    f"⚡ {throughput:.1f} tok/s · {tokens_per_step:.2f} tok/step · {num_tokens} tokens",
+                    style="dim",
+                ),
+            )
+
+        response_text = ""
+        with Live(render(None), console=console, refresh_per_second=8, vertical_overflow="visible") as live:
+            for reply in model.stream_reply(
+                messages,
+                generation_config=generation_config,
+                max_output_length=max_tokens,
+                keychain=keychain,
+                speculator=speculator,
+                enable_thinking=not no_thinking,
+            ):
+                response_text = reply.text
+                live.update(render(reply))
+        return response_text
+
     with jax.set_mesh(model.sharding_config.mesh):
         if message is None:
             console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
@@ -225,27 +215,17 @@ def chat(
                 user_text = console.input("[cyan]user> [/cyan]")
                 messages.append(UserMessage(user_text))
 
-                response_text = _render_streamed_reply(
-                    model,
+                response_text = render_streamed_reply(
                     messages,
-                    generation_config,
-                    max_tokens,
                     Keychain.init(turn_index + 1, sharding_config=model.sharding_config),
-                    speculator,
-                    enable_thinking=not no_thinking,
                 )
                 messages.append(model.token_codec.parse_response(response_text, expect_thinking=not no_thinking))
                 turn_index += 1
 
         else:
-            _render_streamed_reply(
-                model,
+            render_streamed_reply(
                 [UserMessage(message)],
-                generation_config,
-                max_tokens,
                 Keychain.init(1, sharding_config=model.sharding_config),
-                speculator,
-                enable_thinking=not no_thinking,
             )
 
 
