@@ -48,6 +48,12 @@ def _first_path(weights_dict: Mapping[str, Array], paths: Sequence[ParameterPath
     return next((path for path in paths if path in weights_dict), None)
 
 
+def _has_prefix(weights_dict: Mapping[str, Array], path: ParameterPath) -> bool:
+    if not path:
+        return bool(weights_dict)
+    return any(key.startswith(f"{path}.") for key in weights_dict)
+
+
 def _projection_path(weights_dict: Mapping[str, Array], path: ParameterPath, names: Sequence[str]) -> ParameterPath:
     for name in names:
         candidate = path / name
@@ -488,7 +494,7 @@ def load_moe(
     elif (
         (experts_path / "gate_up_proj.weight") in weights_dict
         or (experts_path / "gate_up_proj" / "weight") in weights_dict
-        or any(str(k).startswith(str(experts_path) + ".gate_up_proj") for k in weights_dict)
+        or _has_prefix(weights_dict, experts_path / "gate_up_proj")
     ):
         # MLX/Qwen2Moe batched expert format: gate_up_proj fused, shape (num_experts, hidden*2, model_dim)
         # Check for both flat and nested key formats
@@ -503,13 +509,13 @@ def load_moe(
         else:
             # Find the actual key format
             gate_up_key = next(
-                (k for k in weights_dict if str(k).startswith(str(gate_up_path))),
+                (k for k in weights_dict if k.startswith(f"{gate_up_path}.")),
                 None,
             )
             if gate_up_key is None:
                 raise KeyError(f"Could not find gate_up_proj weights under {gate_up_path}")
             # Infer the weight key suffix
-            suffix = str(gate_up_key)[len(str(gate_up_path)) :]
+            suffix = gate_up_key[len(gate_up_path) :]
             gate_up_weights = weights_dict[gate_up_key]
             down_key = str(down_path) + suffix
             down_weights = weights_dict[ParameterPath(down_key)]
@@ -704,27 +710,24 @@ def _extract_gate_weights(
     path: ParameterPath,
     num_heads: int,
     head_dim: int,
-    *,
-    interleaved: bool,
 ) -> tuple[dict[str, Array], dict[str, Array]]:
-    q_proj_prefix = str(path / "q_proj") + "."
+    q_proj_path = path / "q_proj"
+    q_proj_prefix = f"{q_proj_path}."
+    kv_proj_prefixes = (f"{path / 'k_proj'}.", f"{path / 'v_proj'}.")
     gate_path = path / "gate_projection"
-    q_dim = num_heads * head_dim
-    q_overrides: dict[str, Array] = {}
+    q_weights: dict[str, Array] = {}
     gate_weights: dict[str, Array] = {}
+
     for key in weights_dict:
-        str_key = str(key)
-        if not str_key.startswith(q_proj_prefix):
-            continue
-        suffix = str_key[len(q_proj_prefix) :]
-        tensor = weights_dict[key]
-        if interleaved:
+        if key.startswith(q_proj_prefix):
+            suffix = key[len(q_proj_prefix) :]
+            tensor = weights_dict[key]
             q_part, gate_part = _split_q_gate_tensor(tensor, num_heads, head_dim)
-        else:
-            q_part, gate_part = tensor[:q_dim], tensor[q_dim:]
-        q_overrides[ParameterPath(str_key)] = q_part
-        gate_weights[gate_path / suffix] = gate_part
-    return q_overrides, gate_weights
+            q_weights[key] = q_part
+            gate_weights[gate_path / suffix] = gate_part
+        elif key.startswith(kv_proj_prefixes):
+            q_weights[key] = weights_dict[key]
+    return q_weights, gate_weights
 
 
 def load_attention(
@@ -733,22 +736,21 @@ def load_attention(
     path: ParameterPath,
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-    reorder_q_proj_gate: bool = True,
 ) -> Attention:
     qkv_sublayers = ["q_proj"] if module.config.is_kv_sharing else ["q_proj", "k_proj", "v_proj"]
     if module.gate_projection is not None:
         num_heads, head_dim = module.config.num_heads, module.config.head_dim
-        q_overrides, gate_weights = _extract_gate_weights(
+
+        qkv_weights, gate_weights = _extract_gate_weights(
             weights_dict,
             path,
             num_heads,
             head_dim,
-            interleaved=reorder_q_proj_gate,
         )
 
         qkv_projection = load_linear(
             module.qkv_projection,
-            {**weights_dict, **q_overrides},
+            qkv_weights,
             path,
             sublayers_to_fuse=qkv_sublayers,
             implementation=implementation,
@@ -1022,7 +1024,6 @@ def load_transformer_layer(
     permute_conv: bool,
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-    reorder_q_proj_gate: bool = True,
 ) -> TransformerLayer:
     pre_attention_norm = _load_optional_rmsnorm(module.pre_mixer_norm, weights_dict, mixer_path / pre_mixer_norm_key)
     # Load mixer (attention or mamba)
@@ -1032,7 +1033,6 @@ def load_transformer_layer(
             weights_dict,
             mixer_path / mixer_key,
             implementation=implementation,
-            reorder_q_proj_gate=reorder_q_proj_gate,
         )
     elif isinstance(module.mixer, DeltaNet):
         mixer = load_delta_net_attention(
@@ -1220,8 +1220,15 @@ class DecoderLoadLayout:
     lm_head_path: ParameterPath
 
 
-def _decoder_load_layout(weights_dict: Mapping[str, Array], base_path: ParameterPath) -> DecoderLoadLayout:
-    decoder_path = base_path / "model"
+def _decoder_load_layout(
+    weights_dict: Mapping[str, Array],
+    root_path: ParameterPath,
+) -> DecoderLoadLayout:
+    if root_path.endswith(".language_model"):
+        decoder_path = root_path
+    else:
+        decoder_path = root_path / "model"
+
     standard_layout = DecoderLoadLayout(
         decoder_path=decoder_path,
         embedding_path=decoder_path / "embed_tokens",
@@ -1235,22 +1242,22 @@ def _decoder_load_layout(weights_dict: Mapping[str, Array], base_path: Parameter
         down_proj_key="down_proj",
         alternating_layers=False,
         norm_key="norm",
-        lm_head_path=base_path / "lm_head",
+        lm_head_path=root_path / "lm_head",
     )
 
-    if any(key.startswith("backbone.") for key in weights_dict):
-        decoder_path = base_path / "backbone"
+    backbone_path = root_path / "backbone"
+    if _has_prefix(weights_dict, backbone_path):
         return replace(
             standard_layout,
-            decoder_path=decoder_path,
-            embedding_path=decoder_path / "embedding",
+            decoder_path=backbone_path,
+            embedding_path=backbone_path / "embedding",
             mixer_key={Mamba2Config: "mixer"},
             norm_key="final_layernorm",
         )
-    if any(key.startswith("embedding.encoder.") for key in weights_dict):
+    if _has_prefix(weights_dict, root_path / "embedding.encoder"):
         return replace(
             standard_layout,
-            embedding_path=base_path / "embedding.encoder",
+            embedding_path=root_path / "embedding.encoder",
             pre_mixer_norm_key="norm",
             mixer_key={Mamba2Config: "layer"},
             pre_mlp_norm_key="norm",
@@ -1259,9 +1266,9 @@ def _decoder_load_layout(weights_dict: Mapping[str, Array], base_path: Parameter
             gate_proj_key="in_proj",
             down_proj_key="out_proj",
             alternating_layers=True,
-            lm_head_path=base_path / "head.linear",
+            lm_head_path=root_path / "head.linear",
         )
-    if any(key.startswith("model.layers.0.operator_norm.weight") for key in weights_dict):
+    if (decoder_path / "layers" / "0" / "operator_norm" / "weight") in weights_dict:
         return replace(
             standard_layout,
             pre_mixer_norm_key="operator_norm",
@@ -1282,17 +1289,15 @@ def load_huggingface_decoder(
     weights_dict: Mapping[str, Array],
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-    reorder_q_proj_gate: bool = True,
 ) -> Decoder:
-    if any(key.startswith("model.language_model.") for key in weights_dict):
-        weights_dict = {k.replace("model.language_model.", "model.", 1): v for k, v in weights_dict.items()}
-
-    if any(key.startswith("language_model.") for key in weights_dict):
-        base_path = ParameterPath("language_model")
+    if _has_prefix(weights_dict, ParameterPath("model.language_model")):
+        root_path = ParameterPath("model.language_model")
+    elif _has_prefix(weights_dict, ParameterPath("language_model")):
+        root_path = ParameterPath("language_model")
     else:
-        base_path = ParameterPath()
+        root_path = ParameterPath()
 
-    layout = _decoder_load_layout(weights_dict, base_path)
+    layout = _decoder_load_layout(weights_dict, root_path)
 
     if isinstance(module.embedding, TiedEmbedding):
         embedding = load_tied_embedding(
@@ -1327,7 +1332,6 @@ def load_huggingface_decoder(
             layout.down_proj_key,
             layout.permute_conv,
             implementation=implementation,
-            reorder_q_proj_gate=reorder_q_proj_gate,
         )
         for i, layer in enumerate(module.transformer.layers)
     )

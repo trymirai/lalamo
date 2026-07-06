@@ -40,8 +40,12 @@ standard = [
   "Qwen/Qwen3.6-35B-A3B",
   "prism-ml/Bonsai-4B-mlx-1bit",
   "google/gemma-4-E2B-it",
+  "ibm-granite/granite-3.3-2b-instruct",
 ]
 extra = [
+  "ibm-granite/granite-3.3-8b-instruct",
+  "ibm-granite/granite-3.1-2b-instruct",
+  "ibm-granite/granite-3.1-8b-instruct",
   "LiquidAI/LFM2-350M",
   "mlx-community/LFM2-350M-4bit",
   "mlx-community/LFM2-700M-8bit",

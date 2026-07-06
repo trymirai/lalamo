@@ -22,6 +22,7 @@ from lalamo.modules.token_mixer import (
 from lalamo.modules.token_mixers.convolutions import ConvPrecision
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
+from .chunked_delta import chunk_delta_forward
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .ssm_state import SSMStateLayer
 
@@ -104,26 +105,6 @@ class DeltaNetConfig(TokenMixerConfig):
 class DeltaNetScanResult(NamedTuple):
     outputs: Float[Array, "tokens heads value_channels"]
     final_state: Float[Array, "heads value_channels key_channels"]
-
-
-class DeltaNetScanInputs(NamedTuple):
-    queries: Float[Array, "tokens heads key_channels"]
-    keys: Float[Array, "tokens heads key_channels"]
-    values: Float[Array, "tokens heads value_channels"]
-    decay_factor: Float[Array, "tokens heads"]
-    beta: Float[Array, "tokens heads"]
-
-
-class DeltaNetTokenStepOutput(NamedTuple):
-    local_output: Float[Array, "heads value_channels"]
-    correction_vec: Float[Array, "heads key_channels"]
-
-
-class DeltaNetChunkScanResult(NamedTuple):
-    chunk_outputs: Float[Array, "chunk_size heads value_channels"]
-    correction_vecs: Float[Array, "chunk_size heads key_channels"]
-    end_state: Float[Array, "heads value_channels key_channels"]
-    end_prop: Float[Array, "heads key_channels key_channels"]
 
 
 class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
@@ -283,64 +264,12 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         decay_c = decay_factor.reshape(num_chunks, chunk_size, self.num_heads)
         beta_c = beta.reshape(num_chunks, chunk_size, self.num_heads)
 
-        def _intra_chunk_token_step(
-            carry: tuple[
-                Float[Array, "heads value_channels key_channels"],
-                Float[Array, "heads key_channels key_channels"],
-            ],
-            token_inputs: DeltaNetScanInputs,
-        ) -> tuple[
-            tuple[
-                Float[Array, "heads value_channels key_channels"],
-                Float[Array, "heads key_channels key_channels"],
-            ],
-            DeltaNetTokenStepOutput,
-        ]:
-            state, prop = carry
-
-            decay = jnp.exp(token_inputs.decay_factor)[:, None, None]
-
-            decayed_state = state * decay
-            state_dot_key = jnp.sum(decayed_state * token_inputs.keys[:, None, :], axis=-1)
-            value_delta = (token_inputs.values - state_dot_key) * token_inputs.beta[:, None]
-            new_state = decayed_state + value_delta[:, :, None] * token_inputs.keys[:, None, :]
-
-            decayed_prop = prop * decay
-            prop_dot_key = einops.einsum(
-                decayed_prop,
-                token_inputs.keys,
-                "heads key_channels_out key_channels_in, heads key_channels_in -> heads key_channels_out",
-            )
-            new_prop = (
-                decayed_prop
-                - token_inputs.beta[:, None, None] * prop_dot_key[:, :, None] * token_inputs.keys[:, None, :]
-            )
-
-            local_output = einops.einsum(
-                token_inputs.queries,
-                new_state,
-                "heads key_channels, heads value_channels key_channels -> heads value_channels",
-            )
-            correction_vec = einops.einsum(
-                new_prop,
-                token_inputs.queries,
-                "heads key_channels_out key_channels_in, heads key_channels_in -> heads key_channels_out",
-            )
-
-            return (new_state, new_prop), DeltaNetTokenStepOutput(local_output, correction_vec)
-
-        def _intra_chunk_scan(chunk_inputs: DeltaNetScanInputs) -> DeltaNetChunkScanResult:
-            state_init = jnp.zeros((self.num_heads, self.value_head_dim, self.head_dim), dtype=state_dtype)
-            prop_init = jnp.tile(jnp.eye(self.head_dim, dtype=state_dtype), (self.num_heads, 1, 1))
-            (end_state, end_prop), step_outputs = jax.lax.scan(
-                _intra_chunk_token_step,
-                (state_init, prop_init),
-                chunk_inputs,
-            )
-            return DeltaNetChunkScanResult(step_outputs.local_output, step_outputs.correction_vec, end_state, end_prop)
-
-        chunk_results = jax.vmap(_intra_chunk_scan)(
-            DeltaNetScanInputs(queries_c, keys_c, values_c, decay_c, beta_c),
+        chunk_results = chunk_delta_forward(
+            queries=queries_c,
+            keys=keys_c,
+            values=values_c,
+            decay_factor=decay_c,
+            beta=beta_c,
         )
 
         def _inter_chunk_step(
