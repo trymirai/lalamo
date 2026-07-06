@@ -565,16 +565,13 @@ class BlockContinuousDecoder(eqx.Module):
             speculator=speculator,
         )
 
-    def initial_decoding_state(self, batch: PrefillBatch) -> DecodingState:
-        return DecodingState.from_prefill(
+    def fill_lines(self, state: BlockContinuousState, batch: PrefillBatch) -> BlockContinuousState:
+        prefill_decoding_state = DecodingState.from_prefill(
             batch.prefill_results,
             batch.sampling_policy,
             self.speculator,
             jnp.int32,
         )
-
-    def fill_lines(self, state: BlockContinuousState, batch: PrefillBatch) -> BlockContinuousState:
-        prefill_decoding_state = self.initial_decoding_state(batch)
 
         empty_lines = state.decoding_state.stop_flags
         lines_passed = jnp.sum(batch.mask)
@@ -971,7 +968,12 @@ class ContinuousBatchScheduler(BatchScheduler):
 
         prefills, partially_prefilled_batch = prefills.request(batch_size, decoder.language_model)
         state = BlockContinuousState.from_decoding_state(
-            decoder.initial_decoding_state(partially_prefilled_batch),
+            DecodingState.from_prefill(
+                partially_prefilled_batch.prefill_results,
+                partially_prefilled_batch.sampling_policy,
+                decoder.speculator,
+                jnp.int32,
+            ),
             num_lines=batch_size,
             max_output_length=max_output_length,
             key=decoding_keychain.batch_key,
