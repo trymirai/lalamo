@@ -16,7 +16,6 @@ from lalamo.models.raw_text_codec import RawTextCodec, RawTextCodecConfig
 from lalamo.module import ForwardPassMode, Keychain, SpeculatorState
 from lalamo.modules.decoder import DecoderResult
 from lalamo.modules.embedding import EmbeddingBase
-from lalamo.modules.token_mixer import State
 from lalamo.utils.sharding import ShardingConfig
 
 __all__ = [
@@ -29,6 +28,7 @@ __all__ = [
     "ProposalInputs",
     "Speculator",
     "SpeculatorConfig",
+    "TreeProposal",
 ]
 
 
@@ -110,7 +110,7 @@ class AcceptedProposal(eqx.Module):
             lengths=lengths,
             accepted_node_indices=jnp.where(
                 slots < num_accepted_nodes[:, None],
-                jnp.broadcast_to(slots, self.token_ids.shape),
+                self.accepted_node_indices,
                 -1,
             ),
             num_accepted_nodes=num_accepted_nodes,
@@ -140,30 +140,43 @@ class Proposal(eqx.Module, ABC):
     @abstractmethod
     def accept(self, sampled_token_ids: Int[Array, "batch nodes"]) -> AcceptedProposal: ...
 
-    @abstractmethod
-    def rollback_state(
-        self,
-        state: State,
-        committed_length: Int[Array, " batch"],
-        accepted: AcceptedProposal,
-    ) -> State: ...
-
 
 class ChainProposal(Proposal):
     token_ids: Int[Array, "batch proposal_slots"]
     token_positions: Int[Array, "batch proposal_slots"]
     lengths: Int[Array, " batch"]
 
+    @classmethod
+    def empty(
+        cls,
+        token_positions: Int[Array, "batch proposal_slots"],
+        token_dtype: DTypeLike,
+    ) -> "ChainProposal":
+        return cls(
+            token_ids=jnp.full_like(token_positions, -1, dtype=token_dtype),
+            token_positions=token_positions,
+            lengths=jnp.zeros_like(token_positions[:, 0]),
+        )
+
     def forward_inputs(self) -> ProposalInputs:
         _, num_proposal_slots = self.token_ids.shape
-        forward_pass_mode = ForwardPassMode.MULTI_TOKEN
         if num_proposal_slots == 1:
-            forward_pass_mode = ForwardPassMode.SINGLE_TOKEN
+            return ProposalInputs(
+                token_ids=self.token_ids,
+                token_positions=self.token_positions,
+                lengths_without_padding=self.lengths,
+                forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
+            )
+        parent_indices = jnp.broadcast_to(
+            jnp.arange(num_proposal_slots, dtype=jnp.int32) - 1,
+            self.token_ids.shape,
+        )
         return ProposalInputs(
             token_ids=self.token_ids,
             token_positions=self.token_positions,
             lengths_without_padding=self.lengths,
-            forward_pass_mode=forward_pass_mode,
+            attention_parent_indices=parent_indices,
+            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
         )
 
     def accept(self, sampled_token_ids: Int[Array, "batch nodes"]) -> AcceptedProposal:
@@ -184,13 +197,90 @@ class ChainProposal(Proposal):
             num_accepted_nodes=num_accepted_nodes,
         )
 
-    def rollback_state(
-        self,
-        state: State,
-        committed_length: Int[Array, " batch"],
-        accepted: AcceptedProposal,
-    ) -> State:
-        return state.truncate(committed_length + accepted.num_accepted_nodes)
+
+def walk_accepted_path(
+    token_ids: Int[Array, " nodes"],
+    parent_indices: Int[Array, " nodes"],
+    sampled_token_ids: Int[Array, " nodes"],
+    length: Int[Array, ""],
+) -> tuple[Int[Array, " nodes"], Int[Array, ""]]:
+    (num_nodes,) = token_ids.shape
+    node_ids = jnp.arange(num_nodes, dtype=jnp.int32)
+    valid = node_ids < length
+
+    def step(
+        carry: tuple[Int[Array, ""], Bool[Array, ""]],
+        _: None,
+    ) -> tuple[tuple[Int[Array, ""], Bool[Array, ""]], Int[Array, ""]]:
+        current, done = carry
+        matches = valid & (parent_indices == current) & (token_ids == sampled_token_ids[current]) & ~done
+        has_match = jnp.any(matches)
+        matched_node = jnp.argmax(matches).astype(jnp.int32)
+        next_node = jnp.where(has_match, matched_node, -1)
+        return (jnp.where(has_match, matched_node, current), done | ~has_match), next_node
+
+    _, next_nodes = jax.lax.scan(
+        step,
+        (jnp.zeros((), dtype=jnp.int32), jnp.zeros((), dtype=jnp.bool)),
+        length=num_nodes - 1,
+    )
+    path = jnp.concatenate([jnp.zeros((1,), dtype=jnp.int32), next_nodes])
+    path_length = 1 + jnp.sum(next_nodes >= 0, dtype=jnp.int32)
+    path = jnp.where(node_ids < path_length, path, -1)
+    return path, path_length
+
+
+class TreeProposal(Proposal):
+    token_ids: Int[Array, "batch nodes"]
+    token_positions: Int[Array, "batch nodes"]
+    parent_indices: Int[Array, "batch nodes"]
+    lengths: Int[Array, " batch"]
+
+    @classmethod
+    def empty(
+        cls,
+        token_positions: Int[Array, "batch nodes"],
+        token_dtype: DTypeLike,
+        parent_indices: Int[Array, "batch nodes"],
+    ) -> "TreeProposal":
+        return cls(
+            token_ids=jnp.full_like(token_positions, -1, dtype=token_dtype),
+            token_positions=token_positions,
+            parent_indices=parent_indices,
+            lengths=jnp.zeros_like(token_positions[:, 0]),
+        )
+
+    def forward_inputs(self) -> ProposalInputs:
+        return ProposalInputs(
+            token_ids=self.token_ids,
+            token_positions=self.token_positions,
+            lengths_without_padding=self.lengths,
+            attention_parent_indices=self.parent_indices,
+            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
+        )
+
+    def accept(self, sampled_token_ids: Int[Array, "batch nodes"]) -> AcceptedProposal:
+        batch_size, num_nodes = self.token_ids.shape
+        path, num_emitted = jax.vmap(walk_accepted_path)(
+            self.token_ids,
+            self.parent_indices,
+            sampled_token_ids,
+            self.lengths,
+        )
+        num_accepted_nodes = jnp.where(self.lengths > 0, num_emitted, 0)
+
+        slots = jnp.arange(num_nodes, dtype=jnp.int32)[None, :]
+        batch_indices = jnp.arange(batch_size, dtype=jnp.int32)[:, None]
+        emitted = slots < num_emitted[:, None]
+        path_nodes = jnp.maximum(path, 0)
+        return AcceptedProposal(
+            token_ids=jnp.where(emitted, sampled_token_ids[batch_indices, path_nodes], 0),
+            token_positions=jnp.where(emitted, self.token_positions[batch_indices, path_nodes] + 1, 0),
+            source_indices=jnp.where(emitted, path_nodes, -1),
+            lengths=num_emitted,
+            accepted_node_indices=jnp.where(slots < num_accepted_nodes[:, None], path, -1),
+            num_accepted_nodes=num_accepted_nodes,
+        )
 
 
 @dataclass(frozen=True)
@@ -210,6 +300,13 @@ class Speculator[SpeculatorStateT: SpeculatorState, ConfigT: SpeculatorConfig](
     @property
     def max_proposal_tokens(self) -> int:
         return 1
+
+    def empty_proposal(
+        self,
+        token_positions: Int[Array, "batch nodes"],
+        token_dtype: DTypeLike,
+    ) -> Proposal:
+        return ChainProposal.empty(token_positions, token_dtype)
 
     @abstractmethod
     def init_state(

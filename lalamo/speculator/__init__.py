@@ -10,6 +10,7 @@ from .common import (
     ProposalInputs,
     Speculator,
     SpeculatorConfig,
+    TreeProposal,
 )
 from .dflash import DFlashSpeculator, DFlashSpeculatorConfig
 
@@ -26,4 +27,5 @@ __all__ = [
     "Speculator",
     "SpeculatorConfig",
     "SpeculatorState",
+    "TreeProposal",
 ]

@@ -546,7 +546,12 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
         queries = queries.astype(updated_state.keys.dtype)
         if attention_parent_indices is not None:
-            mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices)
+            mask = updated_state.tree_attention_mask(
+                prefix_length,
+                attention_parent_indices,
+                length_without_padding,
+                self.config.sliding_window_size,
+            )
         else:
             mask = updated_state.attention_mask(
                 num_suffix_tokens,

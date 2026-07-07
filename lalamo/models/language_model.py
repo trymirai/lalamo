@@ -28,7 +28,7 @@ from lalamo.modules import (
 from lalamo.modules.token_mixer import State
 from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy
-from lalamo.speculator import ChainProposal, NoSpeculator, Proposal, Speculator
+from lalamo.speculator import NoSpeculator, Proposal, Speculator
 
 __all__ = [
     "GenerationConfig",
@@ -59,7 +59,6 @@ class Chunk(eqx.Module):
 
 class DecodingState(NamedTuple):
     pending_decoder_result: DecoderResult
-    pending_committed_length: Int[Array, " batch"]
     pending_proposal: Proposal
     stop_flags: Bool[Array, " batch"]
     sampling_policy: SamplingPolicy
@@ -88,18 +87,16 @@ class DecodingState(NamedTuple):
                 dtype=prefill_results.last_token_indices.dtype,
             )[None, :]
         )
+        pending_state = prefill_results.state
+        if max_proposal_tokens > 1:
+            pending_state = pending_state.begin_verification(max_proposal_tokens)
         return cls(
             pending_decoder_result=DecoderResult(
                 logits=initial_logits,
-                updated_state=prefill_results.state,
+                updated_state=pending_state,
                 activation_trace=prefill_results.pending_activation_trace,
             ),
-            pending_committed_length=prefill_results.state.committed_length(),
-            pending_proposal=ChainProposal(
-                token_ids=jnp.full_like(initial_positions, -1, dtype=token_dtype),
-                token_positions=initial_positions,
-                lengths=jnp.zeros_like(prefill_results.last_token_indices),
-            ),
+            pending_proposal=speculator.empty_proposal(initial_positions, token_dtype),
             stop_flags=jnp.zeros_like(prefill_results.last_token_indices, dtype=bool),
             sampling_policy=sampling_policy,
             speculator_state=prefill_results.speculator_state,
@@ -407,11 +404,9 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
 
         pending_state = state.pending_decoder_result.updated_state
         assert pending_state is not None
-        target_state = state.pending_proposal.rollback_state(
-            pending_state,
-            state.pending_committed_length,
-            accepted,
-        )
+        target_state = pending_state.commit_accepted(accepted.accepted_node_indices, accepted.num_accepted_nodes)
+        if speculator.max_proposal_tokens > 1:
+            target_state = target_state.begin_verification(speculator.max_proposal_tokens)
         current_keychain = Keychain(
             vmapped_keys=decoding_key,
             batch_key=decoding_keychain.batch_key,
@@ -483,7 +478,6 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                     updated_state=decoder_result.updated_state,
                     activation_trace=pending_activation_trace,
                 ),
-                pending_committed_length=target_state.committed_length(),
                 pending_proposal=proposal,
                 stop_flags=next_stop_flags,
                 sampling_policy=next_sampling_policy,

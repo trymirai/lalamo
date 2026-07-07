@@ -37,6 +37,12 @@ class DFlashYarnRopeScalingConfig:
 
 
 @dataclass(frozen=True)
+class DFlashRopeParameters:
+    rope_theta: float
+    rope_type: Literal["default"]
+
+
+@dataclass(frozen=True)
 class HFDFlashInnerConfig:
     mask_token_id: int
     target_layer_ids: tuple[int, ...]
@@ -64,10 +70,10 @@ class HFDFlashConfig:
     vocab_size: int
     dflash_config: HFDFlashInnerConfig
     head_dim: int
-    rope_scaling: DFlashYarnRopeScalingConfig | None
     layer_types: tuple[Literal["full_attention", "sliding_attention"], ...]
     sliding_window: int | None
     use_sliding_window: bool
+    rope_scaling: DFlashYarnRopeScalingConfig | None = None
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
@@ -77,6 +83,15 @@ class HFDFlashConfig:
 
     @classmethod
     def from_dict(cls, config: dict[str, object]) -> Self:
+        config = dict(config)
+        dflash_inner = config.get("dflash_config")
+        if isinstance(dflash_inner, dict) and "block_size" in dflash_inner:
+            dflash_inner = dict(dflash_inner)
+            config["block_size"] = dflash_inner.pop("block_size")
+            config["dflash_config"] = dflash_inner
+        rope_parameters = config.pop("rope_parameters", None)
+        if rope_parameters is not None:
+            config["rope_theta"] = cls._converter.structure(rope_parameters, DFlashRopeParameters).rope_theta
         return cls._converter.structure(config, cls)
 
     def _rope_config(self, max_sequence_length: int) -> RoPEConfig:

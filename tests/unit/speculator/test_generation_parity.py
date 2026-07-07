@@ -55,6 +55,69 @@ def test_dflash_matches_baseline(language_model: LanguageModel, dflash_speculato
     assert jnp.array_equal(baseline_token_ids, speculative_token_ids)
 
 
+def test_dflash_matches_baseline_for_hybrid_model(
+    hybrid_language_model: LanguageModel,
+    dflash_speculator: DFlashSpeculator,
+) -> None:
+    baseline_token_ids = generate(hybrid_language_model, speculator=None)
+    speculative_token_ids = generate(hybrid_language_model, dflash_speculator)
+
+    assert jnp.array_equal(baseline_token_ids, speculative_token_ids)
+
+
+def test_schedulers_greedy_parity_for_hybrid_model(
+    hybrid_language_model: LanguageModel,
+    dflash_speculator: DFlashSpeculator,
+) -> None:
+    prompts = [
+        [int(token) for token in jnp.arange(start, start + length) % (VOCAB_SIZE - 1)]
+        for start, length in ((0, 5), (3, 12), (7, 9))
+    ]
+    scheduler_config = BatchSchedulerConfig(batch_size=2, max_output_length=8, padded_length=16)
+    schedulers: dict[str, BatchScheduler] = {
+        "fixed/none": FixedSizeBatchScheduler(model=hybrid_language_model),
+        "fixed/dflash": FixedSizeBatchScheduler(model=hybrid_language_model, speculator=dflash_speculator),
+        "continuous/dflash": ContinuousBatchScheduler(
+            model=hybrid_language_model,
+            speculator=dflash_speculator,
+            block_size=4,
+        ),
+        "continuous/dflash/chunked-prefill": ContinuousBatchScheduler(
+            model=hybrid_language_model,
+            speculator=dflash_speculator,
+            block_size=4,
+            prefill_chunk_size=4,
+        ),
+    }
+
+    with jax.set_mesh(hybrid_language_model.sharding_config.mesh):
+        results = {
+            scheduler_name: dict(
+                scheduler.generate_tokens_many(
+                    prompts,
+                    generation_config=GREEDY_CONFIG,
+                    batch_scheduler_config=scheduler_config,
+                    keychain=Keychain.init(
+                        0,
+                        shape=(len(prompts),),
+                        sharding_config=hybrid_language_model.sharding_config,
+                    ),
+                ),
+            )
+            for scheduler_name, scheduler in schedulers.items()
+        }
+
+    reference = results["fixed/none"]
+    assert sorted(reference) == list(range(len(prompts)))
+    for scheduler_name, result in results.items():
+        assert sorted(result) == sorted(reference), scheduler_name
+        for request_index in reference:
+            assert jnp.array_equal(
+                result[request_index].token_ids,
+                reference[request_index].token_ids,
+            ), f"{scheduler_name}, request {request_index}"
+
+
 def test_bonus_only_step_matches_baseline(
     language_model: LanguageModel,
     dflash_speculator: DFlashSpeculator,

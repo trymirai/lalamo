@@ -10,7 +10,7 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int
 from lalamo.modules.token_mixer import StateLayerBase
 from lalamo.utils.sharding import ShardingConfig
 
-__all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
+__all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "SpeculativeKVCacheLayer", "StaticKVCacheLayer"]
 
 
 @eqx.filter_jit
@@ -37,23 +37,46 @@ def build_tree_attention_mask(
     prefix_length: Int[Array, ""] | int,
     parent_indices: Int[Array, " nodes"],
     has_sinks: bool,
+    length_without_padding: Int[Array, ""] | int | None = None,
+    sliding_window_size: int | None = None,
 ) -> Bool[Array, "nodes total_capacity"]:
     prefix_length = jnp.asarray(prefix_length, dtype=jnp.int32)
     (num_nodes,) = parent_indices.shape
+    if length_without_padding is None:
+        length_without_padding = num_nodes
 
     col_indices = jnp.arange(total_capacity, dtype=jnp.int32)
     prefix_mask = col_indices[None, :] < prefix_length
 
     ancestor_matrix = tree_ancestor_mask(parent_indices)
     draft_offsets = col_indices - prefix_length
-    in_draft = (draft_offsets >= 0) & (draft_offsets < num_nodes)
+    in_draft = (draft_offsets >= 0) & (draft_offsets < length_without_padding)
     clamped = jnp.clip(draft_offsets, 0, num_nodes - 1)
     draft_mask = ancestor_matrix[:, clamped] & in_draft[None, :]
 
     mask = prefix_mask | draft_mask
+    if sliding_window_size is not None:
+        node_depths = ancestor_matrix.sum(axis=-1).astype(jnp.int32) - 1
+        query_positions = prefix_length + node_depths
+        key_positions = jnp.where(in_draft, prefix_length + node_depths[clamped], col_indices)
+        mask = mask & (query_positions[:, None] < key_positions[None, :] + sliding_window_size)
     if has_sinks:
         mask = mask.at[:, 0].set(True)
     return mask
+
+
+def compact_accepted_rows(
+    keys: Float[Array, "tokens groups head_channels"],
+    values: Float[Array, "tokens groups head_channels"],
+    draft_start: Int[Array, ""],
+    accepted_node_indices: Int[Array, " nodes"],
+) -> tuple[Float[Array, "tokens groups head_channels"], Float[Array, "tokens groups head_channels"]]:
+    source_rows = draft_start + jnp.maximum(accepted_node_indices, 0)
+
+    def compact(buffer: Float[Array, "tokens groups head_channels"]) -> Float[Array, "tokens groups head_channels"]:
+        return jax.lax.dynamic_update_slice_in_dim(buffer, buffer[source_rows], draft_start, axis=0)
+
+    return compact(keys), compact(values)
 
 
 class KVCacheLayer(StateLayerBase):
@@ -95,13 +118,23 @@ class KVCacheLayer(StateLayerBase):
         self,
         prefix_length: Int[Array, ""] | int,
         parent_indices: Int[Array, " nodes"],
+        length_without_padding: Int[Array, ""] | int | None = None,
+        sliding_window_size: int | None = None,
     ) -> Bool[Array, "nodes tokens"]:
         self._raise_if_batched()
         total, _, _ = self.keys.shape
-        mask = build_tree_attention_mask(total, prefix_length, parent_indices, self.has_sinks)
+        mask = build_tree_attention_mask(
+            total,
+            prefix_length,
+            parent_indices,
+            self.has_sinks,
+            length_without_padding,
+            sliding_window_size,
+        )
         padding_mask = self.padding_mask
         if padding_mask is not None:
-            mask = mask & padding_mask[None, :]
+            in_prefix = jnp.arange(total, dtype=jnp.int32) < jnp.asarray(prefix_length, dtype=jnp.int32)
+            mask = mask & (padding_mask | ~in_prefix)[None, :]
         return mask
 
     @abstractmethod
@@ -216,8 +249,14 @@ class DynamicKVCacheLayer(KVCacheLayer):
 class StaticKVCacheLayer(KVCacheLayer):
     current_length: Int[Array, "*batch"]
 
-    def committed_length(self) -> Int[Array, " batch"]:
-        return self.current_length
+    def begin_verification(self, num_nodes: int) -> "SpeculativeKVCacheLayer":
+        del num_nodes
+        return SpeculativeKVCacheLayer(
+            has_sinks=self.has_sinks,
+            keys=self.keys,
+            values=self.values,
+            current_length=self.current_length,
+        )
 
     def current_prefix_length(self) -> Int[Array, ""]:
         self._raise_if_batched()
@@ -302,14 +341,6 @@ class StaticKVCacheLayer(KVCacheLayer):
             current_length=updated_sequence_length,
         )
 
-    def truncate(self, new_lengths: Int[Array, " batch"]) -> "StaticKVCacheLayer":
-        return StaticKVCacheLayer(
-            has_sinks=self.has_sinks,
-            keys=self.keys,
-            values=self.values,
-            current_length=new_lengths,
-        )
-
     @classmethod
     def init(
         cls,
@@ -327,4 +358,41 @@ class StaticKVCacheLayer(KVCacheLayer):
             keys=jax.device_put(jnp.zeros((capacity, num_groups, head_dim), dtype=dtype), cache_sharding),
             values=jax.device_put(jnp.zeros((capacity, num_groups, head_dim), dtype=dtype), cache_sharding),
             current_length=jax.device_put(jnp.array(has_sinks, dtype=jnp.int32), length_sharding),
+        )
+
+
+class SpeculativeKVCacheLayer(StaticKVCacheLayer):
+    def begin_verification(self, num_nodes: int) -> "SpeculativeKVCacheLayer":
+        del num_nodes
+        return self
+
+    def extend(
+        self,
+        added_keys: Float[Array, "tokens groups head_channels"],
+        added_values: Float[Array, "tokens groups head_channels"],
+        added_length: Int[Array, ""] | int | None = None,
+    ) -> "SpeculativeKVCacheLayer":
+        extended = super().extend(added_keys, added_values, added_length)
+        return SpeculativeKVCacheLayer(
+            has_sinks=self.has_sinks,
+            keys=extended.keys,
+            values=extended.values,
+            current_length=self.current_length,
+        )
+
+    def commit_accepted(
+        self,
+        accepted_node_indices: Int[Array, "batch nodes"],
+        num_accepted_nodes: Int[Array, " batch"],
+    ) -> StaticKVCacheLayer:
+        if self.keys.ndim == 3:
+            compact = compact_accepted_rows
+        else:
+            compact = jax.vmap(compact_accepted_rows)
+        keys, values = compact(self.keys, self.values, self.current_length, accepted_node_indices)
+        return StaticKVCacheLayer(
+            has_sinks=self.has_sinks,
+            keys=keys,
+            values=values,
+            current_length=self.current_length + num_accepted_nodes,
         )

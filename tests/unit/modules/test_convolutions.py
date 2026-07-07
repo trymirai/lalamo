@@ -284,3 +284,36 @@ def test_separable_causal_conv_export_load_roundtrips_with_replicated_parameters
     _assert_close(result=result.outputs, reference=original(inputs).outputs)
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
     assert result.outputs.sharding == make_sharding((None, None))
+
+
+def test_tree_step_chain_matches_sequential_conv() -> None:
+    module = _conv()
+    num_tokens = 5
+    inputs = jnp.arange(num_tokens * CHANNELS, dtype=jnp.float32).reshape(num_tokens, CHANNELS) / 10 - 0.3
+    state = jnp.arange((KERNEL_SIZE - 1) * CHANNELS, dtype=jnp.float32).reshape(KERNEL_SIZE - 1, CHANNELS) / 7
+    parent_indices = jnp.arange(num_tokens, dtype=jnp.int32) - 1
+
+    outputs, windows = module.tree_step(inputs, parent_indices, state)
+    reference = module(inputs, state=state)
+    _assert_close(result=outputs, reference=reference.outputs)
+
+    for length in range(1, num_tokens + 1):
+        length_reference = module(inputs, length_without_padding=length, state=state, return_updated_state=True)
+        assert length_reference.state is not None
+        _assert_close(result=windows[length - 1], reference=length_reference.state)
+
+
+def test_tree_step_fork_matches_per_branch_conv() -> None:
+    module = _conv()
+    inputs = jnp.arange(3 * CHANNELS, dtype=jnp.float32).reshape(3, CHANNELS) / 10 - 0.3
+    state = jnp.arange((KERNEL_SIZE - 1) * CHANNELS, dtype=jnp.float32).reshape(KERNEL_SIZE - 1, CHANNELS) / 7
+    parent_indices = jnp.array([-1, 0, 0], dtype=jnp.int32)
+
+    outputs, windows = module.tree_step(inputs, parent_indices, state)
+
+    for branch in ([0, 1], [0, 2]):
+        branch_inputs = inputs[jnp.array(branch)]
+        reference = module(branch_inputs, state=state, return_updated_state=True)
+        assert reference.state is not None
+        _assert_close(result=outputs[branch[-1]], reference=reference.outputs[-1])
+        _assert_close(result=windows[branch[-1]], reference=reference.state)

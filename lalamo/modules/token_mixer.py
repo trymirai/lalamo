@@ -32,11 +32,17 @@ __all__ = [
 
 
 class StateLayerBase(Exportable, eqx.Module):
-    def committed_length(self) -> Int[Array, " batch"]:
-        raise NotImplementedError("State layer does not expose its committed length.")
+    def begin_verification(self, num_nodes: int) -> "StateLayerBase":
+        del num_nodes
+        return self
 
-    def truncate(self, new_lengths: Int[Array, " batch"]) -> Self:
-        raise NotImplementedError("State layer does not support truncation.")
+    def commit_accepted(
+        self,
+        accepted_node_indices: Int[Array, "batch nodes"],
+        num_accepted_nodes: Int[Array, " batch"],
+    ) -> "StateLayerBase":
+        del accepted_node_indices, num_accepted_nodes
+        return self
 
 
 @register_pytree_node_class
@@ -50,12 +56,15 @@ class State(tuple[StateLayerBase, ...]):
     def tree_unflatten(cls, aux_data: None, children: tuple[StateLayerBase, ...]) -> Self:  # noqa: ARG003
         return cls(children)
 
-    def truncate(self, new_lengths: Int[Array, " batch"]) -> Self:
-        return State(state_layer.truncate(new_lengths) for state_layer in self)
+    def begin_verification(self, num_nodes: int) -> Self:
+        return State(state_layer.begin_verification(num_nodes) for state_layer in self)
 
-    def committed_length(self) -> Int[Array, " batch"]:
-        first_layer, *_ = self
-        return first_layer.committed_length()
+    def commit_accepted(
+        self,
+        accepted_node_indices: Int[Array, "batch nodes"],
+        num_accepted_nodes: Int[Array, " batch"],
+    ) -> Self:
+        return State(state_layer.commit_accepted(accepted_node_indices, num_accepted_nodes) for state_layer in self)
 
 
 class AttentionImplementation(Enum):

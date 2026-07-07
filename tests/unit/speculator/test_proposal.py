@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 
-from lalamo.speculator import AcceptedProposal, ChainProposal
+from lalamo.speculator import AcceptedProposal, ChainProposal, TreeProposal
 
 
 def make_proposal() -> ChainProposal:
@@ -121,3 +121,102 @@ def test_gather_top_k_follows_source_indices() -> None:
 
     assert token_ids.tolist() == [[[1, 2], [3, 4], [0, 0], [0, 0]]]
     assert token_logits.tolist() == [[[1.0, 2.0], [3.0, 4.0], [0.0, 0.0], [0.0, 0.0]]]
+
+
+def make_tree_proposal() -> TreeProposal:
+    return TreeProposal(
+        token_ids=jnp.asarray([[10, 20, 30, 40, 50, 60]], dtype=jnp.int32),
+        token_positions=jnp.asarray([[5, 6, 6, 7, 7, 7]], dtype=jnp.int32),
+        parent_indices=jnp.asarray([[-1, 0, 0, 1, 2, 2]], dtype=jnp.int32),
+        lengths=jnp.asarray([6], dtype=jnp.int32),
+    )
+
+
+def accept_tree(
+    proposal: TreeProposal,
+    sampled_token_ids: list[int],
+    active: bool = True,
+) -> AcceptedProposal:
+    return proposal.accept(jnp.asarray([sampled_token_ids], dtype=jnp.int32)).where_active(jnp.asarray([active]))
+
+
+def test_tree_accepts_branch_path_with_bonus() -> None:
+    accepted = accept_tree(make_tree_proposal(), [30, 99, 60, 99, 99, 70])
+
+    assert accepted.accepted_node_indices.tolist() == [[0, 2, 5, -1, -1, -1]]
+    assert accepted.num_accepted_nodes.tolist() == [3]
+    assert accepted.token_ids.tolist() == [[30, 60, 70, 0, 0, 0]]
+    assert accepted.token_positions.tolist() == [[6, 7, 8, 0, 0, 0]]
+    assert accepted.source_indices.tolist() == [[0, 2, 5, -1, -1, -1]]
+    assert accepted.lengths.tolist() == [3]
+
+
+def test_tree_accepts_other_branch() -> None:
+    accepted = accept_tree(make_tree_proposal(), [20, 40, 99, 88, 99, 99])
+
+    assert accepted.accepted_node_indices.tolist() == [[0, 1, 3, -1, -1, -1]]
+    assert accepted.token_ids.tolist() == [[20, 40, 88, 0, 0, 0]]
+    assert accepted.token_positions.tolist() == [[6, 7, 8, 0, 0, 0]]
+
+
+def test_tree_rejects_all_children_emits_bonus_only() -> None:
+    accepted = accept_tree(make_tree_proposal(), [99, 98, 97, 96, 95, 94])
+
+    assert accepted.accepted_node_indices.tolist() == [[0, -1, -1, -1, -1, -1]]
+    assert accepted.token_ids.tolist() == [[99, 0, 0, 0, 0, 0]]
+    assert accepted.lengths.tolist() == [1]
+
+
+def test_tree_duplicate_siblings_resolve_to_lowest_index() -> None:
+    proposal = TreeProposal(
+        token_ids=jnp.asarray([[10, 20, 20]], dtype=jnp.int32),
+        token_positions=jnp.asarray([[5, 6, 6]], dtype=jnp.int32),
+        parent_indices=jnp.asarray([[-1, 0, 0]], dtype=jnp.int32),
+        lengths=jnp.asarray([3], dtype=jnp.int32),
+    )
+    accepted = accept_tree(proposal, [20, 99, 98])
+
+    assert accepted.accepted_node_indices.tolist() == [[0, 1, -1]]
+
+
+def test_tree_padded_nodes_are_never_accepted() -> None:
+    proposal = TreeProposal(
+        token_ids=jnp.asarray([[10, 20, 30, 40, 50, 60]], dtype=jnp.int32),
+        token_positions=jnp.asarray([[5, 6, 6, 7, 7, 7]], dtype=jnp.int32),
+        parent_indices=jnp.asarray([[-1, 0, 0, 1, 2, 2]], dtype=jnp.int32),
+        lengths=jnp.asarray([2], dtype=jnp.int32),
+    )
+    accepted = accept_tree(proposal, [30, 99, 60, 99, 99, 70])
+
+    assert accepted.accepted_node_indices.tolist() == [[0, -1, -1, -1, -1, -1]]
+    assert accepted.lengths.tolist() == [1]
+
+
+def test_tree_inactive_line_emits_nothing() -> None:
+    accepted = accept_tree(make_tree_proposal(), [30, 99, 60, 99, 99, 70], active=False)
+
+    assert accepted.token_ids.tolist() == [[0, 0, 0, 0, 0, 0]]
+    assert accepted.lengths.tolist() == [0]
+    assert accepted.num_accepted_nodes.tolist() == [0]
+    assert accepted.accepted_node_indices.tolist() == [[-1, -1, -1, -1, -1, -1]]
+
+
+def test_tree_with_chain_parents_matches_chain_proposal() -> None:
+    chain = make_proposal()
+    tree = TreeProposal(
+        token_ids=chain.token_ids,
+        token_positions=chain.token_positions,
+        parent_indices=jnp.asarray([[-1, 0, 1, 2]], dtype=jnp.int32),
+        lengths=chain.lengths,
+    )
+    sampled = [11, 12, 99, 98]
+
+    chain_accepted = accept(chain, sampled)
+    tree_accepted = accept_tree(tree, sampled)
+
+    assert tree_accepted.token_ids.tolist() == chain_accepted.token_ids.tolist()
+    assert tree_accepted.token_positions.tolist() == chain_accepted.token_positions.tolist()
+    assert tree_accepted.source_indices.tolist() == chain_accepted.source_indices.tolist()
+    assert tree_accepted.lengths.tolist() == chain_accepted.lengths.tolist()
+    assert tree_accepted.accepted_node_indices.tolist() == chain_accepted.accepted_node_indices.tolist()
+    assert tree_accepted.num_accepted_nodes.tolist() == chain_accepted.num_accepted_nodes.tolist()

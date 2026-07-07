@@ -32,7 +32,15 @@ DFLASH_GENERATION_CASES = [
             [1, 1, 1, 2, 3, 2, 0, 0, 0, 0],
         ],
     ),
-    # Enable Qwen/Qwen3.5-4B with z-lab/Qwen3.5-4B-DFlash after GDN rollback works.
+    (
+        "Qwen/Qwen3.5-4B",
+        "z-lab/Qwen3.5-4B-DFlash",
+        [
+            [1, 1, 7, 1, 0, 0, 0, 0, 0, 0],
+            [1, 1, 2, 6, 0, 0, 0, 0, 0, 0],
+            [1, 1, 6, 2, 0, 0, 0, 0, 0, 0],
+        ],
+    ),
 ]
 
 
