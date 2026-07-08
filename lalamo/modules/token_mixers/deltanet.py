@@ -22,7 +22,7 @@ from lalamo.modules.token_mixer import (
 from lalamo.modules.token_mixers.convolutions import ConvPrecision
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
-from .chunked_delta import chunk_delta_forward
+from .chunked_delta import chunk_delta_forward, tree_delta_verify
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .kv_cache import tree_ancestor_mask
 from .ssm_state import LaggedSSMStateLayer, SSMStateLayer
@@ -207,6 +207,53 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         )
         return DeltaNetScanResult(outputs, final_state)
 
+    def _tree_verify(
+        self,
+        queries: Float[Array, "tokens heads key_channels"],
+        keys: Float[Array, "tokens heads key_channels"],
+        values: Float[Array, "tokens heads value_channels"],
+        decay_factor: Float[Array, "tokens heads"],
+        beta: Float[Array, "tokens heads"],
+        initial_state: Float[Array, "heads value_channels key_channels"],
+        num_steps: Int[Array, ""] | int,
+        parent_indices: Int[Array, " tokens"],
+    ) -> DeltaNetScanResult:
+        # Read-only verify under lag-folding: the committed state is only consumed through the
+        # correction vectors, never advanced. The factors are what commit_accepted folds later.
+        num_tokens, _, _ = queries.shape
+        num_steps_arr = jnp.asarray(num_steps, dtype=jnp.int32)
+        state_dtype = initial_state.dtype
+
+        valid_mask = (jnp.arange(num_tokens) < num_steps_arr).astype(state_dtype)
+        keys = keys * valid_mask[:, None, None]
+        values = values * valid_mask[:, None, None]
+        beta = beta * valid_mask[:, None]
+        decay_factor = decay_factor * valid_mask[:, None]
+
+        tree_result = tree_delta_verify(
+            queries=queries,
+            keys=keys,
+            values=values,
+            decay_factor=decay_factor,
+            beta=beta,
+            ancestor_matrix=tree_ancestor_mask(parent_indices),
+        )
+        initial_state_reads = einops.einsum(
+            initial_state,
+            tree_result.correction_vecs,
+            "heads value_channels key_channels, tokens heads key_channels -> tokens heads value_channels",
+        )
+        return DeltaNetScanResult(
+            tree_result.outputs + initial_state_reads,
+            initial_state,
+            DeltaNetVerifyFactors(
+                keys=keys,
+                update_values=tree_result.update_values,
+                prop_updates=tree_result.prop_updates,
+                cumulative_decay=tree_result.cumulative_decay,
+            ),
+        )
+
     def _chunked_scan(
         self,
         queries: Float[Array, "tokens heads key_channels"],
@@ -219,15 +266,21 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         forward_pass_config: MixerForwardPassConfig,
         parent_indices: Int[Array, " tokens"] | None = None,
     ) -> DeltaNetScanResult:
+        if parent_indices is not None:
+            return self._tree_verify(
+                queries,
+                keys,
+                values,
+                decay_factor,
+                beta,
+                initial_state,
+                num_steps,
+                parent_indices,
+            )
+
         num_tokens, _, _ = queries.shape
-        if parent_indices is None:
-            chunk_size = forward_pass_config.ssm_chunk_size
-            min_tail_size_to_chunk = forward_pass_config.ssm_min_tail_size_to_chunk
-            ancestor_matrix = None
-        else:
-            chunk_size = num_tokens
-            min_tail_size_to_chunk = 0
-            ancestor_matrix = tree_ancestor_mask(parent_indices)
+        chunk_size = forward_pass_config.ssm_chunk_size
+        min_tail_size_to_chunk = forward_pass_config.ssm_min_tail_size_to_chunk
         num_steps_arr = jnp.asarray(num_steps, dtype=jnp.int32)
         state_dtype = initial_state.dtype
 
@@ -286,7 +339,6 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             values=values_c,
             decay_factor=decay_c,
             beta=beta_c,
-            ancestor_matrix=ancestor_matrix,
         )
 
         def _inter_chunk_step(
@@ -324,18 +376,6 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         )
         outputs = chunk_results.chunk_outputs + corrections
         outputs = outputs.reshape(padded_len, self.num_heads, self.value_head_dim)[:num_chunked_tokens]
-
-        if parent_indices is not None:
-            return DeltaNetScanResult(
-                outputs,
-                final_state,
-                DeltaNetVerifyFactors(
-                    keys=keys,
-                    update_values=chunk_results.update_values[0],
-                    prop_updates=chunk_results.prop_updates[0],
-                    cumulative_decay=chunk_results.cumulative_decay[0],
-                ),
-            )
 
         if has_short_tail:
             tail_num_steps = jnp.clip(num_steps_arr - num_chunked_tokens, 0, remainder)

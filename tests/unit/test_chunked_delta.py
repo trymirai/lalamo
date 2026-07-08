@@ -6,7 +6,7 @@ import pytest
 from einops import einsum
 from jaxtyping import Array
 
-from lalamo.modules.token_mixers.chunked_delta import ChunkKernelResult, chunk_delta_forward
+from lalamo.modules.token_mixers.chunked_delta import TreeVerifyResult, chunk_delta_forward, tree_delta_verify
 from lalamo.modules.token_mixers.kv_cache import tree_ancestor_mask
 from lalamo.modules.token_mixers.ssm_state import fold_lag_factors
 from tests.common import assert_close
@@ -168,19 +168,19 @@ def tree_verify(
     beta: Array,
     initial_state: Array,
     parent_indices: Array,
-) -> tuple[Array, ChunkKernelResult]:
+) -> tuple[Array, TreeVerifyResult]:
     ancestor_matrix = tree_ancestor_mask(parent_indices)
-    result = chunk_delta_forward(
-        queries[None],
-        keys[None],
-        values[None],
-        decay_factor[None],
-        beta[None],
+    result = tree_delta_verify(
+        queries,
+        keys,
+        values,
+        decay_factor,
+        beta,
         ancestor_matrix,
     )
-    outputs = result.chunk_outputs[0] + einsum(
+    outputs = result.outputs + einsum(
         initial_state.astype(jnp.float32),
-        result.correction_vecs[0],
+        result.correction_vecs,
         "heads value_channels key_channels, nodes heads key_channels -> nodes heads value_channels",
     )
     return outputs, result
@@ -243,8 +243,8 @@ def test_tree_verify_matches_recurrent_reference(parents: list[int]) -> None:
     )
 
     assert_close(result=outputs, reference=expected_outputs.astype(jnp.float32), rtol=1e-4, atol=1e-5)
-    assert_close(result=result.update_values[0], reference=expected_updates.astype(jnp.float32), rtol=1e-4, atol=1e-5)
-    assert_close(result=result.cumulative_decay[0], reference=expected_decay.astype(jnp.float32), rtol=1e-4, atol=1e-5)
+    assert_close(result=result.update_values, reference=expected_updates.astype(jnp.float32), rtol=1e-4, atol=1e-5)
+    assert_close(result=result.cumulative_decay, reference=expected_decay.astype(jnp.float32), rtol=1e-4, atol=1e-5)
 
 
 @pytest.mark.usefixtures("enable_x64")
@@ -265,9 +265,9 @@ def test_fold_lag_factors_matches_recurrent_replay(leaf: int) -> None:
         conv_state,
         initial_state.astype(jnp.float32),
         keys.astype(jnp.float32),
-        verify_result.update_values[0],
-        verify_result.prop_updates[0],
-        verify_result.cumulative_decay[0],
+        verify_result.update_values,
+        verify_result.prop_updates,
+        verify_result.cumulative_decay,
         conv_windows,
         accepted_node_indices,
         jnp.asarray(len(path), dtype=jnp.int32),
@@ -298,9 +298,9 @@ def test_fold_lag_factors_without_accepted_nodes_keeps_committed_state() -> None
         conv_state,
         committed_state,
         keys.astype(jnp.float32),
-        verify_result.update_values[0],
-        verify_result.prop_updates[0],
-        verify_result.cumulative_decay[0],
+        verify_result.update_values,
+        verify_result.prop_updates,
+        verify_result.cumulative_decay,
         conv_windows,
         jnp.full((NUM_NODES,), -1, dtype=jnp.int32),
         jnp.asarray(0, dtype=jnp.int32),
