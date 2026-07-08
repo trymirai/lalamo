@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from jax import numpy as jnp
 
 from lalamo.data.huggingface_message import HFMessage
-from lalamo.inference.batch_scheduler import BatchSchedulerConfig, ContinuousBatchScheduler, clear_probe_cache
+from lalamo.inference.batch_scheduler import _PROBE_CACHE, BatchSchedulerConfig, ContinuousBatchScheduler
 from lalamo.model_import.common import import_model
 from lalamo.models import GenerationConfig, LanguageModel
 from lalamo.module import Keychain
@@ -97,19 +97,24 @@ class Batch:
 gpu_lock = asyncio.Lock()
 creation_lock = asyncio.Lock()
 
+
 # Resident model across /batches requests: pay the safetensors reload + jit warmup once, not per request.
-_model_cache: dict[tuple[str, str | None], LanguageModel] = {}
+_resident_model: tuple[tuple[str, str | None], LanguageModel] | None = None
 
 
 def _load_resident_model(model_path: str, dtype: str | None) -> LanguageModel:
-    cache_key = (model_path, dtype)
-    if (cached := _model_cache.get(cache_key)) is not None:
-        return cached
+    global _resident_model  # noqa: PLW0603
 
-    # Free the old model's device buffers before importing the new one (avoid two full models in VRAM).
-    if _model_cache:
-        _model_cache.clear()
-        clear_probe_cache()  # its entries are id(model)-keyed and must not outlive this model
+    cache_key = (model_path, dtype)
+    if _resident_model is not None:
+        cached_key, cached_model = _resident_model
+        if cached_key == cache_key:
+            return cached_model
+
+        # Free the old model's device buffers before importing the new one (avoid two full models in VRAM).
+        _resident_model = None
+        del cached_model
+        _PROBE_CACHE.clear()  # its entries are id(model)-keyed and must not outlive this model
         gc.collect()
 
     model = import_model(
@@ -120,7 +125,7 @@ def _load_resident_model(model_path: str, dtype: str | None) -> LanguageModel:
     if not isinstance(model, LanguageModel):
         raise TypeError(f"Expected a language model, got {type(model).__name__}")
 
-    _model_cache[cache_key] = model
+    _resident_model = (cache_key, model)
     return model
 
 
