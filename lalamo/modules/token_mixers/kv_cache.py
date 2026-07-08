@@ -17,17 +17,15 @@ __all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "SpeculativeKVCacheLayer", "St
 def tree_ancestor_mask(
     parent_indices: Int[Array, " nodes"],
 ) -> Bool[Array, "nodes nodes"]:
+    # Transitive closure of the parent relation by repeated squaring: log2(nodes) small
+    # matmuls instead of a sequential scan over every node.
     (num_nodes,) = parent_indices.shape
-    initial = jnp.eye(num_nodes, dtype=jnp.bool)
-
-    def step(mask: Bool[Array, "nodes nodes"], i: Int[Array, ""]) -> tuple[Bool[Array, "nodes nodes"], None]:
-        parent = parent_indices[i]
-        parent_row = mask[jnp.maximum(parent, 0)]
-        zero_row = jnp.zeros_like(parent_row)
-        inherited = jnp.where(parent >= 0, parent_row, zero_row)
-        return mask.at[i].set(mask[i] | inherited), None
-
-    mask, _ = jax.lax.scan(step, initial, jnp.arange(num_nodes, dtype=jnp.int32))
+    node_indices = jnp.arange(num_nodes, dtype=parent_indices.dtype)
+    parent_edges = (parent_indices[:, None] == node_indices[None, :]) & (parent_indices >= 0)[:, None]
+    mask = jnp.eye(num_nodes, dtype=jnp.bool) | parent_edges
+    for _ in range(max(num_nodes - 1, 1).bit_length()):
+        hops = mask.astype(jnp.float32)
+        mask = (hops @ hops) > 0.5
     return mask
 
 
