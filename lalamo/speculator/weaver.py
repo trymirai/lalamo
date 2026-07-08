@@ -288,6 +288,44 @@ class Weaver(LalamoModule[WeaverConfig]):
         return logits, jnp.stack(key_layers), jnp.stack(value_layers)
 
 
+def _small_top_k(values: Float[Array, "... slots"], k: int) -> tuple[Array, Array]:
+    # k sequential argmax passes: for small k this is a handful of fused
+    # reductions instead of a full radix sort of every row.
+    remaining = values
+    picked_values = []
+    picked_indices = []
+    slots = jnp.arange(values.shape[-1], dtype=jnp.int32)
+    for _ in range(k):
+        index = jnp.argmax(remaining, axis=-1).astype(jnp.int32)
+        value = jnp.take_along_axis(remaining, index[..., None], axis=-1)[..., 0]
+        picked_values.append(value)
+        picked_indices.append(index)
+        remaining = jnp.where(slots == index[..., None], -jnp.inf, remaining)
+    return jnp.stack(picked_values, axis=-1), jnp.stack(picked_indices, axis=-1)
+
+
+def _vocab_top_k(logits: Float[Array, "... vocab"], k: int) -> tuple[Array, Array]:
+    # Near-exact top-k over the vocabulary: top-2 per contiguous block (two argmax
+    # sweeps), then an exact top-k over the 2*k survivors. Misses an entry only if
+    # a single block holds three of the true top-k. Orders of magnitude cheaper
+    # than the segmented radix sort a full top_k lowers to.
+    *lead, vocab = logits.shape
+    padded = -(-vocab // k) * k
+    block = padded // k
+    padded_logits = jnp.pad(logits, (*[(0, 0)] * len(lead), (0, padded - vocab)), constant_values=-jnp.inf)
+    blocks = padded_logits.reshape(*lead, k, block)
+    offsets = (jnp.arange(k, dtype=jnp.int32) * block)[(None,) * len(lead)]
+    first_index = jnp.argmax(blocks, axis=-1).astype(jnp.int32)
+    first_value = jnp.take_along_axis(blocks, first_index[..., None], axis=-1)[..., 0]
+    masked = jnp.where(jnp.arange(block, dtype=jnp.int32) == first_index[..., None], -jnp.inf, blocks)
+    second_index = jnp.argmax(masked, axis=-1).astype(jnp.int32)
+    second_value = jnp.take_along_axis(masked, second_index[..., None], axis=-1)[..., 0]
+    survivor_values = jnp.concatenate([first_value, second_value], axis=-1)
+    survivor_indices = jnp.concatenate([first_index + offsets, second_index + offsets], axis=-1)
+    top_values, top_ranks = jax.lax.top_k(survivor_values, k)
+    return top_values, jnp.take_along_axis(survivor_indices, top_ranks, axis=-1)
+
+
 def build_weaver_tree(
     weaver: Weaver,
     lm_head: Float[Array, "vocab hidden"],
@@ -375,7 +413,7 @@ def build_weaver_tree(
             ancestor_mask,
             keychain=keychain,
         )
-        child_logits, child_ranks = jax.lax.top_k(logits.astype(jnp.float32), expand_width)
+        child_logits, child_ranks = _small_top_k(logits.astype(jnp.float32), expand_width)
         child_log_probs = child_logits - jax.nn.logsumexp(logits.astype(jnp.float32), axis=-1, keepdims=True)
         child_tokens = jnp.take_along_axis(row_candidate_ids, child_ranks, axis=1)
         child_scores = prefix_score[:, None] + child_log_probs
@@ -437,7 +475,7 @@ def build_weaver_tree(
         ) = carry
         node_offsets = step_index * batch_expand_width + jnp.arange(batch_expand_width, dtype=jnp.int32)
         slot_offsets = node_offsets + 1
-        _, frontier_indices = jax.lax.top_k(
+        _, frontier_indices = _small_top_k(
             jnp.where(f_active, f_scores, -jnp.inf),
             batch_expand_width,
         )
@@ -763,7 +801,7 @@ class WeaverSpeculator(Speculator[WeaverDraftState, WeaverSpeculatorConfig]):
             added_sharding_axes=(batch_axis, None),
         )
         pool_size = min(self.weaver.config.candidate_pool_size, draft_logits.shape[-1])
-        candidate_scores, candidate_ids = jax.lax.top_k(draft_logits.astype(jnp.float32), pool_size)
+        candidate_scores, candidate_ids = _vocab_top_k(draft_logits.astype(jnp.float32), pool_size)
 
         lm_head, embed_w = self.target_matrices(target_embedding)
         prefix = self.weaver.prompt_prefix(
