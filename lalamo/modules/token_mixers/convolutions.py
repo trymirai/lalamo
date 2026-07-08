@@ -128,6 +128,44 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
             updated_state,
         )
 
+    def tree_step(
+        self,
+        inputs: Float[Array, "nodes channels"],
+        parent_indices: Int[Array, " nodes"],
+        state: Float[Array, "kernel_minus_1 channels"],
+        precision: ConvPrecision = ConvPrecision.MATCH_INPUTS,
+    ) -> tuple[Float[Array, "nodes channels"], Float[Array, "nodes kernel_minus_1 channels"]]:
+        match precision:
+            case ConvPrecision.MATCH_WEIGHTS:
+                dtype = self.weights.dtype
+            case ConvPrecision.MATCH_INPUTS:
+                dtype = inputs.dtype
+
+        inputs_for_state = inputs.astype(state.dtype)
+        num_nodes, _ = inputs.shape
+        history = self.kernel_size - 1
+
+        current = jnp.arange(num_nodes, dtype=jnp.int32)
+        entry_indices = [current]
+        for _ in range(history):
+            current = jnp.where(current >= 0, parent_indices[jnp.maximum(current, 0)], current - 1)
+            entry_indices.append(current)
+        window_indices = jnp.stack(entry_indices[::-1], axis=1)
+
+        from_tree = window_indices >= 0
+        tree_entries = inputs_for_state[jnp.maximum(window_indices, 0)]
+        state_entries = state[jnp.clip(history + window_indices, 0, history - 1)]
+        windows = jnp.where(from_tree[:, :, None], tree_entries, state_entries)
+
+        outputs = einsum(
+            windows.astype(dtype),
+            self.weights.astype(dtype),
+            "nodes kernel channels, channels kernel -> nodes channels",
+        )
+        if self.biases is not None:
+            outputs = outputs + self.biases.astype(dtype)
+        return outputs, windows[:, 1:, :]
+
     def step(
         self,
         token: Float[Array, " channels"],

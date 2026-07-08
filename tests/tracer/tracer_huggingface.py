@@ -554,6 +554,7 @@ class ModernBertTracer(
         full_activation_trace: ActivationTrace,
     ) -> None:
         layer_result = full_activation_trace.layer_results[layer_index]
+        assert layer_result is not None
         position_ids = full_activation_trace.token_positions
         activation_trace = layer_result.activation_trace
         assert activation_trace is not None

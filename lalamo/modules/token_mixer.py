@@ -32,7 +32,17 @@ __all__ = [
 
 
 class StateLayerBase(Exportable, eqx.Module):
-    pass
+    def begin_verification(self, num_nodes: int) -> "StateLayerBase":
+        del num_nodes
+        return self
+
+    def commit_accepted(
+        self,
+        accepted_node_indices: Int[Array, "batch nodes"],
+        num_accepted_nodes: Int[Array, " batch"],
+    ) -> "StateLayerBase":
+        del accepted_node_indices, num_accepted_nodes
+        return self
 
 
 @register_pytree_node_class
@@ -45,6 +55,16 @@ class State(tuple[StateLayerBase, ...]):
     @classmethod
     def tree_unflatten(cls, aux_data: None, children: tuple[StateLayerBase, ...]) -> Self:  # noqa: ARG003
         return cls(children)
+
+    def begin_verification(self, num_nodes: int) -> Self:
+        return State(state_layer.begin_verification(num_nodes) for state_layer in self)
+
+    def commit_accepted(
+        self,
+        accepted_node_indices: Int[Array, "batch nodes"],
+        num_accepted_nodes: Int[Array, " batch"],
+    ) -> Self:
+        return State(state_layer.commit_accepted(accepted_node_indices, num_accepted_nodes) for state_layer in self)
 
 
 class AttentionImplementation(Enum):

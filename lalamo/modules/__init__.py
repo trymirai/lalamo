@@ -17,6 +17,15 @@ from .decoder import (
     PerLayerEmbedding,
     PLEModelConfig,
 )
+from .dflash import (
+    DFlashAttention,
+    DFlashAttentionConfig,
+    DFlashDraftConfig,
+    DFlashDraftLayer,
+    DFlashDraftLayerConfig,
+    DFlashDraftModel,
+    DFlashDraftState,
+)
 from .embedding import (
     EmbeddingBase,
     EmbeddingConfig,
@@ -104,6 +113,13 @@ __all__ = [
     "ClassifierConfig",
     "ClassifierForwardPassConfig",
     "ClassifierResult",
+    "DFlashAttention",
+    "DFlashAttentionConfig",
+    "DFlashDraftConfig",
+    "DFlashDraftLayer",
+    "DFlashDraftLayerConfig",
+    "DFlashDraftModel",
+    "DFlashDraftState",
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",

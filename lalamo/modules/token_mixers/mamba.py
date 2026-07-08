@@ -1,10 +1,11 @@
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import einsum, rearrange
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain
@@ -22,7 +23,8 @@ from lalamo.modules.token_mixers.convolutions import ConvPrecision
 from lalamo.modules.utils import call_vmapped
 
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
-from .ssm_state import SSMStateLayer
+from .kv_cache import tree_ancestor_mask
+from .ssm_state import LaggedSSMStateLayer, SSMStateLayer
 
 __all__ = [
     "Mamba2",
@@ -35,6 +37,18 @@ __all__ = [
 ]
 
 Mamba2Result = TokenMixerResult[SSMStateLayer]
+
+
+class Mamba2VerifyFactors(NamedTuple):
+    keys: Float[Array, "suffix_tokens heads state_dim"]
+    update_values: Float[Array, "suffix_tokens heads head_dim"]
+    cumulative_decay: Float[Array, "suffix_tokens heads"]
+
+
+class Mamba2ScanResult(NamedTuple):
+    outputs: Float[Array, "suffix_tokens heads head_dim"]
+    final_state: Float[Array, "heads head_dim state_dim"]
+    verify_factors: Mamba2VerifyFactors | None = None
 
 
 def exp_segsum(x: Float[Array, "... T"]) -> Float[Array, "... T T"]:
@@ -50,6 +64,7 @@ def fused_ssd_intra_chunk(
     a_cumsum: Float[Array, "groups heads_per_group chunks chunk_size"],
     cb: Float[Array, "chunks chunk_size chunk_size groups"],
     x: Float[Array, "chunks chunk_size groups heads_per_group head_dim"],
+    ancestor_matrix: Bool[Array, "chunk_size chunk_size"] | None = None,
 ) -> Float[Array, "chunks chunk_size groups heads_per_group head_dim"]:
     """Compute intra-chunk diagonal block outputs for SSD.
 
@@ -63,8 +78,11 @@ def fused_ssd_intra_chunk(
         x_slice: Float[Array, "chunk_size head_dim"],
     ) -> Float[Array, "chunk_size head_dim"]:
         diff = a_cs[:, None] - a_cs[None, :]
-        mask = jnp.tril(jnp.ones((chunk_size, chunk_size), dtype=jnp.bool_))
-        decay_local = jnp.where(mask, jnp.exp(diff), 0.0)
+        if ancestor_matrix is None:
+            mask = jnp.tril(jnp.ones((chunk_size, chunk_size), dtype=jnp.bool_))
+        else:
+            mask = ancestor_matrix
+        decay_local = jnp.where(mask, jnp.exp(jnp.where(mask, diff, 0.0)), 0.0)
         weighted = decay_local * cb_slice
         return weighted @ x_slice
 
@@ -325,7 +343,8 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         d: Float[Array, " heads"] | None = None,
         z: Float[Array, "suffix_tokens heads head_dim"] | None = None,
         z_bias: Float[Array, "heads head_dim"] | None = None,
-    ) -> tuple[Float[Array, "suffix_tokens heads head_dim"], Float[Array, "heads head_dim state_dim"]]:
+        ancestor_matrix: Bool[Array, "suffix_tokens suffix_tokens"] | None = None,
+    ) -> Mamba2ScanResult:
         """Chunked parallel scan implementing the SSD algorithm."""
         seq_len = values.shape[0]
         num_steps = jnp.asarray(num_steps, dtype=jnp.int32)
@@ -372,14 +391,21 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             "(chunks chunk_size) groups state_dim -> chunks chunk_size groups state_dim",
             chunk_size=chunk_size,
         )
-        log_decay_cumsum = jnp.cumsum(log_decay, axis=-1)
+        if ancestor_matrix is None:
+            log_decay_cumsum = jnp.cumsum(log_decay, axis=-1)
+        else:
+            log_decay_cumsum = einsum(
+                ancestor_matrix.astype(log_decay.dtype),
+                log_decay,
+                "pos other, groups heads_per_group chunks other -> groups heads_per_group chunks pos",
+            )
 
         queries_keys_prod = einsum(
             queries_chunked,
             keys_chunked,
             "chunks query_pos groups state_dim, chunks key_pos groups state_dim -> chunks query_pos key_pos groups",
         )
-        y_diag = fused_ssd_intra_chunk(log_decay_cumsum, queries_keys_prod, values)
+        y_diag = fused_ssd_intra_chunk(log_decay_cumsum, queries_keys_prod, values, ancestor_matrix)
 
         decay_states = jnp.exp(log_decay_cumsum[:, :, :, -1:] - log_decay_cumsum)
         states = einsum(
@@ -452,7 +478,24 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             chunk_size,
         )
 
-        return y, final_state
+        if ancestor_matrix is None:
+            verify_factors = None
+        else:
+            heads_per_group = self.config.num_heads // self.config.num_groups
+            verify_factors = Mamba2VerifyFactors(
+                keys=jnp.repeat(keys, heads_per_group, axis=1),
+                update_values=rearrange(
+                    values,
+                    "chunks chunk_size groups heads_per_group head_dim"
+                    " -> (chunks chunk_size) (groups heads_per_group) head_dim",
+                ),
+                cumulative_decay=rearrange(
+                    log_decay_cumsum,
+                    "groups heads_per_group chunks chunk_size -> (chunks chunk_size) (groups heads_per_group)",
+                ),
+            )
+
+        return Mamba2ScanResult(y, final_state, verify_factors)
 
     def _chunked_scan(
         self,
@@ -466,10 +509,17 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         d: Float[Array, " heads"] | None = None,
         z: Float[Array, "suffix_tokens heads head_dim"] | None = None,
         z_bias: Float[Array, "heads head_dim"] | None = None,
-    ) -> tuple[Float[Array, "suffix_tokens heads head_dim"], Float[Array, "heads head_dim state_dim"]]:
-        chunk_size = forward_pass_config.ssm_chunk_size
-        min_tail_size_to_chunk = forward_pass_config.ssm_min_tail_size_to_chunk
+        parent_indices: Int[Array, " suffix_tokens"] | None = None,
+    ) -> Mamba2ScanResult:
         seq_len = values.shape[0]
+        if parent_indices is None:
+            chunk_size = forward_pass_config.ssm_chunk_size
+            min_tail_size_to_chunk = forward_pass_config.ssm_min_tail_size_to_chunk
+            ancestor_matrix = None
+        else:
+            chunk_size = seq_len
+            min_tail_size_to_chunk = 0
+            ancestor_matrix = tree_ancestor_mask(parent_indices)
         num_steps_arr = jnp.asarray(num_steps, dtype=jnp.int32)
 
         remainder = seq_len % chunk_size
@@ -483,7 +533,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         tail_z = None if z is None else z[num_chunked_tokens:]
 
         if num_chunked_tokens == 0:
-            return self._recurrent_scan(
+            outputs, final_state = self._recurrent_scan(
                 tail_values,
                 tail_keys,
                 tail_queries,
@@ -494,8 +544,9 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
                 z=tail_z,
                 z_bias=z_bias,
             )
+            return Mamba2ScanResult(outputs, final_state)
 
-        outputs, final_state = self._chunked_scan_core(
+        core_result = self._chunked_scan_core(
             values[:num_chunked_tokens],
             keys[:num_chunked_tokens],
             queries[:num_chunked_tokens],
@@ -506,7 +557,12 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             d=d,
             z=None if z is None else z[:num_chunked_tokens],
             z_bias=z_bias,
+            ancestor_matrix=ancestor_matrix,
         )
+        if parent_indices is not None:
+            return core_result
+        outputs = core_result.outputs
+        final_state = core_result.final_state
 
         if has_short_tail:
             tail_num_steps = jnp.clip(num_steps_arr - num_chunked_tokens, 0, remainder)
@@ -523,7 +579,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             )
             outputs = jnp.concatenate([outputs, tail_outputs], axis=0)
 
-        return outputs, final_state
+        return Mamba2ScanResult(outputs, final_state)
 
     def _compute_final_state(
         self,
@@ -601,8 +657,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
     ) -> Mamba2Result:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for Mamba2.")
-        if attention_parent_indices is not None:
-            raise ValueError("Attention parent indices are not supported for Mamba2.")
         if reuse_cache:
             raise ValueError("KV cache sharing is not supported for Mamba2.")
 
@@ -616,7 +670,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
 
         seq_len, _ = inputs.shape
 
-        if seq_len == 1 and return_updated_state:
+        if seq_len == 1 and return_updated_state and attention_parent_indices is None:
             return self._decode_step(inputs, state, forward_pass_config, keychain=keychain)
 
         in_keychain, out_keychain = keychain.split()
@@ -628,13 +682,23 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         )
         conv_inputs, gate_values, time_delta_log = (x.astype(precision) for x in projections)
 
-        conv_output, updated_conv_state = self.conv(
-            conv_inputs,
-            length_without_padding,
-            state.conv_state,
-            return_updated_state=return_updated_state,
-            precision=ConvPrecision.MATCH_WEIGHTS,
-        )
+        if attention_parent_indices is None:
+            conv_output, updated_conv_state = self.conv(
+                conv_inputs,
+                length_without_padding,
+                state.conv_state,
+                return_updated_state=return_updated_state,
+                precision=ConvPrecision.MATCH_WEIGHTS,
+            )
+            conv_windows = None
+        else:
+            conv_output, conv_windows = self.conv.tree_step(
+                conv_inputs,
+                attention_parent_indices,
+                state.conv_state,
+                precision=ConvPrecision.MATCH_WEIGHTS,
+            )
+            updated_conv_state = None
         conv_activated = self.config.activation(conv_output).astype(ssm_dtype)
         gate_values = gate_values.astype(ssm_dtype)
         time_delta_log = time_delta_log.astype(ssm_dtype)
@@ -681,7 +745,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         )
 
         dt = jax.nn.softplus(time_delta_log)
-        ssm_outputs, final_ssm_state = self._chunked_scan(
+        scan_result = self._chunked_scan(
             values,
             keys,
             queries,
@@ -692,7 +756,27 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             d=self.skip_connection_weight.astype(ssm_dtype),
             z=gate_values_reshaped,
             z_bias=gate_bias_reshaped,
+            parent_indices=attention_parent_indices,
         )
+        ssm_outputs = scan_result.outputs
+        if not return_updated_state:
+            updated_state = None
+        elif attention_parent_indices is None:
+            assert updated_conv_state is not None
+            updated_state = SSMStateLayer(updated_conv_state, scan_result.final_state)
+        else:
+            factors = scan_result.verify_factors
+            assert factors is not None
+            assert conv_windows is not None
+            updated_state = LaggedSSMStateLayer(
+                conv_state=state.conv_state,
+                ssm_state=state.ssm_state,
+                keys=factors.keys,
+                update_values=factors.update_values,
+                prop_updates=jnp.zeros_like(factors.keys),
+                cumulative_decay=factors.cumulative_decay,
+                conv_windows=conv_windows,
+            )
 
         ssm_outputs_flat = rearrange(
             ssm_outputs,
@@ -704,12 +788,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=out_keychain,
         )
-
-        if return_updated_state:
-            assert updated_conv_state is not None
-            updated_state = SSMStateLayer(updated_conv_state, final_ssm_state)
-        else:
-            updated_state = None
 
         return Mamba2Result(
             outputs=outputs.astype(inputs.dtype),

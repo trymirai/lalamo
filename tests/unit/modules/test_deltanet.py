@@ -11,6 +11,7 @@ from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.token_mixer import MixerForwardPassConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
+from lalamo.modules.token_mixers.ssm_state import fold_lag_factors
 from tests.common import assert_close
 from tests.helpers import make_test_sharding_config
 
@@ -103,3 +104,137 @@ def test_deltanet_chunked_scan_matches_recurrent_scan_for_ssm_chunk_config(
 
     assert_close(result=result.outputs[:num_steps], reference=reference.outputs[:num_steps])
     assert_close(result=result.final_state, reference=reference.final_state)
+
+
+TREE_PARENTS = [-1, 0, 0, 1, 2, 2]
+
+
+def root_path(parent_indices: list[int], node: int) -> list[int]:
+    path = []
+    cursor = node
+    while cursor >= 0:
+        path.append(cursor)
+        cursor = parent_indices[cursor]
+    return path[::-1]
+
+
+def scan_inputs(num_tokens: int) -> tuple[Array, Array, Array, Array, Array, Array]:
+    queries = _values((num_tokens, NUM_HEADS, HEAD_DIM))
+    keys = _values((num_tokens, NUM_HEADS, HEAD_DIM), offset=100)
+    values = _values((num_tokens, NUM_HEADS, VALUE_HEAD_DIM), offset=200)
+    decay_factor = -jax.nn.softplus(_values((num_tokens, NUM_HEADS), offset=300))
+    beta = jax.nn.sigmoid(_values((num_tokens, NUM_HEADS), offset=400))
+    initial_state = _values((NUM_HEADS, VALUE_HEAD_DIM, HEAD_DIM), offset=500)
+    return queries, keys, values, decay_factor, beta, initial_state
+
+
+@pytest.mark.parametrize("num_steps", [6, SEQUENCE_LENGTH], ids=["partial-prefix", "full-prefix"])
+def test_deltanet_verify_scan_matches_recurrent_scan_for_chain(num_steps: int) -> None:
+    module = _deltanet()
+    queries, keys, values, decay_factor, beta, initial_state = scan_inputs(SEQUENCE_LENGTH)
+    parent_indices = jnp.arange(SEQUENCE_LENGTH, dtype=jnp.int32) - 1
+
+    result = module._chunked_scan(  # noqa: SLF001
+        queries,
+        keys,
+        values,
+        decay_factor,
+        beta,
+        initial_state,
+        num_steps,
+        MixerForwardPassConfig(),
+        parent_indices,
+    )
+    reference = module._recurrent_scan(  # noqa: SLF001
+        queries,
+        keys,
+        values,
+        decay_factor,
+        beta,
+        initial_state,
+        num_steps,
+    )
+
+    assert_close(result=result.outputs[:num_steps], reference=reference.outputs[:num_steps])
+
+
+@pytest.mark.parametrize("num_accepted", [0, 4, SEQUENCE_LENGTH])
+def test_deltanet_fold_matches_recurrent_final_state(num_accepted: int) -> None:
+    module = _deltanet()
+    queries, keys, values, decay_factor, beta, initial_state = scan_inputs(SEQUENCE_LENGTH)
+    parent_indices = jnp.arange(SEQUENCE_LENGTH, dtype=jnp.int32) - 1
+
+    verify_result = module._chunked_scan(  # noqa: SLF001
+        queries,
+        keys,
+        values,
+        decay_factor,
+        beta,
+        initial_state,
+        SEQUENCE_LENGTH,
+        MixerForwardPassConfig(),
+        parent_indices,
+    )
+    accepted_node_indices = jnp.full((SEQUENCE_LENGTH,), -1, dtype=jnp.int32)
+    accepted_node_indices = accepted_node_indices.at[:num_accepted].set(
+        jnp.arange(num_accepted, dtype=jnp.int32),
+    )
+    conv_state = _values((KERNEL_SIZE - 1, MODEL_DIM), offset=600)
+    conv_windows = _values((SEQUENCE_LENGTH, KERNEL_SIZE - 1, MODEL_DIM), offset=700)
+
+    factors = verify_result.verify_factors
+    assert factors is not None
+    _, folded_state = fold_lag_factors(
+        conv_state,
+        initial_state,
+        factors.keys,
+        factors.update_values,
+        factors.prop_updates,
+        factors.cumulative_decay,
+        conv_windows,
+        accepted_node_indices,
+        jnp.asarray(num_accepted, dtype=jnp.int32),
+    )
+    reference = module._recurrent_scan(  # noqa: SLF001
+        queries,
+        keys,
+        values,
+        decay_factor,
+        beta,
+        initial_state,
+        num_accepted,
+    )
+
+    assert_close(result=folded_state, reference=reference.final_state)
+
+
+def test_deltanet_verify_scan_tree_matches_per_path_recurrent() -> None:
+    module = _deltanet()
+    num_nodes = len(TREE_PARENTS)
+    queries, keys, values, decay_factor, beta, initial_state = scan_inputs(num_nodes)
+    parent_indices = jnp.array(TREE_PARENTS, dtype=jnp.int32)
+
+    result = module._chunked_scan(  # noqa: SLF001
+        queries,
+        keys,
+        values,
+        decay_factor,
+        beta,
+        initial_state,
+        num_nodes,
+        MixerForwardPassConfig(),
+        parent_indices,
+    )
+
+    for node in range(num_nodes):
+        path = jnp.array(root_path(TREE_PARENTS, node), dtype=jnp.int32)
+        reference = module._recurrent_scan(  # noqa: SLF001
+            queries[path],
+            keys[path],
+            values[path],
+            decay_factor[path],
+            beta[path],
+            initial_state,
+            len(path),
+        )
+        assert_close(result=result.outputs[node], reference=reference.outputs[-1])

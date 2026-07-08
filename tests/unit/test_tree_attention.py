@@ -309,3 +309,74 @@ def test_tree_attention_mask_static_matches_dynamic() -> None:
         parent_indices=parent_indices,
     )
     assert jnp.array_equal(dynamic_mask, static_mask)
+
+
+def test_tree_attention_mask_sliding_window_matches_causal_for_chain() -> None:
+    prefix_length = 4
+    num_nodes = 3
+    capacity = prefix_length + num_nodes
+    sliding_window_size = 3
+
+    tree_mask = build_tree_attention_mask(
+        total_capacity=capacity,
+        prefix_length=prefix_length,
+        parent_indices=jnp.array([-1, 0, 1], dtype=jnp.int32),
+        has_sinks=False,
+        sliding_window_size=sliding_window_size,
+    )
+    cache = StaticKVCacheLayer(
+        has_sinks=False,
+        keys=jnp.zeros((capacity, 1, 1), dtype=jnp.float32),
+        values=jnp.zeros((capacity, 1, 1), dtype=jnp.float32),
+        current_length=jnp.array(capacity, dtype=jnp.int32),
+    )
+    causal_mask = cache.attention_mask(
+        suffix_length=num_nodes,
+        is_causal=True,
+        suffix_length_without_padding=num_nodes,
+        sliding_window_size=sliding_window_size,
+    )
+    assert jnp.array_equal(tree_mask, causal_mask)
+
+
+def test_tree_attention_mask_sliding_window_uses_node_depths() -> None:
+    mask = build_tree_attention_mask(
+        total_capacity=5,
+        prefix_length=2,
+        parent_indices=jnp.array([-1, 0, 0], dtype=jnp.int32),
+        has_sinks=False,
+        sliding_window_size=2,
+    )
+
+    expected = jnp.array(
+        [
+            [False, True, True, False, False],
+            [False, False, True, True, False],
+            [False, False, True, False, True],
+        ],
+        dtype=jnp.bool,
+    )
+    assert jnp.array_equal(mask, expected)
+
+
+def test_kv_commit_accepted_compacts_accepted_path() -> None:
+    prefix_length = 3
+    num_nodes = 4
+    capacity = prefix_length + num_nodes
+    row_ids = jnp.arange(capacity, dtype=jnp.float32)[None, :, None, None]
+    cache = StaticKVCacheLayer(
+        has_sinks=False,
+        keys=row_ids,
+        values=row_ids * 10,
+        current_length=jnp.array([prefix_length], dtype=jnp.int32),
+    ).begin_verification(num_nodes)
+
+    committed = cache.commit_accepted(
+        accepted_node_indices=jnp.array([[0, 2, -1, -1]], dtype=jnp.int32),
+        num_accepted_nodes=jnp.array([2], dtype=jnp.int32),
+    )
+
+    assert isinstance(committed, StaticKVCacheLayer)
+    assert committed.current_length.tolist() == [prefix_length + 2]
+    assert committed.keys[0, : prefix_length + 2, 0, 0].tolist() == [0.0, 1.0, 2.0, 3.0, 5.0]
+    assert committed.values[0, : prefix_length + 2, 0, 0].tolist() == [0.0, 10.0, 20.0, 30.0, 50.0]

@@ -22,9 +22,10 @@ from lalamo.modules.token_mixer import (
 from lalamo.modules.token_mixers.convolutions import ConvPrecision
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
-from .chunked_delta import chunk_delta_forward
+from .chunked_delta import chunk_delta_forward, tree_delta_verify
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
-from .ssm_state import SSMStateLayer
+from .kv_cache import tree_ancestor_mask
+from .ssm_state import LaggedSSMStateLayer, SSMStateLayer
 
 __all__ = [
     "DeltaNet",
@@ -102,9 +103,17 @@ class DeltaNetConfig(TokenMixerConfig):
         )
 
 
+class DeltaNetVerifyFactors(NamedTuple):
+    keys: Float[Array, "tokens heads key_channels"]
+    update_values: Float[Array, "tokens heads value_channels"]
+    prop_updates: Float[Array, "tokens heads key_channels"]
+    cumulative_decay: Float[Array, "tokens heads"]
+
+
 class DeltaNetScanResult(NamedTuple):
     outputs: Float[Array, "tokens heads value_channels"]
     final_state: Float[Array, "heads value_channels key_channels"]
+    verify_factors: DeltaNetVerifyFactors | None = None
 
 
 class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
@@ -198,6 +207,53 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         )
         return DeltaNetScanResult(outputs, final_state)
 
+    def _tree_verify(
+        self,
+        queries: Float[Array, "tokens heads key_channels"],
+        keys: Float[Array, "tokens heads key_channels"],
+        values: Float[Array, "tokens heads value_channels"],
+        decay_factor: Float[Array, "tokens heads"],
+        beta: Float[Array, "tokens heads"],
+        initial_state: Float[Array, "heads value_channels key_channels"],
+        num_steps: Int[Array, ""] | int,
+        parent_indices: Int[Array, " tokens"],
+    ) -> DeltaNetScanResult:
+        # Read-only verify under lag-folding: the committed state is only consumed through the
+        # correction vectors, never advanced. The factors are what commit_accepted folds later.
+        num_tokens, _, _ = queries.shape
+        num_steps_arr = jnp.asarray(num_steps, dtype=jnp.int32)
+        state_dtype = initial_state.dtype
+
+        valid_mask = (jnp.arange(num_tokens) < num_steps_arr).astype(state_dtype)
+        keys = keys * valid_mask[:, None, None]
+        values = values * valid_mask[:, None, None]
+        beta = beta * valid_mask[:, None]
+        decay_factor = decay_factor * valid_mask[:, None]
+
+        tree_result = tree_delta_verify(
+            queries=queries,
+            keys=keys,
+            values=values,
+            decay_factor=decay_factor,
+            beta=beta,
+            ancestor_matrix=tree_ancestor_mask(parent_indices),
+        )
+        initial_state_reads = einops.einsum(
+            initial_state,
+            tree_result.correction_vecs,
+            "heads value_channels key_channels, tokens heads key_channels -> tokens heads value_channels",
+        )
+        return DeltaNetScanResult(
+            tree_result.outputs + initial_state_reads,
+            initial_state,
+            DeltaNetVerifyFactors(
+                keys=keys,
+                update_values=tree_result.update_values,
+                prop_updates=tree_result.prop_updates,
+                cumulative_decay=tree_result.cumulative_decay,
+            ),
+        )
+
     def _chunked_scan(
         self,
         queries: Float[Array, "tokens heads key_channels"],
@@ -208,10 +264,23 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         initial_state: Float[Array, "heads value_channels key_channels"],
         num_steps: Int[Array, ""] | int,
         forward_pass_config: MixerForwardPassConfig,
+        parent_indices: Int[Array, " tokens"] | None = None,
     ) -> DeltaNetScanResult:
+        if parent_indices is not None:
+            return self._tree_verify(
+                queries,
+                keys,
+                values,
+                decay_factor,
+                beta,
+                initial_state,
+                num_steps,
+                parent_indices,
+            )
+
+        num_tokens, _, _ = queries.shape
         chunk_size = forward_pass_config.ssm_chunk_size
         min_tail_size_to_chunk = forward_pass_config.ssm_min_tail_size_to_chunk
-        num_tokens, _, _ = queries.shape
         num_steps_arr = jnp.asarray(num_steps, dtype=jnp.int32)
         state_dtype = initial_state.dtype
 
@@ -340,8 +409,6 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
     ) -> TokenMixerResult[SSMStateLayer]:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for DeltaNet.")
-        if attention_parent_indices is not None:
-            raise ValueError("Attention parent indices are not supported for DeltaNet.")
         if reuse_cache:
             raise ValueError("KV cache sharing is not supported for DeltaNet.")
 
@@ -365,13 +432,23 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
                 self.conv_dim,
                 (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
             )
-        conv_output, updated_conv_state = self.conv(
-            mixed_qkv,
-            length_without_padding,
-            state.conv_state,
-            return_updated_state,
-            precision=ConvPrecision.MATCH_WEIGHTS,
-        )
+        if attention_parent_indices is None:
+            conv_output, updated_conv_state = self.conv(
+                mixed_qkv,
+                length_without_padding,
+                state.conv_state,
+                return_updated_state,
+                precision=ConvPrecision.MATCH_WEIGHTS,
+            )
+            conv_windows = None
+        else:
+            conv_output, conv_windows = self.conv.tree_step(
+                mixed_qkv,
+                attention_parent_indices,
+                state.conv_state,
+                precision=ConvPrecision.MATCH_WEIGHTS,
+            )
+            updated_conv_state = None
         conv_output = jax.nn.silu(conv_output).astype(mixed_qkv.dtype)
         assert conv_output.shape[0] == num_tokens
         decay_input = decay_input.astype(jnp.float32)
@@ -404,18 +481,51 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         length_without_padding = jnp.asarray(length_without_padding, dtype=jnp.int32)
         length_without_padding = jnp.clip(length_without_padding, 0, num_tokens)
 
-        core_result = self._chunked_scan(
-            query,
-            key,
-            value,
-            decay_factor,
-            beta,
-            state.ssm_state,
-            length_without_padding,
-            forward_pass_config,
-        )
-        core_attn_out = core_result.outputs.astype(mixed_qkv.dtype)
-        final_state = core_result.final_state
+        if attention_parent_indices is None:
+            core_result = self._chunked_scan(
+                query,
+                key,
+                value,
+                decay_factor,
+                beta,
+                state.ssm_state,
+                length_without_padding,
+                forward_pass_config,
+            )
+            core_attn_out = core_result.outputs.astype(mixed_qkv.dtype)
+            if return_updated_state:
+                assert updated_conv_state is not None
+                updated_state = SSMStateLayer(updated_conv_state, core_result.final_state)
+            else:
+                updated_state = None
+        else:
+            verify_result = self._chunked_scan(
+                query,
+                key,
+                value,
+                decay_factor,
+                beta,
+                state.ssm_state,
+                length_without_padding,
+                forward_pass_config,
+                attention_parent_indices,
+            )
+            core_attn_out = verify_result.outputs.astype(mixed_qkv.dtype)
+            if return_updated_state:
+                factors = verify_result.verify_factors
+                assert factors is not None
+                assert conv_windows is not None
+                updated_state = LaggedSSMStateLayer(
+                    conv_state=state.conv_state,
+                    ssm_state=state.ssm_state,
+                    keys=factors.keys,
+                    update_values=factors.update_values,
+                    prop_updates=factors.prop_updates,
+                    cumulative_decay=factors.cumulative_decay,
+                    conv_windows=conv_windows,
+                )
+            else:
+                updated_state = None
 
         def norm_gate(x: Float[Array, " channels"], gate: Float[Array, " channels"]) -> Float[Array, " channels"]:
             normed = self.norm(x, forward_pass_config=forward_pass_config.normalization_forward_pass_config)
@@ -432,12 +542,6 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=out_keychain,
         )
-
-        if return_updated_state:
-            assert updated_conv_state is not None
-            updated_state = SSMStateLayer(updated_conv_state, final_state)
-        else:
-            updated_state = None
 
         return TokenMixerResult(outputs.astype(inputs.dtype), updated_state)
 

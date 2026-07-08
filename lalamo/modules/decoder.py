@@ -85,9 +85,28 @@ class DecoderActivationTrace(Exportable, eqx.Module):
 
     rope_embeddings: tuple[PositionalEmbeddings, ...] | None
 
-    layer_results: tuple[TransformerLayerResult, ...]
+    layer_results: tuple[TransformerLayerResult | None, ...]
 
     output_norm: Float[Array, "batch suffix_tokens channels"]
+
+    def without_states(self) -> "DecoderActivationTrace":
+        return DecoderActivationTrace(
+            token_ids=self.token_ids,
+            token_positions=self.token_positions,
+            state=None,
+            rope_embeddings=None,
+            layer_results=tuple(
+                TransformerLayerResult(
+                    outputs=layer_result.outputs,
+                    updated_state=None,
+                    activation_trace=None,
+                )
+                if layer_result is not None
+                else None
+                for layer_result in self.layer_results
+            ),
+            output_norm=self.output_norm,
+        )
 
 
 class DecoderResult(Exportable, eqx.Module):
@@ -208,6 +227,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         state: State | None = None,
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
+        activation_trace_layer_ids: tuple[int, ...] | None = None,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
@@ -260,12 +280,20 @@ class Decoder(LalamoModule[DecoderConfig]):
         if return_activation_trace:
             assert transformer_result.layer_results is not None
 
+            if activation_trace_layer_ids is None:
+                traced_layer_results = transformer_result.layer_results
+            else:
+                traced_ids = frozenset(activation_trace_layer_ids)
+                traced_layer_results = tuple(
+                    layer_result if layer_index in traced_ids else None
+                    for layer_index, layer_result in enumerate(transformer_result.layer_results)
+                )
             activation_trace = DecoderActivationTrace(
                 token_ids=token_ids,
                 token_positions=token_positions,
                 state=state,
                 rope_embeddings=transformer_result.rope_embeddings,
-                layer_results=transformer_result.layer_results,
+                layer_results=traced_layer_results,
                 output_norm=transformer_result.outputs,
             )
         else:

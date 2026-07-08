@@ -1,6 +1,7 @@
 import re
 import shutil
 import sys
+import time
 from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from functools import partial
@@ -16,7 +17,8 @@ from click import Context as ClickContext
 from click import Parameter as ClickParameter
 from click import ParamType
 from rich import box
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
 from rich.panel import Panel
 from rich.progress import (
     Progress,
@@ -26,6 +28,7 @@ from rich.progress import (
 )
 from rich.prompt import Confirm
 from rich.table import Table
+from rich.text import Text
 from typer import Argument, Exit, Option, Typer
 
 from lalamo.audio.utils import play_mono_audio
@@ -33,18 +36,21 @@ from lalamo.commands import (
     ConversionCallbacks,
     DType,
     PullCallbacks,
+    SpeculatorConversionCallbacks,
     _suggest_similar_models,
 )
 from lalamo.commands import convert as _convert
+from lalamo.commands import convert_speculator as _convert_speculator
 from lalamo.commands import pull as _pull
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
-from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, TTSModel
+from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, StreamedReply, TTSModel
 from lalamo.models.chat_codec import Message, UserMessage
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
+from lalamo.speculator import Speculator
 from lalamo.utils.memory import get_available_bytes_on_default_device
 from lalamo.utils.sharding import ShardingConfig
 
@@ -60,6 +66,12 @@ app = Typer(
     add_completion=False,
     pretty_exceptions_show_locals=False,
 )
+speculator_app = Typer(
+    rich_markup_mode="rich",
+    add_completion=False,
+    pretty_exceptions_show_locals=False,
+)
+app.add_typer(speculator_app, name="speculator", help="Manage speculator artifacts.")
 
 
 class ModelParser(ParamType):
@@ -131,8 +143,24 @@ def chat(
             show_default="model default",
         ),
     ] = None,
+    speculator_path: Annotated[
+        Path | None,
+        Option(
+            "--speculator",
+            help="Path to a converted speculator directory for speculative decoding.",
+            show_default="None, decode without speculation",
+        ),
+    ] = None,
+    no_thinking: Annotated[
+        bool,
+        Option(
+            "--no-thinking",
+            help="Disable thinking mode in the chat template.",
+        ),
+    ] = False,
 ) -> None:
     generation_config: GenerationConfig | None = None
+    speculator: Speculator | None = None
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -141,9 +169,42 @@ def chat(
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
         model = LanguageModel.load(model_path, ShardingConfig.replicated())
+        if speculator_path is not None:
+            speculator = Speculator.load(speculator_path, ShardingConfig.replicated())
         if temperature is not None:
             generation_config = replace(model.config.generation_config, temperature=temperature)
         progress.remove_task(loading_task)
+
+    def render_streamed_reply(messages: list[Message], keychain: Keychain) -> str:
+        start_time = time.perf_counter()
+
+        def render(reply: StreamedReply | None) -> Group:
+            elapsed_seconds = time.perf_counter() - start_time
+            num_tokens = reply.num_tokens if reply is not None else 0
+            num_steps = reply.num_steps if reply is not None else 0
+            throughput = num_tokens / elapsed_seconds if elapsed_seconds > 0 else 0.0
+            tokens_per_step = num_tokens / num_steps if num_steps > 0 else 0.0
+            return Group(
+                Text.assemble(("assistant> ", "red"), reply.text if reply is not None else ""),
+                Text(
+                    f"⚡ {throughput:.1f} tok/s · {tokens_per_step:.2f} tok/step · {num_tokens} tokens",
+                    style="dim",
+                ),
+            )
+
+        response_text = ""
+        with Live(render(None), console=console, refresh_per_second=8, vertical_overflow="visible") as live:
+            for reply in model.stream_reply(
+                messages,
+                generation_config=generation_config,
+                max_output_length=max_tokens,
+                keychain=keychain,
+                speculator=speculator,
+                enable_thinking=not no_thinking,
+            ):
+                response_text = reply.text
+                live.update(render(reply))
+        return response_text
 
     with jax.set_mesh(model.sharding_config.mesh):
         if message is None:
@@ -154,29 +215,18 @@ def chat(
                 user_text = console.input("[cyan]user> [/cyan]")
                 messages.append(UserMessage(user_text))
 
-                console.print("[red]assistant> [/red]", end="")
-                response_text_parts = []
-                for token in model.stream_reply_text(
+                response_text = render_streamed_reply(
                     messages,
-                    generation_config=generation_config,
-                    max_output_length=max_tokens,
-                    keychain=Keychain.init(turn_index + 1, sharding_config=model.sharding_config),
-                ):
-                    console.print(token, end="")
-                    response_text_parts.append(token)
-                console.print()
-                messages.append(model.token_codec.parse_response("".join(response_text_parts)))
+                    Keychain.init(turn_index + 1, sharding_config=model.sharding_config),
+                )
+                messages.append(model.token_codec.parse_response(response_text, expect_thinking=not no_thinking))
                 turn_index += 1
 
         else:
-            for token in model.stream_reply_text(
+            render_streamed_reply(
                 [UserMessage(message)],
-                generation_config=generation_config,
-                max_output_length=max_tokens,
-                keychain=Keychain.init(1, sharding_config=model.sharding_config),
-            ):
-                console.print(token, end="")
-            console.print()
+                Keychain.init(1, sharding_config=model.sharding_config),
+            )
 
 
 @app.command(help="Classify text with a converted classifier model.")
@@ -276,6 +326,68 @@ class CliConversionCallbacks(ConversionCallbacks):
         self.progress.remove_task(self.saving_task)
         self.stack.close()
         console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{self.output_dir}`[/cyan]!")
+
+
+@dataclass
+class CliSpeculatorConversionCallbacks(SpeculatorConversionCallbacks):
+    overwrite: bool = False
+
+    stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
+    loading_task: TaskID | None = None
+    saving_task: TaskID | None = None
+
+    def started(self) -> None:
+        conversion_strs = [
+            f"🚀 Converting DFlash speculator from [cyan]{self.hf_repo_id}[/cyan]",
+        ]
+        if self.dtype is not None:
+            conversion_strs.append(
+                f" and loading floating-point weights as [cyan]{self.dtype.name.lower()}[/cyan]",
+            )
+        conversion_strs.append(".")
+        console.print("".join(conversion_strs))
+
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+            ),
+        )
+
+    def output_dir_exists(self) -> None:
+        if not self.overwrite and not Confirm().ask(
+            rf"⚠️ Output directory [cyan]{self.output_dir}[/cyan] already exists."
+            r" Do you want to overwrite it?",
+        ):
+            raise Exit
+
+        shutil.rmtree(self.output_dir)
+
+    def loading_model(self) -> None:
+        assert self.progress is not None
+
+        self.loading_task = self.progress.add_task("Initializing DFlash speculator...")
+
+    def finished_loading_model(self) -> None:
+        assert self.progress is not None
+        assert self.loading_task is not None
+
+        self.progress.remove_task(self.loading_task)
+
+    def saving_model(self) -> None:
+        assert self.progress is not None
+
+        self.saving_task = self.progress.add_task(f"💾 Saving the speculator to {self.output_dir}")
+
+    def finished_saving_model(self) -> None:
+        assert self.progress is not None
+        assert self.saving_task is not None
+
+        self.progress.remove_task(self.saving_task)
+        self.stack.close()
+        console.print(f"🧑‍🍳 Speculator successfully cooked and saved to [cyan]`{self.output_dir}`[/cyan]!")
 
 
 @dataclass
@@ -457,6 +569,55 @@ def convert(
         dtype,
         context_length,
         partial(CliConversionCallbacks, overwrite=overwrite),
+    )
+
+
+@speculator_app.command("convert", help="Import and export a DFlash speculator into the local Lalamo format.")
+def speculator_convert(
+    hf_repo_id: Annotated[
+        str,
+        Argument(
+            help="Hugging Face DFlash model repository ID.",
+            metavar="HF_REPO_ID",
+        ),
+    ],
+    dtype: Annotated[
+        DType | None,
+        Option(
+            help="Dtype to use for activations and non-quantized weights.",
+            show_default="bfloat16",
+        ),
+    ] = None,
+    output_dir: Annotated[
+        Path | None,
+        Option(
+            help="Directory to save the converted speculator to.",
+            show_default="Saves the converted speculator in the `models/<hf_repo_name>` directory",
+        ),
+    ] = None,
+    context_length: Annotated[
+        int | None,
+        Option(
+            help="Maximum supported context length. Used to configure RoPE.",
+            show_default="DFlash model's native maximum context length.",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        Option(
+            help="Overwrite existing speculator files.",
+        ),
+    ] = False,
+) -> None:
+    if output_dir is None:
+        output_dir = DEFAULT_OUTPUT_DIR / PurePosixPath(hf_repo_id).name
+
+    _convert_speculator(
+        hf_repo_id,
+        output_dir,
+        dtype,
+        context_length,
+        partial(CliSpeculatorConversionCallbacks, overwrite=overwrite),
     )
 
 

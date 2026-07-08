@@ -28,6 +28,18 @@ def _load_language_model(convert_model: ConvertModel, model_repo: str) -> Langua
     return model
 
 
+def _stream_reply_text(model: LanguageModel, prompt: str, *, key_seed: int) -> str:
+    text = ""
+    for reply in model.stream_reply(
+        [UserMessage(prompt)],
+        generation_config=GenerationConfig(temperature=0.0),
+        max_output_length=64,
+        keychain=Keychain.init(key_seed, sharding_config=model.sharding_config),
+    ):
+        text = reply.text
+    return text
+
+
 def _generate_texts(model: LanguageModel, prompts: list[str]) -> list[str]:
     def trim_at_stop_token(token_ids: list[int]) -> list[int]:
         stop_token_ids = set(model.config.generation_config.stop_token_ids)
@@ -117,22 +129,8 @@ def test_converted_model_streams_reply(
     model_repo: str,
 ) -> None:
     model = _load_language_model(convert_model, model_repo)
-    capital_output = "".join(
-        model.stream_reply_text(
-            [UserMessage(CAPITAL_PROMPT)],
-            generation_config=GenerationConfig(temperature=0.0),
-            max_output_length=64,
-            keychain=Keychain.init(1, sharding_config=model.sharding_config),
-        ),
-    )
+    capital_output = _stream_reply_text(model, CAPITAL_PROMPT, key_seed=1)
     assert "london" in capital_output.lower(), f"Expected 'london' in {capital_output!r}"
 
-    apples_output = "".join(
-        model.stream_reply_text(
-            [UserMessage(APPLES_PROMPT)],
-            generation_config=GenerationConfig(temperature=0.0),
-            max_output_length=64,
-            keychain=Keychain.init(2, sharding_config=model.sharding_config),
-        ),
-    )
+    apples_output = _stream_reply_text(model, APPLES_PROMPT, key_seed=2)
     assert "yes" in apples_output.lower(), f"Expected 'yes' in {apples_output!r}"
