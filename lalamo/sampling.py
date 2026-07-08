@@ -270,26 +270,47 @@ class SamplingPolicy(eqx.Module):
             return logits
         (vocabulary_size,) = logits.shape
         effective_top_k = jnp.clip(self.top_k, 1, vocabulary_size)
-        sorted_indices = jnp.argsort(logits, axis=-1, descending=True)
-        ranks = jnp.empty_like(sorted_indices).at[sorted_indices].set(jnp.arange(vocabulary_size, dtype=jnp.int32))
-        filtered_logits = jnp.where(ranks < effective_top_k, logits, -jnp.inf)
+        # Threshold at the k-th largest logit instead of ranking the whole vocabulary:
+        # a full argsort of the vocabulary costs more than the entire verify step.
+        kth_value = _kth_largest(logits, effective_top_k)
+        above = logits > kth_value
+        ties_needed = effective_top_k - jnp.sum(above)
+        tie_rank = jnp.cumsum((logits == kth_value).astype(jnp.int32))
+        keep = above | ((logits == kth_value) & (tie_rank <= ties_needed))
+        filtered_logits = jnp.where(keep, logits, -jnp.inf)
         return jnp.where(self.top_k > 0, filtered_logits, logits)
 
     def _apply_top_p(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         if self.top_p is None:
             return logits
-        sorted_indices = jnp.argsort(logits, axis=-1, descending=True)
-        sorted_logits = jnp.take_along_axis(logits, sorted_indices, axis=-1)
-        sorted_probs = jax.nn.softmax(sorted_logits, axis=-1)
-        cumulative_probs = jnp.cumsum(sorted_probs, axis=-1)
-        cumulative_probs_before_token = cumulative_probs - sorted_probs
+        # The kept set is a prefix of tokens in descending probability order, so it is
+        # a probability threshold set. Find the boundary probability by bisection --
+        # a handful of masked reductions instead of two full argsorts -- then keep
+        # exactly the tokens the sorted prefix would keep, breaking boundary ties in
+        # index order like a stable sort.
+        probs = jax.nn.softmax(logits, axis=-1)
 
-        to_remove_sorted = cumulative_probs_before_token >= self.top_p
+        def bisect(_: Int[Array, ""], bounds: tuple[Array, Array]) -> tuple[Array, Array]:
+            low, high = bounds
+            mid = 0.5 * (low + high)
+            mass_above = jnp.sum(jnp.where(probs > mid, probs, 0.0))
+            boundary_reached = mass_above < self.top_p
+            return jnp.where(boundary_reached, low, mid), jnp.where(boundary_reached, mid, high)
 
-        unsort_indices = jnp.argsort(sorted_indices, axis=-1)
-        to_remove_unsorted = jnp.take_along_axis(to_remove_sorted, unsort_indices, axis=-1)
-
-        return jnp.where(to_remove_unsorted, -jnp.inf, logits)
+        _, high = jax.lax.fori_loop(
+            0,
+            30,
+            bisect,
+            (jnp.zeros_like(self.top_p), jnp.ones_like(self.top_p)),
+        )
+        boundary = jnp.max(jnp.where(probs <= high, probs, -jnp.inf))
+        mass_above = jnp.sum(jnp.where(probs > boundary, probs, 0.0))
+        remaining_mass = jnp.maximum(self.top_p - mass_above, 0.0)
+        boundary_kept = jnp.ceil(remaining_mass / jnp.maximum(boundary, 1e-30)).astype(jnp.int32)
+        is_boundary = probs == boundary
+        boundary_rank = jnp.cumsum(is_boundary.astype(jnp.int32))
+        keep = (probs > boundary) | (is_boundary & (boundary_rank <= boundary_kept))
+        return jnp.where(keep, logits, -jnp.inf)
 
     def _apply_min_p(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         if self.min_p is None:
@@ -298,6 +319,28 @@ class SamplingPolicy(eqx.Module):
         logit_cutoff = max_logit + jnp.log(self.min_p)
         filtered_logits = jnp.where(logits >= logit_cutoff, logits, -jnp.inf)
         return jnp.where(self.min_p == 0.0, logits, filtered_logits)
+
+
+def _kth_largest(
+    logits: Float[Array, " vocabulary"],
+    k: Int[Array, ""] | int,
+) -> Float[Array, ""]:
+    # Exact k-th largest by bisection on the value: count-above reductions until the
+    # bracket collapses onto the k-th value, then snap to the largest logit at or
+    # below the bracet top. Costs ~60 vocabulary reductions; a radix sort costs more.
+    high = jnp.max(logits)
+    # Banned tokens sit at -inf; bisecting from -inf poisons the midpoint arithmetic.
+    low = jnp.min(jnp.where(jnp.isfinite(logits), logits, high))
+
+    def bisect(_: Int[Array, ""], bounds: tuple[Array, Array]) -> tuple[Array, Array]:
+        bottom, top = bounds
+        mid = 0.5 * (bottom + top)
+        rank = jnp.sum(logits >= mid)
+        past_kth = rank >= k
+        return jnp.where(past_kth, mid, bottom), jnp.where(past_kth, top, mid)
+
+    bottom, _ = jax.lax.fori_loop(0, 60, bisect, (low, high))
+    return jnp.max(jnp.where(logits <= bottom, logits, -jnp.inf))
 
 
 def _optional_array[T](values: Iterable[T | None] | None, *, default: T, dtype: DTypeLike) -> SamplingLeaf | None:
