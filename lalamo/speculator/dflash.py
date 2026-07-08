@@ -39,17 +39,21 @@ class DFlashSpeculator(Speculator[DFlashDraftState, DFlashSpeculatorConfig]):
     def max_proposal_tokens(self) -> int:
         return self.draft_model.config.block_size
 
+    @property
+    def trace_layer_ids(self) -> tuple[int, ...] | None:
+        return self.draft_model.config.target_layer_ids
+
     def extract_target_features(
         self,
         activation_trace: DecoderActivationTrace,
     ) -> Float[Array, "batch tokens target_channels"]:
-        return jnp.concatenate(
-            tuple(
-                activation_trace.layer_results[layer_id].outputs
-                for layer_id in self.draft_model.config.target_layer_ids
-            ),
-            axis=-1,
-        )
+        selected_outputs = []
+        for layer_id in self.draft_model.config.target_layer_ids:
+            layer_result = activation_trace.layer_results[layer_id]
+            if layer_result is None:
+                raise ValueError(f"Activation trace is missing target layer {layer_id}.")
+            selected_outputs.append(layer_result.outputs)
+        return jnp.concatenate(tuple(selected_outputs), axis=-1)
 
     def init_state(
         self,

@@ -1229,6 +1229,10 @@ def _decoder_load_layout(
     else:
         decoder_path = root_path / "model"
 
+    lm_head_path = root_path / "lm_head"
+    if not _has_prefix(weights_dict, lm_head_path) and _has_prefix(weights_dict, ParameterPath("lm_head")):
+        lm_head_path = ParameterPath("lm_head")
+
     standard_layout = DecoderLoadLayout(
         decoder_path=decoder_path,
         embedding_path=decoder_path / "embed_tokens",
@@ -1242,7 +1246,7 @@ def _decoder_load_layout(
         down_proj_key="down_proj",
         alternating_layers=False,
         norm_key="norm",
-        lm_head_path=root_path / "lm_head",
+        lm_head_path=lm_head_path,
     )
 
     backbone_path = root_path / "backbone"

@@ -13,6 +13,13 @@ from .common import (
     TreeProposal,
 )
 from .dflash import DFlashSpeculator, DFlashSpeculatorConfig
+from .weaver import (
+    Weaver,
+    WeaverConfig,
+    WeaverDraftState,
+    WeaverSpeculator,
+    WeaverSpeculatorConfig,
+)
 
 __all__ = [
     "AcceptedProposal",
@@ -28,4 +35,9 @@ __all__ = [
     "SpeculatorConfig",
     "SpeculatorState",
     "TreeProposal",
+    "Weaver",
+    "WeaverConfig",
+    "WeaverDraftState",
+    "WeaverSpeculator",
+    "WeaverSpeculatorConfig",
 ]

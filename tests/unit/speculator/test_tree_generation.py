@@ -69,6 +69,7 @@ class FullCoverTreeSpeculator(Speculator[NoSpeculatorState, NoSpeculatorConfig])
             token_positions,
             token_dtype,
             jnp.broadcast_to(tree_parent_indices()[None, :], token_positions.shape),
+            max_depth=2,
         )
 
     def draft(
@@ -80,7 +81,7 @@ class FullCoverTreeSpeculator(Speculator[NoSpeculatorState, NoSpeculatorConfig])
         *,
         keychain: Keychain,
     ) -> TreeProposal:
-        _ = (state, keychain, target_embedding)
+        _ = (state, target_embedding, keychain)
         (batch_size,) = last_token_ids.shape
         child_tokens = jnp.arange(VOCAB_SIZE, dtype=last_token_ids.dtype)
         grandchild_tokens = (child_tokens * 7 + 3) % VOCAB_SIZE
@@ -97,7 +98,9 @@ class FullCoverTreeSpeculator(Speculator[NoSpeculatorState, NoSpeculatorConfig])
             token_ids=token_ids,
             token_positions=token_positions.astype(last_token_indices.dtype),
             parent_indices=jnp.broadcast_to(tree_parent_indices()[None, :], token_ids.shape),
+            draft_logprobs=jnp.zeros_like(token_ids, dtype=jnp.float32),
             lengths=jnp.full_like(last_token_ids, NUM_TREE_NODES),
+            max_depth=2,
         )
 
 

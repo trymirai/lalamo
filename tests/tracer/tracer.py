@@ -163,6 +163,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
     def match_embedding(self, activation_trace: ActivationTrace) -> None:
         first_layer_results, *_ = activation_trace.layer_results
+        assert first_layer_results is not None
         assert first_layer_results.activation_trace is not None
         llm_results = first_layer_results.activation_trace.inputs
 
@@ -270,6 +271,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
     def match_layer(self, ref_layer: LayerT, layer_index: int, full_activation_trace: ActivationTrace) -> None:
         layer_result = full_activation_trace.layer_results[layer_index]
+        assert layer_result is not None
         activation_trace = layer_result.activation_trace
         assert activation_trace is not None
 
@@ -384,8 +386,10 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         for i, ref_layer in enumerate(self.iterate_layers()):
             self.match_layer(ref_layer, i, result.activation_trace)
 
+        last_layer_result = result.activation_trace.layer_results[-1]
+        assert last_layer_result is not None
         self.match_rmsnorm(
-            result.activation_trace.layer_results[-1].outputs,
+            last_layer_result.outputs,
             result.activation_trace.output_norm,
             self.output_norm(),
             "Output RMSNorm",

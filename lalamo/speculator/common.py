@@ -6,7 +6,7 @@ from typing import ClassVar
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Bool, DTypeLike, Float, Int
+from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key
 from tokenizers import Tokenizer
 
 from lalamo.audio.utils import dummy_char_level_tokenizer_config
@@ -16,6 +16,7 @@ from lalamo.models.raw_text_codec import RawTextCodec, RawTextCodecConfig
 from lalamo.module import ForwardPassMode, Keychain, SpeculatorState
 from lalamo.modules.decoder import DecoderResult
 from lalamo.modules.embedding import EmbeddingBase
+from lalamo.sampling import SamplingPolicy
 from lalamo.utils.sharding import ShardingConfig
 
 __all__ = [
@@ -140,6 +141,27 @@ class Proposal(eqx.Module, ABC):
     @abstractmethod
     def accept(self, sampled_token_ids: Int[Array, "batch nodes"]) -> AcceptedProposal: ...
 
+    def sample(
+        self,
+        processed_logits: Float[Array, "batch nodes vocabulary"],
+        sampling_policy: SamplingPolicy,
+        sampling_keys: Key[Array, "batch nodes"],
+    ) -> Int[Array, "batch nodes"]:
+        del sampling_policy
+        return jax.vmap(jax.vmap(jax.random.categorical))(sampling_keys, processed_logits)
+
+    def verify(
+        self,
+        processed_logits: Float[Array, "batch nodes vocabulary"],
+        sampling_policy: SamplingPolicy,
+        sampling_keys: Key[Array, "batch nodes"],
+        active_mask: Bool[Array, " batch"],
+        stopped_token_ids: Int[Array, " batch"],
+    ) -> AcceptedProposal:
+        sampled_token_ids = self.sample(processed_logits, sampling_policy, sampling_keys)
+        sampled_token_ids = jnp.where(active_mask[:, None], sampled_token_ids, stopped_token_ids[:, None])
+        return self.accept(sampled_token_ids)
+
 
 class ChainProposal(Proposal):
     token_ids: Int[Array, "batch proposal_slots"]
@@ -234,7 +256,9 @@ class TreeProposal(Proposal):
     token_ids: Int[Array, "batch nodes"]
     token_positions: Int[Array, "batch nodes"]
     parent_indices: Int[Array, "batch nodes"]
+    draft_logprobs: Float[Array, "batch nodes"]
     lengths: Int[Array, " batch"]
+    max_depth: int = eqx.field(static=True)
 
     @classmethod
     def empty(
@@ -242,12 +266,271 @@ class TreeProposal(Proposal):
         token_positions: Int[Array, "batch nodes"],
         token_dtype: DTypeLike,
         parent_indices: Int[Array, "batch nodes"],
+        max_depth: int,
     ) -> "TreeProposal":
         return cls(
             token_ids=jnp.full_like(token_positions, -1, dtype=token_dtype),
             token_positions=token_positions,
             parent_indices=parent_indices,
+            draft_logprobs=jnp.zeros_like(token_positions, dtype=jnp.float32),
             lengths=jnp.zeros_like(token_positions[:, 0]),
+            max_depth=max_depth,
+        )
+
+    def walk_residual_path(
+        self,
+        token_ids: Int[Array, " nodes"],
+        parent_indices: Int[Array, " nodes"],
+        node_valid: Bool[Array, " nodes"],
+        draft_logprobs: Float[Array, " nodes"],
+        processed_logits: Float[Array, "nodes vocabulary"],
+        coins: Float[Array, " nodes"],
+    ) -> Int[Array, ""]:
+        (num_nodes,) = token_ids.shape
+        node_indices = jnp.arange(num_nodes, dtype=jnp.int32)
+        parent_safe = jnp.clip(parent_indices, 0, num_nodes - 1)
+        log_normalizers = jax.nn.logsumexp(processed_logits.astype(jnp.float32), axis=-1)
+        edge_log_probs = processed_logits[parent_safe, jnp.clip(token_ids, 0, None)] - log_normalizers[parent_safe]
+        is_child = node_valid & (node_indices > 0) & (parent_indices >= 0)
+        target_edge_probs = jnp.where(is_child, jnp.exp(edge_log_probs), 0.0)
+        local_weights = jnp.where(is_child, jnp.exp(draft_logprobs), 0.0)
+        sibling_sums = jax.ops.segment_sum(local_weights, parent_safe, num_segments=num_nodes)
+        initial_draft_probs = jnp.where(
+            is_child,
+            local_weights / jnp.maximum(sibling_sums[parent_safe], 1e-20),
+            0.0,
+        )
+
+        def descend(
+            alive: Bool[Array, " nodes"],
+            draft_probs: Float[Array, " nodes"],
+            node_p: Float[Array, " nodes"],
+            node_p_valid: Bool[Array, " nodes"],
+        ) -> tuple[Int[Array, ""], Float[Array, ""], Int[Array, ""], Float[Array, ""]]:
+            def descend_step(
+                carry: tuple[Int[Array, ""], Float[Array, ""], Int[Array, ""], Float[Array, ""], Bool[Array, ""]],
+                _: None,
+            ) -> tuple[
+                tuple[Int[Array, ""], Float[Array, ""], Int[Array, ""], Float[Array, ""], Bool[Array, ""]],
+                None,
+            ]:
+                cur, cur_p, leaf_parent, leaf_parent_p, stopped = carry
+                child_mask = alive & (parent_indices == cur)
+                has_child = jnp.any(child_mask) & jnp.logical_not(stopped)
+                child = jnp.argmax(child_mask).astype(jnp.int32)
+                computed_p = jnp.minimum(
+                    cur_p * target_edge_probs[child] / jnp.maximum(draft_probs[child], 1e-20),
+                    1.0,
+                )
+                child_p = jnp.where(node_p_valid[child], node_p[child], computed_p)
+                leaf_parent = jnp.where(has_child, cur, leaf_parent)
+                leaf_parent_p = jnp.where(has_child, cur_p, leaf_parent_p)
+                cur = jnp.where(has_child, child, cur)
+                cur_p = jnp.where(has_child, child_p, cur_p)
+                return (cur, cur_p, leaf_parent, leaf_parent_p, stopped | jnp.logical_not(has_child)), None
+
+            initial = (
+                jnp.asarray(0, dtype=jnp.int32),
+                jnp.asarray(1.0, dtype=jnp.float32),
+                jnp.asarray(0, dtype=jnp.int32),
+                jnp.asarray(1.0, dtype=jnp.float32),
+                jnp.zeros((), dtype=jnp.bool),
+            )
+            (leaf, leaf_p, leaf_parent, leaf_parent_p, _), _ = jax.lax.scan(
+                descend_step,
+                initial,
+                None,
+                length=self.max_depth,
+            )
+            return leaf, leaf_p, leaf_parent, leaf_parent_p
+
+        def loop_cond(
+            carry: tuple[
+                Bool[Array, " nodes"],
+                Float[Array, " nodes"],
+                Float[Array, " nodes"],
+                Bool[Array, " nodes"],
+                Int[Array, ""],
+                Bool[Array, ""],
+                Int[Array, ""],
+            ],
+        ) -> Bool[Array, ""]:
+            *_, done, step = carry
+            return jnp.logical_not(done) & (step < num_nodes)
+
+        def loop_body(
+            carry: tuple[
+                Bool[Array, " nodes"],
+                Float[Array, " nodes"],
+                Float[Array, " nodes"],
+                Bool[Array, " nodes"],
+                Int[Array, ""],
+                Bool[Array, ""],
+                Int[Array, ""],
+            ],
+        ) -> tuple[
+            Bool[Array, " nodes"],
+            Float[Array, " nodes"],
+            Float[Array, " nodes"],
+            Bool[Array, " nodes"],
+            Int[Array, ""],
+            Bool[Array, ""],
+            Int[Array, ""],
+        ]:
+            alive, draft_probs, node_p, node_p_valid, terminal, done, step = carry
+            (
+                leaf,
+                leaf_p,
+                reject_parent,
+                reject_parent_p,
+            ) = (*descend(alive, draft_probs, node_p, node_p_valid),)
+            eta = coins[step]
+            accept_now = (leaf == 0) | (eta < leaf_p)
+
+            children_mask = alive & (parent_indices == reject_parent)
+            positive = jnp.sum(
+                jnp.where(
+                    children_mask,
+                    jnp.maximum(reject_parent_p * target_edge_probs - draft_probs, 0.0),
+                    0.0,
+                ),
+            )
+            q_sum = jnp.sum(jnp.where(children_mask, target_edge_probs, 0.0))
+            target_tail = jnp.maximum(reject_parent_p * (1.0 - q_sum), 0.0)
+            residual_mass = positive + target_tail
+            corrected_p = residual_mass / jnp.maximum(residual_mass + 1.0 - reject_parent_p, 1e-20)
+            rejected_q = draft_probs[leaf]
+            sibling_mask = children_mask & (node_indices != leaf)
+            pruned_draft_probs = (
+                jnp.where(
+                    sibling_mask,
+                    draft_probs / jnp.maximum(1.0 - rejected_q, 1e-20),
+                    draft_probs,
+                )
+                .at[leaf]
+                .set(0.0)
+            )
+            pruned_alive = alive.at[leaf].set(False)
+            corrected_node_p = node_p.at[reject_parent].set(corrected_p)
+            corrected_node_p_valid = node_p_valid.at[reject_parent].set(True)
+
+            alive = jnp.where(accept_now, alive, pruned_alive)
+            draft_probs = jnp.where(accept_now, draft_probs, pruned_draft_probs)
+            node_p = jnp.where(accept_now, node_p, corrected_node_p)
+            node_p_valid = jnp.where(accept_now, node_p_valid, corrected_node_p_valid)
+            terminal = jnp.where(accept_now, leaf, terminal)
+            return alive, draft_probs, node_p, node_p_valid, terminal, done | accept_now, step + 1
+
+        initial_carry = (
+            is_child,
+            initial_draft_probs,
+            jnp.zeros((num_nodes,), dtype=jnp.float32),
+            jnp.zeros((num_nodes,), dtype=jnp.bool),
+            jnp.asarray(0, dtype=jnp.int32),
+            jnp.zeros((), dtype=jnp.bool),
+            jnp.asarray(0, dtype=jnp.int32),
+        )
+        *_, terminal, _, _ = jax.lax.while_loop(loop_cond, loop_body, initial_carry)
+        return terminal
+
+    def assemble_accepted(
+        self,
+        terminal_node_indices: Int[Array, " batch"],
+        sampled_token_ids: Int[Array, "batch nodes"],
+    ) -> AcceptedProposal:
+        batch_size, num_nodes = self.token_ids.shape
+        batch_indices = jnp.arange(batch_size, dtype=jnp.int32)
+        root_positions = self.token_positions[:, 0]
+        terminal_positions = self.token_positions[batch_indices, terminal_node_indices]
+        num_accepted = (terminal_positions - root_positions + 1).astype(jnp.int32)
+
+        def build_path(
+            parents_row: Int[Array, " nodes"],
+            positions_row: Int[Array, " nodes"],
+            terminal_node: Int[Array, ""],
+        ) -> Int[Array, " nodes"]:
+            def step(
+                carry: tuple[Int[Array, ""], Int[Array, " nodes"]],
+                _: None,
+            ) -> tuple[tuple[Int[Array, ""], Int[Array, " nodes"]], None]:
+                cur, path = carry
+                depth = (positions_row[cur] - positions_row[0]).astype(jnp.int32)
+                path = path.at[depth].set(cur)
+                next_cur = parents_row[cur]
+                cur = jnp.where(next_cur >= 0, next_cur, cur)
+                return (cur, path), None
+
+            initial = (terminal_node, jnp.zeros((num_nodes,), dtype=jnp.int32))
+            (_, path), _ = jax.lax.scan(step, initial, None, length=self.max_depth + 1)
+            return path
+
+        path = jax.vmap(build_path)(self.parent_indices, self.token_positions, terminal_node_indices)
+        slots = jnp.arange(num_nodes, dtype=jnp.int32)[None, :]
+        child_slots = jnp.clip(slots + 1, 0, num_nodes - 1)
+        path_children = jnp.take_along_axis(path, jnp.broadcast_to(child_slots, path.shape), axis=1)
+        is_inner = slots < (num_accepted - 1)[:, None]
+        is_bonus = slots == (num_accepted - 1)[:, None]
+        tree_token_ids = jnp.take_along_axis(self.token_ids, path_children, axis=1)
+        bonus_token_ids = sampled_token_ids[batch_indices, terminal_node_indices]
+        token_ids = jnp.where(
+            is_inner,
+            tree_token_ids,
+            jnp.where(is_bonus, bonus_token_ids[:, None], 0),
+        )
+        tree_positions = jnp.take_along_axis(self.token_positions, path_children, axis=1)
+        token_positions = jnp.where(
+            is_inner,
+            tree_positions,
+            jnp.where(is_bonus, (terminal_positions + 1)[:, None], 0),
+        )
+        emitted = is_inner | is_bonus
+        source_indices = jnp.where(emitted, path, -1)
+        num_accepted_nodes = jnp.where(self.lengths > 0, num_accepted, 0)
+        accepted_node_indices = jnp.where(slots < num_accepted_nodes[:, None], path, -1)
+        return AcceptedProposal(
+            token_ids=token_ids.astype(self.token_ids.dtype),
+            token_positions=token_positions.astype(self.token_positions.dtype),
+            source_indices=source_indices,
+            lengths=num_accepted.astype(self.lengths.dtype),
+            accepted_node_indices=accepted_node_indices,
+            num_accepted_nodes=num_accepted_nodes.astype(self.lengths.dtype),
+        )
+
+    def verify(
+        self,
+        processed_logits: Float[Array, "batch nodes vocabulary"],
+        sampling_policy: SamplingPolicy,
+        sampling_keys: Key[Array, "batch nodes"],
+        active_mask: Bool[Array, " batch"],
+        stopped_token_ids: Int[Array, " batch"],
+    ) -> AcceptedProposal:
+        _, num_nodes, _ = processed_logits.shape
+        sampled_token_ids = self.sample(processed_logits, sampling_policy, sampling_keys)
+        sampled_token_ids = jnp.where(active_mask[:, None], sampled_token_ids, stopped_token_ids[:, None])
+        coins = jax.vmap(jax.vmap(lambda key: jax.random.uniform(jax.random.fold_in(key, 1))))(sampling_keys)
+        node_valid = jnp.arange(num_nodes, dtype=jnp.int32)[None, :] < self.lengths[:, None]
+
+        def matching_accept(_: None) -> AcceptedProposal:
+            return self.accept(sampled_token_ids)
+
+        def residual_accept(_: None) -> AcceptedProposal:
+            terminal_node_indices = jax.vmap(self.walk_residual_path)(
+                self.token_ids.astype(jnp.int32),
+                self.parent_indices,
+                node_valid,
+                self.draft_logprobs.astype(jnp.float32),
+                processed_logits.astype(jnp.float32),
+                coins,
+            )
+            return self.assemble_accepted(terminal_node_indices, sampled_token_ids)
+
+        if sampling_policy.temperature is None:
+            return residual_accept(None)
+        return jax.lax.cond(
+            jnp.all(sampling_policy.temperature < 1e-5),
+            matching_accept,
+            residual_accept,
+            operand=None,
         )
 
     def forward_inputs(self) -> ProposalInputs:
@@ -296,6 +579,10 @@ class Speculator[SpeculatorStateT: SpeculatorState, ConfigT: SpeculatorConfig](
     token_codec: RawTextCodec
 
     requires_activation_trace: ClassVar[bool] = True
+
+    @property
+    def trace_layer_ids(self) -> tuple[int, ...] | None:
+        return None
 
     @property
     def max_proposal_tokens(self) -> int:

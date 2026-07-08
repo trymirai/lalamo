@@ -324,6 +324,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 state=current_state,
                 return_updated_state=True,
                 return_activation_trace=speculator.requires_activation_trace,
+                activation_trace_layer_ids=speculator.trace_layer_ids,
                 lengths_without_padding=chunk.sequence_ends,
                 forward_pass_config=forward_pass_config,
                 keychain=current_chunk_keychain,
@@ -393,12 +394,18 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             state.sampling_policy,
             state.pending_decoder_result.logits,
         )
-        sampled_token_ids = jax.vmap(jax.vmap(jax.random.categorical))(sampling_keys, processed_logits)
         active_mask = jnp.logical_not(state.stop_flags) & (state.num_generated_tokens < max_output_length)
-        sampled_token_ids = jnp.where(active_mask[:, None], sampled_token_ids, stopped_token_ids[:, None])
         remaining_budget = max_output_length - state.num_generated_tokens
         accepted = (
-            state.pending_proposal.accept(sampled_token_ids).trim_at_eos(eos_token_ids).where_active(active_mask)
+            state.pending_proposal.verify(
+                processed_logits,
+                state.sampling_policy,
+                sampling_keys,
+                active_mask,
+                stopped_token_ids,
+            )
+            .trim_at_eos(eos_token_ids)
+            .where_active(active_mask)
         )
         accepted = accepted.with_lengths(jnp.minimum(accepted.lengths, remaining_budget))
 
@@ -450,6 +457,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             state=target_state,
             return_updated_state=True,
             return_activation_trace=speculator.requires_activation_trace,
+            activation_trace_layer_ids=speculator.trace_layer_ids,
             lengths_without_padding=proposal_inputs.lengths_without_padding,
             attention_parent_indices=proposal_inputs.attention_parent_indices,
             forward_pass_config=decode_forward_pass_config,
@@ -786,7 +794,12 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         )
 
         max_proposal_tokens = speculator.max_proposal_tokens
-        state = DecodingState.from_prefill(prefill_results, sampling_policy, speculator, prompt_token_ids.dtype)
+        state = DecodingState.from_prefill(
+            prefill_results,
+            sampling_policy,
+            speculator,
+            prompt_token_ids.dtype,
+        )
         sampling_keys = rearrange(
             sampling_keychain.rolling_broadcast(
                 (max_output_length, max_proposal_tokens, 1),
