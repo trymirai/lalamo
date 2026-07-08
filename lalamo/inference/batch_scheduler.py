@@ -41,6 +41,10 @@ PROMPT_SIZE_BUCKETS: tuple[int, ...] = tuple(256 * 4**i for i in range(8))
 MIN_BATCHES_PER_BUCKET: int = 10
 MAX_BOUNDARY_BATCH_PADDING_FRACTION: float = 0.05
 
+# Auto-batch probe results {(id(model), vram, max_output_length): {padded_length: batch_size}}: lets a
+# resident server skip the throwaway probe compiles. Keyed on max_output_length since state_capacity scales with it.
+_PROBE_CACHE: dict[tuple[int, int, int], dict[int, int]] = {}
+
 
 @dataclass(frozen=True)
 class BatchSchedulerConfig:
@@ -219,6 +223,7 @@ def bucket_sequences[T: TokenSequence](
     max_vram: int,
     starting_batch_size: int = 2,
     min_batches_per_bucket: int = MIN_BATCHES_PER_BUCKET,
+    probe_cache: dict[int, int],
 ) -> tuple[dict[int, list[tuple[int, T]]], dict[int, int]]:
     sequences_per_bucket = bucket_by_length(tokenized)
     sorted_lengths = sorted(sequences_per_bucket.keys(), reverse=True)
@@ -227,12 +232,15 @@ def bucket_sequences[T: TokenSequence](
     num_steps = 3
 
     for idx, padded_length in enumerate(sorted_lengths):
-        estimated = estimate_batchsize_for_memory_budget(
-            functools.partial(memory_probe, padded_length=padded_length),
-            memory_budget=max_vram,
-            starting_batchsize=estimated,
-            num_steps=num_steps,
-        )
+        # Reuse a cached batch size for this padded_length (the probe's throwaway compiles dominate latency).
+        if padded_length not in probe_cache:
+            probe_cache[padded_length] = estimate_batchsize_for_memory_budget(
+                functools.partial(memory_probe, padded_length=padded_length),
+                memory_budget=max_vram,
+                starting_batchsize=estimated,
+                num_steps=num_steps,
+            )
+        estimated = probe_cache[padded_length]
 
         # 1 estimator step suffices for each consecutive estimation, since we will already have
         # ~80% VRAM allocation ratio by starting from the last batchsize estimate, and 1 step is enough
@@ -805,11 +813,15 @@ class BatchScheduler(ABC):
                 if first_result is not None:
                     jax.block_until_ready(first_result)
 
+            max_vram = _memory_budget_for_auto_batching(vram_bytes)
+            probe_cache_key = (id(self.model), max_vram, batch_scheduler_config.max_output_length)
+            probe_cache = _PROBE_CACHE.setdefault(probe_cache_key, {})
             sequences_per_bucket, batch_size_per_bucket = bucket_sequences(
                 tokenized,
                 memory_probe,
-                max_vram=_memory_budget_for_auto_batching(vram_bytes),
+                max_vram=max_vram,
                 min_batches_per_bucket=MIN_BATCHES_PER_BUCKET,
+                probe_cache=probe_cache,
             )
 
         buckets = merge_small_buckets(sequences_per_bucket, batch_size_per_bucket, min_batches=MIN_BATCHES_PER_BUCKET)
