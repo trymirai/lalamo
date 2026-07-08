@@ -17,6 +17,15 @@ from .decoder import (
     PerLayerEmbedding,
     PLEModelConfig,
 )
+from .dflash import (
+    DFlashAttention,
+    DFlashAttentionConfig,
+    DFlashDraftConfig,
+    DFlashDraftLayer,
+    DFlashDraftLayerConfig,
+    DFlashDraftModel,
+    DFlashDraftState,
+)
 from .embedding import (
     EmbeddingBase,
     EmbeddingConfig,
@@ -92,6 +101,12 @@ from .transformer_layer import (
     TransformerLayerConfig,
     TransformerLayerResult,
 )
+from .weaver import (
+    Weaver,
+    WeaverBlock,
+    WeaverConfig,
+    WeaverPrefix,
+)
 
 __all__ = [
     "GELU",
@@ -104,6 +119,13 @@ __all__ = [
     "ClassifierConfig",
     "ClassifierForwardPassConfig",
     "ClassifierResult",
+    "DFlashAttention",
+    "DFlashAttentionConfig",
+    "DFlashDraftConfig",
+    "DFlashDraftLayer",
+    "DFlashDraftLayerConfig",
+    "DFlashDraftModel",
+    "DFlashDraftState",
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",
@@ -175,6 +197,10 @@ __all__ = [
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
     "UpcastMode",
+    "Weaver",
+    "WeaverBlock",
+    "WeaverConfig",
+    "WeaverPrefix",
     "YARNRoPEConfig",
     "build_tree_attention_mask",
     "tree_ancestor_mask",
