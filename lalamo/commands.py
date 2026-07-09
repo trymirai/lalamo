@@ -20,6 +20,7 @@ from lalamo.model_import.common import (
     StatusEvent,
     import_model,
 )
+from lalamo.model_import.loaders.speculator import load_speculator_model
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.utils.sharding import ShardingConfig
 
@@ -204,3 +205,18 @@ def convert(
     imported_model.model.save(output_dir)
 
     callbacks.finished_saving_model()
+
+
+def convert_speculator(
+    source: str,
+    output_dir: Path,
+    dtype: DType | None = None,
+    context_length: int | None = None,
+) -> None:
+    model = load_speculator_model(
+        source,
+        sharding_config=ShardingConfig.replicated(),
+        dtype=jnp.dtype((dtype or DType.BFLOAT16).value),
+        context_length=context_length,
+    )
+    model.save(output_dir)

@@ -3,7 +3,7 @@ from pathlib import Path
 import equinox as eqx
 import jax.numpy as jnp
 import torch
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.loaders.huggingface import load_linear
@@ -59,8 +59,18 @@ def load_weaver_block(
     )
 
 
-def load_weaver(path: Path | str, sharding_config: ShardingConfig | None = None) -> Weaver:
+def load_weaver(
+    path: Path | str,
+    sharding_config: ShardingConfig | None = None,
+    dtype: DTypeLike | None = None,
+) -> Weaver:
     payload = torch.load(path, map_location="cpu", weights_only=True)
+    speculator_kind = payload.get("metadata", {}).get("speculator_kind")
+    if speculator_kind != "dflash_tfm_weaver":
+        raise ValueError(
+            "Expected a Weaver checkpoint with metadata.speculator_kind='dflash_tfm_weaver', "
+            f"got {speculator_kind!r}.",
+        )
     config_dict = payload["config"]
     config = WeaverConfig(
         d_model=config_dict["d_model"],
@@ -81,7 +91,7 @@ def load_weaver(path: Path | str, sharding_config: ShardingConfig | None = None)
         ),
     )
     sharding_config = sharding_config or ShardingConfig.replicated()
-    weaver = config.init(EmptyInitializer(jnp.float32, sharding_config))
+    weaver = config.init(EmptyInitializer(dtype, sharding_config))
     weights_dict: dict[str, Array] = {
         str(name): jnp.asarray(tensor.float().numpy()) for name, tensor in payload["state_dict"].items()
     }

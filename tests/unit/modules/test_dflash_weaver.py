@@ -1,8 +1,19 @@
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 import numpy as np
+from tokenizers import Tokenizer
 
+from lalamo.audio.utils import dummy_char_level_tokenizer_config
 from lalamo.initializer import RandomInitializer
+from lalamo.models import (
+    DFlashSpeculatorModel,
+    DFlashSpeculatorModelConfig,
+    RawTextCodecConfig,
+    WeaverSpeculatorModel,
+    WeaverSpeculatorModelConfig,
+)
 from lalamo.module import Keychain, ShardingConfig
 from lalamo.modules import (
     DenseMLPConfig,
@@ -169,3 +180,32 @@ def test_dflash_draft_model_export_round_trip() -> None:
     model = config.init(initializer(0))
     template = config.init(initializer(1))
     assert_export_round_trip(model, template)
+
+
+def dummy_tokenizer() -> Tokenizer:
+    return Tokenizer.from_str(dummy_char_level_tokenizer_config())
+
+
+def assert_model_disk_round_trip(model: DFlashSpeculatorModel | WeaverSpeculatorModel, directory: Path) -> None:
+    model.save(directory)
+    assert (directory / "model.safetensors").exists()
+    assert (directory / "config.json").exists()
+    assert (directory / "tokenizer.json").exists()
+
+    restored = type(model).load(directory, ShardingConfig.replicated(), jnp.float32)
+    original_leaves = [leaf for leaf in jax.tree.leaves(model) if isinstance(leaf, jax.Array)]
+    restored_leaves = [leaf for leaf in jax.tree.leaves(restored) if isinstance(leaf, jax.Array)]
+    for original, restored_leaf in zip(original_leaves, restored_leaves, strict=True):
+        np.testing.assert_array_equal(np.asarray(original), np.asarray(restored_leaf))
+
+
+def test_weaver_speculator_model_save_load(tmp_path: Path) -> None:
+    config = WeaverSpeculatorModelConfig(token_codec_config=RawTextCodecConfig(), weaver_config=weaver_config())
+    model = config.init(dummy_tokenizer(), initializer(0))
+    assert_model_disk_round_trip(model, tmp_path / "weaver")
+
+
+def test_dflash_speculator_model_save_load(tmp_path: Path) -> None:
+    config = DFlashSpeculatorModelConfig(token_codec_config=RawTextCodecConfig(), draft_config=draft_config())
+    model = config.init(dummy_tokenizer(), initializer(0))
+    assert_model_disk_round_trip(model, tmp_path / "dflash")

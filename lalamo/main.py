@@ -36,6 +36,7 @@ from lalamo.commands import (
     _suggest_similar_models,
 )
 from lalamo.commands import convert as _convert
+from lalamo.commands import convert_speculator as _convert_speculator
 from lalamo.commands import pull as _pull
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
@@ -60,6 +61,13 @@ app = Typer(
     add_completion=False,
     pretty_exceptions_show_locals=False,
 )
+speculator_app = Typer(
+    rich_markup_mode="rich",
+    add_completion=False,
+    pretty_exceptions_show_locals=False,
+    no_args_is_help=True,
+)
+app.add_typer(speculator_app, name="speculator", help="Convert DFlash and Weaver speculator models.")
 
 
 class ModelParser(ParamType):
@@ -458,6 +466,55 @@ def convert(
         context_length,
         partial(CliConversionCallbacks, overwrite=overwrite),
     )
+
+
+@speculator_app.command("convert", help="Import and export a DFlash or Weaver speculator model into Lalamo format.")
+def speculator_convert(
+    source: Annotated[
+        str,
+        Argument(
+            help="Hugging Face DFlash repository ID, or a path to a Weaver checkpoint (.pth).",
+            metavar="SOURCE",
+        ),
+    ],
+    dtype: Annotated[
+        DType | None,
+        Option(help="Dtype to use for the non-normalization weights.", show_default="bfloat16"),
+    ] = None,
+    output_dir: Annotated[
+        Path | None,
+        Option(
+            help="Directory to save the converted model to.",
+            show_default="Saves the converted model in the `models/<source_name>` directory",
+        ),
+    ] = None,
+    context_length: Annotated[
+        int | None,
+        Option(
+            help="Maximum supported context length. Used to configure RoPE (DFlash only).",
+            show_default="DFlash model's native maximum context length.",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        Option(help="Overwrite existing model files."),
+    ] = False,
+) -> None:
+    if output_dir is None:
+        source_path = Path(source)
+        source_name = source_path.stem if source_path.is_file() else PurePosixPath(source).name
+        output_dir = DEFAULT_OUTPUT_DIR / source_name
+
+    if output_dir.exists():
+        if not overwrite and not Confirm().ask(
+            rf"⚠️ Output directory [cyan]{output_dir}[/cyan] already exists. Do you want to overwrite it?",
+        ):
+            raise Exit
+        shutil.rmtree(output_dir)
+
+    console.print(f"🚀 Converting speculator model from [cyan]{source}[/cyan]...")
+    _convert_speculator(source, output_dir, dtype, context_length)
+    console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
 
 
 @app.command(help="Pull a pre-converted model from the SDK repository.")
