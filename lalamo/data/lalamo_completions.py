@@ -8,15 +8,13 @@ from annotated_types import MinLen
 from cattrs.preconf.msgpack import MsgpackConverter
 from cattrs.preconf.msgpack import make_converter as make_msgpack_converter
 
-type NonEmptyTokenIds = Annotated[list[int], MinLen(1)]
-
 
 @dataclass(frozen=True)
 class LalamoCompletion:
     _converter: ClassVar[MsgpackConverter] = make_msgpack_converter()
 
-    prefix_token_ids: NonEmptyTokenIds
-    completion_token_ids: NonEmptyTokenIds
+    prefix_token_ids: list[int]
+    completion_token_ids: list[int]
 
     def serialize(self) -> bytes:
         return self._converter.dumps(self)
