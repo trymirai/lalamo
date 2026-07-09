@@ -1,10 +1,9 @@
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Annotated, Any, ClassVar, Self
+from typing import IO, Any, ClassVar, Self
 
 import msgpack
-from annotated_types import MinLen
 from cattrs.preconf.msgpack import MsgpackConverter
 from cattrs.preconf.msgpack import make_converter as make_msgpack_converter
 
