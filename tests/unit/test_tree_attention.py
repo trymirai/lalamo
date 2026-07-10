@@ -1,117 +1,26 @@
-import jax
 import jax.numpy as jnp
 import pytest
 
-from lalamo.initializer import RandomInitializer
 from lalamo.modules import (
     Decoder,
-    DecoderConfig,
     DecoderForwardPassConfig,
-    DenseMLPConfig,
     DynamicKVCacheLayer,
     EmbeddingForwardPassConfig,
     ForwardPassMode,
-    Identity,
     Keychain,
-    LinearConfig,
-    NormalizationConfig,
     StaticKVCacheLayer,
-    TiedEmbeddingConfig,
-    TransformerConfig,
     TransformerForwardPassConfig,
-    TransformerLayerConfig,
-    UnscaledRoPEConfig,
-    UpcastMode,
 )
-from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
+from lalamo.modules.token_mixers.attention import Attention
 from lalamo.modules.token_mixers.kv_cache import build_tree_attention_mask, tree_ancestor_mask
-from lalamo.utils.sharding import ShardingConfig
 from tests.common import assert_close
-from tests.helpers import make_test_sharding_config
+from tests.helpers import build_tiny_attention_decoder, make_test_sharding_config
 
 
 @pytest.fixture
 def decoder(request: pytest.FixtureRequest) -> Decoder:
     kv_source_layer_indices: tuple[int | None, ...] = getattr(request, "param", (None,))
-    precision = jnp.float32
-    model_dim = 8
-    hidden_dim = 16
-    vocab_size = 32
-    context_length = 16
-
-    norm_config = NormalizationConfig(
-        epsilon=1e-5,
-        scale_offset=None,
-        upcast_mode=UpcastMode.ONLY_NORMALIZATION,
-        subtract_mean=False,
-    )
-    mlp_config = DenseMLPConfig(
-        linear_config=LinearConfig(),
-        activation=Identity(),
-        has_up_biases=False,
-        has_down_biases=False,
-        gate_clipping=None,
-        up_clipping=None,
-    )
-    rope_config = UnscaledRoPEConfig(
-        base=10_000.0,
-        max_sequence_length=context_length,
-        head_dim=4,
-    )
-
-    layer_configs = []
-    for kv_source in kv_source_layer_indices:
-        attention_config = AttentionConfig(
-            qkv_projection_config=LinearConfig(),
-            out_projection_config=LinearConfig(),
-            query_norm_config=None,
-            key_norm_config=None,
-            num_heads=2,
-            num_groups=2,
-            head_dim=4,
-            is_causal=True,
-            scale=None,
-            sliding_window_size=None,
-            logit_soft_cap=None,
-            has_sinks=False,
-            has_qkv_biases=False,
-            has_out_biases=False,
-            is_kv_sharing=kv_source is not None,
-        )
-        layer_configs.append(
-            TransformerLayerConfig(
-                pre_mixer_norm_config=norm_config,
-                mixer_config=attention_config,
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=norm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=None,
-                rope_config=rope_config,
-                kv_source_layer_index=kv_source,
-            )
-        )
-
-    transformer_config = TransformerConfig(
-        layer_configs=tuple(layer_configs),
-        output_norm_config=norm_config,
-        model_dim=model_dim,
-        hidden_dim=hidden_dim,
-    )
-    decoder_config = DecoderConfig(
-        embedding_config=TiedEmbeddingConfig(
-            input_scale=None,
-            logit_soft_cap=None,
-        ),
-        transformer_config=transformer_config,
-        vocab_size=vocab_size,
-    )
-    return decoder_config.init(
-        RandomInitializer(
-            default_dtype=precision,
-            sharding_config=ShardingConfig.replicated(jax.devices("cpu")[:8]),
-            key=jax.random.key(4),
-        ),
-    )
+    return build_tiny_attention_decoder(kv_source_layer_indices)
 
 
 def test_tree_ancestor_mask_chain() -> None:

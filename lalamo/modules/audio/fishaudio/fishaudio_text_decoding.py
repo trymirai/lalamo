@@ -413,14 +413,15 @@ def decode_next_token(
         token_positions=input_pos,
         state=state_slow,
         return_updated_state=True,
-        return_layer_results=True,
+        return_layer_results=False,
         return_positional_embeddings=False,
         lengths_without_padding=None,
         forward_pass_config=forward_pass_config.transformer_forward_pass_config,
+        return_suffix_tokens=1,
         keychain=slow_transformer_keychain,
     )
-    assert slow_model_result.layer_results is not None
-    hidden_states = slow_model_result.layer_results[-1].outputs[:, -1:]
+    assert slow_model_result.pre_norm_outputs is not None
+    hidden_states = slow_model_result.pre_norm_outputs
     if model.fast_model_projection is not None:
         (hidden_states,) = call_vmapped(
             model.fast_model_projection,

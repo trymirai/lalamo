@@ -5,14 +5,15 @@ from typing import Final, Protocol, overload, runtime_checkable
 import jax
 import jax.numpy as jnp
 from jax import vmap
-from jaxtyping import Array, Float, PyTree, Shaped
+from jaxtyping import Array, Float, Int, PyTree, Shaped
 
-from lalamo.module import Keychain, KeychainBroadcastMode
+from lalamo.module import Keychain, KeychainBroadcastMode, LogicalAxis, ShardingConfig
 
 __all__ = [
     "apply_soft_capping",
     "call_vmapped",
     "call_vmapped_twice",
+    "gather_suffix_tokens",
 ]
 
 
@@ -290,3 +291,34 @@ def apply_soft_capping(
     soft_cap: float,
 ) -> Float[Array, "..."]:
     return jax.nn.tanh(values / soft_cap) * soft_cap
+
+
+def gather_suffix_tokens(
+    features: Shaped[Array, "batch tokens *channels"],
+    lengths_without_padding: Int[Array, " batch"] | None,
+    num_suffix_tokens: int,
+    sharding_config: ShardingConfig,
+) -> Shaped[Array, "batch suffix_tokens *channels"]:
+    """Gather the last `num_suffix_tokens` positions of every sequence, counting back from the end
+    of its non-padded prefix rather than from the physical end of the token axis.
+
+    Sequences shorter than the window get position-0 duplicates at the window start; callers must
+    not consume outputs at those slots.
+    """
+    batch_size, sequence_length, *_ = features.shape
+    if lengths_without_padding is None:
+        return features[:, sequence_length - num_suffix_tokens :]
+
+    batch_axis = sharding_config.resolve_axis(LogicalAxis.BATCH)
+    suffix_offsets = jnp.arange(-num_suffix_tokens, 0, dtype=jnp.int32)
+    suffix_positions = jnp.clip(
+        lengths_without_padding[:, None] + suffix_offsets[None, :],
+        0,
+        sequence_length - 1,
+    )
+    batch_indices = jax.device_put(
+        jnp.arange(batch_size, dtype=jnp.int32)[:, None],
+        sharding_config.make_sharding((batch_axis, None)),
+    )
+    out_sharding = sharding_config.make_sharding((batch_axis, *(None,) * (features.ndim - 1)))
+    return features.at[batch_indices, suffix_positions].get(out_sharding=out_sharding)
