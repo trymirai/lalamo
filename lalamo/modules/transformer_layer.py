@@ -112,7 +112,7 @@ class TransformerLayerConfig(LalamoConfig):
     parallel_mlp_output_norm_config: NormalizationConfig | None = None
     ple_config: PLELayerConfig | None = None
     ple_norm_config: NormalizationConfig | None = None
-    has_post_layer_scalar: bool = False
+    has_output_multiplier: bool = False
     rope_config: RoPEConfig | None = None
 
     def __post_init__(self) -> None:
@@ -164,7 +164,7 @@ class TransformerLayerConfig(LalamoConfig):
         post_mlp_norm = self.post_mlp_norm_config.init(initializer, model_dim) if self.post_mlp_norm_config else None
         ple = self.ple_config.init(initializer, model_dim) if self.ple_config else None
         ple_norm = self.ple_norm_config.init(initializer, model_dim) if self.ple_norm_config else None
-        post_layer_scalar = initializer.ones((1,)) if self.has_post_layer_scalar else None
+        output_multiplier = initializer.ones((1,)) if self.has_output_multiplier else None
         return TransformerLayer(
             config=self,
             sharding_config=initializer.sharding_config,
@@ -180,7 +180,7 @@ class TransformerLayerConfig(LalamoConfig):
             post_mlp_norm=post_mlp_norm,
             ple=ple,
             ple_norm=ple_norm,
-            post_layer_scalar=post_layer_scalar,
+            output_multiplier=output_multiplier,
         )
 
 
@@ -197,7 +197,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     post_mlp_norm: Normalization | None
     ple: PLELayer | None
     ple_norm: Normalization | None
-    post_layer_scalar: Float[Array, "1"] | None
+    output_multiplier: Float[Array, "1"] | None
 
     @eqx.filter_jit
     def __call__(
@@ -347,8 +347,8 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             )
             outputs = outputs + normalized_ple
 
-        if self.post_layer_scalar is not None:
-            outputs = outputs * self.post_layer_scalar.astype(outputs.dtype)
+        if self.output_multiplier is not None:
+            outputs = outputs * self.output_multiplier.astype(outputs.dtype)
 
         if return_activation_trace:
             activation_trace_state = state

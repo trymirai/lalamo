@@ -114,10 +114,8 @@ def _soft_capped_attention_kernel(
         "heads dst_tokens channels, heads src_tokens channels -> heads dst_tokens src_tokens",
     )
     if scale is None:
-        scale_val = head_dim**-0.5
-    else:
-        scale_val = float(scale)
-    attention_logits = attention_logits * scale_val
+        scale = head_dim**-0.5
+    attention_logits = attention_logits * scale
     attention_logits = apply_soft_capping(attention_logits, logit_soft_cap)
     if bias is not None:
         attention_logits = attention_logits + bias
@@ -159,8 +157,6 @@ def _stable_reduction_attention_kernel(
 
     if scale is None:
         scale = head_dim**-0.5
-    else:
-        scale = float(scale)
 
     if mask is None:
         mask = jnp.ones((num_queries, num_keys), dtype=jnp.bool_)

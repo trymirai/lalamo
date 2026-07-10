@@ -270,7 +270,7 @@ class HFGemma4TextConfig:
                 parallel_mlp_output_norm_config=parallel_mlp_output_norm_config,
                 ple_config=ple_layer_config,
                 ple_norm_config=rms_norm_config if ple_layer_config is not None else None,
-                has_post_layer_scalar=True,
+                has_output_multiplier=True,
                 rope_config=layer_rope_config,
             )
             layer_configs.append(transformer_layer_config)
@@ -401,10 +401,10 @@ class HFGemma4Config(HuggingFaceLMConfig):
                     path(layer_path / "post_per_layer_input_norm"),
                 )
 
-            post_layer_scalar = layer.post_layer_scalar
-            if post_layer_scalar is not None:
-                post_layer_scalar = load_as(
-                    post_layer_scalar,
+            output_multiplier = layer.output_multiplier
+            if output_multiplier is not None:
+                output_multiplier = load_as(
+                    output_multiplier,
                     weights_dict[key(layer_path / "layer_scalar")],
                 )
 
@@ -413,7 +413,7 @@ class HFGemma4Config(HuggingFaceLMConfig):
                     layer,
                     ple=ple,
                     ple_norm=ple_norm,
-                    post_layer_scalar=post_layer_scalar,
+                    output_multiplier=output_multiplier,
                 )
             )
 
