@@ -468,15 +468,29 @@ def convert(
     )
 
 
-@speculator_app.command("convert", help="Import and export a DFlash or Weaver speculator model into Lalamo format.")
+@speculator_app.command("convert", help="Import a speculator (DFlash draft, optionally with a Weaver).")
 def speculator_convert(
-    source: Annotated[
+    dflash_source: Annotated[
         str,
         Argument(
-            help="Hugging Face DFlash repository ID, or a path to a Weaver checkpoint (.pth).",
-            metavar="SOURCE",
+            help="Hugging Face repository ID or local directory of the DFlash draft model.",
+            metavar="DFLASH_SOURCE",
         ),
     ],
+    model_dir: Annotated[
+        Path | None,
+        Option(
+            help="Converted target model directory; the speculator is saved to `<model-dir>/speculator`.",
+            show_default=False,
+        ),
+    ] = None,
+    weaver: Annotated[
+        Path | None,
+        Option(
+            help="Path to a Weaver checkpoint to bundle into the same speculator.",
+            show_default="No weaver, DFlash draft only",
+        ),
+    ] = None,
     dtype: Annotated[
         DType | None,
         Option(help="Dtype to use for the non-normalization weights.", show_default="bfloat16"),
@@ -484,14 +498,14 @@ def speculator_convert(
     output_dir: Annotated[
         Path | None,
         Option(
-            help="Directory to save the converted model to.",
-            show_default="Saves the converted model in the `models/<source_name>` directory",
+            help="Explicit output directory, overrides --model-dir.",
+            show_default="`<model-dir>/speculator`",
         ),
     ] = None,
     context_length: Annotated[
         int | None,
         Option(
-            help="Maximum supported context length. Used to configure RoPE (DFlash only).",
+            help="Maximum supported context length. Used to configure RoPE.",
             show_default="DFlash model's native maximum context length.",
         ),
     ] = None,
@@ -501,9 +515,10 @@ def speculator_convert(
     ] = False,
 ) -> None:
     if output_dir is None:
-        source_path = Path(source)
-        source_name = source_path.stem if source_path.is_file() else PurePosixPath(source).name
-        output_dir = DEFAULT_OUTPUT_DIR / source_name
+        if model_dir is None:
+            _error("Either --model-dir or --output-dir must be provided.")
+            return
+        output_dir = model_dir / "speculator"
 
     if output_dir.exists():
         if not overwrite and not Confirm().ask(
@@ -512,8 +527,8 @@ def speculator_convert(
             raise Exit
         shutil.rmtree(output_dir)
 
-    console.print(f"🚀 Converting speculator model from [cyan]{source}[/cyan]...")
-    _convert_speculator(source, output_dir, dtype, context_length)
+    console.print(f"🚀 Converting speculator model from [cyan]{dflash_source}[/cyan]...")
+    _convert_speculator(dflash_source, output_dir, weaver, dtype, context_length)
     console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
 
 

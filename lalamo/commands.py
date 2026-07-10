@@ -208,13 +208,15 @@ def convert(
 
 
 def convert_speculator(
-    source: str,
+    dflash_source: str,
     output_dir: Path,
+    weaver_source: Path | None = None,
     dtype: DType | None = None,
     context_length: int | None = None,
 ) -> None:
     model = load_speculator_model(
-        source,
+        dflash_source,
+        weaver_source,
         sharding_config=ShardingConfig.replicated(),
         dtype=jnp.dtype((dtype or DType.BFLOAT16).value),
         context_length=context_length,

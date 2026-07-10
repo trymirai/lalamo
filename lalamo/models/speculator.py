@@ -8,42 +8,40 @@ from lalamo.models.raw_text_codec import RawTextCodec, RawTextCodecConfig
 from lalamo.modules import DFlashDraftConfig, DFlashDraftModel, Weaver, WeaverConfig
 
 __all__ = [
-    "DFlashSpeculatorModel",
-    "DFlashSpeculatorModelConfig",
-    "WeaverSpeculatorModel",
-    "WeaverSpeculatorModelConfig",
+    "SpeculatorModel",
+    "SpeculatorModelConfig",
 ]
 
 
 @dataclass(frozen=True)
-class DFlashSpeculatorModelConfig(ModelConfig[RawTextCodecConfig]):
+class SpeculatorModelConfig(ModelConfig[RawTextCodecConfig]):
     draft_config: DFlashDraftConfig
+    weaver_config: WeaverConfig | None
 
-    def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "DFlashSpeculatorModel":
-        return DFlashSpeculatorModel(
+    def __post_init__(self) -> None:
+        if self.weaver_config is None:
+            return
+        if self.weaver_config.d_model != self.draft_config.model_dim:
+            raise ValueError(
+                f"Weaver d_model {self.weaver_config.d_model} does not match"
+                f" draft model_dim {self.draft_config.model_dim}.",
+            )
+        if self.weaver_config.k > self.draft_config.block_size - 1:
+            raise ValueError(
+                f"Weaver depth k={self.weaver_config.k} exceeds the draft block's"
+                f" {self.draft_config.block_size - 1} proposal positions.",
+            )
+
+    def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "SpeculatorModel":
+        return SpeculatorModel(
             config=self,
             sharding_config=initializer.sharding_config,
             token_codec=self.token_codec_config.init(tokenizer),
             draft_model=self.draft_config.init(initializer),
+            weaver=self.weaver_config.init(initializer) if self.weaver_config is not None else None,
         )
 
 
-class DFlashSpeculatorModel(Model[RawTextCodecConfig, DFlashSpeculatorModelConfig, RawTextCodec]):
+class SpeculatorModel(Model[RawTextCodecConfig, SpeculatorModelConfig, RawTextCodec]):
     draft_model: DFlashDraftModel
-
-
-@dataclass(frozen=True)
-class WeaverSpeculatorModelConfig(ModelConfig[RawTextCodecConfig]):
-    weaver_config: WeaverConfig
-
-    def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "WeaverSpeculatorModel":
-        return WeaverSpeculatorModel(
-            config=self,
-            sharding_config=initializer.sharding_config,
-            token_codec=self.token_codec_config.init(tokenizer),
-            weaver=self.weaver_config.init(initializer),
-        )
-
-
-class WeaverSpeculatorModel(Model[RawTextCodecConfig, WeaverSpeculatorModelConfig, RawTextCodec]):
-    weaver: Weaver
+    weaver: Weaver | None
