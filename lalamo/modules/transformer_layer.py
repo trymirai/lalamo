@@ -25,7 +25,7 @@ from .token_mixer import (
     TokenMixerConfig,
 )
 from .token_mixers.attention import Attention, AttentionConfig
-from .utils import call_vmapped, call_vmapped_twice
+from .utils import call_vmapped, call_vmapped_twice, gather_suffix_tokens
 
 __all__ = [
     "PositionalEmbeddingSelector",
@@ -211,6 +211,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
         per_layer_input: Float[Array, "batch suffix_tokens ple_channels"] | None = None,
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
+        return_suffix_tokens: int | None = None,
         *,
         keychain: Keychain,
     ) -> TransformerLayerResult:
@@ -219,6 +220,8 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 f"Inputs to decoder layers must be a 3D arrays of size (batch_size, sequence_length, hidden_dim),"
                 f" got {inputs.shape}",
             )
+        if return_suffix_tokens is not None and return_activation_trace:
+            raise ValueError("return_suffix_tokens cannot be combined with return_activation_trace.")
         mixer_keychain, mlp_keychain, ple_keychain = keychain.split(3)
         normalization_forward_pass_config = forward_pass_config.normalization_forward_pass_config
 
@@ -279,6 +282,26 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
 
         assert mlp_inputs.dtype == inputs.dtype
 
+        if return_suffix_tokens is not None:
+            mlp_inputs = gather_suffix_tokens(
+                mlp_inputs,
+                lengths_without_padding,
+                return_suffix_tokens,
+                self.sharding_config,
+            )
+            if per_layer_input is not None:
+                per_layer_input = gather_suffix_tokens(
+                    per_layer_input,
+                    lengths_without_padding,
+                    return_suffix_tokens,
+                    self.sharding_config,
+                )
+            # The gathered window is tail-aligned, while MLP padding masks assume the valid tokens
+            # form a prefix, so the window is treated as fully valid instead.
+            mlp_lengths_without_padding = None
+        else:
+            mlp_lengths_without_padding = lengths_without_padding
+
         normalized_mlp_inputs = call_vmapped_twice(
             self.pre_mlp_norm,
             mlp_inputs,
@@ -296,7 +319,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
 
         mlp_outputs = self.mlp(
             normalized_mlp_inputs,
-            lengths_without_padding=lengths_without_padding,
+            lengths_without_padding=mlp_lengths_without_padding,
             forward_pass_config=mlp_forward_pass_config,
             keychain=primary_mlp_keychain,
         )
@@ -311,7 +334,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             )
             parallel_mlp_outputs = self.parallel_mlp(
                 normalized_mlp_inputs,
-                lengths_without_padding=lengths_without_padding,
+                lengths_without_padding=mlp_lengths_without_padding,
                 forward_pass_config=mlp_forward_pass_config,
                 keychain=parallel_mlp_keychain,
             )

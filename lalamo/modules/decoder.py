@@ -141,6 +141,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
+        return_suffix_tokens: int | None = None,
         *,
         keychain: Keychain,
     ) -> DecoderResult:
@@ -153,6 +154,15 @@ class Decoder(LalamoModule[DecoderConfig]):
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
             )
+        if return_suffix_tokens is not None:
+            _, sequence_length = token_ids.shape
+            if not 1 <= return_suffix_tokens <= sequence_length:
+                raise ValueError(
+                    f"return_suffix_tokens must be between 1 and the sequence length {sequence_length},"
+                    f" got {return_suffix_tokens}",
+                )
+            if return_activation_trace:
+                raise ValueError("return_suffix_tokens cannot be combined with return_activation_trace.")
         embedding_keychain, ple_keychain, transformer_keychain, readout_keychain = keychain.split(4)
         inner_features = self.embedding.embed(
             token_ids,
@@ -176,6 +186,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             forward_pass_config=forward_pass_config.transformer_forward_pass_config,
             per_layer_inputs=per_layer_inputs,
             attention_parent_indices=attention_parent_indices,
+            return_suffix_tokens=return_suffix_tokens,
             keychain=transformer_keychain,
         )
 

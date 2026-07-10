@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import json
 import os
 import random
@@ -19,7 +20,7 @@ from fastapi.responses import JSONResponse
 from jax import numpy as jnp
 
 from lalamo.data.huggingface_message import HFMessage
-from lalamo.inference.batch_scheduler import BatchSchedulerConfig, ContinuousBatchScheduler
+from lalamo.inference.batch_scheduler import _PROBE_CACHE, BatchSchedulerConfig, ContinuousBatchScheduler
 from lalamo.model_import.common import import_model
 from lalamo.models import GenerationConfig, LanguageModel
 from lalamo.module import Keychain
@@ -97,6 +98,37 @@ gpu_lock = asyncio.Lock()
 creation_lock = asyncio.Lock()
 
 
+# Resident model across /batches requests: pay the safetensors reload + jit warmup once, not per request.
+_resident_model: tuple[tuple[str, str | None], LanguageModel] | None = None
+
+
+def _load_resident_model(model_path: str, dtype: str | None) -> LanguageModel:
+    global _resident_model  # noqa: PLW0603
+
+    cache_key = (model_path, dtype)
+    if _resident_model is not None:
+        cached_key, cached_model = _resident_model
+        if cached_key == cache_key:
+            return cached_model
+
+        # Free the old model's device buffers before importing the new one (avoid two full models in VRAM).
+        _resident_model = None
+        del cached_model
+        _PROBE_CACHE.clear()  # its entries are id(model)-keyed and must not outlive this model
+        gc.collect()
+
+    model = import_model(
+        model_path,
+        sharding_config=ShardingConfig.replicated(),
+        dtype=jnp.dtype(dtype) if dtype is not None else None,
+    ).model
+    if not isinstance(model, LanguageModel):
+        raise TypeError(f"Expected a language model, got {type(model).__name__}")
+
+    _resident_model = (cache_key, model)
+    return model
+
+
 def active_batch_ids() -> set[str]:
     if not hasattr(app.state, "active_batch_ids"):
         app.state.active_batch_ids = set()
@@ -159,13 +191,7 @@ def validate_requests(
 def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
     reference, *_ = requests
 
-    model = import_model(
-        reference.model,
-        sharding_config=ShardingConfig.replicated(),
-        dtype=jnp.dtype(reference.dtype),
-    ).model
-    if not isinstance(model, LanguageModel):
-        raise RuntimeError(f"Expected a language model, got {type(model).__name__}")  # noqa: TRY004
+    model = _load_resident_model(reference.model, reference.dtype)
 
     dataset = [[hf_message.as_message() for hf_message in request.messages] for request in requests]
 
