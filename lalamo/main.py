@@ -477,13 +477,6 @@ def speculator_convert(
             metavar="DFLASH_SOURCE",
         ),
     ],
-    model_dir: Annotated[
-        Path | None,
-        Option(
-            help="Converted target model directory; the speculator is saved to `<model-dir>/speculator`.",
-            show_default=False,
-        ),
-    ] = None,
     weaver: Annotated[
         Path | None,
         Option(
@@ -498,8 +491,8 @@ def speculator_convert(
     output_dir: Annotated[
         Path | None,
         Option(
-            help="Explicit output directory, overrides --model-dir.",
-            show_default="`<model-dir>/speculator`",
+            help="Directory to save the converted speculator to, e.g. `<target_model_dir>/speculator`.",
+            show_default="Saves the converted speculator in the `models/<dflash_repo_name>` directory",
         ),
     ] = None,
     context_length: Annotated[
@@ -515,10 +508,7 @@ def speculator_convert(
     ] = False,
 ) -> None:
     if output_dir is None:
-        if model_dir is None:
-            _error("Either --model-dir or --output-dir must be provided.")
-            return
-        output_dir = model_dir / "speculator"
+        output_dir = DEFAULT_OUTPUT_DIR / PurePosixPath(dflash_source).name
 
     if output_dir.exists():
         if not overwrite and not Confirm().ask(
