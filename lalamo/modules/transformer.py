@@ -1,17 +1,18 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import equinox as eqx
+from frozendict import frozendict
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, field
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis
 
 from .normalization import Normalization, NormalizationConfig
-from .rope import PositionalEmbeddings, RoPE, RoPEConfig
+from .rope import PositionalEmbeddings
 from .token_mixer import State, StateLayerBase
-from .token_mixers.attention import Attention
-from .token_mixers.kv_cache import BorrowedKVCacheLayer, ExtendableKVCacheLayer, KVCacheLayer
+from .token_mixers.attention import Attention, AttentionConfig
+from .token_mixers.kv_cache import KVCacheLayer
 from .transformer_layer import (
     TransformerForwardPassConfig,
     TransformerLayer,
@@ -41,60 +42,36 @@ class TransformerConfig(LalamoConfig):
     output_norm_config: NormalizationConfig
     model_dim: int
     hidden_dim: int
-    kv_source_per_layer: tuple[int, ...] | None = None
+    kv_reuse_map: frozendict[int, int] = field(default_factory=frozendict)
 
     def __post_init__(self) -> None:
-        kv_source_per_layer = self.kv_source_per_layer
-        if kv_source_per_layer is None:
-            return
-
-        assert len(kv_source_per_layer) == len(self.layer_configs)
-        for layer_index, source_index in enumerate(kv_source_per_layer):
-            assert 0 <= source_index <= layer_index
-            assert kv_source_per_layer[source_index] == source_index
-
-    def _init_ropes(self, initializer: Initializer) -> tuple[tuple[RoPE, ...], tuple[int, ...]]:
-        rope_cache: dict[RoPEConfig, int] = {}
-        ropes: list[RoPE] = []
-        rope_indices: list[int] = []
-        for layer_config in self.layer_configs:
-            rope_config = layer_config.rope_config
-            if rope_config is None:
-                rope_indices.append(-1)
-                continue
-
-            if rope_config not in rope_cache:
-                rope_cache[rope_config] = len(ropes)
-                ropes.append(rope_config.init(initializer))
-            rope_indices.append(rope_cache[rope_config])
-        return tuple(ropes), tuple(rope_indices)
+        for layer_index, source_index in self.kv_reuse_map.items():
+            assert 0 <= source_index < layer_index < len(self.layer_configs)
+            assert source_index not in self.kv_reuse_map
+            assert isinstance(self.layer_configs[source_index].mixer_config, AttentionConfig)
+            assert isinstance(self.layer_configs[layer_index].mixer_config, AttentionConfig)
 
     def init(self, initializer: Initializer) -> "Transformer":
-        ropes, rope_indices = self._init_ropes(initializer)
-
         layers = tuple(
             layer_config.init(
                 initializer,
                 model_dim=self.model_dim,
                 hidden_dim=layer_config.hidden_dim if layer_config.hidden_dim is not None else self.hidden_dim,
+                borrows_kv_cache=layer_index in self.kv_reuse_map,
             )
-            for layer_config in self.layer_configs
+            for layer_index, layer_config in enumerate(self.layer_configs)
         )
         output_norm = self.output_norm_config.init(initializer, self.model_dim)
 
         return Transformer(
             config=self,
             sharding_config=initializer.sharding_config,
-            ropes=ropes,
-            rope_indices=rope_indices,
             layers=layers,
             output_norm=output_norm,
         )
 
 
 class Transformer(LalamoModule[TransformerConfig]):
-    ropes: tuple[RoPE, ...]
-    rope_indices: tuple[int, ...] = field(static=True)
     layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
 
@@ -109,7 +86,7 @@ class Transformer(LalamoModule[TransformerConfig]):
         return_positional_embeddings: bool,
         lengths_without_padding: Int[Array, " batch"] | None,
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
-        per_layer_inputs: tuple[Float[Array, "batch suffix_tokens ple_dim"], ...] | None = None,
+        per_layer_inputs: tuple[Float[Array, "batch suffix_tokens ple_channels"], ...] | None = None,
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
@@ -124,11 +101,9 @@ class Transformer(LalamoModule[TransformerConfig]):
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
             )
-        kv_source_per_layer = self.config.kv_source_per_layer
-        if kv_source_per_layer is None:
-            kv_source_per_layer = tuple(range(len(self.layers)))
+        kv_reuse_map = self.config.kv_reuse_map
         kv_cache_source_layers = tuple(
-            layer_index for layer_index, source_index in enumerate(kv_source_per_layer) if layer_index == source_index
+            layer_index for layer_index in range(len(self.layers)) if layer_index not in kv_reuse_map
         )
         if state is None:
             state_by_layer: dict[int, StateLayerBase] = {}
@@ -139,47 +114,42 @@ class Transformer(LalamoModule[TransformerConfig]):
                 )
             state_by_layer = dict(zip(kv_cache_source_layers, state, strict=True))
 
-        mixer_forward_pass_config = forward_pass_config.mixer_forward_pass_config
-        rope_embeddings = tuple(
-            call_vmapped(
-                rope,
-                token_positions,
-                added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
-            ).astype(
-                mixer_forward_pass_config.rope_dtype,
-            )
-            for rope in self.ropes
-        )
-        has_kv_sharing = len(kv_cache_source_layers) < len(self.layers)
-        must_return_source_state = return_updated_state or has_kv_sharing
+        has_borrowed_kv_cache = bool(kv_reuse_map)
+        must_return_source_state = return_updated_state or has_borrowed_kv_cache
 
+        mixer_forward_pass_config = forward_pass_config.mixer_forward_pass_config
         residual_dtype = inner_features.dtype
         layer_keychains = keychain.split(len(self.layers))
         updated_states: dict[int, StateLayerBase] = {}
+        rope_embeddings: list[PositionalEmbeddings] = []
         layer_results = []
 
         for layer_index, (layer, layer_keychain) in enumerate(zip(self.layers, layer_keychains, strict=True)):
             assert inner_features.dtype == residual_dtype
-            rope_index = self.rope_indices[layer_index]
-            positional_embeddings = rope_embeddings[rope_index] if rope_index >= 0 else None
+            if layer.rope is None:
+                positional_embeddings = None
+            else:
+                positional_embeddings = call_vmapped(
+                    layer.rope,
+                    token_positions,
+                    added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
+                ).astype(mixer_forward_pass_config.rope_dtype)
+                rope_embeddings.append(positional_embeddings)
 
             per_layer_input = per_layer_inputs[layer_index] if per_layer_inputs is not None else None
 
-            source_layer_index = kv_source_per_layer[layer_index]
-            borrows_kv = source_layer_index != layer_index
+            source_layer_index = kv_reuse_map.get(layer_index)
+            borrows_kv = source_layer_index is not None
             if borrows_kv:
                 source_state = updated_states.get(source_layer_index, state_by_layer.get(source_layer_index))
                 assert isinstance(source_state, KVCacheLayer)
-                layer_state = BorrowedKVCacheLayer.from_cache(source_state)
+                layer_state = source_state
             else:
                 layer_state = state_by_layer.get(layer_index)
                 assert (
                     not isinstance(layer.mixer, Attention)
                     or layer_state is None
-                    or isinstance(
-                        layer_state,
-                        ExtendableKVCacheLayer,
-                    )
+                    or isinstance(layer_state, KVCacheLayer)
                 )
 
             layer_result = layer(
@@ -216,15 +186,13 @@ class Transformer(LalamoModule[TransformerConfig]):
             outputs=normalized_outputs,
             updated_state=compact_state,
             layer_results=tuple(layer_results) if return_layer_results else None,
-            rope_embeddings=rope_embeddings if return_positional_embeddings else None,
+            rope_embeddings=tuple(rope_embeddings) if return_positional_embeddings else None,
         )
 
     def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> State:
-        kv_source_per_layer = self.config.kv_source_per_layer
-        if kv_source_per_layer is None:
-            kv_cache_source_layers = range(len(self.layers))
-        else:
-            kv_cache_source_layers = (i for i, source_index in enumerate(kv_source_per_layer) if i == source_index)
+        kv_cache_source_layers = (
+            layer_index for layer_index in range(len(self.layers)) if layer_index not in self.config.kv_reuse_map
+        )
         return State(
             self.layers[layer_index].init_static_state(batch_size, capacity, dtype)
             for layer_index in kv_cache_source_layers

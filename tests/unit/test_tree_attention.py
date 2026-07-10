@@ -1,10 +1,10 @@
 import jax
 import jax.numpy as jnp
 import pytest
+from frozendict import frozendict
 
 from lalamo.initializer import RandomInitializer
 from lalamo.modules import (
-    BorrowedKVCacheLayer,
     Decoder,
     DecoderConfig,
     DecoderForwardPassConfig,
@@ -33,7 +33,7 @@ from tests.helpers import make_test_sharding_config
 
 @pytest.fixture
 def decoder(request: pytest.FixtureRequest) -> Decoder:
-    kv_source_per_layer: tuple[int, ...] = getattr(request, "param", (0,))
+    num_layers, kv_reuse_map = getattr(request, "param", (1, frozendict()))
     precision = jnp.float32
     model_dim = 8
     hidden_dim = 16
@@ -61,11 +61,7 @@ def decoder(request: pytest.FixtureRequest) -> Decoder:
     )
 
     layer_configs = []
-    for layer_index, kv_source in enumerate(kv_source_per_layer):
-        if kv_source == layer_index:
-            projection_mode = AttentionProjectionMode.QKV
-        else:
-            projection_mode = AttentionProjectionMode.BORROWED_KV
+    for _ in range(num_layers):
         attention_config = AttentionConfig(
             qkv_projection_config=LinearConfig(),
             out_projection_config=LinearConfig(),
@@ -81,7 +77,7 @@ def decoder(request: pytest.FixtureRequest) -> Decoder:
             has_sinks=False,
             has_qkv_biases=False,
             has_out_biases=False,
-            projection_mode=projection_mode,
+            projection_mode=AttentionProjectionMode.QKV,
         )
         layer_configs.append(
             TransformerLayerConfig(
@@ -100,7 +96,7 @@ def decoder(request: pytest.FixtureRequest) -> Decoder:
         output_norm_config=norm_config,
         model_dim=model_dim,
         hidden_dim=hidden_dim,
-        kv_source_per_layer=kv_source_per_layer,
+        kv_reuse_map=kv_reuse_map,
     )
     decoder_config = DecoderConfig(
         embedding_config=TiedEmbeddingConfig(
@@ -170,7 +166,12 @@ def test_build_tree_attention_mask_prefix_plus_draft() -> None:
     assert jnp.array_equal(mask, expected)
 
 
-@pytest.mark.parametrize("decoder", [(0,), (0, 0)], indirect=True, ids=["plain", "shared_kv"])
+@pytest.mark.parametrize(
+    "decoder",
+    [(1, frozendict()), (2, frozendict({1: 0}))],
+    indirect=True,
+    ids=["plain", "borrowed_kv"],
+)
 def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
     prefix_token_ids = jnp.array([[1, 2, 3]], dtype=jnp.int32)
     prefix_positions = jnp.array([[0, 1, 2]], dtype=jnp.int32)
@@ -223,15 +224,25 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
     )
 
 
-@pytest.mark.parametrize("decoder", [(0, 0)], indirect=True, ids=["shared_kv"])
-def test_kv_sharing_layer_projects_queries_only(decoder: Decoder) -> None:
+@pytest.mark.parametrize("decoder", [(2, frozendict({1: 0}))], indirect=True, ids=["borrowed_kv"])
+def test_kv_borrowing_layer_projects_queries_only(decoder: Decoder) -> None:
     owner = decoder.transformer.layers[0].mixer
-    shared = decoder.transformer.layers[1].mixer
+    borrower = decoder.transformer.layers[1].mixer
     assert isinstance(owner, Attention)
-    assert isinstance(shared, Attention)
+    assert isinstance(borrower, Attention)
+    assert not owner.borrows_kv_cache
+    assert borrower.borrows_kv_cache
     assert owner.qkv_projection.output_dims == (8, 8, 8)
-    assert shared.qkv_projection.output_dims == (8,)
-    assert shared.key_norm is None
+    assert borrower.qkv_projection.output_dims == (8,)
+    assert borrower.key_norm is None
+
+
+@pytest.mark.parametrize("decoder", [(2, frozendict())], indirect=True)
+def test_layers_have_distinct_ropes(decoder: Decoder) -> None:
+    first, second = decoder.transformer.layers
+    assert first.rope is not None
+    assert second.rope is not None
+    assert first.rope is not second.rope
 
 
 def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
@@ -316,24 +327,20 @@ def test_tree_attention_mask_static_matches_dynamic() -> None:
     assert jnp.array_equal(dynamic_mask, static_mask)
 
 
-def test_borrowed_dynamic_cache_preserves_sparse_padding_mask() -> None:
+def test_reused_dynamic_cache_preserves_sparse_padding_mask() -> None:
     keys = jnp.zeros((5, 1, 1), dtype=jnp.float32)
     cache = DynamicKVCacheLayer.init(has_sinks=False, keys=keys, values=keys, length=jnp.array(3, dtype=jnp.int32))
     cache = cache.extend(jnp.ones((1, 1, 1), dtype=jnp.float32), jnp.ones((1, 1, 1), dtype=jnp.float32))
-    borrowed_cache = BorrowedKVCacheLayer.from_cache(cache)
-
-    mask = borrowed_cache.attention_mask(suffix_length=1, is_causal=True, suffix_length_without_padding=1)
+    mask = cache.attention_mask(suffix_length=1, is_causal=True, suffix_length_without_padding=1)
 
     assert jnp.array_equal(mask, jnp.array([[True, True, True, False, False, True]], dtype=jnp.bool))
 
 
-def test_borrowed_tree_mask_keeps_sparse_suffix() -> None:
+def test_reused_tree_mask_keeps_sparse_suffix() -> None:
     keys = jnp.zeros((5, 1, 1), dtype=jnp.float32)
     cache = DynamicKVCacheLayer.init(has_sinks=False, keys=keys, values=keys, length=jnp.array(3, dtype=jnp.int32))
     cache = cache.extend(jnp.ones((1, 1, 1), dtype=jnp.float32), jnp.ones((1, 1, 1), dtype=jnp.float32))
-    borrowed_cache = BorrowedKVCacheLayer.from_cache(cache)
-
-    prefix_length = borrowed_cache.tree_prefix_length(suffix_length=1, suffix_length_without_padding=1)
-    mask = borrowed_cache.tree_attention_mask(prefix_length, jnp.array([-1], dtype=jnp.int32))
+    prefix_length = cache.current_prefix_length() - 1
+    mask = cache.tree_attention_mask(prefix_length, jnp.array([-1], dtype=jnp.int32))
 
     assert jnp.array_equal(mask, jnp.array([[True, True, True, False, False, True]], dtype=jnp.bool))

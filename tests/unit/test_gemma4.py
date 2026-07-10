@@ -1,9 +1,19 @@
+import json
+
+from frozendict import frozendict
+
 from lalamo.model_import.model_configs.huggingface.gemma4 import (
     Gemma4RopeParameters,
     HFGemma4TextConfig,
     RopeParameters,
 )
-from lalamo.modules import AttentionConfig, AttentionProjectionMode, ParallelMLPConfig
+from lalamo.modules import (
+    AttentionConfig,
+    AttentionProjectionMode,
+    DecoderConfig,
+    DenseMLPConfig,
+    MixtureOfExpertsConfig,
+)
 
 
 def _config(
@@ -52,12 +62,19 @@ def _config(
 
 
 def test_gemma4_config_variants() -> None:
-    shared_kv = _config().to_decoder_config(context_length=None, metadata_dict={})
-    borrowed_layer = shared_kv.transformer_config.layer_configs[2]
-    assert shared_kv.transformer_config.kv_source_per_layer == (0, 1, 0, 1)
+    decoder_config = _config().to_decoder_config(context_length=None, metadata_dict={})
+    borrowed_layer = decoder_config.transformer_config.layer_configs[2]
+    assert decoder_config.transformer_config.kv_reuse_map == frozendict({2: 0, 3: 1})
     assert isinstance(borrowed_layer.mixer_config, AttentionConfig)
-    assert borrowed_layer.mixer_config.projection_mode is AttentionProjectionMode.BORROWED_KV
+    assert borrowed_layer.mixer_config.projection_mode is AttentionProjectionMode.QKV
+
+    restored_config = DecoderConfig.from_json(json.loads(json.dumps(decoder_config.to_json())))
+    assert restored_config.transformer_config.kv_reuse_map == frozendict({2: 0, 3: 1})
+    assert isinstance(restored_config.transformer_config.kv_reuse_map, frozendict)
 
     moe = _config(enable_moe_block=True).to_decoder_config(context_length=None, metadata_dict={})
-    parallel_mlp_config = moe.transformer_config.layer_configs[0].mlp_config
-    assert isinstance(parallel_mlp_config, ParallelMLPConfig)
+    parallel_layer_config = moe.transformer_config.layer_configs[0]
+    assert isinstance(parallel_layer_config.mlp_config, DenseMLPConfig)
+    assert isinstance(parallel_layer_config.parallel_mlp_config, MixtureOfExpertsConfig)
+    assert parallel_layer_config.mlp_output_norm_config is not None
+    assert parallel_layer_config.parallel_mlp_output_norm_config is not None

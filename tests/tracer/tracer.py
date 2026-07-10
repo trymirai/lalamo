@@ -103,7 +103,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
     @abstractmethod
     def rope_fns(self) -> list[tuple[str, Callable[[ArrayT, ArrayT], tuple[ArrayT, ArrayT]]]]:
-        """Returns list of (label, rope_fn) pairs for each unique rope to test."""
+        """Returns one (label, rope_fn) pair for each RoPE-bearing layer."""
         ...
 
     @abstractmethod

@@ -14,8 +14,6 @@ from .decoder import (
     DecoderConfig,
     DecoderForwardPassConfig,
     DecoderResult,
-    PerLayerEmbedding,
-    PLEModelConfig,
 )
 from .embedding import (
     EmbeddingBase,
@@ -35,8 +33,6 @@ from .mlp import (
     MLPBase,
     MLPConfig,
     MLPForwardPassConfig,
-    ParallelMLP,
-    ParallelMLPConfig,
     RoutingFunction,
     SoftmaxRouting,
 )
@@ -47,11 +43,12 @@ from .normalization import (
     NormalizationImplementation,
     UpcastMode,
 )
+from .ple import PerLayerEmbedding, PerLayerEmbeddingConfig, PLELayer, PLELayerConfig
 from .rope import (
     LinearScalingRoPEConfig,
     LlamaRoPEConfig,
+    PartialRoPEConfig,
     PositionalEmbeddings,
-    ProportionalRoPEConfig,
     RoPE,
     RoPEConfig,
     UnscaledRoPEConfig,
@@ -81,9 +78,7 @@ from .token_mixers import (
     ShortConvConfig,
 )
 from .token_mixers.kv_cache import (
-    BorrowedKVCacheLayer,
     DynamicKVCacheLayer,
-    ExtendableKVCacheLayer,
     KVCacheLayer,
     StaticKVCacheLayer,
     build_tree_attention_mask,
@@ -91,8 +86,6 @@ from .token_mixers.kv_cache import (
 )
 from .transformer import Transformer, TransformerConfig, TransformerForwardPassConfig, TransformerResult
 from .transformer_layer import (
-    PLELayer,
-    PLELayerConfig,
     TransformerLayer,
     TransformerLayerActivationTrace,
     TransformerLayerConfig,
@@ -106,7 +99,6 @@ __all__ = [
     "AttentionConfig",
     "AttentionImplementation",
     "AttentionProjectionMode",
-    "BorrowedKVCacheLayer",
     "Classifier",
     "ClassifierActivationTrace",
     "ClassifierConfig",
@@ -125,7 +117,6 @@ __all__ = [
     "EmbeddingBase",
     "EmbeddingConfig",
     "EmbeddingForwardPassConfig",
-    "ExtendableKVCacheLayer",
     "ForwardPassMode",
     "Identity",
     "KVCacheLayer",
@@ -151,13 +142,11 @@ __all__ = [
     "NormalizationImplementation",
     "PLELayer",
     "PLELayerConfig",
-    "PLEModelConfig",
-    "ParallelMLP",
-    "ParallelMLPConfig",
+    "PartialRoPEConfig",
     "PerLayerEmbedding",
+    "PerLayerEmbeddingConfig",
     "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
-    "ProportionalRoPEConfig",
     "RoPE",
     "RoPEConfig",
     "RoutingFunction",

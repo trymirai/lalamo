@@ -64,6 +64,7 @@ def _attention(*, logit_soft_cap: float | None = None) -> Attention:
         query_norm=None,
         key_norm=None,
         sinks=None,
+        borrows_kv_cache=False,
     )
 
 
@@ -269,6 +270,7 @@ def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_m
         query_norm=None,
         key_norm=None,
         sinks=None,
+        borrows_kv_cache=False,
     )
     inputs = _sharded_sequence(_inputs())
 

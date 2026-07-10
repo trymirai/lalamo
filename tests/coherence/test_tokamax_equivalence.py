@@ -66,6 +66,7 @@ def _attention() -> Attention:
         query_norm=None,
         key_norm=None,
         sinks=None,
+        borrows_kv_cache=False,
     )
 
 

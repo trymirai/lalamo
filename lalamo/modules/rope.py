@@ -30,8 +30,8 @@ from lalamo.utils.registry_abc import RegistryABC
 __all__ = [
     "LinearScalingRoPEConfig",
     "LlamaRoPEConfig",
+    "PartialRoPEConfig",
     "PositionalEmbeddings",
-    "ProportionalRoPEConfig",
     "RoPE",
     "RoPEConfig",
     "UnscaledRoPEConfig",
@@ -116,7 +116,7 @@ class UnscaledRoPEConfig(RoPEConfig):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ProportionalRoPEConfig(RoPEConfig):
+class PartialRoPEConfig(RoPEConfig):
     partial_rotary_factor: float
 
     def _scale_inverse_frequencies(

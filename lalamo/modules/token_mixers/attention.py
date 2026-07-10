@@ -30,9 +30,7 @@ from lalamo.modules.token_mixer import (
 from lalamo.modules.utils import apply_soft_capping, call_vmapped, call_vmapped_twice
 
 from .kv_cache import (
-    BorrowedKVCacheLayer,
     DynamicKVCacheLayer,
-    ExtendableKVCacheLayer,
     KVCacheLayer,
     StaticKVCacheLayer,
 )
@@ -343,7 +341,6 @@ AttentionResult = TokenMixerResult[KVCacheLayer]
 class AttentionProjectionMode(Enum):
     QKV = "qkv"
     KEY_SAME_AS_VALUE = "key_same_as_value"
-    BORROWED_KV = "q_borrowed_kv"
 
 
 @dataclass(frozen=True)
@@ -374,16 +371,20 @@ class AttentionConfig(TokenMixerConfig):
         self,
         initializer: Initializer,
         model_dim: int,
+        *,
+        borrows_kv_cache: bool = False,
     ) -> "Attention":
         q_output_dim = self.num_heads * self.head_dim
         kv_output_dim = self.num_groups * self.head_dim
-        if self.projection_mode is AttentionProjectionMode.QKV:
-            qkv_output_dims = (q_output_dim, kv_output_dim, kv_output_dim)
-        elif self.projection_mode is AttentionProjectionMode.KEY_SAME_AS_VALUE:
-            qkv_output_dims = (q_output_dim, kv_output_dim)
-        else:
-            assert self.key_norm_config is None
+
+        if borrows_kv_cache:
             qkv_output_dims = (q_output_dim,)
+        elif self.projection_mode is AttentionProjectionMode.QKV:
+            qkv_output_dims = (q_output_dim, kv_output_dim, kv_output_dim)
+        else:
+            assert self.projection_mode is AttentionProjectionMode.KEY_SAME_AS_VALUE
+            qkv_output_dims = (q_output_dim, kv_output_dim)
+
         qkv_projection = self.qkv_projection_config.init(
             initializer,
             input_dim=model_dim,
@@ -415,7 +416,7 @@ class AttentionConfig(TokenMixerConfig):
         else:
             query_norm = None
 
-        if self.key_norm_config is not None:
+        if self.key_norm_config is not None and not borrows_kv_cache:
             key_norm = self.key_norm_config.init(
                 initializer,
                 input_dim=self.head_dim,
@@ -437,6 +438,7 @@ class AttentionConfig(TokenMixerConfig):
             query_norm=query_norm,
             key_norm=key_norm,
             sinks=sinks,
+            borrows_kv_cache=borrows_kv_cache,
         )
 
 
@@ -449,6 +451,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
     key_norm: Normalization | None
 
     sinks: Float[Array, " heads"] | None
+    borrows_kv_cache: bool = eqx.field(static=True)
 
     @property
     def model_dim(self) -> int:
@@ -513,16 +516,19 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=qkv_keychain,
         )
-        borrows_kv = isinstance(state, BorrowedKVCacheLayer)
         kv_projection_pattern = "tokens (groups head_channels) -> tokens groups head_channels"
         raw_queries, *raw_kv_projections = qkv_outputs
 
-        if borrows_kv:
-            assert self.config.projection_mode is AttentionProjectionMode.BORROWED_KV
+        if self.borrows_kv_cache:
+            assert not raw_kv_projections
+            assert state is not None
             updated_state = state
-            prefix_length = updated_state.tree_prefix_length(num_suffix_tokens, length_without_padding)
+            if length_without_padding is None:
+                added_length = num_suffix_tokens
+            else:
+                added_length = length_without_padding
+            prefix_length = state.current_prefix_length() - added_length
         else:
-            assert self.config.projection_mode is not AttentionProjectionMode.BORROWED_KV
             projected_kv = tuple(
                 rearrange(
                     projection,
@@ -563,7 +569,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                     self.has_sinks, keys.astype(values.dtype), values, length=length_without_padding
                 )
             else:
-                assert isinstance(state, ExtendableKVCacheLayer)
+                assert isinstance(state, KVCacheLayer)
                 prefix_length = state.current_prefix_length()
                 updated_state = state.extend(keys, values, added_length=length_without_padding)
 
@@ -624,7 +630,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             keychain=out_keychain,
         )
 
-        if not return_updated_state or borrows_kv:
+        if not return_updated_state or self.borrows_kv_cache:
             updated_state = None
 
         return AttentionResult(
@@ -633,6 +639,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         )
 
     def init_static_state(self, capacity: int, dtype: DTypeLike) -> StaticKVCacheLayer:
+        assert not self.borrows_kv_cache
         return StaticKVCacheLayer.init(
             self.has_sinks,
             capacity,

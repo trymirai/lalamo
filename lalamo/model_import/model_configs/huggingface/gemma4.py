@@ -6,6 +6,7 @@ from typing import Literal, Self
 
 import equinox as eqx
 import jax.numpy as jnp
+from frozendict import frozendict
 from jaxtyping import Array
 
 from lalamo.model import Model
@@ -17,17 +18,17 @@ from lalamo.model_import.loaders.huggingface import (
 from lalamo.models import LanguageModel
 from lalamo.modules import (
     DecoderConfig,
+    PerLayerEmbeddingConfig,
     PLELayerConfig,
-    PLEModelConfig,
     TiedEmbeddingConfig,
     TransformerConfig,
 )
 from lalamo.modules.activations import GELU
 from lalamo.modules.decoder import Decoder
 from lalamo.modules.linear import LinearConfig
-from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, ParallelMLPConfig, SoftmaxRouting
+from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, SoftmaxRouting
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.rope import ProportionalRoPEConfig, UnscaledRoPEConfig
+from lalamo.modules.rope import PartialRoPEConfig, UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig, AttentionProjectionMode
 from lalamo.modules.transformer_layer import TransformerLayerConfig
 from lalamo.utils.parameter_path import ParameterPath
@@ -82,20 +83,19 @@ class HFGemma4TextConfig:
     top_k_experts: int | None = None
     moe_intermediate_size: int | None = None
 
-    def kv_source_per_layer(self) -> tuple[int, ...]:
+    def kv_reuse_map(self) -> frozendict[int, int]:
         first_kv_shared = self.num_hidden_layers - self.num_kv_shared_layers
         last_of_type: dict[str, int] = {}
-        kv_source_per_layer: list[int] = []
+        kv_reuse_map: dict[int, int] = {}
         for i, layer_type in enumerate(self.layer_types):
             if i < first_kv_shared:
-                kv_source_per_layer.append(i)
                 last_of_type[layer_type] = i
             else:
                 source = last_of_type.get(layer_type)
                 if source is None:
                     raise ValueError(f"Layer {i} marked shared but no prior {layer_type} layer exists.")
-                kv_source_per_layer.append(source)
-        return tuple(kv_source_per_layer)
+                kv_reuse_map[i] = source
+        return frozendict(kv_reuse_map)
 
     def layer_intermediate_size(self, *, owns_kv_cache: bool) -> int:
         if self.use_double_wide_mlp and not owns_kv_cache:
@@ -137,7 +137,7 @@ class HFGemma4TextConfig:
 
         match full_attention_params.rope_type:
             case "proportional":
-                global_rope_config = ProportionalRoPEConfig(
+                global_rope_config = PartialRoPEConfig(
                     base=full_attention_params.rope_theta,
                     max_sequence_length=max_sequence_length,
                     head_dim=self.global_head_dim,
@@ -160,7 +160,7 @@ class HFGemma4TextConfig:
                     head_dim=self.head_dim,
                 )
             case "proportional":
-                local_rope_config = ProportionalRoPEConfig(
+                local_rope_config = PartialRoPEConfig(
                     base=sliding_attention_params.rope_theta,
                     max_sequence_length=max_sequence_length,
                     head_dim=self.head_dim,
@@ -174,12 +174,11 @@ class HFGemma4TextConfig:
         if self.hidden_size_per_layer_input > 0:
             ple_layer_config = PLELayerConfig(
                 linear_config=linear_config,
-                norm_config=rms_norm_config,
-                ple_dim=self.hidden_size_per_layer_input,
+                ple_channels=self.hidden_size_per_layer_input,
                 activation=GELU(),
             )
-            ple_model_config = PLEModelConfig(
-                ple_dim=self.hidden_size_per_layer_input,
+            per_layer_embedding_config = PerLayerEmbeddingConfig(
+                num_ple_channels=self.hidden_size_per_layer_input,
                 num_layers=self.num_hidden_layers,
                 ple_vocab_size=self.vocab_size_per_layer_input,
                 ple_embed_scale=jnp.array(self.hidden_size_per_layer_input**0.5, dtype=jnp.bfloat16).item(),
@@ -190,9 +189,9 @@ class HFGemma4TextConfig:
             )
         else:
             ple_layer_config = None
-            ple_model_config = None
+            per_layer_embedding_config = None
 
-        kv_source_per_layer = self.kv_source_per_layer()
+        kv_reuse_map = self.kv_reuse_map()
 
         layer_configs = []
         for i, layer_type in enumerate(self.layer_types):
@@ -201,11 +200,8 @@ class HFGemma4TextConfig:
             layer_head_dim = self.global_head_dim if is_global else self.head_dim
             layer_rope_config = global_rope_config if is_global else local_rope_config
 
-            kv_source = kv_source_per_layer[i]
-            owns_kv_cache = kv_source == i
-            if not owns_kv_cache:
-                projection_mode = AttentionProjectionMode.BORROWED_KV
-            elif is_global and self.attention_k_eq_v:
+            owns_kv_cache = i not in kv_reuse_map
+            if is_global and self.attention_k_eq_v:
                 projection_mode = AttentionProjectionMode.KEY_SAME_AS_VALUE
             else:
                 projection_mode = AttentionProjectionMode.QKV
@@ -230,14 +226,13 @@ class HFGemma4TextConfig:
                     num_shared_experts=0,
                     expert_hidden_dim=self.moe_intermediate_size,
                 )
-                mlp_config = ParallelMLPConfig(
-                    primary_mlp_config=dense_mlp_config,
-                    primary_output_norm_config=rms_norm_config,
-                    parallel_mlp_config=moe_mlp_config,
-                    parallel_output_norm_config=rms_norm_config,
-                )
+                parallel_mlp_config = moe_mlp_config
+                mlp_output_norm_config = rms_norm_config
+                parallel_mlp_output_norm_config = rms_norm_config
             else:
-                mlp_config = dense_mlp_config
+                parallel_mlp_config = None
+                mlp_output_norm_config = None
+                parallel_mlp_output_norm_config = None
 
             num_kv_heads = self.num_key_value_heads
             if is_global and self.num_global_key_value_heads is not None:
@@ -247,7 +242,7 @@ class HFGemma4TextConfig:
                 qkv_projection_config=linear_config,
                 out_projection_config=linear_config,
                 query_norm_config=rms_norm_config,
-                key_norm_config=rms_norm_config if owns_kv_cache else None,
+                key_norm_config=rms_norm_config,
                 logit_soft_cap=None,
                 has_sinks=False,
                 has_qkv_biases=self.attention_bias,
@@ -267,10 +262,14 @@ class HFGemma4TextConfig:
                 mixer_config=attention_config,
                 post_mixer_norm_config=rms_norm_config,
                 pre_mlp_norm_config=rms_norm_config,
-                mlp_config=mlp_config,
+                mlp_config=dense_mlp_config,
                 post_mlp_norm_config=rms_norm_config,
                 hidden_dim=layer_intermediate,
+                parallel_mlp_config=parallel_mlp_config,
+                mlp_output_norm_config=mlp_output_norm_config,
+                parallel_mlp_output_norm_config=parallel_mlp_output_norm_config,
                 ple_config=ple_layer_config,
+                ple_norm_config=rms_norm_config if ple_layer_config is not None else None,
                 has_post_layer_scalar=True,
                 rope_config=layer_rope_config,
             )
@@ -281,14 +280,14 @@ class HFGemma4TextConfig:
             output_norm_config=rms_norm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            kv_source_per_layer=tuple(kv_source_per_layer),
+            kv_reuse_map=kv_reuse_map,
         )
 
         return DecoderConfig(
             embedding_config=embedding_config,
             transformer_config=transformer_config,
             vocab_size=self.vocab_size,
-            ple_model_config=ple_model_config,
+            per_layer_embedding_config=per_layer_embedding_config,
         )
 
 
@@ -378,7 +377,9 @@ class HFGemma4Config(HuggingFaceLMConfig):
         for i, layer in enumerate(model.transformer.layers):
             layer_path = ParameterPath("layers") / i
             ple = layer.ple
+            ple_norm = layer.ple_norm
             if ple is not None:
+                assert ple_norm is not None
                 ple = replace(
                     ple,
                     gate=load_linear(
@@ -393,11 +394,11 @@ class HFGemma4Config(HuggingFaceLMConfig):
                         path(layer_path / "per_layer_projection"),
                         implementation=implementation,
                     ),
-                    norm=load_rmsnorm(
-                        ple.norm,
-                        weights_dict,
-                        path(layer_path / "post_per_layer_input_norm"),
-                    ),
+                )
+                ple_norm = load_rmsnorm(
+                    ple_norm,
+                    weights_dict,
+                    path(layer_path / "post_per_layer_input_norm"),
                 )
 
             post_layer_scalar = layer.post_layer_scalar
@@ -407,7 +408,14 @@ class HFGemma4Config(HuggingFaceLMConfig):
                     weights_dict[key(layer_path / "layer_scalar")],
                 )
 
-            new_layers.append(replace(layer, ple=ple, post_layer_scalar=post_layer_scalar))
+            new_layers.append(
+                replace(
+                    layer,
+                    ple=ple,
+                    ple_norm=ple_norm,
+                    post_layer_scalar=post_layer_scalar,
+                )
+            )
 
         return replace(
             model,
