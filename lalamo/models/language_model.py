@@ -233,7 +233,6 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             self.sharding_config.make_sharding((batch_axis, None)),
         )
         logits_sharding = self.sharding_config.make_sharding((batch_axis, None))
-        batch_indices = jax.device_put(jnp.arange(batch_size), batch_vector_sharding)
         chunk_keychains = jax.tree.map(lambda *nodes: jnp.stack(nodes), *keychain.split(num_chunks))
 
         def apply_chunk(
@@ -249,13 +248,12 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 return_updated_state=True,
                 lengths_without_padding=chunk.sequence_ends,
                 forward_pass_config=forward_pass_config,
+                return_suffix_tokens=1,
                 keychain=current_chunk_keychain,
             )
             assert decoder_result.updated_state is not None
 
-            chunk_logits = decoder_result.logits.at[batch_indices, chunk.sequence_ends - 1, :].get(
-                out_sharding=logits_sharding,
-            )
+            chunk_logits = jax.device_put(decoder_result.logits[:, 0, :], logits_sharding)
             return (
                 decoder_result.updated_state,
                 jnp.where(chunk.is_last_token_inside[:, None], chunk_logits, previous_logits),
