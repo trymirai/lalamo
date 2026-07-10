@@ -1,6 +1,5 @@
 from .classifier import ClassifierModel, ClassifierModelConfig
 from .language_model import GenerationConfig, GenerationResults, LanguageModel, LanguageModelConfig
-from .raw_text_codec import RawTextCodec, RawTextCodecConfig
 from .speculator import SpeculatorModel, SpeculatorModelConfig
 from .tts_model import TTSConfig, TTSGenerationResult, TTSModel, TTSModelConfig
 
@@ -11,8 +10,6 @@ __all__ = [
     "GenerationResults",
     "LanguageModel",
     "LanguageModelConfig",
-    "RawTextCodec",
-    "RawTextCodecConfig",
     "SpeculatorModel",
     "SpeculatorModelConfig",
     "TTSConfig",

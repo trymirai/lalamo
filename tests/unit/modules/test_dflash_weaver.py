@@ -3,11 +3,9 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import numpy as np
-from tokenizers import Tokenizer
 
-from lalamo.audio.utils import dummy_char_level_tokenizer_config
 from lalamo.initializer import RandomInitializer
-from lalamo.models import RawTextCodecConfig, SpeculatorModel, SpeculatorModelConfig
+from lalamo.models import SpeculatorModel, SpeculatorModelConfig
 from lalamo.module import Keychain, ShardingConfig
 from lalamo.modules import (
     DenseMLPConfig,
@@ -176,15 +174,11 @@ def test_dflash_draft_model_export_round_trip() -> None:
     assert_export_round_trip(model, template)
 
 
-def dummy_tokenizer() -> Tokenizer:
-    return Tokenizer.from_str(dummy_char_level_tokenizer_config())
-
-
 def assert_model_disk_round_trip(model: SpeculatorModel, directory: Path) -> None:
     model.save(directory)
     assert (directory / "model.safetensors").exists()
     assert (directory / "config.json").exists()
-    assert (directory / "tokenizer.json").exists()
+    assert not (directory / "tokenizer.json").exists()
 
     restored = SpeculatorModel.load(directory, ShardingConfig.replicated(), jnp.float32)
     original_leaves = [leaf for leaf in jax.tree.leaves(model) if isinstance(leaf, jax.Array)]
@@ -194,22 +188,14 @@ def assert_model_disk_round_trip(model: SpeculatorModel, directory: Path) -> Non
 
 
 def test_speculator_model_with_weaver_save_load(tmp_path: Path) -> None:
-    config = SpeculatorModelConfig(
-        token_codec_config=RawTextCodecConfig(),
-        draft_config=draft_config(),
-        weaver_config=weaver_config(),
-    )
-    model = config.init(dummy_tokenizer(), initializer(0))
+    config = SpeculatorModelConfig(draft_config=draft_config(), weaver_config=weaver_config())
+    model = config.init(initializer(0))
     assert model.weaver is not None
     assert_model_disk_round_trip(model, tmp_path / "speculator")
 
 
 def test_speculator_model_without_weaver_save_load(tmp_path: Path) -> None:
-    config = SpeculatorModelConfig(
-        token_codec_config=RawTextCodecConfig(),
-        draft_config=draft_config(),
-        weaver_config=None,
-    )
-    model = config.init(dummy_tokenizer(), initializer(0))
+    config = SpeculatorModelConfig(draft_config=draft_config(), weaver_config=None)
+    model = config.init(initializer(0))
     assert model.weaver is None
     assert_model_disk_round_trip(model, tmp_path / "speculator")

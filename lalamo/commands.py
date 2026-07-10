@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import requests
 import thefuzz.fuzz
 import thefuzz.process
+from huggingface_hub import snapshot_download
 
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import (
@@ -208,15 +209,25 @@ def convert(
 
 
 def convert_speculator(
-    dflash_source: str,
+    dflash_repo_id: str,
     output_dir: Path,
-    weaver_source: Path | None = None,
+    weaver_repo_id: str | None = None,
     dtype: DType | None = None,
     context_length: int | None = None,
 ) -> None:
+    dflash_path = Path(snapshot_download(dflash_repo_id, allow_patterns=["config.json", "*.safetensors"]))
+    weaver_path = None
+    if weaver_repo_id is not None:
+        weaver_dir = Path(snapshot_download(weaver_repo_id, allow_patterns=["*.pth"]))
+        checkpoints = sorted(weaver_dir.rglob("*.pth"))
+        if len(checkpoints) != 1:
+            found = ", ".join(str(checkpoint.relative_to(weaver_dir)) for checkpoint in checkpoints) or "none"
+            raise ValueError(f"Expected exactly one .pth checkpoint in '{weaver_repo_id}', found: {found}.")
+        weaver_path = checkpoints[0]
+
     model = load_speculator_model(
-        dflash_source,
-        weaver_source,
+        dflash_path,
+        weaver_path,
         sharding_config=ShardingConfig.replicated(),
         dtype=jnp.dtype((dtype or DType.BFLOAT16).value),
         context_length=context_length,

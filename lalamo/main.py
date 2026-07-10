@@ -470,17 +470,17 @@ def convert(
 
 @speculator_app.command("convert", help="Import a speculator (DFlash draft, optionally with a Weaver).")
 def speculator_convert(
-    dflash_source: Annotated[
+    dflash_repo_id: Annotated[
         str,
         Argument(
-            help="Hugging Face repository ID or local directory of the DFlash draft model.",
-            metavar="DFLASH_SOURCE",
+            help="Hugging Face repository ID of the DFlash draft model.",
+            metavar="DFLASH_REPO_ID",
         ),
     ],
     weaver: Annotated[
-        Path | None,
+        str | None,
         Option(
-            help="Path to a Weaver checkpoint to bundle into the same speculator.",
+            help="Hugging Face repository ID of a Weaver checkpoint to bundle into the same speculator.",
             show_default="No weaver, DFlash draft only",
         ),
     ] = None,
@@ -508,7 +508,8 @@ def speculator_convert(
     ] = False,
 ) -> None:
     if output_dir is None:
-        output_dir = DEFAULT_OUTPUT_DIR / PurePosixPath(dflash_source).name
+        speculator_name = PurePosixPath(dflash_repo_id).name + ("-TfM" if weaver is not None else "")
+        output_dir = DEFAULT_OUTPUT_DIR / speculator_name
 
     if output_dir.exists():
         if not overwrite and not Confirm().ask(
@@ -517,8 +518,8 @@ def speculator_convert(
             raise Exit
         shutil.rmtree(output_dir)
 
-    console.print(f"🚀 Converting speculator model from [cyan]{dflash_source}[/cyan]...")
-    _convert_speculator(dflash_source, output_dir, weaver, dtype, context_length)
+    console.print(f"🚀 Converting speculator model from [cyan]{dflash_repo_id}[/cyan]...")
+    _convert_speculator(dflash_repo_id, output_dir, weaver, dtype, context_length)
     console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
 
 
