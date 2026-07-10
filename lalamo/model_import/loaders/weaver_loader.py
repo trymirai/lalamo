@@ -7,9 +7,9 @@ from jaxtyping import Array, DTypeLike
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.loaders.huggingface import load_linear
-from lalamo.modules import LinearConfig, Normalization, NormalizationConfig
-from lalamo.modules.normalization import UpcastMode
-from lalamo.modules.weaver import Weaver, WeaverBlock, WeaverConfig
+from lalamo.model_import.model_configs.huggingface.weaver import HFWeaverConfig
+from lalamo.modules import Normalization
+from lalamo.modules.weaver import Weaver, WeaverBlock
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at
@@ -71,25 +71,7 @@ def load_weaver(
             "Expected a Weaver checkpoint with metadata.speculator_kind='dflash_tfm_weaver', "
             f"got {speculator_kind!r}.",
         )
-    config_dict = payload["config"]
-    config = WeaverConfig(
-        d_model=config_dict["d_model"],
-        d_embed=config_dict["d_embed"],
-        d_rank=config_dict["d_rank"],
-        num_layers=config_dict["num_layers"],
-        num_heads=config_dict["num_heads"],
-        mlp_dim=config_dict["mlp_dim"],
-        k=config_dict["K"],
-        candidate_pool_size=config_dict["candidate_pool_size"],
-        linear_config=LinearConfig(),
-        norm_config=NormalizationConfig(
-            epsilon=1e-6,
-            scale_offset=None,
-            upcast_mode=UpcastMode.FULL_LAYER,
-            subtract_mean=False,
-            has_biases=True,
-        ),
-    )
+    config = HFWeaverConfig.from_dict(payload["config"]).to_weaver_config()
     sharding_config = sharding_config or ShardingConfig.replicated()
     weaver = config.init(EmptyInitializer(dtype, sharding_config))
     weights_dict: dict[str, Array] = {

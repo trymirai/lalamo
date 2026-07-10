@@ -16,6 +16,7 @@ from .qwen3 import HFQwen3Config
 from .qwen3_5 import HFQwen35Config
 from .qwen3_next import HFQwen3NextConfig
 from .smollm3 import HFSmolLM3Config
+from .weaver import HFWeaverConfig
 
 __all__ = [
     "DFlashYarnRopeScalingConfig",
@@ -37,6 +38,7 @@ __all__ = [
     "HFQwen3NextConfig",
     "HFQwen35Config",
     "HFSmolLM3Config",
+    "HFWeaverConfig",
     "HuggingFaceLMConfig",
     "ModernBERTConfig",
 ]
