@@ -3,12 +3,14 @@ from dataclasses import dataclass
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from einops import rearrange
 from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.module import Keychain, LalamoConfig, LalamoModule
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
+from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 from lalamo.utils.sharding import lookup_sharded_indices
 
 __all__ = [
@@ -16,28 +18,7 @@ __all__ = [
     "WeaverBlock",
     "WeaverConfig",
     "WeaverPrefix",
-    "apply_linear",
-    "apply_norm",
 ]
-
-
-def apply_linear(
-    linear: Linear,
-    inputs: Float[Array, "*rows in_channels"],
-    keychain: Keychain,
-) -> Float[Array, "*rows out_channels"]:
-    flat_inputs = inputs.reshape(-1, inputs.shape[-1])
-    flat_outputs = jax.vmap(lambda row: linear(row, keychain=keychain)[0])(flat_inputs)
-    return flat_outputs.reshape(*inputs.shape[:-1], flat_outputs.shape[-1])
-
-
-def apply_norm(
-    norm: Normalization,
-    inputs: Float[Array, "*rows channels"],
-) -> Float[Array, "*rows channels"]:
-    flat_inputs = inputs.reshape(-1, inputs.shape[-1])
-    flat_outputs = jax.vmap(norm)(flat_inputs)
-    return flat_outputs.reshape(inputs.shape)
 
 
 class WeaverPrefix(eqx.Module):
@@ -110,27 +91,61 @@ class WeaverBlock(LalamoModule[WeaverConfig]):
 
     def mlp(
         self,
-        x: Float[Array, "*rows d_rank"],
+        x: Float[Array, "rows steps d_rank"],
+        *,
         keychain: Keychain,
-    ) -> Float[Array, "*rows d_rank"]:
-        hidden = jax.nn.gelu(apply_linear(self.fc1, apply_norm(self.norm_mlp, x), keychain))
-        return apply_linear(self.fc2, hidden, keychain)
+    ) -> Float[Array, "rows steps d_rank"]:
+        batch_axes = (self.sharding_config.resolve_axis(LogicalAxis.BATCH), None)
+        normalized = call_vmapped_twice(self.norm_mlp, x)
+        (up,) = call_vmapped_twice(self.fc1, normalized, keychain=keychain, added_sharding_axes=batch_axes)
+        (down,) = call_vmapped_twice(self.fc2, jax.nn.gelu(up), keychain=keychain, added_sharding_axes=batch_axes)
+        return down
 
     def project_qkv(
         self,
-        x: Float[Array, "*rows d_rank"],
+        x: Float[Array, "rows steps d_rank"],
+        *,
         keychain: Keychain,
     ) -> tuple[
-        Float[Array, "*rows heads head_dim"],
-        Float[Array, "*rows heads head_dim"],
-        Float[Array, "*rows heads head_dim"],
+        Float[Array, "rows steps heads head_dim"],
+        Float[Array, "rows steps heads head_dim"],
+        Float[Array, "rows steps heads head_dim"],
     ]:
-        h = apply_norm(self.norm_attn, x)
-        head_shape = (*x.shape[:-1], self.config.num_heads, self.config.head_dim)
-        q = apply_linear(self.q_proj, h, keychain).reshape(head_shape)
-        k = apply_linear(self.k_proj, h, keychain).reshape(head_shape)
-        v = apply_linear(self.v_proj, h, keychain).reshape(head_shape)
-        return q, k, v
+        batch_axes = (self.sharding_config.resolve_axis(LogicalAxis.BATCH), None)
+        normalized = call_vmapped_twice(self.norm_attn, x)
+        (queries,) = call_vmapped_twice(self.q_proj, normalized, keychain=keychain, added_sharding_axes=batch_axes)
+        (keys,) = call_vmapped_twice(self.k_proj, normalized, keychain=keychain, added_sharding_axes=batch_axes)
+        (values,) = call_vmapped_twice(self.v_proj, normalized, keychain=keychain, added_sharding_axes=batch_axes)
+        split = "rows steps (heads channels) -> rows steps heads channels"
+        return (
+            rearrange(queries, split, heads=self.config.num_heads),
+            rearrange(keys, split, heads=self.config.num_heads),
+            rearrange(values, split, heads=self.config.num_heads),
+        )
+
+    def attend(
+        self,
+        x: Float[Array, "rows steps d_rank"],
+        queries: Float[Array, "rows steps heads head_dim"],
+        keys: Float[Array, "rows context heads head_dim"],
+        values: Float[Array, "rows context heads head_dim"],
+        mask: Bool[Array, "rows steps context"],
+        *,
+        keychain: Keychain,
+    ) -> Float[Array, "rows steps d_rank"]:
+        scores = jnp.einsum("bshd,bthd->bhst", queries, keys) * (self.config.head_dim**-0.5)
+        scores = jnp.where(rearrange(mask, "rows steps context -> rows 1 steps context"), scores, -jnp.inf)
+        attention = jax.nn.softmax(scores, axis=-1)
+        outputs = jnp.einsum("bhst,bthd->bshd", attention, values)
+        outputs = rearrange(outputs, "rows steps heads channels -> rows steps (heads channels)")
+        (projected,) = call_vmapped_twice(
+            self.o_proj,
+            outputs,
+            keychain=keychain,
+            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
+        )
+        x = x + projected
+        return x + self.mlp(x, keychain=keychain)
 
     def prefix_forward(
         self,
@@ -143,14 +158,10 @@ class WeaverBlock(LalamoModule[WeaverConfig]):
         Float[Array, "batch prefix heads head_dim"],
     ]:
         batch_size, prefix, _ = x.shape
-        q, k, v = self.project_qkv(x, keychain)
-        scores = jnp.einsum("bshd,bthd->bhst", q, k) * (self.config.head_dim**-0.5)
+        queries, keys, values = self.project_qkv(x, keychain=keychain)
         causal = jnp.tril(jnp.ones((prefix, prefix), dtype=jnp.bool))
-        scores = jnp.where(causal[None, None], scores, -jnp.inf)
-        attention = jax.nn.softmax(scores, axis=-1)
-        y = jnp.einsum("bhst,bthd->bshd", attention, v).reshape(batch_size, prefix, self.config.d_rank)
-        x = x + apply_linear(self.o_proj, y, keychain)
-        return x + self.mlp(x, keychain), k, v
+        mask = jnp.broadcast_to(causal[None], (batch_size, prefix, prefix))
+        return self.attend(x, queries, keys, values, mask, keychain=keychain), keys, values
 
     def node_step(
         self,
@@ -167,17 +178,14 @@ class WeaverBlock(LalamoModule[WeaverConfig]):
         Float[Array, "rows heads head_dim"],
         Float[Array, "rows heads head_dim"],
     ]:
-        rows, prefix, _, _ = prefix_keys.shape
-        q, k, v = self.project_qkv(x, keychain)
-        keys = jnp.concatenate([prefix_keys, ancestor_keys, k[:, None]], axis=1)
-        values = jnp.concatenate([prefix_values, ancestor_values, v[:, None]], axis=1)
-        mask = jnp.pad(ancestor_mask, ((0, 0), (prefix, 1)), constant_values=True)
-        scores = jnp.einsum("rhd,rthd->rht", q, keys) * (self.config.head_dim**-0.5)
-        scores = jnp.where(mask[:, None], scores, -jnp.inf)
-        attention = jax.nn.softmax(scores, axis=-1)
-        y = jnp.einsum("rht,rthd->rhd", attention, values).reshape(rows, self.config.d_rank)
-        x = x + apply_linear(self.o_proj, y, keychain)
-        return x + self.mlp(x, keychain), k, v
+        _, prefix, _, _ = prefix_keys.shape
+        inputs = x[:, None]
+        queries, own_keys, own_values = self.project_qkv(inputs, keychain=keychain)
+        keys = jnp.concatenate([prefix_keys, ancestor_keys, own_keys], axis=1)
+        values = jnp.concatenate([prefix_values, ancestor_values, own_values], axis=1)
+        mask = jnp.pad(ancestor_mask, ((0, 0), (prefix, 1)), constant_values=True)[:, None]
+        outputs = self.attend(inputs, queries, keys, values, mask, keychain=keychain)
+        return outputs[:, 0], own_keys[:, 0], own_values[:, 0]
 
 
 class Weaver(LalamoModule[WeaverConfig]):
@@ -194,10 +202,17 @@ class Weaver(LalamoModule[WeaverConfig]):
         self,
         token_ids: Int[Array, " rows"],
         embed_w: Float[Array, "vocab embed"],
+        *,
         keychain: Keychain,
     ) -> Float[Array, "rows d_rank"]:
-        embeds = lookup_sharded_indices(embed_w, jnp.maximum(token_ids, 0)).astype(jnp.float32)
-        return apply_linear(self.token_in, apply_norm(self.embed_norm, embeds), keychain)
+        embeddings = lookup_sharded_indices(embed_w, jnp.maximum(token_ids, 0)).astype(jnp.float32)
+        (projected,) = call_vmapped(
+            self.token_in,
+            call_vmapped(self.embed_norm, embeddings),
+            keychain=keychain,
+            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
+        )
+        return projected
 
     def prompt_prefix(
         self,
@@ -207,15 +222,21 @@ class Weaver(LalamoModule[WeaverConfig]):
         keychain: Keychain,
     ) -> WeaverPrefix:
         depth = proposal_features.shape[1]
-        output_token = apply_linear(
+        batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
+        normalized_output = call_vmapped(self.output_norm, output_norm_features.astype(jnp.float32))
+        (output_token,) = call_vmapped(
             self.proposal_in,
-            apply_norm(self.output_norm, output_norm_features.astype(jnp.float32)),
-            keychain,
-        )[:, None, :]
-        proposal_tokens = apply_linear(
+            normalized_output,
+            keychain=keychain,
+            added_sharding_axis=batch_axis,
+        )
+        output_token = output_token[:, None, :]
+        normalized_proposals = call_vmapped_twice(self.output_norm, proposal_features.astype(jnp.float32))
+        (proposal_tokens,) = call_vmapped_twice(
             self.proposal_in,
-            apply_norm(self.output_norm, proposal_features.astype(jnp.float32)),
-            keychain,
+            normalized_proposals,
+            keychain=keychain,
+            added_sharding_axes=(batch_axis, None),
         )
         proposal_tokens = proposal_tokens + self.pos_emb[jnp.arange(depth, dtype=jnp.int32)][None]
         x = jnp.concatenate([output_token, proposal_tokens], axis=1)
@@ -247,7 +268,7 @@ class Weaver(LalamoModule[WeaverConfig]):
         Float[Array, "layers rows heads head_dim"],
         Float[Array, "layers rows heads head_dim"],
     ]:
-        x = self.token_project(token_ids, embed_w, keychain)
+        x = self.token_project(token_ids, embed_w, keychain=keychain)
         x = x + lookup_sharded_indices(self.pos_emb, jnp.clip(positions, 0, self.config.k - 1))
         key_layers = []
         value_layers = []
@@ -263,7 +284,12 @@ class Weaver(LalamoModule[WeaverConfig]):
             )
             key_layers.append(layer_keys)
             value_layers.append(layer_values)
-        query = apply_linear(self.lm_head_query_in, apply_norm(self.out_norm, x), keychain)
+        (query,) = call_vmapped(
+            self.lm_head_query_in,
+            call_vmapped(self.out_norm, x),
+            keychain=keychain,
+            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
+        )
         candidate_weights = lookup_sharded_indices(lm_head, jnp.maximum(candidate_ids, 0)).astype(jnp.bfloat16)
         residual = jnp.einsum("rh,rch->rc", query.astype(jnp.bfloat16), candidate_weights).astype(jnp.float32)
         valid = (candidate_ids >= 0) & jnp.isfinite(candidate_scores)
