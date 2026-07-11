@@ -41,6 +41,7 @@ standard = [
   "prism-ml/Bonsai-4B-mlx-1bit",
   "google/gemma-4-E2B-it",
   "ibm-granite/granite-3.3-2b-instruct",
+  "microsoft/Phi-4-mini-instruct",
 ]
 extra = [
   "ibm-granite/granite-3.3-8b-instruct",
