@@ -12,7 +12,7 @@ from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule,
 from lalamo.weight_matrix import GradientEstimator
 
 from .embedding import EmbeddingBase, EmbeddingConfig, EmbeddingForwardPassConfig
-from .ple import PerLayerEmbedding, PerLayerEmbeddingConfig
+from .per_layer_embeddings import PerLayerEmbedding, PerLayerEmbeddingConfig
 from .rope import PositionalEmbeddings
 from .token_mixer import State
 from .transformer import (

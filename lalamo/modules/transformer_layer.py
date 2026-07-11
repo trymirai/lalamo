@@ -15,7 +15,7 @@ from lalamo.weight_matrix import GradientEstimator
 
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig, NormalizationForwardPassConfig
-from .ple import PLELayer, PLELayerConfig
+from .per_layer_embeddings import PLELayer, PLELayerConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 from .token_mixer import (
     MixerForwardPassConfig,

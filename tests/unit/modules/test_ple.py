@@ -5,7 +5,7 @@ from jax.sharding import Mesh
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.activations import Identity
 from lalamo.modules.linear import Linear, LinearConfig
-from lalamo.modules.ple import PLELayer, PLELayerConfig
+from lalamo.modules.per_layer_embeddings import PLELayer, PLELayerConfig
 from lalamo.weight_matrix import FullPrecisionSpec
 from tests.common import assert_close
 from tests.helpers import make_sharding, make_test_sharding_config
