@@ -8,7 +8,7 @@ from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.common import _combine_weight_shards
 from lalamo.model_import.model_configs.huggingface.dflash import HFDFlashConfig
 from lalamo.model_import.origins import LocalOrigin, WeightFormat
-from lalamo.modules.dflash import DFlashAttention, DFlashDraftLayer, DFlashDraftModel
+from lalamo.modules.speculators.dflash import DFlashAttention, DFlashDraftLayer, DFlashDraftModel
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at

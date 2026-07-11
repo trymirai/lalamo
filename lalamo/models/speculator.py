@@ -3,7 +3,7 @@ from pathlib import Path
 
 from lalamo.initializer import Initializer
 from lalamo.model import BaseModel, BaseModelConfig
-from lalamo.modules import DFlashDraftConfig, DFlashDraftModel, Weaver, WeaverConfig
+from lalamo.modules import Speculator, SpeculatorConfig
 
 __all__ = [
     "SpeculatorModel",
@@ -13,15 +13,13 @@ __all__ = [
 
 @dataclass(frozen=True)
 class SpeculatorModelConfig(BaseModelConfig):
-    draft_config: DFlashDraftConfig
-    weaver_config: WeaverConfig | None
+    speculator_config: SpeculatorConfig
 
     def init(self, initializer: Initializer) -> "SpeculatorModel":
         return SpeculatorModel(
             config=self,
             sharding_config=initializer.sharding_config,
-            draft_model=self.draft_config.init(initializer),
-            weaver=self.weaver_config.init(initializer) if self.weaver_config is not None else None,
+            speculator=self.speculator_config.init(initializer),
         )
 
     def init_from_directory(self, directory: Path, initializer: Initializer) -> "SpeculatorModel":
@@ -30,5 +28,4 @@ class SpeculatorModelConfig(BaseModelConfig):
 
 
 class SpeculatorModel(BaseModel[SpeculatorModelConfig]):
-    draft_model: DFlashDraftModel
-    weaver: Weaver | None
+    speculator: Speculator

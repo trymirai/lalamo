@@ -17,15 +17,6 @@ from .decoder import (
     PerLayerEmbedding,
     PLEModelConfig,
 )
-from .dflash import (
-    DFlashAttention,
-    DFlashAttentionConfig,
-    DFlashDraftConfig,
-    DFlashDraftLayer,
-    DFlashDraftLayerConfig,
-    DFlashDraftModel,
-    DFlashDraftState,
-)
 from .embedding import (
     EmbeddingBase,
     EmbeddingConfig,
@@ -62,6 +53,22 @@ from .rope import (
     RoPEConfig,
     UnscaledRoPEConfig,
     YARNRoPEConfig,
+)
+from .speculator import Speculator, SpeculatorConfig
+from .speculators import (
+    DFlashAttention,
+    DFlashAttentionConfig,
+    DFlashDraftConfig,
+    DFlashDraftLayer,
+    DFlashDraftLayerConfig,
+    DFlashDraftModel,
+    DFlashDraftState,
+    DFlashSpeculator,
+    DFlashSpeculatorConfig,
+    Weaver,
+    WeaverBlock,
+    WeaverConfig,
+    WeaverPrefix,
 )
 from .token_mixer import (
     AttentionImplementation,
@@ -101,12 +108,6 @@ from .transformer_layer import (
     TransformerLayerConfig,
     TransformerLayerResult,
 )
-from .weaver import (
-    Weaver,
-    WeaverBlock,
-    WeaverConfig,
-    WeaverPrefix,
-)
 
 __all__ = [
     "GELU",
@@ -126,6 +127,8 @@ __all__ = [
     "DFlashDraftLayerConfig",
     "DFlashDraftModel",
     "DFlashDraftState",
+    "DFlashSpeculator",
+    "DFlashSpeculatorConfig",
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",
@@ -177,6 +180,8 @@ __all__ = [
     "ShortConvConfig",
     "SiLU",
     "SoftmaxRouting",
+    "Speculator",
+    "SpeculatorConfig",
     "State",
     "StateLayerBase",
     "StaticKVCacheLayer",

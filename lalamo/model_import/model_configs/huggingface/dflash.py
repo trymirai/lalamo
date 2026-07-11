@@ -6,15 +6,15 @@ from typing import ClassVar, Literal, Self
 import cattrs
 
 from lalamo.modules.activations import SiLU
-from lalamo.modules.dflash import (
-    DFlashAttentionConfig,
-    DFlashDraftConfig,
-    DFlashDraftLayerConfig,
-)
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
+from lalamo.modules.speculators.dflash import (
+    DFlashAttentionConfig,
+    DFlashDraftConfig,
+    DFlashDraftLayerConfig,
+)
 
 __all__ = [
     "DFlashYarnRopeScalingConfig",

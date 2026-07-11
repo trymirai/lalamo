@@ -9,7 +9,7 @@ from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.loaders.huggingface import load_linear
 from lalamo.model_import.model_configs.huggingface.weaver import HFWeaverConfig
 from lalamo.modules import Normalization
-from lalamo.modules.weaver import Weaver, WeaverBlock
+from lalamo.modules.speculators.weaver import Weaver, WeaverBlock
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at

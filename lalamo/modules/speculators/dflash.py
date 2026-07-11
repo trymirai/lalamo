@@ -14,6 +14,8 @@ from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.mlp import DenseMLP, DenseMLPConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings, RoPE, RoPEConfig
+from lalamo.modules.speculator import Speculator, SpeculatorConfig
+from lalamo.modules.speculators.weaver import Weaver, WeaverConfig
 from lalamo.modules.token_mixers.attention import _attention_kernel
 from lalamo.modules.transformer_layer import TransformerForwardPassConfig
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
@@ -604,3 +606,36 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
             forward_pass_config=forward_pass_config.normalization_forward_pass_config,
             added_sharding_axes=(batch_axis, None),
         )
+
+
+@dataclass(frozen=True)
+class DFlashSpeculatorConfig(SpeculatorConfig):
+    draft_config: DFlashDraftConfig
+    weaver_config: WeaverConfig | None
+
+    def __post_init__(self) -> None:
+        if self.weaver_config is None:
+            return
+        if self.weaver_config.d_model != self.draft_config.model_dim:
+            raise ValueError(
+                f"Weaver d_model {self.weaver_config.d_model} does not match"
+                f" draft model_dim {self.draft_config.model_dim}.",
+            )
+        if self.weaver_config.k > self.draft_config.block_size - 1:
+            raise ValueError(
+                f"Weaver depth k={self.weaver_config.k} exceeds the draft block's"
+                f" {self.draft_config.block_size - 1} proposal positions.",
+            )
+
+    def init(self, initializer: Initializer) -> "DFlashSpeculator":
+        return DFlashSpeculator(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            draft_model=self.draft_config.init(initializer),
+            weaver=self.weaver_config.init(initializer) if self.weaver_config is not None else None,
+        )
+
+
+class DFlashSpeculator(Speculator[DFlashSpeculatorConfig]):
+    draft_model: DFlashDraftModel
+    weaver: Weaver | None
