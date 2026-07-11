@@ -208,14 +208,14 @@ class YARNRoPEConfig(RoPEConfig):
 
     @property
     def _attention_scaling_factor(self) -> float:
-        def mscale_factor(mscale: float) -> float:
-            if self.scaling_factor <= 1:
-                return 1.0
-            return 0.1 * mscale * math.log(self.scaling_factor) + 1.0
-
+        if self.scaling_factor <= 1:
+            return 1.0
+        log_scaling_factor = math.log(self.scaling_factor)
         if self.mscale and self.mscale_all_dim:
-            return mscale_factor(self.mscale) / mscale_factor(self.mscale_all_dim)
-        return mscale_factor(1.0)
+            numerator = 0.1 * self.mscale * log_scaling_factor + 1.0
+            denominator = 0.1 * self.mscale_all_dim * log_scaling_factor + 1.0
+            return numerator / denominator
+        return 0.1 * log_scaling_factor + 1.0
 
 
 @dataclass(frozen=True, kw_only=True)
