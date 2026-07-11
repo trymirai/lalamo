@@ -18,13 +18,8 @@ class LalamoCompletion:
         return self._converter.dumps(self)
 
     @classmethod
-    def deserialize(cls, data: bytes | IO[bytes]) -> Self:
-        if isinstance(data, bytes):
-            obj = msgpack.unpackb(data, strict_map_key=False)
-        else:
-            obj = msgpack.unpack(data, strict_map_key=False)
-
-        return cls._converter.structure(obj, cls)
+    def deserialize(cls, data: bytes) -> Self:
+        return cls._converter.loads(data, cls, strict_map_key=False)
 
     @classmethod
     def deserialize_many(cls, data: bytes | IO[bytes]) -> Iterator[Self]:
