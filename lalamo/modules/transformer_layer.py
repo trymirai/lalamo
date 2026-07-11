@@ -210,7 +210,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
         per_layer_input: Float[Array, "batch suffix_tokens ple_channels"] | None = None,
-        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
+        tree_ancestor_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
         *,
         keychain: Keychain,
@@ -245,7 +245,13 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             *,
             keychain: Keychain,
         ) -> tuple[Float[Array, "suffix_tokens channels"], StateLayerBase | None]:
-            mixer_input, positional_embedding, mixer_state, length_without_padding, parent_indices = mixer_inputs
+            (
+                mixer_input,
+                positional_embedding,
+                mixer_state,
+                length_without_padding,
+                tree_ancestor_indices,
+            ) = mixer_inputs
             return self.mixer(
                 mixer_input,
                 positional_embedding,
@@ -253,7 +259,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 return_updated_state=return_updated_state or return_activation_trace,
                 length_without_padding=length_without_padding,
                 forward_pass_config=forward_pass_config.mixer_forward_pass_config,
-                attention_parent_indices=parent_indices,
+                tree_ancestor_indices=tree_ancestor_indices,
                 keychain=keychain,
             )
 
@@ -264,7 +270,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 positional_embeddings,
                 state,
                 lengths_without_padding,
-                attention_parent_indices,
+                tree_ancestor_indices,
             ),
             keychain=mixer_keychain,
             added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),

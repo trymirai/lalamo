@@ -67,7 +67,6 @@ from .token_mixer import (
 from .token_mixers import (
     Attention,
     AttentionConfig,
-    AttentionProjectionMode,
     DeltaNet,
     DeltaNetConfig,
     Mamba2,
@@ -98,7 +97,6 @@ __all__ = [
     "Attention",
     "AttentionConfig",
     "AttentionImplementation",
-    "AttentionProjectionMode",
     "Classifier",
     "ClassifierActivationTrace",
     "ClassifierConfig",

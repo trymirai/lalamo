@@ -88,7 +88,7 @@ class Transformer(LalamoModule[TransformerConfig]):
         lengths_without_padding: Int[Array, " batch"] | None,
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
         per_layer_inputs: tuple[Float[Array, "batch suffix_tokens ple_channels"], ...] | None = None,
-        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
+        tree_ancestor_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
         *,
         keychain: Keychain,
@@ -113,8 +113,8 @@ class Transformer(LalamoModule[TransformerConfig]):
                     "return_suffix_tokens cannot be combined with return_layer_results"
                     " or return_positional_embeddings.",
                 )
-            if attention_parent_indices is not None:
-                raise ValueError("return_suffix_tokens cannot be combined with attention_parent_indices.")
+            if tree_ancestor_indices is not None:
+                raise ValueError("return_suffix_tokens cannot be combined with tree_ancestor_indices.")
             if not kv_cache_source_layers:
                 raise ValueError("return_suffix_tokens requires at least one layer that owns its state.")
             has_trailing_borrowers = kv_cache_source_layers[-1] < len(self.layers) - 1
@@ -187,8 +187,7 @@ class Transformer(LalamoModule[TransformerConfig]):
                 )
 
             source_layer_index = kv_reuse_map.get(layer_index)
-            borrows_kv = source_layer_index is not None
-            if borrows_kv:
+            if source_layer_index is not None:
                 source_state = updated_states.get(source_layer_index, state_by_layer.get(source_layer_index))
                 assert isinstance(source_state, KVCacheLayer)
                 layer_state = source_state
@@ -204,12 +203,12 @@ class Transformer(LalamoModule[TransformerConfig]):
                 inner_features,
                 positional_embeddings,
                 state=layer_state,
-                return_updated_state=must_return_source_state and not borrows_kv,
+                return_updated_state=must_return_source_state and source_layer_index is None,
                 return_activation_trace=return_layer_results,
                 lengths_without_padding=None if runs_on_suffix_only else lengths_without_padding,
                 forward_pass_config=forward_pass_config,
                 per_layer_input=per_layer_input,
-                attention_parent_indices=attention_parent_indices,
+                tree_ancestor_indices=tree_ancestor_indices,
                 return_suffix_tokens=return_suffix_tokens if layer_index == last_state_owner_index else None,
                 keychain=layer_keychain,
             )
@@ -217,7 +216,7 @@ class Transformer(LalamoModule[TransformerConfig]):
             inner_features = layer_result.outputs
             layer_results.append(layer_result)
 
-            if not borrows_kv and layer_result.updated_state is not None:
+            if source_layer_index is None and layer_result.updated_state is not None:
                 updated_states[layer_index] = layer_result.updated_state
 
         assert inner_features.dtype == residual_dtype

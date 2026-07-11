@@ -16,7 +16,7 @@ from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding
 from lalamo.modules.linear import Linear
 from lalamo.modules.mlp import DenseMLP, MixtureOfExperts, MLPBase
 from lalamo.modules.normalization import Normalization
-from lalamo.modules.token_mixers.attention import Attention, AttentionConfig, AttentionProjectionMode
+from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv
 from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
 from lalamo.modules.token_mixers.mamba import Mamba2, Mamba2Config
@@ -831,6 +831,7 @@ def load_rmsnorm(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Normalization:
+    assert module.scales is not None
     scales = weights_dict[path / "weight"].astype(module.scales.dtype)
     return load_as_at(lambda m: (m.scales,), module, (scales,))
 
@@ -905,12 +906,10 @@ def load_attention(
 ) -> Attention:
     if module.borrows_kv_cache:
         qkv_sublayers = ["q_proj"]
+    elif module.config.tie_keys_values:
+        qkv_sublayers = ["q_proj", "k_proj"]
     else:
-        match module.config.projection_mode:
-            case AttentionProjectionMode.QKV:
-                qkv_sublayers = ["q_proj", "k_proj", "v_proj"]
-            case AttentionProjectionMode.KEY_SAME_AS_VALUE:
-                qkv_sublayers = ["q_proj", "k_proj"]
+        qkv_sublayers = ["q_proj", "k_proj", "v_proj"]
 
     if module.gate_projection is not None:
         num_heads, head_dim = module.config.num_heads, module.config.head_dim
@@ -1247,6 +1246,7 @@ def load_transformer_layer(
 
     if module.parallel_mlp is not None:
         if (mlp_path / "router" / "proj" / "weight") in weights_dict:
+            assert pre_mlp_norm.scales is not None
             pre_mlp_norm = replace(pre_mlp_norm, scales=jnp.ones_like(pre_mlp_norm.scales))
             mlp, mlp_output_norm, parallel_mlp, parallel_mlp_output_norm = _load_gemma4_parallel_mlps(
                 module,

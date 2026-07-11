@@ -9,7 +9,6 @@ from lalamo.model_import.model_configs.huggingface.gemma4 import (
 )
 from lalamo.modules import (
     AttentionConfig,
-    AttentionProjectionMode,
     DecoderConfig,
     DenseMLPConfig,
     MixtureOfExpertsConfig,
@@ -23,6 +22,7 @@ def _config(
     num_kv_shared_layers: int = 2,
     use_double_wide_mlp: bool = True,
     enable_moe_block: bool = False,
+    attention_k_eq_v: bool = False,
 ) -> HFGemma4TextConfig:
     return HFGemma4TextConfig(
         hidden_size=8,
@@ -35,6 +35,7 @@ def _config(
         num_attention_heads=2,
         num_key_value_heads=1,
         num_global_key_value_heads=None,
+        attention_k_eq_v=attention_k_eq_v,
         head_dim=4,
         global_head_dim=4,
         max_position_embeddings=128,
@@ -66,11 +67,21 @@ def test_gemma4_config_variants() -> None:
     borrowed_layer = decoder_config.transformer_config.layer_configs[2]
     assert decoder_config.transformer_config.kv_reuse_map == frozendict({2: 0, 3: 1})
     assert isinstance(borrowed_layer.mixer_config, AttentionConfig)
-    assert borrowed_layer.mixer_config.projection_mode is AttentionProjectionMode.QKV
+    assert not borrowed_layer.mixer_config.tie_keys_values
+    assert borrowed_layer.mixer_config.value_norm_config is not None
+    assert not borrowed_layer.mixer_config.value_norm_config.has_scales
 
     restored_config = DecoderConfig.from_json(json.loads(json.dumps(decoder_config.to_json())))
     assert restored_config.transformer_config.kv_reuse_map == frozendict({2: 0, 3: 1})
     assert isinstance(restored_config.transformer_config.kv_reuse_map, frozendict)
+
+    tied = _config(attention_k_eq_v=True).to_decoder_config(context_length=None, metadata_dict={})
+    local_attention = tied.transformer_config.layer_configs[0].mixer_config
+    global_attention = tied.transformer_config.layer_configs[1].mixer_config
+    assert isinstance(local_attention, AttentionConfig)
+    assert isinstance(global_attention, AttentionConfig)
+    assert not local_attention.tie_keys_values
+    assert global_attention.tie_keys_values
 
     moe = _config(enable_moe_block=True).to_decoder_config(context_length=None, metadata_dict={})
     parallel_layer_config = moe.transformer_config.layer_configs[0]

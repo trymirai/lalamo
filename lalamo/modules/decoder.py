@@ -140,7 +140,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
-        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
+        tree_ancestor_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
         *,
         keychain: Keychain,
@@ -185,7 +185,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             lengths_without_padding=lengths_without_padding,
             forward_pass_config=forward_pass_config.transformer_forward_pass_config,
             per_layer_inputs=per_layer_inputs,
-            attention_parent_indices=attention_parent_indices,
+            tree_ancestor_indices=tree_ancestor_indices,
             return_suffix_tokens=return_suffix_tokens,
             keychain=transformer_keychain,
         )

@@ -333,14 +333,14 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
-        attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
+        tree_ancestor_indices: Int[Array, " suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
     ) -> TokenMixerResult[SSMStateLayer]:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for DeltaNet.")
-        if attention_parent_indices is not None:
-            raise ValueError("Attention parent indices are not supported for DeltaNet.")
+        if tree_ancestor_indices is not None:
+            raise ValueError("Tree ancestor indices are not supported for DeltaNet.")
 
         in_keychain, out_keychain = keychain.split()
         num_tokens, *_ = inputs.shape

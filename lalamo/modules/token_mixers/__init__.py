@@ -1,4 +1,4 @@
-from .attention import Attention, AttentionConfig, AttentionProjectionMode
+from .attention import Attention, AttentionConfig
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .deltanet import DeltaNet, DeltaNetConfig
 from .kv_cache import (
@@ -12,7 +12,6 @@ from .short_conv import ShortConv, ShortConvConfig
 __all__ = [
     "Attention",
     "AttentionConfig",
-    "AttentionProjectionMode",
     "DeltaNet",
     "DeltaNetConfig",
     "DynamicKVCacheLayer",

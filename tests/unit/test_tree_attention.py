@@ -122,7 +122,7 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
         chain_token_ids[None, :],
         jnp.array([[3, 4, 5]], dtype=jnp.int32),
         state=prefix_result.updated_state,
-        attention_parent_indices=jnp.array([[-1, 0, 1]], dtype=jnp.int32),
+        tree_ancestor_indices=jnp.array([[-1, 0, 1]], dtype=jnp.int32),
         forward_pass_config=single_token_forward_pass_config,
         keychain=Keychain.init(30, sharding_config=make_test_sharding_config()),
     )
@@ -144,6 +144,7 @@ def test_kv_borrowing_layer_projects_queries_only(decoder: Decoder) -> None:
     assert owner.qkv_projection.output_dims == (8, 8, 8)
     assert borrower.qkv_projection.output_dims == (8,)
     assert borrower.key_norm is None
+    assert borrower.value_norm is None
 
 
 @pytest.mark.parametrize("decoder", [(2, frozendict())], indirect=True)
@@ -191,7 +192,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         jnp.array([[10, 20]], dtype=jnp.int32),
         jnp.array([[2, 2]], dtype=jnp.int32),
         state=prefix_result.updated_state,
-        attention_parent_indices=jnp.array([[-1, -1]], dtype=jnp.int32),
+        tree_ancestor_indices=jnp.array([[-1, -1]], dtype=jnp.int32),
         forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(70, sharding_config=make_test_sharding_config()),
     )

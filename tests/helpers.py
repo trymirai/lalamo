@@ -22,7 +22,7 @@ from lalamo.modules import (
     UnscaledRoPEConfig,
     UpcastMode,
 )
-from lalamo.modules.token_mixers.attention import AttentionConfig, AttentionProjectionMode
+from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 
 UNITS = ["", "K", "M", "G", "T", "P", "E"]
@@ -76,6 +76,8 @@ def build_tiny_attention_decoder(num_layers: int, kv_reuse_map: frozendict[int, 
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         subtract_mean=False,
+        has_biases=False,
+        has_scales=True,
     )
     mlp_config = DenseMLPConfig(
         linear_config=LinearConfig(),
@@ -96,8 +98,10 @@ def build_tiny_attention_decoder(num_layers: int, kv_reuse_map: frozendict[int, 
         attention_config = AttentionConfig(
             qkv_projection_config=LinearConfig(),
             out_projection_config=LinearConfig(),
+            gate_projection_config=None,
             query_norm_config=None,
             key_norm_config=None,
+            value_norm_config=None,
             num_heads=2,
             num_groups=2,
             head_dim=4,
@@ -108,7 +112,7 @@ def build_tiny_attention_decoder(num_layers: int, kv_reuse_map: frozendict[int, 
             has_sinks=False,
             has_qkv_biases=False,
             has_out_biases=False,
-            projection_mode=AttentionProjectionMode.QKV,
+            tie_keys_values=False,
         )
         layer_configs.append(
             TransformerLayerConfig(

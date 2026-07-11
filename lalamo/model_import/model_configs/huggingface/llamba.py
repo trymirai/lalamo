@@ -74,6 +74,8 @@ class HFLlambaConfig(HuggingFaceLMConfig):
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
+            has_biases=False,
+            has_scales=True,
         )
 
         linear_config = LinearConfig()

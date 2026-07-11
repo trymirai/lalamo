@@ -45,8 +45,10 @@ def _attention() -> Attention:
         config=AttentionConfig(
             qkv_projection_config=LinearConfig(),
             out_projection_config=LinearConfig(),
+            gate_projection_config=None,
             query_norm_config=None,
             key_norm_config=None,
+            value_norm_config=None,
             num_heads=NUM_HEADS,
             num_groups=NUM_GROUPS,
             head_dim=HEAD_DIM,
@@ -57,7 +59,7 @@ def _attention() -> Attention:
             has_sinks=False,
             has_qkv_biases=False,
             has_out_biases=False,
-            gate_projection_config=None,
+            tie_keys_values=False,
         ),
         sharding_config=make_test_sharding_config(),
         qkv_projection=_linear(_weights((3 * qkv_dim, MODEL_DIM)), (qkv_dim, qkv_dim, qkv_dim)),
@@ -65,6 +67,7 @@ def _attention() -> Attention:
         out_projection=_linear(_weights((MODEL_DIM, qkv_dim), offset=100), (MODEL_DIM,)),
         query_norm=None,
         key_norm=None,
+        value_norm=None,
         sinks=None,
         borrows_kv_cache=False,
     )
@@ -78,10 +81,12 @@ def _normalization() -> Normalization:
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=True,
             has_biases=True,
+            has_scales=True,
         ),
         sharding_config=make_test_sharding_config(),
         scales=jnp.array([1.0, 1.5, 2.0, 2.5], dtype=jnp.float32),
         biases=jnp.array([-0.25, 0.0, 0.25, 0.5], dtype=jnp.float32),
+        input_dim=MODEL_DIM,
     )
 
 

@@ -76,14 +76,18 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         subtract_mean=False,
+        has_biases=False,
+        has_scales=True,
     )
 
     linear_config = LinearConfig()
     mixer_config = AttentionConfig(
         qkv_projection_config=linear_config,
         out_projection_config=linear_config,
+        gate_projection_config=None,
         query_norm_config=None,
         key_norm_config=None,
+        value_norm_config=None,
         num_heads=config["n_head"],
         num_groups=n_local_heads,
         head_dim=config["head_dim"],
@@ -94,6 +98,7 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         has_sinks=False,
         has_qkv_biases=False,
         has_out_biases=False,
+        tie_keys_values=False,
     )
 
     mlp_config = DenseMLPConfig(
@@ -150,6 +155,7 @@ def instantiate_dac_config_from_fishaudio_config(
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=True,
             has_biases=True,
+            has_scales=True,
         ),
         pwconv_config=LinearConfig(),
     )
@@ -282,14 +288,18 @@ class FishAudioConfig(ForeignTTSConfig):
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
+            has_biases=False,
+            has_scales=True,
         )
 
         linear_config = LinearConfig()
         mixer_config = AttentionConfig(
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
+            gate_projection_config=None,
             query_norm_config=norm_config if attention_qk_norm else None,
             key_norm_config=norm_config if attention_qk_norm else None,
+            value_norm_config=None,
             num_heads=n_head,
             num_groups=n_local_heads,
             head_dim=head_dim,
@@ -300,6 +310,7 @@ class FishAudioConfig(ForeignTTSConfig):
             has_sinks=False,
             has_qkv_biases=False,
             has_out_biases=False,
+            tie_keys_values=False,
         )
 
         mlp_config = DenseMLPConfig(

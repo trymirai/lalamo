@@ -52,10 +52,14 @@ class NormalizationConfig(LalamoConfig):
     scale_offset: float | None
     upcast_mode: UpcastMode
     subtract_mean: bool
-    has_biases: bool = False
+    has_biases: bool
+    has_scales: bool
 
     def init(self, initializer: Initializer, input_dim: int) -> "Normalization":
-        scales = initializer.ones((input_dim,), dtype=jnp.float32)
+        if self.has_scales:
+            scales = initializer.ones((input_dim,), dtype=jnp.float32)
+        else:
+            scales = None
         if self.has_biases:
             biases = initializer.zeros((input_dim,), dtype=jnp.float32)
         else:
@@ -65,17 +69,14 @@ class NormalizationConfig(LalamoConfig):
             sharding_config=initializer.sharding_config,
             scales=scales,
             biases=biases,
+            input_dim=input_dim,
         )
 
 
 class Normalization(LalamoModule[NormalizationConfig]):
-    scales: Float[Array, " channels"]
+    scales: Float[Array, " channels"] | None
     biases: Float[Array, " channels"] | None
-
-    @property
-    def input_dim(self) -> int:
-        (result,) = self.scales.shape
-        return result
+    input_dim: int = eqx.field(static=True)
 
     def _call_jax(
         self,
@@ -83,14 +84,6 @@ class Normalization(LalamoModule[NormalizationConfig]):
         accumulation_precision: DTypeLike = jnp.float32,
     ) -> Float[Array, " channels"]:
         upcasted_inputs = inputs.astype(accumulation_precision)
-
-        if self.config.upcast_mode == UpcastMode.FULL_LAYER:
-            scales = self.scales.astype(jnp.float32)
-        else:
-            scales = self.scales.astype(inputs.dtype)
-
-        if self.config.scale_offset is not None:
-            scales += self.config.scale_offset
 
         if self.config.subtract_mean:
             mean = jnp.mean(upcasted_inputs)
@@ -102,7 +95,18 @@ class Normalization(LalamoModule[NormalizationConfig]):
         if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
             normalized_x = normalized_x.astype(inputs.dtype)
 
-        result = normalized_x * scales
+        if self.scales is not None:
+            if self.config.upcast_mode == UpcastMode.FULL_LAYER:
+                scales = self.scales.astype(jnp.float32)
+            else:
+                scales = self.scales.astype(inputs.dtype)
+
+            if self.config.scale_offset is not None:
+                scales += self.config.scale_offset
+
+            result = normalized_x * scales
+        else:
+            result = normalized_x
 
         if self.biases is not None:
             result = result + self.biases.astype(result.dtype)

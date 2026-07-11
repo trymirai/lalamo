@@ -29,7 +29,7 @@ from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, SoftmaxRouting
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import PartialRoPEConfig, UnscaledRoPEConfig
-from lalamo.modules.token_mixers.attention import AttentionConfig, AttentionProjectionMode
+from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.surgery import load_as
@@ -117,7 +117,10 @@ class HFGemma4TextConfig:
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=False,
+            has_biases=False,
+            has_scales=True,
         )
+        value_norm_config = replace(rms_norm_config, has_scales=False)
 
         linear_config = LinearConfig()
 
@@ -201,11 +204,6 @@ class HFGemma4TextConfig:
             layer_rope_config = global_rope_config if is_global else local_rope_config
 
             owns_kv_cache = i not in kv_reuse_map
-            if is_global and self.attention_k_eq_v:
-                projection_mode = AttentionProjectionMode.KEY_SAME_AS_VALUE
-            else:
-                projection_mode = AttentionProjectionMode.QKV
-
             layer_intermediate = self.layer_intermediate_size(owns_kv_cache=owns_kv_cache)
             if self.enable_moe_block:
                 if None in (self.num_experts, self.top_k_experts, self.moe_intermediate_size):
@@ -241,20 +239,21 @@ class HFGemma4TextConfig:
             attention_config = AttentionConfig(
                 qkv_projection_config=linear_config,
                 out_projection_config=linear_config,
+                gate_projection_config=None,
                 query_norm_config=rms_norm_config,
                 key_norm_config=rms_norm_config,
+                value_norm_config=value_norm_config,
                 logit_soft_cap=None,
                 has_sinks=False,
                 has_qkv_biases=self.attention_bias,
                 has_out_biases=self.attention_bias,
+                tie_keys_values=is_global and self.attention_k_eq_v,
                 num_heads=self.num_attention_heads,
                 num_groups=num_kv_heads,
                 head_dim=layer_head_dim,
                 is_causal=True,
                 scale=1.0,
                 sliding_window_size=sliding_window_size,
-                normalize_values=True,
-                projection_mode=projection_mode,
             )
 
             transformer_layer_config = TransformerLayerConfig(

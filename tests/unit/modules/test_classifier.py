@@ -48,10 +48,12 @@ def _normalization() -> Normalization:
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=True,
             has_biases=True,
+            has_scales=True,
         ),
         sharding_config=make_test_sharding_config(),
         scales=jnp.array([1.0, 1.5, 2.0, 2.5], dtype=jnp.float32),
         biases=jnp.array([-0.5, -0.25, 0.25, 0.5], dtype=jnp.float32),
+        input_dim=FEATURE_DIM,
     )
 
 
@@ -75,6 +77,7 @@ def _normalization_reference(module: Normalization, inputs: Array) -> Array:
     upcasted = inputs.astype(jnp.float32)
     upcasted = upcasted - jnp.mean(upcasted)
     normalized = upcasted * jax.lax.rsqrt(jnp.mean(jnp.square(upcasted)) + module.config.epsilon)
+    assert module.scales is not None
     adjusted_scales = module.scales + 0.25
     result = normalized.astype(inputs.dtype) * adjusted_scales
     assert module.biases is not None
@@ -183,6 +186,7 @@ def test_prediction_head_export_load_roundtrips_and_preserves_template_sharding(
             sharding_config=make_test_sharding_config(),
             scales=dummy_array((FEATURE_DIM,), jnp.float32, norm_sharding),
             biases=dummy_array((FEATURE_DIM,), jnp.float32, norm_sharding),
+            input_dim=FEATURE_DIM,
         ),
         readout=Linear(
             config=LinearConfig(),
@@ -205,6 +209,8 @@ def test_prediction_head_export_load_roundtrips_and_preserves_template_sharding(
     assert isinstance(restored.readout.weights, FullPrecisionMatrix)
     assert isinstance(template.dense.weights, FullPrecisionMatrix)
     assert isinstance(template.readout.weights, FullPrecisionMatrix)
+    assert restored.norm.scales is not None
+    assert template.norm.scales is not None
     assert restored.dense.weights.weights.sharding == template.dense.weights.weights.sharding
     assert restored.readout.weights.weights.sharding == template.readout.weights.weights.sharding
     assert restored.norm.scales.sharding == template.norm.scales.sharding

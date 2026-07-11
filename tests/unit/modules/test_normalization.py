@@ -18,6 +18,7 @@ def _config(
     scale_offset: float | None = 0.25,
     upcast_mode: UpcastMode = UpcastMode.ONLY_NORMALIZATION,
     has_biases: bool = True,
+    has_scales: bool = True,
 ) -> NormalizationConfig:
     return NormalizationConfig(
         epsilon=1e-5,
@@ -25,19 +26,24 @@ def _config(
         upcast_mode=upcast_mode,
         subtract_mean=subtract_mean,
         has_biases=has_biases,
+        has_scales=has_scales,
     )
 
 
 def _normalization(config: NormalizationConfig | None = None) -> Normalization:
     if config is None:
         config = _config()
-    scales = jnp.array([1.0, 1.5, 2.0, 2.5], dtype=jnp.float32)
+    if config.has_scales:
+        scales = jnp.array([1.0, 1.5, 2.0, 2.5], dtype=jnp.float32)
+    else:
+        scales = None
     biases = jnp.array([-0.25, 0.0, 0.25, 0.5], dtype=jnp.float32) if config.has_biases else None
     return Normalization(
         config=config,
         sharding_config=make_test_sharding_config(),
         scales=scales,
         biases=biases,
+        input_dim=4,
     )
 
 
@@ -51,15 +57,18 @@ def _reference(module: Normalization, inputs: Array) -> Array:
     if config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
         normalized = normalized.astype(inputs.dtype)
 
-    if config.upcast_mode == UpcastMode.FULL_LAYER:
-        adjusted_scales = module.scales.astype(jnp.float32)
+    if module.scales is not None:
+        if config.upcast_mode == UpcastMode.FULL_LAYER:
+            adjusted_scales = module.scales.astype(jnp.float32)
+        else:
+            adjusted_scales = module.scales.astype(inputs.dtype)
+
+        if config.scale_offset is not None:
+            adjusted_scales = adjusted_scales + config.scale_offset
+
+        result = normalized * adjusted_scales
     else:
-        adjusted_scales = module.scales.astype(inputs.dtype)
-
-    if config.scale_offset is not None:
-        adjusted_scales = adjusted_scales + config.scale_offset
-
-    result = normalized * adjusted_scales
+        result = normalized
     if module.biases is not None:
         result = result + module.biases.astype(result.dtype)
     return result.astype(inputs.dtype)
@@ -99,6 +108,25 @@ def test_normalization_without_mean_offset_or_biases_matches_reference(fake_mesh
 
     result = module(inputs)
 
+    _assert_close(result=result, reference=_reference(module, inputs))
+    _assert_named_sharding(result.sharding, fake_mesh)
+    assert result.sharding == make_sharding((None,))
+
+
+def test_scale_free_normalization_matches_reference(fake_mesh: Mesh) -> None:
+    module = _normalization(
+        _config(
+            subtract_mean=False,
+            scale_offset=None,
+            has_biases=False,
+            has_scales=False,
+        )
+    )
+    inputs = _sharded_input(jnp.array([1.0, -2.0, 3.0, -4.0], dtype=jnp.float32))
+
+    result = module(inputs)
+
+    assert module.scales is None
     _assert_close(result=result, reference=_reference(module, inputs))
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == make_sharding((None,))
@@ -174,6 +202,8 @@ def test_normalization_export_load_roundtrips_and_preserves_template_sharding(fa
     restored = template.load_exported(original.export())
     result = restored(inputs)
 
+    assert restored.scales is not None
+    assert template.scales is not None
     assert restored.scales.sharding == template.scales.sharding
     assert restored.scales.dtype == jnp.float32
     assert isinstance(restored.scales.sharding, NamedSharding)

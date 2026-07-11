@@ -86,6 +86,8 @@ class HFGemma3TextConfigRaw:
             scale_offset=1.0,
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=False,
+            has_biases=False,
+            has_scales=True,
         )
 
         if isinstance(self.rope_scaling, GemmaRoPEScalingConfig):
@@ -135,12 +137,15 @@ class HFGemma3TextConfigRaw:
             attention_config = AttentionConfig(
                 qkv_projection_config=linear_config,
                 out_projection_config=linear_config,
+                gate_projection_config=None,
                 query_norm_config=rms_norm_config,
                 key_norm_config=rms_norm_config,
+                value_norm_config=None,
                 logit_soft_cap=self.attn_logit_softcapping,
                 has_sinks=False,
                 has_qkv_biases=self.attention_bias,
                 has_out_biases=self.attention_bias,
+                tie_keys_values=False,
                 num_heads=self.num_attention_heads,
                 num_groups=self.num_key_value_heads,
                 head_dim=self.head_dim,
