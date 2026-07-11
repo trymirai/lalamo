@@ -8,68 +8,19 @@ from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.common import _combine_weight_shards
 from lalamo.model_import.model_configs.huggingface.dflash import HFDFlashConfig
 from lalamo.model_import.origins import LocalOrigin, WeightFormat
-from lalamo.modules.speculators.dflash import DFlashAttention, DFlashDraftLayer, DFlashDraftModel
+from lalamo.modules.speculators.dflash import DFlashDraftLayer, DFlashDraftModel
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at
 from lalamo.weight_matrix import CompressionImplementation
 
-from .huggingface import load_linear, load_mlp, load_rmsnorm
+from .huggingface import load_attention, load_linear, load_mlp, load_rmsnorm
 
 __all__ = [
-    "load_dflash_attention",
     "load_dflash_draft_layer",
     "load_dflash_draft_model",
     "load_hf_dflash_draft_model",
 ]
-
-
-def load_dflash_attention(
-    module: DFlashAttention,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-    *,
-    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-) -> DFlashAttention:
-    query_projection = load_linear(
-        module.query_projection,
-        weights_dict,
-        path / "q_proj",
-        implementation=implementation,
-    )
-    key_value_projection = load_linear(
-        module.key_value_projection,
-        weights_dict,
-        path,
-        sublayers_to_fuse=["k_proj", "v_proj"],
-        implementation=implementation,
-    )
-    output_projection = load_linear(
-        module.output_projection,
-        weights_dict,
-        path / "o_proj",
-        implementation=implementation,
-    )
-    query_norm = load_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
-    key_norm = load_rmsnorm(module.key_norm, weights_dict, path / "k_norm")
-
-    return load_as_at(
-        lambda attention: (
-            attention.query_projection,
-            attention.key_value_projection,
-            attention.output_projection,
-            attention.query_norm,
-            attention.key_norm,
-        ),
-        module,
-        (
-            query_projection,
-            key_value_projection,
-            output_projection,
-            query_norm,
-            key_norm,
-        ),
-    )
 
 
 def load_dflash_draft_layer(
@@ -79,7 +30,7 @@ def load_dflash_draft_layer(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> DFlashDraftLayer:
-    attention = load_dflash_attention(
+    attention = load_attention(
         module.attention,
         weights_dict,
         path / "self_attn",

@@ -11,10 +11,10 @@ from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
 from lalamo.modules.speculators.dflash import (
-    DFlashAttentionConfig,
     DFlashDraftConfig,
     DFlashDraftLayerConfig,
 )
+from lalamo.modules.token_mixers.attention import AttentionConfig
 
 __all__ = [
     "DFlashYarnRopeScalingConfig",
@@ -153,18 +153,21 @@ class HFDFlashConfig:
         rope_config = self._rope_config(max_sequence_length)
         layer_configs = tuple(
             DFlashDraftLayerConfig(
-                attention_config=DFlashAttentionConfig(
-                    linear_config=linear_config,
+                attention_config=AttentionConfig(
+                    qkv_projection_config=linear_config,
+                    out_projection_config=linear_config,
                     query_norm_config=norm_config,
                     key_norm_config=norm_config,
-                    rope_config=rope_config,
                     num_heads=self.num_attention_heads,
-                    num_key_value_heads=self.num_key_value_heads,
+                    num_groups=self.num_key_value_heads,
                     head_dim=self.head_dim,
-                    has_attention_biases=self.attention_bias,
-                    has_output_biases=self.attention_bias,
-                    sliding_window_size=sliding_window_size,
+                    is_causal=False,
                     scale=self.head_dim**-0.5,
+                    sliding_window_size=2 * sliding_window_size - 1 if sliding_window_size is not None else None,
+                    logit_soft_cap=None,
+                    has_sinks=False,
+                    has_qkv_biases=self.attention_bias,
+                    has_out_biases=self.attention_bias,
                 ),
                 input_norm_config=norm_config,
                 post_attention_norm_config=norm_config,
@@ -182,6 +185,7 @@ class HFDFlashConfig:
             vocab_size=self.vocab_size,
             context_projection_config=linear_config,
             context_norm_config=norm_config,
+            rope_config=rope_config,
             layer_configs=layer_configs,
             output_norm_config=norm_config,
         )

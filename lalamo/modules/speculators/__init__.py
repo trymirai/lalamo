@@ -1,6 +1,4 @@
 from .dflash import (
-    DFlashAttention,
-    DFlashAttentionConfig,
     DFlashDraftConfig,
     DFlashDraftLayer,
     DFlashDraftLayerConfig,
@@ -17,8 +15,6 @@ from .weaver import (
 )
 
 __all__ = [
-    "DFlashAttention",
-    "DFlashAttentionConfig",
     "DFlashDraftConfig",
     "DFlashDraftLayer",
     "DFlashDraftLayerConfig",

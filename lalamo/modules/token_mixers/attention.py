@@ -479,6 +479,42 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             heads = call_vmapped(positional_embeddings.apply, heads, in_axes=1, out_axes=1)
         return heads
 
+    def project_key_value_heads(
+        self,
+        inputs: Float[Array, "new_tokens channels"],
+        positional_embeddings: PositionalEmbeddings | None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> tuple[
+        Float[Array, "new_tokens groups head_channels"],
+        Float[Array, "new_tokens groups head_channels"],
+    ]:
+        if self.config.is_kv_sharing:
+            raise ValueError("KV-sharing attention layers do not own key/value projections.")
+        _, keys, values = call_vmapped(
+            self.qkv_projection,
+            inputs,
+            forward_pass_config=forward_pass_config.matmul_config,
+            keychain=keychain,
+        )
+        keys = self._prepare_heads(
+            keys, self.config.num_groups, self.key_norm, positional_embeddings, forward_pass_config
+        )
+        values = rearrange(
+            values,
+            "tokens (groups head_channels) -> tokens groups head_channels",
+            groups=self.config.num_groups,
+            head_channels=self.config.head_dim,
+        )
+        if self.config.normalize_values:
+            values = _rms_normalize(
+                values,
+                eps=1e-6,
+                forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+            )
+        return keys, values
+
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
