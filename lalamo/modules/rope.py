@@ -154,6 +154,8 @@ class YARNRoPEConfig(RoPEConfig):
     beta_fast: float
     beta_slow: float
     truncate: bool
+    mscale: float | None = None
+    mscale_all_dim: float | None = None
 
     @classmethod
     def _find_correction_dim(cls, num_rotations: float, dim: int, base: float, original_context_length: int) -> float:
@@ -206,7 +208,14 @@ class YARNRoPEConfig(RoPEConfig):
 
     @property
     def _attention_scaling_factor(self) -> float:
-        return 0.1 * math.log(self.scaling_factor) + 1.0
+        def mscale_factor(mscale: float) -> float:
+            if self.scaling_factor <= 1:
+                return 1.0
+            return 0.1 * mscale * math.log(self.scaling_factor) + 1.0
+
+        if self.mscale and self.mscale_all_dim:
+            return mscale_factor(self.mscale) / mscale_factor(self.mscale_all_dim)
+        return mscale_factor(1.0)
 
 
 @dataclass(frozen=True, kw_only=True)

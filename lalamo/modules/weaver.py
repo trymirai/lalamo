@@ -9,6 +9,7 @@ from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
+from lalamo.utils.sharding import lookup_sharded_indices
 
 __all__ = [
     "Weaver",
@@ -170,14 +171,7 @@ class WeaverBlock(LalamoModule[WeaverConfig]):
         q, k, v = self.project_qkv(x, keychain)
         keys = jnp.concatenate([prefix_keys, ancestor_keys, k[:, None]], axis=1)
         values = jnp.concatenate([prefix_values, ancestor_values, v[:, None]], axis=1)
-        mask = jnp.concatenate(
-            [
-                jnp.ones((rows, prefix), dtype=jnp.bool),
-                ancestor_mask,
-                jnp.ones((rows, 1), dtype=jnp.bool),
-            ],
-            axis=1,
-        )
+        mask = jnp.pad(ancestor_mask, ((0, 0), (prefix, 1)), constant_values=True)
         scores = jnp.einsum("rhd,rthd->rht", q, keys) * (self.config.head_dim**-0.5)
         scores = jnp.where(mask[:, None], scores, -jnp.inf)
         attention = jax.nn.softmax(scores, axis=-1)
@@ -202,7 +196,7 @@ class Weaver(LalamoModule[WeaverConfig]):
         embed_w: Float[Array, "vocab embed"],
         keychain: Keychain,
     ) -> Float[Array, "rows d_rank"]:
-        embeds = embed_w[jnp.maximum(token_ids, 0)].astype(jnp.float32)
+        embeds = lookup_sharded_indices(embed_w, jnp.maximum(token_ids, 0)).astype(jnp.float32)
         return apply_linear(self.token_in, apply_norm(self.embed_norm, embeds), keychain)
 
     def prompt_prefix(
@@ -254,7 +248,7 @@ class Weaver(LalamoModule[WeaverConfig]):
         Float[Array, "layers rows heads head_dim"],
     ]:
         x = self.token_project(token_ids, embed_w, keychain)
-        x = x + self.pos_emb[jnp.clip(positions, 0, self.config.k - 1)]
+        x = x + lookup_sharded_indices(self.pos_emb, jnp.clip(positions, 0, self.config.k - 1))
         key_layers = []
         value_layers = []
         for layer_index, block in enumerate(self.blocks):
@@ -270,8 +264,8 @@ class Weaver(LalamoModule[WeaverConfig]):
             key_layers.append(layer_keys)
             value_layers.append(layer_values)
         query = apply_linear(self.lm_head_query_in, apply_norm(self.out_norm, x), keychain)
-        candidate_weights = lm_head[jnp.maximum(candidate_ids, 0)].astype(jnp.bfloat16)
+        candidate_weights = lookup_sharded_indices(lm_head, jnp.maximum(candidate_ids, 0)).astype(jnp.bfloat16)
         residual = jnp.einsum("rh,rch->rc", query.astype(jnp.bfloat16), candidate_weights).astype(jnp.float32)
         valid = (candidate_ids >= 0) & jnp.isfinite(candidate_scores)
-        logits = candidate_scores.astype(jnp.float32) + jnp.where(valid, residual, 0.0)
+        logits = jnp.where(valid, candidate_scores.astype(jnp.float32) + residual, -jnp.inf)
         return logits, jnp.stack(key_layers), jnp.stack(value_layers)

@@ -154,7 +154,7 @@ class DFlashAttention(LalamoModule[DFlashAttentionConfig]):
         if self.config.sliding_window_size is None:
             return attention_mask
         query_positions = token_positions[-num_query_tokens:]
-        window_radius = self.config.sliding_window_size // 2
+        window_radius = self.config.sliding_window_size - 1
         sliding_window_mask = (token_positions[None, :] >= query_positions[:, None] - window_radius) & (
             token_positions[None, :] <= query_positions[:, None] + window_radius
         )
@@ -441,6 +441,8 @@ class DFlashDraftState(SpeculatorState):
         num_tokens_to_append: Int[Array, " batch"],
         cache_sharding: NamedSharding,
     ) -> Self:
+        first_layer_state, *_ = self.layer_states
+        _, context_capacity, _, _ = first_layer_state.keys.shape
         return DFlashDraftState(
             layer_states=tuple(
                 layer_state.append(
@@ -451,7 +453,7 @@ class DFlashDraftState(SpeculatorState):
                 )
                 for layer_state, layer_update in zip(self.layer_states, layer_updates, strict=True)
             ),
-            context_lengths=self.context_lengths + num_tokens_to_append,
+            context_lengths=jnp.minimum(self.context_lengths + num_tokens_to_append, context_capacity),
         )
 
 

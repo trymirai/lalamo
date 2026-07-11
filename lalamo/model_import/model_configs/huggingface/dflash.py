@@ -30,7 +30,7 @@ class DFlashYarnRopeScalingConfig:
     beta_slow: float
     original_max_position_embeddings: int
     rope_type: Literal["yarn"]
-    truncate: bool = False
+    truncate: bool = True
     type: Literal["yarn"] | None = None
     mscale: float | None = None
     mscale_all_dim: float | None = None
@@ -109,6 +109,8 @@ class HFDFlashConfig:
             beta_fast=self.rope_scaling.beta_fast,
             beta_slow=self.rope_scaling.beta_slow,
             truncate=self.rope_scaling.truncate,
+            mscale=self.rope_scaling.mscale,
+            mscale_all_dim=self.rope_scaling.mscale_all_dim,
             head_dim=self.head_dim,
         )
 
