@@ -20,12 +20,15 @@ class HFWeaverConfig:
     d_rank: int
     num_layers: int
     num_heads: int
-    mlp_dim: int
-    K: int
+    mlp_channels: int
+    max_depth: int
     candidate_pool_size: int
 
     @classmethod
     def from_dict(cls, config: dict[str, object]) -> Self:
+        config = dict(config)
+        config["max_depth"] = config.pop("K")
+        config["mlp_channels"] = config.pop("mlp_dim")
         return cls._converter.structure(config, cls)
 
     def to_weaver_config(self) -> WeaverConfig:
@@ -35,8 +38,8 @@ class HFWeaverConfig:
             d_rank=self.d_rank,
             num_layers=self.num_layers,
             num_heads=self.num_heads,
-            mlp_dim=self.mlp_dim,
-            k=self.K,
+            mlp_channels=self.mlp_channels,
+            max_depth=self.max_depth,
             candidate_pool_size=self.candidate_pool_size,
             linear_config=LinearConfig(),
             norm_config=NormalizationConfig(

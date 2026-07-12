@@ -369,9 +369,9 @@ class DFlashSpeculatorConfig(SpeculatorConfig):
                 f"Weaver d_model {self.weaver_config.d_model} does not match"
                 f" draft model_dim {self.draft_config.model_dim}.",
             )
-        if self.weaver_config.k > self.draft_config.block_size - 1:
+        if self.weaver_config.max_depth > self.draft_config.block_size - 1:
             raise ValueError(
-                f"Weaver depth k={self.weaver_config.k} exceeds the draft block's"
+                f"Weaver max_depth {self.weaver_config.max_depth} exceeds the draft block's"
                 f" {self.draft_config.block_size - 1} proposal positions.",
             )
 

@@ -22,8 +22,7 @@ class SpeculatorModelConfig(BaseModelConfig):
             speculator=self.speculator_config.init(initializer),
         )
 
-    def init_from_directory(self, directory: Path, initializer: Initializer) -> "SpeculatorModel":
-        del directory
+    def init_from_directory(self, directory: Path, initializer: Initializer) -> "SpeculatorModel":  # noqa: ARG002
         return self.init(initializer)
 
 

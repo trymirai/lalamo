@@ -33,8 +33,8 @@ class WeaverConfig(LalamoConfig):
     d_rank: int
     num_layers: int
     num_heads: int
-    mlp_dim: int
-    k: int
+    mlp_channels: int
+    max_depth: int
     candidate_pool_size: int
     linear_config: LinearConfig
     norm_config: NormalizationConfig
@@ -55,13 +55,16 @@ class WeaverConfig(LalamoConfig):
                 config=self,
                 sharding_config=initializer.sharding_config,
                 norm_attn=self.norm_config.init(initializer, self.d_rank),
-                q_proj=linear(self.d_rank, self.d_rank, has_biases=False),
-                k_proj=linear(self.d_rank, self.d_rank, has_biases=False),
-                v_proj=linear(self.d_rank, self.d_rank, has_biases=False),
+                qkv_projection=self.linear_config.init(
+                    initializer,
+                    self.d_rank,
+                    (self.d_rank, self.d_rank, self.d_rank),
+                    has_biases=False,
+                ),
                 o_proj=linear(self.d_rank, self.d_rank, has_biases=False),
                 norm_mlp=self.norm_config.init(initializer, self.d_rank),
-                fc1=linear(self.d_rank, self.mlp_dim, has_biases=True),
-                fc2=linear(self.mlp_dim, self.d_rank, has_biases=True),
+                fc1=linear(self.d_rank, self.mlp_channels, has_biases=True),
+                fc2=linear(self.mlp_channels, self.d_rank, has_biases=True),
             )
             for _ in range(self.num_layers)
         )
@@ -75,15 +78,13 @@ class WeaverConfig(LalamoConfig):
             out_norm=self.norm_config.init(initializer, self.d_rank),
             proposal_in=linear(self.d_model, self.d_rank, has_biases=True),
             lm_head_query_in=linear(self.d_rank, self.d_model, has_biases=False),
-            pos_emb=initializer.normal(0.02, (self.k, self.d_rank), dtype=jnp.float32),
+            pos_emb=initializer.normal(0.02, (self.max_depth, self.d_rank), dtype=jnp.float32),
         )
 
 
 class WeaverBlock(LalamoModule[WeaverConfig]):
     norm_attn: Normalization
-    q_proj: Linear
-    k_proj: Linear
-    v_proj: Linear
+    qkv_projection: Linear
     o_proj: Linear
     norm_mlp: Normalization
     fc1: Linear
@@ -113,9 +114,12 @@ class WeaverBlock(LalamoModule[WeaverConfig]):
     ]:
         batch_axes = (self.sharding_config.resolve_axis(LogicalAxis.BATCH), None)
         normalized = call_vmapped_twice(self.norm_attn, x)
-        (queries,) = call_vmapped_twice(self.q_proj, normalized, keychain=keychain, added_sharding_axes=batch_axes)
-        (keys,) = call_vmapped_twice(self.k_proj, normalized, keychain=keychain, added_sharding_axes=batch_axes)
-        (values,) = call_vmapped_twice(self.v_proj, normalized, keychain=keychain, added_sharding_axes=batch_axes)
+        queries, keys, values = call_vmapped_twice(
+            self.qkv_projection,
+            normalized,
+            keychain=keychain,
+            added_sharding_axes=batch_axes,
+        )
         split = "rows steps (heads channels) -> rows steps heads channels"
         return (
             rearrange(queries, split, heads=self.config.num_heads),
@@ -196,7 +200,7 @@ class Weaver(LalamoModule[WeaverConfig]):
     out_norm: Normalization
     proposal_in: Linear
     lm_head_query_in: Linear
-    pos_emb: Float[Array, "k d_rank"]
+    pos_emb: Float[Array, "max_depth d_rank"]
 
     def token_project(
         self,
@@ -269,7 +273,7 @@ class Weaver(LalamoModule[WeaverConfig]):
         Float[Array, "layers rows heads head_dim"],
     ]:
         x = self.token_project(token_ids, embed_w, keychain=keychain)
-        x = x + lookup_sharded_indices(self.pos_emb, jnp.clip(positions, 0, self.config.k - 1))
+        x = x + lookup_sharded_indices(self.pos_emb, jnp.clip(positions, 0, self.config.max_depth - 1))
         key_layers = []
         value_layers = []
         for layer_index, block in enumerate(self.blocks):

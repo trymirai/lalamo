@@ -1,4 +1,5 @@
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Literal, Self
@@ -32,8 +33,19 @@ class DFlashYarnRopeScalingConfig:
     rope_type: Literal["yarn"]
     truncate: bool = True
     type: Literal["yarn"] | None = None
+    attention_factor: float | None = None
     mscale: float | None = None
     mscale_all_dim: float | None = None
+
+    def resolved_attention_factor(self) -> float | None:
+        if self.attention_factor is not None:
+            return self.attention_factor
+        if not self.mscale or not self.mscale_all_dim:
+            return None
+        if self.factor <= 1:
+            return 1.0
+        log_factor = math.log(self.factor)
+        return (0.1 * self.mscale * log_factor + 1.0) / (0.1 * self.mscale_all_dim * log_factor + 1.0)
 
 
 @dataclass(frozen=True)
@@ -109,8 +121,7 @@ class HFDFlashConfig:
             beta_fast=self.rope_scaling.beta_fast,
             beta_slow=self.rope_scaling.beta_slow,
             truncate=self.rope_scaling.truncate,
-            mscale=self.rope_scaling.mscale,
-            mscale_all_dim=self.rope_scaling.mscale_all_dim,
+            attention_factor=self.rope_scaling.resolved_attention_factor(),
             head_dim=self.head_dim,
         )
 

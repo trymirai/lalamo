@@ -37,9 +37,7 @@ def load_weaver_block(
     return eqx.tree_at(
         lambda module: (
             module.norm_attn,
-            module.q_proj,
-            module.k_proj,
-            module.v_proj,
+            module.qkv_projection,
             module.o_proj,
             module.norm_mlp,
             module.fc1,
@@ -48,9 +46,7 @@ def load_weaver_block(
         block,
         (
             load_weaver_norm(block.norm_attn, weights_dict, path / "norm_attn"),
-            load_linear(block.q_proj, weights_dict, path / "q_proj"),
-            load_linear(block.k_proj, weights_dict, path / "k_proj"),
-            load_linear(block.v_proj, weights_dict, path / "v_proj"),
+            load_linear(block.qkv_projection, weights_dict, path, sublayers_to_fuse=["q_proj", "k_proj", "v_proj"]),
             load_linear(block.o_proj, weights_dict, path / "o_proj"),
             load_weaver_norm(block.norm_mlp, weights_dict, path / "norm_mlp"),
             load_linear(block.fc1, weights_dict, path / "fc1"),
