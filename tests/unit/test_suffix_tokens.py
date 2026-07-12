@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import pytest
+from frozendict import frozendict
 from jax import Array
 from jaxtyping import Int
 
@@ -21,8 +22,8 @@ FORWARD_PASS_CONFIG = DecoderForwardPassConfig(
 
 @pytest.fixture
 def decoder(request: pytest.FixtureRequest) -> Decoder:
-    kv_source_layer_indices: tuple[int | None, ...] = getattr(request, "param", (None,))
-    return build_tiny_attention_decoder(kv_source_layer_indices)
+    num_layers, kv_reuse_map = getattr(request, "param", (1, frozendict()))
+    return build_tiny_attention_decoder(num_layers, kv_reuse_map)
 
 
 def run_decoder(
@@ -52,9 +53,9 @@ def run_decoder(
 @pytest.mark.parametrize("num_suffix_tokens", [1, 3])
 @pytest.mark.parametrize(
     "decoder",
-    [(None, None, None), (None, None, 0, 1)],
+    [(3, frozendict()), (4, frozendict({2: 0, 3: 1}))],
     indirect=True,
-    ids=["plain", "trailing_shared_kv"],
+    ids=["plain", "trailing_borrowed_kv"],
 )
 def test_suffix_logits_match_full_pass(decoder: Decoder, num_suffix_tokens: int) -> None:
     batch_size, sequence_length = 3, 10
@@ -94,9 +95,9 @@ def test_suffix_logits_match_full_pass(decoder: Decoder, num_suffix_tokens: int)
 
 @pytest.mark.parametrize(
     "decoder",
-    [(None, None, None), (None, None, 0, 1)],
+    [(3, frozendict()), (4, frozendict({2: 0, 3: 1}))],
     indirect=True,
-    ids=["plain", "trailing_shared_kv"],
+    ids=["plain", "trailing_borrowed_kv"],
 )
 def test_suffix_logits_across_chunk_boundary(decoder: Decoder) -> None:
     batch_size, sequence_length, chunk_size = 3, 10, 5

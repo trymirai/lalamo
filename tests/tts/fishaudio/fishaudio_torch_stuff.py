@@ -139,14 +139,18 @@ class ConfigMapping:
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
+            has_biases=False,
+            has_scales=True,
         )
 
         linear_config = LinearConfig()
         mixer_config = AttentionConfig(
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
+            gate_projection_config=None,
             query_norm_config=norm_config if config.attention_qk_norm else None,
             key_norm_config=norm_config if config.attention_qk_norm else None,
+            value_norm_config=None,
             num_heads=config.n_head,
             num_groups=config.n_local_heads,
             head_dim=config.head_dim,
@@ -157,6 +161,7 @@ class ConfigMapping:
             has_sinks=False,
             has_qkv_biases=False,
             has_out_biases=False,
+            tie_keys_values=False,
         )
 
         mlp_config = DenseMLPConfig(
@@ -229,10 +234,11 @@ class FishAudioFromTorch:
 
         token_codec = TTSCodec(tts_request_factory_config, tokenizer)
 
+        vocoder_config = NoopVocoderConfig()
         tts_config = TTSConfig(
             cast("TTSTextDecoderConfig", text_decoder.config),
             cast("TTSAudioDecoderConfig", audio_decoder.config),
-            NoopVocoderConfig(),
+            vocoder_config,
         )
 
         return TTSModel(
@@ -241,7 +247,7 @@ class FishAudioFromTorch:
             token_codec=token_codec,
             text_decoder=text_decoder,
             audio_decoder=audio_decoder,
-            vocoder=NoopVocoder(tts_config.vocoder_config, sharding_config=sharding_config),
+            vocoder=NoopVocoder(vocoder_config, sharding_config=sharding_config),
         )
 
 

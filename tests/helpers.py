@@ -5,6 +5,7 @@ from functools import cache
 
 import jax
 import jax.numpy as jnp
+from frozendict import frozendict
 from jax.sharding import AxisType, NamedSharding
 
 from lalamo.initializer import RandomInitializer
@@ -64,7 +65,7 @@ def make_sharding(logical_axes: tuple[LogicalAxis | None, ...]) -> NamedSharding
     return sharding_config.resolve_sharding(logical_axes)
 
 
-def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]) -> Decoder:
+def build_tiny_attention_decoder(num_layers: int, kv_reuse_map: frozendict[int, int]) -> Decoder:
     model_dim = 8
     hidden_dim = 16
     vocab_size = 32
@@ -75,6 +76,8 @@ def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         subtract_mean=False,
+        has_biases=False,
+        has_scales=True,
     )
     mlp_config = DenseMLPConfig(
         linear_config=LinearConfig(),
@@ -91,12 +94,14 @@ def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]
     )
 
     layer_configs = []
-    for kv_source in kv_source_layer_indices:
+    for _ in range(num_layers):
         attention_config = AttentionConfig(
             qkv_projection_config=LinearConfig(),
             out_projection_config=LinearConfig(),
+            gate_projection_config=None,
             query_norm_config=None,
             key_norm_config=None,
+            value_norm_config=None,
             num_heads=2,
             num_groups=2,
             head_dim=4,
@@ -107,7 +112,7 @@ def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]
             has_sinks=False,
             has_qkv_biases=False,
             has_out_biases=False,
-            is_kv_sharing=kv_source is not None,
+            tie_keys_values=False,
         )
         layer_configs.append(
             TransformerLayerConfig(
@@ -118,7 +123,6 @@ def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
                 rope_config=rope_config,
-                kv_source_layer_index=kv_source,
             ),
         )
 
@@ -127,6 +131,7 @@ def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]
         output_norm_config=norm_config,
         model_dim=model_dim,
         hidden_dim=hidden_dim,
+        kv_reuse_map=kv_reuse_map,
     )
     decoder_config = DecoderConfig(
         embedding_config=TiedEmbeddingConfig(

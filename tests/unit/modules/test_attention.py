@@ -7,8 +7,10 @@ from einops import rearrange
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
+from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.linear import Linear, LinearConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPassConfig
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.utils import call_vmapped
@@ -43,8 +45,10 @@ def _attention(*, logit_soft_cap: float | None = None) -> Attention:
         config=AttentionConfig(
             qkv_projection_config=LinearConfig(),
             out_projection_config=LinearConfig(),
+            gate_projection_config=None,
             query_norm_config=None,
             key_norm_config=None,
+            value_norm_config=None,
             num_heads=NUM_HEADS,
             num_groups=NUM_GROUPS,
             head_dim=HEAD_DIM,
@@ -55,7 +59,7 @@ def _attention(*, logit_soft_cap: float | None = None) -> Attention:
             has_sinks=False,
             has_qkv_biases=False,
             has_out_biases=False,
-            gate_projection_config=None,
+            tie_keys_values=False,
         ),
         sharding_config=make_test_sharding_config(),
         qkv_projection=_linear(_weights((3 * qkv_dim, MODEL_DIM)), (qkv_dim, qkv_dim, qkv_dim)),
@@ -63,7 +67,9 @@ def _attention(*, logit_soft_cap: float | None = None) -> Attention:
         out_projection=_linear(_weights((MODEL_DIM, qkv_dim), offset=100), (MODEL_DIM,)),
         query_norm=None,
         key_norm=None,
+        value_norm=None,
         sinks=None,
+        borrows_kv_cache=False,
     )
 
 
@@ -101,6 +107,45 @@ def _assert_close(result: Array, reference: Array) -> None:
 
 def _inputs() -> Array:
     return jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10
+
+
+def test_attention_config_initializes_tied_keys_values_and_scale_free_value_norm() -> None:
+    value_norm_config = NormalizationConfig(
+        epsilon=1e-6,
+        scale_offset=None,
+        upcast_mode=UpcastMode.FULL_LAYER,
+        subtract_mean=False,
+        has_biases=False,
+        has_scales=False,
+    )
+    config = AttentionConfig(
+        qkv_projection_config=LinearConfig(),
+        out_projection_config=LinearConfig(),
+        gate_projection_config=None,
+        query_norm_config=None,
+        key_norm_config=None,
+        value_norm_config=value_norm_config,
+        num_heads=NUM_HEADS,
+        num_groups=NUM_GROUPS,
+        head_dim=HEAD_DIM,
+        is_causal=True,
+        scale=None,
+        sliding_window_size=None,
+        logit_soft_cap=None,
+        has_sinks=False,
+        has_qkv_biases=False,
+        has_out_biases=False,
+        tie_keys_values=True,
+    )
+
+    module = config.init(
+        EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
+        model_dim=MODEL_DIM,
+    )
+
+    assert module.qkv_projection.output_dims == (NUM_HEADS * HEAD_DIM, NUM_GROUPS * HEAD_DIM)
+    assert module.value_norm is not None
+    assert module.value_norm.scales is None
 
 
 def _sharded_sequence(values: Array) -> Array:
@@ -268,7 +313,9 @@ def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_m
         ),
         query_norm=None,
         key_norm=None,
+        value_norm=None,
         sinks=None,
+        borrows_kv_cache=False,
     )
     inputs = _sharded_sequence(_inputs())
 

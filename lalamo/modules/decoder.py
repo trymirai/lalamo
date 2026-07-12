@@ -1,23 +1,18 @@
-import math
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Self
 
 import equinox as eqx
-import jax
-from einops import rearrange
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, LogicalAxis
-from lalamo.utils.sharding import lookup_sharded_indices
 from lalamo.weight_matrix import GradientEstimator
 
 from .embedding import EmbeddingBase, EmbeddingConfig, EmbeddingForwardPassConfig
-from .linear import Linear, LinearConfig
-from .normalization import Normalization, NormalizationConfig
+from .ple import PerLayerEmbedding, PerLayerEmbeddingConfig
 from .rope import PositionalEmbeddings
 from .token_mixer import State
 from .transformer import (
@@ -34,8 +29,6 @@ __all__ = [
     "DecoderConfig",
     "DecoderForwardPassConfig",
     "DecoderResult",
-    "PLEModelConfig",
-    "PerLayerEmbedding",
 ]
 
 
@@ -97,62 +90,12 @@ class DecoderResult(Exportable, eqx.Module):
 
 
 @dataclass(frozen=True)
-class PLEModelConfig(LalamoConfig):
-    ple_dim: int
-    num_layers: int
-    ple_vocab_size: int
-    ple_embed_scale: float
-    model_projection_scale: float
-    input_scale: float
-    linear_config: LinearConfig
-    norm_config: NormalizationConfig
-
-
-class PerLayerEmbedding(LalamoModule[PLEModelConfig]):
-    token_embedding: Float[Array, "vocab ple_total_dim"]
-    model_projection: Linear
-    projection_norm: Normalization
-
-    def __call__(
-        self,
-        token_ids: Int[Array, "batch suffix_tokens"],
-        inner_features: Float[Array, "batch suffix_tokens channels"],
-        *,
-        keychain: Keychain,
-    ) -> tuple[Float[Array, "batch suffix_tokens ple_dim"], ...]:
-        config = self.config
-        token_ple = lookup_sharded_indices(self.token_embedding, token_ids) * config.ple_embed_scale
-        token_ple = rearrange(
-            token_ple,
-            "batch tokens (layers ple_dim) -> batch tokens layers ple_dim",
-            layers=config.num_layers,
-            ple_dim=config.ple_dim,
-        )
-        (model_ple,) = call_vmapped_twice(
-            self.model_projection,
-            inner_features,
-            keychain=keychain,
-            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
-        )
-        model_ple = model_ple * config.model_projection_scale
-        model_ple = rearrange(
-            model_ple,
-            "batch tokens (layers ple_dim) -> batch tokens layers ple_dim",
-            layers=config.num_layers,
-            ple_dim=config.ple_dim,
-        )
-        model_ple = jax.vmap(jax.vmap(jax.vmap(self.projection_norm)))(model_ple)
-        combined = (model_ple + token_ple) * config.input_scale
-        return tuple(combined[:, :, layer_index, :] for layer_index in range(config.num_layers))
-
-
-@dataclass(frozen=True)
 class DecoderConfig(LalamoConfig):
     embedding_config: EmbeddingConfig
     transformer_config: TransformerConfig
 
     vocab_size: int
-    ple_model_config: PLEModelConfig | None = None
+    per_layer_embedding_config: PerLayerEmbeddingConfig | None = None
 
     def init(self, initializer: Initializer) -> "Decoder":
         embedding = self.embedding_config.init(
@@ -161,23 +104,10 @@ class DecoderConfig(LalamoConfig):
             vocab_size=self.vocab_size,
         )
         transformer = self.transformer_config.init(initializer)
-        if self.ple_model_config is not None:
-            config = self.ple_model_config
-            total_ple_dim = config.num_layers * config.ple_dim
-            per_layer_embedding = PerLayerEmbedding(
-                config=config,
-                sharding_config=initializer.sharding_config,
-                token_embedding=initializer.normal(
-                    1 / math.sqrt(config.ple_dim),
-                    (config.ple_vocab_size, total_ple_dim),
-                ),
-                model_projection=config.linear_config.init(
-                    initializer,
-                    input_dim=self.transformer_config.model_dim,
-                    output_dims=(total_ple_dim,),
-                    has_biases=False,
-                ),
-                projection_norm=config.norm_config.init(initializer, config.ple_dim),
+        if self.per_layer_embedding_config is not None:
+            per_layer_embedding = self.per_layer_embedding_config.init(
+                initializer,
+                model_dim=self.transformer_config.model_dim,
             )
         else:
             per_layer_embedding = None
@@ -210,7 +140,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
-        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
+        tree_ancestor_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
         *,
         keychain: Keychain,
@@ -255,7 +185,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             lengths_without_padding=lengths_without_padding,
             forward_pass_config=forward_pass_config.transformer_forward_pass_config,
             per_layer_inputs=per_layer_inputs,
-            attention_parent_indices=attention_parent_indices,
+            tree_ancestor_indices=tree_ancestor_indices,
             return_suffix_tokens=return_suffix_tokens,
             keychain=transformer_keychain,
         )

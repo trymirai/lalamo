@@ -45,6 +45,8 @@ def _deltanet() -> DeltaNet:
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
+            has_biases=False,
+            has_scales=True,
         ),
         num_heads=NUM_HEADS,
         num_groups=NUM_GROUPS,

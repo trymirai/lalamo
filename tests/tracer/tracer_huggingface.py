@@ -337,15 +337,13 @@ class HFDecoderTracer(
                 lambda x, pos: _rope_forward(rope, x, pos, "sliding_attention", self.device),
             ),
         }
-        # Return rope functions in layer-encounter order, matching _init_ropes() deduplication
-        seen: set[str] = set()
         result: list[tuple[str, Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]]] = []
         for layer in self.text_model.layers:
+            if getattr(layer, "layer_type", None) == "linear_attention":
+                continue
             attn = self.layer_attention(layer)
             layer_type = "sliding_attention" if getattr(attn, "is_sliding", False) else "full_attention"
-            if layer_type not in seen:
-                seen.add(layer_type)
-                result.append(fns[layer_type])
+            result.append(fns[layer_type])
         return result
 
     def rmsnorm(self, rmsnorm: HFRMSNorm, x: torch.Tensor) -> torch.Tensor:

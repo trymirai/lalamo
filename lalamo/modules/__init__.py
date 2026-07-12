@@ -14,8 +14,6 @@ from .decoder import (
     DecoderConfig,
     DecoderForwardPassConfig,
     DecoderResult,
-    PerLayerEmbedding,
-    PLEModelConfig,
 )
 from .embedding import (
     EmbeddingBase,
@@ -45,9 +43,11 @@ from .normalization import (
     NormalizationImplementation,
     UpcastMode,
 )
+from .ple import PerLayerEmbedding, PerLayerEmbeddingConfig, PLELayer, PLELayerConfig
 from .rope import (
     LinearScalingRoPEConfig,
     LlamaRoPEConfig,
+    PartialRoPEConfig,
     PositionalEmbeddings,
     RoPE,
     RoPEConfig,
@@ -85,8 +85,6 @@ from .token_mixers.kv_cache import (
 )
 from .transformer import Transformer, TransformerConfig, TransformerForwardPassConfig, TransformerResult
 from .transformer_layer import (
-    PLELayer,
-    PLELayerConfig,
     TransformerLayer,
     TransformerLayerActivationTrace,
     TransformerLayerConfig,
@@ -142,8 +140,9 @@ __all__ = [
     "NormalizationImplementation",
     "PLELayer",
     "PLELayerConfig",
-    "PLEModelConfig",
+    "PartialRoPEConfig",
     "PerLayerEmbedding",
+    "PerLayerEmbeddingConfig",
     "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
     "RoPE",

@@ -71,6 +71,8 @@ class HFGemma2Config(HuggingFaceLMConfig):
             scale_offset=1.0,
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=False,
+            has_biases=False,
+            has_scales=True,
         )
         linear_config = LinearConfig()
         mlp_config = DenseMLPConfig(
@@ -88,12 +90,15 @@ class HFGemma2Config(HuggingFaceLMConfig):
             attention_config = AttentionConfig(
                 qkv_projection_config=linear_config,
                 out_projection_config=linear_config,
+                gate_projection_config=None,
                 query_norm_config=None,
                 key_norm_config=None,
+                value_norm_config=None,
                 logit_soft_cap=self.attn_logit_softcapping,
                 has_sinks=False,
                 has_qkv_biases=self.attention_bias,
                 has_out_biases=False,
+                tie_keys_values=False,
                 num_heads=self.num_attention_heads,
                 num_groups=self.num_key_value_heads,
                 head_dim=self.head_dim,

@@ -94,6 +94,8 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=True,
+            has_biases=False,
+            has_scales=True,
         )
 
         global_rope_config = UnscaledRoPEConfig(
@@ -114,6 +116,8 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=True,
+            has_biases=False,
+            has_scales=True,
         )
         linear_config = LinearConfig()
         activation = GELU(approximate=False)
@@ -134,12 +138,15 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             attention_config = AttentionConfig(
                 qkv_projection_config=linear_config,
                 out_projection_config=linear_config,
+                gate_projection_config=None,
                 query_norm_config=None,
                 key_norm_config=None,
+                value_norm_config=None,
                 logit_soft_cap=None,
                 has_sinks=False,
                 has_qkv_biases=self.attention_bias,
                 has_out_biases=False,
+                tie_keys_values=False,
                 num_heads=self.num_attention_heads,
                 num_groups=self.num_attention_heads,
                 head_dim=head_dim,
@@ -172,6 +179,8 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             scale_offset=0.0,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=True,
+            has_biases=False,
+            has_scales=True,
         )
         prediction_head_activation = GELU(approximate=False)
         prediction_head_readout_config = LinearConfig()

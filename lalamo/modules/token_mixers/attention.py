@@ -14,8 +14,6 @@ from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import (
     Normalization,
     NormalizationConfig,
-    NormalizationForwardPassConfig,
-    NormalizationImplementation,
 )
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixer import (
@@ -28,43 +26,17 @@ from lalamo.modules.token_mixer import (
 )
 from lalamo.modules.utils import apply_soft_capping, call_vmapped, call_vmapped_twice
 
-from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
+from .kv_cache import (
+    DynamicKVCacheLayer,
+    KVCacheLayer,
+    StaticKVCacheLayer,
+)
 
 __all__ = [
     "Attention",
     "AttentionConfig",
     "AttentionResult",
 ]
-
-
-def _repeat_kv(
-    keys_or_values: Float[Array, "tokens groups channels"],
-    group_size: int,
-) -> Float[Array, "tokens heads channels"]:
-    if group_size == 1:
-        return keys_or_values
-    return jnp.repeat(keys_or_values, group_size, axis=1)
-
-
-def _rms_normalize(
-    inputs: Float[Array, "... channels"],
-    eps: float,
-    forward_pass_config: NormalizationForwardPassConfig,
-) -> Float[Array, "... channels"]:
-    match forward_pass_config.implementation:
-        case NormalizationImplementation.JAX:
-            upcasted_inputs = inputs.astype(jnp.float32)
-            variance = jnp.mean(jnp.square(upcasted_inputs), axis=-1, keepdims=True)
-            return (upcasted_inputs * jax.lax.rsqrt(variance + eps)).astype(inputs.dtype)
-
-        case NormalizationImplementation.TOKAMAX:
-            return tokamax.layer_norm(
-                inputs,
-                scale=None,
-                offset=None,
-                epsilon=eps,
-                subtract_mean=False,
-            ).astype(inputs.dtype)
 
 
 def _soft_capped_attention_kernel(
@@ -98,8 +70,8 @@ def _soft_capped_attention_kernel(
     _, num_heads, head_dim = queries.shape
     _, num_groups, _ = keys.shape
     group_size = num_heads // num_groups
-    keys = _repeat_kv(keys, group_size)
-    values = _repeat_kv(values, group_size)
+    keys = jnp.repeat(keys, group_size, axis=1)
+    values = jnp.repeat(values, group_size, axis=1)
     queries_head_first = rearrange(queries, "dst_tokens heads channels -> heads dst_tokens channels")
     keys_head_first = rearrange(keys, "src_tokens heads channels -> heads src_tokens channels")
     attention_logits = einsum(
@@ -108,10 +80,8 @@ def _soft_capped_attention_kernel(
         "heads dst_tokens channels, heads src_tokens channels -> heads dst_tokens src_tokens",
     )
     if scale is None:
-        scale_val = head_dim**-0.5
-    else:
-        scale_val = float(scale)
-    attention_logits = attention_logits * scale_val
+        scale = head_dim**-0.5
+    attention_logits = attention_logits * scale
     attention_logits = apply_soft_capping(attention_logits, logit_soft_cap)
     if bias is not None:
         attention_logits = attention_logits + bias
@@ -153,15 +123,12 @@ def _stable_reduction_attention_kernel(
 
     if scale is None:
         scale = head_dim**-0.5
-    else:
-        scale = float(scale)
 
     if mask is None:
         mask = jnp.ones((num_queries, num_keys), dtype=jnp.bool_)
 
-    if group_size > 1:
-        keys = _repeat_kv(keys, group_size)
-        values = _repeat_kv(values, group_size)
+    keys = jnp.repeat(keys, group_size, axis=1)
+    values = jnp.repeat(values, group_size, axis=1)
 
     pad_len = (-num_keys) % tile_size
     num_tiles = (num_keys + pad_len) // tile_size
@@ -336,9 +303,11 @@ AttentionResult = TokenMixerResult[KVCacheLayer]
 class AttentionConfig(TokenMixerConfig):
     qkv_projection_config: LinearConfig
     out_projection_config: LinearConfig
+    gate_projection_config: LinearConfig | None
 
     query_norm_config: NormalizationConfig | None
     key_norm_config: NormalizationConfig | None
+    value_norm_config: NormalizationConfig | None
 
     num_heads: int
     num_groups: int
@@ -351,29 +320,29 @@ class AttentionConfig(TokenMixerConfig):
     has_sinks: bool
     has_qkv_biases: bool
     has_out_biases: bool
-    gate_projection_config: LinearConfig | None = None
-    # Scale-free RMS normalization on values
-    normalize_values: bool = False
-    is_kv_sharing: bool = False
+    tie_keys_values: bool
 
     def init(
         self,
         initializer: Initializer,
         model_dim: int,
+        *,
+        borrows_kv_cache: bool = False,
     ) -> "Attention":
         q_output_dim = self.num_heads * self.head_dim
-        if self.is_kv_sharing:
-            output_dims = (q_output_dim,)
+        kv_output_dim = self.num_groups * self.head_dim
+
+        if borrows_kv_cache:
+            qkv_output_dims = (q_output_dim,)
+        elif self.tie_keys_values:
+            qkv_output_dims = (q_output_dim, kv_output_dim)
         else:
-            output_dims = (
-                q_output_dim,
-                self.num_groups * self.head_dim,
-                self.num_groups * self.head_dim,
-            )
+            qkv_output_dims = (q_output_dim, kv_output_dim, kv_output_dim)
+
         qkv_projection = self.qkv_projection_config.init(
             initializer,
             input_dim=model_dim,
-            output_dims=output_dims,
+            output_dims=qkv_output_dims,
             has_biases=self.has_qkv_biases,
         )
         out_projection = self.out_projection_config.init(
@@ -401,13 +370,21 @@ class AttentionConfig(TokenMixerConfig):
         else:
             query_norm = None
 
-        if self.key_norm_config is not None and not self.is_kv_sharing:
+        if self.key_norm_config is not None and not borrows_kv_cache:
             key_norm = self.key_norm_config.init(
                 initializer,
                 input_dim=self.head_dim,
             )
         else:
             key_norm = None
+
+        if self.value_norm_config is not None and not borrows_kv_cache:
+            value_norm = self.value_norm_config.init(
+                initializer,
+                input_dim=self.head_dim,
+            )
+        else:
+            value_norm = None
 
         if self.has_sinks:
             sinks = initializer.zeros((self.num_heads,))
@@ -422,7 +399,9 @@ class AttentionConfig(TokenMixerConfig):
             out_projection=out_projection,
             query_norm=query_norm,
             key_norm=key_norm,
+            value_norm=value_norm,
             sinks=sinks,
+            borrows_kv_cache=borrows_kv_cache,
         )
 
 
@@ -433,8 +412,10 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
     query_norm: Normalization | None
     key_norm: Normalization | None
+    value_norm: Normalization | None
 
     sinks: Float[Array, " heads"] | None
+    borrows_kv_cache: bool = eqx.field(static=True)
 
     @property
     def model_dim(self) -> int:
@@ -487,68 +468,83 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
-        attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
-        reuse_cache: bool = False,
+        tree_ancestor_indices: Int[Array, " suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
     ) -> AttentionResult:
         qkv_keychain, gate_keychain, out_keychain = keychain.split(3)
-        assert reuse_cache == self.config.is_kv_sharing, "reuse_cache must match AttentionConfig.is_kv_sharing"
-        projections = call_vmapped(
+        num_suffix_tokens, _ = inputs.shape
+        qkv_outputs = call_vmapped(
             self.qkv_projection,
             inputs,
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=qkv_keychain,
         )
-        queries = projections[0]
-        if self.gate_projection is not None:
-            (gate,) = call_vmapped(
-                self.gate_projection,
-                inputs,
-                forward_pass_config=forward_pass_config.matmul_config,
-                keychain=gate_keychain,
-            )
-        else:
-            gate = None
+        kv_projection_pattern = "tokens (groups head_channels) -> tokens groups head_channels"
+        raw_queries, *raw_kv_projections = qkv_outputs
 
-        queries = self._prepare_heads(
-            queries, self.config.num_heads, self.query_norm, positional_embeddings, forward_pass_config
-        )
-
-        num_suffix_tokens, _, _ = queries.shape
-        if reuse_cache:
-            if state is None:
-                raise ValueError("a KV-sharing layer must receive the source layer's cache as `state`")
-            prefix_length = state.current_prefix_length() - num_suffix_tokens
+        if self.borrows_kv_cache:
+            assert not raw_kv_projections
+            assert state is not None
             updated_state = state
+            if length_without_padding is None:
+                added_length = num_suffix_tokens
+            else:
+                added_length = length_without_padding
+            prefix_length = state.current_prefix_length() - added_length
         else:
-            _, keys, values = projections
-            prefix_length = 0 if state is None else state.current_prefix_length()
-            keys = self._prepare_heads(
-                keys, self.config.num_groups, self.key_norm, positional_embeddings, forward_pass_config
+            projected_kv = tuple(
+                rearrange(
+                    projection,
+                    kv_projection_pattern,
+                    groups=self.config.num_groups,
+                    head_channels=self.config.head_dim,
+                )
+                for projection in raw_kv_projections
             )
-            values = rearrange(
-                values,
-                "tokens (groups head_channels) -> tokens groups head_channels",
-                groups=self.config.num_groups,
-                head_channels=self.config.head_dim,
-            )
-            if self.config.normalize_values:
-                values = _rms_normalize(
-                    values,
-                    eps=1e-6,
+            if self.config.tie_keys_values:
+                (keys,) = projected_kv
+                values = keys
+            else:
+                keys, values = projected_kv
+
+            if self.key_norm is not None:
+                keys = call_vmapped_twice(
+                    self.key_norm,
+                    keys,
                     forward_pass_config=forward_pass_config.normalization_forward_pass_config,
                 )
+            if positional_embeddings is not None:
+                keys = call_vmapped(positional_embeddings.apply, keys, in_axes=1, out_axes=1)
+
+            if self.value_norm is not None:
+                values = call_vmapped_twice(
+                    self.value_norm,
+                    values,
+                    forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+                )
+
             if state is None:
+                prefix_length = int(self.has_sinks)
                 updated_state = DynamicKVCacheLayer.init(
                     self.has_sinks, keys.astype(values.dtype), values, length=length_without_padding
                 )
             else:
+                assert isinstance(state, KVCacheLayer)
+                prefix_length = state.current_prefix_length()
                 updated_state = state.extend(keys, values, added_length=length_without_padding)
 
+        queries = self._prepare_heads(
+            raw_queries,
+            self.config.num_heads,
+            self.query_norm,
+            positional_embeddings,
+            forward_pass_config,
+        )
+
         queries = queries.astype(updated_state.keys.dtype)
-        if attention_parent_indices is not None:
-            mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices)
+        if tree_ancestor_indices is not None:
+            mask = updated_state.tree_attention_mask(prefix_length, tree_ancestor_indices)
         else:
             mask = updated_state.attention_mask(
                 num_suffix_tokens,
@@ -578,8 +574,16 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             heads=self.config.num_heads,
             head_channels=self.config.head_dim,
         )
-        if gate is not None:
+
+        if self.gate_projection is not None:
+            (gate,) = call_vmapped(
+                self.gate_projection,
+                inputs,
+                forward_pass_config=forward_pass_config.matmul_config,
+                keychain=gate_keychain,
+            )
             attention_output = attention_output * jax.nn.sigmoid(gate)
+
         (result,) = call_vmapped(
             self.out_projection,
             attention_output,
@@ -587,7 +591,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             keychain=out_keychain,
         )
 
-        if not return_updated_state:
+        if not return_updated_state or self.borrows_kv_cache:
             updated_state = None
 
         return AttentionResult(
@@ -596,6 +600,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         )
 
     def init_static_state(self, capacity: int, dtype: DTypeLike) -> StaticKVCacheLayer:
+        assert not self.borrows_kv_cache
         return StaticKVCacheLayer.init(
             self.has_sinks,
             capacity,

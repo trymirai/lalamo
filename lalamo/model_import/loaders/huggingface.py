@@ -408,6 +408,173 @@ def load_mlp(
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
 
+def _load_parallel_mlps(
+    module: TransformerLayer,
+    weights_dict: Mapping[str, Array],
+    layer_path: ParameterPath,
+    primary_mlp_key: str,
+    up_proj_key: str,
+    gate_proj_key: str,
+    down_proj_key: str,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> tuple[MLPBase, Normalization, MLPBase, Normalization]:
+    parallel_mlp = module.parallel_mlp
+    mlp_output_norm = module.mlp_output_norm
+    parallel_mlp_output_norm = module.parallel_mlp_output_norm
+    assert parallel_mlp is not None
+    assert mlp_output_norm is not None
+    assert parallel_mlp_output_norm is not None
+
+    mlp = load_mlp(
+        module.mlp,
+        weights_dict,
+        layer_path / primary_mlp_key,
+        up_proj_key,
+        gate_proj_key,
+        down_proj_key,
+        implementation=implementation,
+    )
+    mlp_output_norm = load_rmsnorm(
+        mlp_output_norm,
+        weights_dict,
+        layer_path / "post_feedforward_layernorm_1",
+    )
+    parallel_mlp = load_mlp(
+        parallel_mlp,
+        weights_dict,
+        layer_path / "parallel_mlp",
+        up_proj_key,
+        gate_proj_key,
+        down_proj_key,
+        implementation=implementation,
+    )
+    parallel_mlp_output_norm = load_rmsnorm(
+        parallel_mlp_output_norm,
+        weights_dict,
+        layer_path / "post_feedforward_layernorm_2",
+    )
+    return mlp, mlp_output_norm, parallel_mlp, parallel_mlp_output_norm
+
+
+def _load_gemma4_parallel_mlps(
+    module: TransformerLayer,
+    weights_dict: Mapping[str, Array],
+    layer_path: ParameterPath,
+    primary_mlp_key: str,
+    up_proj_key: str,
+    gate_proj_key: str,
+    down_proj_key: str,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> tuple[MLPBase, Normalization, MLPBase, Normalization]:
+    mlp = module.mlp
+    parallel_mlp = module.parallel_mlp
+    mlp_output_norm = module.mlp_output_norm
+    parallel_mlp_output_norm = module.parallel_mlp_output_norm
+    assert isinstance(mlp, DenseMLP)
+    assert isinstance(parallel_mlp, MixtureOfExperts)
+    assert mlp_output_norm is not None
+    assert parallel_mlp_output_norm is not None
+
+    primary_mlp_path = layer_path / primary_mlp_key
+    pre_dense_scale = weights_dict[layer_path / "pre_feedforward_layernorm" / "weight"]
+    dense_up_weights = weights_dict[primary_mlp_path / up_proj_key / "weight"]
+    dense_gate_weights = weights_dict[primary_mlp_path / gate_proj_key / "weight"]
+    primary_up_projection = _update_linear(
+        mlp.up_projection,
+        load_full_precision(
+            mlp.up_projection.weights,
+            jnp.concatenate(
+                [
+                    dense_up_weights * pre_dense_scale.astype(dense_up_weights.dtype),
+                    dense_gate_weights * pre_dense_scale.astype(dense_gate_weights.dtype),
+                ],
+                axis=0,
+            ),
+        ),
+        None,
+    )
+    mlp = load_as_at(
+        _dense_mlp_projections,
+        mlp,
+        (
+            primary_up_projection,
+            load_linear(
+                mlp.down_projection,
+                weights_dict,
+                primary_mlp_path / down_proj_key,
+                implementation=implementation,
+            ),
+        ),
+    )
+
+    router_weight = weights_dict[layer_path / "router" / "proj" / "weight"]
+    router_scale = weights_dict[layer_path / "router" / "scale"].astype(router_weight.dtype) * jnp.asarray(
+        mlp.model_dim**-0.5,
+        dtype=router_weight.dtype,
+    )
+    router = _update_linear(
+        parallel_mlp.router,
+        load_full_precision(parallel_mlp.router.weights, router_weight * router_scale[None, :]),
+        None,
+    )
+
+    gate_up_weights = weights_dict[layer_path / "experts" / "gate_up_proj"]
+    gate_up_weights = gate_up_weights * weights_dict[layer_path / "pre_feedforward_layernorm_2" / "weight"].astype(
+        gate_up_weights.dtype,
+    )
+    assert gate_up_weights.shape[1] % 2 == 0
+    intermediate_size = gate_up_weights.shape[1] // 2
+    expert_up_projection = _update_linear(
+        parallel_mlp.experts.up_projection,
+        load_full_precision(
+            parallel_mlp.experts.up_projection.weights,
+            jnp.concatenate(
+                [gate_up_weights[:, intermediate_size:, :], gate_up_weights[:, :intermediate_size, :]],
+                axis=1,
+            ),
+        ),
+        None,
+    )
+
+    down_weights = weights_dict[layer_path / "experts" / "down_proj"]
+    down_weights = (
+        down_weights
+        * weights_dict[layer_path / "router" / "per_expert_scale"].astype(
+            down_weights.dtype,
+        )[:, None, None]
+    )
+    expert_down_projection = _update_linear(
+        parallel_mlp.experts.down_projection,
+        load_full_precision(parallel_mlp.experts.down_projection.weights, down_weights),
+        None,
+    )
+    parallel_mlp = load_as_at(
+        lambda m: (m.router, m.experts),
+        parallel_mlp,
+        (
+            router,
+            load_as_at(
+                _dense_mlp_projections,
+                parallel_mlp.experts,
+                (expert_up_projection, expert_down_projection),
+            ),
+        ),
+    )
+
+    return (
+        mlp,
+        load_rmsnorm(mlp_output_norm, weights_dict, layer_path / "post_feedforward_layernorm_1"),
+        parallel_mlp,
+        load_rmsnorm(
+            parallel_mlp_output_norm,
+            weights_dict,
+            layer_path / "post_feedforward_layernorm_2",
+        ),
+    )
+
+
 def load_moe(
     module: MixtureOfExperts,
     weights_dict: Mapping[str, Array],
@@ -517,8 +684,7 @@ def load_moe(
             # Infer the weight key suffix
             suffix = gate_up_key[len(gate_up_path) :]
             gate_up_weights = weights_dict[gate_up_key]
-            down_key = str(down_path) + suffix
-            down_weights = weights_dict[ParameterPath(down_key)]
+            down_weights = weights_dict[down_path + suffix]
 
         # gate_up_proj is [num_experts, intermediate_size*2, hidden_size] - split into gate and up
         intermediate_size_2 = gate_up_weights.shape[1]
@@ -665,6 +831,7 @@ def load_rmsnorm(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Normalization:
+    assert module.scales is not None
     scales = weights_dict[path / "weight"].astype(module.scales.dtype)
     return load_as_at(lambda m: (m.scales,), module, (scales,))
 
@@ -737,7 +904,13 @@ def load_attention(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> Attention:
-    qkv_sublayers = ["q_proj"] if module.config.is_kv_sharing else ["q_proj", "k_proj", "v_proj"]
+    if module.borrows_kv_cache:
+        qkv_sublayers = ["q_proj"]
+    elif module.config.tie_keys_values:
+        qkv_sublayers = ["q_proj", "k_proj"]
+    else:
+        qkv_sublayers = ["q_proj", "k_proj", "v_proj"]
+
     if module.gate_projection is not None:
         num_heads, head_dim = module.config.num_heads, module.config.head_dim
 
@@ -1071,16 +1244,46 @@ def load_transformer_layer(
         post_attention_norm = None
         pre_mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, mlp_path / pre_mlp_norm_key)
 
-    mlp = load_mlp(
-        module.mlp,
-        weights_dict,
-        mlp_path / mlp_key,
-        up_proj_key,
-        gate_proj_key,
-        down_proj_key,
-        implementation=implementation,
-    )
-
+    if module.parallel_mlp is not None:
+        if (mlp_path / "router" / "proj" / "weight") in weights_dict:
+            assert pre_mlp_norm.scales is not None
+            pre_mlp_norm = replace(pre_mlp_norm, scales=jnp.ones_like(pre_mlp_norm.scales))
+            mlp, mlp_output_norm, parallel_mlp, parallel_mlp_output_norm = _load_gemma4_parallel_mlps(
+                module,
+                weights_dict,
+                mlp_path,
+                mlp_key,
+                up_proj_key,
+                gate_proj_key,
+                down_proj_key,
+                implementation=implementation,
+            )
+        else:
+            mlp, mlp_output_norm, parallel_mlp, parallel_mlp_output_norm = _load_parallel_mlps(
+                module,
+                weights_dict,
+                mlp_path,
+                mlp_key,
+                up_proj_key,
+                gate_proj_key,
+                down_proj_key,
+                implementation=implementation,
+            )
+    else:
+        assert module.mlp_output_norm is None
+        assert module.parallel_mlp_output_norm is None
+        mlp = load_mlp(
+            module.mlp,
+            weights_dict,
+            mlp_path / mlp_key,
+            up_proj_key,
+            gate_proj_key,
+            down_proj_key,
+            implementation=implementation,
+        )
+        mlp_output_norm = None
+        parallel_mlp = None
+        parallel_mlp_output_norm = None
     post_mlp_norm = _load_optional_rmsnorm(module.post_mlp_norm, weights_dict, mlp_path / "post_feedforward_layernorm")
 
     return load_as_at(
@@ -1090,6 +1293,9 @@ def load_transformer_layer(
             m.post_mixer_norm,
             m.pre_mlp_norm,
             m.mlp,
+            m.mlp_output_norm,
+            m.parallel_mlp,
+            m.parallel_mlp_output_norm,
             m.post_mlp_norm,
         ),
         module,
@@ -1099,6 +1305,9 @@ def load_transformer_layer(
             post_attention_norm,
             pre_mlp_norm,
             mlp,
+            mlp_output_norm,
+            parallel_mlp,
+            parallel_mlp_output_norm,
             post_mlp_norm,
         ),
     )

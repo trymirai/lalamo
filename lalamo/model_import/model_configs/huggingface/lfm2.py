@@ -126,13 +126,17 @@ class HFLFM2Config(HuggingFaceLMConfig):
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
+            has_biases=False,
+            has_scales=True,
         )
 
         attention_config = AttentionConfig(
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
+            gate_projection_config=None,
             query_norm_config=block_norm_config,
             key_norm_config=block_norm_config,
+            value_norm_config=None,
             num_heads=self.num_attention_heads,
             num_groups=self.num_key_value_heads,
             head_dim=head_dim,
@@ -143,6 +147,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
             has_sinks=False,
             has_qkv_biases=False,
             has_out_biases=False,
+            tie_keys_values=False,
         )
 
         short_conv_config = ShortConvConfig(
@@ -188,6 +193,8 @@ class HFLFM2Config(HuggingFaceLMConfig):
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
+            has_biases=False,
+            has_scales=True,
         )
 
         if not self.block_auto_adjust_ff_dim:

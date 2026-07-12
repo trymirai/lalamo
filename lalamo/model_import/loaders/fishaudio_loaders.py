@@ -185,6 +185,7 @@ def _load_rope_norm(
     if module is None:
         return None
     norm = load_rmsnorm(module, weights_dict, path)
+    assert norm.scales is not None
     permuted_scales = _permute_for_rope_rotate_half(norm.scales, 1, norm.scales.shape[0])
     return load_as_at(lambda m: (m.scales,), norm, (permuted_scales,))
 

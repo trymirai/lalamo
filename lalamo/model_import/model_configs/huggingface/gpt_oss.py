@@ -112,6 +112,8 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=False,
+            has_biases=False,
+            has_scales=True,
         )
 
         # Linear layers
@@ -157,12 +159,15 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
             attention_config = AttentionConfig(
                 qkv_projection_config=linear_config,
                 out_projection_config=linear_config,
+                gate_projection_config=None,
                 query_norm_config=None,
                 key_norm_config=None,
+                value_norm_config=None,
                 logit_soft_cap=None,
                 has_sinks=True,
                 has_qkv_biases=self.attention_bias,
                 has_out_biases=self.attention_bias,
+                tie_keys_values=False,
                 num_heads=self.num_attention_heads,
                 num_groups=self.num_key_value_heads,
                 head_dim=head_dim,

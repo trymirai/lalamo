@@ -29,6 +29,7 @@ from lalamo.weight_matrix import GradientEstimator, MatmulConfig
 
 from .activations import Activation
 from .linear import Linear, LinearConfig
+from .normalization import NormalizationForwardPassConfig
 from .utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
@@ -84,11 +85,15 @@ def _take_moe_expert_leaf(leaf: object, index: Int[Array, ""], sharding_config: 
 class MLPForwardPassConfig:
     mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN
     moe_chunk_size_ratio: float = 0.2
+    normalization_forward_pass_config: NormalizationForwardPassConfig = dataclass_field(
+        default_factory=NormalizationForwardPassConfig,
+    )
     matmul_config: MatmulConfig = dataclass_field(default_factory=MatmulConfig)
 
     @classmethod
     def for_tracer_tests(cls) -> Self:
         return cls(
+            normalization_forward_pass_config=NormalizationForwardPassConfig.for_tracer_tests(),
             matmul_config=MatmulConfig.for_tracer_tests(),
         )
 
@@ -100,6 +105,7 @@ class MLPForwardPassConfig:
     ) -> Self:
         return cls(
             mode=mode,
+            normalization_forward_pass_config=NormalizationForwardPassConfig.for_inference(),
             matmul_config=MatmulConfig.for_inference(precision),
         )
 
@@ -110,6 +116,7 @@ class MLPForwardPassConfig:
         precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
     ) -> Self:
         return cls(
+            normalization_forward_pass_config=NormalizationForwardPassConfig.for_training(),
             matmul_config=MatmulConfig.for_training(gradient_estimator, precision),
         )
 
