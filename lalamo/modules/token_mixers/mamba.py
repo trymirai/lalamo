@@ -10,10 +10,8 @@ from lalamo.initializer import Initializer
 from lalamo.module import Keychain
 from lalamo.modules.activations import Activation
 from lalamo.modules.linear import Linear, LinearConfig
-from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixer import (
     MixerForwardPassConfig,
-    PositionalEmbeddingSelector,
     TokenMixerBase,
     TokenMixerConfig,
     TokenMixerResult,
@@ -182,10 +180,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
     @property
     def conv_dim(self) -> int:
         return self.inner_dim + 2 * self.config.num_groups * self.config.state_dim
-
-    @property
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        return PositionalEmbeddingSelector.NONE
 
     def _step(
         self,
@@ -588,7 +582,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
-        positional_embeddings: PositionalEmbeddings | None,
+        token_positions: Int[Array, " suffix_tokens"],
         state: SSMStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
@@ -598,8 +592,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         *,
         keychain: Keychain,
     ) -> Mamba2Result:
-        if positional_embeddings is not None:
-            raise ValueError("Positional embeddings are not supported for Mamba2.")
+        del token_positions
         if attention_parent_indices is not None:
             raise ValueError("Attention parent indices are not supported for Mamba2.")
 

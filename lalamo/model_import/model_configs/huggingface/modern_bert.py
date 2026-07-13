@@ -131,11 +131,13 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
 
         transformer_layer_configs = []
         for sliding_window_size, pre_attn_config in zip(sliding_window_sizes, pre_attn_configs, strict=True):
+            layer_rope_config = global_rope_config if sliding_window_size is None else local_rope_config
             attention_config = AttentionConfig(
                 qkv_projection_config=linear_config,
                 out_projection_config=linear_config,
                 query_norm_config=None,
                 key_norm_config=None,
+                rope_config=layer_rope_config,
                 logit_soft_cap=None,
                 has_sinks=False,
                 has_qkv_biases=self.attention_bias,
@@ -147,7 +149,6 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
                 is_causal=False,
                 sliding_window_size=sliding_window_size,
             )
-            layer_rope_config = global_rope_config if sliding_window_size is None else local_rope_config
             layer_config = TransformerLayerConfig(
                 pre_mixer_norm_config=pre_attn_config,
                 mixer_config=attention_config,
@@ -155,7 +156,6 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
                 pre_mlp_norm_config=transformer_norm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
-                rope_config=layer_rope_config,
             )
             transformer_layer_configs.append(layer_config)
 

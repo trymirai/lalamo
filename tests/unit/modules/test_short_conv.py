@@ -3,13 +3,11 @@ from math import prod
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import pytest
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.linear import Linear, LinearConfig
-from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from lalamo.modules.token_mixers.short_conv import ShortConv, ShortConvConfig, ShortConvStateLayer
 from lalamo.modules.utils import call_vmapped
@@ -115,7 +113,9 @@ def test_short_conv_matches_reference_and_keeps_unsharded_features(fake_mesh: Me
     inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10)
 
     result = module(
-        inputs, positional_embeddings=None, keychain=Keychain.init(0, sharding_config=make_test_sharding_config())
+        inputs,
+        jnp.arange(inputs.shape[0], dtype=jnp.int32),
+        keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
     )
 
     _assert_close(result=result.outputs, reference=_reference(module, inputs))
@@ -135,7 +135,7 @@ def test_short_conv_updates_state_from_unpadded_suffix(fake_mesh: Mesh) -> None:
 
     result = module(
         inputs,
-        positional_embeddings=None,
+        jnp.arange(inputs.shape[0], dtype=jnp.int32),
         state=state,
         return_updated_state=True,
         length_without_padding=2,
@@ -153,29 +153,14 @@ def test_short_conv_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
     inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.bfloat16).reshape(5, MODEL_DIM) / 10)
 
     result = module(
-        inputs, positional_embeddings=None, keychain=Keychain.init(7, sharding_config=make_test_sharding_config())
+        inputs,
+        jnp.arange(inputs.shape[0], dtype=jnp.int32),
+        keychain=Keychain.init(7, sharding_config=make_test_sharding_config()),
     )
 
     assert result.outputs.dtype == inputs.dtype
     _assert_close(result=result.outputs, reference=_reference(module, inputs))
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
-
-
-@pytest.mark.usefixtures("fake_mesh")
-def test_short_conv_rejects_positional_embeddings() -> None:
-    module = _short_conv()
-    inputs = jnp.arange(5 * MODEL_DIM, dtype=jnp.float32).reshape(5, MODEL_DIM) / 10
-    positional_embeddings = PositionalEmbeddings(
-        cosines=jnp.ones((5, MODEL_DIM), dtype=jnp.float32),
-        sines=jnp.zeros((5, MODEL_DIM), dtype=jnp.float32),
-    )
-
-    with pytest.raises(ValueError, match="not supported"):
-        module(
-            inputs,
-            positional_embeddings=positional_embeddings,
-            keychain=Keychain.init(2, sharding_config=make_test_sharding_config()),
-        )
 
 
 def test_short_conv_under_jit_matches_reference_and_keeps_unsharded_features(fake_mesh: Mesh) -> None:
@@ -184,7 +169,9 @@ def test_short_conv_under_jit_matches_reference_and_keeps_unsharded_features(fak
 
     result = eqx.filter_jit(
         lambda module, values: module(
-            values, positional_embeddings=None, keychain=Keychain.init(3, sharding_config=make_test_sharding_config())
+            values,
+            jnp.arange(values.shape[0], dtype=jnp.int32),
+            keychain=Keychain.init(3, sharding_config=make_test_sharding_config()),
         ),
     )(module, inputs)
 
@@ -198,7 +185,11 @@ def test_short_conv_vmapped_over_inputs_matches_reference_and_keeps_data_shardin
     inputs = _sharded_sequences(jnp.arange(2 * 5 * MODEL_DIM, dtype=jnp.float32).reshape(2, 5, MODEL_DIM) / 10)
 
     result = call_vmapped(
-        lambda values, *, keychain: module(values, positional_embeddings=None, keychain=keychain),
+        lambda values, *, keychain: module(
+            values,
+            jnp.arange(values.shape[0], dtype=jnp.int32),
+            keychain=keychain,
+        ),
         inputs,
         keychain=Keychain.init(4, sharding_config=make_test_sharding_config()),
         added_sharding_axis=make_test_sharding_config().resolve_axis(LogicalAxis.BATCH),
@@ -249,7 +240,9 @@ def test_short_conv_export_load_roundtrips_with_replicated_conv_parameters(fake_
 
     restored = template.load_exported(original.export())
     result = restored(
-        inputs, positional_embeddings=None, keychain=Keychain.init(5, sharding_config=make_test_sharding_config())
+        inputs,
+        jnp.arange(inputs.shape[0], dtype=jnp.int32),
+        keychain=Keychain.init(5, sharding_config=make_test_sharding_config()),
     )
 
     assert isinstance(restored.in_projection.weights, FullPrecisionMatrix)
@@ -267,7 +260,9 @@ def test_short_conv_export_load_roundtrips_with_replicated_conv_parameters(fake_
     _assert_close(
         result=result.outputs,
         reference=original(
-            inputs, positional_embeddings=None, keychain=Keychain.init(6, sharding_config=make_test_sharding_config())
+            inputs,
+            jnp.arange(inputs.shape[0], dtype=jnp.int32),
+            keychain=Keychain.init(6, sharding_config=make_test_sharding_config()),
         ).outputs,
     )
     _assert_named_sharding(result.outputs.sharding, fake_mesh)

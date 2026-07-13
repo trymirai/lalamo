@@ -90,6 +90,7 @@ class HFGemma2Config(HuggingFaceLMConfig):
                 out_projection_config=linear_config,
                 query_norm_config=None,
                 key_norm_config=None,
+                rope_config=rope_config,
                 logit_soft_cap=self.attn_logit_softcapping,
                 has_sinks=False,
                 has_qkv_biases=self.attention_bias,
@@ -108,7 +109,6 @@ class HFGemma2Config(HuggingFaceLMConfig):
                 pre_mlp_norm_config=rmsnorm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=rmsnorm_config,
-                rope_config=rope_config,
             )
             layer_configs.append(transformer_layer_config)
 

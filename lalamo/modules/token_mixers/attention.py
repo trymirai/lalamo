@@ -18,11 +18,10 @@ from lalamo.modules.normalization import (
     NormalizationForwardPassConfig,
     NormalizationImplementation,
 )
-from lalamo.modules.rope import PositionalEmbeddings
+from lalamo.modules.rope import PositionalEmbeddings, RoPE, RoPEConfig
 from lalamo.modules.token_mixer import (
     AttentionImplementation,
     MixerForwardPassConfig,
-    PositionalEmbeddingSelector,
     TokenMixerBase,
     TokenMixerConfig,
     TokenMixerResult,
@@ -346,6 +345,7 @@ class AttentionConfig(TokenMixerConfig):
 
     query_norm_config: NormalizationConfig | None
     key_norm_config: NormalizationConfig | None
+    rope_config: RoPEConfig | None
 
     num_heads: int
     num_groups: int
@@ -425,6 +425,11 @@ class AttentionConfig(TokenMixerConfig):
         else:
             sinks = None
 
+        if self.rope_config is None:
+            rope = None
+        else:
+            rope = self.rope_config.init(initializer)
+
         return Attention(
             config=self,
             sharding_config=initializer.sharding_config,
@@ -433,6 +438,7 @@ class AttentionConfig(TokenMixerConfig):
             out_projection=out_projection,
             query_norm=query_norm,
             key_norm=key_norm,
+            rope=rope,
             sinks=sinks,
             borrows_kv_cache=borrows_kv_cache,
         )
@@ -445,6 +451,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
     query_norm: Normalization | None
     key_norm: Normalization | None
+    rope: RoPE | None
 
     sinks: Float[Array, " heads"] | None
     borrows_kv_cache: bool = eqx.field(static=True)
@@ -456,12 +463,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
     @property
     def use_sliding_window(self) -> bool:
         return self.config.sliding_window_size is not None
-
-    @property
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        if self.use_sliding_window:
-            return PositionalEmbeddingSelector.LOCAL
-        return PositionalEmbeddingSelector.GLOBAL
 
     @property
     def has_sinks(self) -> bool:
@@ -495,7 +496,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
-        positional_embeddings: PositionalEmbeddings | None,
+        token_positions: Int[Array, " suffix_tokens"],
         state: KVCacheLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
@@ -504,6 +505,11 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         *,
         keychain: Keychain,
     ) -> AttentionResult:
+        if self.rope is None:
+            positional_embeddings = None
+        else:
+            positional_embeddings = self.rope(token_positions).astype(forward_pass_config.rope_dtype)
+
         qkv_keychain, gate_keychain, out_keychain = keychain.split(3)
         num_suffix_tokens, _ = inputs.shape
         qkv_outputs = call_vmapped(
@@ -632,6 +638,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return AttentionResult(
             outputs=result,
             state=updated_state,
+            positional_embeddings=positional_embeddings,
         )
 
     def init_static_state(self, capacity: int, dtype: DTypeLike) -> StaticKVCacheLayer:

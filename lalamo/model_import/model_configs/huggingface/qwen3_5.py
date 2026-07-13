@@ -171,6 +171,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
                     out_projection_config=linear_config,
                     query_norm_config=rmsnorm_config,
                     key_norm_config=rmsnorm_config,
+                    rope_config=rope_config,
                     logit_soft_cap=None,
                     has_sinks=False,
                     has_qkv_biases=self.attention_bias,
@@ -192,7 +193,6 @@ class HFQwen35Config(HuggingFaceLMConfig):
                     pre_mlp_norm_config=rmsnorm_config,
                     mlp_config=mlp_config,
                     post_mlp_norm_config=None,
-                    rope_config=rope_config if layer_type != "linear_attention" else None,
                 ),
             )
 

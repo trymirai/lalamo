@@ -6,7 +6,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis
+from lalamo.module import Keychain, LalamoConfig, LalamoModule
 
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
@@ -19,7 +19,7 @@ from .transformer_layer import (
     TransformerLayerConfig,
     TransformerLayerResult,
 )
-from .utils import call_vmapped, call_vmapped_twice, gather_suffix_tokens
+from .utils import call_vmapped_twice, gather_suffix_tokens
 
 __all__ = [
     "Transformer",
@@ -142,7 +142,6 @@ class Transformer(LalamoModule[TransformerConfig]):
         has_borrowed_kv_cache = bool(kv_reuse_map)
         must_return_source_state = return_updated_state or has_borrowed_kv_cache
 
-        mixer_forward_pass_config = forward_pass_config.mixer_forward_pass_config
         if return_suffix_tokens is None:
             last_state_owner_index = None
             suffix_token_positions = None
@@ -154,7 +153,6 @@ class Transformer(LalamoModule[TransformerConfig]):
                 return_suffix_tokens,
                 self.sharding_config,
             )
-
         residual_dtype = inner_features.dtype
         layer_keychains = keychain.split(len(self.layers))
         updated_states: dict[int, StateLayerBase] = {}
@@ -166,16 +164,6 @@ class Transformer(LalamoModule[TransformerConfig]):
             runs_on_suffix_only = last_state_owner_index is not None and layer_index > last_state_owner_index
             active_token_positions = suffix_token_positions if runs_on_suffix_only else token_positions
             assert active_token_positions is not None
-            if layer.rope is None:
-                positional_embeddings = None
-            else:
-                positional_embeddings = call_vmapped(
-                    layer.rope,
-                    active_token_positions,
-                    added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
-                ).astype(mixer_forward_pass_config.rope_dtype)
-                rope_embeddings.append(positional_embeddings)
-
             per_layer_input = per_layer_inputs[layer_index] if per_layer_inputs is not None else None
             if runs_on_suffix_only and per_layer_input is not None:
                 assert return_suffix_tokens is not None
@@ -202,7 +190,7 @@ class Transformer(LalamoModule[TransformerConfig]):
 
             layer_result = layer(
                 inner_features,
-                positional_embeddings,
+                active_token_positions,
                 state=layer_state,
                 return_updated_state=must_return_source_state and not borrows_kv,
                 return_activation_trace=return_layer_results,
@@ -216,6 +204,8 @@ class Transformer(LalamoModule[TransformerConfig]):
 
             inner_features = layer_result.outputs
             layer_results.append(layer_result)
+            if layer_result.positional_embeddings is not None:
+                rope_embeddings.append(layer_result.positional_embeddings)
 
             if not borrows_kv and layer_result.updated_state is not None:
                 updated_states[layer_index] = layer_result.updated_state

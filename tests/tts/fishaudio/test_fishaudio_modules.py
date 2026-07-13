@@ -15,7 +15,6 @@ from lalamo.model_import.loaders.fishaudio_loaders import (
 )
 from lalamo.model_import.model_specs.fishaudio import FISHAUDIO_TTS_MODELS
 from lalamo.module import Keychain, LogicalAxis
-from lalamo.modules.utils import call_vmapped
 from lalamo.utils.torch_interop import torch_to_jax
 from tests.common import assert_close
 from tests.helpers import make_sharding, make_test_sharding_config
@@ -83,15 +82,9 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     fish_layer_result = fish_layer(embedded_input_torch, freqs_cis, mask, input_pos=input_pos)
 
     lalamo_layer = lalamo_transformer.layers[0]
-    rope = lalamo_layer.rope
-    assert rope is not None
-    pos_emb_lalamo = jax.device_put(
-        call_vmapped(rope, input_pos_lalamo),
-        make_sharding((LogicalAxis.BATCH, None, None)),
-    )
     lalamo_layer_result = lalamo_layer(
         embedded_input_lalamo,
-        pos_emb_lalamo,
+        input_pos_lalamo,
         keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
     )
 

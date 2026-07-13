@@ -104,6 +104,7 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
             out_projection_config=linear_config,
             query_norm_config=rmsnorm_config,
             key_norm_config=rmsnorm_config,
+            rope_config=rope_config,
             logit_soft_cap=None,
             has_sinks=False,
             has_qkv_biases=self.attention_bias,
@@ -122,7 +123,6 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
-            rope_config=rope_config,
         )
         transformer_config = TransformerConfig(
             layer_configs=(transformer_layer_config,) * self.num_hidden_layers,

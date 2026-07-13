@@ -8,10 +8,8 @@ from jaxtyping import Array, DTypeLike, Float, Int
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain
 from lalamo.modules.linear import Linear, LinearConfig
-from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixer import (
     MixerForwardPassConfig,
-    PositionalEmbeddingSelector,
     StateLayerBase,
     TokenMixerBase,
     TokenMixerConfig,
@@ -95,15 +93,11 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
     def model_dim(self) -> int:
         return self.in_projection.input_dim
 
-    @property
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        return PositionalEmbeddingSelector.NONE
-
     @eqx.filter_jit
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
-        positional_embeddings: PositionalEmbeddings | None,
+        token_positions: Int[Array, " suffix_tokens"],
         state: ShortConvStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
@@ -112,8 +106,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         *,
         keychain: Keychain,
     ) -> TokenMixerResult[ShortConvStateLayer]:
-        if positional_embeddings is not None:
-            raise ValueError("Positional embeddings are not supported for ShortConv.")
+        del token_positions
         if attention_parent_indices is not None:
             raise ValueError("Attention parent indices are not supported for ShortConv.")
 

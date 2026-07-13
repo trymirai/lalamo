@@ -132,11 +132,15 @@ class HFGemma3TextConfigRaw:
         )
         layer_configs = []
         for sliding_window_size in self.sliding_window_sizes:
+            # Global layers (sliding_window_size=None) use global_rope_config,
+            # local layers use local_rope_config
+            rope_config = global_rope_config if sliding_window_size is None else local_rope_config
             attention_config = AttentionConfig(
                 qkv_projection_config=linear_config,
                 out_projection_config=linear_config,
                 query_norm_config=rms_norm_config,
                 key_norm_config=rms_norm_config,
+                rope_config=rope_config,
                 logit_soft_cap=self.attn_logit_softcapping,
                 has_sinks=False,
                 has_qkv_biases=self.attention_bias,
@@ -148,9 +152,6 @@ class HFGemma3TextConfigRaw:
                 scale=attention_scale,
                 sliding_window_size=sliding_window_size,
             )
-            # Global layers (sliding_window_size=None) use global_rope_config,
-            # local layers use local_rope_config
-            rope_config = global_rope_config if sliding_window_size is None else local_rope_config
             transformer_layer_config = TransformerLayerConfig(
                 pre_mixer_norm_config=rms_norm_config,
                 mixer_config=attention_config,
@@ -158,7 +159,6 @@ class HFGemma3TextConfigRaw:
                 pre_mlp_norm_config=rms_norm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=rms_norm_config,
-                rope_config=rope_config,
             )
             layer_configs.append(transformer_layer_config)
 

@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from dataclasses import dataclass, field
-from enum import Enum, StrEnum
+from enum import Enum
 from typing import NamedTuple, Self
 
 import equinox as eqx
@@ -22,7 +22,6 @@ from .rope import PositionalEmbeddings
 __all__ = [
     "AttentionImplementation",
     "MixerForwardPassConfig",
-    "PositionalEmbeddingSelector",
     "State",
     "StateLayerBase",
     "TokenMixerBase",
@@ -104,12 +103,7 @@ class MixerForwardPassConfig:
 class TokenMixerResult[StateLayerT](NamedTuple):
     outputs: Float[Array, "*batch suffix_tokens channels"]
     state: StateLayerT | None = None
-
-
-class PositionalEmbeddingSelector(StrEnum):
-    GLOBAL = "global"
-    LOCAL = "sliding_window"
-    NONE = "none"
+    positional_embeddings: PositionalEmbeddings | None = None
 
 
 @dataclass(frozen=True)
@@ -127,15 +121,11 @@ class TokenMixerBase[ConfigT: TokenMixerConfig, StateLayerT: StateLayerBase](Lal
     @abstractmethod
     def model_dim(self) -> int: ...
 
-    @property
-    @abstractmethod
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector: ...
-
     @abstractmethod
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
-        positional_embeddings: PositionalEmbeddings | None,
+        token_positions: Int[Array, " suffix_tokens"],
         state: StateLayerT | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,

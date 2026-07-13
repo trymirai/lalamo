@@ -47,6 +47,7 @@ def _attention() -> Attention:
             out_projection_config=LinearConfig(),
             query_norm_config=None,
             key_norm_config=None,
+            rope_config=None,
             num_heads=NUM_HEADS,
             num_groups=NUM_GROUPS,
             head_dim=HEAD_DIM,
@@ -65,6 +66,7 @@ def _attention() -> Attention:
         out_projection=_linear(_weights((MODEL_DIM, qkv_dim), offset=100), (MODEL_DIM,)),
         query_norm=None,
         key_norm=None,
+        rope=None,
         sinks=None,
         borrows_kv_cache=False,
     )
@@ -91,7 +93,7 @@ def test_tokamax_attention_matches_standard() -> None:
 
     standard = module(
         inputs,
-        positional_embeddings=None,
+        jnp.arange(inputs.shape[0], dtype=jnp.int32),
         forward_pass_config=MixerForwardPassConfig(
             attention_implementation=AttentionImplementation.STANDARD,
         ),
@@ -99,7 +101,7 @@ def test_tokamax_attention_matches_standard() -> None:
     )
     tokamax = module(
         inputs,
-        positional_embeddings=None,
+        jnp.arange(inputs.shape[0], dtype=jnp.int32),
         forward_pass_config=MixerForwardPassConfig(
             attention_implementation=AttentionImplementation.TOKAMAX,
         ),

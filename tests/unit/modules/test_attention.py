@@ -45,6 +45,7 @@ def _attention(*, logit_soft_cap: float | None = None) -> Attention:
             out_projection_config=LinearConfig(),
             query_norm_config=None,
             key_norm_config=None,
+            rope_config=None,
             num_heads=NUM_HEADS,
             num_groups=NUM_GROUPS,
             head_dim=HEAD_DIM,
@@ -63,6 +64,7 @@ def _attention(*, logit_soft_cap: float | None = None) -> Attention:
         out_projection=_linear(_weights((MODEL_DIM, qkv_dim), offset=100), (MODEL_DIM,)),
         query_norm=None,
         key_norm=None,
+        rope=None,
         sinks=None,
         borrows_kv_cache=False,
     )
@@ -117,7 +119,9 @@ def test_attention_matches_reference_and_preserves_tensor_sharding(fake_mesh: Me
     inputs = _sharded_sequence(_inputs())
 
     result = module(
-        inputs, positional_embeddings=None, keychain=Keychain.init(0, sharding_config=make_test_sharding_config())
+        inputs,
+        jnp.arange(inputs.shape[0], dtype=jnp.int32),
+        keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
     )
 
     _assert_close(result=result.outputs, reference=_reference(module, inputs))
@@ -132,7 +136,7 @@ def test_attention_returns_dynamic_state_with_tensor_sharding(fake_mesh: Mesh) -
 
     result = module(
         inputs,
-        positional_embeddings=None,
+        jnp.arange(inputs.shape[0], dtype=jnp.int32),
         return_updated_state=True,
         keychain=Keychain.init(1, sharding_config=make_test_sharding_config()),
     )
@@ -149,7 +153,9 @@ def test_attention_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:
     inputs = _sharded_sequence(jnp.arange(5 * MODEL_DIM, dtype=jnp.bfloat16).reshape(5, MODEL_DIM) / 10)
 
     result = module(
-        inputs, positional_embeddings=None, keychain=Keychain.init(6, sharding_config=make_test_sharding_config())
+        inputs,
+        jnp.arange(inputs.shape[0], dtype=jnp.int32),
+        keychain=Keychain.init(6, sharding_config=make_test_sharding_config()),
     )
 
     assert result.outputs.dtype == inputs.dtype
@@ -162,7 +168,9 @@ def test_attention_under_jit_matches_reference_and_preserves_tensor_sharding(fak
 
     result = eqx.filter_jit(
         lambda module, values: module(
-            values, positional_embeddings=None, keychain=Keychain.init(2, sharding_config=make_test_sharding_config())
+            values,
+            jnp.arange(values.shape[0], dtype=jnp.int32),
+            keychain=Keychain.init(2, sharding_config=make_test_sharding_config()),
         ),
     )(module, inputs)
 
@@ -177,7 +185,7 @@ def test_attention_implementations_match(fake_mesh: Mesh) -> None:
 
     standard = module(
         inputs,
-        positional_embeddings=None,
+        jnp.arange(inputs.shape[0], dtype=jnp.int32),
         forward_pass_config=MixerForwardPassConfig(
             attention_implementation=AttentionImplementation.STANDARD,
         ),
@@ -185,7 +193,7 @@ def test_attention_implementations_match(fake_mesh: Mesh) -> None:
     )
     stable_reduction = module(
         inputs,
-        positional_embeddings=None,
+        jnp.arange(inputs.shape[0], dtype=jnp.int32),
         forward_pass_config=MixerForwardPassConfig(
             attention_implementation=AttentionImplementation.STABLE_REDUCTION,
             attention_tile_size=2,
@@ -203,7 +211,7 @@ def test_soft_capped_attention_implementations_match(fake_mesh: Mesh) -> None:
 
     standard = module(
         inputs,
-        positional_embeddings=None,
+        jnp.arange(inputs.shape[0], dtype=jnp.int32),
         forward_pass_config=MixerForwardPassConfig(
             attention_implementation=AttentionImplementation.STANDARD,
         ),
@@ -211,7 +219,7 @@ def test_soft_capped_attention_implementations_match(fake_mesh: Mesh) -> None:
     )
     stable_reduction = module(
         inputs,
-        positional_embeddings=None,
+        jnp.arange(inputs.shape[0], dtype=jnp.int32),
         forward_pass_config=MixerForwardPassConfig(
             attention_implementation=AttentionImplementation.STABLE_REDUCTION,
             attention_tile_size=2,
@@ -228,7 +236,11 @@ def test_attention_vmapped_over_inputs_matches_reference_and_keeps_data_sharding
     inputs = _sharded_sequences(jnp.arange(2 * 5 * MODEL_DIM, dtype=jnp.float32).reshape(2, 5, MODEL_DIM) / 10)
 
     result = call_vmapped(
-        lambda values, *, keychain: module(values, positional_embeddings=None, keychain=keychain),
+        lambda values, *, keychain: module(
+            values,
+            jnp.arange(values.shape[0], dtype=jnp.int32),
+            keychain=keychain,
+        ),
         inputs,
         keychain=Keychain.init(3, sharding_config=make_test_sharding_config()),
         added_sharding_axis=make_test_sharding_config().resolve_axis(LogicalAxis.BATCH),
@@ -269,6 +281,7 @@ def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_m
         ),
         query_norm=None,
         key_norm=None,
+        rope=original.rope,
         sinks=None,
         borrows_kv_cache=False,
     )
@@ -276,7 +289,9 @@ def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_m
 
     restored = template.load_exported(original.export())
     result = restored(
-        inputs, positional_embeddings=None, keychain=Keychain.init(4, sharding_config=make_test_sharding_config())
+        inputs,
+        jnp.arange(inputs.shape[0], dtype=jnp.int32),
+        keychain=Keychain.init(4, sharding_config=make_test_sharding_config()),
     )
 
     assert isinstance(restored.qkv_projection.weights, FullPrecisionMatrix)
@@ -288,7 +303,9 @@ def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_m
     _assert_close(
         result=result.outputs,
         reference=original(
-            inputs, positional_embeddings=None, keychain=Keychain.init(5, sharding_config=make_test_sharding_config())
+            inputs,
+            jnp.arange(inputs.shape[0], dtype=jnp.int32),
+            keychain=Keychain.init(5, sharding_config=make_test_sharding_config()),
         ).outputs,
     )
     _assert_named_sharding(result.outputs.sharding, fake_mesh)

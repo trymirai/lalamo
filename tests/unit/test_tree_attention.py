@@ -149,9 +149,11 @@ def test_kv_borrowing_layer_projects_queries_only(decoder: Decoder) -> None:
 @pytest.mark.parametrize("decoder", [(2, frozendict())], indirect=True)
 def test_layers_have_distinct_ropes(decoder: Decoder) -> None:
     first, second = decoder.transformer.layers
-    assert first.rope is not None
-    assert second.rope is not None
-    assert first.rope is not second.rope
+    assert isinstance(first.mixer, Attention)
+    assert isinstance(second.mixer, Attention)
+    assert first.mixer.rope is not None
+    assert second.mixer.rope is not None
+    assert first.mixer.rope is not second.mixer.rope
 
 
 def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:

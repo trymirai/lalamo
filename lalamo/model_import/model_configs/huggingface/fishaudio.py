@@ -84,6 +84,7 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         out_projection_config=linear_config,
         query_norm_config=None,
         key_norm_config=None,
+        rope_config=rope_config,
         num_heads=config["n_head"],
         num_groups=n_local_heads,
         head_dim=config["head_dim"],
@@ -112,7 +113,6 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         pre_mlp_norm_config=norm_config_pre,
         mlp_config=mlp_config,
         post_mlp_norm_config=None,
-        rope_config=rope_config,
     )
 
     return TransformerConfig(
@@ -290,6 +290,7 @@ class FishAudioConfig(ForeignTTSConfig):
             out_projection_config=linear_config,
             query_norm_config=norm_config if attention_qk_norm else None,
             key_norm_config=norm_config if attention_qk_norm else None,
+            rope_config=rope_config,
             num_heads=n_head,
             num_groups=n_local_heads,
             head_dim=head_dim,
@@ -318,7 +319,6 @@ class FishAudioConfig(ForeignTTSConfig):
             pre_mlp_norm_config=norm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
-            rope_config=rope_config,
         )
 
         transformer_cfg = TransformerConfig(

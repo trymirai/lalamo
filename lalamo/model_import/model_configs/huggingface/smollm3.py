@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from lalamo.modules.activations import SiLU
@@ -93,6 +93,7 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
             out_projection_config=linear_config,
             query_norm_config=None,
             key_norm_config=None,
+            rope_config=None,
             logit_soft_cap=None,
             has_sinks=False,
             has_qkv_biases=self.attention_bias,
@@ -115,12 +116,11 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
         layer_configs = tuple(
             TransformerLayerConfig(
                 pre_mixer_norm_config=rmsnorm_config,
-                mixer_config=attention_config,
+                mixer_config=replace(attention_config, rope_config=rope_config if uses_rope else None),
                 post_mixer_norm_config=None,
                 pre_mlp_norm_config=rmsnorm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
-                rope_config=rope_config if uses_rope else None,
             )
             for uses_rope in uses_rope_by_layer
         )

@@ -147,6 +147,7 @@ class ConfigMapping:
             out_projection_config=linear_config,
             query_norm_config=norm_config if config.attention_qk_norm else None,
             key_norm_config=norm_config if config.attention_qk_norm else None,
+            rope_config=rope_config,
             num_heads=config.n_head,
             num_groups=config.n_local_heads,
             head_dim=config.head_dim,
@@ -175,7 +176,6 @@ class ConfigMapping:
             pre_mlp_norm_config=norm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
-            rope_config=rope_config,
         )
 
         transformer_cfg = TransformerConfig(

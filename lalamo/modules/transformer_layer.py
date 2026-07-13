@@ -16,19 +16,18 @@ from lalamo.weight_matrix import GradientEstimator
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig, NormalizationForwardPassConfig
 from .ple import PLELayer, PLELayerConfig
-from .rope import PositionalEmbeddings, RoPE, RoPEConfig
+from .rope import PositionalEmbeddings
 from .token_mixer import (
     MixerForwardPassConfig,
-    PositionalEmbeddingSelector,
     StateLayerBase,
     TokenMixerBase,
     TokenMixerConfig,
+    TokenMixerResult,
 )
 from .token_mixers.attention import Attention, AttentionConfig
 from .utils import call_vmapped, call_vmapped_twice, gather_suffix_tokens
 
 __all__ = [
-    "PositionalEmbeddingSelector",
     "TransformerForwardPassConfig",
     "TransformerLayer",
     "TransformerLayerActivationTrace",
@@ -95,6 +94,7 @@ class TransformerLayerActivationTrace(Exportable, eqx.Module):
 class TransformerLayerResult(Exportable, eqx.Module):
     outputs: Float[Array, "batch suffix_tokens channels"]
     updated_state: StateLayerBase | None
+    positional_embeddings: PositionalEmbeddings | None
     activation_trace: TransformerLayerActivationTrace | None
 
 
@@ -113,7 +113,6 @@ class TransformerLayerConfig(LalamoConfig):
     ple_config: PLELayerConfig | None = None
     ple_norm_config: NormalizationConfig | None = None
     has_output_multiplier: bool = False
-    rope_config: RoPEConfig | None = None
 
     def __post_init__(self) -> None:
         has_parallel_mlp = self.parallel_mlp_config is not None
@@ -141,10 +140,6 @@ class TransformerLayerConfig(LalamoConfig):
         else:
             assert not borrows_kv_cache
             mixer = self.mixer_config.init(initializer, model_dim=model_dim)
-        if self.rope_config is None:
-            rope = None
-        else:
-            rope = self.rope_config.init(initializer)
         post_mixer_norm = (
             self.post_mixer_norm_config.init(initializer, model_dim) if self.post_mixer_norm_config else None
         )
@@ -170,7 +165,6 @@ class TransformerLayerConfig(LalamoConfig):
             sharding_config=initializer.sharding_config,
             pre_mixer_norm=pre_mixer_norm,
             mixer=mixer,
-            rope=rope,
             post_mixer_norm=post_mixer_norm,
             pre_mlp_norm=pre_mlp_norm,
             mlp=mlp,
@@ -187,7 +181,6 @@ class TransformerLayerConfig(LalamoConfig):
 class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     pre_mixer_norm: Normalization | None
     mixer: TokenMixerBase
-    rope: RoPE | None
     post_mixer_norm: Normalization | None
     pre_mlp_norm: Normalization
     mlp: MLPBase
@@ -203,7 +196,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     def __call__(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
-        positional_embeddings: PositionalEmbeddings | None,
+        token_positions: Int[Array, "batch suffix_tokens"],
         state: StateLayerBase | None = None,
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
@@ -237,18 +230,18 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         def call_mixer(
             mixer_inputs: tuple[
                 Float[Array, "suffix_tokens channels"],
-                PositionalEmbeddings | None,
+                Int[Array, " suffix_tokens"],
                 StateLayerBase | None,
                 Int[Array, ""] | None,
                 Int[Array, " suffix_tokens"] | None,
             ],
             *,
             keychain: Keychain,
-        ) -> tuple[Float[Array, "suffix_tokens channels"], StateLayerBase | None]:
-            mixer_input, positional_embedding, mixer_state, length_without_padding, parent_indices = mixer_inputs
+        ) -> TokenMixerResult[StateLayerBase]:
+            mixer_input, positions, mixer_state, length_without_padding, parent_indices = mixer_inputs
             return self.mixer(
                 mixer_input,
-                positional_embedding,
+                positions,
                 mixer_state,
                 return_updated_state=return_updated_state or return_activation_trace,
                 length_without_padding=length_without_padding,
@@ -257,11 +250,11 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 keychain=keychain,
             )
 
-        mixer_outputs, updated_state = call_vmapped(
+        mixer_result = call_vmapped(
             call_mixer,
             (
                 normalized_mixer_inputs,
-                positional_embeddings,
+                token_positions,
                 state,
                 lengths_without_padding,
                 attention_parent_indices,
@@ -269,6 +262,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             keychain=mixer_keychain,
             added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )
+        mixer_outputs = mixer_result.outputs
+        updated_state = mixer_result.state
+        positional_embeddings = mixer_result.positional_embeddings
         if self.post_mixer_norm is not None:
             normalized_mixer_outputs = call_vmapped_twice(
                 self.post_mixer_norm,
@@ -396,6 +392,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return TransformerLayerResult(
             outputs=outputs,
             updated_state=updated_state,
+            positional_embeddings=positional_embeddings,
             activation_trace=activation_trace,
         )
 

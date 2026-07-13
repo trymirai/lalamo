@@ -243,6 +243,7 @@ class HFGemma4TextConfig:
                 out_projection_config=linear_config,
                 query_norm_config=rms_norm_config,
                 key_norm_config=rms_norm_config,
+                rope_config=layer_rope_config,
                 logit_soft_cap=None,
                 has_sinks=False,
                 has_qkv_biases=self.attention_bias,
@@ -271,7 +272,6 @@ class HFGemma4TextConfig:
                 ple_config=ple_layer_config,
                 ple_norm_config=rms_norm_config if ple_layer_config is not None else None,
                 has_output_multiplier=True,
-                rope_config=layer_rope_config,
             )
             layer_configs.append(transformer_layer_config)
 

@@ -133,6 +133,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
             out_projection_config=linear_config,
             query_norm_config=block_norm_config,
             key_norm_config=block_norm_config,
+            rope_config=rope_config,
             num_heads=self.num_attention_heads,
             num_groups=self.num_key_value_heads,
             head_dim=head_dim,
@@ -178,7 +179,6 @@ class HFLFM2Config(HuggingFaceLMConfig):
                 pre_mlp_norm_config=block_norm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
-                rope_config=rope_config if layer_type == "full_attention" else None,
             )
             for layer_type in layer_types
         ]

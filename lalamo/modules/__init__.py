@@ -57,7 +57,6 @@ from .rope import (
 from .token_mixer import (
     AttentionImplementation,
     MixerForwardPassConfig,
-    PositionalEmbeddingSelector,
     State,
     StateLayerBase,
     TokenMixerBase,
@@ -145,7 +144,6 @@ __all__ = [
     "PartialRoPEConfig",
     "PerLayerEmbedding",
     "PerLayerEmbeddingConfig",
-    "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
     "RoPE",
     "RoPEConfig",
