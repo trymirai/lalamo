@@ -2,11 +2,14 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
+from einops import rearrange
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
 from lalamo.initializer import EmptyInitializer, RandomInitializer
-from lalamo.module import LogicalAxis
+from lalamo.module import Keychain, LogicalAxis
+from lalamo.modules.linear import Linear, LinearConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import (
     LinearScalingRoPEConfig,
     LlamaRoPEConfig,
@@ -16,6 +19,7 @@ from lalamo.modules.rope import (
     UnscaledRoPEConfig,
     YARNRoPEConfig,
 )
+from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.utils import call_vmapped
 from tests.common import assert_close
 from tests.helpers import make_sharding, make_test_sharding_config
@@ -185,6 +189,76 @@ def test_positional_embeddings_apply_rejects_too_small_head_dim() -> None:
 
     with pytest.raises(ValueError, match="exceeds input head_dim"):
         embeddings.apply(jnp.zeros((2, HEAD_DIM - 1), dtype=jnp.float32))
+
+
+def _attention() -> Attention:
+    norm_config = NormalizationConfig(
+        epsilon=1e-6,
+        scale_offset=None,
+        upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+        subtract_mean=False,
+    )
+    config = AttentionConfig(
+        qkv_projection_config=LinearConfig(),
+        out_projection_config=LinearConfig(),
+        query_norm_config=norm_config,
+        key_norm_config=norm_config,
+        num_heads=2,
+        num_groups=2,
+        head_dim=HEAD_DIM,
+        is_causal=True,
+        scale=None,
+        sliding_window_size=None,
+        logit_soft_cap=None,
+        has_sinks=False,
+        has_qkv_biases=False,
+        has_out_biases=False,
+    )
+    return config.init(
+        RandomInitializer(
+            default_dtype=jnp.float32, sharding_config=make_test_sharding_config(), key=jax.random.key(1)
+        ),
+        model_dim=2 * HEAD_DIM,
+    )
+
+
+def test_attention_project_key_value_heads_matches_cache_written_by_call(fake_mesh: Mesh) -> None:
+    module = _attention()
+    num_tokens = 4
+    inputs = jax.device_put(
+        jnp.arange(num_tokens * module.model_dim, dtype=jnp.float32).reshape(num_tokens, module.model_dim) / 10,
+        make_sharding((None, None)),
+    )
+    positional_embeddings = _rope()(jnp.arange(num_tokens, dtype=jnp.int32))
+
+    keys, values = module.project_key_value_heads(
+        inputs,
+        positional_embeddings,
+        keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
+    )
+    result = module(
+        inputs,
+        positional_embeddings,
+        return_updated_state=True,
+        keychain=Keychain.init(1, sharding_config=make_test_sharding_config()),
+    )
+
+    assert result.state is not None
+    _assert_close(result=keys, reference=result.state.keys)
+    _assert_close(result=values, reference=result.state.values)
+    _assert_named_sharding(keys.sharding, fake_mesh)
+    _assert_named_sharding(values.sharding, fake_mesh)
+
+    projected = jnp.einsum(
+        "ti,oi->to",
+        jnp.asarray(jax.device_get(inputs)),
+        jnp.asarray(jax.device_get(module.qkv_projection.weights.decompress())),
+    )
+    *_, raw_values = jnp.split(projected, Linear.get_split_points(module.qkv_projection.output_dims), axis=-1)
+    _assert_close(
+        result=values,
+        reference=rearrange(raw_values, "tokens (groups head_channels) -> tokens groups head_channels", groups=2),
+    )
 
 
 def test_rope_exports_no_arrays_and_regenerates_from_config() -> None:

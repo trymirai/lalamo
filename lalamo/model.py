@@ -16,26 +16,20 @@ from lalamo.utils.registry_abc import RegistryABC
 from lalamo.utils.sharding import ShardingConfig
 
 __all__ = [
+    "BaseModel",
+    "BaseModelConfig",
     "Model",
     "ModelConfig",
 ]
 
 
 @dataclass(frozen=True)
-class ModelConfig[TokenCodecConfigT: TokenCodecConfig](LalamoConfig, RegistryABC):
-    token_codec_config: TokenCodecConfigT
-
+class BaseModelConfig(LalamoConfig, RegistryABC):
     @abstractmethod
-    def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "Model": ...
+    def init_from_directory(self, directory: Path, initializer: Initializer) -> "BaseModel": ...
 
 
-class Model[
-    TokenCodecConfigT: TokenCodecConfig,
-    ConfigT: ModelConfig,
-    TokenCodecT: TokenCodec,
-](LalamoModule[ConfigT]):
-    token_codec: TokenCodecT = field(static=True)
-
+class BaseModel[ConfigT: BaseModelConfig](LalamoModule[ConfigT]):
     def save(self, directory: Path | str) -> None:
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
@@ -55,21 +49,18 @@ class Model[
         with (directory / "config.json").open("w") as config_file:
             json.dump(self.config.to_json(), config_file, indent=4)
 
-        self.token_codec.tokenizer.save(str(directory / "tokenizer.json"))
-
     @classmethod
     def load(cls, directory: Path | str, sharding_config: ShardingConfig, dtype: DTypeLike | None = None) -> Self:
         directory = Path(directory)
         with (directory / "config.json").open() as config_file:
-            config = ModelConfig.from_json(json.load(config_file))
-        tokenizer = Tokenizer.from_file(str(directory / "tokenizer.json"))
+            config = BaseModelConfig.from_json(json.load(config_file))
 
         with (directory / "model.safetensors").open("rb") as weights_file:
             metadata, arrays = safe_read(weights_file)
             decoded_metadata = {}
             if metadata is not None:
                 decoded_metadata = {key: json.loads(value) for key, value in metadata.items()}
-            template = config.init(tokenizer, EmptyInitializer(dtype, sharding_config))
+            template = config.init_from_directory(directory, EmptyInitializer(dtype, sharding_config))
             result = Exportable.load_exported(
                 template,
                 ExportResults(
@@ -80,3 +71,27 @@ class Model[
 
         assert isinstance(result, cls)
         return result
+
+
+@dataclass(frozen=True)
+class ModelConfig[TokenCodecConfigT: TokenCodecConfig](BaseModelConfig):
+    token_codec_config: TokenCodecConfigT
+
+    @abstractmethod
+    def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "Model": ...
+
+    def init_from_directory(self, directory: Path, initializer: Initializer) -> "Model":
+        tokenizer = Tokenizer.from_file(str(directory / "tokenizer.json"))
+        return self.init(tokenizer, initializer)
+
+
+class Model[
+    TokenCodecConfigT: TokenCodecConfig,
+    ConfigT: ModelConfig,
+    TokenCodecT: TokenCodec,
+](BaseModel[ConfigT]):
+    token_codec: TokenCodecT = field(static=True)
+
+    def save(self, directory: Path | str) -> None:
+        super().save(directory)
+        self.token_codec.tokenizer.save(str(Path(directory) / "tokenizer.json"))

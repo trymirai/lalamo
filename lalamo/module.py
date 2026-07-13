@@ -31,6 +31,7 @@ __all__ = [
     "LalamoModule",
     "LogicalAxis",
     "ShardingConfig",
+    "SpeculatorState",
     "field",
 ]
 
@@ -38,6 +39,10 @@ __all__ = [
 class ForwardPassMode(StrEnum):
     MULTI_TOKEN = "multi_token"
     SINGLE_TOKEN = "single_token"
+
+
+class SpeculatorState(eqx.Module):
+    pass
 
 
 class KeychainBroadcastMode(StrEnum):
