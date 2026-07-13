@@ -36,21 +36,21 @@ def load_weaver_block(
 ) -> WeaverBlock:
     return eqx.tree_at(
         lambda module: (
-            module.norm_attn,
+            module.pre_attention_norm,
             module.qkv_projection,
-            module.o_proj,
-            module.norm_mlp,
-            module.fc1,
-            module.fc2,
+            module.out_projection,
+            module.pre_mlp_norm,
+            module.up_projection,
+            module.down_projection,
         ),
         block,
         (
-            load_weaver_norm(block.norm_attn, weights_dict, path / "norm_attn"),
+            load_weaver_norm(block.pre_attention_norm, weights_dict, path / "norm_attn"),
             load_linear(block.qkv_projection, weights_dict, path, sublayers_to_fuse=["q_proj", "k_proj", "v_proj"]),
-            load_linear(block.o_proj, weights_dict, path / "o_proj"),
-            load_weaver_norm(block.norm_mlp, weights_dict, path / "norm_mlp"),
-            load_linear(block.fc1, weights_dict, path / "fc1"),
-            load_linear(block.fc2, weights_dict, path / "fc2"),
+            load_linear(block.out_projection, weights_dict, path / "o_proj"),
+            load_weaver_norm(block.pre_mlp_norm, weights_dict, path / "norm_mlp"),
+            load_linear(block.up_projection, weights_dict, path / "fc1"),
+            load_linear(block.down_projection, weights_dict, path / "fc2"),
         ),
     )
 
@@ -76,23 +76,23 @@ def load_weaver(
     root = ParameterPath()
     return eqx.tree_at(
         lambda module: (
-            module.embed_norm,
+            module.embedding_norm,
+            module.hidden_state_norm,
             module.output_norm,
-            module.out_norm,
-            module.token_in,
-            module.proposal_in,
-            module.lm_head_query_in,
+            module.embedding_projection,
+            module.hidden_state_projection,
+            module.query_projection,
             module.blocks,
-            module.pos_emb,
+            module.position_embeddings,
         ),
         weaver,
         (
-            load_weaver_norm(weaver.embed_norm, weights_dict, root / "embed_norm"),
-            load_weaver_norm(weaver.output_norm, weights_dict, root / "output_norm"),
-            load_weaver_norm(weaver.out_norm, weights_dict, root / "out_norm"),
-            load_linear(weaver.token_in, weights_dict, root / "token_in"),
-            load_linear(weaver.proposal_in, weights_dict, root / "proposal_in"),
-            load_linear(weaver.lm_head_query_in, weights_dict, root / "lm_head_query_in"),
+            load_weaver_norm(weaver.embedding_norm, weights_dict, root / "embed_norm"),
+            load_weaver_norm(weaver.hidden_state_norm, weights_dict, root / "output_norm"),
+            load_weaver_norm(weaver.output_norm, weights_dict, root / "out_norm"),
+            load_linear(weaver.embedding_projection, weights_dict, root / "token_in"),
+            load_linear(weaver.hidden_state_projection, weights_dict, root / "proposal_in"),
+            load_linear(weaver.query_projection, weights_dict, root / "lm_head_query_in"),
             tuple(
                 load_weaver_block(block, weights_dict, root / "blocks" / index)
                 for index, block in enumerate(weaver.blocks)

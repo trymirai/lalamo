@@ -33,12 +33,12 @@ class HFWeaverConfig:
 
     def to_weaver_config(self) -> WeaverConfig:
         return WeaverConfig(
-            d_model=self.d_model,
-            d_embed=self.d_embed,
-            d_rank=self.d_rank,
+            model_dim=self.d_rank,
+            target_model_dim=self.d_model,
+            target_embedding_dim=self.d_embed,
             num_layers=self.num_layers,
             num_heads=self.num_heads,
-            mlp_channels=self.mlp_channels,
+            hidden_dim=self.mlp_channels,
             max_depth=self.max_depth,
             candidate_pool_size=self.candidate_pool_size,
             linear_config=LinearConfig(),
