@@ -2,7 +2,6 @@ from pathlib import Path
 
 import equinox as eqx
 import jax.numpy as jnp
-import torch
 from jaxtyping import Array, DTypeLike
 
 from lalamo.initializer import EmptyInitializer
@@ -60,6 +59,8 @@ def load_weaver(
     sharding_config: ShardingConfig | None = None,
     dtype: DTypeLike | None = None,
 ) -> Weaver:
+    import torch  # noqa: PLC0415
+
     payload = torch.load(path, map_location="cpu", weights_only=True)
     speculator_kind = payload.get("metadata", {}).get("speculator_kind")
     if speculator_kind != "dflash_tfm_weaver":
