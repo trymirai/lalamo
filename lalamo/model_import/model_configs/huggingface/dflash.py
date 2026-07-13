@@ -37,16 +37,6 @@ class DFlashYarnRopeScalingConfig:
     mscale: float | None = None
     mscale_all_dim: float | None = None
 
-    def resolved_attention_factor(self) -> float | None:
-        if self.attention_factor is not None:
-            return self.attention_factor
-        if not self.mscale or not self.mscale_all_dim:
-            return None
-        if self.factor <= 1:
-            return 1.0
-        log_factor = math.log(self.factor)
-        return (0.1 * self.mscale * log_factor + 1.0) / (0.1 * self.mscale_all_dim * log_factor + 1.0)
-
 
 @dataclass(frozen=True)
 class DFlashRopeParameters:
@@ -121,9 +111,27 @@ class HFDFlashConfig:
             beta_fast=self.rope_scaling.beta_fast,
             beta_slow=self.rope_scaling.beta_slow,
             truncate=self.rope_scaling.truncate,
-            attention_factor=self.rope_scaling.resolved_attention_factor(),
             head_dim=self.head_dim,
         )
+
+    def _attention_scale(self) -> float:
+        scale = self.head_dim**-0.5
+        if self.rope_scaling is None:
+            return scale
+        scaling = self.rope_scaling
+        attention_factor = scaling.attention_factor
+        if attention_factor is None and scaling.mscale and scaling.mscale_all_dim:
+            if scaling.factor > 1:
+                log_factor = math.log(scaling.factor)
+                attention_factor = (0.1 * scaling.mscale * log_factor + 1.0) / (
+                    0.1 * scaling.mscale_all_dim * log_factor + 1.0
+                )
+            else:
+                attention_factor = 1.0
+        if attention_factor is None:
+            return scale
+        yarn_attention_factor = 0.1 * math.log(scaling.factor) + 1.0
+        return scale * (attention_factor / yarn_attention_factor) ** 2
 
     def _layer_sliding_window_sizes(self) -> tuple[int | None, ...]:
         assert len(self.layer_types) == self.num_hidden_layers
@@ -173,7 +181,7 @@ class HFDFlashConfig:
                     num_groups=self.num_key_value_heads,
                     head_dim=self.head_dim,
                     is_causal=False,
-                    scale=self.head_dim**-0.5,
+                    scale=self._attention_scale(),
                     sliding_window_size=2 * sliding_window_size - 1 if sliding_window_size is not None else None,
                     logit_soft_cap=None,
                     has_sinks=False,
