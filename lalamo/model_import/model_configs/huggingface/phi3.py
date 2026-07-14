@@ -11,7 +11,7 @@ from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.rope import LongRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer import TransformerConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
@@ -21,6 +21,13 @@ from lalamo.weight_matrix import CompressionImplementation
 from .common import HuggingFaceLMConfig, QuantizationConfigType
 
 __all__ = ["HFPhi3Config"]
+
+
+@dataclass(frozen=True)
+class Phi3LongRopeScalingConfig:
+    type: Literal["longrope"]
+    short_factor: list[float]
+    long_factor: list[float]
 
 
 @dataclass(frozen=True)
@@ -42,6 +49,7 @@ class HFPhi3Config(HuggingFaceLMConfig):
     partial_rotary_factor: float
 
     original_max_position_embeddings: int
+    rope_scaling: Phi3LongRopeScalingConfig
     quantization_config: QuantizationConfigType = None
 
     @property
@@ -57,20 +65,24 @@ class HFPhi3Config(HuggingFaceLMConfig):
         context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        supported_context_length = self.original_max_position_embeddings
-        if context_length is not None and context_length > supported_context_length:
+        original_context_length = self.original_max_position_embeddings
+        if context_length is not None and context_length > self.max_position_embeddings:
             raise ValueError(
-                f"Requested context_length={context_length} exceeds the supported context "
-                f"{supported_context_length} for this model. Come next time"
+                f"Requested context_length={context_length} exceeds the maximum context "
+                f"{self.max_position_embeddings} for this model."
             )
-        max_sequence_length = supported_context_length if context_length is None else context_length
+        max_sequence_length = original_context_length if context_length is None else context_length
         assert self.tie_word_embeddings, "Phi-4-mini only has tied embeddings"
         embedding_config = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None)
 
-        rope_config = UnscaledRoPEConfig(
+        rope_config = LongRoPEConfig(
             base=self.rope_theta,
             max_sequence_length=max_sequence_length,
             head_dim=self.rotary_dim,
+            short_factor=tuple(self.rope_scaling.short_factor),
+            long_factor=tuple(self.rope_scaling.long_factor),
+            original_context_length=original_context_length,
+            scaling_factor=self.max_position_embeddings / original_context_length,
         )
         rmsnorm_config = NormalizationConfig(
             epsilon=self.rms_norm_eps,

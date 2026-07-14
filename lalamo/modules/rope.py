@@ -30,6 +30,7 @@ from lalamo.utils.registry_abc import RegistryABC
 __all__ = [
     "LinearScalingRoPEConfig",
     "LlamaRoPEConfig",
+    "LongRoPEConfig",
     "PositionalEmbeddings",
     "RoPE",
     "RoPEConfig",
@@ -218,3 +219,29 @@ class LinearScalingRoPEConfig(RoPEConfig):
         inverse_frequencies: Float[Array, " rotary_pairs"],
     ) -> Float[Array, " rotary_pairs"]:
         return inverse_frequencies / self.scaling_factor
+
+
+@dataclass(frozen=True, kw_only=True)
+class LongRoPEConfig(RoPEConfig):
+    short_factor: tuple[float, ...]
+    long_factor: tuple[float, ...]
+    original_context_length: int
+    scaling_factor: float
+
+    @property
+    def _rescaling_factors(self) -> tuple[float, ...]:
+        if self.max_sequence_length > self.original_context_length:
+            return self.long_factor
+        return self.short_factor
+
+    def _scale_inverse_frequencies(
+        self,
+        inverse_frequencies: Float[Array, " rotary_pairs"],
+    ) -> Float[Array, " rotary_pairs"]:
+        return inverse_frequencies / jnp.asarray(self._rescaling_factors, dtype=jnp.float32)
+
+    @property
+    def _attention_scaling_factor(self) -> float:
+        if self.scaling_factor <= 1.0:
+            return 1.0
+        return math.sqrt(1.0 + math.log(self.scaling_factor) / math.log(self.original_context_length))

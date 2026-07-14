@@ -1,3 +1,5 @@
+import math
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -13,6 +15,7 @@ from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import (
     LinearScalingRoPEConfig,
     LlamaRoPEConfig,
+    LongRoPEConfig,
     PositionalEmbeddings,
     RoPE,
     RoPEConfig,
@@ -120,6 +123,18 @@ def _full_table(rope: RoPE) -> PositionalEmbeddings:
                 truncate=True,
             ),
             id="yarn",
+        ),
+        pytest.param(
+            LongRoPEConfig(
+                base=10_000.0,
+                max_sequence_length=NUM_TIMESTEPS,
+                head_dim=HEAD_DIM,
+                short_factor=(1.0, 1.0),
+                long_factor=(1.0, 2.5),
+                original_context_length=NUM_TIMESTEPS // 2,
+                scaling_factor=32.0,
+            ),
+            id="longrope",
         ),
     ],
 )
@@ -274,3 +289,53 @@ def test_rope_exports_no_arrays_and_regenerates_from_config() -> None:
     table = _full_table(original)
     _assert_close(result=embeddings.sines, reference=_select_reference(table.sines, timesteps))
     _assert_close(result=embeddings.cosines, reference=_select_reference(table.cosines, timesteps))
+
+
+LONGROPE_BASE = 10_000.0
+LONGROPE_SHORT_FACTOR = (1.0, 1.0)
+LONGROPE_LONG_FACTOR = (1.0, 2.5)
+LONGROPE_ORIGINAL_CONTEXT_LENGTH = 4
+LONGROPE_SCALING_FACTOR = 32.0
+
+
+def _longrope_config(max_sequence_length: int) -> LongRoPEConfig:
+    return LongRoPEConfig(
+        base=LONGROPE_BASE,
+        max_sequence_length=max_sequence_length,
+        head_dim=HEAD_DIM,
+        short_factor=LONGROPE_SHORT_FACTOR,
+        long_factor=LONGROPE_LONG_FACTOR,
+        original_context_length=LONGROPE_ORIGINAL_CONTEXT_LENGTH,
+        scaling_factor=LONGROPE_SCALING_FACTOR,
+    )
+
+
+@pytest.mark.parametrize(
+    ("max_sequence_length", "expected_factor"),
+    [
+        pytest.param(LONGROPE_ORIGINAL_CONTEXT_LENGTH, LONGROPE_SHORT_FACTOR, id="within-original-context"),
+        pytest.param(NUM_TIMESTEPS, LONGROPE_LONG_FACTOR, id="beyond-original-context"),
+    ],
+)
+def test_longrope_matches_huggingface_reference(
+    max_sequence_length: int,
+    expected_factor: tuple[float, ...],
+) -> None:
+    config = _longrope_config(max_sequence_length)
+
+    channel_indices = jnp.arange(0, HEAD_DIM, 2, dtype=jnp.float32)
+    reference_inverse_frequencies = 1.0 / (
+        jnp.asarray(expected_factor) * LONGROPE_BASE ** (channel_indices / HEAD_DIM)
+    )
+    reference_attention_scaling = math.sqrt(
+        1.0 + math.log(LONGROPE_SCALING_FACTOR) / math.log(LONGROPE_ORIGINAL_CONTEXT_LENGTH)
+    )
+
+    timesteps = jnp.arange(max_sequence_length, dtype=jnp.int32)
+    reference_embeddings = jnp.outer(timesteps.astype(jnp.float32), reference_inverse_frequencies)
+    reference_embeddings = jnp.concatenate((reference_embeddings, reference_embeddings), axis=-1)
+
+    embeddings = config.compute_positional_embeddings(timesteps)
+
+    _assert_close(result=embeddings.cosines, reference=jnp.cos(reference_embeddings) * reference_attention_scaling)
+    _assert_close(result=embeddings.sines, reference=jnp.sin(reference_embeddings) * reference_attention_scaling)
