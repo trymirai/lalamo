@@ -198,7 +198,6 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             is_last_token_inside=is_last_token_inside,
         )
 
-    @eqx.filter_jit
     def prefill_tokens(
         self,
         token_ids: Int[Array, "batch tokens"],
@@ -225,7 +224,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         state_dtype = forward_pass_config.embedding_forward_pass_config.activation_dtype
         state = self.decoder.init_static_state(
             batch_size,
-            max(state_capacity, num_chunks * chunk_size),
+            max(state_capacity, sequence_length),
             state_dtype,
         )
         logits_like = jax.device_put(
@@ -234,6 +233,9 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         )
         logits_sharding = self.sharding_config.make_sharding((batch_axis, None))
         chunk_keychains = jax.tree.map(lambda *nodes: jnp.stack(nodes), *keychain.split(num_chunks))
+        decoder = self.decoder.call_unjitted
+        if batch_axis is None:
+            decoder = self.decoder
 
         def apply_chunk(
             state_and_logits: tuple[State, Float[Array, "batch vocabulary"]],
@@ -241,7 +243,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         ) -> tuple[tuple[State, Float[Array, "batch vocabulary"]], None]:
             current_state, previous_logits = state_and_logits
             chunk, current_chunk_keychain = chunk_inputs
-            decoder_result = self.decoder(
+            decoder_result = decoder(
                 token_ids=chunk.tokens,
                 token_positions=chunk.indices,
                 state=current_state,
@@ -259,11 +261,16 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 jnp.where(chunk.is_last_token_inside[:, None], chunk_logits, previous_logits),
             ), None
 
-        (state, last_token_logits), _ = jax.lax.scan(
-            apply_chunk,
-            (state, logits_like),
-            (chunks, chunk_keychains),
-        )
+        state_and_logits = (state, logits_like)
+        for chunk_index in range(num_chunks):
+            state_and_logits, _ = apply_chunk(
+                state_and_logits,
+                jax.tree.map(
+                    lambda value, chunk_index=chunk_index: value[chunk_index],
+                    (chunks, chunk_keychains),
+                ),
+            )
+        state, last_token_logits = state_and_logits
 
         return PrefillResults(
             last_token_logits=last_token_logits,

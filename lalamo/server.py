@@ -20,10 +20,14 @@ from fastapi.responses import JSONResponse
 from jax import numpy as jnp
 
 from lalamo.data.huggingface_message import HFMessage
-from lalamo.inference.batch_scheduler import _PROBE_CACHE, BatchSchedulerConfig, ContinuousBatchScheduler
+from lalamo.inference.batch_scheduler import (
+    _PROBE_CACHE,
+    BatchSchedulerConfig,
+    ContinuousBatchScheduler,
+)
 from lalamo.model_import.common import import_model
 from lalamo.models import GenerationConfig, LanguageModel
-from lalamo.module import Keychain
+from lalamo.module import Keychain, LogicalAxis
 from lalamo.utils.sharding import ShardingConfig
 
 BatchStatus = Literal["in_progress", "completed", "failed"]
@@ -119,7 +123,7 @@ def _load_resident_model(model_path: str, dtype: str | None) -> LanguageModel:
 
     model = import_model(
         model_path,
-        sharding_config=ShardingConfig.replicated(),
+        sharding_config=app.state.sharding_config,
         dtype=jnp.dtype(dtype) if dtype is not None else None,
     ).model
     if not isinstance(model, LanguageModel):
@@ -206,22 +210,23 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
     sequence_ids = [request.sequence_id for request in requests]
     batch_scheduler = ContinuousBatchScheduler(model=model)
 
-    for reply_idx, reply in batch_scheduler.reply_many(
-        dataset,
-        generation_config=reference.generation_config,
-        batch_scheduler_config=BatchSchedulerConfig(
-            max_output_length=reference.max_completion_tokens,
-            batch_size=None,
-        ),
-        enable_thinking=reference.enable_thinking,
-        keychain=keychain,
-        vram_bytes=app.state.vram_bytes,
-    ):
-        yield ResponseBody(
-            sequence_id=sequence_ids[reply_idx],
-            chain_of_thought=reply.chain_of_thought,
-            response=reply.response,
-        )
+    with jax.set_mesh(model.sharding_config.mesh):
+        for reply_idx, reply in batch_scheduler.reply_many(
+            dataset,
+            generation_config=reference.generation_config,
+            batch_scheduler_config=BatchSchedulerConfig(
+                max_output_length=reference.max_completion_tokens,
+                batch_size=app.state.batch_size,
+            ),
+            enable_thinking=reference.enable_thinking,
+            keychain=keychain,
+            vram_bytes=app.state.vram_bytes if app.state.batch_size is None else None,
+        ):
+            yield ResponseBody(
+                sequence_id=sequence_ids[reply_idx],
+                chain_of_thought=reply.chain_of_thought,
+                response=reply.response,
+            )
 
 
 async def execute_batch(batch: Batch, requests: list[RequestBody]) -> None:
@@ -280,7 +285,19 @@ async def get_batch(batch_id: str) -> Batch:
     raise HTTPException(404, "batch not found")
 
 
-def start_server(host: str, port: int, vram_bytes: int, cache_dir: Path) -> None:
+def start_server(
+    host: str,
+    port: int,
+    vram_bytes: int,
+    batch_size: int | None,
+    cache_dir: Path,
+    sharding_config: ShardingConfig,
+) -> None:
+    if sharding_config.resolve_axis(LogicalAxis.BATCH) is not None and batch_size is None:
+        raise ValueError("Batch-sharded serving requires an explicit batch size.")
+
     app.state.vram_bytes = vram_bytes
+    app.state.batch_size = batch_size
     app.state.cache_dir = cache_dir
+    app.state.sharding_config = sharding_config
     uvicorn.run(app, host=host, port=port)

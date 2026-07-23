@@ -636,9 +636,13 @@ def server(
     vram_gb: Annotated[
         float | None,
         Option(
-            help="Maximum VRAM in GB. Batch sizes are estimated automatically.",
+            help="Maximum VRAM in GB used for automatic batch sizing.",
             show_default="max on default device",
         ),
+    ] = None,
+    batch_size: Annotated[
+        int | None,
+        Option(help="Fixed batch size. Required with --fsdp."),
     ] = None,
     cache_dir: Annotated[
         Path | None,
@@ -647,6 +651,14 @@ def server(
             show_default="~/.cache/lalamo/batches",
         ),
     ] = None,
+    fsdp: Annotated[
+        bool,
+        Option(help="Shard model weights and batches across visible devices."),
+    ] = False,
+    tp: Annotated[
+        bool,
+        Option(help="Shard model weight matrices across visible devices."),
+    ] = False,
 ) -> None:
     try:
         from lalamo.server import start_server  # noqa: PLC0415
@@ -660,10 +672,31 @@ def server(
         err_console.print("Cannot get the default device's memory stats, use --vram-gb")
         raise Exit(1)
 
+    if fsdp and tp:
+        err_console.print("--fsdp and --tp are mutually exclusive")
+        raise Exit(1)
+
+    if fsdp and batch_size is None:
+        err_console.print("--fsdp requires --batch-size")
+        raise Exit(1)
+
     if cache_dir is None:
         cache_dir = Path.home() / ".cache" / "lalamo" / "batches"
 
-    start_server(host=host, port=port, vram_bytes=vram_bytes, cache_dir=cache_dir)
+    sharding_config = ShardingConfig.replicated()
+    if fsdp:
+        sharding_config = ShardingConfig.fully_sharded_data_parallel()
+    elif tp:
+        sharding_config = ShardingConfig.tensor_parallel()
+
+    start_server(
+        host=host,
+        port=port,
+        vram_bytes=vram_bytes,
+        batch_size=batch_size,
+        cache_dir=cache_dir,
+        sharding_config=sharding_config,
+    )
 
 
 @app.callback()

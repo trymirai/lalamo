@@ -113,6 +113,7 @@ class PerLayerEmbedding(LalamoModule[PLEModelConfig]):
     model_projection: Linear
     projection_norm: Normalization
 
+    @eqx.filter_jit
     def __call__(
         self,
         token_ids: Int[Array, "batch suffix_tokens"],
@@ -200,8 +201,7 @@ class Decoder(LalamoModule[DecoderConfig]):
     def vocab_size(self) -> int:
         return self.embedding.vocab_size
 
-    @eqx.filter_jit
-    def __call__(
+    def call_unjitted(
         self,
         token_ids: Int[Array, "batch suffix_tokens"],
         token_positions: Int[Array, "batch suffix_tokens"],
@@ -245,7 +245,10 @@ class Decoder(LalamoModule[DecoderConfig]):
         else:
             per_layer_inputs = None
 
-        transformer_result = self.transformer(
+        transformer = self.transformer.call_unjitted
+        if self.sharding_config.resolve_axis(LogicalAxis.BATCH) is None:
+            transformer = self.transformer
+        transformer_result = transformer(
             inner_features=inner_features,
             token_positions=token_positions,
             state=state,
@@ -287,6 +290,8 @@ class Decoder(LalamoModule[DecoderConfig]):
             updated_state=transformer_result.updated_state,
             activation_trace=activation_trace,
         )
+
+    __call__ = eqx.filter_jit(call_unjitted)
 
     def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> State:
         return self.transformer.init_static_state(batch_size, capacity, dtype)

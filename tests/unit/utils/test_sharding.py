@@ -39,6 +39,12 @@ def test_sharding_config_constructors_use_full_physical_axis_names() -> None:
     assert fsdp.resolve_axis(LogicalAxis.MATRIX) == "fsdp"
     assert fsdp.resolve_axis(LogicalAxis.MIXTURE) == "fsdp"
     assert fsdp.resolve_axis(LogicalAxis.SEQUENCE) is None
+
+    tensor_parallel = ShardingConfig.tensor_parallel(devices)
+    assert tensor_parallel.resolve_axis(LogicalAxis.BATCH) is None
+    assert tensor_parallel.resolve_axis(LogicalAxis.MATRIX) == "tensor"
+    assert tensor_parallel.resolve_axis(LogicalAxis.MIXTURE) == "tensor"
+    assert tensor_parallel.resolve_axis(LogicalAxis.SEQUENCE) is None
     assert fsdp.resolve_axis(None) is None
 
 
