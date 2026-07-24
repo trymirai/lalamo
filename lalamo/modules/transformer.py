@@ -92,7 +92,8 @@ class Transformer(LalamoModule[TransformerConfig]):
     layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
 
-    def call_unjitted(
+    @eqx.filter_jit
+    def __call__(
         self,
         inner_features: Float[Array, "batch suffix_tokens channels"],
         token_positions: Int[Array, "batch suffix_tokens"],
@@ -260,8 +261,6 @@ class Transformer(LalamoModule[TransformerConfig]):
             rope_embeddings=rope_embeddings if return_positional_embeddings else None,
             pre_norm_outputs=pre_norm_outputs,
         )
-
-    __call__ = eqx.filter_jit(call_unjitted)
 
     def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> State:
         return State(
