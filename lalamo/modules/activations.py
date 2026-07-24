@@ -2,7 +2,6 @@ from abc import abstractmethod
 from dataclasses import dataclass
 
 import jax
-import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from lalamo.module import LalamoConfig
@@ -27,7 +26,7 @@ class SiLU(Activation):
     alpha: float = 1.0
 
     def __call__(self, x: Float[Array, "..."]) -> Float[Array, "..."]:
-        return x / (1 + jnp.exp(-x * self.alpha))
+        return x * jax.nn.sigmoid(self.alpha * x)
 
 
 @dataclass(frozen=True)
