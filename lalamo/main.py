@@ -647,6 +647,10 @@ def server(
             show_default="~/.cache/lalamo/batches",
         ),
     ] = None,
+    tp: Annotated[
+        bool,
+        Option(help="Shard model weight matrices across visible devices."),
+    ] = False,
 ) -> None:
     try:
         from lalamo.server import start_server  # noqa: PLC0415
@@ -663,7 +667,13 @@ def server(
     if cache_dir is None:
         cache_dir = Path.home() / ".cache" / "lalamo" / "batches"
 
-    start_server(host=host, port=port, vram_bytes=vram_bytes, cache_dir=cache_dir)
+    start_server(
+        host=host,
+        port=port,
+        vram_bytes=vram_bytes,
+        cache_dir=cache_dir,
+        sharding_config=ShardingConfig.tensor_parallel() if tp else ShardingConfig.replicated(),
+    )
 
 
 @app.callback()
