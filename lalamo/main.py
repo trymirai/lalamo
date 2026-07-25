@@ -647,7 +647,7 @@ def server(
             show_default="~/.cache/lalamo/batches",
         ),
     ] = None,
-    tp: Annotated[
+    tensor_parallel: Annotated[
         bool,
         Option(help="Shard model weight matrices across visible devices."),
     ] = False,
@@ -672,7 +672,7 @@ def server(
         port=port,
         vram_bytes=vram_bytes,
         cache_dir=cache_dir,
-        sharding_config=ShardingConfig.tensor_parallel() if tp else ShardingConfig.replicated(),
+        sharding_config=ShardingConfig.tensor_parallel() if tensor_parallel else ShardingConfig.replicated(),
     )
 
 
