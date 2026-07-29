@@ -119,7 +119,7 @@ def _load_resident_model(model_path: str, dtype: str | None) -> LanguageModel:
 
     model = import_model(
         model_path,
-        sharding_config=ShardingConfig.replicated(),
+        sharding_config=app.state.sharding_config,
         dtype=jnp.dtype(dtype) if dtype is not None else None,
     ).model
     if not isinstance(model, LanguageModel):
@@ -280,7 +280,8 @@ async def get_batch(batch_id: str) -> Batch:
     raise HTTPException(404, "batch not found")
 
 
-def start_server(host: str, port: int, vram_bytes: int, cache_dir: Path) -> None:
+def start_server(host: str, port: int, vram_bytes: int, cache_dir: Path, sharding_config: ShardingConfig) -> None:
     app.state.vram_bytes = vram_bytes
     app.state.cache_dir = cache_dir
+    app.state.sharding_config = sharding_config
     uvicorn.run(app, host=host, port=port)

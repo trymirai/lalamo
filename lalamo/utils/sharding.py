@@ -78,6 +78,16 @@ class ShardingConfig:
             },
         )
 
+    @classmethod
+    def tensor_parallel(cls, devices: Sequence[jax.Device] | None = None) -> "ShardingConfig":
+        return cls(
+            mesh=cls._mesh("tensor", devices),
+            logical_to_physical={
+                LogicalAxis.MATRIX: "tensor",
+                LogicalAxis.MIXTURE: "tensor",
+            },
+        )
+
     def resolve_axis(self, logical_axis: LogicalAxis | None) -> str | None:
         if logical_axis is None:
             return None

@@ -147,6 +147,7 @@ def estimate_batchsize_for_memory_budget(
 ) -> int:
     batch_size = max(1, starting_batchsize)
     last_successful_batch_size: int | None = None
+    previous_measurement: tuple[int, int] | None = None
     remaining_steps = num_steps
 
     while True:
@@ -162,8 +163,8 @@ def estimate_batchsize_for_memory_budget(
                     return last_successful_batch_size
                 raise
 
-            if last_successful_batch_size is not None:
-                next_batch_size = max(last_successful_batch_size, next_batch_size)
+            if last_successful_batch_size is not None and next_batch_size <= last_successful_batch_size:
+                return last_successful_batch_size
 
             warnings.warn(
                 f"OOM while estimating batch size at {batch_size}. Retrying with {next_batch_size}.",
@@ -174,7 +175,23 @@ def estimate_batchsize_for_memory_budget(
             continue
 
         last_successful_batch_size = batch_size
-        estimated_batch_size = max(1, int(batch_size * memory_budget / peak_bytes_in_use))
+        proportional_estimate = max(1, int(batch_size * memory_budget / peak_bytes_in_use))
+        estimated_batch_size = proportional_estimate
+        if previous_measurement is None and proportional_estimate > batch_size and remaining_steps >= 2:
+            estimated_batch_size = batch_size * 4
+        elif (
+            previous_measurement is not None
+            and batch_size > previous_measurement[0]
+            and peak_bytes_in_use > previous_measurement[1]
+        ):
+            previous_batch_size, previous_peak_bytes = previous_measurement
+            bytes_per_batch_element = (peak_bytes_in_use - previous_peak_bytes) / (batch_size - previous_batch_size)
+            fixed_bytes = peak_bytes_in_use - batch_size * bytes_per_batch_element
+            estimated_batch_size = min(
+                batch_size * 4,
+                max(1, int((memory_budget - fixed_bytes) / bytes_per_batch_element)),
+            )
+        previous_measurement = (batch_size, peak_bytes_in_use)
         if estimated_batch_size <= batch_size:
             return estimated_batch_size
         if remaining_steps <= 0:
@@ -229,7 +246,7 @@ def bucket_sequences[T: TokenSequence](
     sorted_lengths = sorted(sequences_per_bucket.keys(), reverse=True)
     batch_size_per_bucket: dict[int, int] = {}
     estimated = starting_batch_size
-    num_steps = 3
+    num_steps = 2
 
     for idx, padded_length in enumerate(sorted_lengths):
         # Reuse a cached batch size for this padded_length (the probe's throwaway compiles dominate latency).
@@ -1007,8 +1024,8 @@ class ContinuousBatchScheduler(BatchScheduler):
         batch_size = batch_scheduler_config.batch_size
         max_output_length = batch_scheduler_config.max_output_length
         padded_length = batch_scheduler_config.padded_length
-        if any(axis is not None for axis in self.model.sharding_config.logical_to_physical.values()):
-            raise RuntimeError("ContinuousBatchScheduler does not support sharded models.")
+        if self.model.sharding_config.resolve_axis(LogicalAxis.BATCH) is not None:
+            raise RuntimeError("ContinuousBatchScheduler does not support batch-sharded models.")
 
         block_size = min(self.block_size, max_output_length)
         state_capacity = padded_length + max_output_length + 1
