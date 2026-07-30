@@ -103,8 +103,8 @@ def _descendant_by_name(registry_abc: type[RegistryABC], type_name: str) -> type
         raise ValueError(f"Unknown {registry_abc.__name__} descendant: {type_name!r}. Available: {available}") from e
 
 
-def make_registry_abc_converter() -> GenConverter:
-    converter = make_converter()
+def make_registry_abc_converter(*, forbid_extra_keys: bool = False) -> GenConverter:
+    converter = make_converter(forbid_extra_keys=forbid_extra_keys)
 
     converter.register_unstructure_hook_func(
         lambda t: t in [jnp.dtype, DTypeLike],
@@ -194,7 +194,7 @@ def make_registry_abc_converter() -> GenConverter:
             new_config = dict(config)
             type_name = cast("str", new_config.pop("type"))
             target_type = _descendant_by_name(resolved_registry_abc, type_name)
-            return converter.structure_attrs_fromdict(new_config, target_type)
+            return converter.gen_structure_attrs_fromdict(target_type)(new_config, target_type)
 
         return structure_abc
 

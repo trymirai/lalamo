@@ -259,8 +259,8 @@ def test_batch_generation(language_model: LanguageModel) -> None:
 
 
 def test_streaming_vs_eager_consistency(replicated_language_model: LanguageModel) -> None:
-    prompt = [UserMessage("Count from 1 to 10 separated by spaces, using digits.")]
-    token_ids = jnp.array(replicated_language_model.token_codec.encode_request(prompt))
+    prompt = [UserMessage("What's the largest domestic cat breed?")]
+    token_ids = jnp.array(replicated_language_model.token_codec.encode_request(prompt, enable_thinking=False))
 
     generation_config = GenerationConfig(temperature=0.0)
     prefill_forward_pass_config = DecoderForwardPassConfig.for_inference(precision=DotAlgorithmPreset.F32_F32_F32)
