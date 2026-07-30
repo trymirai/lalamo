@@ -92,12 +92,14 @@ def load_dflash_draft_model(
         )
         for layer_index, layer in enumerate(module.layers)
     )
+    state_kv_projection = module.state_kv_projection_from_layers(layers)
     output_norm = load_rmsnorm(module.output_norm, weights_dict, path / "norm")
 
     return load_as_at(
         lambda draft_model: (
             draft_model.context_projection,
             draft_model.context_norm,
+            draft_model.state_kv_projection,
             draft_model.layers,
             draft_model.output_norm,
         ),
@@ -105,6 +107,7 @@ def load_dflash_draft_model(
         (
             context_projection,
             context_norm,
+            state_kv_projection,
             layers,
             output_norm,
         ),
