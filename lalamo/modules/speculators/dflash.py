@@ -142,6 +142,15 @@ class DFlashDraftConfig(LalamoConfig):
             ),
             context_norm=self.context_norm_config.init(initializer, self.model_dim),
             rope=self.rope_config.init(initializer),
+            state_kv_projection=LinearConfig().init(
+                initializer,
+                self.model_dim,
+                tuple(
+                    2 * layer.attention_config.num_groups * layer.attention_config.head_dim
+                    for layer in self.layer_configs
+                ),
+                has_biases=False,
+            ),
             layers=tuple(
                 layer_config.init(initializer, self.model_dim, self.hidden_dim) for layer_config in self.layer_configs
             ),
@@ -211,8 +220,23 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
     context_projection: Linear
     context_norm: Normalization
     rope: RoPE
+    state_kv_projection: Linear
     layers: tuple[DFlashDraftLayer, ...]
     output_norm: Normalization
+
+    def state_kv_projection_from_layers(self, layers: tuple[DFlashDraftLayer, ...]) -> Linear:
+        qkv_projections = tuple(layer.attention.qkv_projection for layer in layers)
+        key_value_weights = jnp.concatenate(
+            tuple(projection.weights.decompress()[projection.output_dims[0] :] for projection in qkv_projections),
+            axis=0,
+        )
+        weights = qkv_projections[0].weights.spec.compress(
+            key_value_weights,
+            key=jax.random.key(0),
+            sharding_config=self.state_kv_projection.weights.sharding_config,
+            is_sharded=self.state_kv_projection.weights.is_sharded,
+        )
+        return eqx.tree_at(lambda projection: projection.weights, self.state_kv_projection, weights)
 
     def positional_embeddings(
         self,
