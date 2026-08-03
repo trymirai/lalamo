@@ -431,6 +431,9 @@ def load_moe(
     has_down_biases = module.experts.down_projection.has_biases
 
     experts_path = path / "experts"
+    gate_up_path = experts_path / "gate_up_proj"
+    down_path = experts_path / "down_proj"
+    batched_gate_up_path = _first_path(weights_dict, (gate_up_path, gate_up_path / "weight"))
 
     # GPT-OSS uses fused MXFP4 expert weights; detect and decode those.
     if (experts_path / "gate_up_proj_blocks") in weights_dict:
@@ -491,34 +494,11 @@ def load_moe(
             module.experts,
             (up_projection, down_projection),
         )
-    elif (
-        (experts_path / "gate_up_proj.weight") in weights_dict
-        or (experts_path / "gate_up_proj" / "weight") in weights_dict
-        or _has_prefix(weights_dict, experts_path / "gate_up_proj")
-    ):
+    elif batched_gate_up_path is not None:
         # MLX/Qwen2Moe batched expert format: gate_up_proj fused, shape (num_experts, hidden*2, model_dim)
-        # Check for both flat and nested key formats
-        gate_up_path = experts_path / "gate_up_proj"
-        down_path = experts_path / "down_proj"
-        if (gate_up_path / "weight") in weights_dict:
-            gate_up_weights = weights_dict[gate_up_path / "weight"]
-            down_weights = weights_dict[down_path / "weight"]
-        elif (experts_path / "gate_up_proj.weight") in weights_dict:
-            gate_up_weights = weights_dict[experts_path / "gate_up_proj.weight"]
-            down_weights = weights_dict[experts_path / "down_proj.weight"]
-        else:
-            # Find the actual key format
-            gate_up_key = next(
-                (k for k in weights_dict if k.startswith(f"{gate_up_path}.")),
-                None,
-            )
-            if gate_up_key is None:
-                raise KeyError(f"Could not find gate_up_proj weights under {gate_up_path}")
-            # Infer the weight key suffix
-            suffix = gate_up_key[len(gate_up_path) :]
-            gate_up_weights = weights_dict[gate_up_key]
-            down_key = str(down_path) + suffix
-            down_weights = weights_dict[ParameterPath(down_key)]
+        suffix = batched_gate_up_path.removeprefix(gate_up_path)
+        gate_up_weights = weights_dict[batched_gate_up_path]
+        down_weights = weights_dict[ParameterPath(f"{down_path}{suffix}")]
 
         # gate_up_proj is [num_experts, intermediate_size*2, hidden_size] - split into gate and up
         intermediate_size_2 = gate_up_weights.shape[1]
