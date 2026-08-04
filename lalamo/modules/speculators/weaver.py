@@ -8,8 +8,11 @@ from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis
+from lalamo.modules.activations import SiLU
 from lalamo.modules.linear import Linear, LinearConfig
+from lalamo.modules.mlp import DenseMLP, DenseMLPConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
+from lalamo.modules.rope import PositionalEmbeddings, RoPE, RoPEConfig
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 from lalamo.utils.sharding import lookup_sharded_indices
 
@@ -38,6 +41,7 @@ class WeaverConfig(LalamoConfig):
     candidate_pool_size: int
     linear_config: LinearConfig
     norm_config: NormalizationConfig
+    rope_config: RoPEConfig
 
     @property
     def head_dim(self) -> int:
@@ -63,8 +67,18 @@ class WeaverConfig(LalamoConfig):
                 ),
                 out_projection=linear(self.model_dim, self.model_dim, has_biases=False),
                 pre_mlp_norm=self.norm_config.init(initializer, self.model_dim),
-                up_projection=linear(self.model_dim, self.hidden_dim, has_biases=True),
-                down_projection=linear(self.hidden_dim, self.model_dim, has_biases=True),
+                mlp=DenseMLPConfig(
+                    linear_config=self.linear_config,
+                    activation=SiLU(),
+                    has_up_biases=True,
+                    has_down_biases=True,
+                    gate_clipping=None,
+                    up_clipping=None,
+                ).init(
+                    initializer,
+                    self.model_dim,
+                    self.hidden_dim,
+                ),
             )
             for _ in range(self.num_layers)
         )
@@ -78,7 +92,7 @@ class WeaverConfig(LalamoConfig):
             output_norm=self.norm_config.init(initializer, self.model_dim),
             hidden_state_projection=linear(self.target_model_dim, self.model_dim, has_biases=True),
             query_projection=linear(self.model_dim, self.target_model_dim, has_biases=False),
-            position_embeddings=initializer.normal(0.02, (self.max_depth, self.model_dim), dtype=jnp.float32),
+            rope=self.rope_config.init(initializer),
         )
 
 
@@ -87,29 +101,12 @@ class WeaverBlock(LalamoModule[WeaverConfig]):
     qkv_projection: Linear
     out_projection: Linear
     pre_mlp_norm: Normalization
-    up_projection: Linear
-    down_projection: Linear
-
-    def mlp(
-        self,
-        x: Float[Array, "rows steps channels"],
-        *,
-        keychain: Keychain,
-    ) -> Float[Array, "rows steps channels"]:
-        batch_axes = (self.sharding_config.resolve_axis(LogicalAxis.BATCH), None)
-        normalized = call_vmapped_twice(self.pre_mlp_norm, x)
-        (up,) = call_vmapped_twice(self.up_projection, normalized, keychain=keychain, added_sharding_axes=batch_axes)
-        (down,) = call_vmapped_twice(
-            self.down_projection,
-            jax.nn.gelu(up),
-            keychain=keychain,
-            added_sharding_axes=batch_axes,
-        )
-        return down
+    mlp: DenseMLP
 
     def project_qkv(
         self,
         x: Float[Array, "rows steps channels"],
+        positional_embeddings: PositionalEmbeddings,
         *,
         keychain: Keychain,
     ) -> tuple[
@@ -126,11 +123,24 @@ class WeaverBlock(LalamoModule[WeaverConfig]):
             added_sharding_axes=batch_axes,
         )
         split = "rows steps (heads head_channels) -> rows steps heads head_channels"
-        return (
-            rearrange(queries, split, heads=self.config.num_heads),
-            rearrange(keys, split, heads=self.config.num_heads),
-            rearrange(values, split, heads=self.config.num_heads),
+        queries = rearrange(queries, split, heads=self.config.num_heads)
+        keys = rearrange(keys, split, heads=self.config.num_heads)
+        values = rearrange(values, split, heads=self.config.num_heads)
+        queries = call_vmapped_twice(
+            PositionalEmbeddings.apply,
+            positional_embeddings,
+            queries,
+            in_axes=((0, 0), (None, 1)),
+            out_axes=(0, 1),
         )
+        keys = call_vmapped_twice(
+            PositionalEmbeddings.apply,
+            positional_embeddings,
+            keys,
+            in_axes=((0, 0), (None, 1)),
+            out_axes=(0, 1),
+        )
+        return queries, keys, values
 
     def attend(
         self,
@@ -154,11 +164,13 @@ class WeaverBlock(LalamoModule[WeaverConfig]):
             added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
         x = x + projected
-        return x + self.mlp(x, keychain=keychain)
+        normalized = call_vmapped_twice(self.pre_mlp_norm, x)
+        return x + self.mlp(normalized, keychain=keychain)
 
     def prefix_forward(
         self,
         x: Float[Array, "batch prefix channels"],
+        positional_embeddings: PositionalEmbeddings,
         *,
         keychain: Keychain,
     ) -> tuple[
@@ -167,7 +179,7 @@ class WeaverBlock(LalamoModule[WeaverConfig]):
         Float[Array, "batch prefix heads head_channels"],
     ]:
         batch_size, prefix, _ = x.shape
-        queries, keys, values = self.project_qkv(x, keychain=keychain)
+        queries, keys, values = self.project_qkv(x, positional_embeddings, keychain=keychain)
         causal = jnp.tril(jnp.ones((prefix, prefix), dtype=jnp.bool))
         mask = jnp.broadcast_to(causal[None], (batch_size, prefix, prefix))
         return self.attend(x, queries, keys, values, mask, keychain=keychain), keys, values
@@ -180,6 +192,7 @@ class WeaverBlock(LalamoModule[WeaverConfig]):
         ancestor_keys: Float[Array, "rows depth heads head_channels"],
         ancestor_values: Float[Array, "rows depth heads head_channels"],
         ancestor_mask: Bool[Array, "rows depth"],
+        positional_embeddings: PositionalEmbeddings,
         *,
         keychain: Keychain,
     ) -> tuple[
@@ -189,7 +202,7 @@ class WeaverBlock(LalamoModule[WeaverConfig]):
     ]:
         _, prefix, _, _ = prefix_keys.shape
         inputs = x[:, None]
-        queries, own_keys, own_values = self.project_qkv(inputs, keychain=keychain)
+        queries, own_keys, own_values = self.project_qkv(inputs, positional_embeddings, keychain=keychain)
         keys = jnp.concatenate([prefix_keys, ancestor_keys, own_keys], axis=1)
         values = jnp.concatenate([prefix_values, ancestor_values, own_values], axis=1)
         mask = jnp.pad(ancestor_mask, ((0, 0), (prefix, 1)), constant_values=True)[:, None]
@@ -205,7 +218,7 @@ class Weaver(LalamoModule[WeaverConfig]):
     output_norm: Normalization
     hidden_state_projection: Linear
     query_projection: Linear
-    position_embeddings: Float[Array, "max_depth channels"]
+    rope: RoPE
 
     def token_project(
         self,
@@ -247,12 +260,16 @@ class Weaver(LalamoModule[WeaverConfig]):
             keychain=keychain,
             added_sharding_axes=(batch_axis, None),
         )
-        proposal_tokens = proposal_tokens + self.position_embeddings[jnp.arange(depth, dtype=jnp.int32)][None]
         x = jnp.concatenate([last_token, proposal_tokens], axis=1)
+        rope_embeddings = self.rope(jnp.arange(depth + 1, dtype=jnp.int32))
+        positional_embeddings = PositionalEmbeddings(
+            cosines=jnp.broadcast_to(rope_embeddings.cosines[None], (x.shape[0], *rope_embeddings.cosines.shape)),
+            sines=jnp.broadcast_to(rope_embeddings.sines[None], (x.shape[0], *rope_embeddings.sines.shape)),
+        )
         key_layers = []
         value_layers = []
         for block in self.blocks:
-            x, layer_keys, layer_values = block.prefix_forward(x, keychain=keychain)
+            x, layer_keys, layer_values = block.prefix_forward(x, positional_embeddings, keychain=keychain)
             key_layers.append(layer_keys)
             value_layers.append(layer_values)
         return WeaverPrefix(keys=jnp.stack(key_layers), values=jnp.stack(value_layers))
@@ -278,7 +295,13 @@ class Weaver(LalamoModule[WeaverConfig]):
         Float[Array, "layers rows heads head_channels"],
     ]:
         x = self.token_project(token_ids, embedding_weights, keychain=keychain)
-        x = x + lookup_sharded_indices(self.position_embeddings, jnp.clip(positions, 0, self.config.max_depth - 1))
+        _, _, ancestor_depth, _, _ = ancestor_keys.shape
+        position_ids = jnp.clip(positions, 0, ancestor_depth - 1) + 1
+        rope_embeddings = self.rope(position_ids)
+        positional_embeddings = PositionalEmbeddings(
+            cosines=rope_embeddings.cosines[:, None],
+            sines=rope_embeddings.sines[:, None],
+        )
         key_layers = []
         value_layers = []
         for layer_index, block in enumerate(self.blocks):
@@ -289,6 +312,7 @@ class Weaver(LalamoModule[WeaverConfig]):
                 ancestor_keys[layer_index],
                 ancestor_values[layer_index],
                 ancestor_mask,
+                positional_embeddings,
                 keychain=keychain,
             )
             key_layers.append(layer_keys)

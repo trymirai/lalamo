@@ -3,7 +3,7 @@ from typing import ClassVar, Self
 
 import cattrs
 
-from lalamo.modules import LinearConfig, NormalizationConfig, WeaverConfig
+from lalamo.modules import LinearConfig, NormalizationConfig, UnscaledRoPEConfig, WeaverConfig
 from lalamo.modules.normalization import UpcastMode
 
 __all__ = [
@@ -23,6 +23,7 @@ class HFWeaverConfig:
     mlp_channels: int
     max_depth: int
     candidate_pool_size: int
+    rope_base: float
 
     @classmethod
     def from_dict(cls, config: dict[str, object]) -> Self:
@@ -48,5 +49,10 @@ class HFWeaverConfig:
                 upcast_mode=UpcastMode.FULL_LAYER,
                 subtract_mean=False,
                 has_biases=True,
+            ),
+            rope_config=UnscaledRoPEConfig(
+                base=self.rope_base,
+                max_sequence_length=self.max_depth + 1,
+                head_dim=self.d_rank // self.num_heads,
             ),
         )
