@@ -7,7 +7,7 @@ from jaxtyping import Array, DTypeLike
 from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.loaders.huggingface import load_linear
 from lalamo.model_import.model_configs.huggingface.weaver import HFWeaverConfig
-from lalamo.modules import Normalization
+from lalamo.modules import DenseMLP, Normalization
 from lalamo.modules.speculators.weaver import Weaver, WeaverBlock
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
@@ -39,17 +39,36 @@ def load_weaver_block(
             module.qkv_projection,
             module.out_projection,
             module.pre_mlp_norm,
-            module.up_projection,
-            module.down_projection,
+            module.mlp,
         ),
         block,
         (
             load_weaver_norm(block.pre_attention_norm, weights_dict, path / "norm_attn"),
-            load_linear(block.qkv_projection, weights_dict, path, sublayers_to_fuse=["q_proj", "k_proj", "v_proj"]),
+            load_linear(block.qkv_projection, weights_dict, path / "qkv_proj"),
             load_linear(block.out_projection, weights_dict, path / "o_proj"),
             load_weaver_norm(block.pre_mlp_norm, weights_dict, path / "norm_mlp"),
-            load_linear(block.up_projection, weights_dict, path / "fc1"),
-            load_linear(block.down_projection, weights_dict, path / "fc2"),
+            load_weaver_mlp(block.mlp, weights_dict, path),
+        ),
+    )
+
+
+def load_weaver_mlp(
+    mlp: DenseMLP,
+    weights_dict: dict[str, Array],
+    path: ParameterPath,
+) -> DenseMLP:
+    gate_up_path = path / "gate_up_proj"
+    gate_weights, up_weights = jnp.split(weights_dict[gate_up_path / "weight"], 2, axis=0)
+    gate_biases, up_biases = jnp.split(weights_dict[gate_up_path / "bias"], 2, axis=0)
+    reordered_weights = dict(weights_dict)
+    reordered_weights[gate_up_path / "weight"] = jnp.concatenate([up_weights, gate_weights], axis=0)
+    reordered_weights[gate_up_path / "bias"] = jnp.concatenate([up_biases, gate_biases], axis=0)
+    return eqx.tree_at(
+        lambda module: (module.up_projection, module.down_projection),
+        mlp,
+        (
+            load_linear(mlp.up_projection, reordered_weights, gate_up_path),
+            load_linear(mlp.down_projection, weights_dict, path / "down_proj"),
         ),
     )
 
@@ -62,12 +81,6 @@ def load_weaver(
     import torch  # noqa: PLC0415
 
     payload = torch.load(path, map_location="cpu", weights_only=True)
-    speculator_kind = payload.get("metadata", {}).get("speculator_kind")
-    if speculator_kind != "dflash_tfm_weaver":
-        raise ValueError(
-            "Expected a Weaver checkpoint with metadata.speculator_kind='dflash_tfm_weaver', "
-            f"got {speculator_kind!r}.",
-        )
     config = HFWeaverConfig.from_dict(payload["config"]).to_weaver_config()
     sharding_config = sharding_config or ShardingConfig.replicated()
     weaver = config.init(EmptyInitializer(dtype, sharding_config))
@@ -84,7 +97,6 @@ def load_weaver(
             module.hidden_state_projection,
             module.query_projection,
             module.blocks,
-            module.position_embeddings,
         ),
         weaver,
         (
@@ -98,6 +110,5 @@ def load_weaver(
                 load_weaver_block(block, weights_dict, root / "blocks" / index)
                 for index, block in enumerate(weaver.blocks)
             ),
-            weights_dict[root / "pos_emb"],
         ),
     )
