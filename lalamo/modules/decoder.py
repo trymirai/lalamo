@@ -200,6 +200,13 @@ class Decoder(LalamoModule[DecoderConfig]):
     def vocab_size(self) -> int:
         return self.embedding.vocab_size
 
+    def for_inference(self, batch_size: int) -> Self:
+        return eqx.tree_at(
+            lambda decoder: decoder.transformer,
+            self,
+            self.transformer.for_inference(batch_size),
+        )
+
     @eqx.filter_jit
     def __call__(
         self,

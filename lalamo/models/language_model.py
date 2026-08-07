@@ -335,9 +335,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             )
 
         prefill_keychain, sampling_keychain, decoding_keychain = keychain.split(3)
+        state_capacity = (prompt_length + max_output_length + 8) // 8 * 8
         prefill_results = self.prefill_tokens(
             prompt_token_ids,
-            prompt_length + max_output_length + 1,
+            state_capacity,
             prompt_lengths_without_padding,
             prefill_forward_pass_config,
             keychain=prefill_keychain,
@@ -350,6 +351,9 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             sampling_policy=sampling_policy,
         )
         stopped_token_ids = jax.device_put(jnp.zeros(batch_size, dtype=jnp.int32), batch_vector_sharding)
+        decoder = self.decoder
+        if max_output_length > 1:
+            decoder = decoder.for_inference(batch_size)
 
         def sample_token(
             logits: Float[Array, " vocabulary"],
@@ -384,7 +388,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
 
             next_token_indices = state.last_token_indices + 1
             next_stop_flags = state.stop_flags | jnp.any(next_token_ids[:, None] == eos_token_ids[None, :], axis=-1)
-            decoder_result = self.decoder(
+            decoder_result = decoder(
                 token_ids=next_token_ids[:, None],
                 token_positions=next_token_indices[:, None],
                 state=state.state,

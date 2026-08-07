@@ -21,6 +21,7 @@ from lalamo.modules.token_mixer import (
 )
 from lalamo.modules.token_mixers.convolutions import ConvPrecision
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
+from lalamo.utils.sharding import supports_mosaic_gpu
 
 from .chunked_delta import chunk_delta_forward
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
@@ -160,7 +161,32 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         beta: Float[Array, "tokens heads"],
         initial_state: Float[Array, "heads value_channels key_channels"],
         num_steps: Int[Array, ""] | int,
+        *,
+        use_pallas_deltanet: bool = False,
     ) -> DeltaNetScanResult:
+        num_tokens, num_heads, head_dim = queries.shape
+        value_head_dim = values.shape[-1]
+        if (
+            use_pallas_deltanet
+            and num_tokens == 1
+            and head_dim == 128
+            and value_head_dim % 64 == 0
+            and initial_state.dtype == jnp.float32
+            and supports_mosaic_gpu(self.sharding_config.mesh, 9)
+        ):
+            from lalamo.kernels.deltanet import make_deltanet_update  # noqa: PLC0415
+
+            final_state, output = make_deltanet_update(num_heads, value_head_dim)(
+                queries[0],
+                keys[0],
+                values[0],
+                jnp.exp(decay_factor[0]),
+                beta[0],
+                initial_state,
+                jnp.asarray(num_steps) > 0,
+            )
+            return DeltaNetScanResult(output[None], final_state)
+
         def scan_fn(
             index_and_state: tuple[Int[Array, ""], Float[Array, "heads value_channels key_channels"]],
             step_inputs: tuple[
@@ -233,6 +259,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
                 tail_beta,
                 initial_state,
                 num_steps_arr,
+                use_pallas_deltanet=forward_pass_config.use_pallas_deltanet,
             )
 
         if has_short_tail:
@@ -318,6 +345,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
                 tail_beta,
                 final_state,
                 tail_num_steps,
+                use_pallas_deltanet=forward_pass_config.use_pallas_deltanet,
             )
             outputs = jnp.concatenate([outputs, tail_result.outputs], axis=0)
             final_state = tail_result.final_state

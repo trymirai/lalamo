@@ -62,6 +62,7 @@ class MixerForwardPassConfig:
     attention_tile_size: int = 128
     ssm_chunk_size: int = 32
     ssm_min_tail_size_to_chunk: int = 16
+    use_pallas_deltanet: bool = False
     matmul_config: MatmulConfig = field(default_factory=MatmulConfig)
     normalization_forward_pass_config: NormalizationForwardPassConfig = field(
         default_factory=NormalizationForwardPassConfig,
@@ -83,6 +84,7 @@ class MixerForwardPassConfig:
             attention_implementation = AttentionImplementation.CUDNN
         return cls(
             attention_implementation=attention_implementation,
+            use_pallas_deltanet=True,
             matmul_config=MatmulConfig.for_inference(precision),
             normalization_forward_pass_config=NormalizationForwardPassConfig.for_inference(),
         )

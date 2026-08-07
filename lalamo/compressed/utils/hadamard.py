@@ -66,10 +66,15 @@ def _make_hadamard_transform_for_block_size(
                 f"Input dimension {input_dim} must be a multiple of block size {block_size}",
             )
 
-        if jax.default_backend() == "gpu":
-            from lalamo.compressed.utils.hadamard_kernels import cute_hadamard_transform  # noqa: PLC0415
+        abstract_device = sharding_of(inputs).mesh.abstract_mesh.abstract_device
+        if (
+            abstract_device is not None
+            and abstract_device.platform == "gpu"
+            and abstract_device.device_kind.startswith("NVIDIA")
+        ):
+            from lalamo.kernels.hadamard import gpu_hadamard_transform  # noqa: PLC0415
 
-            return cute_hadamard_transform(inputs, block_size)
+            return gpu_hadamard_transform(inputs, block_size)
         return _jax_hadamard_transform(inputs, block_size)
 
     @transform.def_vmap

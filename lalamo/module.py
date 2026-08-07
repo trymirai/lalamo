@@ -342,6 +342,16 @@ class LalamoModule(Exportable, eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
 
         return map_nodes_of_type(WeightMatrix, lambda value: value.to_full_precision(), self)
 
+    def for_inference(self, batch_size: int) -> Self:
+        from lalamo.utils.surgery import map_nodes_of_type  # noqa: PLC0415
+        from lalamo.weight_matrix import WeightMatrix  # noqa: PLC0415
+
+        return map_nodes_of_type(
+            WeightMatrix,
+            lambda value: value.for_inference(batch_size),
+            self,
+        )
+
     def switch_implementation(self, implementation: "CompressionImplementation") -> Self:
         from lalamo.utils.surgery import map_nodes_of_type  # noqa: PLC0415
         from lalamo.weight_matrix import WeightMatrix  # noqa: PLC0415
