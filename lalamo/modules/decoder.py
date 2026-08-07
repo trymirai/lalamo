@@ -12,7 +12,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, LogicalAxis
-from lalamo.sampling import LogitOutput
+from lalamo.sampling import Logits
 from lalamo.utils.sharding import lookup_sharded_indices
 from lalamo.weight_matrix import GradientEstimator
 
@@ -91,11 +91,12 @@ class DecoderActivationTrace(Exportable, eqx.Module):
     output_norm: Float[Array, "batch suffix_tokens channels"]
 
 
-LogitOutputT_co = TypeVar("LogitOutputT_co", bound=LogitOutput, covariant=True)
+type DecoderLogits = Float[Array, "batch suffix_tokens vocabulary"] | Logits
+DecoderLogitsT_co = TypeVar("DecoderLogitsT_co", bound=DecoderLogits, covariant=True)
 
 
-class DecoderResult(Exportable, eqx.Module, Generic[LogitOutputT_co]):  # noqa: UP046
-    logits: LogitOutputT_co
+class DecoderResult(Exportable, eqx.Module, Generic[DecoderLogitsT_co]):  # noqa: UP046
+    logits: DecoderLogitsT_co
     updated_state: State | None = None
     activation_trace: DecoderActivationTrace | None = None
 
@@ -236,7 +237,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         *,
         return_candidate_logits: bool,
         keychain: Keychain,
-    ) -> DecoderResult[LogitOutput]: ...
+    ) -> DecoderResult[DecoderLogits]: ...
 
     @eqx.filter_jit
     def __call__(
@@ -253,7 +254,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         *,
         return_candidate_logits: bool = False,
         keychain: Keychain,
-    ) -> DecoderResult[LogitOutput]:
+    ) -> DecoderResult[DecoderLogits]:
         if token_ids.ndim != 2:
             raise ValueError(
                 f"token_ids must be a 2D array of size (batch_size, sequence_length), got {token_ids.shape}",

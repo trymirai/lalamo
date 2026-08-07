@@ -9,7 +9,7 @@ from lalamo.compressed.hybrid import HybridMatrix, HybridSpec, IncoherenceProces
 from lalamo.compressed.int import IntSpec
 from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.preconditioner import Preconditioner
-from lalamo.sampling import CandidateLogits
+from lalamo.sampling import SparseLogits
 from lalamo.utils.dummy_array import dummy_array, is_dummy_array
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import ShardingConfig, supports_mosaic_gpu
@@ -142,7 +142,7 @@ class LowRankPreviewReadoutMatrix(WeightMatrix[LowRankPreviewReadoutSpec]):
         *,
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
-    ) -> CandidateLogits:
+    ) -> SparseLogits:
         self._raise_if_batched()
         if vector.dtype != jnp.bfloat16:
             raise ValueError("LowRankPreviewReadout requires a BF16 input vector.")
@@ -212,7 +212,7 @@ class LowRankPreviewReadoutMatrix(WeightMatrix[LowRankPreviewReadoutSpec]):
             )
             with use_dot_algorithm_preset(forward_pass_config.precision):
                 logits = rescore_weights @ vector
-        return CandidateLogits(token_ids=token_ids, logits=logits)
+        return SparseLogits(values=logits, token_ids=token_ids)
 
     def dot(
         self,
@@ -242,4 +242,4 @@ class LowRankPreviewReadoutMatrix(WeightMatrix[LowRankPreviewReadoutSpec]):
             -jnp.inf,
             dtype=jnp.bfloat16,
         )
-        return logits.at[candidates.token_ids].set(candidates.logits)
+        return logits.at[candidates.token_ids].set(candidates.values)

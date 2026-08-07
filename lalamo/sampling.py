@@ -1,5 +1,7 @@
+from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import replace
+from typing import ClassVar, Self
 
 import equinox as eqx
 import jax
@@ -9,7 +11,7 @@ from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.module import Keychain
 
-__all__ = ["CandidateLogits", "LogitOutput", "SamplingPolicy"]
+__all__ = ["FullLogits", "Logits", "SamplingPolicy", "SparseLogits"]
 
 
 _SENTINEL = -1
@@ -17,24 +19,173 @@ _MAX_BANNED_TOKENS = 16
 type SamplingLeaf = Float[Array, "..."] | Int[Array, "..."]
 
 
-class CandidateLogits(eqx.Module):
+class Logits(eqx.Module, ABC):
+    values: Float[Array, "*batch support"]
+
+    def astype(self, dtype: DTypeLike) -> Self:
+        return replace(self, values=self.values.astype(dtype))
+
+    def reshape(self, *shape: int) -> Self:
+        return jax.tree.map(lambda array: array.reshape(*shape), self)
+
+    @abstractmethod
+    def sample(self, policy: "SamplingPolicy", *, keychain: Keychain) -> Int[Array, ""]: ...
+
+
+class FullLogits(Logits):
+    def process(self, policy: "SamplingPolicy") -> Float[Array, " vocabulary"]:
+        _raise_if_batched(policy)
+        logits = self.values
+        if policy.banned_tokens is not None:
+            token_ids = jnp.arange(logits.shape[0], dtype=jnp.int32)
+            logits = jnp.where(jnp.any(policy.banned_tokens[:, None] == token_ids, axis=0), -jnp.inf, logits)
+
+        if policy.has_count_penalties:
+            token_counts = (
+                jnp.zeros(logits.shape, dtype=jnp.int32) if policy.token_counts is None else policy.token_counts
+            )
+            if policy.repetition_penalty is not None:
+                penalized_logits = jnp.where(
+                    logits > 0,
+                    logits / policy.repetition_penalty,
+                    logits * policy.repetition_penalty,
+                )
+                logits = jnp.where(token_counts > 0, penalized_logits, logits)
+            if policy.presence_penalty is not None:
+                logits = jnp.where(token_counts > 0, logits - policy.presence_penalty, logits)
+            if policy.frequency_penalty is not None:
+                logits = logits - policy.frequency_penalty * token_counts.astype(logits.dtype)
+
+        if policy.temperature is not None:
+            best_token = jnp.argmax(logits)
+            greedy_logits = jnp.where(jnp.arange(logits.shape[0]) == best_token, 1.0, -jnp.inf)
+            logits = jnp.where(
+                policy.temperature == 0.0,
+                greedy_logits,
+                logits / jnp.where(policy.temperature == 0.0, 1.0, policy.temperature),
+            )
+
+        if policy.top_k is not None:
+            vocabulary_size = logits.shape[0]
+            sorted_indices = jnp.argsort(logits, descending=True)
+            ranks = jnp.empty_like(sorted_indices).at[sorted_indices].set(jnp.arange(vocabulary_size, dtype=jnp.int32))
+            filtered_logits = jnp.where(ranks < jnp.clip(policy.top_k, 1, vocabulary_size), logits, -jnp.inf)
+            logits = jnp.where(policy.top_k > 0, filtered_logits, logits)
+
+        if policy.top_p is not None:
+            sorted_indices = jnp.argsort(logits, descending=True)
+            sorted_logits = logits[sorted_indices]
+            sorted_probabilities = jax.nn.softmax(sorted_logits)
+            remove_sorted = jnp.cumsum(sorted_probabilities) - sorted_probabilities >= policy.top_p
+            remove = remove_sorted[jnp.argsort(sorted_indices)]
+            logits = jnp.where(remove, -jnp.inf, logits)
+
+        if policy.min_p is not None:
+            filtered_logits = jnp.where(logits >= jnp.max(logits) + jnp.log(policy.min_p), logits, -jnp.inf)
+            logits = jnp.where(policy.min_p == 0.0, logits, filtered_logits)
+        return logits
+
+    def sample(self, policy: "SamplingPolicy", *, keychain: Keychain) -> Int[Array, ""]:
+        return jax.random.categorical(keychain.vmapped_keys, self.process(policy))
+
+
+class SparseLogits(Logits):
     token_ids: Int[Array, "*batch candidates"]
-    logits: Float[Array, "*batch candidates"]
 
-    def __getitem__(self, index: int | slice | tuple[int | slice, ...]) -> "CandidateLogits":
-        return CandidateLogits(token_ids=self.token_ids[index], logits=self.logits[index])
+    MAX_TOP_K: ClassVar[int] = 128
 
-    def astype(self, dtype: DTypeLike) -> "CandidateLogits":
-        return CandidateLogits(token_ids=self.token_ids, logits=self.logits.astype(dtype))
+    def sample(self, policy: "SamplingPolicy", *, keychain: Keychain) -> Int[Array, ""]:
+        _raise_if_batched(policy)
+        logits = self.values
+        if policy.banned_tokens is not None:
+            logits = jnp.where(
+                jnp.any(policy.banned_tokens[:, None] == self.token_ids, axis=0),
+                -jnp.inf,
+                logits,
+            )
 
+        if policy.has_count_penalties:
+            token_counts = (
+                jnp.zeros(self.token_ids.shape, dtype=jnp.int32)
+                if policy.token_counts is None
+                else policy.token_counts[self.token_ids]
+            )
+            if policy.repetition_penalty is not None:
+                penalized_logits = jnp.where(
+                    logits > 0,
+                    logits / policy.repetition_penalty,
+                    logits * policy.repetition_penalty,
+                )
+                logits = jnp.where(token_counts > 0, penalized_logits, logits)
+            if policy.presence_penalty is not None:
+                logits = jnp.where(token_counts > 0, logits - policy.presence_penalty, logits)
+            if policy.frequency_penalty is not None:
+                logits = logits - policy.frequency_penalty * token_counts.astype(logits.dtype)
 
-type LogitOutput = Float[Array, "*batch logits"] | CandidateLogits
+        if policy.temperature is not None:
+            best_candidate = jnp.argmax(logits)
+            greedy_logits = jnp.where(jnp.arange(logits.shape[0]) == best_candidate, 1.0, -jnp.inf)
+            logits = jnp.where(
+                policy.temperature == 0.0,
+                greedy_logits,
+                logits / jnp.where(policy.temperature == 0.0, 1.0, policy.temperature),
+            )
+
+        def sample_candidates(
+            candidate_logits: Float[Array, " candidates"],
+            candidate_token_ids: Int[Array, " candidates"],
+        ) -> Int[Array, ""]:
+            if policy.top_p is not None:
+                probabilities = jax.nn.softmax(candidate_logits)
+                candidate_logits = jnp.where(
+                    jnp.cumsum(probabilities) - probabilities < policy.top_p,
+                    candidate_logits,
+                    -jnp.inf,
+                )
+            if policy.min_p is not None:
+                filtered_logits = jnp.where(
+                    candidate_logits >= jnp.max(candidate_logits) + jnp.log(policy.min_p),
+                    candidate_logits,
+                    -jnp.inf,
+                )
+                candidate_logits = jnp.where(policy.min_p == 0.0, candidate_logits, filtered_logits)
+            candidate_index = jax.random.categorical(keychain.vmapped_keys, candidate_logits)
+            return candidate_token_ids[candidate_index]
+
+        def sample_all(_: None) -> Int[Array, ""]:
+            candidate_logits = logits
+            candidate_token_ids = self.token_ids
+            if policy.top_p is not None:
+                sorted_indices = jnp.argsort(candidate_logits, descending=True)
+                candidate_logits = candidate_logits[sorted_indices]
+                candidate_token_ids = candidate_token_ids[sorted_indices]
+            return sample_candidates(candidate_logits, candidate_token_ids)
+
+        if policy.top_k is None:
+            return sample_all(None)
+
+        top_k = eqx.error_if(
+            policy.top_k,
+            policy.top_k > self.MAX_TOP_K,
+            f"SparseLogits supports top_k <= {self.MAX_TOP_K}.",
+        )
+
+        def sample_top_k(_: None) -> Int[Array, ""]:
+            candidate_count = min(self.MAX_TOP_K, logits.shape[0])
+            candidate_logits, candidate_indices = jax.lax.top_k(logits, candidate_count)
+            candidate_logits = jnp.where(
+                jnp.arange(candidate_count) < top_k,
+                candidate_logits,
+                -jnp.inf,
+            )
+            return sample_candidates(candidate_logits, self.token_ids[candidate_indices])
+
+        return jax.lax.cond(top_k > 0, sample_top_k, sample_all, operand=None)
 
 
 class SamplingPolicy(eqx.Module):
     temperature: Float[Array, "*batch"] | None = None
     top_k: Int[Array, "*batch"] | None = None
-    _top_k_width: int | None = eqx.field(static=True, default=None)
     top_p: Float[Array, "*batch"] | None = None
     min_p: Float[Array, "*batch"] | None = None
     banned_tokens: Int[Array, "*batch max_banned_tokens"] | None = None
@@ -68,7 +219,6 @@ class SamplingPolicy(eqx.Module):
                 None if temperature is None or temperature == 1.0 else jnp.asarray(temperature, dtype=jnp.float32)
             ),
             top_k=None if top_k is None or top_k <= 0 else jnp.asarray(top_k, dtype=jnp.int32),
-            _top_k_width=top_k if top_k is not None and top_k > 0 else None,
             top_p=None if top_p is None or top_p >= 1.0 else jnp.asarray(top_p, dtype=jnp.float32),
             min_p=None if min_p is None or min_p <= 0.0 else jnp.asarray(min_p, dtype=jnp.float32),
             banned_tokens=(
@@ -200,175 +350,29 @@ class SamplingPolicy(eqx.Module):
 
         return jax.tree.map(broadcast_leaf, self)
 
-    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
-        self._raise_if_batched()
-        return self._process_logits(logits, jnp.arange(logits.shape[0], dtype=jnp.int32))
+    def __call__(self, logits: Logits, *, keychain: Keychain) -> Int[Array, ""]:
+        return logits.sample(self, keychain=keychain)
 
-    def _process_logits(
-        self,
-        logits: Float[Array, " candidates"],
-        token_ids: Int[Array, " candidates"],
-    ) -> Float[Array, " candidates"]:
-        logits = self._process_token_logits(logits, token_ids)
-        logits = self._apply_top_k(logits)
-        logits = self._apply_top_p(logits)
-        return self._apply_min_p(logits)
 
-    def _process_token_logits(
-        self,
-        logits: Float[Array, " candidates"],
-        token_ids: Int[Array, " candidates"],
-    ) -> Float[Array, " candidates"]:
-        logits = self._apply_banned_tokens(logits, token_ids)
-        logits = self._apply_repetition_penalty(logits, token_ids)
-        logits = self._apply_presence_penalty(logits, token_ids)
-        logits = self._apply_frequency_penalty(logits, token_ids)
-        return self._apply_temperature(logits)
-
-    def __call__(self, output: LogitOutput, *, keychain: Keychain) -> Int[Array, ""]:
-        self._raise_if_batched()
-        if isinstance(output, CandidateLogits):
-            token_ids = output.token_ids
-            logits = output.logits
-        else:
-            logits = output
-            token_ids = jnp.arange(logits.shape[0], dtype=jnp.int32)
-
-        if self._top_k_width is None:
-            candidate_index = jax.random.categorical(
-                keychain.vmapped_keys,
-                self._process_logits(logits, token_ids),
-            )
-            return token_ids[candidate_index]
-
-        logits = self._process_token_logits(logits, token_ids)
-        candidate_count = min(self._top_k_width, logits.shape[0])
-        candidate_logits, candidate_positions = jax.lax.top_k(logits, candidate_count)
-        if self.top_p is not None:
-            candidate_probabilities = jax.nn.softmax(candidate_logits)
-            cumulative_probabilities = jnp.cumsum(candidate_probabilities)
-            candidate_logits = jnp.where(
-                cumulative_probabilities - candidate_probabilities < self.top_p,
-                candidate_logits,
-                -jnp.inf,
-            )
-        candidate_logits = self._apply_min_p(candidate_logits)
-        candidate_index = jax.random.categorical(keychain.vmapped_keys, candidate_logits)
-        return token_ids[candidate_positions[candidate_index]]
-
-    def _raise_if_batched(self) -> None:
-        scalar_fields: tuple[SamplingLeaf | None, ...] = (
-            self.temperature,
-            self.top_k,
-            self.top_p,
-            self.min_p,
-            self.repetition_penalty,
-            self.presence_penalty,
-            self.frequency_penalty,
-        )
-        vector_fields: tuple[SamplingLeaf | None, ...] = (self.banned_tokens, self.token_counts, self.token_history)
-        if any(field is not None and field.ndim != 0 for field in scalar_fields) or any(
-            field is not None and field.ndim != 1 for field in vector_fields
-        ):
-            raise ValueError(
-                "Attempted to call a method on a batched version of SamplingPolicy. Use vmap instead.",
-            )
-
-    def _apply_banned_tokens(
-        self,
-        logits: Float[Array, " candidates"],
-        token_ids: Int[Array, " candidates"],
-    ) -> Float[Array, " candidates"]:
-        if self.banned_tokens is None:
-            return logits
-        banned_token_mask = jnp.any(
-            self.banned_tokens[:, None] == token_ids,
-            axis=0,
-        )
-        return jnp.where(banned_token_mask, -jnp.inf, logits)
-
-    def _token_counts_or_zeros(self, token_ids: Int[Array, " candidates"]) -> Int[Array, " candidates"]:
-        if self.token_counts is None:
-            return jnp.zeros(token_ids.shape, dtype=jnp.int32)
-        return self.token_counts[token_ids]
-
-    def _apply_repetition_penalty(
-        self,
-        logits: Float[Array, " candidates"],
-        token_ids: Int[Array, " candidates"],
-    ) -> Float[Array, " candidates"]:
-        if self.repetition_penalty is None:
-            return logits
-        token_counts = self._token_counts_or_zeros(token_ids)
-        seen_token_mask = token_counts > 0
-        penalized_logits = jnp.where(logits > 0, logits / self.repetition_penalty, logits * self.repetition_penalty)
-        return jnp.where(seen_token_mask, penalized_logits, logits)
-
-    def _apply_presence_penalty(
-        self,
-        logits: Float[Array, " candidates"],
-        token_ids: Int[Array, " candidates"],
-    ) -> Float[Array, " candidates"]:
-        if self.presence_penalty is None:
-            return logits
-        token_counts = self._token_counts_or_zeros(token_ids)
-        return jnp.where(token_counts > 0, logits - self.presence_penalty, logits)
-
-    def _apply_frequency_penalty(
-        self,
-        logits: Float[Array, " candidates"],
-        token_ids: Int[Array, " candidates"],
-    ) -> Float[Array, " candidates"]:
-        if self.frequency_penalty is None:
-            return logits
-        token_counts = self._token_counts_or_zeros(token_ids).astype(logits.dtype)
-        return logits - self.frequency_penalty * token_counts
-
-    def _apply_temperature(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
-        if self.temperature is None:
-            return logits
-        (vocabulary_size,) = logits.shape
-        best_token = jnp.argmax(logits, axis=-1)
-        greedy_logits = jnp.where(jnp.arange(vocabulary_size) == best_token, 1.0, -jnp.inf)
-        return jnp.where(
-            self.temperature == 0.0,
-            greedy_logits,
-            logits / jnp.where(self.temperature == 0.0, 1.0, self.temperature),
-        )
-
-    def _apply_top_k(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
-        if self.top_k is None:
-            return logits
-        (vocabulary_size,) = logits.shape
-        effective_top_k = jnp.clip(self.top_k, 1, vocabulary_size)
-        sorted_indices = jnp.argsort(logits, axis=-1, descending=True)
-        ranks = jnp.empty_like(sorted_indices).at[sorted_indices].set(jnp.arange(vocabulary_size, dtype=jnp.int32))
-        filtered_logits = jnp.where(ranks < effective_top_k, logits, -jnp.inf)
-        return jnp.where(self.top_k > 0, filtered_logits, logits)
-
-    def _apply_top_p(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
-        if self.top_p is None:
-            return logits
-        sorted_indices = jnp.argsort(logits, axis=-1, descending=True)
-        sorted_logits = jnp.take_along_axis(logits, sorted_indices, axis=-1)
-        sorted_probs = jax.nn.softmax(sorted_logits, axis=-1)
-        cumulative_probs = jnp.cumsum(sorted_probs, axis=-1)
-        cumulative_probs_before_token = cumulative_probs - sorted_probs
-
-        to_remove_sorted = cumulative_probs_before_token >= self.top_p
-
-        unsort_indices = jnp.argsort(sorted_indices, axis=-1)
-        to_remove_unsorted = jnp.take_along_axis(to_remove_sorted, unsort_indices, axis=-1)
-
-        return jnp.where(to_remove_unsorted, -jnp.inf, logits)
-
-    def _apply_min_p(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
-        if self.min_p is None:
-            return logits
-        max_logit = jnp.max(logits)
-        logit_cutoff = max_logit + jnp.log(self.min_p)
-        filtered_logits = jnp.where(logits >= logit_cutoff, logits, -jnp.inf)
-        return jnp.where(self.min_p == 0.0, logits, filtered_logits)
+def _raise_if_batched(policy: SamplingPolicy) -> None:
+    scalar_fields: tuple[SamplingLeaf | None, ...] = (
+        policy.temperature,
+        policy.top_k,
+        policy.top_p,
+        policy.min_p,
+        policy.repetition_penalty,
+        policy.presence_penalty,
+        policy.frequency_penalty,
+    )
+    vector_fields: tuple[SamplingLeaf | None, ...] = (
+        policy.banned_tokens,
+        policy.token_counts,
+        policy.token_history,
+    )
+    if any(field is not None and field.ndim != 0 for field in scalar_fields) or any(
+        field is not None and field.ndim != 1 for field in vector_fields
+    ):
+        raise ValueError("Attempted to sample with a batched SamplingPolicy. Use vmap instead.")
 
 
 def _optional_array[T](values: Iterable[T | None] | None, *, default: T, dtype: DTypeLike) -> SamplingLeaf | None:

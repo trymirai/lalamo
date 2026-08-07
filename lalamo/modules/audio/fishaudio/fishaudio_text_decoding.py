@@ -17,7 +17,7 @@ from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.token_mixer import State
 from lalamo.modules.transformer import Transformer, TransformerConfig
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
-from lalamo.sampling import SamplingPolicy
+from lalamo.sampling import FullLogits, SamplingPolicy
 
 
 @dataclass
@@ -544,9 +544,9 @@ def _sample_with_previous_tokens(
 ) -> Int[Array, ""]:
     logits = logits.astype(jnp.float32)
     if previous_tokens is None:
-        return sampling_policy(logits, keychain=keychain)
+        return sampling_policy(FullLogits(values=logits), keychain=keychain)
     if sampling_policy.repetition_penalty is None:
-        return sampling_policy(logits, keychain=keychain)
+        return sampling_policy(FullLogits(values=logits), keychain=keychain)
 
     previous_tokens_length = (
         previous_tokens_length
@@ -569,4 +569,4 @@ def _sample_with_previous_tokens(
         logits * sampling_policy.repetition_penalty,
     )
     adjusted_logits = jnp.where(seen_token_mask, penalized_logits, logits)
-    return sampling_policy(adjusted_logits, keychain=keychain)
+    return sampling_policy(FullLogits(values=adjusted_logits), keychain=keychain)

@@ -20,7 +20,7 @@ from lalamo.models.language_model import DecodingState, GenerationConfig, Langua
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
 from lalamo.modules import DecoderForwardPassConfig, State
 from lalamo.modules.utils import call_vmapped
-from lalamo.sampling import LogitOutput, SamplingPolicy
+from lalamo.sampling import Logits, SamplingPolicy
 
 __all__ = [
     "BatchScheduler",
@@ -510,7 +510,7 @@ def append_block_tokens(
 
 
 class BlockContinuousState(eqx.Module):
-    last_token_logits: LogitOutput
+    last_token_logits: Logits
     last_token_indices: Int[Array, " num_lines"]
     kv_state: State
     sampling_policy: SamplingPolicy
@@ -677,8 +677,9 @@ class BlockContinuousDecoder(eqx.Module):
             ),
         )
         assert decoder_result.updated_state is not None
+        assert isinstance(decoder_result.logits, Logits)
         new_decode_state = DecodingState(
-            last_token_logits=decoder_result.logits[:, 0, :].astype(jnp.float32),
+            last_token_logits=decoder_result.logits.reshape(next_token_ids.shape[0], -1).astype(jnp.float32),
             last_token_indices=next_token_indices,
             state=decoder_result.updated_state,
             stop_flags=stop_flags,
