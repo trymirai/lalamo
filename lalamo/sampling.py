@@ -9,7 +9,7 @@ from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.module import Keychain
 
-__all__ = ["SamplingPolicy"]
+__all__ = ["CandidateLogits", "LogitOutput", "SamplingPolicy"]
 
 
 _SENTINEL = -1
@@ -17,9 +17,24 @@ _MAX_BANNED_TOKENS = 16
 type SamplingLeaf = Float[Array, "..."] | Int[Array, "..."]
 
 
+class CandidateLogits(eqx.Module):
+    token_ids: Int[Array, "*batch candidates"]
+    logits: Float[Array, "*batch candidates"]
+
+    def __getitem__(self, index: int | slice | tuple[int | slice, ...]) -> "CandidateLogits":
+        return CandidateLogits(token_ids=self.token_ids[index], logits=self.logits[index])
+
+    def astype(self, dtype: DTypeLike) -> "CandidateLogits":
+        return CandidateLogits(token_ids=self.token_ids, logits=self.logits.astype(dtype))
+
+
+type LogitOutput = Float[Array, "*batch logits"] | CandidateLogits
+
+
 class SamplingPolicy(eqx.Module):
     temperature: Float[Array, "*batch"] | None = None
     top_k: Int[Array, "*batch"] | None = None
+    _top_k_width: int | None = eqx.field(static=True, default=None)
     top_p: Float[Array, "*batch"] | None = None
     min_p: Float[Array, "*batch"] | None = None
     banned_tokens: Int[Array, "*batch max_banned_tokens"] | None = None
@@ -46,13 +61,14 @@ class SamplingPolicy(eqx.Module):
         repetition_penalty = 1.0 if repetition_penalty is None else repetition_penalty
         presence_penalty = 0.0 if presence_penalty is None else presence_penalty
         frequency_penalty = 0.0 if frequency_penalty is None else frequency_penalty
-        if repetition_penalty is not None and repetition_penalty <= 0.0:
+        if repetition_penalty <= 0.0:
             raise ValueError("repetition_penalty must be positive.")
         return cls(
             temperature=(
                 None if temperature is None or temperature == 1.0 else jnp.asarray(temperature, dtype=jnp.float32)
             ),
             top_k=None if top_k is None or top_k <= 0 else jnp.asarray(top_k, dtype=jnp.int32),
+            _top_k_width=top_k if top_k is not None and top_k > 0 else None,
             top_p=None if top_p is None or top_p >= 1.0 else jnp.asarray(top_p, dtype=jnp.float32),
             min_p=None if min_p is None or min_p <= 0.0 else jnp.asarray(min_p, dtype=jnp.float32),
             banned_tokens=(
@@ -186,18 +202,59 @@ class SamplingPolicy(eqx.Module):
 
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         self._raise_if_batched()
-        logits = self._apply_banned_tokens(logits)
-        logits = self._apply_repetition_penalty(logits)
-        logits = self._apply_presence_penalty(logits)
-        logits = self._apply_frequency_penalty(logits)
-        logits = self._apply_temperature(logits)
+        return self._process_logits(logits, jnp.arange(logits.shape[0], dtype=jnp.int32))
+
+    def _process_logits(
+        self,
+        logits: Float[Array, " candidates"],
+        token_ids: Int[Array, " candidates"],
+    ) -> Float[Array, " candidates"]:
+        logits = self._process_token_logits(logits, token_ids)
         logits = self._apply_top_k(logits)
         logits = self._apply_top_p(logits)
         return self._apply_min_p(logits)
 
-    def __call__(self, logits: Float[Array, " vocabulary"], *, keychain: Keychain) -> Int[Array, ""]:
+    def _process_token_logits(
+        self,
+        logits: Float[Array, " candidates"],
+        token_ids: Int[Array, " candidates"],
+    ) -> Float[Array, " candidates"]:
+        logits = self._apply_banned_tokens(logits, token_ids)
+        logits = self._apply_repetition_penalty(logits, token_ids)
+        logits = self._apply_presence_penalty(logits, token_ids)
+        logits = self._apply_frequency_penalty(logits, token_ids)
+        return self._apply_temperature(logits)
+
+    def __call__(self, output: LogitOutput, *, keychain: Keychain) -> Int[Array, ""]:
         self._raise_if_batched()
-        return jax.random.categorical(keychain.vmapped_keys, self.process_logits(logits))
+        if isinstance(output, CandidateLogits):
+            token_ids = output.token_ids
+            logits = output.logits
+        else:
+            logits = output
+            token_ids = jnp.arange(logits.shape[0], dtype=jnp.int32)
+
+        if self._top_k_width is None:
+            candidate_index = jax.random.categorical(
+                keychain.vmapped_keys,
+                self._process_logits(logits, token_ids),
+            )
+            return token_ids[candidate_index]
+
+        logits = self._process_token_logits(logits, token_ids)
+        candidate_count = min(self._top_k_width, logits.shape[0])
+        candidate_logits, candidate_positions = jax.lax.top_k(logits, candidate_count)
+        if self.top_p is not None:
+            candidate_probabilities = jax.nn.softmax(candidate_logits)
+            cumulative_probabilities = jnp.cumsum(candidate_probabilities)
+            candidate_logits = jnp.where(
+                cumulative_probabilities - candidate_probabilities < self.top_p,
+                candidate_logits,
+                -jnp.inf,
+            )
+        candidate_logits = self._apply_min_p(candidate_logits)
+        candidate_index = jax.random.categorical(keychain.vmapped_keys, candidate_logits)
+        return token_ids[candidate_positions[candidate_index]]
 
     def _raise_if_batched(self) -> None:
         scalar_fields: tuple[SamplingLeaf | None, ...] = (
@@ -217,40 +274,54 @@ class SamplingPolicy(eqx.Module):
                 "Attempted to call a method on a batched version of SamplingPolicy. Use vmap instead.",
             )
 
-    def _apply_banned_tokens(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+    def _apply_banned_tokens(
+        self,
+        logits: Float[Array, " candidates"],
+        token_ids: Int[Array, " candidates"],
+    ) -> Float[Array, " candidates"]:
         if self.banned_tokens is None:
             return logits
-        (vocabulary_size,) = logits.shape
-        vocabulary_indices = jnp.arange(vocabulary_size)
         banned_token_mask = jnp.any(
-            self.banned_tokens[:, None] == vocabulary_indices,
+            self.banned_tokens[:, None] == token_ids,
             axis=0,
         )
         return jnp.where(banned_token_mask, -jnp.inf, logits)
 
-    def _token_counts_or_zeros(self, logits: Float[Array, " vocabulary"]) -> Int[Array, " vocabulary"]:
+    def _token_counts_or_zeros(self, token_ids: Int[Array, " candidates"]) -> Int[Array, " candidates"]:
         if self.token_counts is None:
-            return jnp.zeros(logits.shape, dtype=jnp.int32)
-        return self.token_counts
+            return jnp.zeros(token_ids.shape, dtype=jnp.int32)
+        return self.token_counts[token_ids]
 
-    def _apply_repetition_penalty(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+    def _apply_repetition_penalty(
+        self,
+        logits: Float[Array, " candidates"],
+        token_ids: Int[Array, " candidates"],
+    ) -> Float[Array, " candidates"]:
         if self.repetition_penalty is None:
             return logits
-        token_counts = self._token_counts_or_zeros(logits)
+        token_counts = self._token_counts_or_zeros(token_ids)
         seen_token_mask = token_counts > 0
         penalized_logits = jnp.where(logits > 0, logits / self.repetition_penalty, logits * self.repetition_penalty)
         return jnp.where(seen_token_mask, penalized_logits, logits)
 
-    def _apply_presence_penalty(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+    def _apply_presence_penalty(
+        self,
+        logits: Float[Array, " candidates"],
+        token_ids: Int[Array, " candidates"],
+    ) -> Float[Array, " candidates"]:
         if self.presence_penalty is None:
             return logits
-        token_counts = self._token_counts_or_zeros(logits)
+        token_counts = self._token_counts_or_zeros(token_ids)
         return jnp.where(token_counts > 0, logits - self.presence_penalty, logits)
 
-    def _apply_frequency_penalty(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+    def _apply_frequency_penalty(
+        self,
+        logits: Float[Array, " candidates"],
+        token_ids: Int[Array, " candidates"],
+    ) -> Float[Array, " candidates"]:
         if self.frequency_penalty is None:
             return logits
-        token_counts = self._token_counts_or_zeros(logits).astype(logits.dtype)
+        token_counts = self._token_counts_or_zeros(token_ids).astype(logits.dtype)
         return logits - self.frequency_penalty * token_counts
 
     def _apply_temperature(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:

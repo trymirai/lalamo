@@ -24,7 +24,7 @@ from lalamo.modules import (
 )
 from lalamo.modules.token_mixer import State
 from lalamo.modules.utils import call_vmapped
-from lalamo.sampling import SamplingPolicy
+from lalamo.sampling import CandidateLogits, LogitOutput, SamplingPolicy
 
 __all__ = [
     "GenerationConfig",
@@ -38,7 +38,7 @@ _COMPILED_PROMPT_LENGTHS = tuple(256 * 2**i for i in range(12))
 
 
 class PrefillResults(NamedTuple):
-    last_token_logits: Float[Array, "batch vocabulary"]
+    last_token_logits: LogitOutput
     last_token_indices: Int[Array, " batch"]
     state: State
 
@@ -51,7 +51,7 @@ class Chunk(eqx.Module):
 
 
 class DecodingState(NamedTuple):
-    last_token_logits: Float[Array, "batch vocabulary"]
+    last_token_logits: LogitOutput
     last_token_indices: Int[Array, " batch"]
     state: State
     stop_flags: Bool[Array, " batch"]
@@ -207,6 +207,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         forward_pass_config: DecoderForwardPassConfig | None = None,
         chunk_size: int = 512,
         *,
+        return_candidate_logits: bool = False,
         keychain: Keychain,
     ) -> PrefillResults:
         batch_size, sequence_length = token_ids.shape
@@ -228,17 +229,18 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             max(state_capacity, num_chunks * chunk_size),
             state_dtype,
         )
-        logits_like = jax.device_put(
-            jnp.zeros((batch_size, self.decoder.vocab_size), dtype=jnp.float32),
-            self.sharding_config.make_sharding((batch_axis, None)),
-        )
         logits_sharding = self.sharding_config.make_sharding((batch_axis, None))
+        if return_candidate_logits:
+            logits_like = self.decoder.embedding.empty_sampling_logits(batch_size)
+        else:
+            logits_like = jnp.zeros((batch_size, self.decoder.vocab_size), dtype=jnp.float32)
+        logits_like = jax.tree.map(lambda leaf: jax.device_put(leaf, logits_sharding), logits_like)
         chunk_keychains = jax.tree.map(lambda *nodes: jnp.stack(nodes), *keychain.split(num_chunks))
 
         def apply_chunk(
-            state_and_logits: tuple[State, Float[Array, "batch vocabulary"]],
+            state_and_logits: tuple[State, LogitOutput],
             chunk_inputs: tuple[Chunk, Keychain],
-        ) -> tuple[tuple[State, Float[Array, "batch vocabulary"]], None]:
+        ) -> tuple[tuple[State, LogitOutput], None]:
             current_state, previous_logits = state_and_logits
             chunk, current_chunk_keychain = chunk_inputs
             decoder_result = self.decoder(
@@ -249,14 +251,23 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 lengths_without_padding=chunk.sequence_ends,
                 forward_pass_config=forward_pass_config,
                 return_suffix_tokens=1,
+                return_candidate_logits=return_candidate_logits,
                 keychain=current_chunk_keychain,
             )
             assert decoder_result.updated_state is not None
 
-            chunk_logits = jax.device_put(decoder_result.logits[:, 0, :], logits_sharding)
+            chunk_logits = jax.tree.map(
+                lambda leaf: leaf.at[:, 0, :].get(out_sharding=logits_sharding),
+                decoder_result.logits,
+            )
+            last_token_logits = jax.tree.map(
+                lambda current, previous: jnp.where(chunk.is_last_token_inside[:, None], current, previous),
+                chunk_logits,
+                previous_logits,
+            )
             return (
                 decoder_result.updated_state,
-                jnp.where(chunk.is_last_token_inside[:, None], chunk_logits, previous_logits),
+                last_token_logits,
             ), None
 
         (state, last_token_logits), _ = jax.lax.scan(
@@ -340,6 +351,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             prompt_length + max_output_length + 1,
             prompt_lengths_without_padding,
             prefill_forward_pass_config,
+            return_candidate_logits=num_top_logits_to_return is None,
             keychain=prefill_keychain,
         )
         initial_state = DecodingState(
@@ -351,23 +363,34 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         )
         stopped_token_ids = jax.device_put(jnp.zeros(batch_size, dtype=jnp.int32), batch_vector_sharding)
 
-        def sample_token(
-            logits: Float[Array, " vocabulary"],
-            sample_key: Key[Array, ""],
-        ) -> Int[Array, ""]:
-            return jax.random.categorical(sample_key, logits)
-
         def loop_iteration(
             state: DecodingState,
             step_keys: tuple[Key[Array, " batch"], Key[Array, "..."]],
         ) -> tuple[DecodingState, GenerationStepResults]:
             sampling_keys, decoding_key = step_keys
-            processed_logits = call_vmapped(
-                lambda policy, logits: policy.process_logits(logits),
-                state.sampling_policy,
-                state.last_token_logits.astype(jnp.float32),
-            )
-            next_token_ids = call_vmapped(sample_token, processed_logits, sampling_keys)
+            if num_top_logits_to_return is None:
+                top_k_token_ids = None
+                top_k_token_logits = None
+                next_token_ids = call_vmapped(
+                    SamplingPolicy.__call__,
+                    state.sampling_policy,
+                    state.last_token_logits.astype(jnp.float32),
+                    keychain=Keychain(
+                        vmapped_keys=sampling_keys,
+                        batch_key=sampling_keychain.batch_key,
+                        sharding_config=sampling_keychain.sharding_config,
+                    ),
+                )
+            else:
+                if isinstance(state.last_token_logits, CandidateLogits):
+                    raise RuntimeError("Top-logit generation requires dense logits.")
+                processed_logits = call_vmapped(
+                    lambda policy, logits: policy.process_logits(logits),
+                    state.sampling_policy,
+                    state.last_token_logits.astype(jnp.float32),
+                )
+                next_token_ids = call_vmapped(jax.random.categorical, sampling_keys, processed_logits)
+                top_k_token_logits, top_k_token_ids = jax.lax.top_k(processed_logits, num_top_logits_to_return)
             next_token_ids = jnp.where(state.stop_flags, stopped_token_ids, next_token_ids)
             next_sampling_policy = call_vmapped(
                 lambda policy, token_id, should_count: policy.with_next_token_count(token_id, should_count),
@@ -376,12 +399,6 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 jnp.logical_not(state.stop_flags),
             )
 
-            if num_top_logits_to_return is None:
-                top_k_token_ids = None
-                top_k_token_logits = None
-            else:
-                top_k_token_logits, top_k_token_ids = jax.lax.top_k(processed_logits, num_top_logits_to_return)
-
             next_token_indices = state.last_token_indices + 1
             next_stop_flags = state.stop_flags | jnp.any(next_token_ids[:, None] == eos_token_ids[None, :], axis=-1)
             decoder_result = self.decoder(
@@ -389,6 +406,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 token_positions=next_token_indices[:, None],
                 state=state.state,
                 return_updated_state=True,
+                return_candidate_logits=num_top_logits_to_return is None,
                 forward_pass_config=decode_forward_pass_config,
                 keychain=Keychain(
                     vmapped_keys=decoding_key,
@@ -525,6 +543,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             padded_input_length + max_output_length + 1,
             length_without_padding,
             prefill_forward_pass_config,
+            return_candidate_logits=True,
             keychain=prefill_keychain,
         )
 
@@ -540,8 +559,14 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             mode=KeychainBroadcastMode.PREFIX,
         ).vmapped_keys
         for sampling_key, decoding_key in zip(sampling_keys, decoding_keys, strict=True):
-            processed_logits = sampling_policy.process_logits(last_token_logits.astype(jnp.float32))
-            next_token_id = jax.random.categorical(sampling_key, processed_logits)
+            next_token_id = sampling_policy(
+                last_token_logits.astype(jnp.float32),
+                keychain=Keychain(
+                    vmapped_keys=sampling_key,
+                    batch_key=sampling_keychain.batch_key,
+                    sharding_config=sampling_keychain.sharding_config,
+                ),
+            )
             yield next_token_id
 
             if bool(jnp.any(next_token_id == stop_token_ids).item()):
@@ -554,6 +579,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 token_positions=next_token_index.reshape(1, 1),
                 state=state,
                 return_updated_state=True,
+                return_candidate_logits=True,
                 forward_pass_config=decode_forward_pass_config,
                 keychain=Keychain(
                     vmapped_keys=decoding_key,

@@ -12,7 +12,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from einops import rearrange
 from jax.errors import JaxRuntimeError
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key, Shaped
 
@@ -21,7 +20,7 @@ from lalamo.models.language_model import DecodingState, GenerationConfig, Langua
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
 from lalamo.modules import DecoderForwardPassConfig, State
 from lalamo.modules.utils import call_vmapped
-from lalamo.sampling import SamplingPolicy
+from lalamo.sampling import LogitOutput, SamplingPolicy
 
 __all__ = [
     "BatchScheduler",
@@ -380,10 +379,11 @@ class PrefillBatch(eqx.Module):
             raise RuntimeError(f"decoding_keys shape {self.decoding_keys.shape} != ({prefill_batch_size},)")
         if self.sequence_ids.shape != (prefill_batch_size,):
             raise RuntimeError(f"sequence_ids shape {self.sequence_ids.shape} != ({prefill_batch_size},)")
-        if self.prefill_results.last_token_logits.shape[0] != prefill_batch_size:
+        if any(
+            leaf.shape[0] != prefill_batch_size for leaf in jax.tree.leaves(self.prefill_results.last_token_logits)
+        ):
             raise RuntimeError(
-                "prefill_results.last_token_logits batch "
-                f"{self.prefill_results.last_token_logits.shape[0]} != {prefill_batch_size}",
+                f"prefill_results.last_token_logits batch does not match {prefill_batch_size}",
             )
 
 
@@ -457,6 +457,7 @@ class PrefillSource:
             state_capacity=self.state_capacity,
             lengths_without_padding=lengths_without_padding_array,
             chunk_size=self.chunk_size,
+            return_candidate_logits=True,
             keychain=prefill_keychain,
         )
         sampling_policy = self.sampling_policy_template.broadcast(self.prefill_batch_size)
@@ -509,7 +510,7 @@ def append_block_tokens(
 
 
 class BlockContinuousState(eqx.Module):
-    last_token_logits: Float[Array, "num_lines vocab"]
+    last_token_logits: LogitOutput
     last_token_indices: Int[Array, " num_lines"]
     kv_state: State
     sampling_policy: SamplingPolicy
@@ -554,12 +555,13 @@ class BlockContinuousState(eqx.Module):
             return jax.device_put(leaf, leaf_sharding)
 
         sampling_policy = jax.tree.map(shard_sampling_leaf, sampling_policy)
+        empty_sampling_logits = jax.tree.map(
+            lambda leaf: jax.device_put(leaf, batch_token_sharding),
+            model.decoder.embedding.empty_sampling_logits(num_lines),
+        )
 
         return BlockContinuousState(
-            last_token_logits=jax.device_put(
-                jnp.zeros((num_lines, model.decoder.vocab_size), dtype=jnp.float32),
-                batch_token_sharding,
-            ),
+            last_token_logits=empty_sampling_logits,
             last_token_indices=jax.device_put(jnp.zeros(num_lines, dtype=jnp.int32), batch_vector_sharding),
             kv_state=model.decoder.init_static_state(
                 num_lines,
@@ -637,12 +639,16 @@ class BlockContinuousDecoder(eqx.Module):
         next_decoding_keys = split_decoding_keys[:, 0]
         decoder_keys = split_decoding_keys[:, 1]
 
-        processed_logits = call_vmapped(
-            lambda policy, logits: policy.process_logits(logits),
+        next_token_ids = call_vmapped(
+            SamplingPolicy.__call__,
             decode_state.sampling_policy,
             decode_state.last_token_logits.astype(jnp.float32),
+            keychain=Keychain(
+                vmapped_keys=sample_keys,
+                batch_key=self.decoding_batch_key,
+                sharding_config=self.language_model.sharding_config,
+            ),
         )
-        next_token_ids = jax.vmap(jax.random.categorical)(sample_keys, processed_logits)
         next_token_ids = jnp.where(decode_state.stop_flags, 0, next_token_ids)
         next_sampling_policy = call_vmapped(
             lambda policy, token_id, should_count: policy.with_next_token_count(token_id, should_count),
@@ -662,6 +668,7 @@ class BlockContinuousDecoder(eqx.Module):
             token_positions=next_token_indices[:, None],
             state=decode_state.state,
             return_updated_state=True,
+            return_candidate_logits=True,
             forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
             keychain=Keychain(
                 vmapped_keys=decoder_keys,
@@ -671,9 +678,7 @@ class BlockContinuousDecoder(eqx.Module):
         )
         assert decoder_result.updated_state is not None
         new_decode_state = DecodingState(
-            last_token_logits=rearrange(decoder_result.logits, "num_lines 1 vocab -> num_lines vocab").astype(
-                jnp.float32,
-            ),
+            last_token_logits=decoder_result.logits[:, 0, :].astype(jnp.float32),
             last_token_indices=next_token_indices,
             state=decoder_result.updated_state,
             stop_flags=stop_flags,

@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import pytest
 
 from lalamo.module import Keychain
-from lalamo.sampling import SamplingPolicy
+from lalamo.sampling import CandidateLogits, SamplingPolicy
 from tests.helpers import make_test_sharding_config
 
 
@@ -132,3 +132,25 @@ def test_call_samples_greedy_token_when_temperature_is_zero() -> None:
 
     assert result.shape == ()
     assert result.item() == 1
+
+
+def test_call_maps_penalized_candidate_logits_back_to_token_ids() -> None:
+    policy = _with_counts(
+        SamplingPolicy.init(top_k=3, top_p=0.01, banned_tokens=(5,), repetition_penalty=2.0),
+        (2,),
+        1,
+        8,
+    )
+    candidate_logits = CandidateLogits(
+        token_ids=jnp.array([7, 2, 5, 1], dtype=jnp.int32),
+        logits=jnp.array([3.0, 4.0, 5.0, 2.0], dtype=jnp.float32),
+    )
+    dense_logits = (
+        jnp.full((8,), -jnp.inf, dtype=jnp.float32).at[candidate_logits.token_ids].set(candidate_logits.logits)
+    )
+    keychain = Keychain.init(0, sharding_config=make_test_sharding_config())
+
+    candidate_token = policy(candidate_logits, keychain=keychain)
+    dense_token = policy(dense_logits, keychain=keychain)
+
+    assert candidate_token.item() == dense_token.item() == 7
