@@ -8,8 +8,10 @@ import jax.numpy as jnp
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int
 
+from lalamo.compressed.low_rank_preview_readout import LowRankPreviewReadoutMatrix
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
+from lalamo.sampling import FullLogits, Logits, SparseLogits
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.weight_matrix import (
     EmbeddingMatrix,
@@ -90,6 +92,15 @@ class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
     @abstractmethod
     def model_dim(self) -> int: ...
 
+    def empty_sampling_logits(self, batch_size: int) -> Logits:
+        if not isinstance(self.readout_matrix, LowRankPreviewReadoutMatrix):
+            return FullLogits(values=jnp.zeros((batch_size, self.vocab_size), dtype=jnp.float32))
+        candidate_count = self.readout_matrix.candidate_count
+        return SparseLogits(
+            values=jnp.zeros((batch_size, candidate_count), dtype=jnp.float32),
+            token_ids=jnp.zeros((batch_size, candidate_count), dtype=jnp.int32),
+        )
+
     def _readout_logits(
         self,
         x: Float[Array, " channels"],
@@ -136,8 +147,33 @@ class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
         )
         logits = logits.astype(forward_pass_config.logit_dtype)
         if self.config.logit_soft_cap is not None:
-            logits = apply_soft_capping(logits, self.config.logit_soft_cap)
+            capped_logits = apply_soft_capping(logits, self.config.logit_soft_cap)
+            if isinstance(self.readout_matrix, LowRankPreviewReadoutMatrix):
+                logits = jnp.where(jnp.isneginf(logits), logits, capped_logits)
+            else:
+                logits = capped_logits
         return logits
+
+    @eqx.filter_jit
+    def readout_for_sampling(
+        self,
+        x: Float[Array, " channels"],
+        *,
+        keychain: Keychain,
+        forward_pass_config: EmbeddingForwardPassConfig = EmbeddingForwardPassConfig(),
+    ) -> Logits:
+        if not isinstance(self.readout_matrix, LowRankPreviewReadoutMatrix):
+            return FullLogits(values=self.readout(x, keychain=keychain, forward_pass_config=forward_pass_config))
+
+        candidates = self.readout_matrix.candidate_logits(
+            x,
+            keychain=keychain,
+            forward_pass_config=forward_pass_config.matmul_config,
+        )
+        logits = candidates.values.astype(forward_pass_config.logit_dtype)
+        if self.config.logit_soft_cap is not None:
+            logits = apply_soft_capping(logits, self.config.logit_soft_cap)
+        return SparseLogits(values=logits, token_ids=candidates.token_ids)
 
 
 @dataclass(frozen=True)
