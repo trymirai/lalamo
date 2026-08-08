@@ -17,6 +17,7 @@ from lalamo.initializer import EmptyInitializer, Initializer
 from lalamo.model import Model, ModelConfig
 from lalamo.model_import.loaders.huggingface import (
     load_huggingface_classifier,
+    load_input_embedding_matrix,
     load_linear,
 )
 from lalamo.model_import.model_configs.foreign_config import ForeignConfig
@@ -24,9 +25,11 @@ from lalamo.model_import.model_configs.huggingface import ModernBERTConfig
 from lalamo.models.chat_codec import ChatCodec, ChatCodecConfig
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
 from lalamo.modules.classifier import Classifier
+from lalamo.modules.decoder import PerLayerEmbedding, PLEModelConfig
 from lalamo.modules.embedding import TiedEmbedding
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.mlp import DenseMLP
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.token_mixers.attention import Attention
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.parameter_path import ParameterPath
@@ -34,7 +37,9 @@ from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
     FullPrecisionSpec,
+    GradientEstimator,
     Layout,
+    MatmulConfig,
     WeightMatrix,
 )
 from tests.helpers import make_sharding, make_test_sharding_config
@@ -220,6 +225,56 @@ def test_load_linear_quantized_checkpoint_uses_requested_dtype_and_implementatio
     assert isinstance(loaded.weights, expected_type)
     assert loaded.weights.spec.layout == Layout.OUTPUT_INPUT
     assert loaded.weights.dtype == jnp.bfloat16
+
+
+def test_mlx_quantized_per_layer_embedding_forwards_training_config() -> None:
+    initializer = EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config())
+    token_path = ParameterPath("embed_tokens_per_layer")
+    token_embedding = load_input_embedding_matrix(
+        initializer.embedding_matrix(OUTPUT_DIM, INPUT_DIM),
+        _mlx_weights(token_path),
+        token_path,
+        implementation=CompressionImplementation.TRAINING,
+    )
+    assert isinstance(token_embedding, MLXMatrixForTraining)
+    assert token_embedding.spec.bits == 8
+
+    config = PLEModelConfig(
+        ple_dim=OUTPUT_DIM,
+        num_layers=NUM_GROUPS,
+        ple_vocab_size=OUTPUT_DIM,
+        ple_embed_scale=1.0,
+        model_projection_scale=1.0,
+        input_scale=1.0,
+        linear_config=LinearConfig(),
+        norm_config=NormalizationConfig(
+            epsilon=1e-6,
+            scale_offset=None,
+            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
+        ),
+    )
+    per_layer_embedding = PerLayerEmbedding(
+        config=config,
+        sharding_config=initializer.sharding_config,
+        token_embedding=token_embedding,
+        model_projection=LinearConfig().init(
+            initializer,
+            input_dim=OUTPUT_DIM,
+            output_dims=(INPUT_DIM,),
+            has_biases=False,
+        ),
+        projection_norm=config.norm_config.init(initializer, config.ple_dim),
+    )
+    forward_pass_config = MatmulConfig.for_training(GradientEstimator.LOCAL_ADDITIVE_NOISE)
+
+    with pytest.raises(ValueError, match="Local additive noise is not implemented"):
+        per_layer_embedding(
+            jnp.zeros((1, 1), dtype=jnp.int32),
+            jnp.ones((1, 1, OUTPUT_DIM), dtype=jnp.bfloat16),
+            forward_pass_config=forward_pass_config,
+            keychain=Keychain.init(0, sharding_config=initializer.sharding_config),
+        )
 
 
 def test_load_linear_symmetric_awq_without_qzeros_uses_symmetric_spec() -> None:
