@@ -25,7 +25,7 @@ from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at
-from lalamo.weight_matrix import CompressionImplementation, Layout, WeightMatrix
+from lalamo.weight_matrix import CompressionImplementation, EmbeddingMatrix, Layout, WeightMatrix
 
 from .common import load_full_precision
 from .utils import decode_mxfp4, deinterleave_pairwise_columns
@@ -1123,14 +1123,14 @@ def _load_weight_matrix(
     )
 
 
-def _load_input_embedding_matrix(
-    matrix: WeightMatrix,
+def load_input_embedding_matrix(
+    matrix: EmbeddingMatrix,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-) -> WeightMatrix:
-    return _load_matrix(
+) -> EmbeddingMatrix:
+    loaded = _load_matrix(
         matrix,
         weights_dict,
         path,
@@ -1140,6 +1140,8 @@ def _load_input_embedding_matrix(
         full_precision_weights=lambda: jnp.matrix_transpose(weights_dict[path / "weight"]),
         implementation=implementation,
     )
+    assert isinstance(loaded, EmbeddingMatrix)
+    return loaded
 
 
 def load_tied_embedding(
@@ -1149,7 +1151,7 @@ def load_tied_embedding(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> TiedEmbedding:
-    embedding = _load_input_embedding_matrix(
+    embedding = load_input_embedding_matrix(
         module.embedding,
         weights_dict,
         embedding_path,
@@ -1166,7 +1168,7 @@ def load_untied_embedding(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> UntiedEmbedding:
-    input_emb = _load_input_embedding_matrix(
+    input_emb = load_input_embedding_matrix(
         module.input_embedding,
         weights_dict,
         embedding_path,
@@ -1224,7 +1226,7 @@ def _decoder_load_layout(
     weights_dict: Mapping[str, Array],
     root_path: ParameterPath,
 ) -> DecoderLoadLayout:
-    if root_path.endswith(".language_model"):
+    if root_path.endswith("language_model"):
         decoder_path = root_path
     else:
         decoder_path = root_path / "model"
@@ -1290,20 +1292,23 @@ def _decoder_load_layout(
     return standard_layout
 
 
-def load_huggingface_decoder(
-    module: Decoder,
-    weights_dict: Mapping[str, Array],
-    *,
-    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-) -> Decoder:
+def resolve_decoder_load_layout(weights_dict: Mapping[str, Array]) -> DecoderLoadLayout:
     if _has_prefix(weights_dict, ParameterPath("model.language_model")):
         root_path = ParameterPath("model.language_model")
     elif _has_prefix(weights_dict, ParameterPath("language_model")):
         root_path = ParameterPath("language_model")
     else:
         root_path = ParameterPath()
+    return _decoder_load_layout(weights_dict, root_path)
 
-    layout = _decoder_load_layout(weights_dict, root_path)
+
+def load_huggingface_decoder(
+    module: Decoder,
+    weights_dict: Mapping[str, Array],
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> Decoder:
+    layout = resolve_decoder_load_layout(weights_dict)
 
     if isinstance(module.embedding, TiedEmbedding):
         embedding = load_tied_embedding(

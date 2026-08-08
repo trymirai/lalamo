@@ -10,8 +10,8 @@ from jaxtyping import Array
 from lalamo.model import Model
 from lalamo.model_import.loaders.huggingface import (
     load_huggingface_decoder,
+    load_input_embedding_matrix,
     load_linear,
-    load_per_layer_embedding_matrix,
     load_rmsnorm,
     resolve_decoder_load_layout,
 )
@@ -283,7 +283,7 @@ class HFGemma4Config(HuggingFaceLMConfig):
 
         new_per_layer_embedding = replace(
             model.per_layer_embedding,
-            token_embedding=load_per_layer_embedding_matrix(
+            token_embedding=load_input_embedding_matrix(
                 model.per_layer_embedding.token_embedding,
                 weights_dict,
                 base / "embed_tokens_per_layer",
