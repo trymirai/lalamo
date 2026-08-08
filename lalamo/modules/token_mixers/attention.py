@@ -1,5 +1,8 @@
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache
+from typing import Literal, cast
 
 import equinox as eqx
 import jax
@@ -27,6 +30,7 @@ from lalamo.modules.token_mixer import (
     TokenMixerResult,
 )
 from lalamo.modules.utils import apply_soft_capping, call_vmapped, call_vmapped_twice
+from lalamo.utils.sharding import supports_mosaic_gpu
 
 from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 
@@ -74,26 +78,28 @@ def _soft_capped_attention_kernel(
     *,
     bias: Float[Array, "heads dst_tokens src_tokens"] | None,
     mask: Bool[Array, "dst_tokens src_tokens"] | None,
-    scale: float | None,
+    scale: float | Float[Array, ""] | None,
     logit_soft_cap: float | None,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
     original_dtype = queries.dtype
+    if logit_soft_cap is None:
+        with jax.numpy_dtype_promotion("standard"):
+            return jax.nn.dot_product_attention(
+                queries,
+                keys,
+                values,
+                bias=bias,
+                mask=mask,
+                # The pinned implementation accepts scalar arrays, although its annotation says float.
+                scale=cast("float | None", scale),
+            ).astype(original_dtype)
+
     attention_dtype = jnp.float32
     queries = queries.astype(attention_dtype)
     keys = keys.astype(attention_dtype)
     values = values.astype(attention_dtype)
     if bias is not None:
         bias = bias.astype(attention_dtype)
-
-    if logit_soft_cap is None:
-        return jax.nn.dot_product_attention(
-            queries,
-            keys,
-            values,
-            bias=bias,
-            mask=mask,
-            scale=scale,
-        ).astype(original_dtype)
 
     _, num_heads, head_dim = queries.shape
     _, num_groups, _ = keys.shape
@@ -110,7 +116,7 @@ def _soft_capped_attention_kernel(
     if scale is None:
         scale_val = head_dim**-0.5
     else:
-        scale_val = float(scale)
+        scale_val = scale
     attention_logits = attention_logits * scale_val
     attention_logits = apply_soft_capping(attention_logits, logit_soft_cap)
     if bias is not None:
@@ -127,6 +133,83 @@ def _soft_capped_attention_kernel(
         values,
         "heads dst_tokens src_tokens, src_tokens heads channels -> dst_tokens heads channels",
     ).astype(original_dtype)
+
+
+def _single_token_bf16_attention(
+    queries: Float[Array, "1 query_heads head_dim"],
+    keys: Float[Array, "capacity key_value_heads head_dim"],
+    values: Float[Array, "capacity key_value_heads head_dim"],
+    mask: Bool[Array, "1 capacity"],
+    scale: Float[Array, ""],
+) -> Float[Array, "1 query_heads head_dim"]:
+    return _soft_capped_attention_kernel(
+        queries,
+        keys,
+        values,
+        bias=None,
+        mask=mask,
+        scale=scale,
+        logit_soft_cap=None,
+    )
+
+
+@cache
+def _make_single_token_decode_attention(max_attention_length: int) -> Callable[..., Array]:
+    @jax.custom_batching.custom_vmap
+    def attention(
+        queries: Float[Array, "1 query_heads head_dim"],
+        keys: Float[Array, "capacity key_value_heads head_dim"],
+        values: Float[Array, "capacity key_value_heads head_dim"],
+        mask: Bool[Array, "1 capacity"],
+        scale: Float[Array, ""],
+    ) -> Float[Array, "1 query_heads head_dim"]:
+        return _single_token_bf16_attention(queries, keys, values, mask, scale)
+
+    @attention.def_vmap
+    def attention_vmap(
+        axis_size: int,
+        _in_batched: list[bool],
+        queries: Float[Array, "batch 1 query_heads head_dim"],
+        keys: Float[Array, "batch capacity key_value_heads head_dim"],
+        values: Float[Array, "batch capacity key_value_heads head_dim"],
+        masks: Bool[Array, "batch 1 capacity"],
+        scale: Float[Array, ""],
+    ) -> tuple[Float[Array, "batch 1 query_heads head_dim"], bool]:
+        programs = axis_size * keys.shape[2]
+        # One CTA per B200 SM is enough to hide the long-cache memory latency.
+        required_splits = (144 + programs - 1) // programs
+        num_blocks = (max_attention_length + 127) // 128
+        if max_attention_length < keys.shape[1]:
+            num_blocks += 1
+        num_splits: Literal[1, 2, 4, 8] | None = None
+        for candidate in (1, 2, 4, 8):
+            if candidate >= required_splits and candidate <= num_blocks:
+                num_splits = candidate
+                break
+        if num_splits is None:
+            fallback = jax.vmap(_single_token_bf16_attention, in_axes=(0, 0, 0, 0, None))
+            return fallback(queries, keys, values, masks, scale), True
+
+        from lalamo.kernels.decode_attention import decode_attention  # noqa: PLC0415
+
+        lengths = jnp.sum(masks[:, 0], axis=-1, dtype=jnp.int32)
+        starts = jnp.argmax(masks[:, 0], axis=-1).astype(jnp.int32)
+        ends = starts + lengths
+        output = jax.vmap(
+            lambda query, key, value, start, end: decode_attention(
+                query,
+                key,
+                value,
+                start,
+                end,
+                scale,
+                num_splits,
+                max_attention_length,
+            )
+        )(queries, keys, values, starts, ends)
+        return output, True
+
+    return attention
 
 
 def _stable_reduction_attention_kernel(
@@ -255,6 +338,7 @@ def _attention_kernel(
     scale: float | None,
     logit_soft_cap: float | None,
     forward_pass_config: MixerForwardPassConfig,
+    pallas_decode_max_attention_length: int,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
     def tokamax_attention() -> Float[Array, "dst_tokens heads head_channels"]:
         if bias is not None and logit_soft_cap is not None:
@@ -268,6 +352,34 @@ def _attention_kernel(
             scale=scale,
             logits_soft_cap=logit_soft_cap,
         ).astype(queries.dtype)
+
+    if (
+        pallas_decode_max_attention_length > 0
+        and forward_pass_config.attention_implementation
+        in (AttentionImplementation.STANDARD, AttentionImplementation.CUDNN)
+        and queries.shape[0] == 1
+        and queries.shape[1] % keys.shape[1] == 0
+        and 1 <= queries.shape[1] // keys.shape[1] <= 16
+        and queries.shape[2] in (128, 256, 512)
+        and keys.shape[2] == queries.shape[2]
+        and values.shape == keys.shape
+        and queries.dtype == keys.dtype == values.dtype == jnp.bfloat16
+        and bias is None
+        and mask is not None
+        and mask.shape == (1, keys.shape[0])
+        and logit_soft_cap is None
+        and (queries.shape[2] < 512 or keys.shape[1] > 1 or pallas_decode_max_attention_length < keys.shape[0])
+    ):
+        attention_scale = queries.shape[-1] ** -0.5
+        if scale is not None:
+            attention_scale = scale
+        return _make_single_token_decode_attention(pallas_decode_max_attention_length)(
+            queries,
+            keys,
+            values,
+            mask,
+            jnp.asarray(attention_scale, dtype=jnp.float32),
+        )
 
     match forward_pass_config.attention_implementation:
         case AttentionImplementation.STANDARD:
@@ -598,6 +710,20 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         else:
             sink_bias = None
 
+        pallas_decode_max_attention_length = 0
+        if (
+            isinstance(updated_state, StaticKVCacheLayer)
+            and attention_parent_indices is None
+            and self.config.is_causal
+            and supports_mosaic_gpu(self.sharding_config.mesh, 10)
+        ):
+            pallas_decode_max_attention_length = updated_state.capacity
+            if self.config.sliding_window_size is not None:
+                pallas_decode_max_attention_length = min(
+                    pallas_decode_max_attention_length,
+                    self.config.sliding_window_size,
+                )
+
         attention_output = _attention_kernel(
             queries,
             updated_state.keys,
@@ -607,6 +733,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             scale=self.config.scale,
             logit_soft_cap=self.config.logit_soft_cap,
             forward_pass_config=forward_pass_config,
+            pallas_decode_max_attention_length=pallas_decode_max_attention_length,
         )
         attention_output = rearrange(
             attention_output,

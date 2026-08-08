@@ -15,6 +15,7 @@ __all__ = [
     "lookup_sharded_indices",
     "reshard_as",
     "sharding_of",
+    "supports_mosaic_gpu",
     "with_sharding",
 ]
 
@@ -118,6 +119,14 @@ def sharding_of(array: Array | ShapeDtypeStruct) -> NamedSharding:
         sharding = typeof(array).sharding
     assert isinstance(sharding, NamedSharding)
     return sharding
+
+
+def supports_mosaic_gpu(mesh: Mesh, minimum_compute_capability: int) -> bool:
+    device = mesh.devices.flat[0]
+    return (
+        device.device_kind.startswith("NVIDIA")
+        and float(getattr(device, "compute_capability", 0)) >= minimum_compute_capability
+    )
 
 
 def with_sharding(array: Array, sharding: NamedSharding) -> Array:
