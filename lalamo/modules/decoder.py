@@ -121,10 +121,11 @@ class PerLayerEmbedding(LalamoModule[PLEModelConfig]):
         keychain: Keychain,
     ) -> tuple[Float[Array, "batch suffix_tokens ple_dim"], ...]:
         config = self.config
+        embedding_keychain, projection_keychain = keychain.split()
         token_ple = (
             self.token_embedding.lookup_embedding(
                 token_ids,
-                keychain=keychain,
+                keychain=embedding_keychain,
                 forward_pass_config=forward_pass_config,
             )
             * config.ple_embed_scale
@@ -139,7 +140,7 @@ class PerLayerEmbedding(LalamoModule[PLEModelConfig]):
             self.model_projection,
             inner_features,
             forward_pass_config=forward_pass_config,
-            keychain=keychain,
+            keychain=projection_keychain,
             added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
         model_ple = model_ple * config.model_projection_scale

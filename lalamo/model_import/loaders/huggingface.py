@@ -1226,7 +1226,7 @@ def _decoder_load_layout(
     weights_dict: Mapping[str, Array],
     root_path: ParameterPath,
 ) -> DecoderLoadLayout:
-    if root_path.endswith("language_model"):
+    if root_path.endswith(".language_model"):
         decoder_path = root_path
     else:
         decoder_path = root_path / "model"
