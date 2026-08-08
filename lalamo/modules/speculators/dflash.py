@@ -10,108 +10,34 @@ from jaxtyping import Array, DTypeLike, Float, Int
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, SpeculatorState
 from lalamo.modules.linear import Linear, LinearConfig
-from lalamo.modules.mlp import DenseMLP, DenseMLPConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings, RoPE, RoPEConfig
 from lalamo.modules.speculator import Speculator, SpeculatorConfig
 from lalamo.modules.speculators.weaver import Weaver, WeaverConfig
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.kv_cache import StaticKVCacheLayer
-from lalamo.modules.transformer_layer import TransformerForwardPassConfig
+from lalamo.modules.transformer_layer import TransformerForwardPassConfig, TransformerLayer, TransformerLayerConfig
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
     "DFlashDraftConfig",
-    "DFlashDraftLayer",
-    "DFlashDraftLayerConfig",
     "DFlashDraftModel",
     "DFlashDraftState",
 ]
 
 
-@dataclass(frozen=True)
-class DFlashDraftLayerConfig(LalamoConfig):
-    attention_config: AttentionConfig
-    input_norm_config: NormalizationConfig
-    post_attention_norm_config: NormalizationConfig
-    mlp_config: DenseMLPConfig
-
-    def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> "DFlashDraftLayer":
-        return DFlashDraftLayer(
-            config=self,
-            sharding_config=initializer.sharding_config,
-            attention=self.attention_config.init(initializer, model_dim),
-            input_norm=self.input_norm_config.init(initializer, model_dim),
-            post_attention_norm=self.post_attention_norm_config.init(initializer, model_dim),
-            mlp=self.mlp_config.init(initializer, model_dim, hidden_dim),
-        )
+def _layer_attention_config(layer_config: TransformerLayerConfig) -> AttentionConfig:
+    mixer_config = layer_config.mixer_config
+    if not isinstance(mixer_config, AttentionConfig):
+        raise TypeError(f"DFlash draft layers must use attention mixers, got {type(mixer_config).__name__}.")
+    return mixer_config
 
 
-class DFlashDraftLayer(LalamoModule[DFlashDraftLayerConfig]):
-    attention: Attention
-    input_norm: Normalization
-    post_attention_norm: Normalization
-    mlp: DenseMLP
-
-    def project_context(
-        self,
-        target_hidden: Float[Array, "batch context_tokens channels"],
-        positional_embeddings: PositionalEmbeddings,
-        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
-        *,
-        keychain: Keychain,
-    ) -> tuple[
-        Float[Array, "batch context_tokens groups head_channels"],
-        Float[Array, "batch context_tokens groups head_channels"],
-    ]:
-        return call_vmapped(
-            self.attention.project_key_value_heads,
-            target_hidden,
-            positional_embeddings,
-            forward_pass_config=forward_pass_config.mixer_forward_pass_config,
-            keychain=keychain,
-            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
-        )
-
-    @eqx.filter_jit
-    def __call__(
-        self,
-        hidden_states: Float[Array, "batch query_tokens channels"],
-        context_state: StaticKVCacheLayer,
-        positional_embeddings: PositionalEmbeddings,
-        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
-        *,
-        keychain: Keychain,
-    ) -> Float[Array, "batch query_tokens channels"]:
-        attention_keychain, mlp_keychain = keychain.split(2)
-        normalized_attention_inputs = call_vmapped_twice(
-            self.input_norm,
-            hidden_states,
-            forward_pass_config=forward_pass_config.normalization_forward_pass_config,
-            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
-        )
-        attention_results = call_vmapped(
-            self.attention,
-            normalized_attention_inputs,
-            positional_embeddings,
-            context_state,
-            forward_pass_config=forward_pass_config.mixer_forward_pass_config,
-            keychain=attention_keychain,
-            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
-        )
-        mlp_inputs = hidden_states + attention_results.outputs
-        normalized_mlp_inputs = call_vmapped_twice(
-            self.post_attention_norm,
-            mlp_inputs,
-            forward_pass_config=forward_pass_config.normalization_forward_pass_config,
-            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
-        )
-        mlp_outputs = self.mlp(
-            normalized_mlp_inputs,
-            forward_pass_config=forward_pass_config.mlp_forward_pass_config,
-            keychain=mlp_keychain,
-        )
-        return mlp_inputs + mlp_outputs
+def _layer_attention(layer: TransformerLayer) -> Attention:
+    mixer = layer.mixer
+    if not isinstance(mixer, Attention):
+        raise TypeError(f"DFlash draft layers must use attention mixers, got {type(mixer).__name__}.")
+    return mixer
 
 
 @dataclass(frozen=True)
@@ -126,11 +52,12 @@ class DFlashDraftConfig(LalamoConfig):
     context_projection_config: LinearConfig
     context_norm_config: NormalizationConfig
     rope_config: RoPEConfig
-    layer_configs: tuple[DFlashDraftLayerConfig, ...]
+    layer_configs: tuple[TransformerLayerConfig, ...]
     output_norm_config: NormalizationConfig
 
     def init(self, initializer: Initializer) -> "DFlashDraftModel":
         context_feature_dim = len(self.target_layer_ids) * self.model_dim
+        attention_configs = tuple(_layer_attention_config(layer_config) for layer_config in self.layer_configs)
         return DFlashDraftModel(
             config=self,
             sharding_config=initializer.sharding_config,
@@ -145,10 +72,7 @@ class DFlashDraftConfig(LalamoConfig):
             state_kv_projection=LinearConfig().init(
                 initializer,
                 self.model_dim,
-                tuple(
-                    2 * layer.attention_config.num_groups * layer.attention_config.head_dim
-                    for layer in self.layer_configs
-                ),
+                tuple(2 * config.num_groups * config.head_dim for config in attention_configs),
                 has_biases=False,
             ),
             layers=tuple(
@@ -221,11 +145,11 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
     context_norm: Normalization
     rope: RoPE
     state_kv_projection: Linear
-    layers: tuple[DFlashDraftLayer, ...]
+    layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
 
-    def state_kv_projection_from_layers(self, layers: tuple[DFlashDraftLayer, ...]) -> Linear:
-        qkv_projections = tuple(layer.attention.qkv_projection for layer in layers)
+    def state_kv_projection_from_layers(self, layers: tuple[TransformerLayer, ...]) -> Linear:
+        qkv_projections = tuple(_layer_attention(layer).qkv_projection for layer in layers)
         key_value_weights = jnp.concatenate(
             tuple(projection.weights.decompress()[projection.output_dims[0] :] for projection in qkv_projections),
             axis=0,
@@ -304,7 +228,7 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
             )
 
         return DFlashDraftState(
-            layer_states=tuple(empty_layer_state(layer.attention.config) for layer in self.layers),
+            layer_states=tuple(empty_layer_state(_layer_attention(layer).config) for layer in self.layers),
         )
 
     @eqx.filter_jit
@@ -330,11 +254,13 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
         _, total_capacity, _, _ = first_layer_state.keys.shape
         return state.append(
             tuple(
-                layer.project_context(
+                call_vmapped(
+                    _layer_attention(layer).project_key_value_heads,
                     target_hidden,
                     positional_embeddings,
-                    forward_pass_config=forward_pass_config,
+                    forward_pass_config=forward_pass_config.mixer_forward_pass_config,
                     keychain=layer_keychain,
+                    added_sharding_axis=layer.sharding_config.resolve_axis(LogicalAxis.BATCH),
                 )
                 for layer, layer_keychain in zip(self.layers, layer_keychains, strict=True)
             ),
@@ -364,13 +290,14 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
 
         hidden_states = noise_embeddings
         for layer, layer_state, layer_keychain in zip(self.layers, state.layer_states, layer_keychains, strict=True):
-            hidden_states = layer(
+            layer_result = layer(
                 hidden_states,
-                layer_state,
                 positional_embeddings,
+                layer_state,
                 forward_pass_config=forward_pass_config,
                 keychain=layer_keychain,
             )
+            hidden_states = layer_result.outputs
 
         return call_vmapped_twice(
             self.output_norm,
