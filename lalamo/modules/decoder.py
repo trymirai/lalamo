@@ -1,4 +1,3 @@
-import math
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Self
@@ -12,8 +11,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, LogicalAxis
-from lalamo.utils.sharding import lookup_sharded_indices
-from lalamo.weight_matrix import GradientEstimator
+from lalamo.weight_matrix import EmbeddingMatrix, GradientEstimator
 
 from .embedding import EmbeddingBase, EmbeddingConfig, EmbeddingForwardPassConfig
 from .linear import Linear, LinearConfig
@@ -109,7 +107,7 @@ class PLEModelConfig(LalamoConfig):
 
 
 class PerLayerEmbedding(LalamoModule[PLEModelConfig]):
-    token_embedding: Float[Array, "vocab ple_total_dim"]
+    token_embedding: EmbeddingMatrix
     model_projection: Linear
     projection_norm: Normalization
 
@@ -121,7 +119,7 @@ class PerLayerEmbedding(LalamoModule[PLEModelConfig]):
         keychain: Keychain,
     ) -> tuple[Float[Array, "batch suffix_tokens ple_dim"], ...]:
         config = self.config
-        token_ple = lookup_sharded_indices(self.token_embedding, token_ids) * config.ple_embed_scale
+        token_ple = self.token_embedding.lookup_embedding(token_ids, keychain=keychain) * config.ple_embed_scale
         token_ple = rearrange(
             token_ple,
             "batch tokens (layers ple_dim) -> batch tokens layers ple_dim",
@@ -167,10 +165,7 @@ class DecoderConfig(LalamoConfig):
             per_layer_embedding = PerLayerEmbedding(
                 config=config,
                 sharding_config=initializer.sharding_config,
-                token_embedding=initializer.normal(
-                    1 / math.sqrt(config.ple_dim),
-                    (config.ple_vocab_size, total_ple_dim),
-                ),
+                token_embedding=initializer.embedding_matrix(config.ple_vocab_size, total_ple_dim),
                 model_projection=config.linear_config.init(
                     initializer,
                     input_dim=self.transformer_config.model_dim,
