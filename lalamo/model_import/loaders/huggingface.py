@@ -645,6 +645,7 @@ def load_rmsnorm(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Normalization:
+    assert module.config.has_scale and module.scales is not None, "cannot load scales into a weightless normalization"
     scales = weights_dict[path / "weight"].astype(module.scales.dtype)
     return load_as_at(lambda m: (m.scales,), module, (scales,))
 
@@ -654,8 +655,8 @@ def _load_optional_rmsnorm(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Normalization | None:
-    if module is None:
-        return None
+    if module is None or not module.config.has_scale:
+        return module
     return load_rmsnorm(module, weights_dict, path)
 
 
@@ -665,8 +666,8 @@ def _load_named_rmsnorm(
     path: ParameterPath,
     names: Sequence[str],
 ) -> Normalization | None:
-    if module is None:
-        return None
+    if module is None or not module.config.has_scale:
+        return module
     scale_path = _first_path(weights_dict, tuple(path / name / "weight" for name in names))
     if scale_path is None:
         raise ValueError(f"Cannot find normalization under {path}; tried {', '.join(names)}")
@@ -718,7 +719,24 @@ def load_attention(
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> Attention:
     qkv_sublayers = ["q_proj"] if module.config.is_kv_sharing else ["q_proj", "k_proj", "v_proj"]
-    if module.gate_projection is not None:
+    has_separate_gate = (path / "gate_proj" / "weight") in weights_dict or (
+        path / "gate_proj" / "qweight"
+    ) in weights_dict
+    if module.gate_projection is not None and has_separate_gate:
+        qkv_projection = load_linear(
+            module.qkv_projection,
+            weights_dict,
+            path,
+            sublayers_to_fuse=qkv_sublayers,
+            implementation=implementation,
+        )
+        gate_projection = load_linear(
+            module.gate_projection,
+            weights_dict,
+            path / "gate_proj",
+            implementation=implementation,
+        )
+    elif module.gate_projection is not None:
         num_heads, head_dim = module.config.num_heads, module.config.head_dim
 
         qkv_weights, gate_weights = _extract_gate_weights(

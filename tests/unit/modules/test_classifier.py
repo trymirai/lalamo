@@ -75,6 +75,7 @@ def _normalization_reference(module: Normalization, inputs: Array) -> Array:
     upcasted = inputs.astype(jnp.float32)
     upcasted = upcasted - jnp.mean(upcasted)
     normalized = upcasted * jax.lax.rsqrt(jnp.mean(jnp.square(upcasted)) + module.config.epsilon)
+    assert module.scales is not None
     adjusted_scales = module.scales + 0.25
     result = normalized.astype(inputs.dtype) * adjusted_scales
     assert module.biases is not None
@@ -207,6 +208,8 @@ def test_prediction_head_export_load_roundtrips_and_preserves_template_sharding(
     assert isinstance(template.readout.weights, FullPrecisionMatrix)
     assert restored.dense.weights.weights.sharding == template.dense.weights.weights.sharding
     assert restored.readout.weights.weights.sharding == template.readout.weights.weights.sharding
+    assert restored.norm.scales is not None
+    assert template.norm.scales is not None
     assert restored.norm.scales.sharding == template.norm.scales.sharding
     assert restored.norm.biases is not None
     assert template.norm.biases is not None
