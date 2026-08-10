@@ -88,7 +88,8 @@ def _load_leaf_as_template(template_leaf: PyTree, value_leaf: PyTree) -> PyTree:
         dtype = _check_array_compatible(template_leaf, value_leaf)
         if isinstance(value_leaf, ShapeDtypeStruct):
             return dummy_array(value_leaf.shape, dtype, template_sharding)
-        return jax.device_put(value_leaf.astype(dtype), template_sharding)
+        loaded_value = jax.device_put(value_leaf, template_sharding)
+        return loaded_value.astype(dtype)
     return value_leaf
 
 
