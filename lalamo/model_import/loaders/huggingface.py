@@ -645,6 +645,7 @@ def load_rmsnorm(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Normalization:
+    assert module.config.has_scale and module.scales is not None, "cannot load scales into a weightless normalization"
     scales = weights_dict[path / "weight"].astype(module.scales.dtype)
     return load_as_at(lambda m: (m.scales,), module, (scales,))
 
@@ -654,8 +655,8 @@ def _load_optional_rmsnorm(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Normalization | None:
-    if module is None:
-        return None
+    if module is None or not module.config.has_scale:
+        return module
     return load_rmsnorm(module, weights_dict, path)
 
 
@@ -665,8 +666,8 @@ def _load_named_rmsnorm(
     path: ParameterPath,
     names: Sequence[str],
 ) -> Normalization | None:
-    if module is None:
-        return None
+    if module is None or not module.config.has_scale:
+        return module
     scale_path = _first_path(weights_dict, tuple(path / name / "weight" for name in names))
     if scale_path is None:
         raise ValueError(f"Cannot find normalization under {path}; tried {', '.join(names)}")
@@ -727,15 +728,16 @@ def load_attention(
     projection_sublayers = ["q_proj"] if module.config.is_kv_sharing else ["q_proj", "k_proj", "v_proj"]
     projection_weights = weights_dict
     if module.config.has_gate:
-        num_heads, head_dim = module.config.num_heads, module.config.head_dim
-
-        projection_weights = _reorder_gated_attention_weights(
-            weights_dict,
-            path,
-            num_heads,
-            head_dim,
-        )
-        projection_sublayers = [*projection_sublayers, "g_proj"]
+        if (path / "gate_proj" / "weight") in weights_dict or (path / "gate_proj" / "qweight") in weights_dict:
+            projection_sublayers = [*projection_sublayers, "gate_proj"]
+        else:
+            projection_weights = _reorder_gated_attention_weights(
+                weights_dict,
+                path,
+                module.config.num_heads,
+                module.config.head_dim,
+            )
+            projection_sublayers = [*projection_sublayers, "g_proj"]
 
     qkv_projection = load_linear(
         module.qkv_projection,

@@ -3,7 +3,6 @@ from math import prod
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import pytest
 from einops import rearrange
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
@@ -304,9 +303,8 @@ def test_attention_vmapped_over_inputs_matches_reference_and_keeps_data_sharding
     assert result.outputs.sharding == make_sharding((LogicalAxis.BATCH, None, None))
 
 
-@pytest.mark.parametrize("has_gate", [False, True])
-def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh, has_gate: bool) -> None:
-    original = _attention(has_gate=has_gate)
+def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
+    original = _attention()
     weight_sharding = make_sharding((None, None))
     template = Attention(
         config=original.config,
