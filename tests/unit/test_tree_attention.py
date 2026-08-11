@@ -133,8 +133,8 @@ def test_kv_sharing_layer_projects_queries_only(decoder: Decoder) -> None:
     shared = decoder.transformer.layers[1].mixer
     assert isinstance(owner, Attention)
     assert isinstance(shared, Attention)
-    assert owner.qkv_projection.output_dims == (8, 8, 8)
-    assert shared.qkv_projection.output_dims == (8,)
+    assert owner.qkvg_projection.output_dims == (8, 8, 8)
+    assert shared.qkvg_projection.output_dims == (8,)
     assert shared.key_norm is None
 
 

@@ -86,13 +86,13 @@ class HFGemma2Config(HuggingFaceLMConfig):
         for i in range(self.num_hidden_layers):
             sliding_window_size = self.sliding_window if not bool(i % 2) else None
             attention_config = AttentionConfig(
-                qkv_projection_config=linear_config,
+                qkvg_projection_config=linear_config,
                 out_projection_config=linear_config,
                 query_norm_config=None,
                 key_norm_config=None,
                 logit_soft_cap=self.attn_logit_softcapping,
                 has_sinks=False,
-                has_qkv_biases=self.attention_bias,
+                has_qkvg_biases=self.attention_bias,
                 has_out_biases=False,
                 num_heads=self.num_attention_heads,
                 num_groups=self.num_key_value_heads,

@@ -149,12 +149,12 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
     output_norm: Normalization
 
     def state_kv_projection_from_layers(self, layers: tuple[TransformerLayer, ...]) -> Linear:
-        qkv_projections = tuple(_layer_attention(layer).qkv_projection for layer in layers)
+        qkvg_projections = tuple(_layer_attention(layer).qkvg_projection for layer in layers)
         key_value_weights = jnp.concatenate(
-            tuple(projection.weights.decompress()[projection.output_dims[0] :] for projection in qkv_projections),
+            tuple(projection.weights.decompress()[projection.output_dims[0] :] for projection in qkvg_projections),
             axis=0,
         )
-        weights = qkv_projections[0].weights.spec.compress(
+        weights = qkvg_projections[0].weights.spec.compress(
             key_value_weights,
             key=jax.random.key(0),
             sharding_config=self.state_kv_projection.weights.sharding_config,
