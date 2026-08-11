@@ -141,39 +141,57 @@ def test_call_samples_greedy_token_when_temperature_is_zero() -> None:
 
 
 def test_sparse_sampling_matches_dense_sampling() -> None:
+    sample_count = 10_000
     rng = np.random.default_rng(0)
     vocabulary_size = SparseLogits.MAX_TOP_K
     token_ids = jnp.arange(vocabulary_size, dtype=jnp.int32)
-    sharding_config = make_test_sharding_config()
-
-    for seed in range(64):
-        values = jnp.asarray(
-            np.sort(rng.standard_normal(vocabulary_size).astype(np.float32))[::-1].copy(),
-        )
-        banned_count = int(rng.integers(0, 17))
-        top_k = rng.choice((1, 5, 20, 100, 10_000, None))  # pyrefly: ignore[no-matching-overload]
-        top_p = rng.choice((0.1, 0.5, 0.8, 0.9, 0.95, None))  # pyrefly: ignore[no-matching-overload]
-        policy = SamplingPolicy.init(
-            temperature=float(rng.choice([0.0, 0.3, 0.7, 1.0, 1.5])),
-            top_k=None if top_k is None else int(top_k),
-            top_p=None if top_p is None else float(top_p),
-            min_p=float(rng.uniform(0.0, 0.5)),
-            banned_tokens=range(vocabulary_size - banned_count, vocabulary_size),
-            repetition_penalty=float(rng.uniform(0.5, 2.0)),
-            presence_penalty=float(rng.uniform(0.0, 0.5)),
-            frequency_penalty=float(rng.uniform(0.0, 0.5)),
-        ).with_prompt_token_counts(
+    values = jnp.asarray(
+        np.sort(
+            rng.standard_normal((sample_count, vocabulary_size)).astype(np.float32),
+            axis=-1,
+        )[:, ::-1].copy(),
+    )
+    policies = SamplingPolicy.init_batch(
+        temperature=rng.choice((0.0, 0.3, 0.7, 1.0, 1.5), size=sample_count),
+        top_k=rng.choice(  # pyrefly: ignore[no-matching-overload]
+            (1, 5, 20, 100, None),
+            size=sample_count,
+        ),
+        top_p=rng.choice(  # pyrefly: ignore[no-matching-overload]
+            (0.1, 0.5, 0.8, 0.9, 0.95, None),
+            size=sample_count,
+        ),
+        min_p=rng.uniform(0.0, 0.5, size=sample_count),
+        banned_tokens=(
+            range(vocabulary_size - int(count), vocabulary_size) for count in rng.integers(0, 17, size=sample_count)
+        ),
+        repetition_penalty=rng.uniform(0.5, 2.0, size=sample_count),
+        presence_penalty=rng.uniform(0.0, 0.5, size=sample_count),
+        frequency_penalty=rng.uniform(0.0, 0.5, size=sample_count),
+    )
+    policies = jax.vmap(
+        lambda policy: policy.with_prompt_token_counts(
             token_ids,
             jnp.asarray(vocabulary_size, dtype=jnp.int32),
             vocabulary_size,
+        ),
+    )(policies)
+    keychain = Keychain.init(0, sharding_config=make_test_sharding_config())
+
+    def sample_both(
+        policy: SamplingPolicy,
+        row_values: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
+        return (
+            policy(FullLogits(values=row_values), keychain=keychain),
+            policy(SparseLogits(values=row_values, token_ids=token_ids), keychain=keychain),
         )
-        keychain = Keychain.init(seed, sharding_config=sharding_config)
 
-        dense_token = policy(FullLogits(values=values), keychain=keychain)
-        if top_k == 10_000:
-            with pytest.raises(RuntimeError, match="SparseLogits supports top_k <= 128"):
-                policy(SparseLogits(values=values, token_ids=token_ids), keychain=keychain)
-            continue
-        sparse_token = policy(SparseLogits(values=values, token_ids=token_ids), keychain=keychain)
+    dense_tokens, sparse_tokens = jax.vmap(sample_both)(policies, values)
 
-        assert sparse_token.item() == dense_token.item()
+    assert jnp.array_equal(sparse_tokens, dense_tokens).item()
+    with pytest.raises(RuntimeError, match="SparseLogits supports top_k <= 128"):
+        SamplingPolicy.init(top_k=10_000)(
+            SparseLogits(values=values[0], token_ids=token_ids),
+            keychain=keychain,
+        ).item()
