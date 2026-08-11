@@ -114,6 +114,7 @@ extra = [
   "Qwen/Qwen3-32B-MLX-4bit",
   "Qwen/Qwen3-32B-MLX-8bit",
   "trymirai/health-related-router",
+  "meta-models/Muse-Glimmer-30B",
 ]
 
 [coherence]

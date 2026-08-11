@@ -21,6 +21,7 @@ from .llama import LLAMA_MODELS
 from .llamba import LLAMBA_MODELS
 from .mirai import MIRAI_CLASSIFIER_MODELS
 from .mistral import MISTRAL_MODELS
+from .muse_glimmer import MUSE_GLIMMER_MODELS
 from .nanbeige import NANBEIGE_MODELS
 from .phi import PHI_MODELS
 from .polaris import POLARIS_MODELS
@@ -50,6 +51,7 @@ ALL_MODEL_LISTS = [
     HUGGINGFACE_MODELS,
     GPT_OSS_MODELS,
     MISTRAL_MODELS,
+    MUSE_GLIMMER_MODELS,
     PHI_MODELS,
     POLARIS_MODELS,
     QWEN_MODELS,

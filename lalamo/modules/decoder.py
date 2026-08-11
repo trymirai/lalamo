@@ -162,6 +162,7 @@ class DecoderConfig(LalamoConfig):
 
     vocab_size: int
     ple_model_config: PLEModelConfig | None = None
+    embedding_norm_config: NormalizationConfig | None = None
 
     def init(self, initializer: Initializer) -> "Decoder":
         embedding = self.embedding_config.init(
@@ -170,6 +171,10 @@ class DecoderConfig(LalamoConfig):
             vocab_size=self.vocab_size,
         )
         transformer = self.transformer_config.init(initializer)
+        if self.embedding_norm_config is not None:
+            embedding_norm = self.embedding_norm_config.init(initializer, self.transformer_config.model_dim)
+        else:
+            embedding_norm = None
         if self.ple_model_config is not None:
             config = self.ple_model_config
             total_ple_dim = config.num_layers * config.ple_dim
@@ -196,6 +201,7 @@ class DecoderConfig(LalamoConfig):
             config=self,
             sharding_config=initializer.sharding_config,
             embedding=embedding,
+            embedding_norm=embedding_norm,
             transformer=transformer,
             per_layer_embedding=per_layer_embedding,
         )
@@ -203,6 +209,7 @@ class DecoderConfig(LalamoConfig):
 
 class Decoder(LalamoModule[DecoderConfig]):
     embedding: EmbeddingBase
+    embedding_norm: Normalization | None
     transformer: Transformer
     per_layer_embedding: PerLayerEmbedding | None
 
@@ -249,6 +256,12 @@ class Decoder(LalamoModule[DecoderConfig]):
             forward_pass_config=forward_pass_config.embedding_forward_pass_config,
             keychain=embedding_keychain,
         )
+        if self.embedding_norm is not None:
+            inner_features = call_vmapped_twice(
+                self.embedding_norm,
+                inner_features,
+                forward_pass_config=forward_pass_config.transformer_forward_pass_config.normalization_forward_pass_config,
+            )
 
         if self.per_layer_embedding is not None:
             per_layer_inputs = self.per_layer_embedding(
