@@ -9,7 +9,7 @@ dependencies = [
     "einops>=0.8.0",
     "equinox>=0.11.11",
     "huggingface-hub>=0.27.1",
-    "jax==0.11.0",
+    "jax>=0.11.0",
     "jaxtyping>=0.2.36",
     "jinja2>=3.1.6",
     "ml-dtypes>=0.5.1",
@@ -31,13 +31,13 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 cpu = [
-    "jax[cpu]==0.11.0",
+    "jax[cpu]>=0.11.0",
 ]
 cuda = [
-    "jax[cuda]==0.11.0",
+    "jax[cuda]>=0.11.0",
 ]
 tpu = [
-    "jax[tpu]==0.11.0",
+    "jax[tpu]>=0.11.0",
 ]
 pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
 fishaudio = ["torch>=2.8.0", "transformers>=5.5.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]

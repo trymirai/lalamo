@@ -45,7 +45,6 @@ def _tiled_smem(
 @cache
 def _make_main(
     sequence_length: int,
-    max_attention_length: int,
     num_key_value_heads: int,
     query_heads_per_key_value_head: int,
     head_dim: int,
@@ -54,9 +53,7 @@ def _make_main(
     padded_query_heads = 8 if query_heads_per_key_value_head <= 8 else 16
     padded_output_heads = 16
     feature_blocks = head_dim // _BLOCK_SIZE
-    num_blocks = math.ceil(max_attention_length / _BLOCK_SIZE)
-    if max_attention_length < sequence_length:
-        num_blocks += 1
+    num_blocks = math.ceil(sequence_length / _BLOCK_SIZE)
     blocks_per_split = math.ceil(num_blocks / num_splits)
     accumulator_layout = plgpu.Layout.TCGEN05
     query_head_layout = accumulator_layout.reduce(0)
@@ -577,7 +574,6 @@ def decode_attention(
     end: Int[Array, ""],
     scale: Float[Array, ""],
     num_splits: _NumSplits,
-    max_attention_length: int,
 ) -> Float[Array, "1 query_heads head_dim"]:
     num_key_value_heads = keys.shape[1]
     head_dim = keys.shape[2]
@@ -590,7 +586,6 @@ def decode_attention(
     )
     main = _make_main(
         keys.shape[0],
-        max_attention_length,
         num_key_value_heads,
         query_heads_per_key_value_head,
         head_dim,

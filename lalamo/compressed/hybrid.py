@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from jax.core import Tracer
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.compressed.utils.hadamard import hadamard_transform
+from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
@@ -213,6 +213,20 @@ class IncoherenceSigns(eqx.Module):
         transformed = hadamard_transform(vector, block_size)
         return transformed * signs.astype(transformed.dtype)
 
+    def input_transform(
+        self,
+        vector: Float[Array, "*batch source_channels"],
+        block_size: Literal[32, 64, 128],
+        *,
+        transposed: bool = False,
+    ) -> Float[Array, "*batch source_channels"]:
+        signs = self.input_signs
+        if transposed:
+            signs = self.output_signs
+        if signs is None:
+            return vector
+        return hadamard_transform(vector * signs.astype(vector.dtype), block_size)
+
 
 @dataclass(frozen=True)
 class HybridSpec(WeightMatrixSpec):
@@ -220,10 +234,6 @@ class HybridSpec(WeightMatrixSpec):
     adapter_spec: WeightMatrixSpec | None
     incoherence_block_size: Literal[32, 64, 128] | None = 32
     incoherence_processing_mode: IncoherenceProcessingMode = IncoherenceProcessingMode.INPUT_OUTPUT
-
-    def __post_init__(self) -> None:
-        if self.incoherence_block_size not in (None, 32, 64, 128):
-            raise ValueError("incoherence_block_size must be None, 32, 64, or 128.")
 
     @supports_dummy_arrays()
     def compress(
@@ -327,15 +337,9 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
     def for_inference(self, batch_size: int) -> "HybridMatrix | FullPrecisionMatrix":
         if batch_size == 1:
             return self
-        block_size = self.spec.incoherence_block_size
-        input_signs = None
-        if self.incoherence_signs is not None:
-            input_signs = self.incoherence_signs.input_signs
         if (
             isinstance(self.quantized, IntMatrixForInference)
             and self.adapter is None
-            and input_signs is not None
-            and block_size is not None
             and self.quantized.spec.layout == Layout.OUTPUT_INPUT
             and self.quantized.dtype == jnp.bfloat16
             and supports_mosaic_gpu(self.sharding_config.mesh, 10)
@@ -350,7 +354,6 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
                 self.quantized.spec.group_size,
                 self.quantized.spec.bits,
                 self.quantized.spec.is_symmetric,
-                block_size,
             ):
                 return self
         return self.to_full_precision()
@@ -447,35 +450,20 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
             raise TypeError("Hybrid transposed matmul does not support adapters.")
 
         quantized_keychain, adapter_keychain = keychain.split(2)
-        rht_signs = None
+        transformed_vector = vector
         if self.incoherence_signs is not None:
-            rht_signs = self.incoherence_signs.input_signs
-            if transposed:
-                rht_signs = self.incoherence_signs.output_signs
-        if isinstance(self.quantized, IntMatrixForInference) and rht_signs is not None:
             assert self.spec.incoherence_block_size is not None
-            result = self.quantized.dot(
+            transformed_vector = self.incoherence_signs.input_transform(
                 vector,
-                keychain=quantized_keychain,
-                forward_pass_config=forward_pass_config,
-                transposed=transposed,
-                rht_signs=rht_signs,
-                rht_block_size=self.spec.incoherence_block_size,
-            )
-        else:
-            transformed_vector = vector
-            if rht_signs is not None:
-                assert self.spec.incoherence_block_size is not None
-                transformed_vector = hadamard_transform(
-                    vector * rht_signs.astype(vector.dtype),
-                    self.spec.incoherence_block_size,
-                )
-            result = self.quantized.dot(
-                transformed_vector,
-                keychain=quantized_keychain,
-                forward_pass_config=forward_pass_config,
+                self.spec.incoherence_block_size,
                 transposed=transposed,
             )
+        result = self.quantized.dot(
+            transformed_vector,
+            keychain=quantized_keychain,
+            forward_pass_config=forward_pass_config,
+            transposed=transposed,
+        )
         if self.adapter is not None:
             result = result + self.adapter.dot(
                 vector,

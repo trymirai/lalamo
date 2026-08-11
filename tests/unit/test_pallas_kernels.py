@@ -5,10 +5,11 @@ import jax.numpy as jnp
 import pytest
 from jaxtyping import Array
 
-from lalamo.compressed.hybrid import HybridSpec, IncoherenceProcessingMode
+from lalamo.compressed.hybrid import HybridMatrix, HybridSpec, IncoherenceProcessingMode
 from lalamo.compressed.int import IntSpec
-from lalamo.compressed.utils.hadamard import hadamard_transform
 from lalamo.initializer import RandomInitializer
+from lalamo.kernels.deltanet import deltanet_recurrent_scan
+from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import Keychain
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
@@ -49,14 +50,22 @@ def _replicate(values: Array, sharding_config: ShardingConfig) -> Array:
         pytest.param(8, 32, 32, (64, 256), None, False, id="w8-g32-rht32"),
         pytest.param(8, 64, 64, (64, 256), None, False, id="w8-g64-rht64"),
         pytest.param(8, 128, 128, (64, 256), None, False, id="w8-g128-rht128"),
+        pytest.param(4, 8, None, (128, 512), 8, False, id="w4-g8-no-rht-b8"),
+        pytest.param(4, 16, 32, (128, 512), 8, False, id="w4-g16-rht32-b8"),
+        pytest.param(4, 32, 32, (128, 512), 16, False, id="w4-g32-rht32-b16"),
         pytest.param(4, 64, 32, (128, 512), 48, False, id="w4-g64-rht32-b48"),
+        pytest.param(4, 128, 32, (128, 1_024), 32, False, id="w4-g128-rht32-b32"),
+        pytest.param(8, 8, 32, (128, 512), 8, True, id="w8-g8-rht32-b8"),
+        pytest.param(8, 16, 32, (128, 512), 8, True, id="w8-g16-rht32-b8"),
+        pytest.param(8, 32, 32, (128, 512), 8, True, id="w8-g32-rht32-b8"),
         pytest.param(8, 64, 32, (128, 512), 8, True, id="w8-g64-rht32-b8"),
+        pytest.param(8, 128, 32, (128, 1_024), 8, True, id="w8-g128-rht32-b8"),
     ],
 )
 def test_int_hybrid_dot_matches_decompressed_weights(
     bits: Literal[4, 8],
     group_size: int,
-    rht_block_size: Literal[32, 64, 128],
+    rht_block_size: Literal[32, 64, 128] | None,
     shape: tuple[int, int],
     batch_size: int | None,
     is_symmetric: bool,
@@ -86,6 +95,9 @@ def test_int_hybrid_dot_matches_decompressed_weights(
         sharding_config=sharding_config,
         is_sharded=False,
     )
+    if batch_size is not None:
+        matrix = matrix.for_inference(batch_size)
+        assert isinstance(matrix, HybridMatrix)
 
     def dot(input_vector: Array) -> Array:
         return matrix.dot(
@@ -208,7 +220,7 @@ def test_decode_attention_matches_stable_reduction(
         ),
     )
 
-    result = _run_attention(module, inputs, state, AttentionImplementation.STANDARD)
+    result = _run_attention(module, inputs, state, AttentionImplementation.PALLAS)
     reference = _run_attention(module, inputs, state, AttentionImplementation.STABLE_REDUCTION)
 
     assert_close(result=result, reference=reference, atol=2e-2, rtol=3e-2)
@@ -242,7 +254,6 @@ def _deltanet(sharding_config: ShardingConfig) -> DeltaNet:
 
 def test_deltanet_single_token_update_matches_recurrence_for_active_and_inactive_rows() -> None:
     sharding_config = _gpu_sharding_config(9)
-    module = _deltanet(sharding_config)
     queries = _replicate(_values((8, 1, 2, 128), seed=11, scale=0.1), sharding_config)
     keys = _replicate(_values((8, 1, 2, 128), seed=12, scale=0.1), sharding_config)
     values = _replicate(_values((8, 1, 2, 128), seed=13, scale=0.1), sharding_config)
@@ -252,21 +263,8 @@ def test_deltanet_single_token_update_matches_recurrence_for_active_and_inactive
     lengths = jnp.arange(8, dtype=jnp.int32) % 2
     lengths = _replicate(lengths, sharding_config)
 
-    update = jax.jit(
-        jax.vmap(
-            lambda query, key, value, decay, beta_value, state, length: module._recurrent_scan(  # noqa: SLF001
-                query,
-                key,
-                value,
-                decay,
-                beta_value,
-                state,
-                length,
-                use_pallas_deltanet=True,
-            )
-        )
-    )
-    result = update(queries, keys, values, decay_factor, beta, initial_state, lengths)
+    update = jax.jit(jax.vmap(deltanet_recurrent_scan))
+    outputs, final_state = update(queries, keys, values, decay_factor, beta, initial_state, lengths)
 
     decay = jnp.exp(decay_factor[:, 0, :, None, None])
     decayed_state = initial_state * decay
@@ -276,9 +274,9 @@ def test_deltanet_single_token_update_matches_recurrence_for_active_and_inactive
     reference_state = jnp.where(lengths[:, None, None, None] > 0, updated_state, initial_state)
     reference_outputs = jnp.einsum("bhk,bhvk->bhv", queries[:, 0], updated_state)[:, None]
 
-    assert_close(result=result.outputs, reference=reference_outputs, atol=5e-2, rtol=1e-1)
-    assert_close(result=result.final_state, reference=reference_state, atol=1e-3, rtol=3e-2)
-    assert jnp.array_equal(jax.device_get(result.final_state[::2]), jax.device_get(initial_state[::2]))
+    assert_close(result=outputs, reference=reference_outputs, atol=5e-2, rtol=1e-1)
+    assert_close(result=final_state, reference=reference_state, atol=1e-3, rtol=3e-2)
+    assert jnp.array_equal(jax.device_get(final_state[::2]), jax.device_get(initial_state[::2]))
 
 
 def test_pallas_hadamard_matches_cpu_under_jit_and_vmap() -> None:

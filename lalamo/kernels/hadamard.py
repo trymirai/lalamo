@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import cache, partial
 from math import sqrt
 from typing import Literal
@@ -15,6 +15,97 @@ from jaxlib.mlir.dialects import arith
 from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.utils.sharding import is_sharded, sharding_of
+
+__all__ = [
+    "hadamard_transform",
+]
+
+
+def hadamard_transform(
+    inputs: Float[Array, "... channels"],
+    block_size: Literal[32, 64, 128],
+) -> Float[Array, "... channels"]:
+    sharding = sharding_of(inputs)
+    *_, channel_axis = sharding.spec
+    if channel_axis is not None:
+        raise ValueError("Hadamard transform inputs must not be sharded along the channels axis.")
+    return _make_hadamard_dispatch(block_size)(inputs)
+
+
+def _xla_hadamard_transform(
+    inputs: Float[Array, "... channels"],
+    block_size: Literal[32, 64, 128],
+) -> Float[Array, "... channels"]:
+    *original_leading_dims, input_dim = inputs.shape
+    result = jnp.reshape(inputs, (*original_leading_dims, input_dim // block_size, block_size))
+
+    for stage in range(block_size.bit_length() - 1):
+        butterfly_size = 2 ** (stage + 1)
+        half_butterfly_size = 2**stage
+        *block_leading_dims, _ = result.shape
+        grouped = jnp.reshape(
+            result,
+            (*block_leading_dims, block_size // butterfly_size, butterfly_size),
+        )
+        left = grouped[..., :half_butterfly_size]
+        right = grouped[..., half_butterfly_size:]
+        result = jnp.reshape(
+            jnp.concatenate((left + right, left - right), axis=-1),
+            (*block_leading_dims, block_size),
+        )
+
+    normalization = jnp.sqrt(jnp.asarray(block_size, dtype=inputs.dtype))
+    return jnp.reshape(result / normalization, (*original_leading_dims, input_dim))
+
+
+@cache
+def _make_hadamard_dispatch(
+    block_size: Literal[32, 64, 128],
+) -> Callable[[Float[Array, "... channels"]], Float[Array, "... channels"]]:
+    if block_size not in (32, 64, 128):
+        raise ValueError(f"Block size {block_size} must be one of 32, 64, or 128")
+
+    @jax.custom_vjp
+    @jax.custom_batching.custom_vmap
+    def transform(inputs: Float[Array, "... channels"]) -> Float[Array, "... channels"]:
+        *_, input_dim = inputs.shape
+        if input_dim % block_size != 0:
+            raise ValueError(
+                f"Input dimension {input_dim} must be a multiple of block size {block_size}",
+            )
+
+        abstract_device = sharding_of(inputs).mesh.abstract_mesh.abstract_device
+        if (
+            abstract_device is not None
+            and abstract_device.platform == "gpu"
+            and abstract_device.device_kind.startswith("NVIDIA")
+        ):
+            return _pallas_hadamard_transform(inputs, block_size)
+        return _xla_hadamard_transform(inputs, block_size)
+
+    @transform.def_vmap
+    def transform_vmap(
+        axis_size: int,
+        in_batched: Sequence[bool],
+        inputs: Float[Array, "... channels"],
+    ) -> tuple[Float[Array, "... channels"], bool]:
+        del axis_size
+        (inputs_batched,) = in_batched
+        return transform(inputs), inputs_batched
+
+    def transform_fwd(
+        inputs: Float[Array, "... channels"],
+    ) -> tuple[Float[Array, "... channels"], None]:
+        return transform(inputs), None
+
+    def transform_bwd(
+        _: None,
+        cotangent: Float[Array, "... channels"],
+    ) -> tuple[Float[Array, "... channels"]]:
+        return (transform(cotangent),)
+
+    transform.defvjp(transform_fwd, transform_bwd)
+    return transform
 
 
 def fragmented_hadamard(
@@ -62,53 +153,30 @@ def fragmented_hadamard(
     )
 
 
-def _hadamard_layouts(
-    blocks_per_program: int,
-    *,
-    permuted_output: bool,
-) -> tuple[ParameterizedLayout, ParameterizedLayout]:
+def _hadamard_layout(blocks_per_program: int) -> ParameterizedLayout:
     if blocks_per_program == 1:
         warp_dims = (plgpu.Replicated(4),)
     elif blocks_per_program == 4:
         warp_dims = (-3,)
     else:
         warp_dims = (-3, plgpu.Replicated(4 // blocks_per_program))
-    input_layout = plgpu.Layout.TILED(
+    return plgpu.Layout.TILED(
         plgpu.Tiling(((blocks_per_program, 32), (1,))),
         warp_dims=warp_dims,
         lane_dims=(-2,),
         vector_dim=-1,
     )
-    if not permuted_output:
-        return input_layout, input_layout
-
-    if blocks_per_program == 1:
-        output_warp_dims = (plgpu.Replicated(4),)
-    elif blocks_per_program == 4:
-        output_warp_dims = (-5,)
-    else:
-        output_warp_dims = (-5, plgpu.Replicated(2))
-    output_layout = plgpu.Layout.TILED(
-        plgpu.Tiling(((blocks_per_program, 32), (8,), (4,), (1,))),
-        warp_dims=output_warp_dims,
-        lane_dims=(-4, -2, -3),
-        vector_dim=-1,
-    )
-    return input_layout, output_layout
 
 
 @cache
-def _make_hadamard_transform(
+def _make_pallas_hadamard_transform(
     element_count: int,
     block_size: Literal[32, 64, 128],
     dtype: DTypeLike,
 ) -> Callable[[Array], Array]:
     block_count = element_count // block_size
     blocks_per_program = next(candidate for candidate in (4, 2, 1) if block_count % candidate == 0)
-    layout, _ = _hadamard_layouts(
-        blocks_per_program,
-        permuted_output=False,
-    )
+    layout = _hadamard_layout(blocks_per_program)
 
     @plgpu.inline_mgpu(
         arg_types=(layout,),
@@ -156,103 +224,18 @@ def _make_hadamard_transform(
     return apply
 
 
-@cache
-def _make_signed_hadamard_transform(
-    element_count: int,
-    row_size: int,
-    block_size: Literal[32, 64, 128],
-    dtype: DTypeLike,
-    *,
-    permuted_output: bool,
-) -> Callable[[Array, Array], Array]:
-    block_count = element_count // block_size
-    blocks_per_row = row_size // block_size
-    blocks_per_program = next(candidate for candidate in (4, 2, 1) if block_count % candidate == 0)
-    input_layout, output_layout = _hadamard_layouts(
-        blocks_per_program,
-        permuted_output=permuted_output,
-    )
-
-    @plgpu.inline_mgpu(
-        arg_types=(input_layout,),
-        return_type=plgpu.ShapeDtypeStruct(
-            (blocks_per_program, block_size),
-            jnp.float32,
-            layout=output_layout,
-        ),
-    )
-    def transform(
-        _ctx: object,
-        values: mgpu.FragmentedArray,
-    ) -> mgpu.FragmentedArray:
-        transformed = fragmented_hadamard(values, block_size, blocks_per_warp=1)
-        if not permuted_output:
-            return transformed
-        return mgpu.FragmentedArray(
-            _registers=transformed.registers.reshape(
-                output_layout.to_mgpu().registers_shape((blocks_per_program, block_size))
-            ),
-            _layout=output_layout.to_mgpu(),
-            _is_signed=None,
-        )
-
-    def kernel(
-        inputs_ref: jax.Ref,
-        signs_ref: jax.Ref,
-        outputs_ref: jax.Ref,
-    ) -> None:
-        block_start = pl.program_id(0) * blocks_per_program
-        block_slice = pl.ds(block_start, blocks_per_program)
-        values = plgpu.load(
-            inputs_ref.at[block_slice, :],
-            layout=input_layout,
-            optimized=False,
-        ).astype(jnp.float32)
-        signs = plgpu.load(
-            signs_ref.at[
-                pl.ds(
-                    jax.lax.rem(block_start, blocks_per_row),
-                    blocks_per_program,
-                ),
-                :,
-            ],
-            layout=input_layout,
-            optimized=False,
-        ).astype(jnp.float32)
-        outputs_ref.at[block_slice, :][...] = (transform(values * signs) / sqrt(block_size)).astype(dtype)
-
-    blocked_shape = (block_count, block_size)
-    pallas_transform = plgpu.kernel(
-        kernel,
-        out_type=jax.ShapeDtypeStruct(blocked_shape, dtype),
-        grid=(block_count // blocks_per_program,),
-        grid_names=("program",),
-        compiler_params=plgpu.CompilerParams(
-            lowering_semantics=plgpu.LoweringSemantics.Warpgroup,
-        ),
-    )
-
-    def apply(inputs: Array, signs: Array) -> Array:
-        return pallas_transform(
-            inputs.reshape(blocked_shape),
-            signs.reshape(blocks_per_row, block_size),
-        ).reshape(inputs.shape)
-
-    return apply
-
-
-def _local_hadamard_transform(
+def _local_pallas_hadamard_transform(
     inputs: Float[Array, "... channels"],
     block_size: Literal[32, 64, 128],
 ) -> Float[Array, "... channels"]:
-    return _make_hadamard_transform(
+    return _make_pallas_hadamard_transform(
         inputs.size,
         block_size,
         inputs.dtype,
     )(inputs)
 
 
-def gpu_hadamard_transform(
+def _pallas_hadamard_transform(
     inputs: Float[Array, "... channels"],
     block_size: Literal[32, 64, 128],
 ) -> Float[Array, "... channels"]:
@@ -260,55 +243,11 @@ def gpu_hadamard_transform(
     if is_sharded(sharding):
         return jax.shard_map(
             partial(
-                _local_hadamard_transform,
+                _local_pallas_hadamard_transform,
                 block_size=block_size,
             ),
             mesh=sharding.mesh,
             in_specs=sharding.spec,
             out_specs=sharding.spec,
         )(inputs)
-    return _local_hadamard_transform(inputs, block_size)
-
-
-def _local_signed_hadamard_transform(
-    inputs: Float[Array, "... channels"],
-    signs: Array,
-    block_size: Literal[32, 64, 128],
-    *,
-    permuted_output: bool,
-) -> Float[Array, "... channels"]:
-    return _make_signed_hadamard_transform(
-        inputs.size,
-        inputs.shape[-1],
-        block_size,
-        inputs.dtype,
-        permuted_output=permuted_output,
-    )(inputs, signs)
-
-
-def gpu_signed_hadamard_transform(
-    inputs: Float[Array, "... channels"],
-    signs: Array,
-    block_size: Literal[32, 64, 128],
-    *,
-    permuted_output: bool,
-) -> Float[Array, "... channels"]:
-    sharding = sharding_of(inputs)
-    if is_sharded(sharding):
-        signs_sharding = sharding_of(signs)
-        return jax.shard_map(
-            partial(
-                _local_signed_hadamard_transform,
-                block_size=block_size,
-                permuted_output=permuted_output,
-            ),
-            mesh=sharding.mesh,
-            in_specs=(sharding.spec, signs_sharding.spec),
-            out_specs=sharding.spec,
-        )(inputs, signs)
-    return _local_signed_hadamard_transform(
-        inputs,
-        signs,
-        block_size,
-        permuted_output=permuted_output,
-    )
+    return _local_pallas_hadamard_transform(inputs, block_size)

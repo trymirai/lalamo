@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import NamedTuple
 
 import einops
 import equinox as eqx
@@ -8,6 +7,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
+from lalamo.kernels.deltanet import deltanet_recurrent_scan
 from lalamo.module import Keychain
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
@@ -21,7 +21,6 @@ from lalamo.modules.token_mixer import (
 )
 from lalamo.modules.token_mixers.convolutions import ConvPrecision
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
-from lalamo.utils.sharding import supports_mosaic_gpu
 
 from .chunked_delta import chunk_delta_forward
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
@@ -103,11 +102,6 @@ class DeltaNetConfig(TokenMixerConfig):
         )
 
 
-class DeltaNetScanResult(NamedTuple):
-    outputs: Float[Array, "tokens heads value_channels"]
-    final_state: Float[Array, "heads value_channels key_channels"]
-
-
 class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
     in_proj: Linear
     conv: SeparableCausalConv
@@ -152,78 +146,6 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
     def conv_dim(self) -> int:
         return self.key_dim * 2 + self.value_dim
 
-    def _recurrent_scan(
-        self,
-        queries: Float[Array, "tokens heads key_channels"],
-        keys: Float[Array, "tokens heads key_channels"],
-        values: Float[Array, "tokens heads value_channels"],
-        decay_factor: Float[Array, "tokens heads"],
-        beta: Float[Array, "tokens heads"],
-        initial_state: Float[Array, "heads value_channels key_channels"],
-        num_steps: Int[Array, ""] | int,
-        *,
-        use_pallas_deltanet: bool = False,
-    ) -> DeltaNetScanResult:
-        num_tokens, num_heads, head_dim = queries.shape
-        value_head_dim = values.shape[-1]
-        if (
-            use_pallas_deltanet
-            and num_tokens == 1
-            and head_dim == 128
-            and value_head_dim % 64 == 0
-            and initial_state.dtype == jnp.float32
-            and supports_mosaic_gpu(self.sharding_config.mesh, 9)
-        ):
-            from lalamo.kernels.deltanet import make_deltanet_update  # noqa: PLC0415
-
-            final_state, output = make_deltanet_update(num_heads, value_head_dim)(
-                queries[0],
-                keys[0],
-                values[0],
-                jnp.exp(decay_factor[0]),
-                beta[0],
-                initial_state,
-                jnp.asarray(num_steps) > 0,
-            )
-            return DeltaNetScanResult(output[None], final_state)
-
-        def scan_fn(
-            index_and_state: tuple[Int[Array, ""], Float[Array, "heads value_channels key_channels"]],
-            step_inputs: tuple[
-                Float[Array, "heads key_channels"],
-                Float[Array, "heads key_channels"],
-                Float[Array, "heads value_channels"],
-                Float[Array, " heads"],
-                Float[Array, " heads"],
-            ],
-        ) -> tuple[
-            tuple[Int[Array, ""], Float[Array, "heads value_channels key_channels"]],
-            Float[Array, "heads value_channels"],
-        ]:
-            index, carry_state = index_and_state
-            query_t, key_t, value_t, decay_factor_t, beta_t = step_inputs
-
-            decay = jnp.exp(decay_factor_t)[:, None, None]
-            decayed_state = carry_state * decay
-            value_delta = value_t - jnp.sum(decayed_state * key_t[:, None, :], axis=-1)
-            value_delta = value_delta * beta_t[:, None]
-            updated_state = decayed_state + value_delta[:, :, None] * key_t[:, None, :]
-            output_t = einops.einsum(
-                query_t,
-                updated_state,
-                "heads key_channels, heads value_channels key_channels -> heads value_channels",
-            )
-
-            propagated_state = jax.lax.cond(index < num_steps, lambda: updated_state, lambda: carry_state)
-            return (index + 1, propagated_state), output_t
-
-        (_, final_state), outputs = jax.lax.scan(
-            scan_fn,
-            (jnp.zeros((), dtype=jnp.int32), initial_state),
-            (queries, keys, values, decay_factor, beta),
-        )
-        return DeltaNetScanResult(outputs, final_state)
-
     def _chunked_scan(
         self,
         queries: Float[Array, "tokens heads key_channels"],
@@ -234,7 +156,10 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         initial_state: Float[Array, "heads value_channels key_channels"],
         num_steps: Int[Array, ""] | int,
         forward_pass_config: MixerForwardPassConfig,
-    ) -> DeltaNetScanResult:
+    ) -> tuple[
+        Float[Array, "tokens heads value_channels"],
+        Float[Array, "heads value_channels key_channels"],
+    ]:
         chunk_size = forward_pass_config.ssm_chunk_size
         min_tail_size_to_chunk = forward_pass_config.ssm_min_tail_size_to_chunk
         num_tokens, _, _ = queries.shape
@@ -251,7 +176,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         tail_decay = decay_factor[num_chunked_tokens:]
         tail_beta = beta[num_chunked_tokens:]
         if num_chunked_tokens == 0:
-            return self._recurrent_scan(
+            return deltanet_recurrent_scan(
                 tail_queries,
                 tail_keys,
                 tail_values,
@@ -259,7 +184,6 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
                 tail_beta,
                 initial_state,
                 num_steps_arr,
-                use_pallas_deltanet=forward_pass_config.use_pallas_deltanet,
             )
 
         if has_short_tail:
@@ -337,7 +261,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
 
         if has_short_tail:
             tail_num_steps = jnp.clip(num_steps_arr - num_chunked_tokens, 0, remainder)
-            tail_result = self._recurrent_scan(
+            tail_outputs, final_state = deltanet_recurrent_scan(
                 tail_queries,
                 tail_keys,
                 tail_values,
@@ -345,12 +269,10 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
                 tail_beta,
                 final_state,
                 tail_num_steps,
-                use_pallas_deltanet=forward_pass_config.use_pallas_deltanet,
             )
-            outputs = jnp.concatenate([outputs, tail_result.outputs], axis=0)
-            final_state = tail_result.final_state
+            outputs = jnp.concatenate([outputs, tail_outputs], axis=0)
 
-        return DeltaNetScanResult(outputs, final_state)
+        return outputs, final_state
 
     @eqx.filter_jit
     def __call__(
@@ -432,7 +354,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         length_without_padding = jnp.asarray(length_without_padding, dtype=jnp.int32)
         length_without_padding = jnp.clip(length_without_padding, 0, num_tokens)
 
-        core_result = self._chunked_scan(
+        core_attn_out, final_state = self._chunked_scan(
             query,
             key,
             value,
@@ -442,8 +364,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             length_without_padding,
             forward_pass_config,
         )
-        core_attn_out = core_result.outputs.astype(mixed_qkv.dtype)
-        final_state = core_result.final_state
+        core_attn_out = core_attn_out.astype(mixed_qkv.dtype)
 
         def norm_gate(x: Float[Array, " channels"], gate: Float[Array, " channels"]) -> Float[Array, " channels"]:
             normed = self.norm(x, forward_pass_config=forward_pass_config.normalization_forward_pass_config)

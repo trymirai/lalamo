@@ -19,12 +19,12 @@ from lalamo.compressed.lloyd_max import (
     _master_weights_to_master_biases,
     _master_weights_to_quantized_weights,
 )
-from lalamo.compressed.utils.packing import pack_uint_to_uint8, packed_last_axis_dim, unpack_uint8_to_uint
 from lalamo.compressed.utils.rounding import round_to_sorted_lut_table
 from lalamo.compressed.utils.yaqa import yaqa_round_blockwise
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
+from lalamo.utils.packing import pack_uint_to_uint8, packed_last_axis_dim, unpack_uint8_to_uint
 from lalamo.utils.sharding import is_sharded
 from lalamo.weight_matrix import CompressionImplementation, GradientEstimator, Layout, MatmulConfig
 from tests.common import assert_close_arrays

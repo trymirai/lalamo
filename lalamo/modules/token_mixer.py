@@ -4,7 +4,6 @@ from enum import Enum, StrEnum
 from typing import NamedTuple, Self
 
 import equinox as eqx
-import jax
 from jax import numpy as jnp
 from jax.lax import DotAlgorithmPreset
 from jax.tree_util import register_pytree_node_class
@@ -48,6 +47,7 @@ class State(tuple[StateLayerBase, ...]):
 
 
 class AttentionImplementation(Enum):
+    PALLAS = "pallas"
     STABLE_REDUCTION = "stable_reduction"
     STANDARD = "standard"
     CUDNN = "cudnn"
@@ -56,13 +56,12 @@ class AttentionImplementation(Enum):
 
 @dataclass(frozen=True)
 class MixerForwardPassConfig:
-    attention_implementation: AttentionImplementation = AttentionImplementation.STANDARD
+    attention_implementation: AttentionImplementation = AttentionImplementation.PALLAS
     attention_accumulation_dtype: DTypeLike | None = jnp.float32
     rope_dtype: DTypeLike | None = jnp.float32
     attention_tile_size: int = 128
     ssm_chunk_size: int = 32
     ssm_min_tail_size_to_chunk: int = 16
-    use_pallas_deltanet: bool = False
     matmul_config: MatmulConfig = field(default_factory=MatmulConfig)
     normalization_forward_pass_config: NormalizationForwardPassConfig = field(
         default_factory=NormalizationForwardPassConfig,
@@ -78,13 +77,8 @@ class MixerForwardPassConfig:
 
     @classmethod
     def for_inference(cls, precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT) -> Self:
-        if jax.default_backend() == "cpu":
-            attention_implementation = AttentionImplementation.STANDARD
-        else:
-            attention_implementation = AttentionImplementation.CUDNN
         return cls(
-            attention_implementation=attention_implementation,
-            use_pallas_deltanet=True,
+            attention_implementation=AttentionImplementation.PALLAS,
             matmul_config=MatmulConfig.for_inference(precision),
             normalization_forward_pass_config=NormalizationForwardPassConfig.for_inference(),
         )

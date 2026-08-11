@@ -91,7 +91,7 @@ def _int4_to_bf16(
             )
             if not isinstance(converted, ir.Value):
                 raise TypeError(f"Expected packed converter result, got {converted}.")
-            registers[index] = mgpu.utils.vector_concat(
+            converted_values = mgpu.utils.vector_concat(
                 [
                     mgpu.utils.bitcast(
                         llvm.extractvalue(i32, converted, (part,)),
@@ -99,6 +99,11 @@ def _int4_to_bf16(
                     )
                     for part in range(4)
                 ]
+            )
+            registers[index] = vector.shuffle(
+                converted_values,
+                converted_values,
+                [0, 4, 1, 5, 2, 6, 3, 7],
             )
         return mgpu.FragmentedArray(
             _registers=registers,
@@ -113,7 +118,8 @@ def _dequantize_int4(
     scales_ref: _Ref,
     zero_points_ref: _Ref,
     weights: Array,
-    zero_point_byte_offset: jax.Array,
+    group_offset: jax.Array,
+    group_size: int,
 ) -> Array:
     @plgpu.inline_mgpu(
         arg_types=(
@@ -133,26 +139,30 @@ def _dequantize_int4(
         scales_smem: _Ref,
         zero_points_smem: _Ref,
         values: mgpu.FragmentedArray,
-        packed_offset: mgpu.FragmentedArray,
+        first_group: mgpu.FragmentedArray,
     ) -> mgpu.FragmentedArray:
         zero_point_row_stride = zero_points_smem.type.shape[0] * zero_points_smem.type.shape[1] // values.shape[0]
-        packed_offset_value = arith.index_castui(
+        first_group_value = arith.index_castui(
             ir.IndexType.get(),
-            cast("ir.Value", packed_offset.registers[()]),
+            cast("ir.Value", first_group.registers[()]),
         )
         logical_row = next(iter(values.layout.thread_idxs(values.shape)))[0]
         scales = []
         biases = []
         for scale_index in range(scales_smem.type.shape[1]):
+            group_index = arith.addi(
+                first_group_value,
+                arith.constant(ir.IndexType.get(), scale_index),
+            )
             zero_point_index = arith.addi(
-                arith.addi(
-                    arith.muli(
-                        logical_row,
-                        arith.constant(ir.IndexType.get(), zero_point_row_stride),
-                    ),
-                    packed_offset_value,
+                arith.muli(
+                    logical_row,
+                    arith.constant(ir.IndexType.get(), zero_point_row_stride),
                 ),
-                arith.constant(ir.IndexType.get(), scale_index // 2),
+                arith.divui(
+                    group_index,
+                    arith.constant(ir.IndexType.get(), 2),
+                ),
             )
             packed_zero_points = memref.load(
                 zero_points_smem,
@@ -173,13 +183,20 @@ def _dequantize_int4(
                     ),
                 ),
             )
+            zero_point_shift = arith.index_castui(
+                ir.IntegerType.get_signless(8),
+                arith.muli(
+                    arith.remui(
+                        group_index,
+                        arith.constant(ir.IndexType.get(), 2),
+                    ),
+                    arith.constant(ir.IndexType.get(), 4),
+                ),
+            )
             zero_point_integer = arith.andi(
                 arith.shrui(
                     packed_zero_points,
-                    mgpu.c(
-                        (scale_index % 2) * 4,
-                        ir.IntegerType.get_signless(8),
-                    ),
+                    zero_point_shift,
                 ),
                 mgpu.c(0xF, ir.IntegerType.get_signless(8)),
             )
@@ -209,8 +226,9 @@ def _dequantize_int4(
             )
 
         registers = np.empty_like(values.registers)
+        registers_per_group = group_size // 8
         for register_index, register in np.ndenumerate(values.registers):
-            scale_index = register_index[1] // 8
+            scale_index = register_index[1] // registers_per_group
             scale = vector.broadcast(register.type, scales[scale_index])
             bias = vector.broadcast(register.type, biases[scale_index])
             registers[register_index] = arith.addf(
@@ -232,13 +250,14 @@ def _dequantize_int4(
         scales_ref,
         zero_points_ref,
         weights,
-        zero_point_byte_offset,
+        group_offset,
     )
 
 
 def _dequantize_int8(
     scales_ref: _Ref,
     weights: Array,
+    group_size: int,
 ) -> Array:
     @plgpu.inline_mgpu(
         arg_types=(plgpu.RefType(), _TMEM(8)),
@@ -268,6 +287,7 @@ def _dequantize_int8(
             for scale_index in range(scales_smem.type.shape[1])
         ]
         registers = np.empty_like(values.registers)
+        registers_per_group = group_size // 8
         for register_index, register in np.ndenumerate(values.registers):
             packed_pair = mgpu.utils.bitcast(register, i32_pair)
             packed_values = [vector.extract(packed_pair, [], [part]) for part in range(2)]
@@ -306,7 +326,7 @@ def _dequantize_int8(
             )
             scale = vector.broadcast(
                 converted_values.type,
-                scales[register_index[1] // 8],
+                scales[register_index[1] // registers_per_group],
             )
             registers[register_index] = arith.mulf(
                 converted_values,
@@ -323,10 +343,11 @@ def _dequantize_int8(
 
 
 @cache
-def make_batched_int_matmul(
+def _make_batched_int_matmul(
     batch_size: int,
     rows: int,
     columns: int,
+    group_size: int,
     bits: int,
     is_symmetric: bool,
 ) -> BatchedIntMatmul:
@@ -334,8 +355,16 @@ def make_batched_int_matmul(
         raise ValueError("The SM100 batched path supports asymmetric W4 and symmetric W8.")
     if batch_size < 8:
         raise ValueError(f"The SM100 batched path requires at least 8 rows, got {batch_size}.")
-    if columns % 256:
-        raise ValueError(f"The contraction dimension must be divisible by 256, got {columns}.")
+    if group_size < 8 or 128 % group_size:
+        raise ValueError(
+            f"The SM100 batched path requires group size to divide 128 and be at least 8, got {group_size}."
+        )
+    column_multiple = max(256, 8 * group_size)
+    if columns % column_multiple:
+        raise ValueError(
+            f"The contraction dimension must be divisible by {column_multiple} for group size {group_size}, "
+            f"got {columns}."
+        )
     if rows % 128:
         raise ValueError(f"The output dimension must be divisible by 128, got {rows}.")
 
@@ -343,7 +372,6 @@ def make_batched_int_matmul(
     block_n = 128
     block_k = 256
     num_stages = 2
-    group_size = 64
     group_count = columns // group_size
     packed_zero_point_count = group_count // 2
     m_iters = pl.cdiv(batch_size, block_m)
@@ -352,7 +380,6 @@ def make_batched_int_matmul(
     packed_block_k = block_k // weight_values_per_byte
     scales_per_block = block_k // group_size
     scales_per_half = scales_per_block // 2
-    packed_scales_per_block = scales_per_block // 2
     if bits == 4:
         main_registers = 152
         producer_registers = 176
@@ -562,6 +589,7 @@ def make_batched_int_matmul(
                 ) -> None:
                     slot = lax.rem(k_index, num_stages)
                     plgpu.barrier_wait(weight_tma_barrier.at[slot])
+                    group_offset = k_index * scales_per_block + half * scales_per_half
                     if bits == 4:
                         packed_weights = plgpu.load(
                             weights_smem.at[slot],
@@ -578,7 +606,7 @@ def make_batched_int_matmul(
                                 :,
                                 pl.ds(
                                     pl.multiple_of(
-                                        k_index * scales_per_block + half * scales_per_half,
+                                        group_offset,
                                         scales_per_half,
                                     ),
                                     scales_per_half,
@@ -586,7 +614,8 @@ def make_batched_int_matmul(
                             ],
                             zero_points_smem,
                             converted_weights,
-                            k_index * packed_scales_per_block + half,
+                            group_offset,
+                            group_size,
                         )
                     else:
                         packed_weights = plgpu.load(
@@ -606,13 +635,14 @@ def make_batched_int_matmul(
                                 :,
                                 pl.ds(
                                     pl.multiple_of(
-                                        k_index * scales_per_block + half * scales_per_half,
+                                        group_offset,
                                         scales_per_half,
                                     ),
                                     scales_per_half,
                                 ),
                             ],
                             packed_weights,
+                            group_size,
                         )
                     dequantized_weights = plgpu.layout_cast(
                         dequantized_weights,
@@ -772,7 +802,7 @@ def make_batched_int_matmul(
         thread_name="wg",
         grid=(m_iters * n_iters,),
         grid_names=("sm",),
-        kernel_name=f"w{bits}a16_g64_sm100",
+        kernel_name=f"w{bits}a16_g{group_size}_sm100",
         compiler_params=plgpu.CompilerParams(
             approx_math=True,
             unsafe_no_auto_barriers=True,

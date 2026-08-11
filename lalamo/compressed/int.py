@@ -5,19 +5,20 @@ from functools import partial
 from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
-from jax.lax import DotAlgorithmPreset, stop_gradient
+from jax.lax import stop_gradient
 from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
 
 from lalamo.exportable import ExportResults
+from lalamo.kernels.int_dot import dequantize_int_weights, int_dot
 from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
+from lalamo.utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import (
     ShardingConfig,
     lookup_sharded_indices,
-    supports_mosaic_gpu,
     with_sharding,
 )
 from lalamo.utils.surgery import load_as
@@ -38,8 +39,6 @@ from .utils.grouping import (
     min_max_within_groups,
     scale_from_min_max,
 )
-from .utils.hadamard import hadamard_transform
-from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from .utils.rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
 from .utils.yaqa import yaqa_round_blockwise
 
@@ -211,33 +210,6 @@ def _packed_zero_points_to_master_zero_points(
     return int_scale_zero_points.astype(scales.dtype) * scales
 
 
-def _packed_weights_to_master_weights(
-    packed_weights: UInt8[Array, "... packed_cols"],
-    scales: Float[Array, "... groups"],
-    packed_zero_points: UInt8[Array, "... packed_groups"] | None,
-    group_size: int,
-    bits: int,
-) -> Float[Array, "... cols"]:
-    int_weights = unpack_uint8_to_uint(
-        packed_weights,
-        bits=bits,
-        dtype=scales.dtype,
-        unpacked_last_axis_dim=scales.shape[-1] * group_size,
-    )
-    if packed_zero_points is None:
-        int_scale_zero_points = None
-    else:
-        *_, num_groups = scales.shape
-        int_scale_zero_points = unpack_uint8_to_uint(
-            packed_zero_points,
-            bits=bits,
-            dtype=scales.dtype,
-            unpacked_last_axis_dim=num_groups,
-        )
-
-    return _integer_scaled_weights_to_master_weights(int_weights, scales, int_scale_zero_points, group_size, bits)
-
-
 @dataclass(frozen=True)
 class IntSpec(QuantizedSpec):
     bits: Literal[4, 8]
@@ -373,7 +345,7 @@ class IntSpec(QuantizedSpec):
                 packed_zero_points=packed_zero_points,
             )
 
-        weights = _packed_weights_to_master_weights(
+        weights = dequantize_int_weights(
             packed_weights,
             scales,
             packed_zero_points,
@@ -689,7 +661,7 @@ class IntMatrixForInference(IntMatrix):
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
-        weights = _packed_weights_to_master_weights(
+        weights = dequantize_int_weights(
             self.packed_weights,
             self.scales,
             self.packed_zero_points,
@@ -715,7 +687,7 @@ class IntMatrixForInference(IntMatrix):
         if packed_zero_points is not None:
             packed_zero_points = lookup_sharded_indices(packed_zero_points, row_index)
         packed_weights = lookup_sharded_indices(self.packed_weights, row_index)
-        return _packed_weights_to_master_weights(
+        return dequantize_int_weights(
             packed_weights,
             lookup_sharded_indices(self.scales, row_index).astype(dtype),
             packed_zero_points,
@@ -730,89 +702,17 @@ class IntMatrixForInference(IntMatrix):
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
-        rht_signs: Int[Array, " source_channels"] | None = None,
-        rht_block_size: Literal[32, 64, 128] | None = None,
     ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
-        rows, columns = self.shape
-        mesh = self.sharding_config.mesh
-        complete_rows = rows - rows % 64
-        is_pallas_candidate = (
-            supports_mosaic_gpu(mesh, 9)
-            and self.spec.layout == Layout.OUTPUT_INPUT
-            and vector.dtype == jnp.bfloat16
-            and forward_pass_config.precision == DotAlgorithmPreset.DEFAULT
-            and not transposed
-            and complete_rows > 0
-        )
-        if is_pallas_candidate:
-            if self.spec.group_size not in (16, 32, 64, 128):
-                raise ValueError(
-                    f"SM90+ BF16 inference dot requires INT group_size 16, 32, 64, or 128; got {self.spec.group_size}."
-                )
-            from lalamo.kernels.int_dot import make_int_dot  # noqa: PLC0415
-
-            packed_zero_points = self.packed_zero_points
-            if packed_zero_points is None:
-                main_zero_points = self.packed_weights[:complete_rows, :0]
-            else:
-                main_zero_points = packed_zero_points[:complete_rows]
-            input_signs = jnp.empty((0,), jnp.int8)
-            if rht_signs is not None:
-                input_signs = rht_signs
-            output = make_int_dot(
-                complete_rows,
-                columns,
-                self.spec.group_size,
-                self.spec.bits,
-                self.spec.is_symmetric,
-                rht_block_size,
-                use_sm100_batched=supports_mosaic_gpu(mesh, 10),
-            )(
-                vector,
-                input_signs,
-                self.packed_weights[:complete_rows],
-                self.scales[:complete_rows].astype(vector.dtype),
-                main_zero_points,
-            )
-            if complete_rows == rows:
-                return output
-
-            tail_zero_points = None
-            if packed_zero_points is not None:
-                tail_zero_points = packed_zero_points[complete_rows:]
-            tail_vector = vector
-            if rht_signs is not None:
-                assert rht_block_size is not None
-                tail_vector = hadamard_transform(
-                    vector * rht_signs.astype(vector.dtype),
-                    rht_block_size,
-                )
-            tail_weights = _packed_weights_to_master_weights(
-                self.packed_weights[complete_rows:],
-                self.scales[complete_rows:].astype(vector.dtype),
-                tail_zero_points,
-                self.spec.group_size,
-                self.spec.bits,
-            )
-            return jnp.concatenate((output, tail_weights @ tail_vector))
-
-        if rht_signs is not None:
-            assert rht_block_size is not None
-            vector = hadamard_transform(
-                vector * rht_signs.astype(vector.dtype),
-                rht_block_size,
-            )
-
-        weights = _packed_weights_to_master_weights(
+        return int_dot(
+            vector,
             self.packed_weights,
-            self.scales.astype(vector.dtype),
+            self.scales,
             self.packed_zero_points,
-            self.spec.group_size,
-            self.spec.bits,
+            group_size=self.spec.group_size,
+            bits=self.spec.bits,
+            is_symmetric=self.spec.is_symmetric,
+            layout=self.spec.layout,
+            precision=forward_pass_config.precision,
+            transposed=transposed,
         )
-        layout = self.spec.layout
-        if transposed:
-            layout = layout.transpose()
-        with use_dot_algorithm_preset(forward_pass_config.precision):
-            return layout.matmul(weights, vector)

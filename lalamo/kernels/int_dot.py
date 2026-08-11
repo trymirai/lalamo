@@ -1,20 +1,60 @@
 from collections.abc import Callable
 from functools import cache
-from math import sqrt
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import jax
 import jax.numpy as jnp
 from jax.experimental import pallas as pl
 from jax.experimental.mosaic import gpu as mgpu
 from jax.experimental.pallas import mosaic_gpu as plgpu
+from jax.lax import DotAlgorithmPreset
 from jaxlib.mlir import ir
 from jaxlib.mlir.dialects import arith, llvm
-from jaxtyping import Array
+from jaxtyping import Array, Float, UInt8
 
-from lalamo.kernels.hadamard import fragmented_hadamard
+from lalamo.utils.packing import unpack_uint8_to_uint
+from lalamo.utils.precision import use_dot_algorithm_preset
+from lalamo.utils.sharding import sharding_of, supports_mosaic_gpu
+from lalamo.weight_matrix import Layout
+
+if TYPE_CHECKING:
+    from jax.sharding import Mesh
 
 type _Ref = Any
+
+__all__ = [
+    "dequantize_int_weights",
+    "int_dot",
+    "supports_batched_int_dot",
+]
+
+
+def dequantize_int_weights(
+    packed_weights: UInt8[Array, "... packed_cols"],
+    scales: Float[Array, "... groups"],
+    packed_zero_points: UInt8[Array, "... packed_groups"] | None,
+    group_size: int,
+    bits: int,
+) -> Float[Array, "... cols"]:
+    int_weights = unpack_uint8_to_uint(
+        packed_weights,
+        bits=bits,
+        dtype=scales.dtype,
+        unpacked_last_axis_dim=scales.shape[-1] * group_size,
+    )
+    if packed_zero_points is None:
+        int_zero_points: Array | int = 2 ** (bits - 1)
+    else:
+        int_zero_points = unpack_uint8_to_uint(
+            packed_zero_points,
+            bits=bits,
+            dtype=scales.dtype,
+            unpacked_last_axis_dim=scales.shape[-1],
+        )[..., None]
+
+    *leading_dims, num_columns = int_weights.shape
+    grouped_weights = int_weights.reshape(*leading_dims, num_columns // group_size, group_size)
+    return ((grouped_weights - int_zero_points) * scales[..., None]).reshape(int_weights.shape)
 
 
 def supports_batched_int_dot(
@@ -24,31 +64,100 @@ def supports_batched_int_dot(
     group_size: int,
     bits: int,
     is_symmetric: bool,
-    input_block_size: Literal[32, 64, 128] | None,
 ) -> bool:
     return (
         batch_size >= 8
         and rows >= 128
         and rows % 128 == 0
         and columns >= 512
-        and columns % 256 == 0
-        and group_size == 64
-        and input_block_size == 32
+        and columns % max(256, 8 * group_size) == 0
+        and group_size >= 8
+        and 128 % group_size == 0
         and (bits, is_symmetric) in ((4, False), (8, True))
     )
 
 
+def int_dot(
+    vector: Float[Array, " source_channels"],
+    packed_weights: UInt8[Array, "rows packed_cols"],
+    scales: Float[Array, "rows groups"],
+    packed_zero_points: UInt8[Array, "rows packed_groups"] | None,
+    *,
+    group_size: int,
+    bits: int,
+    is_symmetric: bool,
+    layout: Layout,
+    precision: DotAlgorithmPreset,
+    transposed: bool = False,
+) -> Float[Array, " target_channels"]:
+    rows = packed_weights.shape[0]
+    columns = scales.shape[-1] * group_size
+    complete_rows = rows - rows % 64
+    mesh = cast("Mesh", sharding_of(packed_weights).mesh)
+    if (
+        supports_mosaic_gpu(mesh, 9)
+        and layout == Layout.OUTPUT_INPUT
+        and vector.dtype == jnp.bfloat16
+        and precision == DotAlgorithmPreset.DEFAULT
+        and not transposed
+        and complete_rows > 0
+        and group_size in (16, 32, 64, 128)
+    ):
+        if packed_zero_points is None:
+            main_zero_points = packed_weights[:complete_rows, :0]
+        else:
+            main_zero_points = packed_zero_points[:complete_rows]
+        output = _make_int_dot(
+            complete_rows,
+            columns,
+            group_size,
+            bits,
+            is_symmetric,
+            use_sm100_batched=supports_mosaic_gpu(mesh, 10),
+        )(
+            vector,
+            packed_weights[:complete_rows],
+            scales[:complete_rows].astype(vector.dtype),
+            main_zero_points,
+        )
+        if complete_rows == rows:
+            return output
+
+        tail_zero_points = None
+        if packed_zero_points is not None:
+            tail_zero_points = packed_zero_points[complete_rows:]
+        tail_weights = dequantize_int_weights(
+            packed_weights[complete_rows:],
+            scales[complete_rows:].astype(vector.dtype),
+            tail_zero_points,
+            group_size,
+            bits,
+        )
+        return jnp.concatenate((output, tail_weights @ vector))
+
+    weights = dequantize_int_weights(
+        packed_weights,
+        scales.astype(vector.dtype),
+        packed_zero_points,
+        group_size,
+        bits,
+    )
+    if transposed:
+        layout = layout.transpose()
+    with use_dot_algorithm_preset(precision):
+        return layout.matmul(weights, vector)
+
+
 @cache
-def make_int_dot(
+def _make_int_dot(
     rows: int,
     columns: int,
     group_size: int,
     bits: int,
     is_symmetric: bool,
-    input_block_size: Literal[32, 64, 128] | None = None,
     *,
     use_sm100_batched: bool = False,
-) -> Callable[[Array, Array, Array, Array, Array], Array]:
+) -> Callable[[Array, Array, Array, Array], Array]:
     rows_per_program = 64
     values_per_byte = 8 // bits
     packed_group_size = group_size // values_per_byte
@@ -344,156 +453,14 @@ def make_int_dot(
         compiler_params=compiler_params,
     )
 
-    prepare_rht = None
-    if input_block_size is not None and input_block_size <= group_size:
-        blocks_per_group = group_size // input_block_size
-        groups_per_program = next(candidate for candidate in (4, 2, 1) if group_count % candidate == 0)
-        if groups_per_program == 1:
-            warp_dims = (plgpu.Replicated(4),)
-        elif groups_per_program == 4:
-            warp_dims = (-4,)
-        else:
-            warp_dims = (-4, plgpu.Replicated(4 // groups_per_program))
-        input_layout = plgpu.Layout.TILED(
-            plgpu.Tiling(((groups_per_program, 1, 32), (1,))),
-            warp_dims=warp_dims,
-            lane_dims=(-2,),
-            vector_dim=-1,
-        )
-        activation_parameter_layout = input_layout.reduce((1, 2))
-
-        @plgpu.inline_mgpu(
-            arg_types=(input_layout,),
-            return_type=(
-                plgpu.ShapeDtypeStruct(
-                    (groups_per_program, blocks_per_group, input_block_size),
-                    jnp.int8,
-                    layout=input_layout,
-                ),
-                plgpu.ShapeDtypeStruct(
-                    (groups_per_program,),
-                    jnp.float32,
-                    layout=activation_parameter_layout,
-                ),
-                plgpu.ShapeDtypeStruct(
-                    (groups_per_program,),
-                    jnp.int32,
-                    layout=activation_parameter_layout,
-                ),
-            ),
-        )
-        def prepare_activations(
-            _ctx: object,
-            values: mgpu.FragmentedArray,
-        ) -> tuple[
-            mgpu.FragmentedArray,
-            mgpu.FragmentedArray,
-            mgpu.FragmentedArray,
-        ]:
-            transformed = fragmented_hadamard(
-                values,
-                input_block_size,
-                blocks_per_warp=blocks_per_group,
-            ) / sqrt(input_block_size)
-            transformed = transformed.astype(ir.BF16Type.get()).astype(ir.F32Type.get())
-            activation_scale = (transformed.abs().reduce("max", axis=(1, 2)) / 127).max(
-                float(jnp.finfo(jnp.float32).tiny)
-            )
-            broadcast_scale = activation_scale.broadcast_in_dim(
-                transformed.shape,
-                (0,),
-                transformed.layout,
-            )
-            quantized = (
-                (transformed / broadcast_scale)
-                .round_even()
-                .max(-127)
-                .min(127)
-                .astype(
-                    ir.IntegerType.get_signless(8),
-                    is_signed=True,
-                )
-            )
-            activation_sums = quantized.astype(
-                ir.IntegerType.get_signless(32),
-                is_signed=True,
-            ).reduce("add", axis=(1, 2))
-            return (
-                quantized,
-                activation_scale,
-                activation_sums,
-            )
-
-        def prepare_rht_kernel(
-            vector_ref: jax.Ref,
-            signs_ref: jax.Ref,
-            quantized_vector_ref: jax.Ref,
-            activation_scales_ref: jax.Ref,
-            activation_sums_ref: jax.Ref,
-        ) -> None:
-            group_slice = pl.ds(
-                pl.program_id(0) * groups_per_program,
-                groups_per_program,
-            )
-            values = plgpu.load(
-                vector_ref.at[group_slice, :, :],
-                layout=input_layout,
-                optimized=False,
-            ).astype(jnp.float32)
-            signs = plgpu.load(
-                signs_ref.at[group_slice, :, :],
-                layout=input_layout,
-                optimized=False,
-            ).astype(jnp.float32)
-            quantized, scales, activation_sums = prepare_activations(values * signs)
-            quantized_vector_ref.at[group_slice, :, :][...] = quantized
-            activation_scales_ref.at[group_slice][...] = scales
-            activation_sums_ref.at[group_slice][...] = activation_sums
-
-        blocked_shape = (group_count, blocks_per_group, input_block_size)
-        prepare_rht = plgpu.kernel(
-            prepare_rht_kernel,
-            out_type=(
-                jax.ShapeDtypeStruct(blocked_shape, jnp.int8),
-                jax.ShapeDtypeStruct((group_count,), jnp.float32),
-                jax.ShapeDtypeStruct((group_count,), jnp.int32),
-            ),
-            grid=(group_count // groups_per_program,),
-            grid_names=("program",),
-            compiler_params=plgpu.CompilerParams(
-                lowering_semantics=plgpu.LoweringSemantics.Warpgroup,
-            ),
-        )
-
     @jax.custom_batching.custom_vmap
     def dot(
         vector: Array,
-        input_signs: Array,
         packed_weights: Array,
         scales: Array,
         packed_zero_points: Array,
     ) -> Array:
-        if prepare_rht is None:
-            if input_block_size is not None:
-                from lalamo.compressed.utils.hadamard import hadamard_transform  # noqa: PLC0415
-
-                vector = hadamard_transform(
-                    vector * input_signs.astype(vector.dtype),
-                    input_block_size,
-                )
-            quantized_vector, activation_scales, activation_sums = quantize(vector)
-        else:
-            assert input_block_size is not None
-            blocked_shape = (
-                group_count,
-                group_size // input_block_size,
-                input_block_size,
-            )
-            quantized_vector, activation_scales, activation_sums = prepare_rht(
-                vector.reshape(blocked_shape),
-                input_signs.reshape(blocked_shape),
-            )
-            quantized_vector = quantized_vector.reshape(columns)
+        quantized_vector, activation_scales, activation_sums = quantize(vector)
         partials = matmul(
             quantized_vector,
             activation_scales,
@@ -509,18 +476,16 @@ def make_int_dot(
         axis_size: int,
         in_batched: list[bool],
         vectors: Array,
-        input_signs: Array,
         packed_weights: Array,
         scales: Array,
         packed_zero_points: Array,
     ) -> tuple[Array, bool]:
-        if in_batched != [True, False, False, False, False]:
+        if in_batched != [True, False, False, False]:
             raise ValueError("Only the input vectors may be batched.")
         if axis_size == 1:
             return (
                 dot(
                     vectors[0],
-                    input_signs,
                     packed_weights,
                     scales,
                     packed_zero_points,
@@ -535,32 +500,22 @@ def make_int_dot(
             group_size,
             bits,
             is_symmetric,
-            input_block_size,
         )
         if use_batched_matmul:
-            assert input_block_size is not None
-            from lalamo.kernels.hadamard import (  # noqa: PLC0415
-                gpu_signed_hadamard_transform,
-            )
             from lalamo.kernels.int_matmul import (  # noqa: PLC0415
-                make_batched_int_matmul,
+                _make_batched_int_matmul,
             )
 
-            transformed_vectors = gpu_signed_hadamard_transform(
-                vectors,
-                input_signs,
-                input_block_size,
-                permuted_output=bits == 4,
-            )
             return (
-                make_batched_int_matmul(
+                _make_batched_int_matmul(
                     axis_size,
                     rows,
                     columns,
+                    group_size,
                     bits,
                     is_symmetric,
                 )(
-                    transformed_vectors,
+                    vectors,
                     packed_weights,
                     scales.astype(vectors.dtype),
                     packed_zero_points,
@@ -568,25 +523,16 @@ def make_int_dot(
                 True,
             )
 
-        from lalamo.compressed.int import _packed_weights_to_master_weights  # noqa: PLC0415
-
         zero_points = packed_zero_points
         if is_symmetric:
             zero_points = None
-        weights = _packed_weights_to_master_weights(
+        weights = dequantize_int_weights(
             packed_weights,
             scales.astype(vectors.dtype),
             zero_points,
             group_size,
             bits,
         )
-        if input_block_size is not None:
-            from lalamo.compressed.utils.hadamard import hadamard_transform  # noqa: PLC0415
-
-            vectors = hadamard_transform(
-                vectors * input_signs.astype(vectors.dtype),
-                input_block_size,
-            )
         return (
             vectors @ weights.swapaxes(-1, -2),
             True,
