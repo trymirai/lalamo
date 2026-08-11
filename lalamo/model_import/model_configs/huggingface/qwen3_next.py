@@ -167,7 +167,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                     is_causal=True,
                     scale=None,
                     sliding_window_size=None,
-                    gate_projection_config=linear_config,
+                    has_gate=True,
                 )
 
             if (

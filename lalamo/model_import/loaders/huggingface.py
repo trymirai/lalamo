@@ -685,29 +685,36 @@ def _split_q_gate_tensor(
     return q, gate
 
 
-def _extract_gate_weights(
+def _reorder_gated_attention_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     num_heads: int,
     head_dim: int,
-) -> tuple[dict[str, Array], dict[str, Array]]:
+) -> dict[str, Array]:
+    """Split Qwen's per-head-interleaved Q/G projection into synthetic Q and G sublayers."""
     q_proj_path = path / "q_proj"
+    if (q_proj_path / "qweight") in weights_dict:
+        raise ValueError(
+            "Packed qweight is not supported for gated attention; Q/G reordering requires "
+            "format-aware output-channel unpacking. Use a full-precision or MLX checkpoint.",
+        )
+
     q_proj_prefix = f"{q_proj_path}."
     kv_proj_prefixes = (f"{path / 'k_proj'}.", f"{path / 'v_proj'}.")
-    gate_path = path / "gate_projection"
-    q_weights: dict[str, Array] = {}
-    gate_weights: dict[str, Array] = {}
+    # g_proj exists only in this normalized mapping so the generic linear loader can fuse Q/K/V/G.
+    gate_path = path / "g_proj"
+    reordered_weights: dict[str, Array] = {}
 
     for key in weights_dict:
         if key.startswith(q_proj_prefix):
             suffix = key[len(q_proj_prefix) :]
             tensor = weights_dict[key]
             q_part, gate_part = _split_q_gate_tensor(tensor, num_heads, head_dim)
-            q_weights[key] = q_part
-            gate_weights[gate_path / suffix] = gate_part
+            reordered_weights[key] = q_part
+            reordered_weights[gate_path / suffix] = gate_part
         elif key.startswith(kv_proj_prefixes):
-            q_weights[key] = weights_dict[key]
-    return q_weights, gate_weights
+            reordered_weights[key] = weights_dict[key]
+    return reordered_weights
 
 
 def load_attention(
@@ -717,40 +724,26 @@ def load_attention(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> Attention:
-    qkv_sublayers = ["q_proj"] if module.config.is_kv_sharing else ["q_proj", "k_proj", "v_proj"]
-    if module.gate_projection is not None:
+    projection_sublayers = ["q_proj"] if module.config.is_kv_sharing else ["q_proj", "k_proj", "v_proj"]
+    projection_weights = weights_dict
+    if module.config.has_gate:
         num_heads, head_dim = module.config.num_heads, module.config.head_dim
 
-        qkv_weights, gate_weights = _extract_gate_weights(
+        projection_weights = _reorder_gated_attention_weights(
             weights_dict,
             path,
             num_heads,
             head_dim,
         )
+        projection_sublayers = [*projection_sublayers, "g_proj"]
 
-        qkv_projection = load_linear(
-            module.qkv_projection,
-            qkv_weights,
-            path,
-            sublayers_to_fuse=qkv_sublayers,
-            implementation=implementation,
-        )
-
-        gate_projection = load_linear(
-            module.gate_projection,
-            gate_weights,
-            path / "gate_projection",
-            implementation=implementation,
-        )
-    else:
-        qkv_projection = load_linear(
-            module.qkv_projection,
-            weights_dict,
-            path,
-            sublayers_to_fuse=qkv_sublayers,
-            implementation=implementation,
-        )
-        gate_projection = None
+    qkv_projection = load_linear(
+        module.qkv_projection,
+        projection_weights,
+        path,
+        sublayers_to_fuse=projection_sublayers,
+        implementation=implementation,
+    )
 
     out_projection = load_linear(
         module.out_projection,
@@ -766,14 +759,13 @@ def load_attention(
     return load_as_at(
         lambda m: (
             m.qkv_projection,
-            m.gate_projection,
             m.out_projection,
             m.query_norm,
             m.key_norm,
             m.sinks,
         ),
         module,
-        (qkv_projection, gate_projection, out_projection, query_norm, key_norm, sinks),
+        (qkv_projection, out_projection, query_norm, key_norm, sinks),
     )
 
 

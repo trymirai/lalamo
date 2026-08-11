@@ -3,6 +3,7 @@ from math import prod
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import pytest
 from einops import rearrange
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
@@ -37,8 +38,16 @@ def _linear(weights: Array, output_dims: tuple[int, ...]) -> Linear:
     )
 
 
-def _attention(*, logit_soft_cap: float | None = None) -> Attention:
+def _attention(
+    *,
+    logit_soft_cap: float | None = None,
+    has_gate: bool = False,
+    is_kv_sharing: bool = False,
+) -> Attention:
     qkv_dim = NUM_HEADS * HEAD_DIM
+    output_dims = (qkv_dim,) if is_kv_sharing else (qkv_dim, qkv_dim, qkv_dim)
+    if has_gate:
+        output_dims = (*output_dims, qkv_dim)
     return Attention(
         config=AttentionConfig(
             qkv_projection_config=LinearConfig(),
@@ -55,11 +64,11 @@ def _attention(*, logit_soft_cap: float | None = None) -> Attention:
             has_sinks=False,
             has_qkv_biases=False,
             has_out_biases=False,
-            gate_projection_config=None,
+            has_gate=has_gate,
+            is_kv_sharing=is_kv_sharing,
         ),
         sharding_config=make_test_sharding_config(),
-        qkv_projection=_linear(_weights((3 * qkv_dim, MODEL_DIM)), (qkv_dim, qkv_dim, qkv_dim)),
-        gate_projection=None,
+        qkv_projection=_linear(_weights((sum(output_dims), MODEL_DIM)), output_dims),
         out_projection=_linear(_weights((MODEL_DIM, qkv_dim), offset=100), (MODEL_DIM,)),
         query_norm=None,
         key_norm=None,
@@ -75,7 +84,8 @@ def _linear_reference(linear: Linear, inputs: Array) -> tuple[Array, ...]:
 
 def _reference(module: Attention, inputs: Array) -> Array:
     inputs = jnp.asarray(jax.device_get(inputs))
-    queries, keys, values = _linear_reference(module.qkv_projection, inputs)
+    projections = _linear_reference(module.qkv_projection, inputs)
+    queries, keys, values, *_ = projections
     queries = rearrange(queries, "tokens (heads channels) -> tokens heads channels", heads=NUM_HEADS)
     keys = rearrange(keys, "tokens (groups channels) -> tokens groups channels", groups=NUM_GROUPS)
     values = rearrange(values, "tokens (groups channels) -> tokens groups channels", groups=NUM_GROUPS)
@@ -86,6 +96,8 @@ def _reference(module: Attention, inputs: Array) -> Array:
     attention_weights = jax.nn.softmax(logits, axis=-1)
     attention_output = jnp.einsum("hts,shc->thc", attention_weights, values)
     attention_output = rearrange(attention_output, "tokens heads channels -> tokens (heads channels)")
+    if module.config.has_gate:
+        attention_output = attention_output * jax.nn.sigmoid(projections[-1])
     (outputs,) = _linear_reference(module.out_projection, attention_output)
     return outputs
 
@@ -123,6 +135,59 @@ def test_attention_matches_reference_and_preserves_tensor_sharding(fake_mesh: Me
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
     assert result.outputs.sharding == make_sharding((None, None))
     assert result.state is None
+
+
+def test_gated_attention_matches_reference(fake_mesh: Mesh) -> None:
+    module = _attention(has_gate=True)
+    inputs = _sharded_sequence(_inputs())
+
+    result = module(
+        inputs,
+        positional_embeddings=None,
+        keychain=Keychain.init(11, sharding_config=make_test_sharding_config()),
+    )
+
+    assert module.qkv_projection.output_dims == (4, 4, 4, 4)
+    _assert_close(result=result.outputs, reference=_reference(module, inputs))
+    _assert_named_sharding(result.outputs.sharding, fake_mesh)
+
+
+def test_gated_kv_sharing_matches_equivalent_full_projection(fake_mesh: Mesh) -> None:
+    source = _attention()
+    query_gate = _attention(has_gate=True, is_kv_sharing=True)
+    query_weights, gate_weights = jnp.split(query_gate.qkv_projection.weights.decompress(), 2)
+    _, key_weights, value_weights = jnp.split(source.qkv_projection.weights.decompress(), 3)
+    full = _attention(has_gate=True)
+    full_projection = _linear(
+        jnp.concatenate((query_weights, key_weights, value_weights, gate_weights)),
+        (NUM_HEADS * HEAD_DIM,) * 4,
+    )
+    full = eqx.tree_at(lambda module: module.qkv_projection, full, full_projection)
+    inputs = _sharded_sequence(_inputs())
+
+    source_result = source(
+        inputs,
+        positional_embeddings=None,
+        return_updated_state=True,
+        keychain=Keychain.init(12, sharding_config=make_test_sharding_config()),
+    )
+    assert source_result.state is not None
+    shared_result = query_gate(
+        inputs,
+        positional_embeddings=None,
+        state=source_result.state,
+        reuse_cache=True,
+        keychain=Keychain.init(13, sharding_config=make_test_sharding_config()),
+    )
+    full_result = full(
+        inputs,
+        positional_embeddings=None,
+        keychain=Keychain.init(14, sharding_config=make_test_sharding_config()),
+    )
+
+    assert query_gate.qkv_projection.output_dims == (4, 4)
+    _assert_close(result=shared_result.outputs, reference=full_result.outputs)
+    _assert_named_sharding(shared_result.outputs.sharding, fake_mesh)
 
 
 def test_attention_returns_dynamic_state_with_tensor_sharding(fake_mesh: Mesh) -> None:
@@ -239,8 +304,9 @@ def test_attention_vmapped_over_inputs_matches_reference_and_keeps_data_sharding
     assert result.outputs.sharding == make_sharding((LogicalAxis.BATCH, None, None))
 
 
-def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
-    original = _attention()
+@pytest.mark.parametrize("has_gate", [False, True])
+def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh, has_gate: bool) -> None:
+    original = _attention(has_gate=has_gate)
     weight_sharding = make_sharding((None, None))
     template = Attention(
         config=original.config,
@@ -255,7 +321,6 @@ def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_m
             biases=None,
             output_dims=original.qkv_projection.output_dims,
         ),
-        gate_projection=None,
         out_projection=Linear(
             config=LinearConfig(),
             sharding_config=make_test_sharding_config(),
