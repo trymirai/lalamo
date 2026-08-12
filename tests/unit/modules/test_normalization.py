@@ -4,10 +4,10 @@ import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
+from lalamo.initializer import EmptyInitializer
 from lalamo.module import LogicalAxis
 from lalamo.modules.normalization import Normalization, NormalizationConfig, UpcastMode
 from lalamo.modules.utils import call_vmapped
-from lalamo.utils.dummy_array import dummy_array
 from tests.common import assert_close
 from tests.helpers import make_sharding, make_test_sharding_config
 
@@ -51,6 +51,7 @@ def _reference(module: Normalization, inputs: Array) -> Array:
     if config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
         normalized = normalized.astype(inputs.dtype)
 
+    assert module.scales is not None
     if config.upcast_mode == UpcastMode.FULL_LAYER:
         adjusted_scales = module.scales.astype(jnp.float32)
     else:
@@ -165,26 +166,25 @@ def test_normalization_vmapped_over_inputs_matches_reference_and_keeps_data_shar
 
 def test_normalization_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
     original = _normalization()
-    parameter_sharding = make_sharding((None,))
-    template = Normalization(
-        config=original.config,
-        sharding_config=make_test_sharding_config(),
-        scales=dummy_array(original.scales.shape, original.scales.dtype, parameter_sharding),
-        biases=dummy_array(original.biases.shape, original.biases.dtype, parameter_sharding)
-        if original.biases is not None
-        else None,
+    template = original.config.init(
+        EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config()),
+        input_dim=original.input_dim,
     )
     inputs = _sharded_input(jnp.array([1.0, -2.0, 3.0, -4.0], dtype=jnp.float32))
 
     restored = template.load_exported(original.export())
     result = restored(inputs)
 
+    assert restored.scales is not None
+    assert template.scales is not None
     assert restored.scales.sharding == template.scales.sharding
+    assert restored.scales.dtype == jnp.float32
     assert isinstance(restored.scales.sharding, NamedSharding)
     assert restored.scales.sharding.mesh == fake_mesh
     assert restored.biases is not None
     assert template.biases is not None
     assert restored.biases.sharding == template.biases.sharding
+    assert restored.biases.dtype == jnp.float32
     _assert_close(result=result, reference=original(inputs))
     _assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == make_sharding((None,))

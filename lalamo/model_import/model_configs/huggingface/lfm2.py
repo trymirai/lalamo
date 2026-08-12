@@ -2,9 +2,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-import jax.numpy as jnp
-from jaxtyping import DTypeLike
-
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
@@ -95,14 +92,6 @@ class HFLFM2Config(HuggingFaceLMConfig):
             return nested
         assert flat is not None
         return flat
-
-    @property
-    def default_dtype(self) -> DTypeLike:
-        assert self.dtype is not None or self.torch_dtype is not None, (
-            "at least one of dtype or torch_dtype must be specified"
-        )
-
-        return jnp.dtype(self.dtype if self.dtype is not None else self.torch_dtype)
 
     def to_decoder_config(
         self,

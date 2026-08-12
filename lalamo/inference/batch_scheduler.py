@@ -41,6 +41,10 @@ PROMPT_SIZE_BUCKETS: tuple[int, ...] = tuple(256 * 4**i for i in range(8))
 MIN_BATCHES_PER_BUCKET: int = 10
 MAX_BOUNDARY_BATCH_PADDING_FRACTION: float = 0.05
 
+# Auto-batch probe results {(id(model), vram, max_output_length): {padded_length: batch_size}}: lets a
+# resident server skip the throwaway probe compiles. Keyed on max_output_length since state_capacity scales with it.
+_PROBE_CACHE: dict[tuple[int, int, int], dict[int, int]] = {}
+
 
 @dataclass(frozen=True)
 class BatchSchedulerConfig:
@@ -143,6 +147,7 @@ def estimate_batchsize_for_memory_budget(
 ) -> int:
     batch_size = max(1, starting_batchsize)
     last_successful_batch_size: int | None = None
+    previous_measurement: tuple[int, int] | None = None
     remaining_steps = num_steps
 
     while True:
@@ -158,8 +163,8 @@ def estimate_batchsize_for_memory_budget(
                     return last_successful_batch_size
                 raise
 
-            if last_successful_batch_size is not None:
-                next_batch_size = max(last_successful_batch_size, next_batch_size)
+            if last_successful_batch_size is not None and next_batch_size <= last_successful_batch_size:
+                return last_successful_batch_size
 
             warnings.warn(
                 f"OOM while estimating batch size at {batch_size}. Retrying with {next_batch_size}.",
@@ -170,7 +175,23 @@ def estimate_batchsize_for_memory_budget(
             continue
 
         last_successful_batch_size = batch_size
-        estimated_batch_size = max(1, int(batch_size * memory_budget / peak_bytes_in_use))
+        proportional_estimate = max(1, int(batch_size * memory_budget / peak_bytes_in_use))
+        estimated_batch_size = proportional_estimate
+        if previous_measurement is None and proportional_estimate > batch_size and remaining_steps >= 2:
+            estimated_batch_size = batch_size * 4
+        elif (
+            previous_measurement is not None
+            and batch_size > previous_measurement[0]
+            and peak_bytes_in_use > previous_measurement[1]
+        ):
+            previous_batch_size, previous_peak_bytes = previous_measurement
+            bytes_per_batch_element = (peak_bytes_in_use - previous_peak_bytes) / (batch_size - previous_batch_size)
+            fixed_bytes = peak_bytes_in_use - batch_size * bytes_per_batch_element
+            estimated_batch_size = min(
+                batch_size * 4,
+                max(1, int((memory_budget - fixed_bytes) / bytes_per_batch_element)),
+            )
+        previous_measurement = (batch_size, peak_bytes_in_use)
         if estimated_batch_size <= batch_size:
             return estimated_batch_size
         if remaining_steps <= 0:
@@ -219,20 +240,24 @@ def bucket_sequences[T: TokenSequence](
     max_vram: int,
     starting_batch_size: int = 2,
     min_batches_per_bucket: int = MIN_BATCHES_PER_BUCKET,
+    probe_cache: dict[int, int],
 ) -> tuple[dict[int, list[tuple[int, T]]], dict[int, int]]:
     sequences_per_bucket = bucket_by_length(tokenized)
     sorted_lengths = sorted(sequences_per_bucket.keys(), reverse=True)
     batch_size_per_bucket: dict[int, int] = {}
     estimated = starting_batch_size
-    num_steps = 3
+    num_steps = 2
 
     for idx, padded_length in enumerate(sorted_lengths):
-        estimated = estimate_batchsize_for_memory_budget(
-            functools.partial(memory_probe, padded_length=padded_length),
-            memory_budget=max_vram,
-            starting_batchsize=estimated,
-            num_steps=num_steps,
-        )
+        # Reuse a cached batch size for this padded_length (the probe's throwaway compiles dominate latency).
+        if padded_length not in probe_cache:
+            probe_cache[padded_length] = estimate_batchsize_for_memory_budget(
+                functools.partial(memory_probe, padded_length=padded_length),
+                memory_budget=max_vram,
+                starting_batchsize=estimated,
+                num_steps=num_steps,
+            )
+        estimated = probe_cache[padded_length]
 
         # 1 estimator step suffices for each consecutive estimation, since we will already have
         # ~80% VRAM allocation ratio by starting from the last batchsize estimate, and 1 step is enough
@@ -805,11 +830,15 @@ class BatchScheduler(ABC):
                 if first_result is not None:
                     jax.block_until_ready(first_result)
 
+            max_vram = _memory_budget_for_auto_batching(vram_bytes)
+            probe_cache_key = (id(self.model), max_vram, batch_scheduler_config.max_output_length)
+            probe_cache = _PROBE_CACHE.setdefault(probe_cache_key, {})
             sequences_per_bucket, batch_size_per_bucket = bucket_sequences(
                 tokenized,
                 memory_probe,
-                max_vram=_memory_budget_for_auto_batching(vram_bytes),
+                max_vram=max_vram,
                 min_batches_per_bucket=MIN_BATCHES_PER_BUCKET,
+                probe_cache=probe_cache,
             )
 
         buckets = merge_small_buckets(sequences_per_bucket, batch_size_per_bucket, min_batches=MIN_BATCHES_PER_BUCKET)
@@ -995,15 +1024,16 @@ class ContinuousBatchScheduler(BatchScheduler):
         batch_size = batch_scheduler_config.batch_size
         max_output_length = batch_scheduler_config.max_output_length
         padded_length = batch_scheduler_config.padded_length
-        if any(axis is not None for axis in self.model.sharding_config.logical_to_physical.values()):
-            raise RuntimeError("ContinuousBatchScheduler does not support sharded models.")
+        if self.model.sharding_config.resolve_axis(LogicalAxis.BATCH) is not None:
+            raise RuntimeError("ContinuousBatchScheduler does not support batch-sharded models.")
 
         block_size = min(self.block_size, max_output_length)
-        prefill_capacity = (
-            (padded_length + self.prefill_chunk_size - 1) // self.prefill_chunk_size
-        ) * self.prefill_chunk_size
-        state_capacity = prefill_capacity + max_output_length + 1
-        requested_prefill_batch_size = max(1, min(int(batch_size * self.prefill_batch_fraction + 1), batch_size))
+        state_capacity = padded_length + max_output_length + 1
+        requested_prefill_batch_size = (
+            batch_size
+            if sampling_policy.has_count_penalties
+            else max(1, min(int(batch_size * self.prefill_batch_fraction + 1), batch_size))
+        )
         prefill_batch_size = requested_prefill_batch_size
 
         prefills: PrefillSource = PrefillSource(

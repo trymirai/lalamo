@@ -15,19 +15,33 @@ from lalamo.compressed.int import IntMatrixForInference, IntMatrixForTraining, I
 from lalamo.compressed.mlx import MLXMatrixForInference, MLXMatrixForTraining
 from lalamo.initializer import EmptyInitializer, Initializer
 from lalamo.model import Model, ModelConfig
-from lalamo.model_import.loaders.huggingface import load_huggingface_classifier, load_linear
+from lalamo.model_import.loaders.huggingface import (
+    load_huggingface_classifier,
+    load_input_embedding_matrix,
+    load_linear,
+)
 from lalamo.model_import.model_configs.foreign_config import ForeignConfig
 from lalamo.model_import.model_configs.huggingface import ModernBERTConfig
 from lalamo.models.chat_codec import ChatCodec, ChatCodecConfig
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
 from lalamo.modules.classifier import Classifier
+from lalamo.modules.decoder import PerLayerEmbedding, PLEModelConfig
 from lalamo.modules.embedding import TiedEmbedding
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.mlp import DenseMLP
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.token_mixers.attention import Attention
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.parameter_path import ParameterPath
-from lalamo.weight_matrix import CompressionImplementation, FullPrecisionSpec, Layout, WeightMatrix
+from lalamo.weight_matrix import (
+    CompressionImplementation,
+    FullPrecisionMatrix,
+    FullPrecisionSpec,
+    GradientEstimator,
+    Layout,
+    MatmulConfig,
+    WeightMatrix,
+)
 from tests.helpers import make_sharding, make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
@@ -50,7 +64,7 @@ def _pack_int32(values: Array, bits: int) -> Array:
     return jnp.sum(grouped << shifts, axis=-1, dtype=jnp.uint32).astype(jnp.int32)
 
 
-def _linear_template(dtype: DTypeLike, layout: Layout = Layout.OUTPUT_INPUT) -> Linear:
+def _linear_template(dtype: DTypeLike | None, layout: Layout = Layout.OUTPUT_INPUT) -> Linear:
     result = LinearConfig().init(
         initializer=EmptyInitializer(default_dtype=dtype, sharding_config=make_test_sharding_config()),
         input_dim=INPUT_DIM,
@@ -71,8 +85,8 @@ def _mlx_weights(path: ParameterPath) -> Mapping[str, Array]:
     unpacked_weights = jnp.arange(OUTPUT_DIM * INPUT_DIM, dtype=jnp.int32).reshape(OUTPUT_DIM, INPUT_DIM)
     return {
         path / "weight": _pack_int32(unpacked_weights, bits=8),
-        path / "scales": jnp.ones((OUTPUT_DIM, NUM_GROUPS), dtype=jnp.float32),
-        path / "biases": jnp.zeros((OUTPUT_DIM, NUM_GROUPS), dtype=jnp.float32),
+        path / "scales": jnp.ones((OUTPUT_DIM, NUM_GROUPS), dtype=jnp.bfloat16),
+        path / "biases": jnp.zeros((OUTPUT_DIM, NUM_GROUPS), dtype=jnp.bfloat16),
     }
 
 
@@ -82,7 +96,7 @@ def _awq_weights(path: ParameterPath) -> Mapping[str, Array]:
     return {
         path / "qweight": _pack_int32(unpacked_weights, bits=8),
         path / "qzeros": _pack_int32(unpacked_zero_points, bits=8),
-        path / "scales": jnp.ones((NUM_GROUPS, OUTPUT_DIM), dtype=jnp.float32),
+        path / "scales": jnp.ones((NUM_GROUPS, OUTPUT_DIM), dtype=jnp.bfloat16),
     }
 
 
@@ -90,7 +104,7 @@ def _symmetric_awq_weights(path: ParameterPath) -> Mapping[str, Array]:
     unpacked_weights = jnp.arange(INPUT_DIM * OUTPUT_DIM, dtype=jnp.int32).reshape(INPUT_DIM, OUTPUT_DIM) + 128
     return {
         path / "qweight": _pack_int32(unpacked_weights, bits=8),
-        path / "scales": jnp.ones((NUM_GROUPS, OUTPUT_DIM), dtype=jnp.float32),
+        path / "scales": jnp.ones((NUM_GROUPS, OUTPUT_DIM), dtype=jnp.bfloat16),
     }
 
 
@@ -151,6 +165,10 @@ def _classifier_weights(classifier: Classifier) -> Mapping[str, Array]:
     assert isinstance(layer.mixer, Attention)
     assert isinstance(layer.mlp, DenseMLP)
     assert layer.pre_mlp_norm is not None
+    assert classifier.embedding_norm.scales is not None
+    assert layer.pre_mlp_norm.scales is not None
+    assert classifier.transformer.output_norm.scales is not None
+    assert classifier.prediction_head.norm.scales is not None
 
     base_path = ParameterPath()
     decoder_path = base_path / "model"
@@ -213,6 +231,56 @@ def test_load_linear_quantized_checkpoint_uses_requested_dtype_and_implementatio
     assert loaded.weights.dtype == jnp.bfloat16
 
 
+def test_mlx_quantized_per_layer_embedding_forwards_training_config() -> None:
+    initializer = EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config())
+    token_path = ParameterPath("embed_tokens_per_layer")
+    token_embedding = load_input_embedding_matrix(
+        initializer.embedding_matrix(OUTPUT_DIM, INPUT_DIM),
+        _mlx_weights(token_path),
+        token_path,
+        implementation=CompressionImplementation.TRAINING,
+    )
+    assert isinstance(token_embedding, MLXMatrixForTraining)
+    assert token_embedding.spec.bits == 8
+
+    config = PLEModelConfig(
+        ple_dim=OUTPUT_DIM,
+        num_layers=NUM_GROUPS,
+        ple_vocab_size=OUTPUT_DIM,
+        ple_embed_scale=1.0,
+        model_projection_scale=1.0,
+        input_scale=1.0,
+        linear_config=LinearConfig(),
+        norm_config=NormalizationConfig(
+            epsilon=1e-6,
+            scale_offset=None,
+            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
+        ),
+    )
+    per_layer_embedding = PerLayerEmbedding(
+        config=config,
+        sharding_config=initializer.sharding_config,
+        token_embedding=token_embedding,
+        model_projection=LinearConfig().init(
+            initializer,
+            input_dim=OUTPUT_DIM,
+            output_dims=(INPUT_DIM,),
+            has_biases=False,
+        ),
+        projection_norm=config.norm_config.init(initializer, config.ple_dim),
+    )
+    forward_pass_config = MatmulConfig.for_training(GradientEstimator.LOCAL_ADDITIVE_NOISE)
+
+    with pytest.raises(ValueError, match="Local additive noise is not implemented"):
+        per_layer_embedding(
+            jnp.zeros((1, 1), dtype=jnp.int32),
+            jnp.ones((1, 1, OUTPUT_DIM), dtype=jnp.bfloat16),
+            forward_pass_config=forward_pass_config,
+            keychain=Keychain.init(0, sharding_config=initializer.sharding_config),
+        )
+
+
 def test_load_linear_symmetric_awq_without_qzeros_uses_symmetric_spec() -> None:
     path = ParameterPath("layer")
 
@@ -226,6 +294,34 @@ def test_load_linear_symmetric_awq_without_qzeros_uses_symmetric_spec() -> None:
     assert isinstance(loaded.weights, IntMatrixForInference)
     assert loaded.weights.spec.is_symmetric
     assert loaded.weights.packed_zero_points is None
+
+
+def test_load_linear_full_precision_weak_template_preserves_checkpoint_dtype() -> None:
+    path = ParameterPath("layer")
+    weights = jnp.arange(OUTPUT_DIM * INPUT_DIM, dtype=jnp.float32).reshape(OUTPUT_DIM, INPUT_DIM).astype(jnp.bfloat16)
+
+    loaded = load_linear(
+        _linear_template(None),
+        {path / "weight": weights},
+        path,
+    )
+
+    assert isinstance(loaded.weights, FullPrecisionMatrix)
+    assert loaded.weights.dtype == jnp.bfloat16
+
+
+def test_load_linear_full_precision_strong_template_forces_template_dtype() -> None:
+    path = ParameterPath("layer")
+    weights = jnp.arange(OUTPUT_DIM * INPUT_DIM, dtype=jnp.float32).reshape(OUTPUT_DIM, INPUT_DIM).astype(jnp.bfloat16)
+
+    loaded = load_linear(
+        _linear_template(jnp.float32),
+        {path / "weight": weights},
+        path,
+    )
+
+    assert isinstance(loaded.weights, FullPrecisionMatrix)
+    assert loaded.weights.dtype == jnp.float32
 
 
 def test_load_huggingface_classifier_uses_hf_embedding_layout() -> None:
@@ -252,11 +348,15 @@ class TinyConfig(LalamoConfig):
             config=self,
             sharding_config=make_test_sharding_config(),
             matrix=initializer.weight_matrix(output_dim=4, input_dim=4),
+            fp8_values=initializer.zeros((4,)),
+            fp16_values=initializer.zeros((4,)),
         )
 
 
 class TinyModule(LalamoModule[TinyConfig]):
     matrix: WeightMatrix
+    fp8_values: Array
+    fp16_values: Array
 
 
 @dataclass(frozen=True)
@@ -279,10 +379,6 @@ class TinyModel(Model[ChatCodecConfig, TinyModelConfig, ChatCodec]):
 
 @dataclass(frozen=True)
 class TinyForeignConfig(ForeignConfig[TinyModelConfig]):
-    @property
-    def default_dtype(self) -> DTypeLike:
-        return jnp.float32
-
     def _load_weights(
         self,
         model: Model,
@@ -303,6 +399,8 @@ class TinyForeignConfig(ForeignConfig[TinyModelConfig]):
                     implementation=implementation,
                     sharding_config=make_test_sharding_config(),
                 ),
+                fp8_values=model.module.fp8_values,
+                fp16_values=model.module.fp16_values,
             ),
         )
 
@@ -320,6 +418,7 @@ def test_foreign_config_load_initializes_model_with_requested_dtype_and_implemen
                 assistant_role_name="assistant",
                 eos_token=None,
                 bos_token=None,
+                end_of_thinking_tag=None,
             ),
             module_config=TinyConfig(),
         ),
@@ -336,9 +435,8 @@ def test_foreign_config_load_initializes_model_with_requested_dtype_and_implemen
     assert loaded.module.matrix.dtype == jnp.bfloat16
 
 
-def test_model_export_load_uses_saved_weight_matrix_spec_with_shape_dtype_template(tmp_path: Path) -> None:
-    tokenizer = Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]"))
-    config = TinyModelConfig(
+def _tiny_model_config() -> TinyModelConfig:
+    return TinyModelConfig(
         token_codec_config=ChatCodecConfig(
             prompt_template="",
             output_parser_regex=None,
@@ -347,10 +445,21 @@ def test_model_export_load_uses_saved_weight_matrix_spec_with_shape_dtype_templa
             assistant_role_name="assistant",
             eos_token=None,
             bos_token=None,
+            end_of_thinking_tag=None,
         ),
         module_config=TinyConfig(),
     )
-    original = TinyModel(
+
+
+def _tiny_model_with_dtypes(
+    tokenizer: Tokenizer,
+    *,
+    matrix_dtype: DTypeLike = jnp.float32,
+    fp8_values_dtype: DTypeLike = jnp.float8_e4m3fn,
+    fp16_values_dtype: DTypeLike = jnp.float16,
+) -> TinyModel:
+    config = _tiny_model_config()
+    return TinyModel(
         config=config,
         sharding_config=make_test_sharding_config(),
         token_codec=config.token_codec_config.init(tokenizer),
@@ -358,21 +467,37 @@ def test_model_export_load_uses_saved_weight_matrix_spec_with_shape_dtype_templa
             config=TinyConfig(),
             sharding_config=make_test_sharding_config(),
             matrix=IntSpec(bits=8, group_size=2).compress(
-                jnp.arange(16, dtype=jnp.float32).reshape(4, 4),
+                jnp.arange(16, dtype=matrix_dtype).reshape(4, 4),
                 sharding_config=make_test_sharding_config(),
             ),
+            fp8_values=jnp.arange(4, dtype=fp8_values_dtype),
+            fp16_values=jnp.arange(4, dtype=fp16_values_dtype),
         ),
     )
 
+
+def test_model_export_load_with_weak_initializer_preserves_saved_float_dtypes(tmp_path: Path) -> None:
+    tokenizer = Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]"))
+    original = _tiny_model_with_dtypes(tokenizer)
+
     original.save(tmp_path)
     restored = TinyModel.load(tmp_path, sharding_config=make_test_sharding_config())
-    restored_float32 = TinyModel.load(
-        tmp_path,
-        dtype=jnp.float32,
-        sharding_config=make_test_sharding_config(),
-    )
 
     assert isinstance(restored.module.matrix, IntMatrixForInference)
     assert restored.module.matrix.spec == original.module.matrix.spec
+    assert restored.module.matrix.dtype == original.module.matrix.dtype
+    assert restored.module.fp8_values.dtype == jnp.float8_e4m3fn
+    assert restored.module.fp16_values.dtype == jnp.float16
+
+
+def test_model_export_load_with_strong_initializer_forces_saved_float_dtypes(tmp_path: Path) -> None:
+    tokenizer = Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]"))
+    original = _tiny_model_with_dtypes(tokenizer)
+    original.save(tmp_path)
+
+    restored = TinyModel.load(tmp_path, dtype=jnp.bfloat16, sharding_config=make_test_sharding_config())
+
+    assert isinstance(restored.module.matrix, IntMatrixForInference)
     assert restored.module.matrix.dtype == jnp.bfloat16
-    assert restored_float32.module.matrix.dtype == jnp.float32
+    assert restored.module.fp8_values.dtype == jnp.bfloat16
+    assert restored.module.fp16_values.dtype == jnp.bfloat16

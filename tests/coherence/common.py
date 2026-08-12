@@ -177,6 +177,10 @@ def judge(
             last_error = e
             log.warning("Judge error (attempt %d/%d): %s", attempt + 1, max_retries, e)
             continue
+        if not isinstance(content, str):
+            last_error = TypeError(f"Judge returned non-text content: {content!r}")
+            log.warning("Judge error (attempt %d/%d): %s", attempt + 1, max_retries, last_error)
+            continue
         try:
             return _parse_verdict(content)
         except (KeyError, TypeError, ValueError) as e:

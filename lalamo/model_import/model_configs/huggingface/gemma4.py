@@ -5,14 +5,15 @@ from pathlib import Path
 from typing import Any, Literal, Self
 
 import equinox as eqx
-from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike
+from jaxtyping import Array
 
 from lalamo.model import Model
 from lalamo.model_import.loaders.huggingface import (
     load_huggingface_decoder,
+    load_input_embedding_matrix,
     load_linear,
     load_rmsnorm,
+    resolve_decoder_load_layout,
 )
 from lalamo.models import LanguageModel
 from lalamo.modules import (
@@ -30,7 +31,6 @@ from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
-from lalamo.utils.parameter_path import ParameterPath
 from lalamo.weight_matrix import CompressionImplementation
 
 from .common import HuggingFaceLMConfig
@@ -193,6 +193,7 @@ class HFGemma4TextConfig:
                 scale=1.0,
                 sliding_window_size=sliding_window_size,
                 normalize_values=True,
+                is_kv_sharing=not owns_kv_cache,
             )
 
             transformer_layer_config = TransformerLayerConfig(
@@ -231,10 +232,6 @@ class HFGemma4Config(HuggingFaceLMConfig):
     dtype: Literal["bfloat16", "float16", "float32"]
     model_type: Literal["gemma4"]
     eos_token_id: list[int]
-
-    @property
-    def default_dtype(self) -> DTypeLike:
-        return jnp.dtype(self.dtype)
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
@@ -281,16 +278,17 @@ class HFGemma4Config(HuggingFaceLMConfig):
         if model.per_layer_embedding is None:
             return model
 
-        if any(key.startswith("model.language_model.") for key in weights_dict):
-            base = ParameterPath("model") / "language_model"
-        elif any(key.startswith("language_model.") for key in weights_dict):
-            base = ParameterPath("language_model")
-        else:
-            base = ParameterPath("model")
+        layout = resolve_decoder_load_layout(weights_dict)
+        base = layout.decoder_path
 
         new_per_layer_embedding = replace(
             model.per_layer_embedding,
-            token_embedding=weights_dict[base / "embed_tokens_per_layer" / "weight"],
+            token_embedding=load_input_embedding_matrix(
+                model.per_layer_embedding.token_embedding,
+                weights_dict,
+                base / "embed_tokens_per_layer",
+                implementation=implementation,
+            ),
             model_projection=load_linear(
                 model.per_layer_embedding.model_projection,
                 weights_dict,

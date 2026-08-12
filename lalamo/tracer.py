@@ -57,6 +57,7 @@ class UzuMessageProcessorConfig(TypedDict):
     assistant_role_name: str
     eos_token: str | None
     bos_token: str | None
+    end_of_thinking_tag: NotRequired[str | None]
     default_system_prompt: str | None
 
 
@@ -158,6 +159,7 @@ def _uzu_language_model_config(metadata: UzuModelMetadata) -> LanguageModelConfi
             assistant_role_name=message_config["assistant_role_name"],
             eos_token=message_config["eos_token"],
             bos_token=message_config["bos_token"],
+            end_of_thinking_tag=message_config.get("end_of_thinking_tag"),
             default_system_prompt=message_config["default_system_prompt"],
         ),
         decoder_config=DecoderConfig.from_json(model_config["model_config"]),

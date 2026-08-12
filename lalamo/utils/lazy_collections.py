@@ -20,6 +20,7 @@ __all__ = [
     "MapSequence",
     "MapValuesView",
     "MapView",
+    "MappedValues",
 ]
 
 
@@ -102,6 +103,21 @@ class MapDictValues[K, OldV, NewV](Mapping[K, NewV]):
 
     def values(self) -> MapValuesView[OldV, NewV]:
         return MapValuesView(self.value_map, self.collection.values())
+
+    def __len__(self) -> int:
+        return len(self.collection)
+
+
+@dataclass(frozen=True)
+class MappedValues[K, OldV, NewV](Mapping[K, NewV]):
+    collection: Mapping[K, OldV]
+    value_map: Callable[[K, OldV], NewV]
+
+    def __getitem__(self, key: K) -> NewV:
+        return self.value_map(key, self.collection[key])
+
+    def __iter__(self) -> Iterator[K]:
+        return iter(self.collection)
 
     def __len__(self) -> int:
         return len(self.collection)

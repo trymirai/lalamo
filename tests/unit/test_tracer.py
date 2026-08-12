@@ -92,6 +92,7 @@ def _language_model() -> LanguageModel:
             assistant_role_name="assistant",
             eos_token=None,
             bos_token=None,
+            end_of_thinking_tag=None,
         ),
         decoder_config=DecoderConfig(
             embedding_config=TiedEmbeddingConfig(
@@ -410,6 +411,7 @@ def test_record_tokenization_trace_rejects_empty_encoding() -> None:
         assistant_role_name="assistant",
         eos_token=None,
         bos_token=None,
+        end_of_thinking_tag=None,
     ).init(Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]")))
 
     with pytest.raises(ValueError, match="at least one token"):

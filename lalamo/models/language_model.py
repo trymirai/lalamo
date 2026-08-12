@@ -1,6 +1,6 @@
 from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import NamedTuple
+from dataclasses import dataclass, fields, replace
+from typing import NamedTuple, Self
 
 import equinox as eqx
 import jax
@@ -82,6 +82,25 @@ class GenerationConfig:
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
     suffix_repetition_length: int | None = None
+
+    def override_with(self, other: Self) -> Self:
+        default_config = GenerationConfig()
+        merged_fields = {"stop_token_ids", "banned_tokens"}
+        overrides = {}
+        for config_field in fields(GenerationConfig):
+            field_name = config_field.name
+            ours = getattr(self, field_name)
+            theirs = getattr(other, field_name)
+            default = getattr(default_config, field_name)
+
+            if theirs == default:
+                continue
+            if field_name in merged_fields and ours != default:
+                overrides[field_name] = tuple(sorted({*ours, *theirs}))
+            else:
+                overrides[field_name] = theirs
+
+        return replace(self, **overrides)
 
     def default_policy(self) -> SamplingPolicy:
         return SamplingPolicy.init(
@@ -214,7 +233,6 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             self.sharding_config.make_sharding((batch_axis, None)),
         )
         logits_sharding = self.sharding_config.make_sharding((batch_axis, None))
-        batch_indices = jax.device_put(jnp.arange(batch_size), batch_vector_sharding)
         chunk_keychains = jax.tree.map(lambda *nodes: jnp.stack(nodes), *keychain.split(num_chunks))
 
         def apply_chunk(
@@ -230,13 +248,12 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 return_updated_state=True,
                 lengths_without_padding=chunk.sequence_ends,
                 forward_pass_config=forward_pass_config,
+                return_suffix_tokens=1,
                 keychain=current_chunk_keychain,
             )
             assert decoder_result.updated_state is not None
 
-            chunk_logits = decoder_result.logits.at[batch_indices, chunk.sequence_ends - 1, :].get(
-                out_sharding=logits_sharding,
-            )
+            chunk_logits = jax.device_put(decoder_result.logits[:, 0, :], logits_sharding)
             return (
                 decoder_result.updated_state,
                 jnp.where(chunk.is_last_token_inside[:, None], chunk_logits, previous_logits),
@@ -514,8 +531,14 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         last_token_logits = prefill_results.last_token_logits[0]
         last_token_index = prefill_results.last_token_indices[0]
         state = prefill_results.state
-        sampling_keys = sampling_keychain.rolling_broadcast((max_output_length,)).vmapped_keys
-        decoding_keys = decoding_keychain.rolling_broadcast((max_output_length,)).vmapped_keys
+        sampling_keys = sampling_keychain.rolling_broadcast(
+            (max_output_length, 1),
+            mode=KeychainBroadcastMode.PREFIX,
+        ).vmapped_keys[:, 0]
+        decoding_keys = decoding_keychain.rolling_broadcast(
+            (max_output_length, 1),
+            mode=KeychainBroadcastMode.PREFIX,
+        ).vmapped_keys
         for sampling_key, decoding_key in zip(sampling_keys, decoding_keys, strict=True):
             processed_logits = sampling_policy.process_logits(last_token_logits.astype(jnp.float32))
             next_token_id = jax.random.categorical(sampling_key, processed_logits)

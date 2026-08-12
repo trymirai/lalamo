@@ -271,7 +271,6 @@ class MLXMatrix(EmbeddingMatrix[MLXSpec]):
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> "MLXMatrix": ...
@@ -386,7 +385,6 @@ class MLXMatrixForTraining(MLXMatrix):
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> MLXMatrix:
@@ -400,17 +398,14 @@ class MLXMatrixForTraining(MLXMatrix):
         packed_weights = load_as(
             self._packed_quantized_weights,
             exported_data.arrays[prefix / "weights"],
-            allow_dtype_cast=False,
         )
         scales = load_as(
             self.scales,
             exported_data.arrays[prefix / "scales"],
-            allow_dtype_cast=allow_dtype_cast,
         )
         biases = load_as(
             self.biases,
             exported_data.arrays[prefix / "biases"],
-            allow_dtype_cast=allow_dtype_cast,
         )
         return self.spec.from_packed_parameters(
             packed_weights=packed_weights,
@@ -465,7 +460,6 @@ class MLXMatrixForInference(MLXMatrix):
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> MLXMatrix:
@@ -479,17 +473,14 @@ class MLXMatrixForInference(MLXMatrix):
         packed_weights = load_as(
             self.packed_weights,
             exported_data.arrays[prefix / "weights"],
-            allow_dtype_cast=False,
         )
         scales = load_as(
             self.scales,
             exported_data.arrays[prefix / "scales"],
-            allow_dtype_cast=allow_dtype_cast,
         )
         biases = load_as(
             self.biases,
             exported_data.arrays[prefix / "biases"],
-            allow_dtype_cast=allow_dtype_cast,
         )
         return MLXMatrixForInference(
             spec=self.spec,

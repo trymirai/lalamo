@@ -23,6 +23,7 @@ HUGGINGFACE_MODELS = [
         config_type=HFSmolLM3Config,
         configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        end_of_thinking_tag="\n</think>",
     ),
     LanguageModelSpec(
         vendor="HuggingFace",
@@ -36,6 +37,7 @@ HUGGINGFACE_MODELS = [
             chat_template=FileSpec("chat_template.jinja", "HuggingFaceTB/SmolLM3-3B"),
         ),
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        end_of_thinking_tag="\n</think>",
     ),
     LanguageModelSpec(
         vendor="HuggingFace",
@@ -49,5 +51,6 @@ HUGGINGFACE_MODELS = [
             chat_template=FileSpec("chat_template.jinja", "HuggingFaceTB/SmolLM3-3B"),
         ),
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        end_of_thinking_tag="\n</think>",
     ),
 ]

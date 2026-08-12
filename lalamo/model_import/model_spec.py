@@ -37,6 +37,7 @@ class ConfigMap:
     tokenizer: FileSpec | None = field(default=FileSpec("tokenizer.json"))
     tokenizer_config: FileSpec = field(default=FileSpec("tokenizer_config.json"))
     generation_config: FileSpec | GenerationConfig | None = field(default=FileSpec("generation_config.json"))
+    generation_params_overrides: GenerationConfig | None = None
     chat_template: FileSpec | JSONFieldSpec | str | None = None
     system_prompt: FileSpec | str | None = None
 
@@ -69,6 +70,7 @@ class ModelSpec[ForeignConfigBaseT: ForeignConfig](RegistryABC):
 class LanguageModelSpec(ModelSpec[ForeignLMConfig]):
     config_type: type[ForeignLMConfig]
     output_parser_regex: str | None = None
+    end_of_thinking_tag: str | None = None
     system_role_name: str = "system"
     user_role_name: str = "user"
     assistant_role_name: str = "assistant"

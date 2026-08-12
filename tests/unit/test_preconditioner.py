@@ -63,6 +63,7 @@ def _chat_codec_config() -> ChatCodecConfig:
         assistant_role_name="assistant",
         eos_token=None,
         bos_token=None,
+        end_of_thinking_tag=None,
     )
 
 

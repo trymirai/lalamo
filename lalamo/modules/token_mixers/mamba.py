@@ -111,7 +111,6 @@ class Mamba2Config(TokenMixerConfig):
     num_groups: int
     head_dim: int
     state_dim: int
-    expansion_factor: int
 
     has_in_biases: bool
     has_out_biases: bool
@@ -147,7 +146,7 @@ class Mamba2Config(TokenMixerConfig):
             has_biases=self.has_out_biases,
         )
 
-        conv = self.conv_config.init(initializer, self.conv_dim, self.kernel_size, dtype=jnp.float32)
+        conv = self.conv_config.init(initializer, self.conv_dim, self.kernel_size)
 
         skip_connection_weight = initializer.normal(1.0, (self.num_heads,), dtype=jnp.float32)
 
@@ -222,7 +221,10 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             forward_pass_config=forward_pass_config.matmul_config,
         )
         conv_out, new_conv_state = self.conv.step(conv_in, state.conv_state, precision=ConvPrecision.MATCH_WEIGHTS)
-        conv_activated = self.config.activation(conv_out)
+        ssm_dtype = state.ssm_state.dtype
+        conv_activated = self.config.activation(conv_out).astype(ssm_dtype)
+        gate = gate.astype(ssm_dtype)
+        dt_log = dt_log.astype(ssm_dtype)
 
         values_flat, input_proj_flat, output_proj_flat = jnp.split(
             conv_activated,
@@ -234,9 +236,9 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
 
         y, new_ssm_state = self._step(values, keys, queries, dt_log, state.ssm_state)
 
-        y = y + self.skip_connection_weight[:, None] * values
+        y = y + self.skip_connection_weight.astype(y.dtype)[:, None] * values
         y = rearrange(y, "heads head_dim -> (heads head_dim)")
-        gated = y * jax.nn.silu(gate + self.gate_bias)
+        gated = y * jax.nn.silu(gate + self.gate_bias.astype(gate.dtype))
         (output,) = self.out_projection(
             gated,
             keychain=keychain,
@@ -592,6 +594,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
+        reuse_cache: bool = False,
         precision: DTypeLike = jnp.float32,
         *,
         keychain: Keychain,
@@ -600,6 +603,8 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             raise ValueError("Positional embeddings are not supported for Mamba2.")
         if attention_parent_indices is not None:
             raise ValueError("Attention parent indices are not supported for Mamba2.")
+        if reuse_cache:
+            raise ValueError("KV cache sharing is not supported for Mamba2.")
 
         if state is None:
             state = SSMStateLayer.init(
@@ -607,6 +612,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
                 self.conv_dim,
                 (self.config.num_heads, self.config.head_dim, self.config.state_dim),
             )
+        ssm_dtype = state.ssm_state.dtype
 
         seq_len, _ = inputs.shape
 
@@ -629,7 +635,9 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             return_updated_state=return_updated_state,
             precision=ConvPrecision.MATCH_WEIGHTS,
         )
-        conv_activated = self.config.activation(conv_output)
+        conv_activated = self.config.activation(conv_output).astype(ssm_dtype)
+        gate_values = gate_values.astype(ssm_dtype)
+        time_delta_log = time_delta_log.astype(ssm_dtype)
 
         x_channels, input_proj_channels, output_proj_channels = jnp.split(
             conv_activated,
@@ -667,7 +675,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             heads=self.config.num_heads,
         )
         gate_bias_reshaped = rearrange(
-            self.gate_bias,
+            self.gate_bias.astype(ssm_dtype),
             "(heads head_channels) -> heads head_channels",
             heads=self.config.num_heads,
         )
@@ -681,7 +689,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             state.ssm_state,
             forward_pass_config,
             length_without_padding,
-            d=self.skip_connection_weight,
+            d=self.skip_connection_weight.astype(ssm_dtype),
             z=gate_values_reshaped,
             z_bias=gate_bias_reshaped,
         )

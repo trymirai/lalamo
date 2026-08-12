@@ -33,10 +33,6 @@ class ForeignConfig[ConfigT: ModelConfig](RegistryABC):
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
 
-    @property
-    @abstractmethod
-    def default_dtype(self) -> DTypeLike: ...
-
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
         json_path = Path(json_path)
@@ -57,7 +53,7 @@ class ForeignConfig[ConfigT: ModelConfig](RegistryABC):
         self,
         config: ConfigT,
         tokenizer: Tokenizer,
-        dtype: DTypeLike,
+        dtype: DTypeLike | None,
         weights_dict: Mapping[str, Array],
         *,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,

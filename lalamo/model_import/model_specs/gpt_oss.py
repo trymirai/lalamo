@@ -17,5 +17,6 @@ GPT_OSS_MODELS = [
             chat_template=FileSpec("chat_template.jinja"),
         ),
         output_parser_regex=GPT_OSS_OUTPUT_PARSER_REGEX,
+        end_of_thinking_tag="<|end|><|start|>assistant<|channel|>final<|message|>",
     ),
 ]
