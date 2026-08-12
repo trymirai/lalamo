@@ -53,10 +53,9 @@ def test_load_as_loads_matching_array_tree() -> None:
     [
         ({"weight": jnp.zeros((2, 3))}, {"weight": jnp.ones((2, 3)), "bias": jnp.ones((2,))}, TypeError, "pytree"),
         (jnp.zeros((2, 3), dtype=jnp.float32), jnp.ones((2, 4), dtype=jnp.float32), ValueError, "shape"),
-        (jnp.zeros((2, 3), dtype=jnp.float32), jnp.ones((2, 3), dtype=jnp.float16), ValueError, "dtype"),
         ({"name": "linear"}, {"name": 1}, TypeError, "type"),
         (_matrix(shape=(2, 3)), _matrix(shape=(2, 4), fill_value=1), ValueError, "shape"),
-        (_matrix(dtype=jnp.float32), _matrix(dtype=jnp.float16, fill_value=1), ValueError, "dtype"),
+        (_matrix(dtype=jnp.float32), _matrix(dtype=jnp.bfloat16, fill_value=1), ValueError, "dtype"),
     ],
 )
 def test_load_as_rejects_mismatches(template: PyTree, value: PyTree, error: type[Exception], match: str) -> None:
@@ -64,11 +63,23 @@ def test_load_as_rejects_mismatches(template: PyTree, value: PyTree, error: type
         load_as(template, value)
 
 
-def test_load_as_casts_array_dtype_when_allowed() -> None:
-    result = load_as(jnp.zeros((2, 3), dtype=jnp.float32), jnp.ones((2, 3), dtype=jnp.float16), allow_dtype_cast=True)
+def test_load_as_casts_strong_template_array_dtype_under_strict_promotion() -> None:
+    template = jnp.zeros((2, 3), dtype=jnp.float32)
+    value = jnp.ones((2, 3), dtype=jnp.bfloat16)
+
+    with jax.numpy_dtype_promotion("strict"):
+        result = load_as(template, value)
 
     assert result.dtype == jnp.float32
-    assert jnp.all(result == 1)
+
+
+def test_load_as_uses_value_dtype_for_weak_template_arrays() -> None:
+    template = dummy_array((2, 3), None, make_sharding((None, None)))
+    value = jnp.ones((2, 3), dtype=jnp.bfloat16)
+
+    result = load_as(template, value)
+
+    assert result.dtype == jnp.bfloat16
 
 
 def test_load_as_treats_weight_matrices_as_leaf_nodes() -> None:
@@ -111,17 +122,6 @@ def test_load_as_uses_template_replicated_sharding_without_host_roundtrip(fake_m
     assert result.sharding != source_sharding
     assert jnp.array_equal(result, value)
     del fake_mesh
-
-
-def test_load_as_casts_weight_matrix_dtype_when_allowed() -> None:
-    template = _matrix(dtype=jnp.float32)
-    value = _matrix(dtype=jnp.float16, fill_value=1)
-
-    result = load_as(template, value, allow_dtype_cast=True)
-
-    assert isinstance(result, FullPrecisionMatrix)
-    assert result.dtype == jnp.float32
-    assert jnp.all(result.weights == 1)
 
 
 def test_map_nodes_of_type_updates_only_selected_nodes() -> None:

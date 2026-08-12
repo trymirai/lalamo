@@ -46,7 +46,6 @@ def _mamba() -> Mamba2:
         num_groups=NUM_GROUPS,
         head_dim=HEAD_DIM,
         state_dim=STATE_DIM,
-        expansion_factor=1,
         has_in_biases=False,
         has_out_biases=False,
     )

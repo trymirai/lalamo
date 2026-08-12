@@ -7,8 +7,7 @@ from pathlib import Path
 from typing import Any, Self
 
 import numpy as np
-from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike
+from jaxtyping import Array
 
 from lalamo.model import Model
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
@@ -160,7 +159,6 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
             _tts_audio_decoder,
             tts_model,
             (loaded_audio_decoder,),
-            allow_dtype_cast=True,
         )
 
     @classmethod
@@ -195,7 +193,3 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
                 DEFAULT_AUDIO_DECODER_RESBLOCK_DILATIONS,
             ),
         )
-
-    @property
-    def default_dtype(self) -> DTypeLike:
-        return jnp.float32

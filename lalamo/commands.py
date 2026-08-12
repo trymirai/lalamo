@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import requests
 import thefuzz.fuzz
 import thefuzz.process
+from huggingface_hub import snapshot_download
 
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import (
@@ -20,8 +21,12 @@ from lalamo.model_import.common import (
     StatusEvent,
     import_model,
 )
+from lalamo.model_import.loaders.dflash_loader import load_hf_dflash_draft_model
+from lalamo.model_import.loaders.weaver_loader import load_weaver
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
+from lalamo.models import SpeculatorModel, SpeculatorModelConfig
 from lalamo.models.chat_codec import Message
+from lalamo.modules import DFlashSpeculator, DFlashSpeculatorConfig
 from lalamo.safetensors import safe_write
 from lalamo.trace_comparator import TraceComparison, compare_trace_files
 from lalamo.tracer import (
@@ -180,10 +185,11 @@ def convert(
         ConversionCallbacks,
     ] = ConversionCallbacks,
 ) -> None:
+    effective_dtype = dtype or DType.BFLOAT16
     callbacks = callbacks_type(
         model_spec,
         output_dir,
-        dtype,
+        effective_dtype,
         context_length,
     )
 
@@ -203,14 +209,10 @@ def convert(
             case FinishedInitializingModelEvent():
                 callbacks.finished_initializing_model()
 
-    import_dtype = None
-    if dtype is not None:
-        import_dtype = jnp.dtype(dtype.value)
-
     imported_model = import_model(
         model_spec,
         sharding_config=ShardingConfig.replicated(),
-        dtype=import_dtype,
+        dtype=jnp.dtype(effective_dtype.value),
         context_length=context_length,
         progress_callback=progress_callback,
     )
@@ -262,3 +264,47 @@ def trace_tokenization(
 
 def compare_traces(reference_path: Path, result_path: Path) -> TraceComparison:
     return compare_trace_files(reference_path, result_path)
+
+
+def convert_speculator(
+    dflash_repo_id: str,
+    output_dir: Path,
+    weaver_repo_id: str | None = None,
+    dtype: DType | None = None,
+    context_length: int | None = None,
+) -> None:
+    sharding_config = ShardingConfig.replicated()
+    effective_dtype = jnp.dtype((dtype or DType.BFLOAT16).value)
+
+    dflash_path = Path(snapshot_download(dflash_repo_id, allow_patterns=["config.json", "*.safetensors"]))
+    draft_model = load_hf_dflash_draft_model(
+        dflash_path,
+        sharding_config=sharding_config,
+        dtype=effective_dtype,
+        context_length=context_length,
+    )
+
+    weaver = None
+    if weaver_repo_id is not None:
+        weaver_dir = Path(snapshot_download(weaver_repo_id, allow_patterns=["*.pth"]))
+        checkpoints = sorted(weaver_dir.rglob("*.pth"))
+        if len(checkpoints) != 1:
+            found = ", ".join(str(checkpoint.relative_to(weaver_dir)) for checkpoint in checkpoints) or "none"
+            raise ValueError(f"Expected exactly one .pth checkpoint in '{weaver_repo_id}', found: {found}.")
+        weaver = load_weaver(checkpoints[0], sharding_config, dtype=effective_dtype)
+
+    speculator = DFlashSpeculator(
+        config=DFlashSpeculatorConfig(
+            draft_config=draft_model.config,
+            weaver_config=weaver.config if weaver is not None else None,
+        ),
+        sharding_config=sharding_config,
+        draft_model=draft_model,
+        weaver=weaver,
+    )
+    model = SpeculatorModel(
+        config=SpeculatorModelConfig(speculator_config=speculator.config),
+        sharding_config=sharding_config,
+        speculator=speculator,
+    )
+    model.save(output_dir)

@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import ClassVar, Generic, Literal, Self, TypeVar, cast, overload
 
 import equinox as eqx
+import jax.tree_util as jtu
 from cattrs import GenConverter
 from jax import ShapeDtypeStruct
 from jax.lax import DotAlgorithmPreset, dot_general
@@ -212,7 +213,6 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> "WeightMatrix":
@@ -222,7 +222,7 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
         loaded_spec = WeightMatrixSpec.from_json(saved_spec)
         if loaded_spec != self.spec:
             raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
-        return super().load_exported(exported_data, allow_dtype_cast=allow_dtype_cast, prefix=prefix)
+        return super().load_exported(exported_data, prefix=prefix)
 
 
 class EmbeddingMatrix(WeightMatrix[WeightMatrixSpecT_co]):
@@ -451,7 +451,12 @@ class ShapeDtypeSpec(WeightMatrixSpec):
         *mixture_dims, _output_dim, _input_dim = weights.shape
         logical_axes = Layout.OUTPUT_INPUT.weight_partition(len(mixture_dims), is_sharded=is_sharded)
         sharding = sharding_config.resolve_sharding(logical_axes)
-        dummy_weights = dummy_array(weights.shape, weights.dtype, sharding)
+        dummy_weights = dummy_array(
+            weights.shape,
+            weights.dtype,
+            sharding,
+            weak_type=weights.weak_type,
+        )
         return ShapeDtypeMatrix(
             spec=self,
             sharding_config=sharding_config,
@@ -503,12 +508,12 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
             self.dummy_weights.shape,
             self.dummy_weights.dtype,
             self.sharding_config.resolve_sharding((None,) * len(self.dummy_weights.shape)),
+            weak_type=self.dummy_weights.weak_type,
         )
 
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> WeightMatrix:
@@ -522,7 +527,13 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
             sharding_config=self.sharding_config,
             is_sharded=self.is_sharded,
         )
-        result = dummy_layer.load_exported(exported_data, allow_dtype_cast=allow_dtype_cast, prefix=prefix)
+        if self.dummy_weights.weak_type:
+
+            def keep_weak(leaf: ShapeDtypeStruct) -> Array:
+                return dummy_array(leaf.shape, leaf.dtype, sharding_of(leaf), weak_type=True)
+
+            dummy_layer = cast("WeightMatrix", jtu.tree_map(keep_weak, dummy_layer))
+        result = dummy_layer.load_exported(exported_data, prefix=prefix)
         return cast("Self", result)
 
     def to_full_precision(self) -> "FullPrecisionMatrix":

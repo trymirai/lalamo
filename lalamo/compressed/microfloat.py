@@ -404,7 +404,6 @@ class MicrofloatMatrix(EmbeddingMatrix[MicrofloatSpec]):
     def _load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         implementation: CompressionImplementation,
         prefix: ParameterPath | None = None,
@@ -417,13 +416,11 @@ class MicrofloatMatrix(EmbeddingMatrix[MicrofloatSpec]):
         packed_weights = load_as(
             self._packed_weights,
             exported_data.arrays[prefix / "weights"],
-            allow_dtype_cast=False,
         )
-        packed_scales = load_as(self._packed_scales, exported_data.arrays[prefix / "scales"], allow_dtype_cast=False)
+        packed_scales = load_as(self._packed_scales, exported_data.arrays[prefix / "scales"])
         global_scale = load_as(
             self.global_scale,
             exported_data.arrays[prefix / "global_scale"],
-            allow_dtype_cast=allow_dtype_cast,
         )
         if implementation == CompressionImplementation.INFERENCE:
             return MicrofloatMatrixForInference(
@@ -460,7 +457,6 @@ class MicrofloatMatrix(EmbeddingMatrix[MicrofloatSpec]):
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> "MicrofloatMatrix": ...
@@ -559,13 +555,11 @@ class MicrofloatMatrixForTraining(MicrofloatMatrix):
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> MicrofloatMatrix:
         return self._load_exported(
             exported_data,
-            allow_dtype_cast=allow_dtype_cast,
             implementation=CompressionImplementation.TRAINING,
             prefix=prefix,
         )
@@ -654,13 +648,11 @@ class MicrofloatMatrixForInference(MicrofloatMatrix):
     def load_exported(
         self,
         exported_data: ExportResults,
-        allow_dtype_cast: bool = False,
         *,
         prefix: ParameterPath | None = None,
     ) -> MicrofloatMatrix:
         return self._load_exported(
             exported_data,
-            allow_dtype_cast=allow_dtype_cast,
             implementation=CompressionImplementation.INFERENCE,
             prefix=prefix,
         )

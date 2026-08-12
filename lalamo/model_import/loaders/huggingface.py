@@ -25,7 +25,7 @@ from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at
-from lalamo.weight_matrix import CompressionImplementation, Layout, WeightMatrix
+from lalamo.weight_matrix import CompressionImplementation, EmbeddingMatrix, Layout, WeightMatrix
 
 from .common import load_full_precision
 from .utils import decode_mxfp4, deinterleave_pairwise_columns
@@ -46,6 +46,12 @@ def _dense_mlp_projections(module: DenseMLP) -> tuple[Linear, Linear]:
 
 def _first_path(weights_dict: Mapping[str, Array], paths: Sequence[ParameterPath]) -> ParameterPath | None:
     return next((path for path in paths if path in weights_dict), None)
+
+
+def _has_prefix(weights_dict: Mapping[str, Array], path: ParameterPath) -> bool:
+    if not path:
+        return bool(weights_dict)
+    return any(key.startswith(f"{path}.") for key in weights_dict)
 
 
 def _projection_path(weights_dict: Mapping[str, Array], path: ParameterPath, names: Sequence[str]) -> ParameterPath:
@@ -84,9 +90,10 @@ def unpack_int32(packed_weights: Array, bits: int) -> Array:
     assert packed_weights.dtype in (jnp.int32, jnp.uint32)
     assert 32 % bits == 0
 
-    shifts = jnp.arange(0, 32, bits)
-    mask = (2**bits) - 1
-    unpacked = jnp.bitwise_and(jnp.right_shift(packed_weights[:, :, None], shifts[None, None, :]), mask)
+    shifts = jnp.arange(0, 32, bits, dtype=jnp.uint32)
+    mask = jnp.asarray((2**bits) - 1, dtype=jnp.uint32)
+    packed_unsigned = packed_weights.astype(jnp.uint32)
+    unpacked = jnp.bitwise_and(jnp.right_shift(packed_unsigned[:, :, None], shifts[None, None, :]), mask)
     return rearrange(
         unpacked,
         "rows packed_groups packed_values -> rows (packed_groups packed_values)",
@@ -393,7 +400,6 @@ def load_mlp(
             _dense_mlp_projections,
             dense_module,
             (up_projection, down_projection),
-            allow_dtype_cast=True,
         )
 
     if isinstance(module, MixtureOfExperts):
@@ -425,6 +431,9 @@ def load_moe(
     has_down_biases = module.experts.down_projection.has_biases
 
     experts_path = path / "experts"
+    gate_up_path = experts_path / "gate_up_proj"
+    down_path = experts_path / "down_proj"
+    batched_gate_up_path = _first_path(weights_dict, (gate_up_path, gate_up_path / "weight"))
 
     # GPT-OSS uses fused MXFP4 expert weights; detect and decode those.
     if (experts_path / "gate_up_proj_blocks") in weights_dict:
@@ -484,36 +493,12 @@ def load_moe(
             lambda m: (m.up_projection, m.down_projection),
             module.experts,
             (up_projection, down_projection),
-            allow_dtype_cast=True,
         )
-    elif (
-        (experts_path / "gate_up_proj.weight") in weights_dict
-        or (experts_path / "gate_up_proj" / "weight") in weights_dict
-        or any(str(k).startswith(str(experts_path) + ".gate_up_proj") for k in weights_dict)
-    ):
+    elif batched_gate_up_path is not None:
         # MLX/Qwen2Moe batched expert format: gate_up_proj fused, shape (num_experts, hidden*2, model_dim)
-        # Check for both flat and nested key formats
-        gate_up_path = experts_path / "gate_up_proj"
-        down_path = experts_path / "down_proj"
-        if (gate_up_path / "weight") in weights_dict:
-            gate_up_weights = weights_dict[gate_up_path / "weight"]
-            down_weights = weights_dict[down_path / "weight"]
-        elif (experts_path / "gate_up_proj.weight") in weights_dict:
-            gate_up_weights = weights_dict[experts_path / "gate_up_proj.weight"]
-            down_weights = weights_dict[experts_path / "down_proj.weight"]
-        else:
-            # Find the actual key format
-            gate_up_key = next(
-                (k for k in weights_dict if str(k).startswith(str(gate_up_path))),
-                None,
-            )
-            if gate_up_key is None:
-                raise KeyError(f"Could not find gate_up_proj weights under {gate_up_path}")
-            # Infer the weight key suffix
-            suffix = str(gate_up_key)[len(str(gate_up_path)) :]
-            gate_up_weights = weights_dict[gate_up_key]
-            down_key = str(down_path) + suffix
-            down_weights = weights_dict[ParameterPath(down_key)]
+        suffix = batched_gate_up_path.removeprefix(gate_up_path)
+        gate_up_weights = weights_dict[batched_gate_up_path]
+        down_weights = weights_dict[ParameterPath(f"{down_path}{suffix}")]
 
         # gate_up_proj is [num_experts, intermediate_size*2, hidden_size] - split into gate and up
         intermediate_size_2 = gate_up_weights.shape[1]
@@ -567,7 +552,6 @@ def load_moe(
             lambda m: (m.up_projection, m.down_projection),
             module.experts,
             (up_projection, down_projection),
-            allow_dtype_cast=True,
         )
     else:
         # Collect expert weight paths: routed experts first, then shared experts.
@@ -636,7 +620,6 @@ def load_moe(
             lambda m: (m.up_projection, m.down_projection),
             module.experts,
             (up_projection, down_projection),
-            allow_dtype_cast=True,
         )
 
     gate = None
@@ -654,7 +637,6 @@ def load_moe(
         lambda m: (m.router, m.experts, m.gate),
         module,
         (router, experts, gate),
-        allow_dtype_cast=True,
     )
 
 
@@ -663,8 +645,9 @@ def load_rmsnorm(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Normalization:
-    scales = weights_dict[path / "weight"].astype(jnp.float32)
-    return load_as_at(lambda m: (m.scales,), module, (scales,), allow_dtype_cast=True)
+    assert module.config.has_scale and module.scales is not None, "cannot load scales into a weightless normalization"
+    scales = weights_dict[path / "weight"].astype(module.scales.dtype)
+    return load_as_at(lambda m: (m.scales,), module, (scales,))
 
 
 def _load_optional_rmsnorm(
@@ -672,8 +655,8 @@ def _load_optional_rmsnorm(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Normalization | None:
-    if module is None:
-        return None
+    if module is None or not module.config.has_scale:
+        return module
     return load_rmsnorm(module, weights_dict, path)
 
 
@@ -683,8 +666,8 @@ def _load_named_rmsnorm(
     path: ParameterPath,
     names: Sequence[str],
 ) -> Normalization | None:
-    if module is None:
-        return None
+    if module is None or not module.config.has_scale:
+        return module
     scale_path = _first_path(weights_dict, tuple(path / name / "weight" for name in names))
     if scale_path is None:
         raise ValueError(f"Cannot find normalization under {path}; tried {', '.join(names)}")
@@ -708,27 +691,24 @@ def _extract_gate_weights(
     path: ParameterPath,
     num_heads: int,
     head_dim: int,
-    *,
-    interleaved: bool,
 ) -> tuple[dict[str, Array], dict[str, Array]]:
-    q_proj_prefix = str(path / "q_proj") + "."
+    q_proj_path = path / "q_proj"
+    q_proj_prefix = f"{q_proj_path}."
+    kv_proj_prefixes = (f"{path / 'k_proj'}.", f"{path / 'v_proj'}.")
     gate_path = path / "gate_projection"
-    q_dim = num_heads * head_dim
-    q_overrides: dict[str, Array] = {}
+    q_weights: dict[str, Array] = {}
     gate_weights: dict[str, Array] = {}
+
     for key in weights_dict:
-        str_key = str(key)
-        if not str_key.startswith(q_proj_prefix):
-            continue
-        suffix = str_key[len(q_proj_prefix) :]
-        tensor = weights_dict[key]
-        if interleaved:
+        if key.startswith(q_proj_prefix):
+            suffix = key[len(q_proj_prefix) :]
+            tensor = weights_dict[key]
             q_part, gate_part = _split_q_gate_tensor(tensor, num_heads, head_dim)
-        else:
-            q_part, gate_part = tensor[:q_dim], tensor[q_dim:]
-        q_overrides[ParameterPath(str_key)] = q_part
-        gate_weights[gate_path / suffix] = gate_part
-    return q_overrides, gate_weights
+            q_weights[key] = q_part
+            gate_weights[gate_path / suffix] = gate_part
+        elif key.startswith(kv_proj_prefixes):
+            q_weights[key] = weights_dict[key]
+    return q_weights, gate_weights
 
 
 def load_attention(
@@ -737,23 +717,40 @@ def load_attention(
     path: ParameterPath,
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-    reorder_q_proj_gate: bool = True,
 ) -> Attention:
-    if module.gate_projection is not None:
+    qkv_sublayers = ["q_proj"] if module.config.is_kv_sharing else ["q_proj", "k_proj", "v_proj"]
+    has_separate_gate = (path / "gate_proj" / "weight") in weights_dict or (
+        path / "gate_proj" / "qweight"
+    ) in weights_dict
+    if module.gate_projection is not None and has_separate_gate:
+        qkv_projection = load_linear(
+            module.qkv_projection,
+            weights_dict,
+            path,
+            sublayers_to_fuse=qkv_sublayers,
+            implementation=implementation,
+        )
+        gate_projection = load_linear(
+            module.gate_projection,
+            weights_dict,
+            path / "gate_proj",
+            implementation=implementation,
+        )
+    elif module.gate_projection is not None:
         num_heads, head_dim = module.config.num_heads, module.config.head_dim
-        q_overrides, gate_weights = _extract_gate_weights(
+
+        qkv_weights, gate_weights = _extract_gate_weights(
             weights_dict,
             path,
             num_heads,
             head_dim,
-            interleaved=reorder_q_proj_gate,
         )
 
         qkv_projection = load_linear(
             module.qkv_projection,
-            {**weights_dict, **q_overrides},
+            qkv_weights,
             path,
-            sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
+            sublayers_to_fuse=qkv_sublayers,
             implementation=implementation,
         )
 
@@ -768,7 +765,7 @@ def load_attention(
             module.qkv_projection,
             weights_dict,
             path,
-            sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
+            sublayers_to_fuse=qkv_sublayers,
             implementation=implementation,
         )
         gate_projection = None
@@ -795,7 +792,6 @@ def load_attention(
         ),
         module,
         (qkv_projection, gate_projection, out_projection, query_norm, key_norm, sinks),
-        allow_dtype_cast=True,
     )
 
 
@@ -805,6 +801,10 @@ def _load_conv(
     path: ParameterPath,
     permute_conv: bool,
 ) -> SeparableCausalConv:
+    parameter_dtype = conv_module.weights.dtype
+    if conv_module.weights.weak_type:
+        parameter_dtype = jnp.float32
+
     weight_path = _first_path(
         weights_dict,
         (path / "conv1d" / "weight", path / "conv_weight", path / "conv.weight"),
@@ -821,6 +821,7 @@ def _load_conv(
             conv_weight = raw.squeeze(axis_to_squeeze)
         else:
             conv_weight = raw
+        conv_weight = conv_weight.astype(parameter_dtype)
     else:
         conv_weight = conv_module.weights
 
@@ -830,7 +831,7 @@ def _load_conv(
     )
 
     if bias_path is not None and conv_module.biases is not None:
-        conv_bias = weights_dict[bias_path]
+        conv_bias = weights_dict[bias_path].astype(parameter_dtype)
     else:
         conv_bias = conv_module.biases
 
@@ -838,7 +839,6 @@ def _load_conv(
         lambda m: (m.weights, m.biases),
         conv_module,
         (conv_weight, conv_bias),
-        allow_dtype_cast=True,
     )
 
 
@@ -854,8 +854,8 @@ def load_mamba2(
     out_projection = load_linear(module.out_projection, weights_dict, path / "out_proj", implementation=implementation)
     conv = _load_conv(module.conv, weights_dict, path, permute_conv)
 
-    skip_connection_weight = weights_dict.get(path / "D", module.skip_connection_weight)
-    gate_bias = weights_dict.get(path / "z_bias", module.gate_bias)
+    skip_connection_weight = weights_dict.get(path / "D", module.skip_connection_weight).astype(jnp.float32)
+    gate_bias = weights_dict.get(path / "z_bias", module.gate_bias).astype(jnp.float32)
 
     return load_as_at(
         lambda m: (
@@ -867,7 +867,6 @@ def load_mamba2(
         ),
         module,
         (in_projection, out_projection, conv, skip_connection_weight, gate_bias),
-        allow_dtype_cast=True,
     )
 
 
@@ -887,7 +886,6 @@ def load_short_conv(
         lambda m: (m.in_projection, m.out_projection, m.conv),
         module,
         (in_projection, out_projection, conv),
-        allow_dtype_cast=True,
     )
 
 
@@ -988,12 +986,12 @@ def load_delta_net_attention(
                 sharding_config=module.in_proj.weights.sharding_config,
             )
         in_proj = _update_linear(module.in_proj, new_weights, None)
-    conv = _load_conv(module.conv, weights_dict, path, permute_conv).astype(jnp.float32)
+    conv = _load_conv(module.conv, weights_dict, path, permute_conv)
     out_proj = load_linear(module.out_proj, weights_dict, path / "out_proj", implementation=implementation)
     norm = load_rmsnorm(module.norm, weights_dict, path / "norm")
 
-    dt_bias = weights_dict.get(path / "dt_bias", module.dt_bias).astype(jnp.float32)
-    a_log = weights_dict.get(path / "A_log", module.a_log).astype(jnp.float32)
+    dt_bias = weights_dict[path / "dt_bias"].astype(module.dt_bias)
+    a_log = weights_dict[path / "A_log"].astype(module.a_log)
 
     return load_as_at(
         lambda m: (
@@ -1006,7 +1004,6 @@ def load_delta_net_attention(
         ),
         module,
         (in_proj, conv, out_proj, norm, dt_bias, a_log),
-        allow_dtype_cast=True,
     )
 
 
@@ -1025,7 +1022,6 @@ def load_transformer_layer(
     permute_conv: bool,
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-    reorder_q_proj_gate: bool = True,
 ) -> TransformerLayer:
     pre_attention_norm = _load_optional_rmsnorm(module.pre_mixer_norm, weights_dict, mixer_path / pre_mixer_norm_key)
     # Load mixer (attention or mamba)
@@ -1035,7 +1031,6 @@ def load_transformer_layer(
             weights_dict,
             mixer_path / mixer_key,
             implementation=implementation,
-            reorder_q_proj_gate=reorder_q_proj_gate,
         )
     elif isinstance(module.mixer, DeltaNet):
         mixer = load_delta_net_attention(
@@ -1104,7 +1099,6 @@ def load_transformer_layer(
             mlp,
             post_mlp_norm,
         ),
-        allow_dtype_cast=True,
     )
 
 
@@ -1127,14 +1121,14 @@ def _load_weight_matrix(
     )
 
 
-def _load_input_embedding_matrix(
-    matrix: WeightMatrix,
+def load_input_embedding_matrix(
+    matrix: EmbeddingMatrix,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-) -> WeightMatrix:
-    return _load_matrix(
+) -> EmbeddingMatrix:
+    loaded = _load_matrix(
         matrix,
         weights_dict,
         path,
@@ -1144,6 +1138,8 @@ def _load_input_embedding_matrix(
         full_precision_weights=lambda: jnp.matrix_transpose(weights_dict[path / "weight"]),
         implementation=implementation,
     )
+    assert isinstance(loaded, EmbeddingMatrix)
+    return loaded
 
 
 def load_tied_embedding(
@@ -1153,7 +1149,7 @@ def load_tied_embedding(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> TiedEmbedding:
-    embedding = _load_input_embedding_matrix(
+    embedding = load_input_embedding_matrix(
         module.embedding,
         weights_dict,
         embedding_path,
@@ -1170,7 +1166,7 @@ def load_untied_embedding(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> UntiedEmbedding:
-    input_emb = _load_input_embedding_matrix(
+    input_emb = load_input_embedding_matrix(
         module.input_embedding,
         weights_dict,
         embedding_path,
@@ -1224,8 +1220,21 @@ class DecoderLoadLayout:
     lm_head_path: ParameterPath
 
 
-def _decoder_load_layout(weights_dict: Mapping[str, Array], base_path: ParameterPath) -> DecoderLoadLayout:
-    decoder_path = base_path / "model"
+def _decoder_load_layout(
+    weights_dict: Mapping[str, Array],
+    root_path: ParameterPath,
+) -> DecoderLoadLayout:
+    if root_path.endswith(".language_model"):
+        decoder_path = root_path
+    else:
+        decoder_path = root_path / "model"
+
+    nested_lm_head_path = root_path / "lm_head"
+    if _has_prefix(weights_dict, ParameterPath("lm_head")):
+        lm_head_path = ParameterPath("lm_head")
+    else:
+        lm_head_path = nested_lm_head_path
+
     standard_layout = DecoderLoadLayout(
         decoder_path=decoder_path,
         embedding_path=decoder_path / "embed_tokens",
@@ -1239,22 +1248,22 @@ def _decoder_load_layout(weights_dict: Mapping[str, Array], base_path: Parameter
         down_proj_key="down_proj",
         alternating_layers=False,
         norm_key="norm",
-        lm_head_path=base_path / "lm_head",
+        lm_head_path=lm_head_path,
     )
 
-    if any(key.startswith("backbone.") for key in weights_dict):
-        decoder_path = base_path / "backbone"
+    backbone_path = root_path / "backbone"
+    if _has_prefix(weights_dict, backbone_path):
         return replace(
             standard_layout,
-            decoder_path=decoder_path,
-            embedding_path=decoder_path / "embedding",
+            decoder_path=backbone_path,
+            embedding_path=backbone_path / "embedding",
             mixer_key={Mamba2Config: "mixer"},
             norm_key="final_layernorm",
         )
-    if any(key.startswith("embedding.encoder.") for key in weights_dict):
+    if _has_prefix(weights_dict, root_path / "embedding.encoder"):
         return replace(
             standard_layout,
-            embedding_path=base_path / "embedding.encoder",
+            embedding_path=root_path / "embedding.encoder",
             pre_mixer_norm_key="norm",
             mixer_key={Mamba2Config: "layer"},
             pre_mlp_norm_key="norm",
@@ -1263,9 +1272,9 @@ def _decoder_load_layout(weights_dict: Mapping[str, Array], base_path: Parameter
             gate_proj_key="in_proj",
             down_proj_key="out_proj",
             alternating_layers=True,
-            lm_head_path=base_path / "head.linear",
+            lm_head_path=root_path / "head.linear",
         )
-    if any(key.startswith("model.layers.0.operator_norm.weight") for key in weights_dict):
+    if (decoder_path / "layers" / "0" / "operator_norm" / "weight") in weights_dict:
         return replace(
             standard_layout,
             pre_mixer_norm_key="operator_norm",
@@ -1281,22 +1290,23 @@ def _decoder_load_layout(weights_dict: Mapping[str, Array], base_path: Parameter
     return standard_layout
 
 
+def resolve_decoder_load_layout(weights_dict: Mapping[str, Array]) -> DecoderLoadLayout:
+    if _has_prefix(weights_dict, ParameterPath("model.language_model")):
+        root_path = ParameterPath("model.language_model")
+    elif _has_prefix(weights_dict, ParameterPath("language_model")):
+        root_path = ParameterPath("language_model")
+    else:
+        root_path = ParameterPath()
+    return _decoder_load_layout(weights_dict, root_path)
+
+
 def load_huggingface_decoder(
     module: Decoder,
     weights_dict: Mapping[str, Array],
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-    reorder_q_proj_gate: bool = True,
 ) -> Decoder:
-    if any(key.startswith("model.language_model.") for key in weights_dict):
-        weights_dict = {k.replace("model.language_model.", "model.", 1): v for k, v in weights_dict.items()}
-
-    if any(key.startswith("language_model.") for key in weights_dict):
-        base_path = ParameterPath("language_model")
-    else:
-        base_path = ParameterPath()
-
-    layout = _decoder_load_layout(weights_dict, base_path)
+    layout = resolve_decoder_load_layout(weights_dict)
 
     if isinstance(module.embedding, TiedEmbedding):
         embedding = load_tied_embedding(
@@ -1331,7 +1341,6 @@ def load_huggingface_decoder(
             layout.down_proj_key,
             layout.permute_conv,
             implementation=implementation,
-            reorder_q_proj_gate=reorder_q_proj_gate,
         )
         for i, layer in enumerate(module.transformer.layers)
     )
@@ -1340,7 +1349,6 @@ def load_huggingface_decoder(
         lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm),
         module,
         (embedding, decoder_layers, output_norm),
-        allow_dtype_cast=True,
     )
 
 
@@ -1386,7 +1394,6 @@ def load_huggingface_classifier(
             lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm),
             module,
             (qkv_projection, out_projection, query_norm, key_norm),
-            allow_dtype_cast=True,
         )
 
     def load_mlp_local(module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLPBase:
@@ -1407,7 +1414,6 @@ def load_huggingface_classifier(
             _dense_mlp_projections,
             dense_module,
             (up_projection, down_projection),
-            allow_dtype_cast=True,
         )
 
     def load_transformer_layer_local(
@@ -1447,7 +1453,6 @@ def load_huggingface_classifier(
                 mlp,
                 post_mlp_norm,
             ),
-            allow_dtype_cast=True,
         )
 
     base_path = ParameterPath()
@@ -1496,5 +1501,4 @@ def load_huggingface_classifier(
             head_norm,
             head_readout,
         ),
-        allow_dtype_cast=True,
     )

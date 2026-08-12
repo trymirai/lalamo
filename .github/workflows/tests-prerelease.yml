@@ -88,7 +88,7 @@ jobs:
           - device: cpu
             runner: '["github-n2hmem16"]' # ubuntu-latest does not have enough RAM (?) to run these
           - device: gpu
-            runner: '["self-hosted", "linux", "gpu"]'
+            runner: '["arc-l40s"]'
 
     steps:
       - uses: actions/checkout@v6

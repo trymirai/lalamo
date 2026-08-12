@@ -14,6 +14,7 @@ NANBEIGE41 = [
         origin=HuggingFaceOrigin(repo="Nanbeige/Nanbeige4.1-3B"),
         config_type=HFLlamaConfig,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        end_of_thinking_tag="</think>",
     ),
 ]
 

@@ -77,6 +77,14 @@ def _soft_capped_attention_kernel(
     scale: float | None,
     logit_soft_cap: float | None,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
+    original_dtype = queries.dtype
+    attention_dtype = jnp.float32
+    queries = queries.astype(attention_dtype)
+    keys = keys.astype(attention_dtype)
+    values = values.astype(attention_dtype)
+    if bias is not None:
+        bias = bias.astype(attention_dtype)
+
     if logit_soft_cap is None:
         return jax.nn.dot_product_attention(
             queries,
@@ -85,7 +93,7 @@ def _soft_capped_attention_kernel(
             bias=bias,
             mask=mask,
             scale=scale,
-        )
+        ).astype(original_dtype)
 
     _, num_heads, head_dim = queries.shape
     _, num_groups, _ = keys.shape
@@ -118,7 +126,7 @@ def _soft_capped_attention_kernel(
         attention_weights,
         values,
         "heads dst_tokens src_tokens, src_tokens heads channels -> dst_tokens heads channels",
-    )
+    ).astype(original_dtype)
 
 
 def _stable_reduction_attention_kernel(
@@ -188,7 +196,7 @@ def _stable_reduction_attention_kernel(
             "heads queries (tiles tokens) -> tiles heads queries tokens",
             tiles=num_tiles,
             tokens=tile_size,
-        )
+        ).astype(accumulation_dtype)
 
     scores = einsum(
         queries,
@@ -277,24 +285,34 @@ def _attention_kernel(
             if head_dim > 128 or head_dim % 8 != 0:
                 warnings.warn(
                     "cuDNN attention requires head_dim <= 128 and divisible by 8; "
-                    f"got head_dim={head_dim}. Falling back to Tokamax attention.",
+                    f"got head_dim={head_dim}. Falling back to standard (jax/xla) attention.",
                     RuntimeWarning,
                     stacklevel=2,
                 )
-                return tokamax_attention()
+                return _soft_capped_attention_kernel(
+                    queries,
+                    keys,
+                    values,
+                    bias=bias,
+                    mask=mask,
+                    scale=scale,
+                    logit_soft_cap=logit_soft_cap,
+                )
             if logit_soft_cap is not None:
                 raise RuntimeError("cuDNN attention does not support logit soft-capping.")
             if mask is not None:
                 mask = jnp.broadcast_to(mask, (queries.shape[1], *mask.shape))
+            original_dtype = queries.dtype
+            attention_dtype = jnp.float32
             return jax.nn.dot_product_attention(
-                queries,
-                keys,
-                values,
-                bias=bias,
+                queries.astype(attention_dtype),
+                keys.astype(attention_dtype),
+                values.astype(attention_dtype),
+                bias=None if bias is None else bias.astype(attention_dtype),
                 mask=mask,
                 scale=scale,
                 implementation="cudnn",
-            )
+            ).astype(original_dtype)
         case AttentionImplementation.TOKAMAX:
             return tokamax_attention()
         case AttentionImplementation.STABLE_REDUCTION:
@@ -336,6 +354,7 @@ class AttentionConfig(TokenMixerConfig):
     gate_projection_config: LinearConfig | None = None
     # Scale-free RMS normalization on values
     normalize_values: bool = False
+    is_kv_sharing: bool = False
 
     def init(
         self,
@@ -343,11 +362,14 @@ class AttentionConfig(TokenMixerConfig):
         model_dim: int,
     ) -> "Attention":
         q_output_dim = self.num_heads * self.head_dim
-        output_dims = (
-            q_output_dim,
-            self.num_groups * self.head_dim,
-            self.num_groups * self.head_dim,
-        )
+        if self.is_kv_sharing:
+            output_dims = (q_output_dim,)
+        else:
+            output_dims = (
+                q_output_dim,
+                self.num_groups * self.head_dim,
+                self.num_groups * self.head_dim,
+            )
         qkv_projection = self.qkv_projection_config.init(
             initializer,
             input_dim=model_dim,
@@ -379,7 +401,7 @@ class AttentionConfig(TokenMixerConfig):
         else:
             query_norm = None
 
-        if self.key_norm_config is not None:
+        if self.key_norm_config is not None and not self.is_kv_sharing:
             key_norm = self.key_norm_config.init(
                 initializer,
                 input_dim=self.head_dim,
@@ -419,10 +441,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return self.qkv_projection.input_dim
 
     @property
-    def group_size(self) -> int:
-        return self.config.num_heads // self.config.num_groups
-
-    @property
     def use_sliding_window(self) -> bool:
         return self.config.sliding_window_size is not None
 
@@ -437,6 +455,66 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return self.sinks is not None
 
     @eqx.filter_jit
+    def _prepare_heads(
+        self,
+        projection: Float[Array, "tokens channels"],
+        num_heads: int,
+        norm: Normalization | None,
+        positional_embeddings: PositionalEmbeddings | None,
+        forward_pass_config: MixerForwardPassConfig,
+    ) -> Float[Array, "tokens heads head_channels"]:
+        heads = rearrange(
+            projection,
+            "tokens (heads head_channels) -> tokens heads head_channels",
+            heads=num_heads,
+            head_channels=self.config.head_dim,
+        )
+        if norm is not None:
+            heads = call_vmapped_twice(
+                norm,
+                heads,
+                forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+            )
+        if positional_embeddings is not None:
+            heads = call_vmapped(positional_embeddings.apply, heads, in_axes=1, out_axes=1)
+        return heads
+
+    def project_key_value_heads(
+        self,
+        inputs: Float[Array, "new_tokens channels"],
+        positional_embeddings: PositionalEmbeddings | None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> tuple[
+        Float[Array, "new_tokens groups head_channels"],
+        Float[Array, "new_tokens groups head_channels"],
+    ]:
+        if self.config.is_kv_sharing:
+            raise ValueError("KV-sharing attention layers do not own key/value projections.")
+        _, keys, values = call_vmapped(
+            self.qkv_projection,
+            inputs,
+            forward_pass_config=forward_pass_config.matmul_config,
+            keychain=keychain,
+        )
+        keys = self._prepare_heads(
+            keys, self.config.num_groups, self.key_norm, positional_embeddings, forward_pass_config
+        )
+        values = rearrange(
+            values,
+            "tokens (groups head_channels) -> tokens groups head_channels",
+            groups=self.config.num_groups,
+            head_channels=self.config.head_dim,
+        )
+        if self.config.normalize_values:
+            values = _rms_normalize(
+                values,
+                eps=1e-6,
+                forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+            )
+        return keys, values
+
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
@@ -446,16 +524,19 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
+        reuse_cache: bool = False,
         *,
         keychain: Keychain,
     ) -> AttentionResult:
         qkv_keychain, gate_keychain, out_keychain = keychain.split(3)
-        queries, keys, values = call_vmapped(
+        assert reuse_cache == self.config.is_kv_sharing, "reuse_cache must match AttentionConfig.is_kv_sharing"
+        projections = call_vmapped(
             self.qkv_projection,
             inputs,
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=qkv_keychain,
         )
+        queries = projections[0]
         if self.gate_projection is not None:
             (gate,) = call_vmapped(
                 self.gate_projection,
@@ -466,60 +547,42 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         else:
             gate = None
 
-        queries = rearrange(
-            queries,
-            "tokens (heads head_channels) -> tokens heads head_channels",
-            heads=self.config.num_heads,
-            head_channels=self.config.head_dim,
+        queries = self._prepare_heads(
+            queries, self.config.num_heads, self.query_norm, positional_embeddings, forward_pass_config
         )
-        keys = rearrange(
-            keys,
-            "tokens (groups head_channels) -> tokens groups head_channels",
-            groups=self.config.num_groups,
-            head_channels=self.config.head_dim,
-        )
-        values = rearrange(
-            values,
-            "tokens (groups head_channels) -> tokens groups head_channels",
-            groups=self.config.num_groups,
-            head_channels=self.config.head_dim,
-        )
-        if self.query_norm is not None:
-            queries = call_vmapped_twice(
-                self.query_norm,
-                queries,
-                forward_pass_config=forward_pass_config.normalization_forward_pass_config,
-            )
-        if self.key_norm is not None:
-            keys = call_vmapped_twice(
-                self.key_norm,
-                keys,
-                forward_pass_config=forward_pass_config.normalization_forward_pass_config,
-            )
-        if self.config.normalize_values:
-            values = _rms_normalize(
-                values,
-                eps=1e-6,
-                forward_pass_config=forward_pass_config.normalization_forward_pass_config,
-            )
 
-        if positional_embeddings is not None:
-            queries = call_vmapped(positional_embeddings.apply, queries, in_axes=1, out_axes=1)
-            keys = call_vmapped(positional_embeddings.apply, keys, in_axes=1, out_axes=1)
-
-        prefix_length = 0 if state is None else state.current_prefix_length()
-        if state is None:
-            updated_state = DynamicKVCacheLayer.init(
-                self.has_sinks,
-                keys.astype(values.dtype),
-                values,
-                length=length_without_padding,
-            )
+        num_suffix_tokens, _, _ = queries.shape
+        if reuse_cache:
+            if state is None:
+                raise ValueError("a KV-sharing layer must receive the source layer's cache as `state`")
+            prefix_length = state.current_prefix_length() - num_suffix_tokens
+            updated_state = state
         else:
-            updated_state = state.extend(keys, values, added_length=length_without_padding)
+            _, keys, values = projections
+            prefix_length = 0 if state is None else state.current_prefix_length()
+            keys = self._prepare_heads(
+                keys, self.config.num_groups, self.key_norm, positional_embeddings, forward_pass_config
+            )
+            values = rearrange(
+                values,
+                "tokens (groups head_channels) -> tokens groups head_channels",
+                groups=self.config.num_groups,
+                head_channels=self.config.head_dim,
+            )
+            if self.config.normalize_values:
+                values = _rms_normalize(
+                    values,
+                    eps=1e-6,
+                    forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+                )
+            if state is None:
+                updated_state = DynamicKVCacheLayer.init(
+                    self.has_sinks, keys.astype(values.dtype), values, length=length_without_padding
+                )
+            else:
+                updated_state = state.extend(keys, values, added_length=length_without_padding)
 
         queries = queries.astype(updated_state.keys.dtype)
-        num_suffix_tokens, _, _ = queries.shape
         if attention_parent_indices is not None:
             mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices)
         else:

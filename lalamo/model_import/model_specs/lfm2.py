@@ -59,6 +59,7 @@ _LFM25_MODELS = [
             chat_template=FileSpec("chat_template.jinja"),
         ),
         output_parser_regex=output_parser_regex,
+        end_of_thinking_tag="\n</think>",
     )
     for repo_owner, name, size, _quantization_bits, output_parser_regex in _LFM25_MODEL_SPECS
 ]

@@ -37,6 +37,7 @@ from lalamo.commands import (
 )
 from lalamo.commands import compare_traces as _compare_traces
 from lalamo.commands import convert as _convert
+from lalamo.commands import convert_speculator as _convert_speculator
 from lalamo.commands import pull as _pull
 from lalamo.commands import trace as _trace
 from lalamo.commands import trace_tokenization as _trace_tokenization
@@ -44,7 +45,7 @@ from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
-from lalamo.models import GenerationConfig, LanguageModel, TTSModel
+from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, TTSModel
 from lalamo.models.chat_codec import Message, UserMessage
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
@@ -63,6 +64,13 @@ app = Typer(
     add_completion=False,
     pretty_exceptions_show_locals=False,
 )
+speculator_app = Typer(
+    rich_markup_mode="rich",
+    add_completion=False,
+    pretty_exceptions_show_locals=False,
+    no_args_is_help=True,
+)
+app.add_typer(speculator_app, name="speculator", help="Convert DFlash and Weaver speculator models.")
 
 
 class ModelParser(ParamType):
@@ -88,14 +96,15 @@ class RemoteModelParser(ParamType):
             error_message = f"Failed to fetch model list from SDK. Check your internet connection.\n\nError: {e}"
             return self.fail(error_message, param, ctx)
 
-        repo_to_model = {m.repo_id: m for m in available_models}
-        model_spec = repo_to_model.get(value)
-        if model_spec is None:
-            error_message = f'Model "{value}" not found.'
-            error_message += _suggest_similar_models(value, list(repo_to_model))
-            return self.fail(error_message, param, ctx)
+        model_by_artifact_repo = {model.artifact_repo_id: model for model in available_models}
+        model_spec = model_by_artifact_repo.get(value)
+        if model_spec is not None:
+            return model_spec
 
-        return model_spec
+        identifiers = sorted(model_by_artifact_repo)
+        error_message = f'Model "{value}" not found.'
+        error_message += _suggest_similar_models(value, identifiers)
+        return self.fail(error_message, param, ctx)
 
 
 def _error(message: str) -> None:
@@ -147,36 +156,64 @@ def chat(
             generation_config = replace(model.config.generation_config, temperature=temperature)
         progress.remove_task(loading_task)
 
-    if message is None:
-        console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
-        messages: list[Message] = []
-        turn_index = 0
-        while True:
-            user_text = console.input("[cyan]user> [/cyan]")
-            messages.append(UserMessage(user_text))
+    with jax.set_mesh(model.sharding_config.mesh):
+        if message is None:
+            console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
+            messages: list[Message] = []
+            turn_index = 0
+            while True:
+                user_text = console.input("[cyan]user> [/cyan]")
+                messages.append(UserMessage(user_text))
 
-            console.print("[red]assistant> [/red]", end="")
-            response_text_parts = []
+                console.print("[red]assistant> [/red]", end="")
+                response_text_parts = []
+                for token in model.stream_reply_text(
+                    messages,
+                    generation_config=generation_config,
+                    max_output_length=max_tokens,
+                    keychain=Keychain.init(turn_index + 1, sharding_config=model.sharding_config),
+                ):
+                    console.print(token, end="")
+                    response_text_parts.append(token)
+                console.print()
+                messages.append(model.token_codec.parse_response("".join(response_text_parts)))
+                turn_index += 1
+
+        else:
             for token in model.stream_reply_text(
-                messages,
+                [UserMessage(message)],
                 generation_config=generation_config,
                 max_output_length=max_tokens,
-                keychain=Keychain.init(turn_index + 1, sharding_config=model.sharding_config),
+                keychain=Keychain.init(1, sharding_config=model.sharding_config),
             ):
                 console.print(token, end="")
-                response_text_parts.append(token)
             console.print()
-            messages.append(model.token_codec.parse_response("".join(response_text_parts)))
-            turn_index += 1
 
-    for token in model.stream_reply_text(
-        [UserMessage(message)],
-        generation_config=generation_config,
-        max_output_length=max_tokens,
-        keychain=Keychain.init(1, sharding_config=model.sharding_config),
-    ):
-        console.print(token, end="")
-    console.print()
+
+@app.command(help="Classify text with a converted classifier model.")
+def classify(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the classifier model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    text: Annotated[
+        str,
+        Argument(
+            help="Text to classify.",
+            metavar="TEXT",
+        ),
+    ],
+) -> None:
+    model = ClassifierModel.load(model_path, ShardingConfig.replicated())
+    scores = model.classify_chat(
+        [UserMessage(text)],
+        keychain=Keychain.init(0, sharding_config=model.sharding_config),
+    )
+    for label, score in scores.items():
+        console.print(f"{label}: {score}")
 
 
 @dataclass
@@ -398,7 +435,7 @@ def convert(
         DType | None,
         Option(
             help="Dtype to use for activations and non-quantized weights.",
-            show_default="Native dtype of the model",
+            show_default="bfloat16",
         ),
     ] = None,
     output_dir: Annotated[
@@ -434,6 +471,61 @@ def convert(
     )
 
 
+@speculator_app.command("convert", help="Import a speculator (DFlash draft, optionally with a Weaver).")
+def speculator_convert(
+    dflash_repo_id: Annotated[
+        str,
+        Argument(
+            help="Hugging Face repository ID of the DFlash draft model.",
+            metavar="DFLASH_REPO_ID",
+        ),
+    ],
+    weaver: Annotated[
+        str | None,
+        Option(
+            help="Hugging Face repository ID of a Weaver checkpoint to bundle into the same speculator.",
+            show_default="No weaver, DFlash draft only",
+        ),
+    ] = None,
+    dtype: Annotated[
+        DType | None,
+        Option(help="Dtype to use for the non-normalization weights.", show_default="bfloat16"),
+    ] = None,
+    output_dir: Annotated[
+        Path | None,
+        Option(
+            help="Directory to save the converted speculator to, e.g. `<target_model_dir>/speculator`.",
+            show_default="Saves the converted speculator in the `models/<dflash_repo_name>` directory",
+        ),
+    ] = None,
+    context_length: Annotated[
+        int | None,
+        Option(
+            help="Maximum supported context length. Used to configure RoPE.",
+            show_default="DFlash model's native maximum context length.",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        Option(help="Overwrite existing model files."),
+    ] = False,
+) -> None:
+    if output_dir is None:
+        speculator_name = PurePosixPath(dflash_repo_id).name + ("-TfM" if weaver is not None else "")
+        output_dir = DEFAULT_OUTPUT_DIR / speculator_name
+
+    if output_dir.exists():
+        if not overwrite and not Confirm().ask(
+            rf"⚠️ Output directory [cyan]{output_dir}[/cyan] already exists. Do you want to overwrite it?",
+        ):
+            raise Exit
+        shutil.rmtree(output_dir)
+
+    console.print(f"🚀 Converting speculator model from [cyan]{dflash_repo_id}[/cyan]...")
+    _convert_speculator(dflash_repo_id, output_dir, weaver, dtype, context_length)
+    console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
+
+
 @app.command(help="Pull a pre-converted model from the SDK repository.")
 def pull(
     model_spec: Annotated[
@@ -463,7 +555,7 @@ def pull(
     ] = False,
 ) -> None:
     if output_dir is None:
-        output_dir = DEFAULT_OUTPUT_DIR / PurePosixPath(model_spec.repo_id).name
+        output_dir = DEFAULT_OUTPUT_DIR / PurePosixPath(model_spec.artifact_repo_id).name
 
     _pull(
         model_spec,
@@ -710,6 +802,10 @@ def server(
             show_default="~/.cache/lalamo/batches",
         ),
     ] = None,
+    tensor_parallel: Annotated[
+        bool,
+        Option(help="Shard model weight matrices across visible devices."),
+    ] = False,
 ) -> None:
     try:
         from lalamo.server import start_server  # noqa: PLC0415
@@ -726,7 +822,13 @@ def server(
     if cache_dir is None:
         cache_dir = Path.home() / ".cache" / "lalamo" / "batches"
 
-    start_server(host=host, port=port, vram_bytes=vram_bytes, cache_dir=cache_dir)
+    start_server(
+        host=host,
+        port=port,
+        vram_bytes=vram_bytes,
+        cache_dir=cache_dir,
+        sharding_config=ShardingConfig.tensor_parallel() if tensor_parallel else ShardingConfig.replicated(),
+    )
 
 
 @app.callback()

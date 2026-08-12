@@ -173,6 +173,7 @@ def _import_chat_codec(
             eos_token = token_ids_to_text(tokenizer, eos_token_id)
 
     system_prompt_text = _read_text_spec(origin, model_spec.configs.system_prompt, progress_callback)
+    end_of_thinking_tag = model_spec.end_of_thinking_tag if isinstance(model_spec, LanguageModelSpec) else None
 
     return (
         tokenizer,
@@ -184,6 +185,7 @@ def _import_chat_codec(
             assistant_role_name=model_spec.assistant_role_name,
             bos_token=bos_token,
             eos_token=eos_token,
+            end_of_thinking_tag=end_of_thinking_tag,
             default_system_prompt=system_prompt_text,
         ),
     )
@@ -219,16 +221,12 @@ def _load_foreign_config[ForeignConfigT: ForeignConfig](
     return model_spec.config_type.from_json(config_path)
 
 
-def _dtype_or_default(dtype: DTypeLike | None, foreign_config: ForeignConfig) -> DTypeLike:
-    return foreign_config.default_dtype if dtype is None else dtype
-
-
 def _load_model[ModelT: Model](
     expected_model_type: type[ModelT],
     foreign_config: ForeignConfig,
     model_config: ModelConfig,
     tokenizer: Tokenizer,
-    dtype: DTypeLike,
+    dtype: DTypeLike | None,
     weights_dict: Mapping[str, Array],
     progress_callback: Callable[[StatusEvent], None] | None = None,
     *,
@@ -259,14 +257,18 @@ def _import_generation_config(
     match model_spec.configs.generation_config:
         case GenerationConfig() as generation_config:
             stop_token_ids = merge_token_ids(generation_config.stop_token_ids, stop_token_ids)
-            return replace(generation_config, stop_token_ids=stop_token_ids)
+            generation_config = replace(generation_config, stop_token_ids=stop_token_ids)
         case FileSpec() as file_spec:
             hf_generation_config_file = model_spec.origin.resolve_file(file_spec, progress_callback)
             hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)
             stop_token_ids = merge_token_ids(stop_token_ids, hf_generation_config.eos_token_id)
-            return _policy_from_hf_config(hf_generation_config, stop_token_ids=stop_token_ids)
+            generation_config = _policy_from_hf_config(hf_generation_config, stop_token_ids=stop_token_ids)
         case None:
-            return GenerationConfig(stop_token_ids)
+            generation_config = GenerationConfig(stop_token_ids)
+
+    if model_spec.configs.generation_params_overrides is None:
+        return generation_config
+    return generation_config.override_with(model_spec.configs.generation_params_overrides)
 
 
 def _import_language_model(
@@ -279,7 +281,6 @@ def _import_language_model(
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> LanguageModel:
     foreign_decoder_config = _load_foreign_config(model_spec, progress_callback=progress_callback)
-    dtype = _dtype_or_default(dtype, foreign_decoder_config)
 
     tokenizer, token_codec_config = _import_chat_codec(model_spec, progress_callback=progress_callback)
     generation_config = _import_generation_config(model_spec, foreign_decoder_config, progress_callback)
@@ -314,7 +315,6 @@ def _import_classifier(
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> ClassifierModel:
     foreign_classifier_config = _load_foreign_config(model_spec, progress_callback=progress_callback)
-    dtype = _dtype_or_default(dtype, foreign_classifier_config)
 
     tokenizer, token_codec_config = _import_chat_codec(model_spec, progress_callback=progress_callback)
     classifier_config = foreign_classifier_config.to_classifier_config(context_length)
@@ -346,7 +346,6 @@ def _import_tts_model(
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> TTSModel:
     foreign_tts_config = _load_foreign_config(model_spec, progress_callback=progress_callback)
-    dtype = _dtype_or_default(dtype, foreign_tts_config)
     if isinstance(foreign_tts_config, FishAudioConfig):
         assert isinstance(model_spec.configs.tokenizer, FileSpec)
         tokenizer_path = model_spec.origin.resolve_file(model_spec.configs.tokenizer, progress_callback)

@@ -31,6 +31,7 @@ __all__ = [
     "LalamoModule",
     "LogicalAxis",
     "ShardingConfig",
+    "SpeculatorState",
     "field",
 ]
 
@@ -38,6 +39,10 @@ __all__ = [
 class ForwardPassMode(StrEnum):
     MULTI_TOKEN = "multi_token"
     SINGLE_TOKEN = "single_token"
+
+
+class SpeculatorState(eqx.Module):
+    pass
 
 
 class KeychainBroadcastMode(StrEnum):
@@ -125,7 +130,6 @@ class Keychain(eqx.Module):
         mode: KeychainBroadcastMode = KeychainBroadcastMode.AUTO,
         sharding_axes: tuple[str | None, ...] | None = None,
     ) -> Self:
-
         prefix_shape, suffix_shape = _broadcast_prefix_and_suffix(self.vmapped_keys.shape, shape, mode)
         combined_shape = prefix_shape + suffix_shape
 
@@ -233,7 +237,7 @@ class Keychain(eqx.Module):
 
 @dataclass(frozen=True)
 class LalamoConfig:
-    _converter: ClassVar[GenConverter] = make_registry_abc_converter()
+    _converter: ClassVar[GenConverter] = make_registry_abc_converter(forbid_extra_keys=True)
 
     @classmethod
     def from_json(cls, json_object: JSON) -> Self:

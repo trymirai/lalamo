@@ -166,26 +166,27 @@ class DynamicKVCacheLayer(KVCacheLayer):
         if suffix_length_without_padding is None:
             suffix_length_without_padding = suffix_length
 
-        result = jnp.ones((suffix_length, num_tokens), dtype=jnp.bool)
-        if is_causal:
-            if self.padding_mask is None:
-                query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
-                query_positions = num_tokens + query_offsets
-                key_positions = jnp.arange(num_tokens, dtype=jnp.int32)
-            else:
-                key_positions = jnp.cumsum(self.padding_mask.astype(jnp.int32)) - 1
-                query_physical_indices = num_tokens - suffix_length + jnp.arange(suffix_length, dtype=jnp.int32)
-                query_positions = key_positions[query_physical_indices]
+        if self.padding_mask is None:
+            query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
+            query_positions = num_tokens + query_offsets
+            key_positions = jnp.arange(num_tokens, dtype=jnp.int32)
+        else:
+            key_positions = jnp.cumsum(self.padding_mask.astype(jnp.int32)) - 1
+            query_physical_indices = num_tokens - suffix_length + jnp.arange(suffix_length, dtype=jnp.int32)
+            query_positions = key_positions[query_physical_indices]
 
+        if is_causal:
             result = query_positions[:, None] >= key_positions[None, :]
             if sliding_window_size is not None:
                 result = jnp.logical_and(
                     result,
                     query_positions[:, None] < (key_positions[None, :] + sliding_window_size),
                 )
-        elif sliding_window_size is not None:
-            top_zeroed = jnp.tril(result, k=sliding_window_size // 2)
-            result = jnp.triu(top_zeroed, k=-sliding_window_size // 2)
+        else:
+            result = jnp.ones((suffix_length, num_tokens), dtype=jnp.bool)
+            if sliding_window_size is not None:
+                distances = jnp.abs(query_positions[:, None] - key_positions[None, :])
+                result = distances <= sliding_window_size // 2
         if self.has_sinks:
             result = result.at[:, 0].set(True)
         if self.padding_mask is not None:
@@ -238,18 +239,20 @@ class StaticKVCacheLayer(KVCacheLayer):
         self._raise_if_batched()
         if suffix_length_without_padding is None:
             suffix_length_without_padding = suffix_length
-        if is_causal:
-            query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
-        else:
-            query_offsets = jnp.zeros(suffix_length, dtype=jnp.int32)
-
+        query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
         query_indices = self.current_length + query_offsets
         key_indices = jnp.arange(self.capacity, dtype=jnp.int32)
 
-        result = query_indices[:, None] >= key_indices[None, :]
-        if sliding_window_size is not None:
-            swa_mask = query_indices[:, None] < (key_indices[None, :] + sliding_window_size)
-            result = result & swa_mask
+        if is_causal:
+            result = query_indices[:, None] >= key_indices[None, :]
+            if sliding_window_size is not None:
+                swa_mask = query_indices[:, None] < (key_indices[None, :] + sliding_window_size)
+                result = result & swa_mask
+        else:
+            result = jnp.broadcast_to(key_indices[None, :] < self.current_length, (suffix_length, self.capacity))
+            if sliding_window_size is not None:
+                distances = jnp.abs(query_indices[:, None] - key_indices[None, :])
+                result = result & (distances <= sliding_window_size // 2)
         if self.has_sinks:
             result = result.at[:, 0].set(True)
 
