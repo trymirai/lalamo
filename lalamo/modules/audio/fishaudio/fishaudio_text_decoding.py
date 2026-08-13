@@ -180,9 +180,9 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         self,
         inp: Int[Array, "batch codebooks tokens"],
         apply_codebook_embeddings: bool = False,
-        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
         *,
         keychain: Keychain,
+        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
     ) -> Float[Array, "batch tokens embedding"]:
         """
         apply_codebook_embeddings argument should be set to 'True' if audio-prompt is used. In this

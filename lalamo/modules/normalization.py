@@ -117,8 +117,9 @@ class Normalization(LalamoModule[NormalizationConfig]):
     def __call__(
         self,
         inputs: Float[Array, " channels"],
-        forward_pass_config: NormalizationForwardPassConfig = NormalizationForwardPassConfig(),
+        *,
         accumulation_precision: DTypeLike = jnp.float32,
+        forward_pass_config: NormalizationForwardPassConfig = NormalizationForwardPassConfig(),
     ) -> Float[Array, " channels"]:
         match forward_pass_config.implementation:
             case NormalizationImplementation.JAX:

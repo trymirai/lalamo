@@ -1,4 +1,3 @@
-import math
 from dataclasses import dataclass
 
 import jax
@@ -8,10 +7,10 @@ from jaxtyping import Array, Float, Int
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis
 from lalamo.utils.sharding import lookup_sharded_indices
+from lalamo.weight_matrix import EmbeddingMatrix
 
 from .activations import Activation
 from .linear import Linear, LinearConfig
-from .normalization import Normalization, NormalizationConfig
 from .utils import call_vmapped_twice
 
 __all__ = [
@@ -24,47 +23,28 @@ __all__ = [
 
 @dataclass(frozen=True)
 class PerLayerEmbeddingConfig(LalamoConfig):
-    num_ple_channels: int
     num_layers: int
-    ple_vocab_size: int
-    ple_embed_scale: float
-    model_projection_scale: float
-    input_scale: float
-    linear_config: LinearConfig
-    norm_config: NormalizationConfig
+    num_channels_per_layer: int
 
-    def init(self, initializer: Initializer, model_dim: int) -> "PerLayerEmbedding":
-        total_ple_channels = self.num_layers * self.num_ple_channels
+    def init(self, initializer: Initializer, vocabulary_size: int) -> "PerLayerEmbedding":
+        total_ple_channels = self.num_layers * self.num_channels_per_layer
         return PerLayerEmbedding(
             config=self,
             sharding_config=initializer.sharding_config,
-            token_embedding=initializer.normal(
-                1 / math.sqrt(self.num_ple_channels),
-                (self.ple_vocab_size, total_ple_channels),
-            ),
-            model_projection=self.linear_config.init(
-                initializer,
-                input_dim=model_dim,
-                output_dims=(total_ple_channels,),
-                has_biases=False,
-            ),
-            projection_norm=self.norm_config.init(initializer, self.num_ple_channels),
+            embedding=initializer.embedding_matrix(vocabulary_size, total_ple_channels),
         )
 
 
 class PerLayerEmbedding(LalamoModule[PerLayerEmbeddingConfig]):
-    token_embedding: Float[Array, "vocab ple_total_dim"]
-    model_projection: Linear
-    projection_norm: Normalization
+    embedding: EmbeddingMatrix
 
     def __call__(
         self,
         token_ids: Int[Array, "batch suffix_tokens"],
-        inner_features: Float[Array, "batch suffix_tokens channels"],
         *,
         keychain: Keychain,
     ) -> tuple[Float[Array, "batch suffix_tokens ple_channels"], ...]:
-        config = self.config
+        self.embedding.lookup_embedding()
         token_ple = lookup_sharded_indices(self.token_embedding, token_ids) * config.ple_embed_scale
         token_ple = rearrange(
             token_ple,
@@ -92,7 +72,7 @@ class PerLayerEmbedding(LalamoModule[PerLayerEmbeddingConfig]):
 
 
 @dataclass(frozen=True)
-class PLELayerConfig(LalamoConfig):
+class PLEModulatorConfig(LalamoConfig):
     linear_config: LinearConfig
     ple_channels: int
     activation: Activation
@@ -110,7 +90,7 @@ class PLELayerConfig(LalamoConfig):
             output_dims=(model_dim,),
             has_biases=False,
         )
-        return PLELayer(
+        return PLEModulator(
             config=self,
             sharding_config=initializer.sharding_config,
             gate=gate,
@@ -118,7 +98,7 @@ class PLELayerConfig(LalamoConfig):
         )
 
 
-class PLELayer(LalamoModule[PLELayerConfig]):
+class PLEModulator(LalamoModule[PLEModulatorConfig]):
     gate: Linear
     projection: Linear
 

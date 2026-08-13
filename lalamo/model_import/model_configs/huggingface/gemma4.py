@@ -19,7 +19,7 @@ from lalamo.models import LanguageModel
 from lalamo.modules import (
     DecoderConfig,
     PerLayerEmbeddingConfig,
-    PLELayerConfig,
+    PLEModulatorConfig,
     TiedEmbeddingConfig,
     TransformerConfig,
 )
@@ -175,7 +175,7 @@ class HFGemma4TextConfig:
                 )
 
         if self.hidden_size_per_layer_input > 0:
-            ple_layer_config = PLELayerConfig(
+            ple_layer_config = PLEModulatorConfig(
                 linear_config=linear_config,
                 ple_channels=self.hidden_size_per_layer_input,
                 activation=GELU(),

@@ -332,11 +332,12 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         state: SSMStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         tree_ancestor_indices: Int[Array, " suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
     ) -> TokenMixerResult[SSMStateLayer]:
+        batch_size, *_ = inputs.shape
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for DeltaNet.")
         if tree_ancestor_indices is not None:
@@ -357,11 +358,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         beta = jax.nn.sigmoid(beta_logits.astype(jnp.float32))
 
         if state is None:
-            state = SSMStateLayer.init(
-                self.config.kernel_size,
-                self.conv_dim,
-                (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
-            )
+            state = self.init_static_state(batch_size)
         conv_output, updated_conv_state = self.conv(
             mixed_qkv,
             length_without_padding,
@@ -438,9 +435,18 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
 
         return TokenMixerResult(outputs.astype(inputs.dtype), updated_state)
 
-    def init_static_state(self, capacity: int, dtype: DTypeLike) -> SSMStateLayer:  # noqa: ARG002
+    def init_static_state(
+        self,
+        batch_size: int,
+        capacity: int = 0,  # noqa: ARG002
+        dtype: DTypeLike = jnp.float32,  # noqa: ARG002
+    ) -> SSMStateLayer:
         return SSMStateLayer.init(
+            batch_size,
             self.config.kernel_size,
             self.conv_dim,
-            (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
+            self.config.num_heads,
+            self.config.value_head_dim,
+            self.config.head_dim,
+            self.sharding_config,
         )

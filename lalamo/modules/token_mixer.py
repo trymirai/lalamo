@@ -5,6 +5,7 @@ from typing import NamedTuple, Self
 
 import equinox as eqx
 import jax
+from frozendict import frozendict
 from jax import numpy as jnp
 from jax.lax import DotAlgorithmPreset
 from jax.tree_util import register_pytree_node_class
@@ -36,14 +37,14 @@ class StateLayerBase(Exportable, eqx.Module):
 
 
 @register_pytree_node_class
-class State(tuple[StateLayerBase, ...]):
+class State(frozendict[int, StateLayerBase]):
     __slots__ = ()
 
-    def tree_flatten(self) -> tuple[tuple[StateLayerBase, ...], None]:
-        return (tuple(self), None)
+    def tree_flatten(self) -> tuple[dict[int, StateLayerBase], None]:
+        return (dict(self), None)
 
     @classmethod
-    def tree_unflatten(cls, aux_data: None, children: tuple[StateLayerBase, ...]) -> Self:  # noqa: ARG003
+    def tree_unflatten(cls, aux_data: None, children: dict[int, StateLayerBase]) -> Self:  # noqa: ARG003
         return cls(children)
 
 
@@ -139,11 +140,11 @@ class TokenMixerBase[ConfigT: TokenMixerConfig, StateLayerT: StateLayerBase](Lal
         state: StateLayerT | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         tree_ancestor_indices: Int[Array, " suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
     ) -> TokenMixerResult[StateLayerT]: ...
 
     @abstractmethod
-    def init_static_state(self, capacity: int, dtype: DTypeLike) -> StateLayerT: ...
+    def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> StateLayerT: ...

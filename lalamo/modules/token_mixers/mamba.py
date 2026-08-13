@@ -592,23 +592,20 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         state: SSMStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         tree_ancestor_indices: Int[Array, " suffix_tokens"] | None = None,
         precision: DTypeLike = jnp.float32,
         *,
         keychain: Keychain,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
     ) -> Mamba2Result:
+        batch_size, *_ = inputs.shape
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for Mamba2.")
         if tree_ancestor_indices is not None:
             raise ValueError("Tree ancestor indices are not supported for Mamba2.")
 
         if state is None:
-            state = SSMStateLayer.init(
-                self.config.kernel_size,
-                self.conv_dim,
-                (self.config.num_heads, self.config.head_dim, self.config.state_dim),
-            )
+            state = self.init_static_state(batch_size)
         ssm_dtype = state.ssm_state.dtype
 
         seq_len, _ = inputs.shape
@@ -713,9 +710,18 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             state=updated_state,
         )
 
-    def init_static_state(self, capacity: int, dtype: DTypeLike) -> SSMStateLayer:  # noqa: ARG002
+    def init_static_state(
+        self,
+        batch_size: int,
+        capacity: int = 0,  # noqa: ARG002
+        dtype: DTypeLike = jnp.float32,  # noqa: ARG002
+    ) -> SSMStateLayer:
         return SSMStateLayer.init(
+            batch_size,
             self.config.kernel_size,
             self.conv_dim,
-            (self.config.num_heads, self.config.head_dim, self.config.state_dim),
+            self.config.num_heads,
+            self.config.head_dim,
+            self.config.state_dim,
+            self.sharding_config,
         )

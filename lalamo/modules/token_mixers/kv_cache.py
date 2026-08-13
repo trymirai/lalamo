@@ -8,7 +8,7 @@ from jax.lax import dynamic_update_slice_in_dim
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.modules.token_mixer import StateLayerBase
-from lalamo.utils.sharding import ShardingConfig
+from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 
 __all__ = [
     "DynamicKVCacheLayer",
@@ -299,17 +299,18 @@ class StaticKVCacheLayer(KVCacheLayer):
     def init(
         cls,
         has_sinks: bool,
+        batch_size: int,
         capacity: int,
         num_groups: int,
         head_dim: int,
         dtype: DTypeLike,
         sharding_config: ShardingConfig,
     ) -> Self:
-        cache_sharding = sharding_config.make_sharding((None, None, None))
-        length_sharding = sharding_config.make_sharding(())
+        cache_sharding = sharding_config.resolve_sharding((LogicalAxis.BATCH, None, None, None))
+        length_sharding = sharding_config.resolve_sharding((LogicalAxis.BATCH,))
         return cls(
             has_sinks=has_sinks,
-            keys=jax.device_put(jnp.zeros((capacity, num_groups, head_dim), dtype=dtype), cache_sharding),
-            values=jax.device_put(jnp.zeros((capacity, num_groups, head_dim), dtype=dtype), cache_sharding),
-            current_length=jax.device_put(jnp.array(has_sinks, dtype=jnp.int32), length_sharding),
+            keys=jnp.zeros((batch_size, capacity, num_groups, head_dim), dtype=dtype, out_sharding=cache_sharding),
+            values=jnp.zeros((batch_size, capacity, num_groups, head_dim), dtype=dtype, out_sharding=cache_sharding),
+            current_length=jnp.full((batch_size,), has_sinks, dtype=jnp.int32, device=length_sharding),
         )

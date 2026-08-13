@@ -92,10 +92,10 @@ class DecoderResult(Exportable, eqx.Module):
 @dataclass(frozen=True)
 class DecoderConfig(LalamoConfig):
     embedding_config: EmbeddingConfig
+    per_layer_embedding_config: PerLayerEmbeddingConfig | None
     transformer_config: TransformerConfig
 
     vocab_size: int
-    per_layer_embedding_config: PerLayerEmbeddingConfig | None = None
 
     def init(self, initializer: Initializer) -> "Decoder":
         embedding = self.embedding_config.init(
@@ -123,8 +123,8 @@ class DecoderConfig(LalamoConfig):
 
 class Decoder(LalamoModule[DecoderConfig]):
     embedding: EmbeddingBase
-    transformer: Transformer
     per_layer_embedding: PerLayerEmbedding | None
+    transformer: Transformer
 
     @property
     def vocab_size(self) -> int:
@@ -139,11 +139,11 @@ class Decoder(LalamoModule[DecoderConfig]):
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
         tree_ancestor_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
         *,
         keychain: Keychain,
+        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
     ) -> DecoderResult:
         if token_ids.ndim != 2:
             raise ValueError(
@@ -164,19 +164,19 @@ class Decoder(LalamoModule[DecoderConfig]):
             if return_activation_trace:
                 raise ValueError("return_suffix_tokens cannot be combined with return_activation_trace.")
         embedding_keychain, ple_keychain, transformer_keychain, readout_keychain = keychain.split(4)
-        inner_features = self.embedding.embed(
+        input_embeddings = self.embedding.embed(
             token_ids,
             forward_pass_config=forward_pass_config.embedding_forward_pass_config,
             keychain=embedding_keychain,
         )
 
         if self.per_layer_embedding is not None:
-            per_layer_inputs = self.per_layer_embedding(token_ids, inner_features, keychain=ple_keychain)
+            per_layer_inputs = self.per_layer_embedding(token_ids, input_embeddings, keychain=ple_keychain)
         else:
             per_layer_inputs = None
 
         transformer_result = self.transformer(
-            inner_features=inner_features,
+            input_embeddings=input_embeddings,
             token_positions=token_positions,
             state=state,
             return_updated_state=return_updated_state,
@@ -205,7 +205,7 @@ class Decoder(LalamoModule[DecoderConfig]):
                 token_ids=token_ids,
                 token_positions=token_positions,
                 state=state,
-                rope_embeddings=transformer_result.rope_embeddings,
+                rope_embeddings=transformer_result.positional_embeddings,
                 layer_results=transformer_result.layer_results,
                 output_norm=transformer_result.outputs,
             )

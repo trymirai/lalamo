@@ -29,7 +29,6 @@ from lalamo.weight_matrix import GradientEstimator, MatmulConfig
 
 from .activations import Activation
 from .linear import Linear, LinearConfig
-from .normalization import NormalizationForwardPassConfig
 from .utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
@@ -85,15 +84,11 @@ def _take_moe_expert_leaf(leaf: object, index: Int[Array, ""], sharding_config: 
 class MLPForwardPassConfig:
     mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN
     moe_chunk_size_ratio: float = 0.2
-    normalization_forward_pass_config: NormalizationForwardPassConfig = dataclass_field(
-        default_factory=NormalizationForwardPassConfig,
-    )
     matmul_config: MatmulConfig = dataclass_field(default_factory=MatmulConfig)
 
     @classmethod
     def for_tracer_tests(cls) -> Self:
         return cls(
-            normalization_forward_pass_config=NormalizationForwardPassConfig.for_tracer_tests(),
             matmul_config=MatmulConfig.for_tracer_tests(),
         )
 
@@ -105,7 +100,6 @@ class MLPForwardPassConfig:
     ) -> Self:
         return cls(
             mode=mode,
-            normalization_forward_pass_config=NormalizationForwardPassConfig.for_inference(),
             matmul_config=MatmulConfig.for_inference(precision),
         )
 
@@ -116,7 +110,6 @@ class MLPForwardPassConfig:
         precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
     ) -> Self:
         return cls(
-            normalization_forward_pass_config=NormalizationForwardPassConfig.for_training(),
             matmul_config=MatmulConfig.for_training(gradient_estimator, precision),
         )
 
@@ -141,9 +134,9 @@ class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
         *,
         keychain: Keychain,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
     ) -> Float[Array, "batch suffix_tokens channels"]: ...
 
 
@@ -222,9 +215,9 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,  # noqa: ARG002
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
         *,
         keychain: Keychain,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
     ) -> Float[Array, "batch suffix_tokens channels"]:
         call_unbatched = partial(
             self.call_unbatched,
@@ -241,9 +234,9 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
     def call_unbatched(
         self,
         inputs: Float[Array, " channels"],
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
         *,
         keychain: Keychain,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
     ) -> Float[Array, " channels"]:
         if self.mixture_size is not None:
             raise ValueError(
@@ -382,20 +375,20 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
         *,
         keychain: Keychain,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
     ) -> Float[Array, "batch suffix_tokens channels"]:
         match forward_pass_config.mode:
             case ForwardPassMode.MULTI_TOKEN:
                 return self.call_prefill_mode(
                     inputs,
                     lengths_without_padding,
-                    forward_pass_config,
                     keychain=keychain,
+                    forward_pass_config=forward_pass_config,
                 )
             case ForwardPassMode.SINGLE_TOKEN:
-                return self.call_decode_mode(inputs, forward_pass_config, keychain=keychain)
+                return self.call_decode_mode(inputs, keychain=keychain, forward_pass_config=forward_pass_config)
             case _:
                 raise ValueError(f"Unsupported forward pass mode: {forward_pass_config.mode}")
 
@@ -472,8 +465,8 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             return (
                 selected_expert.call_unbatched(
                     token_input,
-                    forward_pass_config,
                     keychain=selected_expert_keychain,
+                    forward_pass_config=forward_pass_config,
                 )
                 * weight
             )
@@ -487,9 +480,9 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     def call_decode_mode(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
         *,
         keychain: Keychain,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
     ) -> Float[Array, "batch suffix_tokens channels"]:
         return call_vmapped_twice(
             self._call_decode_token,
@@ -504,9 +497,9 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
         *,
         keychain: Keychain,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
     ) -> Float[Array, "batch suffix_tokens channels"]:
         batch_size, sequence_length, _ = inputs.shape
         num_tokens = batch_size * sequence_length

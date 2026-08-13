@@ -467,10 +467,10 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         state: KVCacheLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         tree_ancestor_indices: Int[Array, " suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
     ) -> AttentionResult:
         qkv_keychain, gate_keychain, out_keychain = keychain.split(3)
         num_suffix_tokens, _ = inputs.shape
@@ -599,10 +599,11 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             state=updated_state,
         )
 
-    def init_static_state(self, capacity: int, dtype: DTypeLike) -> StaticKVCacheLayer:
+    def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> StaticKVCacheLayer:
         assert not self.borrows_kv_cache
         return StaticKVCacheLayer.init(
             self.has_sinks,
+            batch_size,
             capacity,
             self.config.num_groups,
             self.config.head_dim,

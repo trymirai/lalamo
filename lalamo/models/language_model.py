@@ -204,10 +204,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         token_ids: Int[Array, "batch tokens"],
         state_capacity: int,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: DecoderForwardPassConfig | None = None,
         chunk_size: int = 512,
         *,
         keychain: Keychain,
+        forward_pass_config: DecoderForwardPassConfig | None = None,
     ) -> PrefillResults:
         batch_size, sequence_length = token_ids.shape
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
@@ -339,8 +339,8 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             prompt_token_ids,
             prompt_length + max_output_length + 1,
             prompt_lengths_without_padding,
-            prefill_forward_pass_config,
             keychain=prefill_keychain,
+            forward_pass_config=prefill_forward_pass_config,
         )
         initial_state = DecodingState(
             last_token_logits=prefill_results.last_token_logits,
@@ -524,8 +524,8 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             batched_token_ids,
             padded_input_length + max_output_length + 1,
             length_without_padding,
-            prefill_forward_pass_config,
             keychain=prefill_keychain,
+            forward_pass_config=prefill_forward_pass_config,
         )
 
         last_token_logits = prefill_results.last_token_logits[0]

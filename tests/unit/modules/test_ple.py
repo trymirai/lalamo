@@ -5,7 +5,7 @@ from jax.sharding import Mesh
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.activations import Identity
 from lalamo.modules.linear import Linear, LinearConfig
-from lalamo.modules.per_layer_embeddings import PLELayer, PLELayerConfig
+from lalamo.modules.per_layer_embeddings import PLEModulator, PLEModulatorConfig
 from lalamo.weight_matrix import FullPrecisionSpec
 from tests.common import assert_close
 from tests.helpers import make_sharding, make_test_sharding_config
@@ -14,8 +14,8 @@ from tests.helpers import make_sharding, make_test_sharding_config
 def test_ple_layer_returns_projected_update_without_residual(fake_mesh: Mesh) -> None:  # noqa: ARG001
     sharding_config = make_test_sharding_config()
     linear_config = LinearConfig()
-    module = PLELayer(
-        config=PLELayerConfig(
+    module = PLEModulator(
+        config=PLEModulatorConfig(
             linear_config=linear_config,
             ple_channels=2,
             activation=Identity(),

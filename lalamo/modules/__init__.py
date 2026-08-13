@@ -43,7 +43,7 @@ from .normalization import (
     NormalizationImplementation,
     UpcastMode,
 )
-from .per_layer_embeddings import PerLayerEmbedding, PerLayerEmbeddingConfig, PLELayer, PLELayerConfig
+from .per_layer_embeddings import PerLayerEmbedding, PerLayerEmbeddingConfig, PLEModulator, PLEModulatorConfig
 from .rope import (
     LinearScalingRoPEConfig,
     LlamaRoPEConfig,

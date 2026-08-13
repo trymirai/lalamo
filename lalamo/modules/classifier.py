@@ -220,9 +220,9 @@ class Classifier(LalamoModule[ClassifierConfig]):
         token_positions: Int[Array, "batch tokens"],
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: ClassifierForwardPassConfig = ClassifierForwardPassConfig(),
         *,
         keychain: Keychain,
+        forward_pass_config: ClassifierForwardPassConfig = ClassifierForwardPassConfig(),
     ) -> ClassifierResult:
         embedding_keychain, transformer_keychain, prediction_head_keychain = keychain.split(3)
         inner_features = self.embedding.embed(
@@ -266,7 +266,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
             activation_trace = ClassifierActivationTrace(
                 token_ids=token_ids,
                 token_positions=token_positions,
-                rope_embeddings=transformer_result.rope_embeddings,
+                rope_embeddings=transformer_result.positional_embeddings,
                 embedding_norm_output=normalized_embeddings,
                 layer_results=tuple(transformer_result.layer_results),
                 output_norm=transformer_result.outputs,

@@ -15,7 +15,7 @@ from lalamo.weight_matrix import GradientEstimator
 
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig, NormalizationForwardPassConfig
-from .per_layer_embeddings import PLELayer, PLELayerConfig
+from .per_layer_embeddings import PLEModulator, PLEModulatorConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 from .token_mixer import (
     MixerForwardPassConfig,
@@ -110,7 +110,7 @@ class TransformerLayerConfig(LalamoConfig):
     parallel_mlp_config: MLPConfig | None = None
     mlp_output_norm_config: NormalizationConfig | None = None
     parallel_mlp_output_norm_config: NormalizationConfig | None = None
-    ple_config: PLELayerConfig | None = None
+    ple_config: PLEModulatorConfig | None = None
     ple_norm_config: NormalizationConfig | None = None
     has_output_multiplier: bool = False
     rope_config: RoPEConfig | None = None
@@ -195,7 +195,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     mlp_output_norm: Normalization | None
     parallel_mlp_output_norm: Normalization | None
     post_mlp_norm: Normalization | None
-    ple: PLELayer | None
+    ple: PLEModulator | None
     ple_norm: Normalization | None
     output_multiplier: Float[Array, "1"] | None
 
@@ -208,12 +208,12 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
         per_layer_input: Float[Array, "batch suffix_tokens ple_channels"] | None = None,
         tree_ancestor_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
         *,
         keychain: Keychain,
+        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
     ) -> TransformerLayerResult:
         if inputs.ndim != 3:
             raise ValueError(
@@ -406,10 +406,4 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         )
 
     def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> StateLayerBase:
-        return jax.tree.map(
-            lambda array: jax.device_put(
-                jnp.repeat(array[None, ...], batch_size, axis=0),
-                self.sharding_config.resolve_sharding((LogicalAxis.BATCH, *((None,) * array.ndim))),
-            ),
-            self.mixer.init_static_state(capacity, dtype),
-        )
+        self.mixer.init_static_state(batch_size: int, capacity, dtype),

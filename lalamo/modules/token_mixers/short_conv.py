@@ -19,6 +19,7 @@ from lalamo.modules.token_mixer import (
 )
 from lalamo.modules.token_mixers.convolutions import ConvPrecision, SeparableCausalConv, SeparableCausalConvConfig
 from lalamo.modules.utils import call_vmapped
+from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 
 __all__ = [
     "ShortConv",
@@ -41,11 +42,14 @@ class ShortConvStateLayer(StateLayerBase):
     @classmethod
     def init(
         cls,
+        batch_size: int,
         kernel_size: int,
         model_dim: int,
         dtype: DTypeLike,
+        sharding_config: ShardingConfig,
     ) -> Self:
-        return cls(conv_state=jnp.zeros((kernel_size - 1, model_dim), dtype=dtype))
+        sharding = sharding_config.resolve_sharding((LogicalAxis.BATCH, None, None))
+        return cls(conv_state=jnp.zeros((batch_size, kernel_size - 1, model_dim), dtype=dtype, out_sharding=sharding))
 
 
 ShortConvResult = TokenMixerResult[ShortConvStateLayer]
@@ -107,10 +111,10 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         state: ShortConvStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         tree_ancestor_indices: Int[Array, " suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
     ) -> TokenMixerResult[ShortConvStateLayer]:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for ShortConv.")
@@ -150,5 +154,16 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
 
         return TokenMixerResult(outputs, updated_state)
 
-    def init_static_state(self, capacity: int, dtype: DTypeLike) -> ShortConvStateLayer:  # noqa: ARG002
-        return ShortConvStateLayer.init(self.config.kernel_size, self.in_projection.input_dim, dtype)
+    def init_static_state(
+        self,
+        batch_size: int,
+        capacity: int = 0,  # noqa: ARG002
+        dtype: DTypeLike = jnp.float32,
+    ) -> ShortConvStateLayer:
+        return ShortConvStateLayer.init(
+            batch_size,
+            self.config.kernel_size,
+            self.in_projection.input_dim,
+            dtype,
+            self.sharding_config,
+        )
