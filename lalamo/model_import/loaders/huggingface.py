@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array
 
-from lalamo.compressed import IntMatrix, IntSpec, MLXMatrix, MLXSpec
+from lalamo.compressed import IntMatrix, IntSpec, MicrofloatSpec, MLXMatrix, MLXSpec
 from lalamo.compressed.utils.packing import pack_uint_to_uint8
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.decoder import Decoder
@@ -28,7 +28,6 @@ from lalamo.utils.surgery import load_as_at
 from lalamo.weight_matrix import CompressionImplementation, EmbeddingMatrix, Layout, WeightMatrix
 
 from .common import load_full_precision
-from .utils import decode_mxfp4, deinterleave_pairwise_columns
 
 __all__ = ["load_huggingface_decoder", "load_linear", "load_rmsnorm"]
 
@@ -38,6 +37,60 @@ AWQ_UINT4_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
 
 def _update_linear(module: Linear, weights: WeightMatrix, biases: Array | None) -> Linear:
     return eqx.tree_at(lambda m: (m.weights, m.biases), module, (weights, biases))
+
+
+def _load_mxfp4_matrix(
+    template: WeightMatrix,
+    blocks: Array,
+    scales: Array,
+    *,
+    group_size: int = 32,
+    implementation: CompressionImplementation,
+) -> WeightMatrix:
+    """Packed MXFP4 blocks with raw E8M0 scale bytes."""
+    if blocks.dtype != jnp.dtype(jnp.uint8):
+        raise ValueError(f"MXFP4 blocks must be U8, got {blocks.dtype}")
+    if blocks.ndim != scales.ndim + 1 or blocks.shape[:-1] != scales.shape:
+        raise ValueError(f"MXFP4 block/scale shape mismatch: blocks={blocks.shape}, scales={scales.shape}")
+    if blocks.shape[-1] * 2 != group_size:
+        raise ValueError(f"MXFP4 group size {group_size} does not match {blocks.shape[-1]} packed bytes")
+
+    if scales.dtype == jnp.dtype(jnp.float8_e8m0fnu):
+        packed_scales = jax.lax.bitcast_convert_type(scales, jnp.uint8)
+    elif scales.dtype == jnp.dtype(jnp.uint8):
+        packed_scales = scales
+    else:
+        raise ValueError(f"MXFP4 scales must be F8_E8M0 or U8, got {scales.dtype}")
+
+    packed_weights = rearrange(blocks, "... rows groups packed -> ... rows (groups packed)")
+    global_scale = jnp.ones(blocks.shape[:-3], dtype=template.dtype)
+    return MicrofloatSpec(group_size=group_size).from_packed_parameters(
+        packed_weights=packed_weights,
+        packed_scales=packed_scales,
+        global_scale=global_scale,
+        dtype=template.dtype,
+        implementation=implementation,
+        sharding_config=template.sharding_config,
+        is_sharded=template.is_sharded,
+    )
+
+
+def _stack_gpt_oss_gate_up(blocks: Array, scales: Array) -> tuple[Array, Array]:
+    """Canonical up/gate rows with 16-value groups, without decoding MXFP4."""
+    up_blocks = blocks[..., 1::2, :, :]
+    gate_blocks = blocks[..., 0::2, :, :]
+    blocks = jnp.concatenate((up_blocks, gate_blocks), axis=-3)
+    blocks = rearrange(
+        blocks,
+        "... rows groups (halves packed) -> ... rows (groups halves) packed",
+        halves=2,
+    )
+
+    up_scales = scales[..., 1::2, :]
+    gate_scales = scales[..., 0::2, :]
+    scales = jnp.concatenate((up_scales, gate_scales), axis=-2)
+    scales = jnp.repeat(scales, 2, axis=-1)
+    return blocks, scales
 
 
 def _dense_mlp_projections(module: DenseMLP) -> tuple[Linear, Linear]:
@@ -435,57 +488,49 @@ def load_moe(
     down_path = experts_path / "down_proj"
     batched_gate_up_path = _first_path(weights_dict, (gate_up_path, gate_up_path / "weight"))
 
-    # GPT-OSS uses fused MXFP4 expert weights; detect and decode those.
+    # Preserve MXFP4 while restoring Lalamo's canonical [all up, all gate] rows.
     if (experts_path / "gate_up_proj_blocks") in weights_dict:
-        fused = decode_mxfp4(
-            weights_dict[experts_path / "gate_up_proj_blocks"],
-            weights_dict[experts_path / "gate_up_proj_scales"],
-            dtype=module.experts.up_projection.weights.dtype,
-            flatten=False,
-        )
-        fused_eio = rearrange(fused, "e o ib ie -> e (ib ie) o")
-        up_weights, gate_weights = deinterleave_pairwise_columns(fused_eio, first="odd")
-        combined_up_gate_weights = jnp.swapaxes(
-            jnp.concatenate([up_weights, gate_weights], axis=-1),
-            -1,
-            -2,
+        gate_up_blocks = weights_dict[experts_path / "gate_up_proj_blocks"]
+        gate_up_scales = weights_dict[experts_path / "gate_up_proj_scales"]
+        gate_up_blocks, gate_up_scales = _stack_gpt_oss_gate_up(gate_up_blocks, gate_up_scales)
+        gate_up_weights = _load_mxfp4_matrix(
+            module.experts.up_projection.weights,
+            gate_up_blocks,
+            gate_up_scales,
+            group_size=16,
+            implementation=implementation,
         )
 
         gate_up_bias = weights_dict[experts_path / "gate_up_proj_bias"]
         if gate_up_bias.ndim == 1:
             gate_up_bias = jnp.broadcast_to(
                 gate_up_bias,
-                (combined_up_gate_weights.shape[0], gate_up_bias.shape[0]),
+                (gate_up_blocks.shape[0], gate_up_bias.shape[0]),
             )
-        up_bias, gate_bias = deinterleave_pairwise_columns(gate_up_bias, first="odd")
-        combined_up_gate_biases = jnp.concatenate([up_bias + 1.0, gate_bias], axis=-1)
+        up_bias = gate_up_bias[..., 1::2] + jnp.asarray(1.0, dtype=gate_up_bias.dtype)
+        gate_bias = gate_up_bias[..., 0::2]
+        gate_up_bias = jnp.concatenate((up_bias, gate_bias), axis=-1)
 
         up_projection = _update_linear(
             module.experts.up_projection,
-            load_full_precision(
-                module.experts.up_projection.weights,
-                combined_up_gate_weights,
-            ),
-            combined_up_gate_biases,
+            gate_up_weights,
+            gate_up_bias,
         )
 
-        down_weights = decode_mxfp4(
-            weights_dict[experts_path / "down_proj_blocks"],
+        down_blocks = weights_dict[experts_path / "down_proj_blocks"]
+        down_weights = _load_mxfp4_matrix(
+            module.experts.down_projection.weights,
+            down_blocks,
             weights_dict[experts_path / "down_proj_scales"],
-            dtype=module.experts.down_projection.weights.dtype,
-            flatten=False,
+            implementation=implementation,
         )
-        down_weights = rearrange(down_weights, "e o ib ie -> e o (ib ie)")
         down_biases = weights_dict[experts_path / "down_proj_bias"]
         if down_biases.ndim == 1:
-            down_biases = jnp.broadcast_to(down_biases, (*down_weights.shape[:-1], down_biases.shape[0]))
+            down_biases = jnp.broadcast_to(down_biases, (down_blocks.shape[0], down_biases.shape[0]))
 
         down_projection = _update_linear(
             module.experts.down_projection,
-            load_full_precision(
-                module.experts.down_projection.weights,
-                down_weights,
-            ),
+            down_weights,
             down_biases,
         )
 

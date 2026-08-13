@@ -4,6 +4,7 @@ from math import prod
 from pathlib import Path
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -12,26 +13,35 @@ from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 
 from lalamo.compressed.int import IntMatrixForInference, IntMatrixForTraining, IntSpec
+from lalamo.compressed.microfloat import MicrofloatMatrixForInference
 from lalamo.compressed.mlx import MLXMatrixForInference, MLXMatrixForTraining
 from lalamo.initializer import EmptyInitializer, Initializer
 from lalamo.model import Model, ModelConfig
 from lalamo.model_import.loaders.huggingface import (
-    load_attention,
     load_huggingface_classifier,
     load_input_embedding_matrix,
     load_linear,
+    load_moe,
 )
+from lalamo.model_import.loaders.utils import decode_mxfp4
 from lalamo.model_import.model_configs.foreign_config import ForeignConfig
 from lalamo.model_import.model_configs.huggingface import ModernBERTConfig
 from lalamo.models.chat_codec import ChatCodec, ChatCodecConfig
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
+from lalamo.modules.activations import SiLU
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.decoder import PerLayerEmbedding, PLEModelConfig
 from lalamo.modules.embedding import TiedEmbedding
 from lalamo.modules.linear import Linear, LinearConfig
-from lalamo.modules.mlp import DenseMLP
+from lalamo.modules.mlp import (
+    DenseMLP,
+    DenseMLPConfig,
+    MixtureOfExperts,
+    MixtureOfExpertsConfig,
+    SoftmaxRouting,
+)
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
+from lalamo.modules.token_mixers.attention import Attention
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.weight_matrix import (
@@ -82,25 +92,28 @@ def _linear_template(dtype: DTypeLike | None, layout: Layout = Layout.OUTPUT_INP
     return eqx.tree_at(lambda module: module.weights, result, weights)
 
 
-def _gated_attention_template(dtype: DTypeLike, *, has_qkvg_biases: bool) -> Attention:
-    initializer = EmptyInitializer(default_dtype=dtype, sharding_config=make_test_sharding_config())
-    return AttentionConfig(
-        qkvg_projection_config=LinearConfig(),
-        out_projection_config=LinearConfig(),
-        query_norm_config=None,
-        key_norm_config=None,
-        num_heads=2,
-        num_groups=1,
-        head_dim=2,
-        is_causal=True,
-        scale=None,
-        sliding_window_size=None,
-        logit_soft_cap=None,
-        has_sinks=False,
-        has_qkvg_biases=has_qkvg_biases,
-        has_out_biases=False,
-        has_gate=True,
-    ).init(initializer, INPUT_DIM)
+def _gpt_oss_moe_template() -> MixtureOfExperts:
+    linear_config = LinearConfig()
+    expert_config = DenseMLPConfig(
+        linear_config=linear_config,
+        activation=SiLU(alpha=1.702),
+        has_up_biases=True,
+        has_down_biases=True,
+        gate_clipping=(None, 7.0),
+        up_clipping=(-6.0, 8.0),
+    )
+    config = MixtureOfExpertsConfig(
+        expert_config=expert_config,
+        router_config=linear_config,
+        routing_function=SoftmaxRouting(),
+        num_routed_experts=2,
+        num_active_routed_experts=1,
+        router_has_biases=True,
+        num_shared_experts=0,
+        expert_hidden_dim=32,
+    )
+    initializer = EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config())
+    return config.init(initializer, model_dim=64, hidden_dim=64)
 
 
 def _mlx_weights(path: ParameterPath) -> Mapping[str, Array]:
@@ -346,94 +359,72 @@ def test_load_linear_full_precision_strong_template_forces_template_dtype() -> N
     assert loaded.weights.dtype == jnp.float32
 
 
-def test_load_gated_attention_fuses_qkvg_weights_and_biases() -> None:
-    module = _gated_attention_template(jnp.float32, has_qkvg_biases=True)
-    num_heads = module.config.num_heads
-    num_groups = module.config.num_groups
-    head_dim = module.config.head_dim
-    q_dim = num_heads * head_dim
-    kv_dim = num_groups * head_dim
-    path = ParameterPath("self_attn")
-    qg_weights = jnp.arange(2 * q_dim * INPUT_DIM, dtype=jnp.float32).reshape(2 * q_dim, INPUT_DIM)
-    qg_biases = jnp.arange(2 * q_dim, dtype=jnp.float32)
-    k_weights = jnp.full((kv_dim, INPUT_DIM), 100, dtype=jnp.float32)
-    v_weights = jnp.full((kv_dim, INPUT_DIM), 200, dtype=jnp.float32)
-    k_biases = jnp.full((kv_dim,), 300, dtype=jnp.float32)
-    v_biases = jnp.full((kv_dim,), 400, dtype=jnp.float32)
+def test_load_gpt_oss_moe_preserves_native_mxfp4_payload_and_canonical_rows() -> None:
+    module = _gpt_oss_moe_template()
+    path = ParameterPath()
+    experts_path = path / "experts"
+    gate_up_blocks = jnp.arange(2 * 64 * 2 * 16, dtype=jnp.int32).astype(jnp.uint8).reshape(2, 64, 2, 16)
+    gate_up_scale_bytes = ((jnp.arange(2 * 64 * 2, dtype=jnp.int32) % 5) + 125).astype(jnp.uint8)
+    gate_up_scale_bytes = gate_up_scale_bytes.reshape(2, 64, 2)
+    gate_up_scales = jax.lax.bitcast_convert_type(gate_up_scale_bytes, jnp.float8_e8m0fnu)
+    down_blocks = jnp.arange(2 * 64 * 16, dtype=jnp.int32).astype(jnp.uint8).reshape(2, 64, 1, 16)
+    down_scale_bytes = ((jnp.arange(2 * 64, dtype=jnp.int32) % 3) + 126).astype(jnp.uint8)
+    down_scale_bytes = down_scale_bytes.reshape(2, 64, 1)
+    down_scales = jax.lax.bitcast_convert_type(down_scale_bytes, jnp.float8_e8m0fnu)
+    gate_up_bias = jnp.arange(64, dtype=jnp.bfloat16)
+    down_bias = jnp.arange(64, dtype=jnp.bfloat16)
     weights: Mapping[str, Array] = {
-        path / "q_proj" / "weight": qg_weights,
-        path / "q_proj" / "bias": qg_biases,
-        path / "k_proj" / "weight": k_weights,
-        path / "k_proj" / "bias": k_biases,
-        path / "v_proj" / "weight": v_weights,
-        path / "v_proj" / "bias": v_biases,
-        path / "o_proj" / "weight": jnp.zeros((INPUT_DIM, q_dim), dtype=jnp.float32),
+        path / "router" / "weight": jnp.zeros((2, 64), dtype=jnp.bfloat16),
+        path / "router" / "bias": jnp.zeros((2,), dtype=jnp.bfloat16),
+        experts_path / "gate_up_proj_blocks": gate_up_blocks,
+        experts_path / "gate_up_proj_scales": gate_up_scales,
+        experts_path / "gate_up_proj_bias": gate_up_bias,
+        experts_path / "down_proj_blocks": down_blocks,
+        experts_path / "down_proj_scales": down_scales,
+        experts_path / "down_proj_bias": down_bias,
     }
 
-    loaded = load_attention(module, weights, path)
+    loaded = load_moe(module, weights, path)
 
-    qg_weights_by_head = qg_weights.reshape(num_heads, 2 * head_dim, INPUT_DIM)
-    q_weights = qg_weights_by_head[:, :head_dim].reshape(q_dim, INPUT_DIM)
-    gate_weights = qg_weights_by_head[:, head_dim:].reshape(q_dim, INPUT_DIM)
-    expected_weights = jnp.concatenate((q_weights, k_weights, v_weights, gate_weights))
-    qg_biases_by_head = qg_biases.reshape(num_heads, 2 * head_dim)
-    q_biases = qg_biases_by_head[:, :head_dim].reshape(q_dim)
-    gate_biases = qg_biases_by_head[:, head_dim:].reshape(q_dim)
-    expected_biases = jnp.concatenate((q_biases, k_biases, v_biases, gate_biases))
+    up_weights = loaded.experts.up_projection.weights
+    down_weights = loaded.experts.down_projection.weights
+    assert isinstance(up_weights, MicrofloatMatrixForInference)
+    assert isinstance(down_weights, MicrofloatMatrixForInference)
+    expected_up_blocks = jnp.concatenate((gate_up_blocks[:, 1::2], gate_up_blocks[:, 0::2]), axis=1)
+    expected_up_blocks = expected_up_blocks.reshape(2, 64, 2, 2, 8).reshape(2, 64, 32)
+    expected_up_scales = jnp.concatenate((gate_up_scale_bytes[:, 1::2], gate_up_scale_bytes[:, 0::2]), axis=1)
+    expected_up_scales = jnp.repeat(expected_up_scales, 2, axis=-1)
+    assert up_weights.spec.group_size == 16
+    assert jnp.array_equal(up_weights.packed_weights, expected_up_blocks)
+    assert jnp.array_equal(up_weights.packed_scales, expected_up_scales)
+    assert down_weights.spec.group_size == 32
+    assert jnp.array_equal(down_weights.packed_weights, down_blocks.reshape(2, 64, 16))
+    assert jnp.array_equal(down_weights.packed_scales, down_scale_bytes)
 
-    assert loaded.qkvg_projection.output_dims == (q_dim, kv_dim, kv_dim, q_dim)
-    np.testing.assert_array_equal(loaded.qkvg_projection.weights.decompress(), expected_weights)
-    np.testing.assert_array_equal(loaded.qkvg_projection.biases, expected_biases)
+    expected_up_weights = decode_mxfp4(
+        gate_up_blocks,
+        gate_up_scale_bytes,
+        dtype=up_weights.dtype,
+        flatten=False,
+    )
+    expected_up_weights = jnp.concatenate((expected_up_weights[:, 1::2], expected_up_weights[:, 0::2]), axis=1)
+    expected_up_weights = expected_up_weights.reshape(2, 64, 64)
+    expected_down_weights = decode_mxfp4(
+        down_blocks,
+        down_scale_bytes,
+        dtype=down_weights.dtype,
+        flatten=False,
+    ).reshape(2, 64, 32)
+    np.testing.assert_array_equal(up_weights.decompress(), expected_up_weights)
+    np.testing.assert_array_equal(down_weights.decompress(), expected_down_weights)
 
-
-def test_load_gated_attention_fuses_mlx_4bit_qkvg_weights() -> None:
-    module = _gated_attention_template(jnp.bfloat16, has_qkvg_biases=False)
-    num_heads = module.config.num_heads
-    head_dim = module.config.head_dim
-    q_dim = num_heads * head_dim
-    kv_dim = module.config.num_groups * head_dim
-    path = ParameterPath("self_attn")
-    qg_weights = jnp.arange(2 * q_dim * INPUT_DIM, dtype=jnp.int32).reshape(2 * q_dim, INPUT_DIM) % 16
-    k_weights = (jnp.arange(kv_dim * INPUT_DIM, dtype=jnp.int32).reshape(kv_dim, INPUT_DIM) + 3) % 16
-    v_weights = (jnp.arange(kv_dim * INPUT_DIM, dtype=jnp.int32).reshape(kv_dim, INPUT_DIM) + 7) % 16
-
-    def mlx_projection(projection_path: ParameterPath, unpacked_weights: Array) -> Mapping[str, Array]:
-        rows = unpacked_weights.shape[0]
-        return {
-            projection_path / "weight": _pack_int32(unpacked_weights, bits=4),
-            projection_path / "scales": jnp.ones((rows, NUM_GROUPS), dtype=jnp.bfloat16),
-            projection_path / "biases": jnp.zeros((rows, NUM_GROUPS), dtype=jnp.bfloat16),
-        }
-
-    weights = {
-        **mlx_projection(path / "q_proj", qg_weights),
-        **mlx_projection(path / "k_proj", k_weights),
-        **mlx_projection(path / "v_proj", v_weights),
-        path / "o_proj" / "weight": jnp.zeros((INPUT_DIM, q_dim), dtype=jnp.bfloat16),
-    }
-
-    loaded = load_attention(module, weights, path)
-
-    qg_weights_by_head = qg_weights.reshape(num_heads, 2 * head_dim, INPUT_DIM)
-    q_weights = qg_weights_by_head[:, :head_dim].reshape(q_dim, INPUT_DIM)
-    gate_weights = qg_weights_by_head[:, head_dim:].reshape(q_dim, INPUT_DIM)
-    expected_weights = jnp.concatenate((q_weights, k_weights, v_weights, gate_weights)).astype(jnp.bfloat16)
-
-    assert isinstance(loaded.qkvg_projection.weights, MLXMatrixForInference)
-    assert loaded.qkvg_projection.weights.spec.bits == 4
-    assert loaded.qkvg_projection.output_dims == (q_dim, kv_dim, kv_dim, q_dim)
-    np.testing.assert_array_equal(loaded.qkvg_projection.weights.decompress(), expected_weights)
-
-
-def test_load_gated_attention_rejects_packed_qweight_with_clear_error() -> None:
-    module = _gated_attention_template(jnp.bfloat16, has_qkvg_biases=False)
-    path = ParameterPath("self_attn")
-    weights: Mapping[str, Array] = {
-        path / "q_proj" / "qweight": jnp.zeros((INPUT_DIM, 1), dtype=jnp.int32),
-    }
-
-    with pytest.raises(ValueError, match="Packed qweight is not supported for gated attention"):
-        load_attention(module, weights, path)
+    assert loaded.experts.up_projection.biases is not None
+    assert loaded.experts.down_projection.biases is not None
+    expected_up_bias = jnp.broadcast_to(gate_up_bias[1::2] + 1, (2, 32))
+    expected_gate_bias = jnp.broadcast_to(gate_up_bias[0::2], (2, 32))
+    assert jnp.array_equal(loaded.experts.up_projection.biases[..., :32], expected_up_bias)
+    assert jnp.array_equal(loaded.experts.up_projection.biases[..., 32:], expected_gate_bias)
+    assert jnp.array_equal(loaded.experts.down_projection.biases, jnp.broadcast_to(down_bias, (2, 64)))
 
 
 def test_load_huggingface_classifier_uses_hf_embedding_layout() -> None:
