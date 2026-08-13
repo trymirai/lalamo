@@ -16,6 +16,7 @@ from lalamo.compressed.mlx import MLXMatrixForInference, MLXMatrixForTraining
 from lalamo.initializer import EmptyInitializer, Initializer
 from lalamo.model import Model, ModelConfig
 from lalamo.model_import.loaders.huggingface import (
+    load_attention,
     load_huggingface_classifier,
     load_input_embedding_matrix,
     load_linear,
@@ -30,7 +31,7 @@ from lalamo.modules.embedding import TiedEmbedding
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.mlp import DenseMLP
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.token_mixers.attention import Attention
+from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.weight_matrix import (
@@ -79,6 +80,27 @@ def _linear_template(dtype: DTypeLike | None, layout: Layout = Layout.OUTPUT_INP
         sharding_config=make_test_sharding_config(),
     )
     return eqx.tree_at(lambda module: module.weights, result, weights)
+
+
+def _gated_attention_template(dtype: DTypeLike, *, has_qkvg_biases: bool) -> Attention:
+    initializer = EmptyInitializer(default_dtype=dtype, sharding_config=make_test_sharding_config())
+    return AttentionConfig(
+        qkvg_projection_config=LinearConfig(),
+        out_projection_config=LinearConfig(),
+        query_norm_config=None,
+        key_norm_config=None,
+        num_heads=2,
+        num_groups=1,
+        head_dim=2,
+        is_causal=True,
+        scale=None,
+        sliding_window_size=None,
+        logit_soft_cap=None,
+        has_sinks=False,
+        has_qkvg_biases=has_qkvg_biases,
+        has_out_biases=False,
+        has_gate=True,
+    ).init(initializer, INPUT_DIM)
 
 
 def _mlx_weights(path: ParameterPath) -> Mapping[str, Array]:
@@ -181,7 +203,7 @@ def _classifier_weights(classifier: Classifier) -> Mapping[str, Array]:
         ),
         decoder_path / "embeddings" / "norm" / "weight": _classifier_tensor(classifier.embedding_norm.scales.shape),
         decoder_path / "layers" / 0 / "attn" / "Wqkv" / "weight": _classifier_tensor(
-            layer.mixer.qkv_projection.weights.shape,
+            layer.mixer.qkvg_projection.weights.shape,
         ),
         decoder_path / "layers" / 0 / "attn" / "Wo" / "weight": _classifier_tensor(
             layer.mixer.out_projection.weights.shape,
@@ -322,6 +344,96 @@ def test_load_linear_full_precision_strong_template_forces_template_dtype() -> N
 
     assert isinstance(loaded.weights, FullPrecisionMatrix)
     assert loaded.weights.dtype == jnp.float32
+
+
+def test_load_gated_attention_fuses_qkvg_weights_and_biases() -> None:
+    module = _gated_attention_template(jnp.float32, has_qkvg_biases=True)
+    num_heads = module.config.num_heads
+    num_groups = module.config.num_groups
+    head_dim = module.config.head_dim
+    q_dim = num_heads * head_dim
+    kv_dim = num_groups * head_dim
+    path = ParameterPath("self_attn")
+    qg_weights = jnp.arange(2 * q_dim * INPUT_DIM, dtype=jnp.float32).reshape(2 * q_dim, INPUT_DIM)
+    qg_biases = jnp.arange(2 * q_dim, dtype=jnp.float32)
+    k_weights = jnp.full((kv_dim, INPUT_DIM), 100, dtype=jnp.float32)
+    v_weights = jnp.full((kv_dim, INPUT_DIM), 200, dtype=jnp.float32)
+    k_biases = jnp.full((kv_dim,), 300, dtype=jnp.float32)
+    v_biases = jnp.full((kv_dim,), 400, dtype=jnp.float32)
+    weights: Mapping[str, Array] = {
+        path / "q_proj" / "weight": qg_weights,
+        path / "q_proj" / "bias": qg_biases,
+        path / "k_proj" / "weight": k_weights,
+        path / "k_proj" / "bias": k_biases,
+        path / "v_proj" / "weight": v_weights,
+        path / "v_proj" / "bias": v_biases,
+        path / "o_proj" / "weight": jnp.zeros((INPUT_DIM, q_dim), dtype=jnp.float32),
+    }
+
+    loaded = load_attention(module, weights, path)
+
+    qg_weights_by_head = qg_weights.reshape(num_heads, 2 * head_dim, INPUT_DIM)
+    q_weights = qg_weights_by_head[:, :head_dim].reshape(q_dim, INPUT_DIM)
+    gate_weights = qg_weights_by_head[:, head_dim:].reshape(q_dim, INPUT_DIM)
+    expected_weights = jnp.concatenate((q_weights, k_weights, v_weights, gate_weights))
+    qg_biases_by_head = qg_biases.reshape(num_heads, 2 * head_dim)
+    q_biases = qg_biases_by_head[:, :head_dim].reshape(q_dim)
+    gate_biases = qg_biases_by_head[:, head_dim:].reshape(q_dim)
+    expected_biases = jnp.concatenate((q_biases, k_biases, v_biases, gate_biases))
+
+    assert loaded.qkvg_projection.output_dims == (q_dim, kv_dim, kv_dim, q_dim)
+    np.testing.assert_array_equal(loaded.qkvg_projection.weights.decompress(), expected_weights)
+    np.testing.assert_array_equal(loaded.qkvg_projection.biases, expected_biases)
+
+
+def test_load_gated_attention_fuses_mlx_4bit_qkvg_weights() -> None:
+    module = _gated_attention_template(jnp.bfloat16, has_qkvg_biases=False)
+    num_heads = module.config.num_heads
+    head_dim = module.config.head_dim
+    q_dim = num_heads * head_dim
+    kv_dim = module.config.num_groups * head_dim
+    path = ParameterPath("self_attn")
+    qg_weights = jnp.arange(2 * q_dim * INPUT_DIM, dtype=jnp.int32).reshape(2 * q_dim, INPUT_DIM) % 16
+    k_weights = (jnp.arange(kv_dim * INPUT_DIM, dtype=jnp.int32).reshape(kv_dim, INPUT_DIM) + 3) % 16
+    v_weights = (jnp.arange(kv_dim * INPUT_DIM, dtype=jnp.int32).reshape(kv_dim, INPUT_DIM) + 7) % 16
+
+    def mlx_projection(projection_path: ParameterPath, unpacked_weights: Array) -> Mapping[str, Array]:
+        rows = unpacked_weights.shape[0]
+        return {
+            projection_path / "weight": _pack_int32(unpacked_weights, bits=4),
+            projection_path / "scales": jnp.ones((rows, NUM_GROUPS), dtype=jnp.bfloat16),
+            projection_path / "biases": jnp.zeros((rows, NUM_GROUPS), dtype=jnp.bfloat16),
+        }
+
+    weights = {
+        **mlx_projection(path / "q_proj", qg_weights),
+        **mlx_projection(path / "k_proj", k_weights),
+        **mlx_projection(path / "v_proj", v_weights),
+        path / "o_proj" / "weight": jnp.zeros((INPUT_DIM, q_dim), dtype=jnp.bfloat16),
+    }
+
+    loaded = load_attention(module, weights, path)
+
+    qg_weights_by_head = qg_weights.reshape(num_heads, 2 * head_dim, INPUT_DIM)
+    q_weights = qg_weights_by_head[:, :head_dim].reshape(q_dim, INPUT_DIM)
+    gate_weights = qg_weights_by_head[:, head_dim:].reshape(q_dim, INPUT_DIM)
+    expected_weights = jnp.concatenate((q_weights, k_weights, v_weights, gate_weights)).astype(jnp.bfloat16)
+
+    assert isinstance(loaded.qkvg_projection.weights, MLXMatrixForInference)
+    assert loaded.qkvg_projection.weights.spec.bits == 4
+    assert loaded.qkvg_projection.output_dims == (q_dim, kv_dim, kv_dim, q_dim)
+    np.testing.assert_array_equal(loaded.qkvg_projection.weights.decompress(), expected_weights)
+
+
+def test_load_gated_attention_rejects_packed_qweight_with_clear_error() -> None:
+    module = _gated_attention_template(jnp.bfloat16, has_qkvg_biases=False)
+    path = ParameterPath("self_attn")
+    weights: Mapping[str, Array] = {
+        path / "q_proj" / "qweight": jnp.zeros((INPUT_DIM, 1), dtype=jnp.int32),
+    }
+
+    with pytest.raises(ValueError, match="Packed qweight is not supported for gated attention"):
+        load_attention(module, weights, path)
 
 
 def test_load_huggingface_classifier_uses_hf_embedding_layout() -> None:

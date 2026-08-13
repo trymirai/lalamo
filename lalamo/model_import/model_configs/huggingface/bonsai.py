@@ -100,13 +100,13 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
         )
 
         attention_config = AttentionConfig(
-            qkv_projection_config=linear_config,
+            qkvg_projection_config=linear_config,
             out_projection_config=linear_config,
             query_norm_config=rmsnorm_config,
             key_norm_config=rmsnorm_config,
             logit_soft_cap=None,
             has_sinks=False,
-            has_qkv_biases=self.attention_bias,
+            has_qkvg_biases=self.attention_bias,
             has_out_biases=self.attention_bias,
             num_heads=self.num_attention_heads,
             num_groups=self.num_key_value_heads,

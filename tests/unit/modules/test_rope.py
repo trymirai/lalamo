@@ -214,7 +214,7 @@ def _attention() -> Attention:
         subtract_mean=False,
     )
     config = AttentionConfig(
-        qkv_projection_config=LinearConfig(),
+        qkvg_projection_config=LinearConfig(),
         out_projection_config=LinearConfig(),
         query_norm_config=norm_config,
         key_norm_config=norm_config,
@@ -226,7 +226,7 @@ def _attention() -> Attention:
         sliding_window_size=None,
         logit_soft_cap=None,
         has_sinks=False,
-        has_qkv_biases=False,
+        has_qkvg_biases=False,
         has_out_biases=False,
     )
     return config.init(
@@ -267,9 +267,9 @@ def test_attention_project_key_value_heads_matches_cache_written_by_call(fake_me
     projected = jnp.einsum(
         "ti,oi->to",
         jnp.asarray(jax.device_get(inputs)),
-        jnp.asarray(jax.device_get(module.qkv_projection.weights.decompress())),
+        jnp.asarray(jax.device_get(module.qkvg_projection.weights.decompress())),
     )
-    *_, raw_values = jnp.split(projected, Linear.get_split_points(module.qkv_projection.output_dims), axis=-1)
+    *_, raw_values = jnp.split(projected, Linear.get_split_points(module.qkvg_projection.output_dims), axis=-1)
     _assert_close(
         result=values,
         reference=rearrange(raw_values, "tokens (groups head_channels) -> tokens groups head_channels", groups=2),
