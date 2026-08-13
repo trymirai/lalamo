@@ -93,7 +93,7 @@ def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]
     layer_configs = []
     for kv_source in kv_source_layer_indices:
         attention_config = AttentionConfig(
-            qkv_projection_config=LinearConfig(),
+            qkvg_projection_config=LinearConfig(),
             out_projection_config=LinearConfig(),
             query_norm_config=None,
             key_norm_config=None,
@@ -105,7 +105,7 @@ def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]
             sliding_window_size=None,
             logit_soft_cap=None,
             has_sinks=False,
-            has_qkv_biases=False,
+            has_qkvg_biases=False,
             has_out_biases=False,
             is_kv_sharing=kv_source is not None,
         )

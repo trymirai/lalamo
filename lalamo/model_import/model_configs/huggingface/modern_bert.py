@@ -132,13 +132,13 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
         transformer_layer_configs = []
         for sliding_window_size, pre_attn_config in zip(sliding_window_sizes, pre_attn_configs, strict=True):
             attention_config = AttentionConfig(
-                qkv_projection_config=linear_config,
+                qkvg_projection_config=linear_config,
                 out_projection_config=linear_config,
                 query_norm_config=None,
                 key_norm_config=None,
                 logit_soft_cap=None,
                 has_sinks=False,
-                has_qkv_biases=self.attention_bias,
+                has_qkvg_biases=self.attention_bias,
                 has_out_biases=False,
                 num_heads=self.num_attention_heads,
                 num_groups=self.num_attention_heads,

@@ -216,7 +216,7 @@ def _classifier_weights(classifier: Classifier) -> Mapping[str, Array]:
         ),
         decoder_path / "embeddings" / "norm" / "weight": _classifier_tensor(classifier.embedding_norm.scales.shape),
         decoder_path / "layers" / 0 / "attn" / "Wqkv" / "weight": _classifier_tensor(
-            layer.mixer.qkv_projection.weights.shape,
+            layer.mixer.qkvg_projection.weights.shape,
         ),
         decoder_path / "layers" / 0 / "attn" / "Wo" / "weight": _classifier_tensor(
             layer.mixer.out_projection.weights.shape,

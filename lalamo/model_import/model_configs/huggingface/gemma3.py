@@ -133,13 +133,13 @@ class HFGemma3TextConfigRaw:
         layer_configs = []
         for sliding_window_size in self.sliding_window_sizes:
             attention_config = AttentionConfig(
-                qkv_projection_config=linear_config,
+                qkvg_projection_config=linear_config,
                 out_projection_config=linear_config,
                 query_norm_config=rms_norm_config,
                 key_norm_config=rms_norm_config,
                 logit_soft_cap=self.attn_logit_softcapping,
                 has_sinks=False,
-                has_qkv_biases=self.attention_bias,
+                has_qkvg_biases=self.attention_bias,
                 has_out_biases=self.attention_bias,
                 num_heads=self.num_attention_heads,
                 num_groups=self.num_key_value_heads,

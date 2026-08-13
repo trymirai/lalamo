@@ -172,7 +172,7 @@ class HFDFlashConfig:
             TransformerLayerConfig(
                 pre_mixer_norm_config=norm_config,
                 mixer_config=AttentionConfig(
-                    qkv_projection_config=linear_config,
+                    qkvg_projection_config=linear_config,
                     out_projection_config=linear_config,
                     query_norm_config=norm_config,
                     key_norm_config=norm_config,
@@ -184,7 +184,7 @@ class HFDFlashConfig:
                     sliding_window_size=sliding_window_size,
                     logit_soft_cap=None,
                     has_sinks=False,
-                    has_qkv_biases=self.attention_bias,
+                    has_qkvg_biases=self.attention_bias,
                     has_out_biases=self.attention_bias,
                 ),
                 post_mixer_norm_config=None,
