@@ -14,7 +14,7 @@ from jaxlib.mlir import ir
 from jaxlib.mlir.dialects import arith
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.utils.sharding import is_sharded, sharding_of
+from lalamo.utils.sharding import is_sharded, sharding_of, supports_mosaic_gpu
 
 __all__ = [
     "hadamard_transform",
@@ -74,12 +74,7 @@ def _make_hadamard_dispatch(
                 f"Input dimension {input_dim} must be a multiple of block size {block_size}",
             )
 
-        abstract_device = sharding_of(inputs).mesh.abstract_mesh.abstract_device
-        if (
-            abstract_device is not None
-            and abstract_device.platform == "gpu"
-            and abstract_device.device_kind.startswith("NVIDIA")
-        ):
+        if supports_mosaic_gpu(sharding_of(inputs).mesh, 9):
             return _pallas_hadamard_transform(inputs, block_size)
         return _xla_hadamard_transform(inputs, block_size)
 

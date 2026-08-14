@@ -87,7 +87,6 @@ class DFlashDraftLayer(LalamoModule[DFlashDraftLayerConfig]):
         normalized_attention_inputs = call_vmapped_twice(
             self.input_norm,
             hidden_states,
-            forward_pass_config=forward_pass_config.normalization_forward_pass_config,
             added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
         attention_results = call_vmapped(
@@ -103,7 +102,6 @@ class DFlashDraftLayer(LalamoModule[DFlashDraftLayerConfig]):
         normalized_mlp_inputs = call_vmapped_twice(
             self.post_attention_norm,
             mlp_inputs,
-            forward_pass_config=forward_pass_config.normalization_forward_pass_config,
             added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
         mlp_outputs = self.mlp(
@@ -269,7 +267,6 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
         return call_vmapped_twice(
             self.context_norm,
             target_hidden,
-            forward_pass_config=forward_pass_config.normalization_forward_pass_config,
             added_sharding_axes=(batch_axis, None),
         )
 
@@ -375,7 +372,6 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
         return call_vmapped_twice(
             self.output_norm,
             hidden_states,
-            forward_pass_config=forward_pass_config.normalization_forward_pass_config,
             added_sharding_axes=(batch_axis, None),
         )
 

@@ -367,7 +367,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         core_attn_out = core_attn_out.astype(mixed_qkv.dtype)
 
         def norm_gate(x: Float[Array, " channels"], gate: Float[Array, " channels"]) -> Float[Array, " channels"]:
-            normed = self.norm(x, forward_pass_config=forward_pass_config.normalization_forward_pass_config)
+            normed = self.norm(x)
             return normed * jax.nn.silu(gate.astype(jnp.float32)).astype(x.dtype)
 
         num_tokens, *_ = gate.shape

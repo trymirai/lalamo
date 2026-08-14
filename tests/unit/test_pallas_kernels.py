@@ -17,7 +17,11 @@ from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPass
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
-from lalamo.modules.token_mixers.kv_cache import StaticKVCacheLayer
+from lalamo.modules.token_mixers.kv_cache import (
+    DynamicKVCacheLayer,
+    KVCacheLayer,
+    StaticKVCacheLayer,
+)
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.sharding import ShardingConfig
 from tests.common import assert_close, gpu_only
@@ -129,7 +133,7 @@ def _attention(
 def _run_attention(
     module: Attention,
     inputs: Array,
-    state: StaticKVCacheLayer,
+    state: KVCacheLayer,
     implementation: AttentionImplementation,
 ) -> Array:
     return call_vmapped(
@@ -157,7 +161,7 @@ def _run_attention(
         pytest.param(32, 40, 8, 128, 264, None, None, id="qwen3-d128-gqa5"),
         pytest.param(16, 64, 4, 128, 1_032, None, None, id="qwen3-d128-gqa16-split4"),
         pytest.param(64, 16, 8, 256, 2_056, 1.0, 1_024, id="gemma4-d256-sliding"),
-        pytest.param(64, 16, 2, 512, 1_032, 1.0, None, id="gemma4-d512-gqa8"),
+        pytest.param(64, 16, 1, 512, 1_032, 1.0, None, id="d512-mqa"),
     ],
 )
 def test_decode_attention_matches_stable_reduction(
@@ -194,6 +198,50 @@ def test_decode_attention_matches_stable_reduction(
         ),
         current_length=_replicate(
             (capacity - batch_size - 1 + jnp.arange(batch_size)).astype(jnp.int32),
+            sharding_config,
+        ),
+    )
+
+    result = _run_attention(module, inputs, state, AttentionImplementation.PALLAS)
+    reference = _run_attention(module, inputs, state, AttentionImplementation.STABLE_REDUCTION)
+
+    assert_close(result=result, reference=reference, atol=2e-2, rtol=3e-2)
+
+
+def test_decode_attention_respects_dynamic_padding_mask() -> None:
+    batch_size = 32
+    capacity = 264
+    num_heads = 40
+    num_groups = 8
+    head_dim = 128
+    sharding_config = _gpu_sharding_config(10)
+    module = _attention(num_heads, num_groups, head_dim, None, None, sharding_config)
+    inputs = _replicate(
+        _values((batch_size, 1, 8), seed=40, scale=0.2).astype(jnp.bfloat16),
+        sharding_config,
+    )
+    padding_mask = jnp.arange(capacity - 1) < 16
+    padding_mask = padding_mask.at[8:12].set(False)
+    state = DynamicKVCacheLayer(
+        has_sinks=False,
+        keys=_replicate(
+            _values(
+                (batch_size, capacity - 1, num_groups, head_dim),
+                seed=41,
+                scale=0.1,
+            ).astype(jnp.bfloat16),
+            sharding_config,
+        ),
+        values=_replicate(
+            _values(
+                (batch_size, capacity - 1, num_groups, head_dim),
+                seed=42,
+                scale=0.1,
+            ).astype(jnp.bfloat16),
+            sharding_config,
+        ),
+        padding_mask=_replicate(
+            jnp.broadcast_to(padding_mask, (batch_size, capacity - 1)),
             sharding_config,
         ),
     )

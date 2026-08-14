@@ -424,15 +424,16 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
             raise TypeError("Hybrid transposed matmul does not support adapters.")
 
         quantized_keychain, adapter_keychain = keychain.split(2)
+        quantized_vector = vector
         if self.incoherence_signs is not None:
             assert self.spec.incoherence_block_size is not None
-            vector = self.incoherence_signs.input_transform(
+            quantized_vector = self.incoherence_signs.input_transform(
                 vector,
                 self.spec.incoherence_block_size,
                 transposed=transposed,
             )
         result = self.quantized.dot(
-            vector,
+            quantized_vector,
             keychain=quantized_keychain,
             forward_pass_config=forward_pass_config,
             transposed=transposed,

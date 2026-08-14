@@ -12,7 +12,6 @@ from jaxtyping import Array, DTypeLike, Float, Int
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
-from lalamo.modules.normalization import NormalizationForwardPassConfig
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.weight_matrix import GradientEstimator, MatmulConfig
 
@@ -51,7 +50,6 @@ class AttentionImplementation(Enum):
     STABLE_REDUCTION = "stable_reduction"
     STANDARD = "standard"
     CUDNN = "cudnn"
-    TOKAMAX = "tokamax"
 
 
 @dataclass(frozen=True)
@@ -63,16 +61,12 @@ class MixerForwardPassConfig:
     ssm_chunk_size: int = 32
     ssm_min_tail_size_to_chunk: int = 16
     matmul_config: MatmulConfig = field(default_factory=MatmulConfig)
-    normalization_forward_pass_config: NormalizationForwardPassConfig = field(
-        default_factory=NormalizationForwardPassConfig,
-    )
 
     @classmethod
     def for_tracer_tests(cls) -> Self:
         return cls(
             attention_implementation=AttentionImplementation.STABLE_REDUCTION,
             matmul_config=MatmulConfig.for_tracer_tests(),
-            normalization_forward_pass_config=NormalizationForwardPassConfig.for_tracer_tests(),
         )
 
     @classmethod
@@ -80,7 +74,6 @@ class MixerForwardPassConfig:
         return cls(
             attention_implementation=AttentionImplementation.PALLAS,
             matmul_config=MatmulConfig.for_inference(precision),
-            normalization_forward_pass_config=NormalizationForwardPassConfig.for_inference(),
         )
 
     @classmethod
@@ -93,7 +86,6 @@ class MixerForwardPassConfig:
             attention_implementation=AttentionImplementation.STANDARD,
             ssm_min_tail_size_to_chunk=0,
             matmul_config=MatmulConfig.for_training(gradient_estimator, precision),
-            normalization_forward_pass_config=NormalizationForwardPassConfig.for_training(),
         )
 
 

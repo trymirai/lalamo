@@ -1,4 +1,5 @@
 import math
+import warnings
 from collections.abc import Callable
 from functools import cache
 from typing import Any, Literal, cast
@@ -8,8 +9,6 @@ import jax.numpy as jnp
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import mosaic_gpu as plgpu
 from jaxtyping import Array, Bool, Float, Int
-
-from lalamo.utils.sharding import sharding_of, supports_mosaic_gpu
 
 type _Ref = Any
 type _NumSplits = Literal[1, 2, 4, 8]
@@ -64,15 +63,24 @@ def _make_main(
 
     def kernel(*refs: _Ref) -> None:
         if num_splits == 1:
-            grouped_queries_ref, keys_ref, values_ref, start_ref, end_ref, scale_ref, final_outputs_ref, *scratch = (
-                refs
-            )
+            (
+                grouped_queries_ref,
+                keys_ref,
+                values_ref,
+                mask_ref,
+                start_ref,
+                end_ref,
+                scale_ref,
+                final_outputs_ref,
+                *scratch,
+            ) = refs
             partial_maxima_ref = partial_normalizers_ref = partial_outputs_ref = cast("_Ref", None)
         else:
             (
                 grouped_queries_ref,
                 keys_ref,
                 values_ref,
+                mask_ref,
                 start_ref,
                 end_ref,
                 scale_ref,
@@ -191,8 +199,17 @@ def _make_main(
                 token_layout,
             )
             absolute_token_indices = block_start + token_offsets
+            attention_mask = (
+                plgpu.load(
+                    mask_ref.at[token_slice],
+                    layout=token_layout,
+                    optimized=False,
+                )
+                != 0
+            )
             valid_rows = (
-                (absolute_token_indices >= start)
+                attention_mask
+                & (absolute_token_indices >= start)
                 & (absolute_token_indices < end)
                 & (absolute_token_indices < sequence_length)
             )
@@ -206,9 +223,7 @@ def _make_main(
             )
             logits = jnp.where(valid, logits, -jnp.inf)
             block_maximum = jnp.max(logits, axis=0)
-            block_has_values = (
-                (block_start < end) & (block_start + _BLOCK_SIZE > start) & (block_start < sequence_length)
-            )
+            block_has_values = jnp.sum(valid_rows.astype(jnp.int32)) > 0
             updated_maximum = jnp.where(
                 block_has_values,
                 jnp.maximum(maximum, block_maximum),
@@ -541,10 +556,11 @@ def _make_reduction(
     )
 
 
-def _decode_attention(
+def _pallas_decode_attention(
     queries: Float[Array, "1 query_heads head_dim"],
     keys: Float[Array, "capacity key_value_heads head_dim"],
     values: Float[Array, "capacity key_value_heads head_dim"],
+    mask: Int[Array, " padded_capacity"],
     start: Int[Array, ""],
     end: Int[Array, ""],
     scale: Float[Array, ""],
@@ -567,9 +583,9 @@ def _decode_attention(
         num_splits,
     )
     if num_splits == 1:
-        return main(grouped_queries, keys, values, start, end, scale).reshape(queries.shape)
+        return main(grouped_queries, keys, values, mask, start, end, scale).reshape(queries.shape)
 
-    partials = main(grouped_queries, keys, values, start, end, scale)
+    partials = main(grouped_queries, keys, values, mask, start, end, scale)
     reduced = _make_reduction(
         num_key_value_heads,
         padded_query_heads,
@@ -597,7 +613,7 @@ def _single_token_bf16_attention(
 
 
 @jax.custom_batching.custom_vmap
-def _single_token_decode_attention(
+def decode_attention(
     queries: Float[Array, "1 query_heads head_dim"],
     keys: Float[Array, "capacity key_value_heads head_dim"],
     values: Float[Array, "capacity key_value_heads head_dim"],
@@ -607,8 +623,8 @@ def _single_token_decode_attention(
     return _single_token_bf16_attention(queries, keys, values, mask, scale)
 
 
-@_single_token_decode_attention.def_vmap
-def _single_token_decode_attention_vmap(
+@decode_attention.def_vmap
+def _decode_attention_vmap(
     axis_size: int,
     _in_batched: list[bool],
     queries: Float[Array, "batch 1 query_heads head_dim"],
@@ -625,61 +641,44 @@ def _single_token_decode_attention_vmap(
         None,
     )
     if num_splits is None:
+        warnings.warn(
+            "Pallas decode attention cannot provide enough parallel work for this batch and cache size; "
+            "falling back to standard attention.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         fallback = jax.vmap(_single_token_bf16_attention, in_axes=(0, 0, 0, 0, None))
         return fallback(queries, keys, values, masks, scale), True
 
-    lengths = jnp.sum(masks[:, 0], axis=-1, dtype=jnp.int32)
-    starts = jnp.argmax(masks[:, 0], axis=-1).astype(jnp.int32)
-    ends = starts + lengths
+    unbatched_masks = masks[:, 0]
+    has_values = jnp.any(unbatched_masks, axis=-1)
+    starts = jnp.where(
+        has_values,
+        jnp.argmax(unbatched_masks, axis=-1),
+        0,
+    ).astype(jnp.int32)
+    ends = jnp.where(
+        has_values,
+        masks.shape[-1] - jnp.argmax(unbatched_masks[:, ::-1], axis=-1),
+        0,
+    ).astype(jnp.int32)
+    padded_masks = jnp.pad(
+        unbatched_masks,
+        ((0, 0), (0, (-masks.shape[-1]) % _BLOCK_SIZE)),
+        constant_values=False,
+    ).astype(jnp.int32)
     return (
         jax.vmap(
-            lambda query, key, value, start, end: _decode_attention(
+            lambda query, key, value, mask, start, end: _pallas_decode_attention(
                 query,
                 key,
                 value,
+                mask,
                 start,
                 end,
                 scale,
                 num_splits,
             )
-        )(queries, keys, values, starts, ends),
+        )(queries, keys, values, padded_masks, starts, ends),
         True,
-    )
-
-
-def decode_attention(
-    queries: Float[Array, "dst_tokens query_heads head_dim"],
-    keys: Float[Array, "capacity key_value_heads head_dim"],
-    values: Float[Array, "capacity key_value_heads head_dim"],
-    *,
-    bias: Float[Array, "query_heads dst_tokens capacity"] | None,
-    mask: Bool[Array, "dst_tokens capacity"] | None,
-    scale: float | None,
-    logit_soft_cap: float | None,
-) -> Float[Array, "dst_tokens query_heads head_dim"] | None:
-    if not supports_mosaic_gpu(sharding_of(keys).mesh, 10):
-        return None
-    if bias is not None or mask is None or logit_soft_cap is not None:
-        return None
-
-    query_heads = queries.shape[1]
-    key_value_heads = keys.shape[1]
-    head_dim = queries.shape[2]
-    if (
-        queries.shape[0] != 1
-        or query_heads % key_value_heads != 0
-        or not 1 <= query_heads // key_value_heads <= 16
-        or head_dim not in (128, 256, 512)
-        or (head_dim == 512 and key_value_heads == 1)
-        or queries.dtype != jnp.bfloat16
-    ):
-        return None
-
-    attention_scale = head_dim**-0.5 if scale is None else scale
-    return _single_token_decode_attention(
-        queries,
-        keys,
-        values,
-        mask,
-        jnp.asarray(attention_scale, dtype=jnp.float32),
     )

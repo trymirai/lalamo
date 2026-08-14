@@ -4,7 +4,6 @@ from typing import cast
 
 import equinox as eqx
 import jax
-import tokamax
 from einops import einsum, rearrange
 from jax import numpy as jnp
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
@@ -13,12 +12,7 @@ from lalamo.initializer import Initializer
 from lalamo.kernels.decode_attention import decode_attention
 from lalamo.module import Keychain
 from lalamo.modules.linear import Linear, LinearConfig
-from lalamo.modules.normalization import (
-    Normalization,
-    NormalizationConfig,
-    NormalizationForwardPassConfig,
-    NormalizationImplementation,
-)
+from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixer import (
     AttentionImplementation,
@@ -29,6 +23,7 @@ from lalamo.modules.token_mixer import (
     TokenMixerResult,
 )
 from lalamo.modules.utils import apply_soft_capping, call_vmapped, call_vmapped_twice
+from lalamo.utils.sharding import sharding_of, supports_mosaic_gpu
 
 from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 
@@ -51,22 +46,10 @@ def _repeat_kv(
 def _rms_normalize(
     inputs: Float[Array, "... channels"],
     eps: float,
-    forward_pass_config: NormalizationForwardPassConfig,
 ) -> Float[Array, "... channels"]:
-    match forward_pass_config.implementation:
-        case NormalizationImplementation.JAX:
-            upcasted_inputs = inputs.astype(jnp.float32)
-            variance = jnp.mean(jnp.square(upcasted_inputs), axis=-1, keepdims=True)
-            return (upcasted_inputs * jax.lax.rsqrt(variance + eps)).astype(inputs.dtype)
-
-        case NormalizationImplementation.TOKAMAX:
-            return tokamax.layer_norm(
-                inputs,
-                scale=None,
-                offset=None,
-                epsilon=eps,
-                subtract_mean=False,
-            ).astype(inputs.dtype)
+    upcasted_inputs = inputs.astype(jnp.float32)
+    variance = jnp.mean(jnp.square(upcasted_inputs), axis=-1, keepdims=True)
+    return (upcasted_inputs * jax.lax.rsqrt(variance + eps)).astype(inputs.dtype)
 
 
 def _soft_capped_attention_kernel(
@@ -75,7 +58,7 @@ def _soft_capped_attention_kernel(
     values: Float[Array, "src_tokens groups head_channels"],
     *,
     bias: Float[Array, "heads dst_tokens src_tokens"] | None,
-    mask: Bool[Array, "dst_tokens src_tokens"] | None,
+    mask: Bool[Array, "dst_tokens src_tokens"],
     scale: float | Float[Array, ""] | None,
     logit_soft_cap: float | None,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
@@ -88,8 +71,7 @@ def _soft_capped_attention_kernel(
                 values,
                 bias=bias,
                 mask=mask,
-                # The pinned implementation accepts scalar arrays, although its annotation says float.
-                scale=cast("float | None", scale),
+                scale=cast("float | None", scale),  # jax bugs
             ).astype(original_dtype)
 
     attention_dtype = jnp.float32
@@ -119,12 +101,11 @@ def _soft_capped_attention_kernel(
     attention_logits = apply_soft_capping(attention_logits, logit_soft_cap)
     if bias is not None:
         attention_logits = attention_logits + bias
-    if mask is not None:
-        attention_logits = jnp.where(
-            mask,
-            attention_logits,
-            jnp.array(float("-inf"), dtype=attention_logits.dtype),
-        )
+    attention_logits = jnp.where(
+        mask,
+        attention_logits,
+        jnp.array(float("-inf"), dtype=attention_logits.dtype),
+    )
     attention_weights = jax.nn.softmax(attention_logits, axis=-1)
     return einsum(
         attention_weights,
@@ -139,7 +120,7 @@ def _stable_reduction_attention_kernel(
     values: Float[Array, "src_tokens groups head_channels"],
     *,
     bias: Float[Array, "heads dst_tokens src_tokens"] | None,
-    mask: Bool[Array, "dst_tokens src_tokens"] | None,
+    mask: Bool[Array, "dst_tokens src_tokens"],
     scale: float | None,
     logit_soft_cap: float | None,
     tile_size: int,
@@ -151,7 +132,7 @@ def _stable_reduction_attention_kernel(
     original_dtype = queries.dtype
     accumulation_dtype = original_dtype if accumulation_dtype is None else accumulation_dtype
 
-    num_queries, num_heads, head_dim = queries.shape
+    _, num_heads, head_dim = queries.shape
     num_keys, num_groups, _ = keys.shape
     group_size = num_heads // num_groups
 
@@ -159,9 +140,6 @@ def _stable_reduction_attention_kernel(
         scale = head_dim**-0.5
     else:
         scale = float(scale)
-
-    if mask is None:
-        mask = jnp.ones((num_queries, num_keys), dtype=jnp.bool_)
 
     if group_size > 1:
         keys = _repeat_kv(keys, group_size)
@@ -255,39 +233,51 @@ def _attention_kernel(
     values: Float[Array, "src_tokens groups head_channels"],
     *,
     bias: Float[Array, "heads dst_tokens src_tokens"] | None,
-    mask: Bool[Array, "dst_tokens src_tokens"] | None,
+    mask: Bool[Array, "dst_tokens src_tokens"],
     scale: float | None,
     logit_soft_cap: float | None,
     forward_pass_config: MixerForwardPassConfig,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
-    def tokamax_attention() -> Float[Array, "dst_tokens heads head_channels"]:
-        if bias is not None and logit_soft_cap is not None:
-            raise RuntimeError("Tokamax attention does not support logit soft-capping with additive bias.")
-        return tokamax.dot_product_attention(
-            queries,
-            keys,
-            values,
-            bias=bias,
-            mask=mask,
-            scale=scale,
-            logits_soft_cap=logit_soft_cap,
-        ).astype(queries.dtype)
-
-    if forward_pass_config.attention_implementation == AttentionImplementation.PALLAS:
-        pallas_output = decode_attention(
-            queries,
-            keys,
-            values,
-            bias=bias,
-            mask=mask,
-            scale=scale,
-            logit_soft_cap=logit_soft_cap,
-        )
-        if pallas_output is not None:
-            return pallas_output
-
     match forward_pass_config.attention_implementation:
-        case AttentionImplementation.PALLAS | AttentionImplementation.STANDARD:
+        case AttentionImplementation.PALLAS:
+            query_heads = queries.shape[1]
+            key_value_heads = keys.shape[1]
+            head_dim = queries.shape[2]
+            if (
+                not supports_mosaic_gpu(sharding_of(keys).mesh, 10)
+                or bias is not None
+                or logit_soft_cap is not None
+                or queries.shape[0] != 1
+                or query_heads % key_value_heads != 0
+                or not 1 <= query_heads // key_value_heads <= 16
+                or head_dim not in (128, 256, 512)
+                or queries.dtype != jnp.bfloat16
+            ):
+                warnings.warn(
+                    "Pallas decode attention does not support this attention configuration; "
+                    "falling back to standard attention.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                return _soft_capped_attention_kernel(
+                    queries,
+                    keys,
+                    values,
+                    bias=bias,
+                    mask=mask,
+                    scale=scale,
+                    logit_soft_cap=logit_soft_cap,
+                )
+
+            attention_scale = head_dim**-0.5 if scale is None else scale
+            return decode_attention(
+                queries,
+                keys,
+                values,
+                mask,
+                jnp.asarray(attention_scale, dtype=jnp.float32),
+            )
+        case AttentionImplementation.STANDARD:
             return _soft_capped_attention_kernel(
                 queries,
                 keys,
@@ -317,8 +307,7 @@ def _attention_kernel(
                 )
             if logit_soft_cap is not None:
                 raise RuntimeError("cuDNN attention does not support logit soft-capping.")
-            if mask is not None:
-                mask = jnp.broadcast_to(mask, (queries.shape[1], *mask.shape))
+            mask = jnp.broadcast_to(mask, (queries.shape[1], *mask.shape))
             original_dtype = queries.dtype
             attention_dtype = jnp.float32
             return jax.nn.dot_product_attention(
@@ -330,8 +319,6 @@ def _attention_kernel(
                 scale=scale,
                 implementation="cudnn",
             ).astype(original_dtype)
-        case AttentionImplementation.TOKAMAX:
-            return tokamax_attention()
         case AttentionImplementation.STABLE_REDUCTION:
             return _stable_reduction_attention_kernel(
                 queries,
@@ -478,7 +465,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         num_heads: int,
         norm: Normalization | None,
         positional_embeddings: PositionalEmbeddings | None,
-        forward_pass_config: MixerForwardPassConfig,
     ) -> Float[Array, "tokens heads head_channels"]:
         heads = rearrange(
             projection,
@@ -487,11 +473,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             head_channels=self.config.head_dim,
         )
         if norm is not None:
-            heads = call_vmapped_twice(
-                norm,
-                heads,
-                forward_pass_config=forward_pass_config.normalization_forward_pass_config,
-            )
+            heads = call_vmapped_twice(norm, heads)
         if positional_embeddings is not None:
             heads = call_vmapped(positional_embeddings.apply, heads, in_axes=1, out_axes=1)
         return heads
@@ -515,9 +497,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=keychain,
         )
-        keys = self._prepare_heads(
-            keys, self.config.num_groups, self.key_norm, positional_embeddings, forward_pass_config
-        )
+        keys = self._prepare_heads(keys, self.config.num_groups, self.key_norm, positional_embeddings)
         values = rearrange(
             values,
             "tokens (groups head_channels) -> tokens groups head_channels",
@@ -525,11 +505,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             head_channels=self.config.head_dim,
         )
         if self.config.normalize_values:
-            values = _rms_normalize(
-                values,
-                eps=1e-6,
-                forward_pass_config=forward_pass_config.normalization_forward_pass_config,
-            )
+            values = _rms_normalize(values, eps=1e-6)
         return keys, values
 
     def __call__(
@@ -564,9 +540,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         else:
             gate = None
 
-        queries = self._prepare_heads(
-            queries, self.config.num_heads, self.query_norm, positional_embeddings, forward_pass_config
-        )
+        queries = self._prepare_heads(queries, self.config.num_heads, self.query_norm, positional_embeddings)
 
         num_suffix_tokens, _, _ = queries.shape
         if reuse_cache:
@@ -577,9 +551,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         else:
             _, keys, values = projections
             prefix_length = 0 if state is None else state.current_prefix_length()
-            keys = self._prepare_heads(
-                keys, self.config.num_groups, self.key_norm, positional_embeddings, forward_pass_config
-            )
+            keys = self._prepare_heads(keys, self.config.num_groups, self.key_norm, positional_embeddings)
             values = rearrange(
                 values,
                 "tokens (groups head_channels) -> tokens groups head_channels",
@@ -587,11 +559,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 head_channels=self.config.head_dim,
             )
             if self.config.normalize_values:
-                values = _rms_normalize(
-                    values,
-                    eps=1e-6,
-                    forward_pass_config=forward_pass_config.normalization_forward_pass_config,
-                )
+                values = _rms_normalize(values, eps=1e-6)
             if state is None:
                 updated_state = DynamicKVCacheLayer.init(
                     self.has_sinks, keys.astype(values.dtype), values, length=length_without_padding
