@@ -17,6 +17,8 @@ from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import sharding_of, supports_mosaic_gpu
 from lalamo.weight_matrix import Layout
 
+from .int_matmul import _batched_int_matmul
+
 if TYPE_CHECKING:
     from jax.sharding import Mesh
 
@@ -25,7 +27,6 @@ type _Ref = Any
 __all__ = [
     "dequantize_int_weights",
     "int_dot",
-    "supports_batched_int_dot",
 ]
 
 
@@ -57,26 +58,6 @@ def dequantize_int_weights(
     return ((grouped_weights - int_zero_points) * scales[..., None]).reshape(int_weights.shape)
 
 
-def supports_batched_int_dot(
-    batch_size: int,
-    rows: int,
-    columns: int,
-    group_size: int,
-    bits: int,
-    is_symmetric: bool,
-) -> bool:
-    return (
-        batch_size >= 8
-        and rows >= 128
-        and rows % 128 == 0
-        and columns >= 512
-        and columns % max(256, 8 * group_size) == 0
-        and group_size >= 8
-        and 128 % group_size == 0
-        and (bits, is_symmetric) in ((4, False), (8, True))
-    )
-
-
 def int_dot(
     vector: Float[Array, " source_channels"],
     packed_weights: UInt8[Array, "rows packed_cols"],
@@ -101,7 +82,7 @@ def int_dot(
         and precision == DotAlgorithmPreset.DEFAULT
         and not transposed
         and complete_rows > 0
-        and group_size in (16, 32, 64, 128)
+        and group_size in (8, 16, 32, 64, 128)
     ):
         if packed_zero_points is None:
             main_zero_points = packed_weights[:complete_rows, :0]
@@ -113,7 +94,6 @@ def int_dot(
             group_size,
             bits,
             is_symmetric,
-            use_sm100_batched=supports_mosaic_gpu(mesh, 10),
         )(
             vector,
             packed_weights[:complete_rows],
@@ -155,29 +135,35 @@ def _make_int_dot(
     group_size: int,
     bits: int,
     is_symmetric: bool,
-    *,
-    use_sm100_batched: bool = False,
 ) -> Callable[[Array, Array, Array, Array], Array]:
     rows_per_program = 64
     values_per_byte = 8 // bits
     packed_group_size = group_size // values_per_byte
     group_count = columns // group_size
     row_programs = rows // rows_per_program
+
+    def staged_split_size(split: int) -> int:
+        packed_size = group_count // split * packed_group_size
+        if packed_group_size >= 32:
+            return packed_size
+        staged_size = (packed_size + 15) // 16 * 16
+        if staged_size % 32 == 0:
+            staged_size += 16
+        return staged_size
+
     splits = min(
         (
             split
             for split in range(1, group_count + 1)
-            if group_count % split == 0 and rows_per_program * columns // values_per_byte // split <= 196_608
+            if group_count % split == 0
+            and rows_per_program * columns // values_per_byte // split <= 196_608
+            and staged_split_size(split) <= 256
         ),
         key=lambda split: abs(row_programs * split - 1_440),
     )
     groups_per_split = group_count // splits
     packed_split_size = groups_per_split * packed_group_size
-    staged_packed_split_size = packed_split_size
-    if packed_group_size < 32:
-        staged_packed_split_size = (packed_split_size + 15) // 16 * 16
-        if staged_packed_split_size % 32 == 0:
-            staged_packed_split_size += 16
+    staged_packed_split_size = staged_split_size(splits)
 
     weight_layout = plgpu.Layout.TILED(
         plgpu.Tiling(((64, 8), (16, 8), (8, 8), (4,))),
@@ -493,35 +479,17 @@ def _make_int_dot(
                 True,
             )
 
-        use_batched_matmul = use_sm100_batched and supports_batched_int_dot(
-            axis_size,
-            rows,
-            columns,
-            group_size,
-            bits,
-            is_symmetric,
+        batched_output = _batched_int_matmul(
+            vectors,
+            packed_weights,
+            scales.astype(vectors.dtype),
+            packed_zero_points,
+            group_size=group_size,
+            bits=bits,
+            is_symmetric=is_symmetric,
         )
-        if use_batched_matmul:
-            from lalamo.kernels.int_matmul import (  # noqa: PLC0415
-                _make_batched_int_matmul,
-            )
-
-            return (
-                _make_batched_int_matmul(
-                    axis_size,
-                    rows,
-                    columns,
-                    group_size,
-                    bits,
-                    is_symmetric,
-                )(
-                    vectors,
-                    packed_weights,
-                    scales.astype(vectors.dtype),
-                    packed_zero_points,
-                ),
-                True,
-            )
+        if batched_output is not None:
+            return batched_output, True
 
         zero_points = packed_zero_points
         if is_symmetric:

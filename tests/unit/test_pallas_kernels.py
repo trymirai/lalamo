@@ -47,6 +47,7 @@ def _replicate(values: Array, sharding_config: ShardingConfig) -> Array:
     [
         pytest.param(4, 16, 128, (1_536, 2_560), None, False, id="w4-g16-rht128"),
         pytest.param(4, 32, 32, (1_536, 2_560), None, False, id="w4-g32-rht32-even-stride"),
+        pytest.param(4, 32, 32, (64, 9_216), None, False, id="w4-g32-rht32-wide"),
         pytest.param(8, 32, 32, (64, 256), None, False, id="w8-g32-rht32"),
         pytest.param(8, 64, 64, (64, 256), None, False, id="w8-g64-rht64"),
         pytest.param(8, 128, 128, (64, 256), None, False, id="w8-g128-rht128"),
@@ -54,12 +55,14 @@ def _replicate(values: Array, sharding_config: ShardingConfig) -> Array:
         pytest.param(4, 16, 32, (128, 512), 8, False, id="w4-g16-rht32-b8"),
         pytest.param(4, 32, 32, (128, 512), 16, False, id="w4-g32-rht32-b16"),
         pytest.param(4, 64, 32, (128, 512), 48, False, id="w4-g64-rht32-b48"),
+        pytest.param(4, 32, 32, (128, 9_216), 65, False, id="w4-g32-rht32-b65-wide"),
         pytest.param(4, 128, 32, (128, 1_024), 32, False, id="w4-g128-rht32-b32"),
         pytest.param(8, 8, 32, (128, 512), 8, True, id="w8-g8-rht32-b8"),
         pytest.param(8, 16, 32, (128, 512), 8, True, id="w8-g16-rht32-b8"),
         pytest.param(8, 32, 32, (128, 512), 8, True, id="w8-g32-rht32-b8"),
         pytest.param(8, 64, 32, (128, 512), 8, True, id="w8-g64-rht32-b8"),
         pytest.param(8, 128, 32, (128, 1_024), 8, True, id="w8-g128-rht32-b8"),
+        pytest.param(8, 8, 32, (128, 2_304), 17, True, id="w8-g8-rht32-b17-wide"),
     ],
 )
 def test_int_hybrid_dot_matches_decompressed_weights(

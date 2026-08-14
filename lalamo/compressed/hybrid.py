@@ -12,7 +12,7 @@ from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
-from lalamo.utils.sharding import ShardingConfig, sharding_of, supports_mosaic_gpu
+from lalamo.utils.sharding import ShardingConfig, sharding_of
 from lalamo.weight_matrix import (
     CompressionImplementation,
     EmbeddingMatrix,
@@ -198,6 +198,20 @@ class IncoherenceSigns(eqx.Module):
         output_signs = self.output_signs.astype(restored.dtype)
         return jax.device_put(restored * output_signs[..., None], input_sharding)
 
+    def input_transform(
+        self,
+        vector: Float[Array, "*batch source_channels"],
+        block_size: Literal[32, 64, 128],
+        *,
+        transposed: bool = False,
+    ) -> Float[Array, "*batch source_channels"]:
+        signs = self.input_signs
+        if transposed:
+            signs = self.output_signs
+        if signs is None:
+            return vector
+        return hadamard_transform(vector * signs.astype(vector.dtype), block_size)
+
     def output_transform(
         self,
         vector: Float[Array, "*batch target_channels"],
@@ -212,20 +226,6 @@ class IncoherenceSigns(eqx.Module):
             return vector
         transformed = hadamard_transform(vector, block_size)
         return transformed * signs.astype(transformed.dtype)
-
-    def input_transform(
-        self,
-        vector: Float[Array, "*batch source_channels"],
-        block_size: Literal[32, 64, 128],
-        *,
-        transposed: bool = False,
-    ) -> Float[Array, "*batch source_channels"]:
-        signs = self.input_signs
-        if transposed:
-            signs = self.output_signs
-        if signs is None:
-            return vector
-        return hadamard_transform(vector * signs.astype(vector.dtype), block_size)
 
 
 @dataclass(frozen=True)
@@ -337,25 +337,8 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
     def for_inference(self, batch_size: int) -> "HybridMatrix | FullPrecisionMatrix":
         if batch_size == 1:
             return self
-        if (
-            isinstance(self.quantized, IntMatrixForInference)
-            and self.adapter is None
-            and self.quantized.spec.layout == Layout.OUTPUT_INPUT
-            and self.quantized.dtype == jnp.bfloat16
-            and supports_mosaic_gpu(self.sharding_config.mesh, 10)
-        ):
-            from lalamo.kernels.int_dot import supports_batched_int_dot  # noqa: PLC0415
-
-            rows, columns = self.shape
-            if supports_batched_int_dot(
-                batch_size,
-                rows,
-                columns,
-                self.quantized.spec.group_size,
-                self.quantized.spec.bits,
-                self.quantized.spec.is_symmetric,
-            ):
-                return self
+        if isinstance(self.quantized, IntMatrixForInference) and self.adapter is None:
+            return self
         return self.to_full_precision()
 
     @property
@@ -450,16 +433,15 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
             raise TypeError("Hybrid transposed matmul does not support adapters.")
 
         quantized_keychain, adapter_keychain = keychain.split(2)
-        transformed_vector = vector
         if self.incoherence_signs is not None:
             assert self.spec.incoherence_block_size is not None
-            transformed_vector = self.incoherence_signs.input_transform(
+            vector = self.incoherence_signs.input_transform(
                 vector,
                 self.spec.incoherence_block_size,
                 transposed=transposed,
             )
         result = self.quantized.dot(
-            transformed_vector,
+            vector,
             keychain=quantized_keychain,
             forward_pass_config=forward_pass_config,
             transposed=transposed,

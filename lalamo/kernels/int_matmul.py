@@ -27,6 +27,8 @@ from jaxlib.mlir import ir
 from jaxlib.mlir.dialects import arith, llvm, memref, vector
 from jaxtyping import Array
 
+from lalamo.utils.sharding import sharding_of, supports_mosaic_gpu
+
 type _Ref = Any
 type BatchedIntMatmul = Callable[[Array, Array, Array, Array], Array]
 
@@ -118,7 +120,7 @@ def _dequantize_int4(
     scales_ref: _Ref,
     zero_points_ref: _Ref,
     weights: Array,
-    group_offset: jax.Array,
+    group_offset: int | jax.Array,
     group_size: int,
 ) -> Array:
     @plgpu.inline_mgpu(
@@ -342,6 +344,39 @@ def _dequantize_int8(
     return convert_and_scale(scales_ref, weights)
 
 
+def _batched_int_matmul(
+    activations: Array,
+    packed_weights: Array,
+    scales: Array,
+    packed_zero_points: Array,
+    *,
+    group_size: int,
+    bits: int,
+    is_symmetric: bool,
+) -> Array | None:
+    batch_size, columns = activations.shape
+    rows = packed_weights.shape[0]
+    if (
+        not supports_mosaic_gpu(sharding_of(packed_weights).mesh, 10)
+        or batch_size < 8
+        or rows < 128
+        or rows % 128
+        or columns < 512
+        or columns % max(256, 8 * group_size)
+        or group_size < 8
+        or 128 % group_size
+        or (bits, is_symmetric) not in ((4, False), (8, True))
+    ):
+        return None
+    return _make_batched_int_matmul(
+        batch_size,
+        rows,
+        columns,
+        group_size,
+        bits,
+    )(activations, packed_weights, scales, packed_zero_points)
+
+
 @cache
 def _make_batched_int_matmul(
     batch_size: int,
@@ -349,24 +384,7 @@ def _make_batched_int_matmul(
     columns: int,
     group_size: int,
     bits: int,
-    is_symmetric: bool,
 ) -> BatchedIntMatmul:
-    if (bits, is_symmetric) not in ((4, False), (8, True)):
-        raise ValueError("The SM100 batched path supports asymmetric W4 and symmetric W8.")
-    if batch_size < 8:
-        raise ValueError(f"The SM100 batched path requires at least 8 rows, got {batch_size}.")
-    if group_size < 8 or 128 % group_size:
-        raise ValueError(
-            f"The SM100 batched path requires group size to divide 128 and be at least 8, got {group_size}."
-        )
-    column_multiple = max(256, 8 * group_size)
-    if columns % column_multiple:
-        raise ValueError(
-            f"The contraction dimension must be divisible by {column_multiple} for group size {group_size}, "
-            f"got {columns}."
-        )
-    if rows % 128:
-        raise ValueError(f"The output dimension must be divisible by 128, got {rows}.")
 
     block_m = min(64, 1 << (batch_size - 1).bit_length())
     block_n = 128
@@ -374,20 +392,22 @@ def _make_batched_int_matmul(
     num_stages = 2
     group_count = columns // group_size
     packed_zero_point_count = group_count // 2
+    zero_point_chunks = pl.cdiv(packed_zero_point_count, 256)
     m_iters = pl.cdiv(batch_size, block_m)
+    padded_batch_size = m_iters * block_m
     n_iters = pl.cdiv(rows, block_n)
     weight_values_per_byte = 8 // bits
     packed_block_k = block_k // weight_values_per_byte
     scales_per_block = block_k // group_size
     scales_per_half = scales_per_block // 2
+    scales_per_chunk = max(8, scales_per_block)
+    scale_blocks_per_chunk = scales_per_chunk // scales_per_block
     if bits == 4:
         main_registers = 152
         producer_registers = 176
-        metadata_arrivals = 2
     else:
         main_registers = 88
         producer_registers = 208
-        metadata_arrivals = 1
 
     activation_swizzle = plgpu.find_swizzle(block_k * jnp.dtype(jnp.bfloat16).itemsize * 8)
     activation_transforms = (
@@ -449,7 +469,9 @@ def _make_batched_int_matmul(
             mma_complete_barrier,
             mma_done_barrier,
             metadata_ready_barrier,
+            *zero_points_ready_barriers,
         ) = barriers
+        zero_points_ready_barrier = zero_points_ready_barriers[0] if bits == 4 else None
         warpgroup_index = lax.axis_index("wg")
 
         batch_tile_index, output_tile_index = plgpu.planar_snake(
@@ -459,267 +481,269 @@ def _make_batched_int_matmul(
             1,
         )
         batch_start = pl.multiple_of(batch_tile_index * block_m, 8)
-        actual_batch_size = lax.min(block_m, batch_size - batch_start)
         batch_slice = pl.ds(batch_start, block_m)
         output_slice = pl.ds(output_tile_index * block_n, block_n)
 
-        @pl.when(actual_batch_size > 0)
-        def run_tile() -> None:
-            @pl.when(warpgroup_index == _MAIN_WARPGROUP)
-            def main_warpgroup() -> None:
-                plgpu.set_max_registers(main_registers, action="decrease")
+        @pl.when(warpgroup_index == _MAIN_WARPGROUP)
+        def main_warpgroup() -> None:
+            plgpu.set_max_registers(main_registers, action="decrease")
 
-                @pl.core_map(plgpu.WarpMesh(axis_name="warp"))
-                def per_warp() -> None:
-                    warp_index = lax.axis_index("warp")
+            @pl.core_map(plgpu.WarpMesh(axis_name="warp"))
+            def per_warp() -> None:
+                warp_index = lax.axis_index("warp")
 
-                    @pl.when(warp_index == _WEIGHT_TMA_WARP)
-                    def load_weights() -> None:
-                        def load_weight_tile(
-                            k_index: jax.Array,
-                            _: None,
-                        ) -> None:
-                            slot = lax.rem(k_index, num_stages)
+                @pl.when(warp_index == _WEIGHT_TMA_WARP)
+                def load_weights() -> None:
+                    def load_weight_tile(
+                        k_index: jax.Array,
+                        _: None,
+                    ) -> None:
+                        slot = lax.rem(k_index, num_stages)
 
-                            @pl.when(k_index >= num_stages)
-                            def wait_for_consumer() -> None:
-                                plgpu.barrier_wait(weight_ready_barrier.at[slot])
+                        @pl.when(k_index >= num_stages)
+                        def wait_for_consumer() -> None:
+                            plgpu.barrier_wait(weight_ready_barrier.at[slot])
 
-                            plgpu.copy_gmem_to_smem(
-                                weights_gmem.at[
-                                    0,
-                                    output_slice,
-                                    pl.ds(k_index * packed_block_k, packed_block_k),
-                                ],
-                                weights_smem.at[slot],
-                                weight_tma_barrier.at[slot],
-                            )
-
-                        lax.fori_loop(
-                            0,
-                            columns // block_k,
-                            load_weight_tile,
-                            None,
-                        )
-
-                    @pl.when(warp_index == _ACTIVATION_TMA_WARP)
-                    def load_activations() -> None:
-                        def load_activation_tile(
-                            k_index: jax.Array,
-                            _: None,
-                        ) -> None:
-                            slot = lax.rem(k_index, num_stages)
-
-                            @pl.when(k_index >= num_stages)
-                            def wait_for_mma() -> None:
-                                plgpu.barrier_wait(mma_complete_barrier.at[slot])
-
-                            plgpu.copy_gmem_to_smem(
-                                activations_gmem.at[
-                                    batch_slice,
-                                    pl.ds(k_index * block_k, block_k),
-                                ],
-                                activations_smem.at[slot],
-                                activation_tma_barrier.at[slot],
-                            )
-
-                        lax.fori_loop(
-                            0,
-                            columns // block_k,
-                            load_activation_tile,
-                            None,
-                        )
-
-                    @pl.when(warp_index == _METADATA_TMA_WARP)
-                    def load_metadata() -> None:
                         plgpu.copy_gmem_to_smem(
-                            scales_gmem.at[0, output_slice, :],
-                            scales_smem,
-                            metadata_ready_barrier,
+                            weights_gmem.at[
+                                0,
+                                output_slice,
+                                pl.ds(k_index * packed_block_k, packed_block_k),
+                            ],
+                            weights_smem.at[slot],
+                            weight_tma_barrier.at[slot],
                         )
-                        if bits == 4:
-                            assert zero_points_gmem is not None
-                            assert zero_points_smem is not None
+
+                    lax.fori_loop(
+                        0,
+                        columns // block_k,
+                        load_weight_tile,
+                        None,
+                    )
+
+                @pl.when(warp_index == _ACTIVATION_TMA_WARP)
+                def load_activations() -> None:
+                    def load_activation_tile(
+                        k_index: jax.Array,
+                        _: None,
+                    ) -> None:
+                        slot = lax.rem(k_index, num_stages)
+
+                        @pl.when(k_index >= num_stages)
+                        def wait_for_mma() -> None:
+                            plgpu.barrier_wait(mma_complete_barrier.at[slot])
+
+                        plgpu.copy_gmem_to_smem(
+                            activations_gmem.at[
+                                batch_slice,
+                                pl.ds(k_index * block_k, block_k),
+                            ],
+                            activations_smem.at[slot],
+                            activation_tma_barrier.at[slot],
+                        )
+
+                    lax.fori_loop(
+                        0,
+                        columns // block_k,
+                        load_activation_tile,
+                        None,
+                    )
+
+                @pl.when(warp_index == _METADATA_TMA_WARP)
+                def load_metadata() -> None:
+                    if bits == 4:
+                        assert zero_points_gmem is not None
+                        assert zero_points_smem is not None
+                        assert zero_points_ready_barrier is not None
+                        for chunk_index in range(zero_point_chunks):
+                            chunk_offset = chunk_index * 256
+                            chunk_size = min(256, packed_zero_point_count - chunk_offset)
                             plgpu.copy_gmem_to_smem(
                                 zero_points_gmem.at[
                                     pl.ds(
-                                        output_tile_index * packed_zero_point_count,
-                                        packed_zero_point_count,
+                                        output_tile_index * packed_zero_point_count + chunk_offset,
+                                        chunk_size,
                                     ),
                                     :,
                                 ],
-                                zero_points_smem,
-                                metadata_ready_barrier,
+                                zero_points_smem.at[pl.ds(chunk_offset, chunk_size), :],
+                                zero_points_ready_barrier,
                             )
 
-                    @pl.when(warp_index == _MMA_WARP)
-                    def issue_mma() -> None:
-                        def mma(
-                            k_index: jax.Array,
-                            _: None,
-                        ) -> None:
-                            slot = lax.rem(k_index, num_stages)
+                    def load_metadata_tile(
+                        k_index: jax.Array,
+                        _: None,
+                    ) -> None:
+                        slot = lax.rem(k_index, num_stages)
+
+                        @pl.when(k_index >= num_stages)
+                        def wait_for_dequantization() -> None:
                             plgpu.barrier_wait(weight_ready_barrier.at[slot])
-                            plgpu.barrier_wait(activation_tma_barrier.at[slot])
-                            plgpu.tcgen05_mma(
-                                accumulator_tmem,
-                                weights_bf16_tmem.at[
-                                    :,
-                                    pl.ds(slot * block_k, block_k),
-                                ],
-                                activations_smem.at[slot].T,
-                                mma_complete_barrier.at[slot],
-                                accumulate=k_index > 0,
-                            )
 
-                            @pl.when(k_index == columns // block_k - 1)
-                            def signal_done() -> None:
-                                plgpu.tcgen05_commit_arrive(mma_done_barrier)
-
-                        lax.fori_loop(0, columns // block_k, mma, None)
-
-            def dequantize_half(half: int) -> None:
-                plgpu.set_max_registers(producer_registers, action="increase")
-                plgpu.barrier_wait(metadata_ready_barrier)
-                half_block_k = block_k // 2
-
-                def dequantize_tile(
-                    k_index: jax.Array,
-                    _: None,
-                ) -> None:
-                    slot = lax.rem(k_index, num_stages)
-                    plgpu.barrier_wait(weight_tma_barrier.at[slot])
-                    group_offset = k_index * scales_per_block + half * scales_per_half
-                    if bits == 4:
-                        packed_weights = plgpu.load(
-                            weights_smem.at[slot],
-                            layout=_TMEM(4),
-                            optimized=False,
-                        )
-                        converted_weights = _int4_to_bf16(
-                            packed_weights,
-                            half,
-                        )
-                        assert zero_points_smem is not None
-                        dequantized_weights = _dequantize_int4(
-                            scales_smem.at[
-                                :,
+                        plgpu.copy_gmem_to_smem(
+                            scales_gmem.at[
+                                0,
+                                output_slice,
                                 pl.ds(
-                                    pl.multiple_of(
-                                        group_offset,
-                                        scales_per_half,
-                                    ),
-                                    scales_per_half,
+                                    lax.div(k_index, scale_blocks_per_chunk) * scales_per_chunk,
+                                    scales_per_chunk,
                                 ),
                             ],
-                            zero_points_smem,
-                            converted_weights,
-                            group_offset,
-                            group_size,
+                            scales_smem.at[slot],
+                            metadata_ready_barrier.at[slot],
                         )
-                    else:
-                        packed_weights = plgpu.load(
-                            weights_smem.at[
-                                slot,
-                                :,
-                                pl.ds(
-                                    half * half_block_k,
-                                    half_block_k,
-                                ),
-                            ],
-                            layout=_TMEM(8),
-                            optimized=False,
-                        )
-                        dequantized_weights = _dequantize_int8(
-                            scales_smem.at[
-                                :,
-                                pl.ds(
-                                    pl.multiple_of(
-                                        group_offset,
-                                        scales_per_half,
-                                    ),
-                                    scales_per_half,
-                                ),
-                            ],
-                            packed_weights,
-                            group_size,
-                        )
-                    dequantized_weights = plgpu.layout_cast(
-                        dequantized_weights,
-                        _TMEM,
+
+                    lax.fori_loop(
+                        0,
+                        columns // block_k,
+                        load_metadata_tile,
+                        None,
                     )
 
-                    @pl.when(k_index >= num_stages)
-                    def wait_for_previous_mma() -> None:
-                        plgpu.barrier_wait(mma_complete_barrier.at[slot])
+                @pl.when(warp_index == _MMA_WARP)
+                def issue_mma() -> None:
+                    def mma(
+                        k_index: jax.Array,
+                        _: None,
+                    ) -> None:
+                        slot = lax.rem(k_index, num_stages)
+                        plgpu.barrier_wait(weight_ready_barrier.at[slot])
+                        plgpu.barrier_wait(activation_tma_barrier.at[slot])
+                        plgpu.tcgen05_mma(
+                            accumulator_tmem,
+                            weights_bf16_tmem.at[
+                                :,
+                                pl.ds(slot * block_k, block_k),
+                            ],
+                            activations_smem.at[slot].T,
+                            mma_complete_barrier.at[slot],
+                            accumulate=k_index > 0,
+                        )
 
-                    plgpu.async_store_tmem(
-                        weights_bf16_tmem.at[
+                        @pl.when(k_index == columns // block_k - 1)
+                        def signal_done() -> None:
+                            plgpu.tcgen05_commit_arrive(mma_done_barrier)
+
+                    lax.fori_loop(0, columns // block_k, mma, None)
+
+        def dequantize_half(half: int) -> None:
+            plgpu.set_max_registers(producer_registers, action="increase")
+            if bits == 4:
+                assert zero_points_ready_barrier is not None
+                plgpu.barrier_wait(zero_points_ready_barrier)
+            half_block_k = block_k // 2
+
+            def dequantize_tile(
+                k_index: jax.Array,
+                _: None,
+            ) -> None:
+                slot = lax.rem(k_index, num_stages)
+                plgpu.barrier_wait(weight_tma_barrier.at[slot])
+                plgpu.barrier_wait(metadata_ready_barrier.at[slot])
+                group_offset = lax.rem(k_index, scale_blocks_per_chunk) * scales_per_block + half * scales_per_half
+                if bits == 4:
+                    packed_weights = plgpu.load(
+                        weights_smem.at[slot],
+                        layout=_TMEM(4),
+                        optimized=False,
+                    )
+                    converted_weights = _int4_to_bf16(
+                        packed_weights,
+                        half,
+                    )
+                    assert zero_points_smem is not None
+                    dequantized_weights = _dequantize_int4(
+                        scales_smem.at[
+                            slot,
                             :,
                             pl.ds(
-                                slot * block_k + half * half_block_k,
+                                group_offset,
+                                scales_per_half,
+                            ),
+                        ],
+                        zero_points_smem,
+                        converted_weights,
+                        k_index * scales_per_block + half * scales_per_half,
+                        group_size,
+                    )
+                else:
+                    packed_weights = plgpu.load(
+                        weights_smem.at[
+                            slot,
+                            :,
+                            pl.ds(
+                                half * half_block_k,
                                 half_block_k,
                             ),
                         ],
-                        dequantized_weights,
+                        layout=_TMEM(8),
+                        optimized=False,
                     )
-                    plgpu.commit_tmem()
-                    plgpu.barrier_arrive(weight_ready_barrier.at[slot])
-
-                lax.fori_loop(
-                    0,
-                    columns // block_k,
-                    dequantize_tile,
-                    None,
+                    dequantized_weights = _dequantize_int8(
+                        scales_smem.at[
+                            slot,
+                            :,
+                            pl.ds(
+                                group_offset,
+                                scales_per_half,
+                            ),
+                        ],
+                        packed_weights,
+                        group_size,
+                    )
+                dequantized_weights = plgpu.layout_cast(
+                    dequantized_weights,
+                    _TMEM,
                 )
 
-            @pl.when(warpgroup_index == _DEQUANT_LOW_WARPGROUP)
-            def dequantize_low() -> None:
-                dequantize_half(0)
+                @pl.when(k_index >= num_stages)
+                def wait_for_previous_mma() -> None:
+                    plgpu.barrier_wait(mma_complete_barrier.at[slot])
 
-            @pl.when(warpgroup_index == _DEQUANT_HIGH_WARPGROUP)
-            def dequantize_high() -> None:
-                dequantize_half(1)
-
-            @pl.when(warpgroup_index == _STORE_WARPGROUP)
-            def store_output() -> None:
-                plgpu.barrier_wait(mma_done_barrier)
-                accumulator = plgpu.async_load_tmem(accumulator_tmem)
-                plgpu.wait_load_tmem()
-                output_smem.at[0].T[...] = plgpu.layout_cast(
-                    accumulator.astype(jnp.bfloat16),
-                    plgpu.Layout.TCGEN05_TRANSPOSED,
+                plgpu.async_store_tmem(
+                    weights_bf16_tmem.at[
+                        :,
+                        pl.ds(
+                            slot * block_k + half * half_block_k,
+                            half_block_k,
+                        ),
+                    ],
+                    dequantized_weights,
                 )
-                plgpu.commit_smem()
+                plgpu.commit_tmem()
+                plgpu.barrier_arrive(weight_ready_barrier.at[slot])
 
-                length = actual_batch_size
+            lax.fori_loop(
+                0,
+                columns // block_k,
+                dequantize_tile,
+                None,
+            )
 
-                def store_chunk(
-                    offset: int | jax.Array,
-                    size: int,
-                ) -> None:
-                    @pl.when(length & size != 0)
-                    def store_rows() -> None:
-                        plgpu.copy_smem_to_gmem(
-                            output_smem.at[0, pl.ds(offset, size)],
-                            output_gmem.at[
-                                pl.ds(
-                                    batch_start + offset,
-                                    size,
-                                ),
-                                output_slice,
-                            ],
-                            commit_group=False,
-                        )
+        @pl.when(warpgroup_index == _DEQUANT_LOW_WARPGROUP)
+        def dequantize_low() -> None:
+            dequantize_half(0)
 
-                offset = 0
-                size = 1 << (min(block_m, batch_size).bit_length() - 1)
-                while size > 0:
-                    store_chunk(offset, size)
-                    offset += length & size
-                    size //= 2
-                plgpu.commit_smem_to_gmem_group()
-                plgpu.wait_smem_to_gmem(0, wait_read_only=True)
+        @pl.when(warpgroup_index == _DEQUANT_HIGH_WARPGROUP)
+        def dequantize_high() -> None:
+            dequantize_half(1)
+
+        @pl.when(warpgroup_index == _STORE_WARPGROUP)
+        def store_output() -> None:
+            plgpu.barrier_wait(mma_done_barrier)
+            accumulator = plgpu.async_load_tmem(accumulator_tmem)
+            plgpu.wait_load_tmem()
+            output_smem.at[0].T[...] = plgpu.layout_cast(
+                accumulator.astype(jnp.bfloat16),
+                plgpu.Layout.TCGEN05_TRANSPOSED,
+            )
+            plgpu.commit_smem()
+
+            plgpu.copy_smem_to_gmem(
+                output_smem.at[0],
+                output_gmem.at[batch_slice, output_slice],
+            )
+            plgpu.wait_smem_to_gmem(0, wait_read_only=True)
 
     def kernel_entry(*refs: _Ref) -> None:
         activation_smem = plgpu.SMEM(
@@ -733,7 +757,7 @@ def _make_batched_int_matmul(
             transforms=weight_transforms,
         )
         scale_smem = plgpu.SMEM(
-            (block_n, group_count),
+            (num_stages, block_n, scales_per_chunk),
             dtype=jnp.bfloat16,
         )
         output_smem = plgpu.SMEM(
@@ -783,8 +807,12 @@ def _make_batched_int_matmul(
                 orders_tensor_core=True,
             ),
             plgpu.Barrier(orders_tensor_core=True),
-            plgpu.Barrier(num_arrivals=metadata_arrivals),
+            plgpu.Barrier(
+                num_barriers=num_stages,
+            ),
         )
+        if bits == 4:
+            barriers += (plgpu.Barrier(num_arrivals=zero_point_chunks),)
         pl.run_scoped(
             lambda *args: kernel(*refs, scoped=args),
             scratch_buffers,
@@ -795,7 +823,7 @@ def _make_batched_int_matmul(
     pallas_matmul = plgpu.kernel(
         kernel_entry,
         out_type=jax.ShapeDtypeStruct(
-            (batch_size, rows),
+            (padded_batch_size, rows),
             jnp.bfloat16,
         ),
         num_threads=3,
@@ -816,36 +844,27 @@ def _make_batched_int_matmul(
         scales: Array,
         packed_zero_points: Array,
     ) -> Array:
-        expected_weight_shape = (
-            rows,
-            columns // weight_values_per_byte,
-        )
-        if activations.shape != (batch_size, columns):
-            raise ValueError(f"Expected activations with shape {(batch_size, columns)}, got {activations.shape}.")
-        if packed_weights.shape != expected_weight_shape:
-            raise ValueError(
-                f"Expected packed weights with shape {expected_weight_shape}, got {packed_weights.shape}."
-            )
-        if scales.shape != (rows, group_count):
-            raise ValueError(f"Expected scales with shape {(rows, group_count)}, got {scales.shape}.")
-        if activations.dtype != jnp.bfloat16 or packed_weights.dtype != jnp.uint8:
-            raise TypeError("The SM100 batched path requires BF16 activations and uint8 weight storage.")
-        if scales.dtype != jnp.bfloat16:
-            raise TypeError(f"The SM100 batched path requires BF16 scales, got {scales.dtype}.")
-
-        kernel_arguments = (
+        activations = jnp.pad(
             activations,
-            packed_weights[None],
-            scales[None],
+            ((0, padded_batch_size - batch_size), (0, 0)),
+        )
+        scales = jnp.pad(
+            scales,
+            ((0, 0), (0, -scales.shape[-1] % scales_per_chunk)),
         )
         if bits == 4:
-            expected_zero_point_shape = (rows, packed_zero_point_count)
-            if packed_zero_points.shape != expected_zero_point_shape:
-                raise ValueError(
-                    "Expected packed zero points with shape "
-                    f"{expected_zero_point_shape}, got {packed_zero_points.shape}."
-                )
-            kernel_arguments += (packed_zero_points.reshape(-1, block_n),)
-        return pallas_matmul(*kernel_arguments)
+            output = pallas_matmul(
+                activations,
+                packed_weights[None],
+                scales[None],
+                packed_zero_points.reshape(-1, block_n),
+            )
+        else:
+            output = pallas_matmul(
+                activations,
+                packed_weights[None],
+                scales[None],
+            )
+        return output[:batch_size]
 
     return matmul

@@ -108,10 +108,9 @@ def _make_hadamard_dispatch(
     return transform
 
 
-def fragmented_hadamard(
+def _fragmented_hadamard(
     values: mgpu.FragmentedArray,
     block_size: Literal[32, 64, 128],
-    blocks_per_warp: int,
 ) -> mgpu.FragmentedArray:
     registers = np.array(values.registers, copy=True)
     i32 = ir.IntegerType.get_signless(32)
@@ -132,19 +131,17 @@ def fragmented_hadamard(
             )
 
     registers_per_block = block_size // 32
-    for block_index in range(blocks_per_warp):
-        block_offset = block_index * registers_per_block
-        for stage in range(5, block_size.bit_length() - 1):
-            register_stride = 1 << (stage - 5)
-            for pair_index in range(registers_per_block // 2):
-                group_index = pair_index >> (stage - 5)
-                pair_in_group = pair_index - (group_index << (stage - 5))
-                left_index = block_offset + (group_index << (stage - 4)) + pair_in_group
-                right_index = left_index + register_stride
-                left = registers.flat[left_index]
-                right = registers.flat[right_index]
-                registers.flat[left_index] = arith.addf(left, right)
-                registers.flat[right_index] = arith.subf(left, right)
+    for stage in range(5, block_size.bit_length() - 1):
+        register_stride = 1 << (stage - 5)
+        for pair_index in range(registers_per_block // 2):
+            group_index = pair_index >> (stage - 5)
+            pair_in_group = pair_index - (group_index << (stage - 5))
+            left_index = (group_index << (stage - 4)) + pair_in_group
+            right_index = left_index + register_stride
+            left = registers.flat[left_index]
+            right = registers.flat[right_index]
+            registers.flat[left_index] = arith.addf(left, right)
+            registers.flat[right_index] = arith.subf(left, right)
 
     return mgpu.FragmentedArray(
         _registers=registers,
@@ -190,7 +187,7 @@ def _make_pallas_hadamard_transform(
         _ctx: object,
         values: mgpu.FragmentedArray,
     ) -> mgpu.FragmentedArray:
-        return fragmented_hadamard(values, block_size, blocks_per_warp=1)
+        return _fragmented_hadamard(values, block_size)
 
     def kernel(
         inputs_ref: jax.Ref,

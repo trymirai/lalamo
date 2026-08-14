@@ -1,6 +1,5 @@
 from collections.abc import Callable
 from functools import cache
-from typing import TYPE_CHECKING, cast
 
 import einops
 import jax
@@ -11,9 +10,6 @@ from jax.sharding import NamedSharding
 from jaxtyping import Array, Float, Int
 
 from lalamo.utils.sharding import supports_mosaic_gpu
-
-if TYPE_CHECKING:
-    from jax.sharding import Mesh
 
 __all__ = [
     "deltanet_recurrent_scan",
@@ -37,21 +33,18 @@ def deltanet_recurrent_scan(
     Float[Array, "tokens heads value_channels"],
     Float[Array, "heads value_channels key_channels"],
 ]:
-    num_tokens, num_heads, head_dim = queries.shape
+    num_tokens, _, head_dim = queries.shape
     value_head_dim = values.shape[-1]
-    try:
-        state_sharding = initial_state.sharding
-    except AttributeError:
-        state_sharding = jax.typeof(initial_state).sharding
+    state_sharding = jax.typeof(initial_state).sharding
     if (
         num_tokens == 1
         and head_dim == 128
         and value_head_dim % 64 == 0
         and initial_state.dtype == jnp.float32
         and isinstance(state_sharding, NamedSharding)
-        and supports_mosaic_gpu(cast("Mesh", state_sharding.mesh), 9)
+        and supports_mosaic_gpu(state_sharding.mesh, 9)
     ):
-        final_state, output = _make_deltanet_update(num_heads, value_head_dim)(
+        final_state, output = _deltanet_update(
             queries[0],
             keys[0],
             values[0],
@@ -221,59 +214,55 @@ def _make_batched_update(
     return update
 
 
-@cache
-def _make_deltanet_update(
-    num_heads: int,
-    value_head_dim: int,
-) -> DeltaUpdate:
-    @jax.custom_batching.custom_vmap
-    def update(
-        queries: Array,
-        keys: Array,
-        values: Array,
-        decay: Array,
-        beta: Array,
-        state: Array,
-        active: Array,
-    ) -> tuple[Array, Array]:
-        updated_state, outputs = _make_batched_update(1, num_heads, value_head_dim)(
-            queries[None],
-            keys[None],
-            values[None],
-            decay[None],
-            beta[None],
-            state[None],
-            active[None],
-        )
-        return updated_state[0], outputs[0]
+@jax.custom_batching.custom_vmap
+def _deltanet_update(
+    queries: Array,
+    keys: Array,
+    values: Array,
+    decay: Array,
+    beta: Array,
+    state: Array,
+    active: Array,
+) -> tuple[Array, Array]:
+    num_heads, value_head_dim, _ = state.shape
+    updated_state, outputs = _make_batched_update(1, num_heads, value_head_dim)(
+        queries[None],
+        keys[None],
+        values[None],
+        decay[None],
+        beta[None],
+        state[None],
+        active[None],
+    )
+    return updated_state[0], outputs[0]
 
-    @update.def_vmap
-    def update_vmap(
-        axis_size: int,
-        in_batched: list[bool],
-        queries: Array,
-        keys: Array,
-        values: Array,
-        decay: Array,
-        beta: Array,
-        state: Array,
-        active: Array,
-    ) -> tuple[tuple[Array, Array], tuple[bool, bool]]:
-        if not all(in_batched[:6]):
-            raise ValueError(f"Expected DeltaNet tensors to be batched, got {in_batched}.")
-        if not in_batched[6]:
-            active = jnp.broadcast_to(active, (axis_size,))
-        return (
-            _make_batched_update(axis_size, num_heads, value_head_dim)(
-                queries,
-                keys,
-                values,
-                decay,
-                beta,
-                state,
-                active,
-            ),
-            (True, True),
-        )
 
-    return update
+@_deltanet_update.def_vmap
+def _deltanet_update_vmap(
+    axis_size: int,
+    in_batched: list[bool],
+    queries: Array,
+    keys: Array,
+    values: Array,
+    decay: Array,
+    beta: Array,
+    state: Array,
+    active: Array,
+) -> tuple[tuple[Array, Array], tuple[bool, bool]]:
+    if not all(in_batched[:6]):
+        raise ValueError(f"Expected DeltaNet tensors to be batched, got {in_batched}.")
+    if not in_batched[6]:
+        active = jnp.broadcast_to(active, (axis_size,))
+    _, num_heads, value_head_dim, _ = state.shape
+    return (
+        _make_batched_update(axis_size, num_heads, value_head_dim)(
+            queries,
+            keys,
+            values,
+            decay,
+            beta,
+            state,
+            active,
+        ),
+        (True, True),
+    )

@@ -5,7 +5,7 @@ from typing import TypeGuard
 
 import jax
 from jax import Array, ShapeDtypeStruct, typeof
-from jax.sharding import AxisType, Mesh, NamedSharding, PartitionSpec
+from jax.sharding import AbstractMesh, AxisType, Mesh, NamedSharding, PartitionSpec
 from jaxtyping import Int, Shaped
 
 __all__ = [
@@ -121,11 +121,15 @@ def sharding_of(array: Array | ShapeDtypeStruct) -> NamedSharding:
     return sharding
 
 
-def supports_mosaic_gpu(mesh: Mesh, minimum_compute_capability: int) -> bool:
-    device = mesh.devices.flat[0]
-    return (
-        device.device_kind.startswith("NVIDIA")
+def supports_mosaic_gpu(mesh: Mesh | AbstractMesh, minimum_compute_capability: int) -> bool:
+    abstract_device = mesh.abstract_mesh.abstract_device
+    if abstract_device is None:
+        return False
+    return any(
+        device.device_kind == abstract_device.device_kind
+        and device.device_kind.startswith("NVIDIA")
         and float(getattr(device, "compute_capability", 0)) >= minimum_compute_capability
+        for device in jax.devices(abstract_device.platform)
     )
 
 

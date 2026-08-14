@@ -1,6 +1,6 @@
 import warnings
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import cast
 
 import equinox as eqx
 import jax
@@ -10,6 +10,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
+from lalamo.kernels.decode_attention import decode_attention
 from lalamo.module import Keychain
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import (
@@ -28,7 +29,6 @@ from lalamo.modules.token_mixer import (
     TokenMixerResult,
 )
 from lalamo.modules.utils import apply_soft_capping, call_vmapped, call_vmapped_twice
-from lalamo.utils.sharding import sharding_of
 
 from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 
@@ -131,77 +131,6 @@ def _soft_capped_attention_kernel(
         values,
         "heads dst_tokens src_tokens, src_tokens heads channels -> dst_tokens heads channels",
     ).astype(original_dtype)
-
-
-def _single_token_bf16_attention(
-    queries: Float[Array, "1 query_heads head_dim"],
-    keys: Float[Array, "capacity key_value_heads head_dim"],
-    values: Float[Array, "capacity key_value_heads head_dim"],
-    mask: Bool[Array, "1 capacity"],
-    scale: Float[Array, ""],
-) -> Float[Array, "1 query_heads head_dim"]:
-    return _soft_capped_attention_kernel(
-        queries,
-        keys,
-        values,
-        bias=None,
-        mask=mask,
-        scale=scale,
-        logit_soft_cap=None,
-    )
-
-
-@jax.custom_batching.custom_vmap
-def _single_token_decode_attention(
-    queries: Float[Array, "1 query_heads head_dim"],
-    keys: Float[Array, "capacity key_value_heads head_dim"],
-    values: Float[Array, "capacity key_value_heads head_dim"],
-    mask: Bool[Array, "1 capacity"],
-    scale: Float[Array, ""],
-) -> Float[Array, "1 query_heads head_dim"]:
-    return _single_token_bf16_attention(queries, keys, values, mask, scale)
-
-
-@_single_token_decode_attention.def_vmap
-def _single_token_decode_attention_vmap(
-    axis_size: int,
-    _in_batched: list[bool],
-    queries: Float[Array, "batch 1 query_heads head_dim"],
-    keys: Float[Array, "batch capacity key_value_heads head_dim"],
-    values: Float[Array, "batch capacity key_value_heads head_dim"],
-    masks: Bool[Array, "batch 1 capacity"],
-    scale: Float[Array, ""],
-) -> tuple[Float[Array, "batch 1 query_heads head_dim"], bool]:
-    programs = axis_size * keys.shape[2]
-    # One CTA per B200 SM is enough to hide the long-cache memory latency.
-    required_splits = (144 + programs - 1) // programs
-    num_blocks = (keys.shape[1] + 127) // 128
-    num_splits: Literal[1, 2, 4, 8] | None = None
-    for candidate in (1, 2, 4, 8):
-        if candidate >= required_splits and candidate <= num_blocks:
-            num_splits = candidate
-            break
-    if num_splits is None:
-        fallback = jax.vmap(_single_token_bf16_attention, in_axes=(0, 0, 0, 0, None))
-        return fallback(queries, keys, values, masks, scale), True
-
-    from lalamo.kernels.decode_attention import decode_attention  # noqa: PLC0415
-
-    lengths = jnp.sum(masks[:, 0], axis=-1, dtype=jnp.int32)
-    starts = jnp.argmax(masks[:, 0], axis=-1).astype(jnp.int32)
-    ends = starts + lengths
-    output = jax.vmap(
-        lambda query, key, value, start, end: decode_attention(
-            query,
-            key,
-            value,
-            start,
-            end,
-            scale,
-            num_splits,
-        )
-    )(queries, keys, values, starts, ends)
-    return output, True
 
 
 def _stable_reduction_attention_kernel(
@@ -344,35 +273,18 @@ def _attention_kernel(
             logits_soft_cap=logit_soft_cap,
         ).astype(queries.dtype)
 
-    abstract_device = sharding_of(keys).mesh.abstract_mesh.abstract_device
-    if (
-        forward_pass_config.attention_implementation == AttentionImplementation.PALLAS
-        and abstract_device is not None
-        and abstract_device.platform == "gpu"
-        and "B200" in abstract_device.device_kind
-        and queries.shape[0] == 1
-        and queries.shape[1] % keys.shape[1] == 0
-        and 1 <= queries.shape[1] // keys.shape[1] <= 16
-        and queries.shape[2] in (128, 256, 512)
-        and keys.shape[2] == queries.shape[2]
-        and values.shape == keys.shape
-        and queries.dtype == keys.dtype == values.dtype == jnp.bfloat16
-        and bias is None
-        and mask is not None
-        and mask.shape == (1, keys.shape[0])
-        and logit_soft_cap is None
-        and (queries.shape[2] < 512 or keys.shape[1] > 1)
-    ):
-        attention_scale = queries.shape[-1] ** -0.5
-        if scale is not None:
-            attention_scale = scale
-        return _single_token_decode_attention(
+    if forward_pass_config.attention_implementation == AttentionImplementation.PALLAS:
+        pallas_output = decode_attention(
             queries,
             keys,
             values,
-            mask,
-            jnp.asarray(attention_scale, dtype=jnp.float32),
+            bias=bias,
+            mask=mask,
+            scale=scale,
+            logit_soft_cap=logit_soft_cap,
         )
+        if pallas_output is not None:
+            return pallas_output
 
     match forward_pass_config.attention_implementation:
         case AttentionImplementation.PALLAS | AttentionImplementation.STANDARD:

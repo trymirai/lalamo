@@ -1,18 +1,21 @@
 import math
 from collections.abc import Callable
 from functools import cache
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import jax
 import jax.numpy as jnp
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import mosaic_gpu as plgpu
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, Bool, Float, Int
+
+from lalamo.utils.sharding import sharding_of, supports_mosaic_gpu
 
 type _Ref = Any
 type _NumSplits = Literal[1, 2, 4, 8]
 
 _BLOCK_SIZE = 128
+_NUM_SPLITS: tuple[_NumSplits, ...] = (1, 2, 4, 8)
 _KEY_VALUE_HEAD_AXIS = "pallas_decode_key_value_head"
 _QUERY_HEAD_AXIS = "pallas_decode_query_head"
 _SPLIT_AXIS = "pallas_decode_split"
@@ -59,28 +62,42 @@ def _make_main(
     query_head_layout = accumulator_layout.reduce(0)
     token_layout = accumulator_layout.reduce(1)
 
-    def run(
-        grouped_queries_ref: _Ref,
-        keys_ref: _Ref,
-        values_ref: _Ref,
-        start_ref: _Ref,
-        end_ref: _Ref,
-        scale_ref: _Ref,
-        final_outputs_ref: _Ref,
-        partial_maxima_ref: _Ref,
-        partial_normalizers_ref: _Ref,
-        partial_outputs_ref: _Ref,
-        query_smem_ref: _Ref,
-        key_value_smem_union: _Ref,
-        values_low_smem_ref: _Ref,
-        probability_output_smem_union: _Ref,
-        query_barrier_ref: _Ref,
-        key_value_barrier_ref: _Ref,
-        values_high_barrier_ref: _Ref,
-        tensor_core_barrier_ref: _Ref,
-        logits_tmem_ref: _Ref,
-        output_tmem_ref: _Ref,
-    ) -> None:
+    def kernel(*refs: _Ref) -> None:
+        if num_splits == 1:
+            grouped_queries_ref, keys_ref, values_ref, start_ref, end_ref, scale_ref, final_outputs_ref, *scratch = (
+                refs
+            )
+            partial_maxima_ref = partial_normalizers_ref = partial_outputs_ref = cast("_Ref", None)
+        else:
+            (
+                grouped_queries_ref,
+                keys_ref,
+                values_ref,
+                start_ref,
+                end_ref,
+                scale_ref,
+                partial_maxima_ref,
+                partial_normalizers_ref,
+                partial_outputs_ref,
+                *scratch,
+            ) = refs
+            final_outputs_ref = cast("_Ref", None)
+        (
+            query_smem_ref,
+            key_value_smem_union,
+            values_low_smem_ref,
+            probability_output_smem_union,
+            query_barrier_ref,
+            key_value_barrier_ref,
+            tensor_core_barrier_ref,
+            logits_tmem_ref,
+            output_tmem_ref,
+            *optional_scratch,
+        ) = scratch
+        if feature_blocks > 1:
+            (values_high_barrier_ref,) = optional_scratch
+        else:
+            values_high_barrier_ref = cast("_Ref", None)
         keys_smem_ref, values_high_smem_ref = key_value_smem_union
         probabilities_smem_ref, output_smem_ref = probability_output_smem_union
         key_value_head_index = jax.lax.axis_index(_KEY_VALUE_HEAD_AXIS)
@@ -100,7 +117,6 @@ def _make_main(
             query_barrier_ref,
             oob_mode=plgpu.OOBFillMode.ZEROS,
         )
-        plgpu.barrier_wait(query_barrier_ref)
         start = start_ref[...]
         end = end_ref[...]
         first_block = start // _BLOCK_SIZE
@@ -112,6 +128,7 @@ def _make_main(
             jnp.zeros((padded_query_heads,), jnp.float32),
             query_head_layout,
         )
+        plgpu.barrier_wait(query_barrier_ref)
 
         @pl.loop(
             0,
@@ -373,49 +390,6 @@ def _make_main(
             plgpu.copy_smem_to_gmem(output_smem_ref, destination_ref)
             plgpu.wait_smem_to_gmem(0, wait_read_only=True)
 
-    def final_kernel(*refs: _Ref) -> None:
-        grouped_queries_ref, keys_ref, values_ref, start_ref, end_ref, scale_ref, outputs_ref, *scratch = refs
-        run(
-            grouped_queries_ref,
-            keys_ref,
-            values_ref,
-            start_ref,
-            end_ref,
-            scale_ref,
-            outputs_ref,
-            None,
-            None,
-            None,
-            *scratch,
-        )
-
-    def partial_kernel(*refs: _Ref) -> None:
-        (
-            grouped_queries_ref,
-            keys_ref,
-            values_ref,
-            start_ref,
-            end_ref,
-            scale_ref,
-            partial_maxima_ref,
-            partial_normalizers_ref,
-            partial_outputs_ref,
-            *scratch,
-        ) = refs
-        run(
-            grouped_queries_ref,
-            keys_ref,
-            values_ref,
-            start_ref,
-            end_ref,
-            scale_ref,
-            None,
-            partial_maxima_ref,
-            partial_normalizers_ref,
-            partial_outputs_ref,
-            *scratch,
-        )
-
     scratch_types = (
         _tiled_smem((padded_query_heads, head_dim), jnp.bfloat16),
         plgpu.RefUnion(
@@ -429,15 +403,16 @@ def _make_main(
         ),
         plgpu.Barrier(),
         plgpu.Barrier(num_arrivals=2),
-        plgpu.Barrier(),
         plgpu.Barrier(orders_tensor_core=True),
         plgpu.TMEM((_BLOCK_SIZE, padded_query_heads), jnp.float32),
         plgpu.TMEM((_BLOCK_SIZE, padded_output_heads * feature_blocks), jnp.float32),
     )
+    if feature_blocks > 1:
+        scratch_types = (*scratch_types, plgpu.Barrier())
     kernel_suffix = f"d{head_dim}_q{query_heads_per_key_value_head}"
     if num_splits == 1:
         return plgpu.kernel(
-            final_kernel,
+            kernel,
             out_type=jax.ShapeDtypeStruct(
                 (
                     num_key_value_heads,
@@ -459,7 +434,7 @@ def _make_main(
         padded_output_heads,
     )
     return plgpu.kernel(
-        partial_kernel,
+        kernel,
         out_type=(
             jax.ShapeDtypeStruct(partial_prefix, jnp.float32),
             jax.ShapeDtypeStruct(partial_prefix, jnp.float32),
@@ -566,7 +541,7 @@ def _make_reduction(
     )
 
 
-def decode_attention(
+def _decode_attention(
     queries: Float[Array, "1 query_heads head_dim"],
     keys: Float[Array, "capacity key_value_heads head_dim"],
     values: Float[Array, "capacity key_value_heads head_dim"],
@@ -602,3 +577,109 @@ def decode_attention(
         num_splits,
     )(*partials)
     return reduced[:, :query_heads_per_key_value_head].reshape(queries.shape)
+
+
+def _single_token_bf16_attention(
+    queries: Float[Array, "1 query_heads head_dim"],
+    keys: Float[Array, "capacity key_value_heads head_dim"],
+    values: Float[Array, "capacity key_value_heads head_dim"],
+    mask: Bool[Array, "1 capacity"],
+    scale: Float[Array, ""],
+) -> Float[Array, "1 query_heads head_dim"]:
+    with jax.numpy_dtype_promotion("standard"):
+        return jax.nn.dot_product_attention(
+            queries,
+            keys,
+            values,
+            mask=mask,
+            scale=cast("float", scale),
+        ).astype(queries.dtype)
+
+
+@jax.custom_batching.custom_vmap
+def _single_token_decode_attention(
+    queries: Float[Array, "1 query_heads head_dim"],
+    keys: Float[Array, "capacity key_value_heads head_dim"],
+    values: Float[Array, "capacity key_value_heads head_dim"],
+    mask: Bool[Array, "1 capacity"],
+    scale: Float[Array, ""],
+) -> Float[Array, "1 query_heads head_dim"]:
+    return _single_token_bf16_attention(queries, keys, values, mask, scale)
+
+
+@_single_token_decode_attention.def_vmap
+def _single_token_decode_attention_vmap(
+    axis_size: int,
+    _in_batched: list[bool],
+    queries: Float[Array, "batch 1 query_heads head_dim"],
+    keys: Float[Array, "batch capacity key_value_heads head_dim"],
+    values: Float[Array, "batch capacity key_value_heads head_dim"],
+    masks: Bool[Array, "batch 1 capacity"],
+    scale: Float[Array, ""],
+) -> tuple[Float[Array, "batch 1 query_heads head_dim"], bool]:
+    programs = axis_size * keys.shape[2]
+    required_splits = (144 + programs - 1) // programs
+    num_blocks = math.ceil(keys.shape[1] / _BLOCK_SIZE)
+    num_splits = next(
+        (candidate for candidate in _NUM_SPLITS if required_splits <= candidate <= num_blocks),
+        None,
+    )
+    if num_splits is None:
+        fallback = jax.vmap(_single_token_bf16_attention, in_axes=(0, 0, 0, 0, None))
+        return fallback(queries, keys, values, masks, scale), True
+
+    lengths = jnp.sum(masks[:, 0], axis=-1, dtype=jnp.int32)
+    starts = jnp.argmax(masks[:, 0], axis=-1).astype(jnp.int32)
+    ends = starts + lengths
+    return (
+        jax.vmap(
+            lambda query, key, value, start, end: _decode_attention(
+                query,
+                key,
+                value,
+                start,
+                end,
+                scale,
+                num_splits,
+            )
+        )(queries, keys, values, starts, ends),
+        True,
+    )
+
+
+def decode_attention(
+    queries: Float[Array, "dst_tokens query_heads head_dim"],
+    keys: Float[Array, "capacity key_value_heads head_dim"],
+    values: Float[Array, "capacity key_value_heads head_dim"],
+    *,
+    bias: Float[Array, "query_heads dst_tokens capacity"] | None,
+    mask: Bool[Array, "dst_tokens capacity"] | None,
+    scale: float | None,
+    logit_soft_cap: float | None,
+) -> Float[Array, "dst_tokens query_heads head_dim"] | None:
+    if not supports_mosaic_gpu(sharding_of(keys).mesh, 10):
+        return None
+    if bias is not None or mask is None or logit_soft_cap is not None:
+        return None
+
+    query_heads = queries.shape[1]
+    key_value_heads = keys.shape[1]
+    head_dim = queries.shape[2]
+    if (
+        queries.shape[0] != 1
+        or query_heads % key_value_heads != 0
+        or not 1 <= query_heads // key_value_heads <= 16
+        or head_dim not in (128, 256, 512)
+        or (head_dim == 512 and key_value_heads == 1)
+        or queries.dtype != jnp.bfloat16
+    ):
+        return None
+
+    attention_scale = head_dim**-0.5 if scale is None else scale
+    return _single_token_decode_attention(
+        queries,
+        keys,
+        values,
+        mask,
+        jnp.asarray(attention_scale, dtype=jnp.float32),
+    )
