@@ -38,6 +38,7 @@ standard = [
   "mlx-community/Qwen3.5-9B-MLX-4bit",
   "Qwen/Qwen3.6-27B",
   "Qwen/Qwen3.6-35B-A3B",
+  "Qwen/Qwen3.8-27B",
   "prism-ml/Bonsai-4B-mlx-1bit",
   "google/gemma-4-E2B-it",
   "ibm-granite/granite-3.3-2b-instruct",

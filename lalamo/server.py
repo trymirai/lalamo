@@ -22,7 +22,7 @@ from jax import numpy as jnp
 from lalamo.data.huggingface_message import HFMessage
 from lalamo.inference.batch_scheduler import _PROBE_CACHE, BatchSchedulerConfig, ContinuousBatchScheduler
 from lalamo.model_import.common import import_model
-from lalamo.models import GenerationConfig, LanguageModel
+from lalamo.models import GenerationConfig, LanguageModel, ReasoningEffort
 from lalamo.module import Keychain
 from lalamo.utils.sharding import ShardingConfig
 
@@ -40,6 +40,7 @@ class RequestBody:
     dtype: Literal["bfloat16", "float32"] | None = None
     seed: int | None = None
     enable_thinking: bool = True
+    reasoning_effort: ReasoningEffort | None = None
 
     def shares_batch_params(self, other: Self) -> bool:
         return (
@@ -49,6 +50,7 @@ class RequestBody:
             and self.dtype == other.dtype
             and (self.seed is None) == (other.seed is None)
             and self.enable_thinking == other.enable_thinking
+            and self.reasoning_effort == other.reasoning_effort
         )
 
 
@@ -214,6 +216,7 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
             batch_size=None,
         ),
         enable_thinking=reference.enable_thinking,
+        reasoning_effort=reference.reasoning_effort,
         keychain=keychain,
         vram_bytes=app.state.vram_bytes,
     ):

@@ -4,6 +4,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from functools import cached_property
 from re import Pattern
 from typing import NotRequired, TypedDict
@@ -20,6 +21,7 @@ __all__ = [
     "ContentBlock",
     "Image",
     "Message",
+    "ReasoningEffort",
     "SystemMessage",
     "ToolSchema",
     "UserMessage",
@@ -28,6 +30,12 @@ __all__ = [
 
 type ToolSchema = None  # WIP
 type Image = None  # WIP
+
+
+class ReasoningEffort(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    XHIGH = "xhigh"
 
 
 def _strftime_now(format_string: str) -> str:
@@ -47,6 +55,7 @@ class HuggingFaceRequest(TypedDict):
     eos_token: str | None
     messages: list[HuggingFaceMessage]
     enable_thinking: NotRequired[bool]
+    reasoning_effort: NotRequired[ReasoningEffort]
     tools: NotRequired[dict]
 
 
@@ -133,6 +142,7 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         messages: Iterable[Message],
         tools: Iterable[ToolSchema] | None = None,
         enable_thinking: bool | None = None,
+        reasoning_effort: ReasoningEffort | None = None,
     ) -> HuggingFaceRequest:
         converted_messages = [self.message_to_dict(message) for message in messages]
         if self.config.default_system_prompt is not None:  # noqa: SIM102
@@ -149,21 +159,58 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         )
         if enable_thinking is not None:
             result["enable_thinking"] = enable_thinking
+        if reasoning_effort is not None:
+            result["reasoning_effort"] = reasoning_effort
         if tools is not None:
             raise NotImplementedError("Tools are not supported yet.")
         return result
 
-    def render_request(self, messages: Iterable[Message], *, enable_thinking: bool = True) -> str:
+    def render_request(
+        self,
+        messages: Iterable[Message],
+        *,
+        enable_thinking: bool = True,
+        reasoning_effort: ReasoningEffort | None = None,
+    ) -> str:
         # TODO(knyazer): the following is an ugly thing that needs to be fixed
         # as soon as shoji is alive (avoid hardcoding random flags)
-        request_dict = self.request_to_dict(messages, enable_thinking=enable_thinking)
+        request_dict = self.request_to_dict(
+            messages,
+            enable_thinking=enable_thinking,
+            reasoning_effort=reasoning_effort,
+        )
         return self.prompt_template.render({**request_dict, "strftime_now": _strftime_now})
 
-    def encode_request(self, request: Iterable[Message], *, enable_thinking: bool = True) -> list[int]:
-        return self.encode_text(self.render_request(request, enable_thinking=enable_thinking))
+    def encode_request(
+        self,
+        request: Iterable[Message],
+        *,
+        enable_thinking: bool = True,
+        reasoning_effort: ReasoningEffort | None = None,
+    ) -> list[int]:
+        return self.encode_text(
+            self.render_request(
+                request,
+                enable_thinking=enable_thinking,
+                reasoning_effort=reasoning_effort,
+            ),
+        )
 
-    def encode_requests(self, requests: Iterable[Iterable[Message]]) -> list[list[int]]:
-        return [self.encode_request(request) for request in requests]
+    def encode_requests(
+        self,
+        requests: Iterable[Iterable[Message]],
+        *,
+        enable_thinking: bool = True,
+        reasoning_effort: ReasoningEffort | None = None,
+    ) -> list[list[int]]:
+        return [
+            self.encode_request(
+                request,
+                enable_thinking=enable_thinking,
+                reasoning_effort=reasoning_effort,
+            )
+            for request in requests
+        ]
 
     def parse_response(self, response: str, *, expect_thinking: bool = True) -> AssistantMessage:
         if self.output_parser_regex is None or not expect_thinking:

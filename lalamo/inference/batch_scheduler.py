@@ -16,7 +16,7 @@ from einops import rearrange
 from jax.errors import JaxRuntimeError
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key, Shaped
 
-from lalamo.models.chat_codec import AssistantMessage, Message
+from lalamo.models.chat_codec import AssistantMessage, Message, ReasoningEffort
 from lalamo.models.language_model import DecodingState, GenerationConfig, LanguageModel, PrefillResults
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
 from lalamo.modules import DecoderForwardPassConfig, State
@@ -784,6 +784,7 @@ class BatchScheduler(ABC):
         batch_scheduler_config: BatchSchedulerConfig = BatchSchedulerConfig(),
         *,
         enable_thinking: bool = True,
+        reasoning_effort: ReasoningEffort | None = None,
         keychain: Keychain | None = None,
         vram_bytes: int | None = None,
         batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
@@ -800,7 +801,12 @@ class BatchScheduler(ABC):
             raise RuntimeError("Specify either batch_scheduler_config.batch_size or vram_bytes.")
 
         tokenized = [
-            self.model.token_codec.encode_request(message, enable_thinking=enable_thinking) for message in messages
+            self.model.token_codec.encode_request(
+                message,
+                enable_thinking=enable_thinking,
+                reasoning_effort=reasoning_effort,
+            )
+            for message in messages
         ]
 
         if batch_scheduler_config.batch_size is not None:

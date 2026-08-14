@@ -42,7 +42,7 @@ from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
-from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, TTSModel
+from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, ReasoningEffort, TTSModel
 from lalamo.models.chat_codec import Message, UserMessage
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
@@ -139,6 +139,13 @@ def chat(
             show_default="model default",
         ),
     ] = None,
+    reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Option(
+            help="Reasoning effort requested from a model whose chat template supports it.",
+            show_default="model default",
+        ),
+    ] = None,
 ) -> None:
     generation_config: GenerationConfig | None = None
     with Progress(
@@ -168,6 +175,7 @@ def chat(
                     messages,
                     generation_config=generation_config,
                     max_output_length=max_tokens,
+                    reasoning_effort=reasoning_effort,
                     keychain=Keychain.init(turn_index + 1, sharding_config=model.sharding_config),
                 ):
                     console.print(token, end="")
@@ -181,6 +189,7 @@ def chat(
                 [UserMessage(message)],
                 generation_config=generation_config,
                 max_output_length=max_tokens,
+                reasoning_effort=reasoning_effort,
                 keychain=Keychain.init(1, sharding_config=model.sharding_config),
             ):
                 console.print(token, end="")

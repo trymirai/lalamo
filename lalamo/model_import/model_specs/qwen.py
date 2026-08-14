@@ -527,5 +527,18 @@ QWEN36 = [
     ),
 ]
 
+QWEN38 = [
+    LanguageModelSpec(
+        vendor="Alibaba",
+        family="Qwen3.8",
+        name="Qwen3.8-27B",
+        size="27B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3.8-27B"),
+        config_type=HFQwen35Config,
+        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+    ),
+]
 
-QWEN_MODELS = QWEN25_CODER + QWEN3 + QWEN35 + QWEN36
+
+QWEN_MODELS = QWEN25_CODER + QWEN3 + QWEN35 + QWEN36 + QWEN38
