@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import pytest
 from jaxtyping import Array
 
-from lalamo.compressed.hybrid import HybridMatrix, HybridSpec, IncoherenceProcessingMode
+from lalamo.compressed.hybrid import HybridSpec, IncoherenceProcessingMode
 from lalamo.compressed.int import IntSpec
 from lalamo.initializer import RandomInitializer
 from lalamo.kernels.deltanet import deltanet_recurrent_scan
@@ -43,26 +43,14 @@ def _replicate(values: Array, sharding_config: ShardingConfig) -> Array:
 
 
 @pytest.mark.parametrize(
-    ("bits", "group_size", "rht_block_size", "shape", "batch_size", "is_symmetric"),
+    ("bits", "group_size", "rht_block_size", "shape", "is_symmetric"),
     [
-        pytest.param(4, 16, 128, (1_536, 2_560), None, False, id="w4-g16-rht128"),
-        pytest.param(4, 32, 32, (1_536, 2_560), None, False, id="w4-g32-rht32-even-stride"),
-        pytest.param(4, 32, 32, (64, 9_216), None, False, id="w4-g32-rht32-wide"),
-        pytest.param(8, 32, 32, (64, 256), None, False, id="w8-g32-rht32"),
-        pytest.param(8, 64, 64, (64, 256), None, False, id="w8-g64-rht64"),
-        pytest.param(8, 128, 128, (64, 256), None, False, id="w8-g128-rht128"),
-        pytest.param(4, 8, None, (128, 512), 8, False, id="w4-g8-no-rht-b8"),
-        pytest.param(4, 16, 32, (128, 512), 8, False, id="w4-g16-rht32-b8"),
-        pytest.param(4, 32, 32, (128, 512), 16, False, id="w4-g32-rht32-b16"),
-        pytest.param(4, 64, 32, (128, 512), 48, False, id="w4-g64-rht32-b48"),
-        pytest.param(4, 32, 32, (128, 9_216), 65, False, id="w4-g32-rht32-b65-wide"),
-        pytest.param(4, 128, 32, (128, 1_024), 32, False, id="w4-g128-rht32-b32"),
-        pytest.param(8, 8, 32, (128, 512), 8, True, id="w8-g8-rht32-b8"),
-        pytest.param(8, 16, 32, (128, 512), 8, True, id="w8-g16-rht32-b8"),
-        pytest.param(8, 32, 32, (128, 512), 8, True, id="w8-g32-rht32-b8"),
-        pytest.param(8, 64, 32, (128, 512), 8, True, id="w8-g64-rht32-b8"),
-        pytest.param(8, 128, 32, (128, 1_024), 8, True, id="w8-g128-rht32-b8"),
-        pytest.param(8, 8, 32, (128, 2_304), 17, True, id="w8-g8-rht32-b17-wide"),
+        pytest.param(4, 16, 128, (1_536, 2_560), False, id="w4-g16-rht128"),
+        pytest.param(4, 32, 32, (1_536, 2_560), False, id="w4-g32-rht32-even-stride"),
+        pytest.param(4, 32, 32, (64, 9_216), False, id="w4-g32-rht32-wide"),
+        pytest.param(8, 32, 32, (64, 256), False, id="w8-g32-rht32"),
+        pytest.param(8, 64, 64, (64, 256), False, id="w8-g64-rht64"),
+        pytest.param(8, 128, 128, (64, 256), False, id="w8-g128-rht128"),
     ],
 )
 def test_int_hybrid_dot_matches_decompressed_weights(
@@ -70,19 +58,12 @@ def test_int_hybrid_dot_matches_decompressed_weights(
     group_size: int,
     rht_block_size: Literal[32, 64, 128] | None,
     shape: tuple[int, int],
-    batch_size: int | None,
     is_symmetric: bool,
 ) -> None:
-    minimum_compute_capability = 9
-    if batch_size is not None:
-        minimum_compute_capability = 10
-    sharding_config = _gpu_sharding_config(minimum_compute_capability)
+    sharding_config = _gpu_sharding_config(9)
     _, columns = shape
     weights = _replicate(_values(shape, seed=bits, scale=0.1).astype(jnp.bfloat16), sharding_config)
-    vector_shape = (columns,)
-    if batch_size is not None:
-        vector_shape = (batch_size, columns)
-    vector = _replicate(_values(vector_shape, seed=group_size, scale=0.2).astype(jnp.bfloat16), sharding_config)
+    vector = _replicate(_values((columns,), seed=group_size, scale=0.2).astype(jnp.bfloat16), sharding_config)
     matrix = HybridSpec(
         quantization_spec=IntSpec(
             bits=bits,
@@ -98,9 +79,6 @@ def test_int_hybrid_dot_matches_decompressed_weights(
         sharding_config=sharding_config,
         is_sharded=False,
     )
-    if batch_size is not None:
-        matrix = matrix.for_inference(batch_size)
-        assert isinstance(matrix, HybridMatrix)
 
     def dot(input_vector: Array) -> Array:
         return matrix.dot(
@@ -108,10 +86,7 @@ def test_int_hybrid_dot_matches_decompressed_weights(
             keychain=Keychain.init(0, sharding_config=sharding_config),
         )
 
-    if batch_size is None:
-        result = dot(vector)
-    else:
-        result = jax.vmap(dot)(vector)
+    result = dot(vector)
     reference = vector @ matrix.decompress().T
 
     assert_close(result=result, reference=reference, atol=5e-2, rtol=3e-2)

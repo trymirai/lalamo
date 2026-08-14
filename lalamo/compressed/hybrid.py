@@ -24,8 +24,6 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
-from .int import IntMatrixForInference
-
 __all__ = [
     "HybridMatrix",
     "HybridSpec",
@@ -333,13 +331,6 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
             sharding_config=self.sharding_config,
             is_sharded=self.is_sharded,
         )
-
-    def for_inference(self, batch_size: int) -> "HybridMatrix | FullPrecisionMatrix":
-        if batch_size == 1:
-            return self
-        if isinstance(self.quantized, IntMatrixForInference) and self.adapter is None:
-            return self
-        return self.to_full_precision()
 
     @property
     def shape(self) -> tuple[int, ...]:

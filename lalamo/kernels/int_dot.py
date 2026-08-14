@@ -17,8 +17,6 @@ from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import sharding_of, supports_mosaic_gpu
 from lalamo.weight_matrix import Layout
 
-from .int_matmul import _batched_int_matmul
-
 if TYPE_CHECKING:
     from jax.sharding import Mesh
 
@@ -478,18 +476,6 @@ def _make_int_dot(
                 )[None],
                 True,
             )
-
-        batched_output = _batched_int_matmul(
-            vectors,
-            packed_weights,
-            scales.astype(vectors.dtype),
-            packed_zero_points,
-            group_size=group_size,
-            bits=bits,
-            is_symmetric=is_symmetric,
-        )
-        if batched_output is not None:
-            return batched_output, True
 
         zero_points = packed_zero_points
         if is_symmetric:
