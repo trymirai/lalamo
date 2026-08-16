@@ -1,7 +1,7 @@
 import math
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Generic, Literal, Self, TypeVar, overload
+from typing import Self
 
 import equinox as eqx
 import jax
@@ -91,12 +91,8 @@ class DecoderActivationTrace(Exportable, eqx.Module):
     output_norm: Float[Array, "batch suffix_tokens channels"]
 
 
-type DecoderLogits = Float[Array, "batch suffix_tokens vocabulary"] | Logits
-DecoderLogitsT_co = TypeVar("DecoderLogitsT_co", bound=DecoderLogits, covariant=True)
-
-
-class DecoderResult(Exportable, eqx.Module, Generic[DecoderLogitsT_co]):  # noqa: UP046
-    logits: DecoderLogitsT_co
+class DecoderResult(Exportable, eqx.Module):
+    logits: Logits
     updated_state: State | None = None
     activation_trace: DecoderActivationTrace | None = None
 
@@ -205,40 +201,6 @@ class Decoder(LalamoModule[DecoderConfig]):
     def vocab_size(self) -> int:
         return self.embedding.vocab_size
 
-    @overload
-    def __call__(
-        self,
-        token_ids: Int[Array, "batch suffix_tokens"],
-        token_positions: Int[Array, "batch suffix_tokens"],
-        state: State | None = None,
-        return_updated_state: bool = False,
-        return_activation_trace: bool = False,
-        lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
-        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
-        return_suffix_tokens: int | None = None,
-        *,
-        return_candidate_logits: Literal[False] = False,
-        keychain: Keychain,
-    ) -> DecoderResult[Float[Array, "batch suffix_tokens vocabulary"]]: ...
-
-    @overload
-    def __call__(
-        self,
-        token_ids: Int[Array, "batch suffix_tokens"],
-        token_positions: Int[Array, "batch suffix_tokens"],
-        state: State | None = None,
-        return_updated_state: bool = False,
-        return_activation_trace: bool = False,
-        lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
-        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
-        return_suffix_tokens: int | None = None,
-        *,
-        return_candidate_logits: bool,
-        keychain: Keychain,
-    ) -> DecoderResult[DecoderLogits]: ...
-
     @eqx.filter_jit
     def __call__(
         self,
@@ -252,9 +214,8 @@ class Decoder(LalamoModule[DecoderConfig]):
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
         *,
-        return_candidate_logits: bool = False,
         keychain: Keychain,
-    ) -> DecoderResult[DecoderLogits]:
+    ) -> DecoderResult:
         if token_ids.ndim != 2:
             raise ValueError(
                 f"token_ids must be a 2D array of size (batch_size, sequence_length), got {token_ids.shape}",
@@ -300,9 +261,8 @@ class Decoder(LalamoModule[DecoderConfig]):
             keychain=transformer_keychain,
         )
 
-        readout = self.embedding.readout_for_sampling if return_candidate_logits else self.embedding.readout
         logits = call_vmapped_twice(
-            readout,
+            self.embedding.readout,
             transformer_result.outputs,
             forward_pass_config=forward_pass_config.embedding_forward_pass_config,
             keychain=readout_keychain,

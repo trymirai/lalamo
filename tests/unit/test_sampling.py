@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from lalamo.module import Keychain
-from lalamo.sampling import FullLogits, SamplingPolicy, SparseLogits
+from lalamo.sampling import DenseLogits, SamplingPolicy, SparseLogits
 from tests.helpers import make_test_sharding_config
 
 
@@ -81,14 +81,14 @@ def test_init_rejects_invalid_arguments(call: Callable[[], SamplingPolicy], matc
     ],
 )
 def test_process_logits(policy: SamplingPolicy, logits: jax.Array | list[float], expected: list[float]) -> None:
-    result = FullLogits(values=jnp.asarray(logits, dtype=jnp.float32)).process(policy)
+    result = policy.process_logits(jnp.asarray(logits, dtype=jnp.float32))
 
     _assert_array(result, jnp.array(expected, dtype=jnp.float32))
 
 
 def test_top_k_keeps_exactly_k_tokens_at_cutoff_ties() -> None:
-    result = FullLogits(values=jnp.array([5.0, 4.0, 4.0, 4.0, 3.0], dtype=jnp.float32)).process(
-        SamplingPolicy.init(top_k=2),
+    result = SamplingPolicy.init(top_k=2).process_logits(
+        jnp.array([5.0, 4.0, 4.0, 4.0, 3.0], dtype=jnp.float32),
     )
 
     assert jnp.isfinite(result).sum().item() == 2
@@ -104,7 +104,7 @@ def test_token_counts_ignore_out_of_vocab_tokens_and_update_generated_tokens() -
     _assert_array(policy.token_counts, jnp.array([0, 1, 1, 0], dtype=jnp.int32))
     _assert_array(updated_policy.token_counts, jnp.array([0, 1, 2, 0], dtype=jnp.int32))
     _assert_array(
-        FullLogits(values=jnp.array([1.0, 2.0, 4.0, 8.0], dtype=jnp.float32)).process(policy),
+        policy.process_logits(jnp.array([1.0, 2.0, 4.0, 8.0], dtype=jnp.float32)),
         jnp.array([1.0, 1.0, 2.0, 8.0], dtype=jnp.float32),
     )
 
@@ -120,9 +120,9 @@ def test_batched_policy_requires_vmap_and_processes_rows() -> None:
     logits = jnp.array([[1.0, 3.0, 2.0], [1.0, 3.0, 2.0]], dtype=jnp.float32)
 
     with pytest.raises(ValueError, match="Use vmap"):
-        FullLogits(values=logits[0]).process(policy)
+        policy.process_logits(logits[0])
 
-    result = jax.vmap(lambda policy_row, logits_row: FullLogits(values=logits_row).process(policy_row))(
+    result = jax.vmap(SamplingPolicy.process_logits)(
         policy,
         logits,
     )
@@ -132,7 +132,7 @@ def test_batched_policy_requires_vmap_and_processes_rows() -> None:
 
 def test_call_samples_greedy_token_when_temperature_is_zero() -> None:
     result = SamplingPolicy.init(temperature=0.0)(
-        FullLogits(values=jnp.array([0.0, 3.0, 2.0], dtype=jnp.float32)),
+        DenseLogits(values=jnp.array([0.0, 3.0, 2.0], dtype=jnp.float32)),
         keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
     )
 
@@ -143,7 +143,7 @@ def test_call_samples_greedy_token_when_temperature_is_zero() -> None:
 def test_sparse_sampling_matches_dense_sampling() -> None:
     sample_count = 10_000
     rng = np.random.default_rng(0)
-    vocabulary_size = SparseLogits.MAX_TOP_K
+    vocabulary_size = 128
     token_ids = jnp.arange(vocabulary_size, dtype=jnp.int32)
     values = jnp.asarray(
         np.sort(
@@ -183,7 +183,7 @@ def test_sparse_sampling_matches_dense_sampling() -> None:
         row_values: jax.Array,
     ) -> tuple[jax.Array, jax.Array]:
         return (
-            policy(FullLogits(values=row_values), keychain=keychain),
+            policy(DenseLogits(values=row_values), keychain=keychain),
             policy(SparseLogits(values=row_values, token_ids=token_ids), keychain=keychain),
         )
 

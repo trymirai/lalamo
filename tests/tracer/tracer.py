@@ -91,6 +91,12 @@ ActivationTrace = ClassifierActivationTrace | DecoderActivationTrace
 InferenceResult = ClassifierResult | DecoderResult
 
 
+def _logit_values(result: InferenceResult) -> jax.Array:
+    if isinstance(result, DecoderResult):
+        return result.logits.values
+    return result.logits
+
+
 class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     @abstractmethod
     def from_jax(self, array: Array) -> ArrayT: ...
@@ -362,14 +368,12 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     def match_readout(self, result: DecoderResult | ClassifierResult) -> None:
         assert result.activation_trace is not None
 
-        llm_logits = result.logits
-
         ref_normalized_outputs = self.normalized_output(result)
         ref_native_logits = self.readout(ref_normalized_outputs)
         ref_logits = self.to_jax(ref_native_logits).squeeze(0)
 
         assert_close(
-            result=llm_logits,
+            result=_logit_values(result),
             reference=ref_logits,
             operation_name="Readout (lm_head)",
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
@@ -419,7 +423,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         )
 
         ref_probas = jax.nn.softmax(self.to_jax(hf_output_logits), axis=-1)
-        llm_probas = jax.nn.softmax(result.logits, axis=-1)
+        llm_probas = jax.nn.softmax(_logit_values(result), axis=-1)
         assert_close(
             result=llm_probas,
             reference=ref_probas,

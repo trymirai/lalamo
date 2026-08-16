@@ -7,7 +7,6 @@ from .lloyd_max import (
     LloydMaxSpec,
 )
 from .low_rank import LowRankMatrix, LowRankSpec
-from .low_rank_preview_readout import LowRankPreviewReadoutMatrix, LowRankPreviewReadoutSpec
 from .microfloat import (
     MicrofloatMatrix,
     MicrofloatMatrixForInference,
@@ -30,8 +29,6 @@ __all__ = [
     "LloydMaxMatrixForTraining",
     "LloydMaxSpec",
     "LowRankMatrix",
-    "LowRankPreviewReadoutMatrix",
-    "LowRankPreviewReadoutSpec",
     "LowRankSpec",
     "MLXMatrix",
     "MLXMatrixForInference",

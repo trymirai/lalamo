@@ -110,7 +110,7 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
         )
         assert step_result.updated_state is not None
         state = step_result.updated_state
-        sequential_logits.append(step_result.logits[0, -1])
+        sequential_logits.append(step_result.logits.values[0, -1])
 
     tree_result = decoder(
         chain_token_ids[None, :],
@@ -121,7 +121,7 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
         keychain=Keychain.init(30, sharding_config=make_test_sharding_config()),
     )
     assert_close(
-        result=tree_result.logits[0],
+        result=tree_result.logits.values[0],
         reference=jnp.stack(sequential_logits),
         operation_name="tree attention chain vs sequential logits",
     )
@@ -159,7 +159,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(50, sharding_config=make_test_sharding_config()),
     )
-    logits_a = result_a.logits[0, 0]
+    logits_a = result_a.logits.values[0, 0]
 
     state_b = prefix_result.updated_state
     result_b = decoder(
@@ -169,7 +169,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(60, sharding_config=make_test_sharding_config()),
     )
-    logits_b = result_b.logits[0, 0]
+    logits_b = result_b.logits.values[0, 0]
 
     tree_result = decoder(
         jnp.array([[10, 20]], dtype=jnp.int32),
@@ -179,14 +179,13 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(70, sharding_config=make_test_sharding_config()),
     )
-
     assert_close(
-        result=tree_result.logits[0, 0],
+        result=tree_result.logits.values[0, 0],
         reference=logits_a,
         operation_name="tree sibling A matches isolated A",
     )
     assert_close(
-        result=tree_result.logits[0, 1],
+        result=tree_result.logits.values[0, 1],
         reference=logits_b,
         operation_name="tree sibling B matches isolated B",
     )

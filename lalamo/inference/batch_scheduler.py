@@ -457,7 +457,6 @@ class PrefillSource:
             state_capacity=self.state_capacity,
             lengths_without_padding=lengths_without_padding_array,
             chunk_size=self.chunk_size,
-            return_candidate_logits=True,
             keychain=prefill_keychain,
         )
         sampling_policy = self.sampling_policy_template.broadcast(self.prefill_batch_size)
@@ -555,13 +554,13 @@ class BlockContinuousState(eqx.Module):
             return jax.device_put(leaf, leaf_sharding)
 
         sampling_policy = jax.tree.map(shard_sampling_leaf, sampling_policy)
-        empty_sampling_logits = jax.tree.map(
+        empty_logits = jax.tree.map(
             lambda leaf: jax.device_put(leaf, batch_token_sharding),
-            model.decoder.embedding.empty_sampling_logits(num_lines),
+            model.decoder.embedding.empty_logits(num_lines),
         )
 
         return BlockContinuousState(
-            last_token_logits=empty_sampling_logits,
+            last_token_logits=empty_logits,
             last_token_indices=jax.device_put(jnp.zeros(num_lines, dtype=jnp.int32), batch_vector_sharding),
             kv_state=model.decoder.init_static_state(
                 num_lines,
@@ -668,7 +667,6 @@ class BlockContinuousDecoder(eqx.Module):
             token_positions=next_token_indices[:, None],
             state=decode_state.state,
             return_updated_state=True,
-            return_candidate_logits=True,
             forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
             keychain=Keychain(
                 vmapped_keys=decoder_keys,
@@ -677,7 +675,6 @@ class BlockContinuousDecoder(eqx.Module):
             ),
         )
         assert decoder_result.updated_state is not None
-        assert isinstance(decoder_result.logits, Logits)
         new_decode_state = DecodingState(
             last_token_logits=decoder_result.logits.reshape(next_token_ids.shape[0], -1).astype(jnp.float32),
             last_token_indices=next_token_indices,

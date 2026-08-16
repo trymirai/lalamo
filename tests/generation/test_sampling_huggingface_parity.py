@@ -9,7 +9,6 @@ from transformers import GenerationConfig as TransformersGenerationConfig
 from transformers.generation.utils import GenerationMixin
 
 from lalamo.model_import.huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config
-from lalamo.sampling import FullLogits
 from lalamo.utils.torch_interop import torch_to_jax
 from tests.common import assert_close
 
@@ -48,7 +47,7 @@ def test_process_logits_matches_huggingface_generation_config(hf_generation_conf
     for i in range(256):
         logits = jax.random.normal(jax.random.key(i), (256,), dtype=jnp.float32)
 
-        lalamo_result = FullLogits(values=logits).process(lalamo_policy)
+        lalamo_result = lalamo_policy.process_logits(logits)
 
         hf_scores = cast("torch.FloatTensor", torch.tensor(jax.device_get(logits), dtype=torch.float32).unsqueeze(0))
         hf_input_ids = cast("torch.LongTensor", torch.zeros((1, 1), dtype=torch.long))

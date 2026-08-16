@@ -69,13 +69,15 @@ def test_suffix_logits_match_full_pass(decoder: Decoder, num_suffix_tokens: int)
 
     full_result = run_decoder(decoder, token_ids, lengths_without_padding)
     suffix_result = run_decoder(decoder, token_ids, lengths_without_padding, return_suffix_tokens=num_suffix_tokens)
+    full_logits = full_result.logits.values
+    suffix_logits = suffix_result.logits.values
 
-    assert suffix_result.logits.shape == (batch_size, num_suffix_tokens, decoder.vocab_size)
+    assert suffix_logits.shape == (batch_size, num_suffix_tokens, decoder.vocab_size)
     for row, row_length in enumerate(lengths_without_padding.tolist()):
         num_valid_tokens = min(num_suffix_tokens, row_length)
         assert_close(
-            result=suffix_result.logits[row, num_suffix_tokens - num_valid_tokens :],
-            reference=full_result.logits[row, row_length - num_valid_tokens : row_length],
+            result=suffix_logits[row, num_suffix_tokens - num_valid_tokens :],
+            reference=full_logits[row, row_length - num_valid_tokens : row_length],
             operation_name=f"suffix logits, row {row}",
         )
 
@@ -110,6 +112,7 @@ def test_suffix_logits_across_chunk_boundary(decoder: Decoder) -> None:
     )
 
     full_result = run_decoder(decoder, token_ids, lengths_without_padding)
+    full_logits = full_result.logits.values
 
     state = decoder.init_static_state(batch_size, 16, jnp.float32)
     chunk_logits = []
@@ -132,13 +135,13 @@ def test_suffix_logits_across_chunk_boundary(decoder: Decoder) -> None:
         )
         assert chunk_result.updated_state is not None
         state = chunk_result.updated_state
-        chunk_logits.append(chunk_result.logits[:, 0])
+        chunk_logits.append(chunk_result.logits.values[:, 0])
 
     for row, row_length in enumerate(lengths_without_padding.tolist()):
         last_token_chunk = (row_length - 1) // chunk_size
         assert_close(
             result=chunk_logits[last_token_chunk][row],
-            reference=full_result.logits[row, row_length - 1],
+            reference=full_logits[row, row_length - 1],
             operation_name=f"chunked suffix logits, row {row}",
         )
 
