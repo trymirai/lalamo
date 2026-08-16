@@ -49,7 +49,6 @@ class AttentionImplementation(Enum):
     PALLAS = "pallas"
     STABLE_REDUCTION = "stable_reduction"
     STANDARD = "standard"
-    CUDNN = "cudnn"
 
 
 @dataclass(frozen=True)

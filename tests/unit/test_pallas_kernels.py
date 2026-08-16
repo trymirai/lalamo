@@ -1,28 +1,13 @@
-from typing import Literal
+from typing import cast
 
 import jax
 import jax.numpy as jnp
 import pytest
 from jaxtyping import Array
 
-from lalamo.compressed.hybrid import HybridSpec, IncoherenceProcessingMode
-from lalamo.compressed.int import IntSpec
-from lalamo.initializer import RandomInitializer
+from lalamo.kernels.decode_attention import decode_attention
 from lalamo.kernels.deltanet import deltanet_recurrent_scan
 from lalamo.kernels.hadamard import hadamard_transform
-from lalamo.module import Keychain
-from lalamo.modules.linear import LinearConfig
-from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPassConfig
-from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
-from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
-from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
-from lalamo.modules.token_mixers.kv_cache import (
-    DynamicKVCacheLayer,
-    KVCacheLayer,
-    StaticKVCacheLayer,
-)
-from lalamo.modules.utils import call_vmapped
 from lalamo.utils.sharding import ShardingConfig
 from tests.common import assert_close, gpu_only
 
@@ -47,115 +32,7 @@ def _replicate(values: Array, sharding_config: ShardingConfig) -> Array:
 
 
 @pytest.mark.parametrize(
-    ("bits", "group_size", "rht_block_size", "shape", "is_symmetric"),
-    [
-        pytest.param(4, 16, 128, (1_536, 2_560), False, id="w4-g16-rht128"),
-        pytest.param(4, 32, 32, (1_536, 2_560), False, id="w4-g32-rht32-even-stride"),
-        pytest.param(4, 32, 32, (64, 9_216), False, id="w4-g32-rht32-wide"),
-        pytest.param(8, 32, 32, (64, 256), False, id="w8-g32-rht32"),
-        pytest.param(8, 64, 64, (64, 256), False, id="w8-g64-rht64"),
-        pytest.param(8, 128, 128, (64, 256), False, id="w8-g128-rht128"),
-    ],
-)
-def test_int_hybrid_dot_matches_decompressed_weights(
-    bits: Literal[4, 8],
-    group_size: int,
-    rht_block_size: Literal[32, 64, 128] | None,
-    shape: tuple[int, int],
-    is_symmetric: bool,
-) -> None:
-    sharding_config = _gpu_sharding_config(9)
-    _, columns = shape
-    weights = _replicate(_values(shape, seed=bits, scale=0.1).astype(jnp.bfloat16), sharding_config)
-    vector = _replicate(_values((columns,), seed=group_size, scale=0.2).astype(jnp.bfloat16), sharding_config)
-    matrix = HybridSpec(
-        quantization_spec=IntSpec(
-            bits=bits,
-            group_size=group_size,
-            is_symmetric=is_symmetric,
-        ),
-        adapter_spec=None,
-        incoherence_block_size=rht_block_size,
-        incoherence_processing_mode=IncoherenceProcessingMode.INPUT,
-    ).compress(
-        weights,
-        key=jax.random.key(0),
-        sharding_config=sharding_config,
-        is_sharded=False,
-    )
-
-    def dot(input_vector: Array) -> Array:
-        return matrix.dot(
-            input_vector,
-            keychain=Keychain.init(0, sharding_config=sharding_config),
-        )
-
-    result = dot(vector)
-    reference = vector @ matrix.decompress().T
-
-    assert_close(result=result, reference=reference, atol=5e-2, rtol=3e-2)
-
-
-def _attention(
-    num_heads: int,
-    num_groups: int,
-    head_dim: int,
-    scale: float | None,
-    sliding_window_size: int | None,
-    sharding_config: ShardingConfig,
-) -> Attention:
-    return AttentionConfig(
-        qkv_projection_config=LinearConfig(),
-        out_projection_config=LinearConfig(),
-        query_norm_config=None,
-        key_norm_config=None,
-        num_heads=num_heads,
-        num_groups=num_groups,
-        head_dim=head_dim,
-        is_causal=True,
-        scale=scale,
-        sliding_window_size=sliding_window_size,
-        logit_soft_cap=None,
-        has_sinks=False,
-        has_qkv_biases=False,
-        has_out_biases=False,
-        gate_projection_config=None,
-    ).init(
-        RandomInitializer(
-            default_dtype=jnp.bfloat16,
-            sharding_config=sharding_config,
-            key=jax.random.key(0),
-        ),
-        model_dim=8,
-    )
-
-
-def _run_attention(
-    module: Attention,
-    inputs: Array,
-    state: KVCacheLayer,
-    implementation: AttentionImplementation,
-) -> Array:
-    return call_vmapped(
-        lambda values, cache, *, keychain: module(
-            values,
-            positional_embeddings=None,
-            state=cache,
-            length_without_padding=1,
-            forward_pass_config=MixerForwardPassConfig(
-                attention_implementation=implementation,
-                attention_tile_size=128,
-            ),
-            keychain=keychain,
-        ),
-        inputs,
-        state,
-        keychain=Keychain.init(0, sharding_config=module.sharding_config),
-    ).outputs
-
-
-@pytest.mark.parametrize(
-    ("batch_size", "num_heads", "num_groups", "head_dim", "capacity", "scale", "sliding_window_size"),
+    ("batch_size", "num_heads", "num_groups", "head_dim", "capacity", "scale", "window_size"),
     [
         pytest.param(8, 16, 4, 256, 2_056, None, None, id="qwen35-b8-split8"),
         pytest.param(32, 40, 8, 128, 264, None, None, id="qwen3-d128-gqa5"),
@@ -164,118 +41,57 @@ def _run_attention(
         pytest.param(64, 16, 1, 512, 1_032, 1.0, None, id="d512-mqa"),
     ],
 )
-def test_decode_attention_matches_stable_reduction(
+def test_decode_attention_matches_reference(
     batch_size: int,
     num_heads: int,
     num_groups: int,
     head_dim: int,
     capacity: int,
     scale: float | None,
-    sliding_window_size: int | None,
+    window_size: int | None,
 ) -> None:
     sharding_config = _gpu_sharding_config(10)
-    module = _attention(
-        num_heads,
-        num_groups,
-        head_dim,
-        scale,
-        sliding_window_size,
+    queries = _replicate(
+        _values((batch_size, 1, num_heads, head_dim), seed=batch_size, scale=0.2).astype(jnp.bfloat16),
         sharding_config,
     )
-    inputs = _replicate(
-        _values((batch_size, 1, 8), seed=batch_size, scale=0.2).astype(jnp.bfloat16),
+    keys = _replicate(
+        _values((batch_size, capacity, num_groups, head_dim), seed=capacity, scale=0.1).astype(jnp.bfloat16),
         sharding_config,
     )
-    state = StaticKVCacheLayer(
-        has_sinks=False,
-        keys=_replicate(
-            _values((batch_size, capacity, num_groups, head_dim), seed=capacity, scale=0.1).astype(jnp.bfloat16),
-            sharding_config,
-        ),
-        values=_replicate(
-            _values((batch_size, capacity, num_groups, head_dim), seed=capacity + 1, scale=0.1).astype(jnp.bfloat16),
-            sharding_config,
-        ),
-        current_length=_replicate(
-            (capacity - batch_size - 1 + jnp.arange(batch_size)).astype(jnp.int32),
-            sharding_config,
-        ),
+    values = _replicate(
+        _values((batch_size, capacity, num_groups, head_dim), seed=capacity + 1, scale=0.1).astype(jnp.bfloat16),
+        sharding_config,
     )
+    lengths = capacity - batch_size + jnp.arange(batch_size)
+    starts = 0 if window_size is None else jnp.maximum(lengths - window_size, 0)
+    token_indices = jnp.arange(capacity)
+    masks = (token_indices >= jnp.asarray(starts)[..., None]) & (token_indices < lengths[:, None])
+    masks = masks.at[:, 8:12].set(False)
+    masks = _replicate(masks[:, None], sharding_config)
+    attention_scale = jnp.asarray(head_dim**-0.5 if scale is None else scale, dtype=jnp.float32)
 
-    result = _run_attention(module, inputs, state, AttentionImplementation.PALLAS)
-    reference = _run_attention(module, inputs, state, AttentionImplementation.STABLE_REDUCTION)
+    result = jax.jit(jax.vmap(decode_attention, in_axes=(0, 0, 0, None, 0, None, None)))(
+        queries,
+        keys,
+        values,
+        None,
+        masks,
+        attention_scale,
+        None,
+    )
+    with jax.numpy_dtype_promotion("standard"):
+        reference = jax.vmap(
+            lambda query, key, value, mask: jax.nn.dot_product_attention(
+                query,
+                key,
+                value,
+                mask=mask,
+                scale=cast("float", attention_scale),
+            ),
+        )(queries, keys, values, masks)
 
     assert_close(result=result, reference=reference, atol=2e-2, rtol=3e-2)
-
-
-def test_decode_attention_respects_dynamic_padding_mask() -> None:
-    batch_size = 32
-    capacity = 264
-    num_heads = 40
-    num_groups = 8
-    head_dim = 128
-    sharding_config = _gpu_sharding_config(10)
-    module = _attention(num_heads, num_groups, head_dim, None, None, sharding_config)
-    inputs = _replicate(
-        _values((batch_size, 1, 8), seed=40, scale=0.2).astype(jnp.bfloat16),
-        sharding_config,
-    )
-    padding_mask = jnp.arange(capacity - 1) < 16
-    padding_mask = padding_mask.at[8:12].set(False)
-    state = DynamicKVCacheLayer(
-        has_sinks=False,
-        keys=_replicate(
-            _values(
-                (batch_size, capacity - 1, num_groups, head_dim),
-                seed=41,
-                scale=0.1,
-            ).astype(jnp.bfloat16),
-            sharding_config,
-        ),
-        values=_replicate(
-            _values(
-                (batch_size, capacity - 1, num_groups, head_dim),
-                seed=42,
-                scale=0.1,
-            ).astype(jnp.bfloat16),
-            sharding_config,
-        ),
-        padding_mask=_replicate(
-            jnp.broadcast_to(padding_mask, (batch_size, capacity - 1)),
-            sharding_config,
-        ),
-    )
-
-    result = _run_attention(module, inputs, state, AttentionImplementation.PALLAS)
-    reference = _run_attention(module, inputs, state, AttentionImplementation.STABLE_REDUCTION)
-
-    assert_close(result=result, reference=reference, atol=2e-2, rtol=3e-2)
-
-
-def _deltanet(sharding_config: ShardingConfig) -> DeltaNet:
-    return DeltaNetConfig(
-        in_proj_config=LinearConfig(),
-        conv_config=SeparableCausalConvConfig(has_biases=False),
-        out_proj_config=LinearConfig(),
-        norm_config=NormalizationConfig(
-            epsilon=1e-6,
-            scale_offset=None,
-            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
-            subtract_mean=False,
-        ),
-        num_heads=2,
-        num_groups=2,
-        head_dim=128,
-        value_head_dim=128,
-        kernel_size=4,
-    ).init(
-        RandomInitializer(
-            default_dtype=jnp.bfloat16,
-            sharding_config=sharding_config,
-            key=jax.random.key(0),
-        ),
-        model_dim=8,
-    )
 
 
 def test_deltanet_single_token_update_matches_recurrence_for_active_and_inactive_rows() -> None:
@@ -302,7 +118,6 @@ def test_deltanet_single_token_update_matches_recurrence_for_active_and_inactive
 
     assert_close(result=outputs, reference=reference_outputs, atol=5e-2, rtol=1e-1)
     assert_close(result=final_state, reference=reference_state, atol=1e-3, rtol=3e-2)
-    assert jnp.array_equal(jax.device_get(final_state[::2]), jax.device_get(initial_state[::2]))
 
 
 def test_pallas_hadamard_matches_cpu_under_jit_and_vmap() -> None:

@@ -9,7 +9,7 @@ from jax.experimental.pallas import mosaic_gpu as plgpu
 from jax.sharding import NamedSharding
 from jaxtyping import Array, Float, Int
 
-from lalamo.utils.sharding import supports_mosaic_gpu
+from lalamo.kernels.mosaic import supports_mosaic_gpu
 
 __all__ = [
     "deltanet_recurrent_scan",
@@ -21,6 +21,7 @@ type DeltaUpdate = Callable[
 ]
 
 
+@jax.custom_batching.custom_vmap
 def deltanet_recurrent_scan(
     queries: Float[Array, "tokens heads key_channels"],
     keys: Float[Array, "tokens heads key_channels"],
@@ -33,28 +34,6 @@ def deltanet_recurrent_scan(
     Float[Array, "tokens heads value_channels"],
     Float[Array, "heads value_channels key_channels"],
 ]:
-    num_tokens, _, head_dim = queries.shape
-    value_head_dim = values.shape[-1]
-    state_sharding = jax.typeof(initial_state).sharding
-    if (
-        num_tokens == 1
-        and head_dim == 128
-        and value_head_dim % 64 == 0
-        and initial_state.dtype == jnp.float32
-        and isinstance(state_sharding, NamedSharding)
-        and supports_mosaic_gpu(state_sharding.mesh, 9)
-    ):
-        final_state, output = _deltanet_update(
-            queries[0],
-            keys[0],
-            values[0],
-            jnp.exp(decay_factor[0]),
-            beta[0],
-            initial_state,
-            jnp.asarray(num_steps) > 0,
-        )
-        return output[None], final_state
-
     def scan_fn(
         index_and_state: tuple[Int[Array, ""], Float[Array, "heads value_channels key_channels"]],
         step_inputs: tuple[
@@ -214,55 +193,57 @@ def _make_batched_update(
     return update
 
 
-@jax.custom_batching.custom_vmap
-def _deltanet_update(
-    queries: Array,
-    keys: Array,
-    values: Array,
-    decay: Array,
-    beta: Array,
-    state: Array,
-    active: Array,
-) -> tuple[Array, Array]:
-    num_heads, value_head_dim, _ = state.shape
-    updated_state, outputs = _make_batched_update(1, num_heads, value_head_dim)(
-        queries[None],
-        keys[None],
-        values[None],
-        decay[None],
-        beta[None],
-        state[None],
-        active[None],
-    )
-    return updated_state[0], outputs[0]
-
-
-@_deltanet_update.def_vmap
-def _deltanet_update_vmap(
+@deltanet_recurrent_scan.def_vmap
+def _deltanet_recurrent_scan_vmap(
     axis_size: int,
     in_batched: list[bool],
     queries: Array,
     keys: Array,
     values: Array,
-    decay: Array,
+    decay_factor: Array,
     beta: Array,
-    state: Array,
-    active: Array,
+    initial_state: Array,
+    num_steps: Array | int,
 ) -> tuple[tuple[Array, Array], tuple[bool, bool]]:
     if not all(in_batched[:6]):
         raise ValueError(f"Expected DeltaNet tensors to be batched, got {in_batched}.")
     if not in_batched[6]:
-        active = jnp.broadcast_to(active, (axis_size,))
-    _, num_heads, value_head_dim, _ = state.shape
+        num_steps = jnp.broadcast_to(num_steps, (axis_size,))
+    _, num_tokens, num_heads, head_dim = queries.shape
+    value_head_dim = values.shape[-1]
+    state_sharding = jax.typeof(initial_state).sharding
+    if (
+        num_tokens != 1
+        or head_dim != 128
+        or value_head_dim % 64 != 0
+        or initial_state.dtype != jnp.float32
+        or not isinstance(state_sharding, NamedSharding)
+        or any(axis is not None for axis in state_sharding.spec)
+        or not supports_mosaic_gpu(state_sharding.mesh, 9)
+    ):
+        return (
+            jax.vmap(deltanet_recurrent_scan.fun)(
+                queries,
+                keys,
+                values,
+                decay_factor,
+                beta,
+                initial_state,
+                num_steps,
+            ),
+            (True, True),
+        )
+
+    final_state, outputs = _make_batched_update(axis_size, num_heads, value_head_dim)(
+        queries[:, 0],
+        keys[:, 0],
+        values[:, 0],
+        jnp.exp(decay_factor[:, 0]),
+        beta[:, 0],
+        initial_state,
+        jnp.asarray(num_steps) > 0,
+    )
     return (
-        _make_batched_update(axis_size, num_heads, value_head_dim)(
-            queries,
-            keys,
-            values,
-            decay,
-            beta,
-            state,
-            active,
-        ),
+        (outputs[:, None], final_state),
         (True, True),
     )

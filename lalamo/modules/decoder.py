@@ -13,8 +13,7 @@ from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, LogicalAxis
 from lalamo.utils.sharding import lookup_sharded_indices
-from lalamo.utils.surgery import map_nodes_of_type
-from lalamo.weight_matrix import GradientEstimator, WeightMatrix
+from lalamo.weight_matrix import GradientEstimator
 
 from .embedding import EmbeddingBase, EmbeddingConfig, EmbeddingForwardPassConfig
 from .linear import Linear, LinearConfig
@@ -200,17 +199,6 @@ class Decoder(LalamoModule[DecoderConfig]):
     @property
     def vocab_size(self) -> int:
         return self.embedding.vocab_size
-
-    def for_inference(self, batch_size: int) -> Self:
-        return eqx.tree_at(
-            lambda decoder: decoder.transformer,
-            self,
-            map_nodes_of_type(
-                WeightMatrix,
-                lambda matrix: matrix.for_inference(batch_size),
-                self.transformer,
-            ),
-        )
 
     @eqx.filter_jit
     def __call__(

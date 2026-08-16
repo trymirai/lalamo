@@ -1,6 +1,4 @@
-import warnings
 from dataclasses import dataclass
-from typing import cast
 
 import equinox as eqx
 import jax
@@ -9,7 +7,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.kernels.decode_attention import decode_attention
+from lalamo.kernels.decode_attention import decode_attention, standard_attention
 from lalamo.module import Keychain
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
@@ -23,7 +21,6 @@ from lalamo.modules.token_mixer import (
     TokenMixerResult,
 )
 from lalamo.modules.utils import apply_soft_capping, call_vmapped, call_vmapped_twice
-from lalamo.utils.sharding import sharding_of, supports_mosaic_gpu
 
 from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 
@@ -50,68 +47,6 @@ def _rms_normalize(
     upcasted_inputs = inputs.astype(jnp.float32)
     variance = jnp.mean(jnp.square(upcasted_inputs), axis=-1, keepdims=True)
     return (upcasted_inputs * jax.lax.rsqrt(variance + eps)).astype(inputs.dtype)
-
-
-def _soft_capped_attention_kernel(
-    queries: Float[Array, "dst_tokens heads head_channels"],
-    keys: Float[Array, "src_tokens groups head_channels"],
-    values: Float[Array, "src_tokens groups head_channels"],
-    *,
-    bias: Float[Array, "heads dst_tokens src_tokens"] | None,
-    mask: Bool[Array, "dst_tokens src_tokens"],
-    scale: float | Float[Array, ""] | None,
-    logit_soft_cap: float | None,
-) -> Float[Array, "dst_tokens heads head_channels"]:
-    original_dtype = queries.dtype
-    if logit_soft_cap is None:
-        with jax.numpy_dtype_promotion("standard"):
-            return jax.nn.dot_product_attention(
-                queries,
-                keys,
-                values,
-                bias=bias,
-                mask=mask,
-                scale=cast("float | None", scale),  # jax bugs
-            ).astype(original_dtype)
-
-    attention_dtype = jnp.float32
-    queries = queries.astype(attention_dtype)
-    keys = keys.astype(attention_dtype)
-    values = values.astype(attention_dtype)
-    if bias is not None:
-        bias = bias.astype(attention_dtype)
-
-    _, num_heads, head_dim = queries.shape
-    _, num_groups, _ = keys.shape
-    group_size = num_heads // num_groups
-    keys = _repeat_kv(keys, group_size)
-    values = _repeat_kv(values, group_size)
-    queries_head_first = rearrange(queries, "dst_tokens heads channels -> heads dst_tokens channels")
-    keys_head_first = rearrange(keys, "src_tokens heads channels -> heads src_tokens channels")
-    attention_logits = einsum(
-        queries_head_first,
-        keys_head_first,
-        "heads dst_tokens channels, heads src_tokens channels -> heads dst_tokens src_tokens",
-    )
-    if scale is None:
-        scale_val = head_dim**-0.5
-    else:
-        scale_val = scale
-    attention_logits = attention_logits * scale_val
-    attention_logits = apply_soft_capping(attention_logits, logit_soft_cap)
-    if bias is not None:
-        attention_logits = attention_logits + bias
-    attention_logits = jnp.where(
-        mask,
-        attention_logits,
-        jnp.array(float("-inf"), dtype=attention_logits.dtype),
-    )
-    attention_weights = jax.nn.softmax(attention_logits, axis=-1)
-    return einsum(
-        attention_weights,
-        values,
-        "heads dst_tokens src_tokens, src_tokens heads channels -> dst_tokens heads channels",
-    ).astype(original_dtype)
 
 
 def _stable_reduction_attention_kernel(
@@ -240,85 +175,25 @@ def _attention_kernel(
 ) -> Float[Array, "dst_tokens heads head_channels"]:
     match forward_pass_config.attention_implementation:
         case AttentionImplementation.PALLAS:
-            query_heads = queries.shape[1]
-            key_value_heads = keys.shape[1]
-            head_dim = queries.shape[2]
-            if (
-                not supports_mosaic_gpu(sharding_of(keys).mesh, 10)
-                or bias is not None
-                or logit_soft_cap is not None
-                or queries.shape[0] != 1
-                or query_heads % key_value_heads != 0
-                or not 1 <= query_heads // key_value_heads <= 16
-                or head_dim not in (128, 256, 512)
-                or queries.dtype != jnp.bfloat16
-            ):
-                warnings.warn(
-                    "Pallas decode attention does not support this attention configuration; "
-                    "falling back to standard attention.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-                return _soft_capped_attention_kernel(
-                    queries,
-                    keys,
-                    values,
-                    bias=bias,
-                    mask=mask,
-                    scale=scale,
-                    logit_soft_cap=logit_soft_cap,
-                )
-
-            attention_scale = head_dim**-0.5 if scale is None else scale
             return decode_attention(
                 queries,
                 keys,
                 values,
+                bias,
                 mask,
-                jnp.asarray(attention_scale, dtype=jnp.float32),
+                scale,
+                logit_soft_cap,
             )
         case AttentionImplementation.STANDARD:
-            return _soft_capped_attention_kernel(
+            return standard_attention(
                 queries,
                 keys,
                 values,
-                bias=bias,
-                mask=mask,
-                scale=scale,
-                logit_soft_cap=logit_soft_cap,
+                bias,
+                mask,
+                scale,
+                logit_soft_cap,
             )
-        case AttentionImplementation.CUDNN:
-            head_dim = queries.shape[-1]
-            if head_dim > 128 or head_dim % 8 != 0:
-                warnings.warn(
-                    "cuDNN attention requires head_dim <= 128 and divisible by 8; "
-                    f"got head_dim={head_dim}. Falling back to standard (jax/xla) attention.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-                return _soft_capped_attention_kernel(
-                    queries,
-                    keys,
-                    values,
-                    bias=bias,
-                    mask=mask,
-                    scale=scale,
-                    logit_soft_cap=logit_soft_cap,
-                )
-            if logit_soft_cap is not None:
-                raise RuntimeError("cuDNN attention does not support logit soft-capping.")
-            mask = jnp.broadcast_to(mask, (queries.shape[1], *mask.shape))
-            original_dtype = queries.dtype
-            attention_dtype = jnp.float32
-            return jax.nn.dot_product_attention(
-                queries.astype(attention_dtype),
-                keys.astype(attention_dtype),
-                values.astype(attention_dtype),
-                bias=None if bias is None else bias.astype(attention_dtype),
-                mask=mask,
-                scale=scale,
-                implementation="cudnn",
-            ).astype(original_dtype)
         case AttentionImplementation.STABLE_REDUCTION:
             return _stable_reduction_attention_kernel(
                 queries,

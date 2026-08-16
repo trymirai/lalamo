@@ -12,12 +12,12 @@ from lalamo.compressed.microfloat import (
     MicrofloatScaleMode,
     MicrofloatSpec,
 )
+from lalamo.compressed.utils.packing import pack_uint_to_uint8
 from lalamo.compressed.utils.yaqa import yaqa_round_fixpoint
 from lalamo.model_import.loaders.utils import decode_mxfp4
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.utils.packing import pack_uint_to_uint8
 from lalamo.utils.sharding import is_sharded
 from lalamo.weight_matrix import CompressionImplementation, Layout
 from tests.common import assert_close_arrays

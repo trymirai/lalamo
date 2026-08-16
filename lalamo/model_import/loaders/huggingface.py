@@ -9,6 +9,7 @@ from einops import rearrange
 from jaxtyping import Array
 
 from lalamo.compressed import IntMatrix, IntSpec, MLXMatrix, MLXSpec
+from lalamo.compressed.utils.packing import pack_uint_to_uint8
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.decoder import Decoder
 from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding
@@ -21,7 +22,6 @@ from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
 from lalamo.modules.token_mixers.mamba import Mamba2, Mamba2Config
 from lalamo.modules.token_mixers.short_conv import ShortConv, ShortConvConfig
 from lalamo.modules.transformer_layer import TransformerLayer
-from lalamo.utils.packing import pack_uint_to_uint8
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at

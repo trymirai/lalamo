@@ -15,7 +15,6 @@ from lalamo.utils.dummy_array import (
     preserve_first_input_sharding,
     supports_dummy_arrays,
 )
-from lalamo.utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import (
@@ -39,6 +38,7 @@ from .data.distortion import distortion_estimate
 from .data.lloyd_max import bias_lut_values, codebook_values
 from .quantized_spec import QuantizedSpec
 from .utils.grouping import group_by_last_axis
+from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from .utils.rounding import (
     lut_values_at,
     pack_e4m3_scales,

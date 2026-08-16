@@ -170,11 +170,6 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
     @abstractmethod
     def to_full_precision(self) -> "FullPrecisionMatrix": ...
 
-    def for_inference(self, batch_size: int) -> "WeightMatrix":
-        if batch_size == 1:
-            return self
-        return self.to_full_precision()
-
     @abstractmethod
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]: ...
 

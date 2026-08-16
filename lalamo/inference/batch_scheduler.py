@@ -19,7 +19,7 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key, Shaped
 from lalamo.models.chat_codec import AssistantMessage, Message
 from lalamo.models.language_model import DecodingState, GenerationConfig, LanguageModel, PrefillResults
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
-from lalamo.modules import Decoder, DecoderForwardPassConfig, State
+from lalamo.modules import DecoderForwardPassConfig, State
 from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy
 
@@ -627,7 +627,6 @@ class BlockContinuousDecoder(eqx.Module):
         self,
         carry: tuple[DecodingState, Key[Array, " num_lines"], Key[Array, " num_lines"]],
         eos_token_ids: Int[Array, " eos_tokens"],
-        decoder: Decoder,
     ) -> tuple[tuple[DecodingState, Key[Array, " num_lines"], Key[Array, " num_lines"]], Int[Array, " num_lines"]]:
         decode_state, sampling_keys, decoding_keys = carry
 
@@ -658,7 +657,7 @@ class BlockContinuousDecoder(eqx.Module):
             jnp.any(next_token_ids[:, None] == eos_token_ids[None, :], axis=-1),
         )
 
-        decoder_result = decoder(
+        decoder_result = self.language_model.decoder(
             token_ids=next_token_ids[:, None],
             token_positions=next_token_indices[:, None],
             state=decode_state.state,
@@ -731,9 +730,6 @@ class BlockContinuousDecoder(eqx.Module):
 
     def decode_block(self, state: BlockContinuousState) -> tuple[BlockContinuousState, Bool[Array, " num_lines"]]:
         eos_token_ids = jnp.asarray(self.language_model.config.generation_config.stop_token_ids, dtype=jnp.int32)
-        decoder = self.language_model.decoder
-        if self.block_size > 1:
-            decoder = decoder.for_inference(state.stop_flags.shape[0])
         initial_decode_state = DecodingState(
             last_token_logits=state.last_token_logits,
             last_token_indices=state.last_token_indices,
@@ -742,7 +738,7 @@ class BlockContinuousDecoder(eqx.Module):
             sampling_policy=state.sampling_policy,
         )
         (new_decode_state, new_sampling_keys, new_decoding_keys), block_tokens = jax.lax.scan(
-            lambda carry, _: self._step(carry, eos_token_ids, decoder),
+            lambda carry, _: self._step(carry, eos_token_ids),
             (initial_decode_state, state.sampling_keys, state.decoding_keys),
             None,
             length=self.block_size,
@@ -1032,7 +1028,7 @@ class ContinuousBatchScheduler(BatchScheduler):
             raise RuntimeError("ContinuousBatchScheduler does not support batch-sharded models.")
 
         block_size = min(self.block_size, max_output_length)
-        state_capacity = (padded_length + max_output_length + 8) // 8 * 8
+        state_capacity = padded_length + max_output_length + 1
         requested_prefill_batch_size = (
             batch_size
             if sampling_policy.has_count_penalties

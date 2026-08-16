@@ -29,15 +29,9 @@ readme = { file = "README.md", content-type = "text/markdown" }
 dynamic = ["version"]
 
 [project.optional-dependencies]
-cpu = [
-    "jax[cpu]>=0.11.0",
-]
-cuda = [
-    "jax[cuda]>=0.11.0",
-]
-tpu = [
-    "jax[tpu]>=0.11.0",
-]
+cpu = ["jax[cpu]>=0.11.0"]
+cuda = ["jax[cuda]>=0.11.0"]
+tpu = ["jax[tpu]>=0.11.0"]
 pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
 fishaudio = ["torch>=2.8.0", "transformers>=5.5.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
 server = ["fastapi>=0.135.3", "uvicorn>=0.44.0"]
@@ -200,7 +194,6 @@ pard = "pard"
 ba = "ba"
 PARD = "PARD"
 pard = "pard"
-ue8m0 = "ue8m0"
 
 [tool.pyrefly]
 python-version = "3.12.0"

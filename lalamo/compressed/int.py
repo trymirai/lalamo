@@ -9,11 +9,9 @@ from jax.lax import stop_gradient
 from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
 
 from lalamo.exportable import ExportResults
-from lalamo.kernels.int_dot import dequantize_int_weights, int_dot
 from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
-from lalamo.utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import (
@@ -39,6 +37,7 @@ from .utils.grouping import (
     min_max_within_groups,
     scale_from_min_max,
 )
+from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
 from .utils.rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
 from .utils.yaqa import yaqa_round_blockwise
 
@@ -210,6 +209,33 @@ def _packed_zero_points_to_master_zero_points(
     return int_scale_zero_points.astype(scales.dtype) * scales
 
 
+def _packed_weights_to_master_weights(
+    packed_weights: UInt8[Array, "... packed_cols"],
+    scales: Float[Array, "... groups"],
+    packed_zero_points: UInt8[Array, "... packed_groups"] | None,
+    group_size: int,
+    bits: int,
+) -> Float[Array, "... cols"]:
+    int_weights = unpack_uint8_to_uint(
+        packed_weights,
+        bits=bits,
+        dtype=scales.dtype,
+        unpacked_last_axis_dim=scales.shape[-1] * group_size,
+    )
+    if packed_zero_points is None:
+        int_scale_zero_points = None
+    else:
+        *_, num_groups = scales.shape
+        int_scale_zero_points = unpack_uint8_to_uint(
+            packed_zero_points,
+            bits=bits,
+            dtype=scales.dtype,
+            unpacked_last_axis_dim=num_groups,
+        )
+
+    return _integer_scaled_weights_to_master_weights(int_weights, scales, int_scale_zero_points, group_size, bits)
+
+
 @dataclass(frozen=True)
 class IntSpec(QuantizedSpec):
     bits: Literal[4, 8]
@@ -345,7 +371,7 @@ class IntSpec(QuantizedSpec):
                 packed_zero_points=packed_zero_points,
             )
 
-        weights = dequantize_int_weights(
+        weights = _packed_weights_to_master_weights(
             packed_weights,
             scales,
             packed_zero_points,
@@ -661,7 +687,7 @@ class IntMatrixForInference(IntMatrix):
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
-        weights = dequantize_int_weights(
+        weights = _packed_weights_to_master_weights(
             self.packed_weights,
             self.scales,
             self.packed_zero_points,
@@ -687,7 +713,7 @@ class IntMatrixForInference(IntMatrix):
         if packed_zero_points is not None:
             packed_zero_points = lookup_sharded_indices(packed_zero_points, row_index)
         packed_weights = lookup_sharded_indices(self.packed_weights, row_index)
-        return dequantize_int_weights(
+        return _packed_weights_to_master_weights(
             packed_weights,
             lookup_sharded_indices(self.scales, row_index).astype(dtype),
             packed_zero_points,
@@ -704,15 +730,15 @@ class IntMatrixForInference(IntMatrix):
         transposed: bool = False,
     ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
-        return int_dot(
-            vector,
+        weights = _packed_weights_to_master_weights(
             self.packed_weights,
-            self.scales,
+            self.scales.astype(vector.dtype),
             self.packed_zero_points,
-            group_size=self.spec.group_size,
-            bits=self.spec.bits,
-            is_symmetric=self.spec.is_symmetric,
-            layout=self.spec.layout,
-            precision=forward_pass_config.precision,
-            transposed=transposed,
+            self.spec.group_size,
+            self.spec.bits,
         )
+        layout = self.spec.layout
+        if transposed:
+            layout = layout.transpose()
+        with use_dot_algorithm_preset(forward_pass_config.precision):
+            return layout.matmul(weights, vector)

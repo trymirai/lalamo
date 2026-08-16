@@ -14,7 +14,8 @@ from jaxlib.mlir import ir
 from jaxlib.mlir.dialects import arith
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.utils.sharding import is_sharded, sharding_of, supports_mosaic_gpu
+from lalamo.kernels.mosaic import supports_mosaic_gpu
+from lalamo.utils.sharding import is_sharded, sharding_of
 
 __all__ = [
     "hadamard_transform",

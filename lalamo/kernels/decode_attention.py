@@ -6,9 +6,13 @@ from typing import Any, Literal, cast
 
 import jax
 import jax.numpy as jnp
+from einops import einsum, rearrange
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import mosaic_gpu as plgpu
 from jaxtyping import Array, Bool, Float, Int
+
+from lalamo.kernels.mosaic import supports_mosaic_gpu
+from lalamo.utils.sharding import sharding_of
 
 type _Ref = Any
 type _NumSplits = Literal[1, 2, 4, 8]
@@ -595,44 +599,123 @@ def _pallas_decode_attention(
     return reduced[:, :query_heads_per_key_value_head].reshape(queries.shape)
 
 
-def _single_token_bf16_attention(
-    queries: Float[Array, "1 query_heads head_dim"],
-    keys: Float[Array, "capacity key_value_heads head_dim"],
-    values: Float[Array, "capacity key_value_heads head_dim"],
-    mask: Bool[Array, "1 capacity"],
-    scale: Float[Array, ""],
-) -> Float[Array, "1 query_heads head_dim"]:
+def standard_attention(
+    queries: Float[Array, "dst_tokens heads head_dim"],
+    keys: Float[Array, "src_tokens key_value_heads head_dim"],
+    values: Float[Array, "src_tokens key_value_heads head_dim"],
+    bias: Float[Array, "heads dst_tokens src_tokens"] | None,
+    mask: Bool[Array, "dst_tokens src_tokens"],
+    scale: float | Float[Array, ""] | None,
+    logit_soft_cap: float | None,
+) -> Float[Array, "dst_tokens heads head_dim"]:
+    original_dtype = queries.dtype
+    if logit_soft_cap is not None:
+        queries = queries.astype(jnp.float32)
+        keys = keys.astype(jnp.float32)
+        values = values.astype(jnp.float32)
+        if bias is not None:
+            bias = bias.astype(jnp.float32)
+
+        _, num_heads, head_dim = queries.shape
+        _, num_key_value_heads, _ = keys.shape
+        heads_per_key_value_head = num_heads // num_key_value_heads
+        if heads_per_key_value_head > 1:
+            keys = jnp.repeat(keys, heads_per_key_value_head, axis=1)
+            values = jnp.repeat(values, heads_per_key_value_head, axis=1)
+        queries_head_first = rearrange(
+            queries,
+            "dst_tokens heads channels -> heads dst_tokens channels",
+        )
+        keys_head_first = rearrange(
+            keys,
+            "src_tokens heads channels -> heads src_tokens channels",
+        )
+        attention_logits = einsum(
+            queries_head_first,
+            keys_head_first,
+            "heads dst_tokens channels, heads src_tokens channels -> heads dst_tokens src_tokens",
+        )
+        attention_scale = head_dim**-0.5 if scale is None else scale
+        attention_logits = attention_logits * attention_scale
+        attention_logits = jax.nn.tanh(attention_logits / logit_soft_cap) * logit_soft_cap
+        if bias is not None:
+            attention_logits = attention_logits + bias
+        attention_logits = jnp.where(
+            mask,
+            attention_logits,
+            jnp.array(float("-inf"), dtype=attention_logits.dtype),
+        )
+        attention_weights = jax.nn.softmax(attention_logits, axis=-1)
+        return einsum(
+            attention_weights,
+            values,
+            "heads dst_tokens src_tokens, src_tokens heads channels -> dst_tokens heads channels",
+        ).astype(original_dtype)
+
     with jax.numpy_dtype_promotion("standard"):
         return jax.nn.dot_product_attention(
             queries,
             keys,
             values,
+            bias=bias,
             mask=mask,
-            scale=cast("float", scale),
-        ).astype(queries.dtype)
+            scale=cast("float | None", scale),
+        ).astype(original_dtype)
 
 
 @jax.custom_batching.custom_vmap
 def decode_attention(
-    queries: Float[Array, "1 query_heads head_dim"],
-    keys: Float[Array, "capacity key_value_heads head_dim"],
-    values: Float[Array, "capacity key_value_heads head_dim"],
-    mask: Bool[Array, "1 capacity"],
-    scale: Float[Array, ""],
-) -> Float[Array, "1 query_heads head_dim"]:
-    return _single_token_bf16_attention(queries, keys, values, mask, scale)
+    queries: Float[Array, "dst_tokens heads head_dim"],
+    keys: Float[Array, "src_tokens key_value_heads head_dim"],
+    values: Float[Array, "src_tokens key_value_heads head_dim"],
+    bias: Float[Array, "heads dst_tokens src_tokens"] | None,
+    mask: Bool[Array, "dst_tokens src_tokens"],
+    scale: float | Float[Array, ""] | None,
+    logit_soft_cap: float | None,
+) -> Float[Array, "dst_tokens heads head_dim"]:
+    return standard_attention(queries, keys, values, bias, mask, scale, logit_soft_cap)
 
 
 @decode_attention.def_vmap
 def _decode_attention_vmap(
     axis_size: int,
-    _in_batched: list[bool],
-    queries: Float[Array, "batch 1 query_heads head_dim"],
-    keys: Float[Array, "batch capacity key_value_heads head_dim"],
-    values: Float[Array, "batch capacity key_value_heads head_dim"],
-    masks: Bool[Array, "batch 1 capacity"],
-    scale: Float[Array, ""],
-) -> tuple[Float[Array, "batch 1 query_heads head_dim"], bool]:
+    in_batched: list[bool | None],
+    queries: Float[Array, "batch dst_tokens heads head_dim"],
+    keys: Float[Array, "batch src_tokens key_value_heads head_dim"],
+    values: Float[Array, "batch src_tokens key_value_heads head_dim"],
+    bias: Float[Array, "batch heads dst_tokens src_tokens"] | None,
+    masks: Bool[Array, "batch dst_tokens src_tokens"],
+    scale: float | Float[Array, ""] | None,
+    logit_soft_cap: float | None,
+) -> tuple[Float[Array, "batch dst_tokens heads head_dim"], bool]:
+    fallback = jax.vmap(
+        standard_attention,
+        in_axes=tuple(0 if batched else None for batched in in_batched),
+    )
+    arrays_are_batched = all(in_batched[index] is True for index in (0, 1, 2, 4))
+    supports_pallas = arrays_are_batched and bias is None and logit_soft_cap is None
+    if supports_pallas:
+        query_heads = queries.shape[2]
+        key_value_heads = keys.shape[2]
+        head_dim = queries.shape[3]
+        supports_pallas = (
+            not in_batched[5]
+            and supports_mosaic_gpu(sharding_of(keys).mesh, 10)
+            and queries.shape[1] == 1
+            and query_heads % key_value_heads == 0
+            and query_heads // key_value_heads <= 16
+            and head_dim in (128, 256, 512)
+            and queries.dtype == keys.dtype == values.dtype == jnp.bfloat16
+        )
+    if not supports_pallas:
+        warnings.warn(
+            "Pallas decode attention does not support this attention configuration; "
+            "falling back to standard attention.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return fallback(queries, keys, values, bias, masks, scale, logit_soft_cap), True
+
     programs = axis_size * keys.shape[2]
     required_splits = (144 + programs - 1) // programs
     num_blocks = math.ceil(keys.shape[1] / _BLOCK_SIZE)
@@ -647,8 +730,10 @@ def _decode_attention_vmap(
             RuntimeWarning,
             stacklevel=2,
         )
-        fallback = jax.vmap(_single_token_bf16_attention, in_axes=(0, 0, 0, 0, None))
-        return fallback(queries, keys, values, masks, scale), True
+        return fallback(queries, keys, values, bias, masks, scale, logit_soft_cap), True
+
+    attention_scale = queries.shape[-1] ** -0.5 if scale is None else scale
+    attention_scale = jnp.asarray(attention_scale, dtype=jnp.float32)
 
     unbatched_masks = masks[:, 0]
     has_values = jnp.any(unbatched_masks, axis=-1)
@@ -676,7 +761,7 @@ def _decode_attention_vmap(
                 mask,
                 start,
                 end,
-                scale,
+                attention_scale,
                 num_splits,
             )
         )(queries, keys, values, padded_masks, starts, ends),
