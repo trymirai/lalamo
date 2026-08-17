@@ -178,13 +178,13 @@ class HFGemma4TextConfig:
                 num_kv_heads = self.num_global_key_value_heads
 
             attention_config = AttentionConfig(
-                qkv_projection_config=linear_config,
+                qkvg_projection_config=linear_config,
                 out_projection_config=linear_config,
                 query_norm_config=rms_norm_config,
                 key_norm_config=rms_norm_config,
                 logit_soft_cap=None,
                 has_sinks=False,
-                has_qkv_biases=self.attention_bias,
+                has_qkvg_biases=self.attention_bias,
                 has_out_biases=self.attention_bias,
                 num_heads=self.num_attention_heads,
                 num_groups=num_kv_heads,

@@ -43,7 +43,7 @@ def _attention() -> Attention:
     qkv_dim = NUM_HEADS * HEAD_DIM
     return Attention(
         config=AttentionConfig(
-            qkv_projection_config=LinearConfig(),
+            qkvg_projection_config=LinearConfig(),
             out_projection_config=LinearConfig(),
             query_norm_config=None,
             key_norm_config=None,
@@ -55,13 +55,11 @@ def _attention() -> Attention:
             sliding_window_size=None,
             logit_soft_cap=None,
             has_sinks=False,
-            has_qkv_biases=False,
+            has_qkvg_biases=False,
             has_out_biases=False,
-            gate_projection_config=None,
         ),
         sharding_config=make_test_sharding_config(),
-        qkv_projection=_linear(_weights((3 * qkv_dim, MODEL_DIM)), (qkv_dim, qkv_dim, qkv_dim)),
-        gate_projection=None,
+        qkvg_projection=_linear(_weights((3 * qkv_dim, MODEL_DIM)), (qkv_dim, qkv_dim, qkv_dim)),
         out_projection=_linear(_weights((MODEL_DIM, qkv_dim), offset=100), (MODEL_DIM,)),
         query_norm=None,
         key_norm=None,

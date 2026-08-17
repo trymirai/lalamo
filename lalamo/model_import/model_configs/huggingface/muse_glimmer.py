@@ -156,13 +156,13 @@ class HFMuseGlimmerTextConfig:
                 sliding_window_size = None
 
             attention_config = AttentionConfig(
-                qkv_projection_config=linear_config,
+                qkvg_projection_config=linear_config,
                 out_projection_config=linear_config,
                 query_norm_config=qk_norm_config,
                 key_norm_config=qk_norm_config,
                 logit_soft_cap=None,
                 has_sinks=False,
-                has_qkv_biases=self.attention_bias,
+                has_qkvg_biases=self.attention_bias,
                 has_out_biases=self.attention_bias,
                 num_heads=self.num_attention_heads,
                 num_groups=self.num_key_value_heads,
@@ -170,7 +170,7 @@ class HFMuseGlimmerTextConfig:
                 is_causal=True,
                 scale=attention_scale,
                 sliding_window_size=sliding_window_size,
-                gate_projection_config=linear_config,
+                has_gate=True,
             )
             transformer_layer_config = TransformerLayerConfig(
                 pre_mixer_norm_config=pre_norm_config,
