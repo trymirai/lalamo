@@ -6,13 +6,14 @@ from typing import Any, Literal, cast
 
 import jax
 import jax.numpy as jnp
-from einops import einsum, rearrange
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import mosaic_gpu as plgpu
 from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.kernels.mosaic import supports_mosaic_gpu
 from lalamo.utils.sharding import sharding_of
+
+from .xla import xla_attention
 
 type _Ref = Any
 type _NumSplits = Literal[1, 2, 4, 8]
@@ -599,107 +600,42 @@ def _pallas_decode_attention(
     return reduced[:, :query_heads_per_key_value_head].reshape(queries.shape)
 
 
-def standard_attention(
-    queries: Float[Array, "dst_tokens heads head_dim"],
-    keys: Float[Array, "src_tokens key_value_heads head_dim"],
-    values: Float[Array, "src_tokens key_value_heads head_dim"],
-    bias: Float[Array, "heads dst_tokens src_tokens"] | None,
-    mask: Bool[Array, "dst_tokens src_tokens"],
-    scale: float | Float[Array, ""] | None,
-    logit_soft_cap: float | None,
-) -> Float[Array, "dst_tokens heads head_dim"]:
-    original_dtype = queries.dtype
-    if logit_soft_cap is not None:
-        queries = queries.astype(jnp.float32)
-        keys = keys.astype(jnp.float32)
-        values = values.astype(jnp.float32)
-        if bias is not None:
-            bias = bias.astype(jnp.float32)
-
-        _, num_heads, head_dim = queries.shape
-        _, num_key_value_heads, _ = keys.shape
-        heads_per_key_value_head = num_heads // num_key_value_heads
-        if heads_per_key_value_head > 1:
-            keys = jnp.repeat(keys, heads_per_key_value_head, axis=1)
-            values = jnp.repeat(values, heads_per_key_value_head, axis=1)
-        queries_head_first = rearrange(
-            queries,
-            "dst_tokens heads channels -> heads dst_tokens channels",
-        )
-        keys_head_first = rearrange(
-            keys,
-            "src_tokens heads channels -> heads src_tokens channels",
-        )
-        attention_logits = einsum(
-            queries_head_first,
-            keys_head_first,
-            "heads dst_tokens channels, heads src_tokens channels -> heads dst_tokens src_tokens",
-        )
-        attention_scale = head_dim**-0.5 if scale is None else scale
-        attention_logits = attention_logits * attention_scale
-        attention_logits = jax.nn.tanh(attention_logits / logit_soft_cap) * logit_soft_cap
-        if bias is not None:
-            attention_logits = attention_logits + bias
-        attention_logits = jnp.where(
-            mask,
-            attention_logits,
-            jnp.array(float("-inf"), dtype=attention_logits.dtype),
-        )
-        attention_weights = jax.nn.softmax(attention_logits, axis=-1)
-        return einsum(
-            attention_weights,
-            values,
-            "heads dst_tokens src_tokens, src_tokens heads channels -> dst_tokens heads channels",
-        ).astype(original_dtype)
-
-    with jax.numpy_dtype_promotion("standard"):
-        return jax.nn.dot_product_attention(
-            queries,
-            keys,
-            values,
-            bias=bias,
-            mask=mask,
-            scale=cast("float | None", scale),
-        ).astype(original_dtype)
+pallas_decode_attention = jax.custom_batching.custom_vmap(xla_attention)
 
 
-@jax.custom_batching.custom_vmap
-def decode_attention(
-    queries: Float[Array, "dst_tokens heads head_dim"],
-    keys: Float[Array, "src_tokens key_value_heads head_dim"],
-    values: Float[Array, "src_tokens key_value_heads head_dim"],
-    bias: Float[Array, "heads dst_tokens src_tokens"] | None,
-    mask: Bool[Array, "dst_tokens src_tokens"],
-    scale: float | Float[Array, ""] | None,
-    logit_soft_cap: float | None,
-) -> Float[Array, "dst_tokens heads head_dim"]:
-    return standard_attention(queries, keys, values, bias, mask, scale, logit_soft_cap)
-
-
-@decode_attention.def_vmap
-def _decode_attention_vmap(
+@pallas_decode_attention.def_vmap
+def _pallas_decode_attention_vmap(
     axis_size: int,
     in_batched: list[bool | None],
     queries: Float[Array, "batch dst_tokens heads head_dim"],
     keys: Float[Array, "batch src_tokens key_value_heads head_dim"],
     values: Float[Array, "batch src_tokens key_value_heads head_dim"],
-    bias: Float[Array, "batch heads dst_tokens src_tokens"] | None,
-    masks: Bool[Array, "batch dst_tokens src_tokens"],
+    bias: Float[Array, "batch heads dst_tokens src_tokens"] | Float[Array, "heads dst_tokens src_tokens"] | None,
+    masks: Bool[Array, "batch dst_tokens src_tokens"] | Bool[Array, "dst_tokens src_tokens"],
     scale: float | Float[Array, ""] | None,
     logit_soft_cap: float | None,
 ) -> tuple[Float[Array, "batch dst_tokens heads head_dim"], bool]:
+    (
+        queries_batched,
+        keys_batched,
+        values_batched,
+        _bias_batched,
+        masks_batched,
+        scale_batched,
+        _logit_soft_cap_batched,
+    ) = in_batched
     fallback = jax.vmap(
-        standard_attention,
+        xla_attention,
         in_axes=tuple(0 if batched else None for batched in in_batched),
     )
-    arrays_are_batched = all(in_batched[index] is True for index in (0, 1, 2, 4))
+    arrays_are_batched = all((queries_batched, keys_batched, values_batched, masks_batched))
     supports_pallas = arrays_are_batched and bias is None and logit_soft_cap is None
     if supports_pallas:
         query_heads = queries.shape[2]
         key_value_heads = keys.shape[2]
         head_dim = queries.shape[3]
         supports_pallas = (
-            not in_batched[5]
+            not scale_batched
             and supports_mosaic_gpu(sharding_of(keys).mesh, 10)
             and queries.shape[1] == 1
             and query_heads % key_value_heads == 0
@@ -709,8 +645,7 @@ def _decode_attention_vmap(
         )
     if not supports_pallas:
         warnings.warn(
-            "Pallas decode attention does not support this attention configuration; "
-            "falling back to standard attention.",
+            "Pallas decode attention does not support this attention configuration; falling back to XLA attention.",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -726,7 +661,7 @@ def _decode_attention_vmap(
     if num_splits is None:
         warnings.warn(
             "Pallas decode attention cannot provide enough parallel work for this batch and cache size; "
-            "falling back to standard attention.",
+            "falling back to XLA attention.",
             RuntimeWarning,
             stacklevel=2,
         )

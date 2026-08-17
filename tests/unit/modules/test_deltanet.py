@@ -104,3 +104,20 @@ def test_deltanet_chunked_scan_matches_recurrent_scan_for_ssm_chunk_config(
 
     assert_close(result=outputs[:num_steps], reference=reference_outputs[:num_steps])
     assert_close(result=final_state, reference=reference_state)
+
+
+def test_deltanet_vmapped_pallas_fallback_warns() -> None:
+    values = jnp.ones((2, 1, 1, 3), dtype=jnp.float32)
+    factors = jnp.ones((2, 1, 1), dtype=jnp.float32)
+    states = jnp.ones((2, 1, 3, 3), dtype=jnp.float32)
+
+    with pytest.warns(RuntimeWarning, match="Pallas DeltaNet recurrence .*falling back to XLA recurrence"):
+        jax.vmap(deltanet_recurrent_scan, in_axes=(0, 0, 0, 0, 0, 0, None))(
+            values,
+            values,
+            values,
+            factors,
+            factors,
+            states,
+            1,
+        )

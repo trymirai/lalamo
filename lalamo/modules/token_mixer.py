@@ -48,7 +48,7 @@ class State(tuple[StateLayerBase, ...]):
 class AttentionImplementation(Enum):
     PALLAS = "pallas"
     STABLE_REDUCTION = "stable_reduction"
-    STANDARD = "standard"
+    XLA = "xla"
 
 
 @dataclass(frozen=True)
@@ -82,7 +82,7 @@ class MixerForwardPassConfig:
         precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
     ) -> Self:
         return cls(
-            attention_implementation=AttentionImplementation.STANDARD,
+            attention_implementation=AttentionImplementation.XLA,
             ssm_min_tail_size_to_chunk=0,
             matmul_config=MatmulConfig.for_training(gradient_estimator, precision),
         )

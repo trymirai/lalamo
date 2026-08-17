@@ -3,6 +3,7 @@ from math import prod
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import pytest
 from einops import rearrange
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
@@ -174,11 +175,11 @@ def test_attention_implementations_match(fake_mesh: Mesh) -> None:
     module = _attention()
     inputs = _sharded_sequence(_inputs())
 
-    standard = module(
+    xla = module(
         inputs,
         positional_embeddings=None,
         forward_pass_config=MixerForwardPassConfig(
-            attention_implementation=AttentionImplementation.STANDARD,
+            attention_implementation=AttentionImplementation.XLA,
         ),
         keychain=Keychain.init(7, sharding_config=make_test_sharding_config()),
     )
@@ -192,7 +193,7 @@ def test_attention_implementations_match(fake_mesh: Mesh) -> None:
         keychain=Keychain.init(8, sharding_config=make_test_sharding_config()),
     )
 
-    _assert_close(result=stable_reduction.outputs, reference=standard.outputs)
+    _assert_close(result=stable_reduction.outputs, reference=xla.outputs)
     _assert_named_sharding(stable_reduction.outputs.sharding, fake_mesh)
 
 
@@ -200,11 +201,11 @@ def test_soft_capped_attention_implementations_match(fake_mesh: Mesh) -> None:
     module = _attention(logit_soft_cap=0.5)
     inputs = _sharded_sequence(_inputs())
 
-    standard = module(
+    xla = module(
         inputs,
         positional_embeddings=None,
         forward_pass_config=MixerForwardPassConfig(
-            attention_implementation=AttentionImplementation.STANDARD,
+            attention_implementation=AttentionImplementation.XLA,
         ),
         keychain=Keychain.init(9, sharding_config=make_test_sharding_config()),
     )
@@ -218,7 +219,7 @@ def test_soft_capped_attention_implementations_match(fake_mesh: Mesh) -> None:
         keychain=Keychain.init(10, sharding_config=make_test_sharding_config()),
     )
 
-    _assert_close(result=stable_reduction.outputs, reference=standard.outputs)
+    _assert_close(result=stable_reduction.outputs, reference=xla.outputs)
     _assert_named_sharding(stable_reduction.outputs.sharding, fake_mesh)
 
 
@@ -226,12 +227,13 @@ def test_attention_vmapped_over_inputs_matches_reference_and_keeps_data_sharding
     module = _attention()
     inputs = _sharded_sequences(jnp.arange(2 * 5 * MODEL_DIM, dtype=jnp.float32).reshape(2, 5, MODEL_DIM) / 10)
 
-    result = call_vmapped(
-        lambda values, *, keychain: module(values, positional_embeddings=None, keychain=keychain),
-        inputs,
-        keychain=Keychain.init(3, sharding_config=make_test_sharding_config()),
-        added_sharding_axis=make_test_sharding_config().resolve_axis(LogicalAxis.BATCH),
-    )
+    with pytest.warns(RuntimeWarning, match="Pallas decode attention .*falling back to XLA attention"):
+        result = call_vmapped(
+            lambda values, *, keychain: module(values, positional_embeddings=None, keychain=keychain),
+            inputs,
+            keychain=Keychain.init(3, sharding_config=make_test_sharding_config()),
+            added_sharding_axis=make_test_sharding_config().resolve_axis(LogicalAxis.BATCH),
+        )
     reference = jnp.stack([_reference(module, values) for values in jnp.asarray(jax.device_get(inputs))])
 
     _assert_close(result=result.outputs, reference=reference)

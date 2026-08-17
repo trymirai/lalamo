@@ -1,15 +1,17 @@
+import warnings
 from collections.abc import Callable
 from functools import cache
 
-import einops
 import jax
 import jax.numpy as jnp
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import mosaic_gpu as plgpu
 from jax.sharding import NamedSharding
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array
 
 from lalamo.kernels.mosaic import supports_mosaic_gpu
+
+from .xla import xla_recurrent_scan
 
 __all__ = [
     "deltanet_recurrent_scan",
@@ -21,55 +23,7 @@ type DeltaUpdate = Callable[
 ]
 
 
-@jax.custom_batching.custom_vmap
-def deltanet_recurrent_scan(
-    queries: Float[Array, "tokens heads key_channels"],
-    keys: Float[Array, "tokens heads key_channels"],
-    values: Float[Array, "tokens heads value_channels"],
-    decay_factor: Float[Array, "tokens heads"],
-    beta: Float[Array, "tokens heads"],
-    initial_state: Float[Array, "heads value_channels key_channels"],
-    num_steps: Int[Array, ""] | int,
-) -> tuple[
-    Float[Array, "tokens heads value_channels"],
-    Float[Array, "heads value_channels key_channels"],
-]:
-    def scan_fn(
-        index_and_state: tuple[Int[Array, ""], Float[Array, "heads value_channels key_channels"]],
-        step_inputs: tuple[
-            Float[Array, "heads key_channels"],
-            Float[Array, "heads key_channels"],
-            Float[Array, "heads value_channels"],
-            Float[Array, " heads"],
-            Float[Array, " heads"],
-        ],
-    ) -> tuple[
-        tuple[Int[Array, ""], Float[Array, "heads value_channels key_channels"]],
-        Float[Array, "heads value_channels"],
-    ]:
-        index, carry_state = index_and_state
-        query_t, key_t, value_t, decay_factor_t, beta_t = step_inputs
-
-        decay = jnp.exp(decay_factor_t)[:, None, None]
-        decayed_state = carry_state * decay
-        value_delta = value_t - jnp.sum(decayed_state * key_t[:, None, :], axis=-1)
-        value_delta = value_delta * beta_t[:, None]
-        updated_state = decayed_state + value_delta[:, :, None] * key_t[:, None, :]
-        output_t = einops.einsum(
-            query_t,
-            updated_state,
-            "heads key_channels, heads value_channels key_channels -> heads value_channels",
-        )
-
-        propagated_state = jax.lax.cond(index < num_steps, lambda: updated_state, lambda: carry_state)
-        return (index + 1, propagated_state), output_t
-
-    (_, final_state), outputs = jax.lax.scan(
-        scan_fn,
-        (jnp.zeros((), dtype=jnp.int32), initial_state),
-        (queries, keys, values, decay_factor, beta),
-    )
-    return outputs, final_state
+deltanet_recurrent_scan = jax.custom_batching.custom_vmap(xla_recurrent_scan)
 
 
 @cache
@@ -205,9 +159,27 @@ def _deltanet_recurrent_scan_vmap(
     initial_state: Array,
     num_steps: Array | int,
 ) -> tuple[tuple[Array, Array], tuple[bool, bool]]:
-    if not all(in_batched[:6]):
-        raise ValueError(f"Expected DeltaNet tensors to be batched, got {in_batched}.")
-    if not in_batched[6]:
+    (
+        queries_batched,
+        keys_batched,
+        values_batched,
+        decay_factor_batched,
+        beta_batched,
+        initial_state_batched,
+        num_steps_batched,
+    ) = in_batched
+    if not all(
+        (
+            queries_batched,
+            keys_batched,
+            values_batched,
+            decay_factor_batched,
+            beta_batched,
+            initial_state_batched,
+        )
+    ):
+        raise ValueError("Expected queries, keys, values, decay_factor, beta, and initial_state to be batched.")
+    if not num_steps_batched:
         num_steps = jnp.broadcast_to(num_steps, (axis_size,))
     _, num_tokens, num_heads, head_dim = queries.shape
     value_head_dim = values.shape[-1]
@@ -221,8 +193,14 @@ def _deltanet_recurrent_scan_vmap(
         or any(axis is not None for axis in state_sharding.spec)
         or not supports_mosaic_gpu(state_sharding.mesh, 9)
     ):
+        warnings.warn(
+            "Pallas DeltaNet recurrence does not support this recurrent configuration; "
+            "falling back to XLA recurrence.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return (
-            jax.vmap(deltanet_recurrent_scan.fun)(
+            jax.vmap(xla_recurrent_scan)(
                 queries,
                 keys,
                 values,

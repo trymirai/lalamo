@@ -3,32 +3,15 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 import pytest
-from jaxtyping import Array
 
-from lalamo.kernels.decode_attention import decode_attention
+from lalamo.kernels.attention import pallas_decode_attention
 from lalamo.kernels.deltanet import deltanet_recurrent_scan
 from lalamo.kernels.hadamard import hadamard_transform
+from lalamo.kernels.mosaic import supports_mosaic_gpu
 from lalamo.utils.sharding import ShardingConfig
 from tests.common import assert_close, gpu_only
 
 pytestmark = [gpu_only, pytest.mark.slow]
-
-
-def _gpu_sharding_config(minimum_compute_capability: int) -> ShardingConfig:
-    (device, *_) = jax.devices("gpu")
-    if not device.device_kind.startswith("NVIDIA") or (
-        float(getattr(device, "compute_capability", 0)) < minimum_compute_capability
-    ):
-        pytest.skip(f"requires an NVIDIA GPU with compute capability {minimum_compute_capability} or newer")
-    return ShardingConfig.replicated((device,))
-
-
-def _values(shape: tuple[int, ...], seed: int, scale: float = 1.0) -> Array:
-    return jax.random.normal(jax.random.key(seed), shape, dtype=jnp.float32) * scale
-
-
-def _replicate(values: Array, sharding_config: ShardingConfig) -> Array:
-    return jax.device_put(values, sharding_config.make_sharding((None,) * values.ndim))
 
 
 @pytest.mark.parametrize(
@@ -50,28 +33,54 @@ def test_decode_attention_matches_reference(
     scale: float | None,
     window_size: int | None,
 ) -> None:
-    sharding_config = _gpu_sharding_config(10)
-    queries = _replicate(
-        _values((batch_size, 1, num_heads, head_dim), seed=batch_size, scale=0.2).astype(jnp.bfloat16),
-        sharding_config,
+    sharding_config = ShardingConfig.replicated()
+    if not supports_mosaic_gpu(sharding_config.mesh, minimum_compute_capability=10):
+        pytest.skip("requires Blackwell Pallas support")
+    queries = jax.device_put(
+        (
+            jax.random.normal(
+                jax.random.key(batch_size),
+                (batch_size, 1, num_heads, head_dim),
+                dtype=jnp.float32,
+            )
+            * 0.2
+        ).astype(jnp.bfloat16),
+        sharding_config.make_sharding((None, None, None, None)),
     )
-    keys = _replicate(
-        _values((batch_size, capacity, num_groups, head_dim), seed=capacity, scale=0.1).astype(jnp.bfloat16),
-        sharding_config,
+    keys = jax.device_put(
+        (
+            jax.random.normal(
+                jax.random.key(capacity),
+                (batch_size, capacity, num_groups, head_dim),
+                dtype=jnp.float32,
+            )
+            * 0.1
+        ).astype(jnp.bfloat16),
+        sharding_config.make_sharding((None, None, None, None)),
     )
-    values = _replicate(
-        _values((batch_size, capacity, num_groups, head_dim), seed=capacity + 1, scale=0.1).astype(jnp.bfloat16),
-        sharding_config,
+    values = jax.device_put(
+        (
+            jax.random.normal(
+                jax.random.key(capacity + 1),
+                (batch_size, capacity, num_groups, head_dim),
+                dtype=jnp.float32,
+            )
+            * 0.1
+        ).astype(jnp.bfloat16),
+        sharding_config.make_sharding((None, None, None, None)),
     )
     lengths = capacity - batch_size + jnp.arange(batch_size)
     starts = 0 if window_size is None else jnp.maximum(lengths - window_size, 0)
     token_indices = jnp.arange(capacity)
     masks = (token_indices >= jnp.asarray(starts)[..., None]) & (token_indices < lengths[:, None])
     masks = masks.at[:, 8:12].set(False)
-    masks = _replicate(masks[:, None], sharding_config)
+    masks = jax.device_put(
+        masks[:, None],
+        sharding_config.make_sharding((None, None, None)),
+    )
     attention_scale = jnp.asarray(head_dim**-0.5 if scale is None else scale, dtype=jnp.float32)
 
-    result = jax.jit(jax.vmap(decode_attention, in_axes=(0, 0, 0, None, 0, None, None)))(
+    result = jax.jit(jax.vmap(pallas_decode_attention, in_axes=(0, 0, 0, None, 0, None, None)))(
         queries,
         keys,
         values,
@@ -95,15 +104,37 @@ def test_decode_attention_matches_reference(
 
 
 def test_deltanet_single_token_update_matches_recurrence_for_active_and_inactive_rows() -> None:
-    sharding_config = _gpu_sharding_config(9)
-    queries = _replicate(_values((8, 1, 2, 128), seed=11, scale=0.1), sharding_config)
-    keys = _replicate(_values((8, 1, 2, 128), seed=12, scale=0.1), sharding_config)
-    values = _replicate(_values((8, 1, 2, 128), seed=13, scale=0.1), sharding_config)
-    decay_factor = _replicate(-jax.nn.softplus(_values((8, 1, 2), seed=14)), sharding_config)
-    beta = _replicate(jax.nn.sigmoid(_values((8, 1, 2), seed=15)), sharding_config)
-    initial_state = _replicate(_values((8, 2, 128, 128), seed=16, scale=0.05), sharding_config)
+    sharding_config = ShardingConfig.replicated()
+    if not supports_mosaic_gpu(sharding_config.mesh, minimum_compute_capability=9):
+        pytest.skip("requires Hopper Pallas support")
+    replicated_tensor_sharding = sharding_config.make_sharding((None, None, None, None))
+    replicated_sequence_sharding = sharding_config.make_sharding((None, None, None))
+    queries = jax.device_put(
+        jax.random.normal(jax.random.key(11), (8, 1, 2, 128), dtype=jnp.float32) * 0.1,
+        replicated_tensor_sharding,
+    )
+    keys = jax.device_put(
+        jax.random.normal(jax.random.key(12), (8, 1, 2, 128), dtype=jnp.float32) * 0.1,
+        replicated_tensor_sharding,
+    )
+    values = jax.device_put(
+        jax.random.normal(jax.random.key(13), (8, 1, 2, 128), dtype=jnp.float32) * 0.1,
+        replicated_tensor_sharding,
+    )
+    decay_factor = jax.device_put(
+        -jax.nn.softplus(jax.random.normal(jax.random.key(14), (8, 1, 2), dtype=jnp.float32)),
+        replicated_sequence_sharding,
+    )
+    beta = jax.device_put(
+        jax.nn.sigmoid(jax.random.normal(jax.random.key(15), (8, 1, 2), dtype=jnp.float32)),
+        replicated_sequence_sharding,
+    )
+    initial_state = jax.device_put(
+        jax.random.normal(jax.random.key(16), (8, 2, 128, 128), dtype=jnp.float32) * 0.05,
+        replicated_tensor_sharding,
+    )
     lengths = jnp.arange(8, dtype=jnp.int32) % 2
-    lengths = _replicate(lengths, sharding_config)
+    lengths = jax.device_put(lengths, sharding_config.make_sharding((None,)))
 
     update = jax.jit(jax.vmap(deltanet_recurrent_scan))
     outputs, final_state = update(queries, keys, values, decay_factor, beta, initial_state, lengths)
@@ -122,11 +153,23 @@ def test_deltanet_single_token_update_matches_recurrence_for_active_and_inactive
 
 def test_pallas_hadamard_matches_cpu_under_jit_and_vmap() -> None:
     cpu_sharding_config = ShardingConfig.replicated(jax.devices("cpu")[:1])
-    gpu_sharding_config = _gpu_sharding_config(9)
-    values = _values((8, 512), seed=30, scale=0.1).astype(jnp.bfloat16)
+    gpu_sharding_config = ShardingConfig.replicated()
+    if not supports_mosaic_gpu(gpu_sharding_config.mesh, minimum_compute_capability=9):
+        pytest.skip("requires Hopper Pallas support")
+    values = (jax.random.normal(jax.random.key(30), (8, 512), dtype=jnp.float32) * 0.1).astype(jnp.bfloat16)
     transform = jax.jit(jax.vmap(lambda row: hadamard_transform(row, block_size=128)))
 
-    result = transform(_replicate(values, gpu_sharding_config))
-    reference = transform(_replicate(values, cpu_sharding_config))
+    result = transform(
+        jax.device_put(
+            values,
+            gpu_sharding_config.make_sharding((None, None)),
+        )
+    )
+    reference = transform(
+        jax.device_put(
+            values,
+            cpu_sharding_config.make_sharding((None, None)),
+        )
+    )
 
     assert_close(result=result, reference=reference, atol=2e-2, rtol=3e-2)
