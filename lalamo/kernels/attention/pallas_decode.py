@@ -114,18 +114,12 @@ def _make_main(
         keys_smem_ref, values_high_smem_ref = key_value_smem_union
         probabilities_smem_ref, output_smem_ref = probability_output_smem_union
         key_value_head_index = jax.lax.axis_index(_KEY_VALUE_HEAD_AXIS)
-        # A dynamic slice lets TMA zero-fill the padded query heads.
-        dynamic_zero = key_value_head_index - key_value_head_index
         if num_splits == 1:
             split_index = 0
         else:
             split_index = jax.lax.axis_index(_SPLIT_AXIS)
         plgpu.copy_gmem_to_smem(
-            grouped_queries_ref.at[
-                key_value_head_index,
-                pl.ds(dynamic_zero, padded_query_heads),
-                :,
-            ],
+            grouped_queries_ref.at[key_value_head_index, :, :],
             query_smem_ref,
             query_barrier_ref,
             oob_mode=plgpu.OOBFillMode.ZEROS,
@@ -365,7 +359,7 @@ def _make_main(
             partial_maxima_ref.at[key_value_head_index, split_index, padded_head_slice][...] = padded_maximum
             partial_normalizers_ref.at[key_value_head_index, split_index, padded_head_slice][...] = padded_normalizer
         else:
-            padded_head_slice = pl.ds(dynamic_zero, padded_output_heads)
+            padded_head_slice = pl.ds(0, padded_output_heads)
 
         for feature_block in range(feature_blocks):
             output_block = plgpu.async_load_tmem(
@@ -436,7 +430,7 @@ def _make_main(
             out_type=jax.ShapeDtypeStruct(
                 (
                     num_key_value_heads,
-                    query_heads_per_key_value_head,
+                    padded_output_heads,
                     head_dim,
                 ),
                 jnp.bfloat16,
@@ -571,24 +565,33 @@ def _pallas_decode_attention(
     scale: Float[Array, ""],
     num_splits: _NumSplits,
 ) -> Float[Array, "1 query_heads head_dim"]:
+    sequence_length = keys.shape[0]
     num_key_value_heads = keys.shape[1]
     head_dim = keys.shape[2]
     query_heads_per_key_value_head = queries.shape[1] // num_key_value_heads
     padded_query_heads = 8 if query_heads_per_key_value_head <= 8 else 16
+    sequence_padding = (-sequence_length) % _BLOCK_SIZE
+    keys = jnp.pad(keys, ((0, sequence_padding), (0, 0), (0, 0)))
+    values = jnp.pad(values, ((0, sequence_padding), (0, 0), (0, 0)))
     grouped_queries = queries[0].reshape(
         num_key_value_heads,
         query_heads_per_key_value_head,
         head_dim,
     )
+    grouped_queries = jnp.pad(
+        grouped_queries,
+        ((0, 0), (0, padded_query_heads - query_heads_per_key_value_head), (0, 0)),
+    )
     main = _make_main(
-        keys.shape[0],
+        sequence_length,
         num_key_value_heads,
         query_heads_per_key_value_head,
         head_dim,
         num_splits,
     )
     if num_splits == 1:
-        return main(grouped_queries, keys, values, mask, start, end, scale).reshape(queries.shape)
+        output = main(grouped_queries, keys, values, mask, start, end, scale)
+        return output[:, :query_heads_per_key_value_head].reshape(queries.shape)
 
     partials = main(grouped_queries, keys, values, mask, start, end, scale)
     reduced = _make_reduction(
@@ -613,7 +616,7 @@ def _pallas_decode_attention_vmap(
     bias: Float[Array, "batch heads dst_tokens src_tokens"] | Float[Array, "heads dst_tokens src_tokens"] | None,
     masks: Bool[Array, "batch dst_tokens src_tokens"] | Bool[Array, "dst_tokens src_tokens"],
     scale: float | Float[Array, ""] | None,
-    logit_soft_cap: float | None,
+    logit_soft_cap: float | Float[Array, ""] | None,
 ) -> tuple[Float[Array, "batch dst_tokens heads head_dim"], bool]:
     (
         queries_batched,

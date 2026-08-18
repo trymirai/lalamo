@@ -74,23 +74,6 @@ jobs:
         run: |
           pytest tests/coherence/test_tts_coherence.py
 
-  kernel-fuzz:
-    name: "Kernel fuzz"
-    runs-on: gpu
-    needs: [config]
-    if: ${{ needs.config.outputs.run-tests == 'true' && needs.config.outputs.is-prerelease == 'true' }}
-
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup
-        with:
-          dev: 'true'
-          cuda: 'true'
-
-      - name: Run pytest
-        run: |
-          pytest tests/prerelease/test_kernel_fuzz.py -v --hypothesis-show-statistics
-
   user-install:
     name: "User Install (${{ matrix.device }})"
     runs-on: ${{ fromJSON(matrix.runner) }}

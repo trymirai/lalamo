@@ -21,7 +21,7 @@ def stable_reduction_attention(
     bias: Float[Array, "heads dst_tokens src_tokens"] | None,
     mask: Bool[Array, "dst_tokens src_tokens"],
     scale: float | Float[Array, ""] | None,
-    logit_soft_cap: float | None,
+    logit_soft_cap: float | Float[Array, ""] | None,
     tile_size: int,
     accumulation_dtype: DTypeLike | None,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
@@ -120,5 +120,7 @@ def stable_reduction_attention(
         combine,
         (tile_max, tile_sum, tile_output),
     )
-    result = final_output[-1] / final_sum[-1, ..., None]
+    normalizer = final_sum[-1]
+    safe_normalizer = jnp.where(normalizer > 0, normalizer, 1)
+    result = final_output[-1] / safe_normalizer[..., None]
     return rearrange(result, "heads queries channels -> queries heads channels").astype(original_dtype)

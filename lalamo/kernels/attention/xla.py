@@ -13,9 +13,10 @@ def xla_attention(
     bias: Float[Array, "heads dst_tokens src_tokens"] | None,
     mask: Bool[Array, "dst_tokens src_tokens"],
     scale: float | Float[Array, ""] | None,
-    logit_soft_cap: float | None,
+    logit_soft_cap: float | Float[Array, ""] | None,
 ) -> Float[Array, "dst_tokens heads head_dim"]:
     original_dtype = queries.dtype
+    has_values = jnp.any(mask, axis=-1)
     if logit_soft_cap is not None:
         queries = queries.astype(jnp.float32)
         keys = keys.astype(jnp.float32)
@@ -52,20 +53,23 @@ def xla_attention(
             attention_logits,
             jnp.array(float("-inf"), dtype=attention_logits.dtype),
         )
+        attention_logits = jnp.where(has_values[None, :, None], attention_logits, 0)
         attention_weights = jax.nn.softmax(attention_logits, axis=-1)
-        return einsum(
+        result = einsum(
             attention_weights,
             values,
             "heads dst_tokens src_tokens, src_tokens heads channels -> dst_tokens heads channels",
-        ).astype(original_dtype)
+        )
+    else:
+        with jax.numpy_dtype_promotion("standard"):
+            result = jax.nn.dot_product_attention(
+                queries,
+                keys,
+                values,
+                bias=bias,
+                mask=mask,
+                scale=cast("float | None", scale),
+                implementation="xla",
+            )
 
-    with jax.numpy_dtype_promotion("standard"):
-        return jax.nn.dot_product_attention(
-            queries,
-            keys,
-            values,
-            bias=bias,
-            mask=mask,
-            scale=cast("float | None", scale),
-            implementation="xla",
-        ).astype(original_dtype)
+    return jnp.where(has_values[:, None, None], result, 0).astype(original_dtype)
