@@ -46,7 +46,6 @@ from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, TTSM
 from lalamo.models.chat_codec import Message, UserMessage
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
-from lalamo.utils.memory import get_available_bytes_on_default_device
 from lalamo.utils.sharding import ShardingConfig
 
 SCRIPT_NAME = Path(sys.argv[0]).name
@@ -623,8 +622,12 @@ def list_models(
     console.print(table)
 
 
-@app.command(help="Start a server for batched inference.")
+@app.command(help="Start the paged continuous-batching server.")
 def server(
+    model_path: Annotated[
+        Path,
+        Argument(help="Path to the model directory.", metavar="MODEL_PATH"),
+    ],
     host: Annotated[
         str,
         Option(help="Host to bind to."),
@@ -633,46 +636,57 @@ def server(
         int,
         Option(help="Port to bind to."),
     ] = 8293,
-    vram_gb: Annotated[
-        float | None,
-        Option(
-            help="Maximum VRAM in GB. Batch sizes are estimated automatically.",
-            show_default="max on default device",
-        ),
-    ] = None,
-    cache_dir: Annotated[
-        Path | None,
-        Option(
-            help="Directory to persist completed batches to.",
-            show_default="~/.cache/lalamo/batches",
-        ),
+    page_size: Annotated[int, Option(help="Tokens per KV-cache page.")] = 32,
+    total_pages: Annotated[int, Option(help="Maximum number of resident KV-cache pages.")] = 16_384,
+    slots: Annotated[int, Option(help="Maximum number of resident requests.")] = 64,
+    max_decode_batch_size: Annotated[int, Option(help="Maximum decode batch size.")] = 64,
+    prefill_batch_size: Annotated[int, Option(help="Maximum prefill batch size.")] = 32,
+    prefill_chunk_size: Annotated[int, Option(help="Tokens per prefill scan chunk.")] = 128,
+    decode_steps_per_prefill: Annotated[
+        int,
+        Option(help="Decode scheduling steps between pending-request admissions."),
+    ] = 8,
+    decode_block_size: Annotated[
+        int,
+        Option(help="Sequential decode steps queued per scheduler dispatch."),
+    ] = 512,
+    dtype: Annotated[
+        str | None,
+        Option(help="Floating-point dtype used while importing weights.", show_default="model dtype"),
     ] = None,
     tensor_parallel: Annotated[
         bool,
         Option(help="Shard model weight matrices across visible devices."),
     ] = False,
+    benchmark_metrics: Annotated[
+        bool,
+        Option(help="Expose opt-in scheduler telemetry at /benchmark-metrics."),
+    ] = False,
 ) -> None:
     try:
+        from lalamo.inference.continuous_batching import ContinuousBatchingConfig  # noqa: PLC0415
         from lalamo.server import start_server  # noqa: PLC0415
     except ImportError as error:
         err_console.print("Server extras not installed. Install with: uv add 'lalamo[server]'")
         raise Exit(1) from error
 
-    if vram_gb is not None:
-        vram_bytes = int(vram_gb * 1000 * 1000 * 1000)
-    elif (vram_bytes := get_available_bytes_on_default_device()) is None:
-        err_console.print("Cannot get the default device's memory stats, use --vram-gb")
-        raise Exit(1)
-
-    if cache_dir is None:
-        cache_dir = Path.home() / ".cache" / "lalamo" / "batches"
-
     start_server(
+        model_path=model_path,
         host=host,
         port=port,
-        vram_bytes=vram_bytes,
-        cache_dir=cache_dir,
+        batching_config=ContinuousBatchingConfig(
+            page_size=page_size,
+            total_pages=total_pages,
+            slot_count=slots,
+            max_decode_batch_size=max_decode_batch_size,
+            prefill_batch_size=prefill_batch_size,
+            prefill_chunk_size=prefill_chunk_size,
+            decode_steps_per_prefill=decode_steps_per_prefill,
+            decode_block_size=decode_block_size,
+        ),
         sharding_config=ShardingConfig.tensor_parallel() if tensor_parallel else ShardingConfig.replicated(),
+        dtype=dtype,
+        enable_benchmark_metrics=benchmark_metrics,
     )
 
 

@@ -132,11 +132,13 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
     if num_top_logits_to_return is not None:
         assert result.top_k_token_ids is not None
         assert result.top_k_token_logits is not None
+        assert result.remainder_logits is not None
 
         generation_batch_size, response_length = result.token_ids.shape
         expected_shape = (generation_batch_size, response_length, num_top_logits_to_return)
         assert result.top_k_token_ids.shape == expected_shape
         assert result.top_k_token_logits.shape == expected_shape
+        assert result.remainder_logits.shape == (generation_batch_size, response_length)
 
         top_k_token_ids = _take_first_batch_row(language_model, result.top_k_token_ids).tolist()
         top_k_token_logits = _take_first_batch_row(language_model, result.top_k_token_logits).tolist()
@@ -147,6 +149,7 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
     else:
         assert result.top_k_token_ids is None
         assert result.top_k_token_logits is None
+        assert result.remainder_logits is None
 
 
 def test_padding(language_model: LanguageModel) -> None:

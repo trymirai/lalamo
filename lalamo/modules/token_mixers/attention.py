@@ -1,3 +1,4 @@
+import math
 import warnings
 from dataclasses import dataclass
 
@@ -6,10 +7,12 @@ import jax
 import tokamax
 from einops import einsum, rearrange
 from jax import numpy as jnp
+from jax.experimental.pallas.ops.gpu.paged_attention import paged_attention as pallas_paged_attention
+from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.module import Keychain
+from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import (
     Normalization,
@@ -28,7 +31,12 @@ from lalamo.modules.token_mixer import (
 )
 from lalamo.modules.utils import apply_soft_capping, call_vmapped, call_vmapped_twice
 
-from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
+from .kv_cache import (
+    DynamicKVCacheLayer,
+    KVCacheLayer,
+    PagedKVCacheLayer,
+    StaticKVCacheLayer,
+)
 
 __all__ = [
     "Attention",
@@ -271,6 +279,18 @@ def _attention_kernel(
 
     match forward_pass_config.attention_implementation:
         case AttentionImplementation.STANDARD:
+            if bias is not None:
+                return _stable_reduction_attention_kernel(
+                    queries,
+                    keys,
+                    values,
+                    bias=bias,
+                    mask=mask,
+                    scale=scale,
+                    logit_soft_cap=logit_soft_cap,
+                    tile_size=forward_pass_config.attention_tile_size,
+                    accumulation_dtype=forward_pass_config.attention_accumulation_dtype,
+                )
             return _soft_capped_attention_kernel(
                 queries,
                 keys,
@@ -329,7 +349,131 @@ def _attention_kernel(
             )
 
 
+def _composed_paged_attention(
+    queries: Float[Array, "batch heads head_channels"],
+    key_pages: Float[Array, "groups total_pages page_size head_channels"],
+    value_pages: Float[Array, "groups total_pages page_size head_channels"],
+    block_tables: Int[Array, "batch pages_per_sequence"],
+    lengths: Int[Array, " batch"],
+    *,
+    scale: float | None,
+    logit_soft_cap: float | None,
+    sliding_window_size: int | None,
+    sinks: Float[Array, " heads"] | None,
+    forward_pass_config: MixerForwardPassConfig,
+) -> Float[Array, "batch heads head_channels"]:
+    gathered_keys = rearrange(
+        key_pages[:, block_tables, :, :],
+        "groups batch pages page_size head_channels -> batch (pages page_size) groups head_channels",
+    )
+    gathered_values = rearrange(
+        value_pages[:, block_tables, :, :],
+        "groups batch pages page_size head_channels -> batch (pages page_size) groups head_channels",
+    )
+    token_indices = jnp.arange(gathered_keys.shape[1], dtype=jnp.int32)
+    masks = token_indices[None, :] < lengths[:, None]
+    if sliding_window_size is not None:
+        masks = masks & (token_indices[None, :] >= lengths[:, None] - sliding_window_size)
+    if sinks is not None:
+        masks = masks.at[:, 0].set(True)
+    query_sharding = jax.typeof(queries).sharding
+    if isinstance(query_sharding, NamedSharding) and not query_sharding.mesh.empty:
+        batch_axis = query_sharding.spec[0]
+        gathered_sharding = NamedSharding(
+            query_sharding.mesh,
+            PartitionSpec(batch_axis, None, None, None),
+        )
+        mask_sharding = NamedSharding(query_sharding.mesh, PartitionSpec(batch_axis, None))
+        gathered_keys = jax.sharding.reshard(gathered_keys, gathered_sharding)
+        gathered_values = jax.sharding.reshard(gathered_values, gathered_sharding)
+        masks = jax.sharding.reshard(masks, mask_sharding)
+
+    def attend(
+        query: Float[Array, "heads head_channels"],
+        keys: Float[Array, "tokens groups head_channels"],
+        values: Float[Array, "tokens groups head_channels"],
+        mask: Bool[Array, " tokens"],
+    ) -> Float[Array, "heads head_channels"]:
+        if sinks is None:
+            sink_bias = None
+        else:
+            sink_bias = jnp.zeros((queries.shape[1], 1, mask.shape[0]), dtype=query.dtype)
+            sink_bias = sink_bias.at[:, :, 0].set(sinks[:, None])
+        return _attention_kernel(
+            query[None, :, :],
+            keys,
+            values,
+            bias=sink_bias,
+            mask=mask[None, :],
+            scale=scale,
+            logit_soft_cap=logit_soft_cap,
+            forward_pass_config=forward_pass_config,
+        )[0]
+
+    return jax.vmap(attend)(queries, gathered_keys, gathered_values, masks)
+
+
+def _pallas_paged_attention(
+    queries: Float[Array, "batch heads head_channels"],
+    key_pages: Float[Array, "groups total_pages page_size head_channels"],
+    value_pages: Float[Array, "groups total_pages page_size head_channels"],
+    block_tables: Int[Array, "batch pages_per_sequence"],
+    lengths: Int[Array, " batch"],
+    *,
+    scale: float | None,
+    logit_soft_cap: float | None,
+) -> Float[Array, "batch heads head_channels"]:
+    pages_per_sequence = block_tables.shape[1]
+    k_splits = math.gcd(pages_per_sequence, 16)
+    scale_value = queries.shape[-1] ** -0.5 if scale is None else scale
+    return pallas_paged_attention(
+        queries * scale_value,
+        key_pages,
+        value_pages,
+        block_tables,
+        lengths,
+        pages_per_compute_block=1,
+        k_splits=k_splits,
+        num_stages=1,
+        attn_logits_soft_cap=logit_soft_cap,
+    )
+
+
+def _append_paged_key_values(
+    key_pages: Float[Array, "groups total_pages page_size head_channels"],
+    value_pages: Float[Array, "groups total_pages page_size head_channels"],
+    block_tables: Int[Array, "batch pages_per_sequence"],
+    lengths: Int[Array, " batch"],
+    added_keys: Float[Array, "batch groups head_channels"],
+    added_values: Float[Array, "batch groups head_channels"],
+) -> tuple[
+    Float[Array, "groups total_pages page_size head_channels"],
+    Float[Array, "groups total_pages page_size head_channels"],
+]:
+    num_groups, _, page_size, _ = key_pages.shape
+    logical_page_indices = lengths // page_size
+    physical_page_indices = jnp.take_along_axis(block_tables, logical_page_indices[:, None], axis=1)[:, 0]
+    page_offsets = lengths % page_size
+    group_indices = jnp.arange(num_groups, dtype=jnp.int32)[:, None]
+    physical_page_indices = physical_page_indices[None, :]
+    page_offsets = page_offsets[None, :]
+    key_sharding = jax.typeof(key_pages).sharding
+    value_sharding = jax.typeof(value_pages).sharding
+    key_out_sharding = key_sharding if isinstance(key_sharding, NamedSharding) else None
+    value_out_sharding = value_sharding if isinstance(value_sharding, NamedSharding) else None
+    updated_keys = key_pages.at[group_indices, physical_page_indices, page_offsets, :].set(
+        rearrange(added_keys, "batch groups head_channels -> groups batch head_channels"),
+        out_sharding=key_out_sharding,
+    )
+    updated_values = value_pages.at[group_indices, physical_page_indices, page_offsets, :].set(
+        rearrange(added_values, "batch groups head_channels -> groups batch head_channels"),
+        out_sharding=value_out_sharding,
+    )
+    return updated_keys, updated_values
+
+
 AttentionResult = TokenMixerResult[KVCacheLayer]
+PagedAttentionResult = TokenMixerResult[PagedKVCacheLayer]
 
 
 @dataclass(frozen=True)
@@ -507,6 +651,154 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 forward_pass_config=forward_pass_config.normalization_forward_pass_config,
             )
         return keys, values
+
+    def paged_decode(
+        self,
+        inputs: Float[Array, "batch 1 channels"],
+        positional_embeddings: PositionalEmbeddings | None,
+        state: PagedKVCacheLayer,
+        return_updated_state: bool,
+        forward_pass_config: MixerForwardPassConfig,
+        *,
+        keychain: Keychain,
+    ) -> PagedAttentionResult:
+        qkvg_keychain, out_keychain = keychain.split(2)
+        projections = call_vmapped_twice(
+            self.qkvg_projection,
+            inputs,
+            forward_pass_config=forward_pass_config.matmul_config,
+            keychain=qkvg_keychain,
+            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
+        )
+        queries = projections[0]
+
+        def prepare_heads(
+            projection: Float[Array, "tokens channels"],
+            embeddings: PositionalEmbeddings | None,
+            num_heads: int,
+            norm: Normalization | None,
+        ) -> Float[Array, "tokens heads head_channels"]:
+            return self._prepare_heads(projection, num_heads, norm, embeddings, forward_pass_config)
+
+        if positional_embeddings is None:
+            queries = jax.vmap(
+                lambda projection: prepare_heads(projection, None, self.config.num_heads, self.query_norm)
+            )(queries)
+        else:
+            queries = call_vmapped(
+                lambda projection, embeddings: prepare_heads(
+                    projection,
+                    embeddings,
+                    self.config.num_heads,
+                    self.query_norm,
+                ),
+                queries,
+                positional_embeddings,
+                added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
+            )
+
+        if self.config.is_kv_sharing:
+            updated_keys = state.keys
+            updated_values = state.values
+            updated_lengths = state.lengths
+        else:
+            key_projections = projections[1]
+            value_projections = projections[2]
+            if positional_embeddings is None:
+                keys = jax.vmap(
+                    lambda projection: prepare_heads(projection, None, self.config.num_groups, self.key_norm)
+                )(key_projections)
+            else:
+                keys = call_vmapped(
+                    lambda projection, embeddings: prepare_heads(
+                        projection,
+                        embeddings,
+                        self.config.num_groups,
+                        self.key_norm,
+                    ),
+                    key_projections,
+                    positional_embeddings,
+                    added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
+                )
+            values = rearrange(
+                value_projections,
+                "batch tokens (groups head_channels) -> batch tokens groups head_channels",
+                groups=self.config.num_groups,
+                head_channels=self.config.head_dim,
+            )
+            if self.config.normalize_values:
+                values = _rms_normalize(
+                    values,
+                    eps=1e-6,
+                    forward_pass_config=forward_pass_config.normalization_forward_pass_config,
+                )
+            physical_lengths = state.lengths + int(self.has_sinks)
+            updated_keys, updated_values = _append_paged_key_values(
+                state.keys,
+                state.values,
+                state.block_tables,
+                physical_lengths,
+                keys[:, 0].astype(state.keys.dtype),
+                values[:, 0].astype(state.values.dtype),
+            )
+            updated_lengths = physical_lengths + 1
+        first_device, *_ = self.sharding_config.mesh.devices.flat
+        if first_device.platform == "gpu" and not self.use_sliding_window and not self.has_sinks:
+            attention_output = _pallas_paged_attention(
+                queries[:, 0].astype(updated_keys.dtype),
+                updated_keys,
+                updated_values,
+                state.block_tables,
+                updated_lengths,
+                scale=self.config.scale,
+                logit_soft_cap=self.config.logit_soft_cap,
+            )
+        else:
+            attention_output = _composed_paged_attention(
+                queries[:, 0].astype(updated_keys.dtype),
+                updated_keys,
+                updated_values,
+                state.block_tables,
+                updated_lengths,
+                scale=self.config.scale,
+                logit_soft_cap=self.config.logit_soft_cap,
+                sliding_window_size=self.config.sliding_window_size,
+                sinks=self.sinks,
+                forward_pass_config=forward_pass_config,
+            )
+        output_sharding = None
+        attention_output_sharding = jax.typeof(attention_output).sharding
+        if isinstance(attention_output_sharding, NamedSharding):
+            output_sharding = NamedSharding(
+                attention_output_sharding.mesh,
+                PartitionSpec(attention_output_sharding.spec[0], None, None),
+            )
+        batch_size, num_heads, head_dim = attention_output.shape
+        attention_output = jax.lax.reshape(
+            attention_output,
+            (batch_size, 1, num_heads * head_dim),
+            out_sharding=output_sharding,
+        )
+        if self.config.has_gate:
+            gate = projections[-1]
+            attention_output = attention_output * jax.nn.sigmoid(gate)
+        (result,) = call_vmapped_twice(
+            self.out_projection,
+            attention_output,
+            forward_pass_config=forward_pass_config.matmul_config,
+            keychain=out_keychain,
+            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
+        )
+        updated_state = PagedKVCacheLayer(
+            keys=updated_keys,
+            values=updated_values,
+            block_tables=state.block_tables,
+            lengths=updated_lengths,
+        )
+        return PagedAttentionResult(
+            outputs=result,
+            state=updated_state if return_updated_state else None,
+        )
 
     def __call__(
         self,

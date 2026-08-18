@@ -62,12 +62,25 @@ class GenerationStepResults(NamedTuple):
     token_ids: Int[Array, " batch"]
     top_k_token_ids: Int[Array, " batch k"] | None
     top_k_token_logits: Float[Array, " batch k"] | None
+    remainder_logits: Float[Array, " batch"] | None
 
 
 class GenerationResults(NamedTuple):
     token_ids: Int[Array, "batch response_tokens"]
     top_k_token_ids: Int[Array, "batch response_tokens k"] | None
     top_k_token_logits: Float[Array, "batch response_tokens k"] | None
+    remainder_logits: Float[Array, "batch response_tokens"] | None
+
+
+def _top_logits_with_remainder(
+    raw_logits: Float[Array, "batch vocabulary"],
+    top_k: int,
+) -> tuple[Int[Array, "batch k"], Float[Array, "batch k"], Float[Array, " batch"]]:
+    top_k_logits, top_k_token_ids = jax.lax.top_k(raw_logits, top_k)
+    batch_indices = jnp.arange(raw_logits.shape[0])[:, None]
+    omitted_logits = raw_logits.at[batch_indices, top_k_token_ids].set(-jnp.inf)
+    remainder_logits = jax.nn.logsumexp(omitted_logits, axis=-1)
+    return top_k_token_ids, top_k_logits, remainder_logits
 
 
 @dataclass(frozen=True)
@@ -287,6 +300,11 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
     ) -> GenerationResults:
         if max_output_length < 1:
             raise ValueError("max_output_length must be at least 1.")
+        if num_top_logits_to_return is not None and not 1 <= num_top_logits_to_return < self.decoder.vocab_size:
+            raise ValueError(
+                f"num_top_logits_to_return must be between 1 and {self.decoder.vocab_size - 1}, "
+                f"got {num_top_logits_to_return}."
+            )
         if prefill_forward_pass_config is None:
             prefill_forward_pass_config = DecoderForwardPassConfig.for_inference()
         if decode_forward_pass_config is None:
@@ -362,10 +380,11 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             step_keys: tuple[Key[Array, " batch"], Key[Array, "..."]],
         ) -> tuple[DecodingState, GenerationStepResults]:
             sampling_keys, decoding_key = step_keys
+            raw_logits = state.last_token_logits.astype(jnp.float32)
             processed_logits = call_vmapped(
                 lambda policy, logits: policy.process_logits(logits),
                 state.sampling_policy,
-                state.last_token_logits.astype(jnp.float32),
+                raw_logits,
             )
             next_token_ids = call_vmapped(sample_token, processed_logits, sampling_keys)
             next_token_ids = jnp.where(state.stop_flags, stopped_token_ids, next_token_ids)
@@ -379,8 +398,12 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             if num_top_logits_to_return is None:
                 top_k_token_ids = None
                 top_k_token_logits = None
+                remainder_logits = None
             else:
-                top_k_token_logits, top_k_token_ids = jax.lax.top_k(processed_logits, num_top_logits_to_return)
+                top_k_token_ids, top_k_token_logits, remainder_logits = _top_logits_with_remainder(
+                    raw_logits,
+                    num_top_logits_to_return,
+                )
 
             next_token_indices = state.last_token_indices + 1
             next_stop_flags = state.stop_flags | jnp.any(next_token_ids[:, None] == eos_token_ids[None, :], axis=-1)
@@ -410,6 +433,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                     token_ids=next_token_ids,
                     top_k_token_ids=top_k_token_ids,
                     top_k_token_logits=top_k_token_logits,
+                    remainder_logits=remainder_logits,
                 ),
             )
 
@@ -431,14 +455,17 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         if num_top_logits_to_return is None:
             top_k_token_ids = None
             top_k_token_logits = None
+            remainder_logits = None
         else:
             top_k_token_ids = rearrange(generated.top_k_token_ids, "step batch k -> batch step k")
             top_k_token_logits = rearrange(generated.top_k_token_logits, "step batch k -> batch step k")
+            remainder_logits = rearrange(generated.remainder_logits, "step batch -> batch step")
 
         return GenerationResults(
             token_ids=token_ids,
             top_k_token_ids=top_k_token_ids,
             top_k_token_logits=top_k_token_logits,
+            remainder_logits=remainder_logits,
         )
 
     def reply(

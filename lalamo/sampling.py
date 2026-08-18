@@ -5,7 +5,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax.typing import DTypeLike
-from jaxtyping import Array, Bool, Float, Int
+from jaxtyping import Array, Bool, Float, Int, Key
 
 from lalamo.module import Keychain
 
@@ -18,6 +18,7 @@ type SamplingLeaf = Float[Array, "..."] | Int[Array, "..."]
 
 
 class SamplingPolicy(eqx.Module):
+    is_greedy: bool = eqx.field(static=True)
     temperature: Float[Array, "*batch"] | None = None
     top_k: Int[Array, "*batch"] | None = None
     top_p: Float[Array, "*batch"] | None = None
@@ -49,6 +50,7 @@ class SamplingPolicy(eqx.Module):
         if repetition_penalty is not None and repetition_penalty <= 0.0:
             raise ValueError("repetition_penalty must be positive.")
         return cls(
+            is_greedy=temperature == 0.0,
             temperature=(
                 None if temperature is None or temperature == 1.0 else jnp.asarray(temperature, dtype=jnp.float32)
             ),
@@ -105,7 +107,7 @@ class SamplingPolicy(eqx.Module):
             "frequency_penalty": _optional_array(frequency_penalty, default=0.0, dtype=jnp.float32),
         }
         _raise_if_different_batch_sizes(*jax.tree.leaves(arrays))
-        return cls(token_counts=None, token_history=None, **arrays)
+        return cls(is_greedy=False, token_counts=None, token_history=None, **arrays)
 
     @property
     def has_count_penalties(self) -> bool:
@@ -186,18 +188,40 @@ class SamplingPolicy(eqx.Module):
 
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         self._raise_if_batched()
-        logits = self._apply_banned_tokens(logits)
-        logits = self._apply_repetition_penalty(logits)
-        logits = self._apply_presence_penalty(logits)
-        logits = self._apply_frequency_penalty(logits)
+        logits = self._apply_token_constraints(logits)
         logits = self._apply_temperature(logits)
         logits = self._apply_top_k(logits)
         logits = self._apply_top_p(logits)
         return self._apply_min_p(logits)
 
     def __call__(self, logits: Float[Array, " vocabulary"], *, keychain: Keychain) -> Int[Array, ""]:
+        return self.sample(logits, keychain.vmapped_keys)
+
+    def sample(
+        self,
+        logits: Float[Array, " vocabulary"],
+        key: Key[Array, ""],
+    ) -> Int[Array, ""]:
         self._raise_if_batched()
-        return jax.random.categorical(keychain.vmapped_keys, self.process_logits(logits))
+        if self.is_greedy:
+            return jnp.argmax(self._apply_token_constraints(logits)).astype(jnp.int32)
+        return jax.random.categorical(key, self.process_logits(logits))
+
+    def sample_with_next_key(
+        self,
+        logits: Float[Array, " vocabulary"],
+        key: Key[Array, ""],
+    ) -> tuple[Int[Array, ""], Key[Array, ""]]:
+        if self.is_greedy:
+            return self.sample(logits, key), key
+        next_key, sample_key = jax.random.split(key)
+        return self.sample(logits, sample_key), next_key
+
+    def _apply_token_constraints(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+        logits = self._apply_banned_tokens(logits)
+        logits = self._apply_repetition_penalty(logits)
+        logits = self._apply_presence_penalty(logits)
+        return self._apply_frequency_penalty(logits)
 
     def _raise_if_batched(self) -> None:
         scalar_fields: tuple[SamplingLeaf | None, ...] = (

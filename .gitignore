@@ -32,6 +32,10 @@ wheels/
 # Inference traces
 /traces/
 
+# Local benchmark artifacts
+/benchmarks/corpora/
+/benchmarks/results/
+
 # IDE
 .idea/
 *~

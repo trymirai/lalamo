@@ -11,6 +11,7 @@ from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPassConfig
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
+from lalamo.modules.token_mixers.kv_cache import PagedKVCacheLayer
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec
@@ -205,6 +206,77 @@ def test_attention_returns_dynamic_state_with_tensor_sharding(fake_mesh: Mesh) -
     _assert_named_sharding(result.state.values.sharding, fake_mesh)
     assert result.state.keys.sharding == make_sharding((None, None, None))
     assert result.state.values.sharding == make_sharding((None, None, None))
+
+
+def test_paged_decode_matches_dense_decode_and_updates_physical_page(fake_mesh: Mesh) -> None:
+    module = _attention()
+    inputs = _sharded_sequence(_inputs()[:3])
+    prefix_result = module(
+        inputs[:2],
+        positional_embeddings=None,
+        return_updated_state=True,
+        keychain=Keychain.init(20, sharding_config=make_test_sharding_config()),
+    )
+    assert prefix_result.state is not None
+    dense_result = module(
+        inputs[2:],
+        positional_embeddings=None,
+        state=prefix_result.state,
+        return_updated_state=True,
+        keychain=Keychain.init(21, sharding_config=make_test_sharding_config()),
+    )
+    assert dense_result.state is not None
+
+    key_pages = jnp.zeros((NUM_GROUPS, 4, 2, HEAD_DIM), dtype=jnp.float32)
+    value_pages = jnp.zeros_like(key_pages)
+    key_pages = key_pages.at[:, 2].set(
+        rearrange(prefix_result.state.keys, "tokens groups channels -> groups tokens channels")
+    )
+    key_pages = key_pages.at[:, 1].set(
+        rearrange(prefix_result.state.keys, "tokens groups channels -> groups tokens channels")
+    )
+    value_pages = value_pages.at[:, 2].set(
+        rearrange(prefix_result.state.values, "tokens groups channels -> groups tokens channels")
+    )
+    value_pages = value_pages.at[:, 1].set(
+        rearrange(prefix_result.state.values, "tokens groups channels -> groups tokens channels")
+    )
+    paged_inputs = _sharded_sequences(jnp.repeat(inputs[None, 2:], 2, axis=0))
+    paged_result = module.paged_decode(
+        paged_inputs,
+        positional_embeddings=None,
+        state=PagedKVCacheLayer(
+            keys=jax.device_put(key_pages, make_sharding((None, None, None, None))),
+            values=jax.device_put(value_pages, make_sharding((None, None, None, None))),
+            block_tables=jax.device_put(
+                jnp.array([[2, 0], [1, 3]], dtype=jnp.int32),
+                make_sharding((None, None)),
+            ),
+            lengths=jax.device_put(
+                jnp.array([2, 2], dtype=jnp.int32),
+                make_sharding((None,)),
+            ),
+        ),
+        return_updated_state=True,
+        forward_pass_config=MixerForwardPassConfig(),
+        keychain=Keychain.init(21, shape=(2,), sharding_config=make_test_sharding_config()),
+    )
+    assert paged_result.state is not None
+
+    paged_outputs = jnp.asarray(jax.device_get(paged_result.outputs))
+    _assert_close(result=paged_outputs[0], reference=dense_result.outputs)
+    _assert_close(result=paged_outputs[1], reference=dense_result.outputs)
+    _assert_named_sharding(paged_result.outputs.sharding, fake_mesh)
+    assert jnp.array_equal(
+        paged_result.state.keys[:, 0, 0],
+        rearrange(dense_result.state.keys[-1], "groups channels -> groups channels"),
+    )
+    assert jnp.array_equal(
+        paged_result.state.values[:, 0, 0],
+        rearrange(dense_result.state.values[-1], "groups channels -> groups channels"),
+    )
+    assert jnp.array_equal(paged_result.state.keys[:, 3, 0], paged_result.state.keys[:, 0, 0])
+    assert jnp.array_equal(paged_result.state.values[:, 3, 0], paged_result.state.values[:, 0, 0])
 
 
 def test_attention_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:

@@ -10,7 +10,12 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int
 from lalamo.modules.token_mixer import StateLayerBase
 from lalamo.utils.sharding import ShardingConfig
 
-__all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
+__all__ = [
+    "DynamicKVCacheLayer",
+    "KVCacheLayer",
+    "PagedKVCacheLayer",
+    "StaticKVCacheLayer",
+]
 
 
 @eqx.filter_jit
@@ -122,6 +127,32 @@ class KVCacheLayer(StateLayerBase):
         added_values: Float[Array, "new_tokens groups head_channels"],
         added_length: Int[Array, ""] | int | None = None,
     ) -> Self: ...
+
+
+class PagedKVCacheLayer(StateLayerBase):
+    keys: Float[Array, "groups total_pages page_size head_channels"]
+    values: Float[Array, "groups total_pages page_size head_channels"]
+    block_tables: Int[Array, "batch pages_per_sequence"]
+    lengths: Int[Array, " batch"]
+
+    def __post_init__(self) -> None:
+        if self.keys.ndim != 4:
+            raise ValueError(
+                "Paged keys and values must have shape [groups, total_pages, page_size, head_channels], "
+                f"got {self.keys.shape}."
+            )
+        if self.keys.shape != self.values.shape:
+            raise ValueError("Paged keys and values must have the same shape.")
+        if self.keys.dtype != self.values.dtype:
+            raise ValueError("Paged keys and values must have the same dtype.")
+        if self.block_tables.ndim != 2:
+            raise ValueError(f"block_tables must be two-dimensional, got {self.block_tables.shape}.")
+        if self.lengths.shape != (self.block_tables.shape[0],):
+            raise ValueError(f"lengths must have shape {(self.block_tables.shape[0],)}, got {self.lengths.shape}.")
+
+    @property
+    def page_size(self) -> int:
+        return self.keys.shape[2]
 
 
 class DynamicKVCacheLayer(KVCacheLayer):

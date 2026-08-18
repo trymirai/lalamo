@@ -75,6 +75,7 @@ class MicrofloatParameters(NamedTuple):
         scale_mode: MicrofloatScaleMode,
         *,
         scale_sharding: NamedSharding | None = None,
+        global_scale_sharding: NamedSharding,
     ) -> Self:
         group_absmax = jnp.max(jnp.abs(group_by_last_axis(weights, group_size=group_size)), axis=-1)
         matrix_absmax = jnp.max(jnp.abs(weights), axis=(-2, -1))
@@ -82,7 +83,7 @@ class MicrofloatParameters(NamedTuple):
             packed_scales = pack_e8m0_scales(group_absmax / 4, out_sharding=scale_sharding)
             return cls(
                 scales=e8m0_scale_values(packed_scales, weights.dtype),
-                global_scale=jnp.ones_like(matrix_absmax),
+                global_scale=with_sharding(jnp.ones_like(matrix_absmax), global_scale_sharding),
             )
 
         scale_max = jnp.asarray(jnp.finfo(jnp.float8_e4m3fn).max, dtype=matrix_absmax.dtype) * 6
@@ -92,7 +93,7 @@ class MicrofloatParameters(NamedTuple):
                 group_absmax / (6 * global_scale[..., None, None]),
                 out_sharding=scale_sharding,
             ).astype(weights.dtype),
-            global_scale=global_scale,
+            global_scale=with_sharding(global_scale, global_scale_sharding),
         )
 
 
@@ -286,6 +287,7 @@ class MicrofloatSpec(QuantizedSpec):
             self.group_size,
             self.scale_mode,
             scale_sharding=parameter_sharding,
+            global_scale_sharding=global_scale_sharding,
         )
         master_scales = with_sharding(parameters.scales, parameter_sharding)
         global_scale = with_sharding(parameters.global_scale, global_scale_sharding)

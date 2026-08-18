@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from lalamo.models.language_model import _top_logits_with_remainder
 from lalamo.module import Keychain
 from lalamo.sampling import SamplingPolicy
 from tests.helpers import make_test_sharding_config
@@ -125,10 +126,45 @@ def test_batched_policy_requires_vmap_and_processes_rows() -> None:
 
 
 def test_call_samples_greedy_token_when_temperature_is_zero() -> None:
-    result = SamplingPolicy.init(temperature=0.0)(
-        jnp.array([0.0, 3.0, 2.0], dtype=jnp.float32),
+    policy = _with_counts(
+        SamplingPolicy.init(temperature=0.0, banned_tokens=(3,), presence_penalty=2.0),
+        (1,),
+        1,
+        4,
+    )
+    result = policy(
+        jnp.array([0.0, 3.0, 2.0, 5.0], dtype=jnp.float32),
         keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
     )
 
     assert result.shape == ()
-    assert result.item() == 1
+    assert result.item() == 2
+
+
+def test_greedy_sampling_does_not_advance_key() -> None:
+    policy = SamplingPolicy.init(temperature=0.0)
+    key = jax.random.key(7)
+
+    token_id, next_key = policy.sample_with_next_key(jnp.array([0.0, 2.0, 1.0]), key)
+
+    assert token_id.item() == 1
+    assert jnp.array_equal(next_key, key)
+
+
+def test_greedy_picks_exact_argmax_even_within_one_bfloat16_ulp() -> None:
+    logits = jnp.array([[12.0, 12.0625, 11.5], [-12.0, -12.0625, -13.0]], dtype=jnp.float32)
+    policy = SamplingPolicy.init(temperature=0.0).broadcast(2)
+
+    result = jax.vmap(lambda policy_row, logits_row: policy_row.process_logits(logits_row))(policy, logits)
+
+    _assert_array(jnp.argmax(result, axis=-1), jnp.array([1, 0], dtype=jnp.int32))
+
+
+def test_top_logits_with_remainder_uses_raw_logits_and_excludes_returned_tokens() -> None:
+    raw_logits = jnp.log(jnp.array([[1.0, 2.0, 4.0, 8.0], [16.0, 1.0, 4.0, 2.0]], dtype=jnp.float32))
+
+    token_ids, logits, remainder_logits = _top_logits_with_remainder(raw_logits, top_k=2)
+
+    _assert_array(token_ids, jnp.array([[3, 2], [0, 2]], dtype=jnp.int32))
+    _assert_array(logits, jnp.log(jnp.array([[8.0, 4.0], [16.0, 4.0]], dtype=jnp.float32)))
+    _assert_array(remainder_logits, jnp.log(jnp.array([3.0, 3.0], dtype=jnp.float32)))
