@@ -16,7 +16,7 @@ from lalamo.weight_matrix import GradientEstimator
 from .activations import Activation
 from .linear import Linear, LinearConfig
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
-from .normalization import Normalization, NormalizationConfig, NormalizationForwardPassConfig
+from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPEConfig
 from .token_mixer import (
     MixerForwardPassConfig,
@@ -43,16 +43,12 @@ __all__ = [
 class TransformerForwardPassConfig:
     mixer_forward_pass_config: MixerForwardPassConfig = dataclass_field(default_factory=MixerForwardPassConfig)
     mlp_forward_pass_config: MLPForwardPassConfig = dataclass_field(default_factory=MLPForwardPassConfig)
-    normalization_forward_pass_config: NormalizationForwardPassConfig = dataclass_field(
-        default_factory=NormalizationForwardPassConfig,
-    )
 
     @classmethod
     def for_tracer_tests(cls) -> Self:
         return cls(
             mixer_forward_pass_config=MixerForwardPassConfig.for_tracer_tests(),
             mlp_forward_pass_config=MLPForwardPassConfig.for_tracer_tests(),
-            normalization_forward_pass_config=NormalizationForwardPassConfig.for_tracer_tests(),
         )
 
     @classmethod
@@ -64,7 +60,6 @@ class TransformerForwardPassConfig:
         return cls(
             mixer_forward_pass_config=MixerForwardPassConfig.for_inference(precision),
             mlp_forward_pass_config=MLPForwardPassConfig.for_inference(mode, precision),
-            normalization_forward_pass_config=NormalizationForwardPassConfig.for_inference(),
         )
 
     @classmethod
@@ -76,7 +71,6 @@ class TransformerForwardPassConfig:
         return cls(
             mixer_forward_pass_config=MixerForwardPassConfig.for_training(gradient_estimator, precision),
             mlp_forward_pass_config=MLPForwardPassConfig.for_training(gradient_estimator, precision),
-            normalization_forward_pass_config=NormalizationForwardPassConfig.for_training(),
         )
 
 
@@ -139,7 +133,6 @@ class PLELayer(LalamoModule[PLELayerConfig]):
         self,
         outputs: Float[Array, "batch suffix_tokens channels"],
         per_layer_input: Float[Array, "batch suffix_tokens ple_dim"],
-        forward_pass_config: NormalizationForwardPassConfig = NormalizationForwardPassConfig(),
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]:
@@ -157,7 +150,7 @@ class PLELayer(LalamoModule[PLELayerConfig]):
             keychain=projection_keychain,
             added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
-        ple_normed = call_vmapped_twice(self.norm, ple_projected, forward_pass_config=forward_pass_config)
+        ple_normed = call_vmapped_twice(self.norm, ple_projected)
         return outputs + ple_normed
 
 
@@ -241,14 +234,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         if return_suffix_tokens is not None and return_activation_trace:
             raise ValueError("return_suffix_tokens cannot be combined with return_activation_trace.")
         mixer_keychain, mlp_keychain, ple_keychain = keychain.split(3)
-        normalization_forward_pass_config = forward_pass_config.normalization_forward_pass_config
 
         if self.pre_mixer_norm is not None:
-            normalized_mixer_inputs = call_vmapped_twice(
-                self.pre_mixer_norm,
-                inputs,
-                forward_pass_config=normalization_forward_pass_config,
-            )
+            normalized_mixer_inputs = call_vmapped_twice(self.pre_mixer_norm, inputs)
         else:
             normalized_mixer_inputs = inputs
 
@@ -289,11 +277,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )
         if self.post_mixer_norm is not None:
-            normalized_mixer_outputs = call_vmapped_twice(
-                self.post_mixer_norm,
-                mixer_outputs,
-                forward_pass_config=normalization_forward_pass_config,
-            )
+            normalized_mixer_outputs = call_vmapped_twice(self.post_mixer_norm, mixer_outputs)
             mlp_inputs = inputs + normalized_mixer_outputs
         else:
             normalized_mixer_outputs = None
@@ -321,11 +305,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         else:
             mlp_lengths_without_padding = lengths_without_padding
 
-        normalized_mlp_inputs = call_vmapped_twice(
-            self.pre_mlp_norm,
-            mlp_inputs,
-            forward_pass_config=normalization_forward_pass_config,
-        )
+        normalized_mlp_inputs = call_vmapped_twice(self.pre_mlp_norm, mlp_inputs)
         mlp_outputs = self.mlp(
             normalized_mlp_inputs,
             lengths_without_padding=mlp_lengths_without_padding,
@@ -333,11 +313,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             keychain=mlp_keychain,
         )
         if self.post_mlp_norm is not None:
-            normalized_mlp_outputs = call_vmapped_twice(
-                self.post_mlp_norm,
-                mlp_outputs,
-                forward_pass_config=normalization_forward_pass_config,
-            )
+            normalized_mlp_outputs = call_vmapped_twice(self.post_mlp_norm, mlp_outputs)
             outputs = mlp_inputs + normalized_mlp_outputs
         else:
             normalized_mlp_outputs = None
@@ -347,7 +323,6 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             outputs = self.ple(
                 outputs,
                 per_layer_input,
-                forward_pass_config=normalization_forward_pass_config,
                 keychain=ple_keychain,
             )
         if self.post_layer_scalar is not None:

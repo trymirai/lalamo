@@ -6,6 +6,7 @@ import pytest
 from jaxtyping import Array
 
 from lalamo.initializer import RandomInitializer
+from lalamo.kernels.deltanet import deltanet_recurrent_scan
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.token_mixer import MixerForwardPassConfig
@@ -81,7 +82,7 @@ def test_deltanet_chunked_scan_matches_recurrent_scan_for_ssm_chunk_config(
         ssm_min_tail_size_to_chunk=ssm_min_tail_size_to_chunk,
     )
 
-    result = module._chunked_scan(  # noqa: SLF001
+    outputs, final_state = module._chunked_scan(  # noqa: SLF001
         queries,
         keys,
         values,
@@ -91,7 +92,7 @@ def test_deltanet_chunked_scan_matches_recurrent_scan_for_ssm_chunk_config(
         num_steps,
         forward_pass_config,
     )
-    reference = module._recurrent_scan(  # noqa: SLF001
+    reference_outputs, reference_state = deltanet_recurrent_scan(
         queries,
         keys,
         values,
@@ -101,5 +102,22 @@ def test_deltanet_chunked_scan_matches_recurrent_scan_for_ssm_chunk_config(
         num_steps,
     )
 
-    assert_close(result=result.outputs[:num_steps], reference=reference.outputs[:num_steps])
-    assert_close(result=result.final_state, reference=reference.final_state)
+    assert_close(result=outputs[:num_steps], reference=reference_outputs[:num_steps])
+    assert_close(result=final_state, reference=reference_state)
+
+
+def test_deltanet_vmapped_pallas_fallback_warns() -> None:
+    values = jnp.ones((2, 1, 1, 3), dtype=jnp.float32)
+    factors = jnp.ones((2, 1, 1), dtype=jnp.float32)
+    states = jnp.ones((2, 1, 3, 3), dtype=jnp.float32)
+
+    with pytest.warns(RuntimeWarning, match="Pallas DeltaNet recurrence .*falling back to XLA recurrence"):
+        jax.vmap(deltanet_recurrent_scan, in_axes=(0, 0, 0, 0, 0, 0, None))(
+            values,
+            values,
+            values,
+            factors,
+            factors,
+            states,
+            1,
+        )
