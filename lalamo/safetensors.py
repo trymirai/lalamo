@@ -71,11 +71,13 @@ def safe_read(fd: BufferedReader) -> tuple[dict[str, str] | None, LazyDict[str, 
     header: dict[str, dict[str, Any]] = json.loads(fd.read(header_size))
     metadata: dict[str, str] | None = header.pop("__metadata__", None)
     data_offset = fd.tell()
+    cpu_device = jax.devices("cpu")[0]
 
     def _load_tensor(key: str) -> Array:
         info = SFTensorInfo.from_dict(header[key])
         fd.seek(data_offset + info.start)
-        return jnp.asarray(np.fromfile(fd, info.dtype, info.size // info.dtype.itemsize)).reshape(info.shape)
+        host_tensor = np.fromfile(fd, info.dtype, info.size // info.dtype.itemsize).reshape(info.shape)
+        return jax.device_put(host_tensor, cpu_device)
 
     lazy_tensors = LazyDict(set(header.keys()), _load_tensor)
     return (metadata, lazy_tensors)
