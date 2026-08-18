@@ -16,7 +16,7 @@ from einops import rearrange
 from jax.errors import JaxRuntimeError
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key, Shaped
 
-from lalamo.models.chat_codec import AssistantMessage, Message
+from lalamo.models.chat_codec import AssistantMessage, Message, ReasoningEffort
 from lalamo.models.language_model import DecodingState, GenerationConfig, LanguageModel, PrefillResults
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
 from lalamo.modules import DecoderForwardPassConfig, State
@@ -783,7 +783,7 @@ class BatchScheduler(ABC):
         generation_config: GenerationConfig | None = None,
         batch_scheduler_config: BatchSchedulerConfig = BatchSchedulerConfig(),
         *,
-        enable_thinking: bool = True,
+        reasoning_effort: ReasoningEffort = ReasoningEffort.XHIGH,
         keychain: Keychain | None = None,
         vram_bytes: int | None = None,
         batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
@@ -800,7 +800,7 @@ class BatchScheduler(ABC):
             raise RuntimeError("Specify either batch_scheduler_config.batch_size or vram_bytes.")
 
         tokenized = [
-            self.model.token_codec.encode_request(message, enable_thinking=enable_thinking) for message in messages
+            self.model.token_codec.encode_request(message, reasoning_effort=reasoning_effort) for message in messages
         ]
 
         if batch_scheduler_config.batch_size is not None:
@@ -888,7 +888,10 @@ class BatchScheduler(ABC):
             ):
                 idx = sequence_ids[local_idx]
                 trimmed_ids = self.model.trim_at_eos(result.token_ids.tolist())
-                yield (idx, self.model.token_codec.decode_response(trimmed_ids, expect_thinking=enable_thinking))
+                yield (
+                    idx,
+                    self.model.token_codec.decode_response(trimmed_ids, expect_thinking=reasoning_effort.is_enabled),
+                )
 
 
 @dataclass(frozen=True)
