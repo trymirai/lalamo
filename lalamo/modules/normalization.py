@@ -27,10 +27,18 @@ class NormalizationConfig(LalamoConfig):
     scale_offset: float | None
     upcast_mode: UpcastMode
     subtract_mean: bool
+    has_scale: bool = True
     has_biases: bool = False
 
+    def __post_init__(self) -> None:
+        if not self.has_scale and self.scale_offset is not None:
+            raise ValueError("scale_offset is meaningless for a weightless normalization.")
+
     def init(self, initializer: Initializer, input_dim: int) -> "Normalization":
-        scales = initializer.ones((input_dim,), dtype=jnp.float32)
+        if self.has_scale:
+            scales = initializer.ones((input_dim,), dtype=jnp.float32)
+        else:
+            scales = None
         if self.has_biases:
             biases = initializer.zeros((input_dim,), dtype=jnp.float32)
         else:
@@ -44,11 +52,12 @@ class NormalizationConfig(LalamoConfig):
 
 
 class Normalization(LalamoModule[NormalizationConfig]):
-    scales: Float[Array, " channels"]
+    scales: Float[Array, " channels"] | None
     biases: Float[Array, " channels"] | None
 
     @property
     def input_dim(self) -> int:
+        assert self.config.has_scale and self.scales is not None, "weightless normalization does not track input_dim"
         (result,) = self.scales.shape
         return result
 
@@ -60,12 +69,16 @@ class Normalization(LalamoModule[NormalizationConfig]):
     ) -> Float[Array, " channels"]:
         upcasted_inputs = inputs.astype(accumulation_precision)
 
-        if self.config.upcast_mode == UpcastMode.FULL_LAYER:
-            scales = self.scales.astype(jnp.float32)
+        if not self.config.has_scale:
+            scales = None
         else:
-            scales = self.scales.astype(inputs.dtype)
+            assert self.scales is not None, "has_scale is set but scales are missing"
+            if self.config.upcast_mode == UpcastMode.FULL_LAYER:
+                scales = self.scales.astype(jnp.float32)
+            else:
+                scales = self.scales.astype(inputs.dtype)
 
-        if self.config.scale_offset is not None:
+        if scales is not None and self.config.scale_offset is not None:
             scales += self.config.scale_offset
 
         if self.config.subtract_mean:
@@ -78,7 +91,10 @@ class Normalization(LalamoModule[NormalizationConfig]):
         if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
             normalized_x = normalized_x.astype(inputs.dtype)
 
-        result = normalized_x * scales
+        if scales is not None:
+            result = normalized_x * scales
+        else:
+            result = normalized_x
 
         if self.biases is not None:
             result = result + self.biases.astype(result.dtype)

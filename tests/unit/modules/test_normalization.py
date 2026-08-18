@@ -51,6 +51,7 @@ def _reference(module: Normalization, inputs: Array) -> Array:
     if config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
         normalized = normalized.astype(inputs.dtype)
 
+    assert module.scales is not None
     if config.upcast_mode == UpcastMode.FULL_LAYER:
         adjusted_scales = module.scales.astype(jnp.float32)
     else:
@@ -174,6 +175,8 @@ def test_normalization_export_load_roundtrips_and_preserves_template_sharding(fa
     restored = template.load_exported(original.export())
     result = restored(inputs)
 
+    assert restored.scales is not None
+    assert template.scales is not None
     assert restored.scales.sharding == template.scales.sharding
     assert restored.scales.dtype == jnp.float32
     assert isinstance(restored.scales.sharding, NamedSharding)

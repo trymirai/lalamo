@@ -11,6 +11,7 @@ from .llama import HFLlamaConfig
 from .llamba import HFLlambaConfig
 from .mistral import HFMistralConfig
 from .modern_bert import ModernBERTConfig
+from .muse_glimmer import HFMuseGlimmerConfig
 from .phi3 import HFPhi3Config
 from .qwen2 import HFQwen2Config
 from .qwen3 import HFQwen3Config
@@ -34,6 +35,7 @@ __all__ = [
     "HFLlamaConfig",
     "HFLlambaConfig",
     "HFMistralConfig",
+    "HFMuseGlimmerConfig",
     "HFPhi3Config",
     "HFQwen2Config",
     "HFQwen3Config",

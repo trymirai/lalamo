@@ -1,7 +1,5 @@
 from .dflash import (
     DFlashDraftConfig,
-    DFlashDraftLayer,
-    DFlashDraftLayerConfig,
     DFlashDraftModel,
     DFlashDraftState,
     DFlashSpeculator,
@@ -16,8 +14,6 @@ from .weaver import (
 
 __all__ = [
     "DFlashDraftConfig",
-    "DFlashDraftLayer",
-    "DFlashDraftLayerConfig",
     "DFlashDraftModel",
     "DFlashDraftState",
     "DFlashSpeculator",

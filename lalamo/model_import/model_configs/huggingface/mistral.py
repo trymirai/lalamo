@@ -88,13 +88,13 @@ class HFMistralConfig(HuggingFaceLMConfig):
         layer_configs = []
         for _ in range(self.num_hidden_layers):
             attention_config = AttentionConfig(
-                qkv_projection_config=linear_config,
+                qkvg_projection_config=linear_config,
                 out_projection_config=linear_config,
                 query_norm_config=None,
                 key_norm_config=None,
                 logit_soft_cap=None,
                 has_sinks=False,
-                has_qkv_biases=False,
+                has_qkvg_biases=False,
                 has_out_biases=False,
                 num_heads=self.num_attention_heads,
                 num_groups=self.num_key_value_heads,

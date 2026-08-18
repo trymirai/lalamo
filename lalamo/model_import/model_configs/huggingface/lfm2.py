@@ -129,7 +129,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
         )
 
         attention_config = AttentionConfig(
-            qkv_projection_config=linear_config,
+            qkvg_projection_config=linear_config,
             out_projection_config=linear_config,
             query_norm_config=block_norm_config,
             key_norm_config=block_norm_config,
@@ -141,7 +141,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
             sliding_window_size=None,
             logit_soft_cap=None,
             has_sinks=False,
-            has_qkv_biases=False,
+            has_qkvg_biases=False,
             has_out_biases=False,
         )
 

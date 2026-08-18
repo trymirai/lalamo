@@ -10,8 +10,10 @@ from jaxtyping import Array
 from lalamo.model import Model
 from lalamo.model_import.loaders.huggingface import (
     load_huggingface_decoder,
+    load_input_embedding_matrix,
     load_linear,
     load_rmsnorm,
+    resolve_decoder_load_layout,
 )
 from lalamo.models import LanguageModel
 from lalamo.modules import (
@@ -29,7 +31,6 @@ from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
-from lalamo.utils.parameter_path import ParameterPath
 from lalamo.weight_matrix import CompressionImplementation
 
 from .common import HuggingFaceLMConfig
@@ -177,13 +178,13 @@ class HFGemma4TextConfig:
                 num_kv_heads = self.num_global_key_value_heads
 
             attention_config = AttentionConfig(
-                qkv_projection_config=linear_config,
+                qkvg_projection_config=linear_config,
                 out_projection_config=linear_config,
                 query_norm_config=rms_norm_config,
                 key_norm_config=rms_norm_config,
                 logit_soft_cap=None,
                 has_sinks=False,
-                has_qkv_biases=self.attention_bias,
+                has_qkvg_biases=self.attention_bias,
                 has_out_biases=self.attention_bias,
                 num_heads=self.num_attention_heads,
                 num_groups=num_kv_heads,
@@ -277,16 +278,17 @@ class HFGemma4Config(HuggingFaceLMConfig):
         if model.per_layer_embedding is None:
             return model
 
-        if any(key.startswith("model.language_model.") for key in weights_dict):
-            base = ParameterPath("model") / "language_model"
-        elif any(key.startswith("language_model.") for key in weights_dict):
-            base = ParameterPath("language_model")
-        else:
-            base = ParameterPath("model")
+        layout = resolve_decoder_load_layout(weights_dict)
+        base = layout.decoder_path
 
         new_per_layer_embedding = replace(
             model.per_layer_embedding,
-            token_embedding=weights_dict[base / "embed_tokens_per_layer" / "weight"],
+            token_embedding=load_input_embedding_matrix(
+                model.per_layer_embedding.token_embedding,
+                weights_dict,
+                base / "embed_tokens_per_layer",
+                implementation=implementation,
+            ),
             model_projection=load_linear(
                 model.per_layer_embedding.model_projection,
                 weights_dict,

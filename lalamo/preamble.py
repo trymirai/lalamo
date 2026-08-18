@@ -1,7 +1,17 @@
 import os
+import sys
+import warnings
 
 
 def init_jax() -> None:
+    if "jax" in sys.modules:
+        warnings.warn(
+            "JAX was imported before Lalamo; Lalamo's JAX environment configuration may not take effect. "
+            "Import lalamo before jax.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
     # Must run before importing jax / tensorflow, this hides the XLA optimization logs
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 

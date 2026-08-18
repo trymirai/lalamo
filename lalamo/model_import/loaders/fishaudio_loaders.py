@@ -185,6 +185,7 @@ def _load_rope_norm(
     if module is None:
         return None
     norm = load_rmsnorm(module, weights_dict, path)
+    assert norm.scales is not None
     permuted_scales = _permute_for_rope_rotate_half(norm.scales, 1, norm.scales.shape[0])
     return load_as_at(lambda m: (m.scales,), norm, (permuted_scales,))
 
@@ -201,27 +202,27 @@ def load_transformer_block(
         path: ParameterPath,
         scaling_to_fuse: Array | None = None,
     ) -> Attention:
-        qkv_projection = load_linear_and_fuse_scaling(
-            attn_module.qkv_projection,
+        qkvg_projection = load_linear_and_fuse_scaling(
+            attn_module.qkvg_projection,
             weights_dict,
             path / "wqkv",
             sublayers_to_fuse=None,
         )
-        assert isinstance(qkv_projection, Linear)
+        assert isinstance(qkvg_projection, Linear)
 
         # Permute QKV weights from interleaved RoPE format to rotate-half format
         permuted_qkv_weights = _permute_qkv_for_rope_rotate_half(
-            qkv_projection.weights.decompress(),
+            qkvg_projection.weights.decompress(),
             num_heads=attn_module.config.num_heads,
             num_groups=attn_module.config.num_groups,
             head_dim=attn_module.config.head_dim,
         )
-        new_weights = qkv_projection.weights.spec.compress(
+        new_weights = qkvg_projection.weights.spec.compress(
             permuted_qkv_weights,
-            sharding_config=qkv_projection.weights.sharding_config,
+            sharding_config=qkvg_projection.weights.sharding_config,
         )
-        qkv_projection = eqx.tree_at(lambda m: (m.weights,), qkv_projection, (new_weights,))
-        assert isinstance(qkv_projection, Linear)
+        qkvg_projection = eqx.tree_at(lambda m: (m.weights,), qkvg_projection, (new_weights,))
+        assert isinstance(qkvg_projection, Linear)
 
         out_projection = load_linear_and_fuse_scaling(
             attn_module.out_projection,
@@ -234,9 +235,9 @@ def load_transformer_block(
         key_norm = _load_rope_norm(attn_module.key_norm, weights_dict, path / "k_norm")
 
         return load_as_at(
-            lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm),
+            lambda m: (m.qkvg_projection, m.out_projection, m.query_norm, m.key_norm),
             attn_module,
-            (qkv_projection, out_projection, query_norm, key_norm),
+            (qkvg_projection, out_projection, query_norm, key_norm),
         )
 
     def load_mlp(

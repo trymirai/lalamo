@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array
 
-from lalamo.compressed import IntMatrix, IntSpec, MLXMatrix, MLXSpec
+from lalamo.compressed import IntMatrix, IntSpec, MicrofloatSpec, MLXMatrix, MLXSpec
 from lalamo.compressed.utils.packing import pack_uint_to_uint8
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.decoder import Decoder
@@ -25,10 +25,9 @@ from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at
-from lalamo.weight_matrix import CompressionImplementation, Layout, WeightMatrix
+from lalamo.weight_matrix import CompressionImplementation, EmbeddingMatrix, Layout, WeightMatrix
 
 from .common import load_full_precision
-from .utils import decode_mxfp4, deinterleave_pairwise_columns
 
 __all__ = ["load_huggingface_decoder", "load_linear", "load_rmsnorm"]
 
@@ -38,6 +37,60 @@ AWQ_UINT4_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
 
 def _update_linear(module: Linear, weights: WeightMatrix, biases: Array | None) -> Linear:
     return eqx.tree_at(lambda m: (m.weights, m.biases), module, (weights, biases))
+
+
+def _load_mxfp4_matrix(
+    template: WeightMatrix,
+    blocks: Array,
+    scales: Array,
+    *,
+    group_size: int = 32,
+    implementation: CompressionImplementation,
+) -> WeightMatrix:
+    """Packed MXFP4 blocks with raw E8M0 scale bytes."""
+    if blocks.dtype != jnp.dtype(jnp.uint8):
+        raise ValueError(f"MXFP4 blocks must be U8, got {blocks.dtype}")
+    if blocks.ndim != scales.ndim + 1 or blocks.shape[:-1] != scales.shape:
+        raise ValueError(f"MXFP4 block/scale shape mismatch: blocks={blocks.shape}, scales={scales.shape}")
+    if blocks.shape[-1] * 2 != group_size:
+        raise ValueError(f"MXFP4 group size {group_size} does not match {blocks.shape[-1]} packed bytes")
+
+    if scales.dtype == jnp.dtype(jnp.float8_e8m0fnu):
+        packed_scales = jax.lax.bitcast_convert_type(scales, jnp.uint8)
+    elif scales.dtype == jnp.dtype(jnp.uint8):
+        packed_scales = scales
+    else:
+        raise ValueError(f"MXFP4 scales must be F8_E8M0 or U8, got {scales.dtype}")
+
+    packed_weights = rearrange(blocks, "... rows groups packed -> ... rows (groups packed)")
+    global_scale = jnp.ones(blocks.shape[:-3], dtype=template.dtype)
+    return MicrofloatSpec(group_size=group_size).from_packed_parameters(
+        packed_weights=packed_weights,
+        packed_scales=packed_scales,
+        global_scale=global_scale,
+        dtype=template.dtype,
+        implementation=implementation,
+        sharding_config=template.sharding_config,
+        is_sharded=template.is_sharded,
+    )
+
+
+def _stack_gpt_oss_gate_up(blocks: Array, scales: Array) -> tuple[Array, Array]:
+    """Canonical up/gate rows with 16-value groups, without decoding MXFP4."""
+    up_blocks = blocks[..., 1::2, :, :]
+    gate_blocks = blocks[..., 0::2, :, :]
+    blocks = jnp.concatenate((up_blocks, gate_blocks), axis=-3)
+    blocks = rearrange(
+        blocks,
+        "... rows groups (halves packed) -> ... rows (groups halves) packed",
+        halves=2,
+    )
+
+    up_scales = scales[..., 1::2, :]
+    gate_scales = scales[..., 0::2, :]
+    scales = jnp.concatenate((up_scales, gate_scales), axis=-2)
+    scales = jnp.repeat(scales, 2, axis=-1)
+    return blocks, scales
 
 
 def _dense_mlp_projections(module: DenseMLP) -> tuple[Linear, Linear]:
@@ -435,57 +488,49 @@ def load_moe(
     down_path = experts_path / "down_proj"
     batched_gate_up_path = _first_path(weights_dict, (gate_up_path, gate_up_path / "weight"))
 
-    # GPT-OSS uses fused MXFP4 expert weights; detect and decode those.
+    # Preserve MXFP4 while restoring Lalamo's canonical [all up, all gate] rows.
     if (experts_path / "gate_up_proj_blocks") in weights_dict:
-        fused = decode_mxfp4(
-            weights_dict[experts_path / "gate_up_proj_blocks"],
-            weights_dict[experts_path / "gate_up_proj_scales"],
-            dtype=module.experts.up_projection.weights.dtype,
-            flatten=False,
-        )
-        fused_eio = rearrange(fused, "e o ib ie -> e (ib ie) o")
-        up_weights, gate_weights = deinterleave_pairwise_columns(fused_eio, first="odd")
-        combined_up_gate_weights = jnp.swapaxes(
-            jnp.concatenate([up_weights, gate_weights], axis=-1),
-            -1,
-            -2,
+        gate_up_blocks = weights_dict[experts_path / "gate_up_proj_blocks"]
+        gate_up_scales = weights_dict[experts_path / "gate_up_proj_scales"]
+        gate_up_blocks, gate_up_scales = _stack_gpt_oss_gate_up(gate_up_blocks, gate_up_scales)
+        gate_up_weights = _load_mxfp4_matrix(
+            module.experts.up_projection.weights,
+            gate_up_blocks,
+            gate_up_scales,
+            group_size=16,
+            implementation=implementation,
         )
 
         gate_up_bias = weights_dict[experts_path / "gate_up_proj_bias"]
         if gate_up_bias.ndim == 1:
             gate_up_bias = jnp.broadcast_to(
                 gate_up_bias,
-                (combined_up_gate_weights.shape[0], gate_up_bias.shape[0]),
+                (gate_up_blocks.shape[0], gate_up_bias.shape[0]),
             )
-        up_bias, gate_bias = deinterleave_pairwise_columns(gate_up_bias, first="odd")
-        combined_up_gate_biases = jnp.concatenate([up_bias + 1.0, gate_bias], axis=-1)
+        up_bias = gate_up_bias[..., 1::2] + jnp.asarray(1.0, dtype=gate_up_bias.dtype)
+        gate_bias = gate_up_bias[..., 0::2]
+        gate_up_bias = jnp.concatenate((up_bias, gate_bias), axis=-1)
 
         up_projection = _update_linear(
             module.experts.up_projection,
-            load_full_precision(
-                module.experts.up_projection.weights,
-                combined_up_gate_weights,
-            ),
-            combined_up_gate_biases,
+            gate_up_weights,
+            gate_up_bias,
         )
 
-        down_weights = decode_mxfp4(
-            weights_dict[experts_path / "down_proj_blocks"],
+        down_blocks = weights_dict[experts_path / "down_proj_blocks"]
+        down_weights = _load_mxfp4_matrix(
+            module.experts.down_projection.weights,
+            down_blocks,
             weights_dict[experts_path / "down_proj_scales"],
-            dtype=module.experts.down_projection.weights.dtype,
-            flatten=False,
+            implementation=implementation,
         )
-        down_weights = rearrange(down_weights, "e o ib ie -> e o (ib ie)")
         down_biases = weights_dict[experts_path / "down_proj_bias"]
         if down_biases.ndim == 1:
-            down_biases = jnp.broadcast_to(down_biases, (*down_weights.shape[:-1], down_biases.shape[0]))
+            down_biases = jnp.broadcast_to(down_biases, (down_blocks.shape[0], down_biases.shape[0]))
 
         down_projection = _update_linear(
             module.experts.down_projection,
-            load_full_precision(
-                module.experts.down_projection.weights,
-                down_weights,
-            ),
+            down_weights,
             down_biases,
         )
 
@@ -645,6 +690,7 @@ def load_rmsnorm(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Normalization:
+    assert module.config.has_scale and module.scales is not None, "cannot load scales into a weightless normalization"
     scales = weights_dict[path / "weight"].astype(module.scales.dtype)
     return load_as_at(lambda m: (m.scales,), module, (scales,))
 
@@ -654,8 +700,8 @@ def _load_optional_rmsnorm(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Normalization | None:
-    if module is None:
-        return None
+    if module is None or not module.config.has_scale:
+        return module
     return load_rmsnorm(module, weights_dict, path)
 
 
@@ -665,8 +711,8 @@ def _load_named_rmsnorm(
     path: ParameterPath,
     names: Sequence[str],
 ) -> Normalization | None:
-    if module is None:
-        return None
+    if module is None or not module.config.has_scale:
+        return module
     scale_path = _first_path(weights_dict, tuple(path / name / "weight" for name in names))
     if scale_path is None:
         raise ValueError(f"Cannot find normalization under {path}; tried {', '.join(names)}")
@@ -685,29 +731,36 @@ def _split_q_gate_tensor(
     return q, gate
 
 
-def _extract_gate_weights(
+def _reorder_gated_attention_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     num_heads: int,
     head_dim: int,
-) -> tuple[dict[str, Array], dict[str, Array]]:
+) -> dict[str, Array]:
+    """Split Qwen's per-head-interleaved Q/G projection into synthetic Q and G sublayers."""
     q_proj_path = path / "q_proj"
+    if (q_proj_path / "qweight") in weights_dict:
+        raise ValueError(
+            "Packed qweight is not supported for gated attention; Q/G reordering requires "
+            "format-aware output-channel unpacking. Use a full-precision or MLX checkpoint.",
+        )
+
     q_proj_prefix = f"{q_proj_path}."
     kv_proj_prefixes = (f"{path / 'k_proj'}.", f"{path / 'v_proj'}.")
-    gate_path = path / "gate_projection"
-    q_weights: dict[str, Array] = {}
-    gate_weights: dict[str, Array] = {}
+    # g_proj exists only in this normalized mapping so the generic linear loader can fuse Q/K/V/G.
+    gate_path = path / "g_proj"
+    reordered_weights: dict[str, Array] = {}
 
     for key in weights_dict:
         if key.startswith(q_proj_prefix):
             suffix = key[len(q_proj_prefix) :]
             tensor = weights_dict[key]
             q_part, gate_part = _split_q_gate_tensor(tensor, num_heads, head_dim)
-            q_weights[key] = q_part
-            gate_weights[gate_path / suffix] = gate_part
+            reordered_weights[key] = q_part
+            reordered_weights[gate_path / suffix] = gate_part
         elif key.startswith(kv_proj_prefixes):
-            q_weights[key] = weights_dict[key]
-    return q_weights, gate_weights
+            reordered_weights[key] = weights_dict[key]
+    return reordered_weights
 
 
 def load_attention(
@@ -717,40 +770,27 @@ def load_attention(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> Attention:
-    qkv_sublayers = ["q_proj"] if module.config.is_kv_sharing else ["q_proj", "k_proj", "v_proj"]
-    if module.gate_projection is not None:
-        num_heads, head_dim = module.config.num_heads, module.config.head_dim
+    projection_sublayers = ["q_proj"] if module.config.is_kv_sharing else ["q_proj", "k_proj", "v_proj"]
+    projection_weights = weights_dict
+    if module.config.has_gate:
+        if (path / "gate_proj" / "weight") in weights_dict or (path / "gate_proj" / "qweight") in weights_dict:
+            projection_sublayers = [*projection_sublayers, "gate_proj"]
+        else:
+            projection_weights = _reorder_gated_attention_weights(
+                weights_dict,
+                path,
+                module.config.num_heads,
+                module.config.head_dim,
+            )
+            projection_sublayers = [*projection_sublayers, "g_proj"]
 
-        qkv_weights, gate_weights = _extract_gate_weights(
-            weights_dict,
-            path,
-            num_heads,
-            head_dim,
-        )
-
-        qkv_projection = load_linear(
-            module.qkv_projection,
-            qkv_weights,
-            path,
-            sublayers_to_fuse=qkv_sublayers,
-            implementation=implementation,
-        )
-
-        gate_projection = load_linear(
-            module.gate_projection,
-            gate_weights,
-            path / "gate_projection",
-            implementation=implementation,
-        )
-    else:
-        qkv_projection = load_linear(
-            module.qkv_projection,
-            weights_dict,
-            path,
-            sublayers_to_fuse=qkv_sublayers,
-            implementation=implementation,
-        )
-        gate_projection = None
+    qkvg_projection = load_linear(
+        module.qkvg_projection,
+        projection_weights,
+        path,
+        sublayers_to_fuse=projection_sublayers,
+        implementation=implementation,
+    )
 
     out_projection = load_linear(
         module.out_projection,
@@ -765,15 +805,14 @@ def load_attention(
 
     return load_as_at(
         lambda m: (
-            m.qkv_projection,
-            m.gate_projection,
+            m.qkvg_projection,
             m.out_projection,
             m.query_norm,
             m.key_norm,
             m.sinks,
         ),
         module,
-        (qkv_projection, gate_projection, out_projection, query_norm, key_norm, sinks),
+        (qkvg_projection, out_projection, query_norm, key_norm, sinks),
     )
 
 
@@ -1103,14 +1142,14 @@ def _load_weight_matrix(
     )
 
 
-def _load_input_embedding_matrix(
-    matrix: WeightMatrix,
+def load_input_embedding_matrix(
+    matrix: EmbeddingMatrix,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-) -> WeightMatrix:
-    return _load_matrix(
+) -> EmbeddingMatrix:
+    loaded = _load_matrix(
         matrix,
         weights_dict,
         path,
@@ -1120,6 +1159,8 @@ def _load_input_embedding_matrix(
         full_precision_weights=lambda: jnp.matrix_transpose(weights_dict[path / "weight"]),
         implementation=implementation,
     )
+    assert isinstance(loaded, EmbeddingMatrix)
+    return loaded
 
 
 def load_tied_embedding(
@@ -1129,7 +1170,7 @@ def load_tied_embedding(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> TiedEmbedding:
-    embedding = _load_input_embedding_matrix(
+    embedding = load_input_embedding_matrix(
         module.embedding,
         weights_dict,
         embedding_path,
@@ -1146,7 +1187,7 @@ def load_untied_embedding(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> UntiedEmbedding:
-    input_emb = _load_input_embedding_matrix(
+    input_emb = load_input_embedding_matrix(
         module.input_embedding,
         weights_dict,
         embedding_path,
@@ -1270,20 +1311,23 @@ def _decoder_load_layout(
     return standard_layout
 
 
-def load_huggingface_decoder(
-    module: Decoder,
-    weights_dict: Mapping[str, Array],
-    *,
-    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-) -> Decoder:
+def resolve_decoder_load_layout(weights_dict: Mapping[str, Array]) -> DecoderLoadLayout:
     if _has_prefix(weights_dict, ParameterPath("model.language_model")):
         root_path = ParameterPath("model.language_model")
     elif _has_prefix(weights_dict, ParameterPath("language_model")):
         root_path = ParameterPath("language_model")
     else:
         root_path = ParameterPath()
+    return _decoder_load_layout(weights_dict, root_path)
 
-    layout = _decoder_load_layout(weights_dict, root_path)
+
+def load_huggingface_decoder(
+    module: Decoder,
+    weights_dict: Mapping[str, Array],
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> Decoder:
+    layout = resolve_decoder_load_layout(weights_dict)
 
     if isinstance(module.embedding, TiedEmbedding):
         embedding = load_tied_embedding(
@@ -1355,8 +1399,8 @@ def load_huggingface_classifier(
         weights_dict: Mapping[str, Array],
         path: ParameterPath,
     ) -> Attention:
-        qkv_projection = load_linear(
-            module.qkv_projection,
+        qkvg_projection = load_linear(
+            module.qkvg_projection,
             weights_dict,
             path / "Wqkv",
             sublayers_to_fuse=None,
@@ -1368,9 +1412,9 @@ def load_huggingface_classifier(
         key_norm = _load_optional_rmsnorm(module.key_norm, weights_dict, path / "k_norm")
 
         return load_as_at(
-            lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm),
+            lambda m: (m.qkvg_projection, m.out_projection, m.query_norm, m.key_norm),
             module,
-            (qkv_projection, out_projection, query_norm, key_norm),
+            (qkvg_projection, out_projection, query_norm, key_norm),
         )
 
     def load_mlp_local(module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLPBase:

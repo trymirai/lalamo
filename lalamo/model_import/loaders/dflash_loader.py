@@ -8,65 +8,18 @@ from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.common import _combine_weight_shards
 from lalamo.model_import.model_configs.huggingface.dflash import HFDFlashConfig
 from lalamo.model_import.origins import LocalOrigin, WeightFormat
-from lalamo.modules.speculators.dflash import DFlashDraftLayer, DFlashDraftModel
+from lalamo.modules.speculators.dflash import DFlashDraftModel
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at
 from lalamo.weight_matrix import CompressionImplementation
 
-from .huggingface import load_attention, load_linear, load_mlp, load_rmsnorm
+from .huggingface import load_linear, load_rmsnorm, load_transformer_layer
 
 __all__ = [
-    "load_dflash_draft_layer",
     "load_dflash_draft_model",
     "load_hf_dflash_draft_model",
 ]
-
-
-def load_dflash_draft_layer(
-    module: DFlashDraftLayer,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-    *,
-    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-) -> DFlashDraftLayer:
-    attention = load_attention(
-        module.attention,
-        weights_dict,
-        path / "self_attn",
-        implementation=implementation,
-    )
-    input_norm = load_rmsnorm(module.input_norm, weights_dict, path / "input_layernorm")
-    post_attention_norm = load_rmsnorm(
-        module.post_attention_norm,
-        weights_dict,
-        path / "post_attention_layernorm",
-    )
-    mlp = load_mlp(
-        module.mlp,
-        weights_dict,
-        path / "mlp",
-        "up_proj",
-        "gate_proj",
-        "down_proj",
-        implementation=implementation,
-    )
-
-    return load_as_at(
-        lambda layer: (
-            layer.attention,
-            layer.input_norm,
-            layer.post_attention_norm,
-            layer.mlp,
-        ),
-        module,
-        (
-            attention,
-            input_norm,
-            post_attention_norm,
-            mlp,
-        ),
-    )
 
 
 def load_dflash_draft_model(
@@ -84,10 +37,19 @@ def load_dflash_draft_model(
     )
     context_norm = load_rmsnorm(module.context_norm, weights_dict, path / "hidden_norm")
     layers = tuple(
-        load_dflash_draft_layer(
+        load_transformer_layer(
             layer,
             weights_dict,
             path / "layers" / layer_index,
+            path / "layers" / layer_index,
+            "self_attn",
+            "mlp",
+            "input_layernorm",
+            "post_attention_layernorm",
+            "up_proj",
+            "gate_proj",
+            "down_proj",
+            permute_conv=False,
             implementation=implementation,
         )
         for layer_index, layer in enumerate(module.layers)

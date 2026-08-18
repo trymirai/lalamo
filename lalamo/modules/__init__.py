@@ -55,8 +55,6 @@ from .rope import (
 from .speculator import Speculator, SpeculatorConfig
 from .speculators import (
     DFlashDraftConfig,
-    DFlashDraftLayer,
-    DFlashDraftLayerConfig,
     DFlashDraftModel,
     DFlashDraftState,
     DFlashSpeculator,
@@ -117,8 +115,6 @@ __all__ = [
     "ClassifierForwardPassConfig",
     "ClassifierResult",
     "DFlashDraftConfig",
-    "DFlashDraftLayer",
-    "DFlashDraftLayerConfig",
     "DFlashDraftModel",
     "DFlashDraftState",
     "DFlashSpeculator",

@@ -143,7 +143,7 @@ class ConfigMapping:
 
         linear_config = LinearConfig()
         mixer_config = AttentionConfig(
-            qkv_projection_config=linear_config,
+            qkvg_projection_config=linear_config,
             out_projection_config=linear_config,
             query_norm_config=norm_config if config.attention_qk_norm else None,
             key_norm_config=norm_config if config.attention_qk_norm else None,
@@ -155,7 +155,7 @@ class ConfigMapping:
             sliding_window_size=None,
             logit_soft_cap=None,
             has_sinks=False,
-            has_qkv_biases=False,
+            has_qkvg_biases=False,
             has_out_biases=False,
         )
 
