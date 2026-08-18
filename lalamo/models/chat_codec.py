@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import StrEnum
 from functools import cached_property
 from re import Pattern
-from typing import NotRequired, TypedDict
+from typing import NotRequired, TypedDict, cast
 
 from jinja2 import Template
 from tokenizers import Tokenizer
@@ -15,6 +15,7 @@ from tokenizers import Tokenizer
 from lalamo.token_codec import TokenCodec, TokenCodecConfig
 
 __all__ = [
+    "ENABLE_THINKING_REASONING_EFFORT_MAPPINGS",
     "AssistantMessage",
     "ChatCodec",
     "ChatCodecConfig",
@@ -22,6 +23,7 @@ __all__ = [
     "Image",
     "Message",
     "ReasoningEffort",
+    "ReasoningEffortMapping",
     "SystemMessage",
     "ToolSchema",
     "UserMessage",
@@ -33,7 +35,9 @@ type Image = None  # WIP
 
 
 class ReasoningEffort(StrEnum):
+    DEFAULT = "default"
     XHIGH = "xhigh"
+    HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
     NONE = "none"
@@ -41,6 +45,19 @@ class ReasoningEffort(StrEnum):
     @property
     def is_enabled(self) -> bool:
         return self is not ReasoningEffort.NONE
+
+
+@dataclass(frozen=True)
+class ReasoningEffortMapping:
+    effort: ReasoningEffort
+    parameter: str
+    value: str | bool | None
+
+
+ENABLE_THINKING_REASONING_EFFORT_MAPPINGS = (
+    ReasoningEffortMapping(effort=ReasoningEffort.DEFAULT, parameter="enable_thinking", value=True),
+    ReasoningEffortMapping(effort=ReasoningEffort.NONE, parameter="enable_thinking", value=False),
+)
 
 
 def _strftime_now(format_string: str) -> str:
@@ -99,6 +116,25 @@ class ChatCodecConfig(TokenCodecConfig):
     bos_token: str | None
     end_of_thinking_tag: str | None
     default_system_prompt: str | None = None
+    reasoning_effort_mappings: tuple[ReasoningEffortMapping, ...] = ()
+
+    def __post_init__(self) -> None:
+        efforts = tuple(mapping.effort for mapping in self.reasoning_effort_mappings)
+        if len(efforts) != len(set(efforts)):
+            raise ValueError("Reasoning efforts must have unique mappings.")
+
+    def reasoning_effort_mapping(self, effort: ReasoningEffort) -> ReasoningEffortMapping:
+        for mapping in self.reasoning_effort_mappings:
+            if mapping.effort is effort:
+                return mapping
+
+        supported_efforts = ", ".join(mapping.effort.value for mapping in self.reasoning_effort_mappings)
+        if not supported_efforts:
+            supported_efforts = "none"
+        raise ValueError(
+            f"Reasoning effort {effort.value!r} is not supported by this model; "
+            f"supported efforts: {supported_efforts}."
+        )
 
     def init(self, tokenizer: Tokenizer) -> "ChatCodec":
         return ChatCodec(
@@ -146,7 +182,7 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         self,
         messages: Iterable[Message],
         tools: Iterable[ToolSchema] | None = None,
-        reasoning_effort: ReasoningEffort = ReasoningEffort.XHIGH,
+        reasoning_effort: ReasoningEffort | None = None,
     ) -> HuggingFaceRequest:
         converted_messages = [self.message_to_dict(message) for message in messages]
         if self.config.default_system_prompt is not None:  # noqa: SIM102
@@ -161,8 +197,10 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
             bos_token=self.config.bos_token,
             eos_token=self.config.eos_token,
         )
-        result["enable_thinking"] = reasoning_effort.is_enabled
-        result["reasoning_effort"] = reasoning_effort
+        if reasoning_effort is not None:
+            mapping = self.config.reasoning_effort_mapping(reasoning_effort)
+            if mapping.value is not None:
+                cast("dict[str, object]", result)[mapping.parameter] = mapping.value
         if tools is not None:
             raise NotImplementedError("Tools are not supported yet.")
         return result
@@ -171,7 +209,7 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         self,
         messages: Iterable[Message],
         *,
-        reasoning_effort: ReasoningEffort = ReasoningEffort.XHIGH,
+        reasoning_effort: ReasoningEffort | None = None,
     ) -> str:
         # TODO(knyazer): the following is an ugly thing that needs to be fixed
         # as soon as shoji is alive (avoid hardcoding random flags)
@@ -182,7 +220,7 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         self,
         request: Iterable[Message],
         *,
-        reasoning_effort: ReasoningEffort = ReasoningEffort.XHIGH,
+        reasoning_effort: ReasoningEffort | None = None,
     ) -> list[int]:
         return self.encode_text(self.render_request(request, reasoning_effort=reasoning_effort))
 

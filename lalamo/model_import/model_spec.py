@@ -10,6 +10,7 @@ from lalamo.model_import.model_configs.foreign_config import (
     ForeignTTSConfig,
 )
 from lalamo.model_import.origins import FileSpec, Origin
+from lalamo.models.chat_codec import ReasoningEffortMapping
 from lalamo.models.language_model import GenerationConfig
 from lalamo.utils.json import JSON
 from lalamo.utils.registry_abc import RegistryABC, make_registry_abc_converter
@@ -75,6 +76,7 @@ class LanguageModelSpec(ModelSpec[ForeignLMConfig]):
     user_role_name: str = "user"
     assistant_role_name: str = "assistant"
     grammar_start_tokens: tuple[str, ...] = ()
+    reasoning_effort_mappings: tuple[ReasoningEffortMapping, ...] = ()
 
 
 @dataclass(frozen=True)

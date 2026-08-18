@@ -187,6 +187,9 @@ def _import_chat_codec(
             eos_token=eos_token,
             end_of_thinking_tag=end_of_thinking_tag,
             default_system_prompt=system_prompt_text,
+            reasoning_effort_mappings=(
+                model_spec.reasoning_effort_mappings if isinstance(model_spec, LanguageModelSpec) else ()
+            ),
         ),
     )
 

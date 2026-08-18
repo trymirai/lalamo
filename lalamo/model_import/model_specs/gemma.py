@@ -5,6 +5,7 @@ from lalamo.model_import.model_configs import (
 )
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.origins import HuggingFaceOrigin
+from lalamo.models.chat_codec import ENABLE_THINKING_REASONING_EFFORT_MAPPINGS
 
 __all__ = ["GEMMA_MODELS"]
 
@@ -122,6 +123,7 @@ GEMMA4 = [
         origin=HuggingFaceOrigin(repo="google/gemma-4-E2B-it"),
         config_type=HFGemma4Config,
         configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
+        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
     ),
     LanguageModelSpec(
         vendor="Google",
@@ -140,6 +142,7 @@ GEMMA4 = [
         origin=HuggingFaceOrigin(repo="google/gemma-4-E4B-it"),
         config_type=HFGemma4Config,
         configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
+        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
     ),
 ]
 

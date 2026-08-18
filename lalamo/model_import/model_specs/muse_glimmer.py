@@ -1,6 +1,7 @@
 from lalamo.model_import.model_configs import HFMuseGlimmerConfig
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.origins import HuggingFaceOrigin
+from lalamo.models.chat_codec import ReasoningEffort, ReasoningEffortMapping
 from lalamo.models.language_model import GenerationConfig
 
 __all__ = ["MUSE_GLIMMER_MODELS"]
@@ -29,5 +30,32 @@ MUSE_GLIMMER_MODELS = [
         ),
         output_parser_regex=MUSE_GLIMMER_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag="<|eom|><|start|>assistant to=user<|message|>",
+        reasoning_effort_mappings=(
+            ReasoningEffortMapping(
+                effort=ReasoningEffort.DEFAULT,
+                parameter="reasoning_strength",
+                value=None,
+            ),
+            ReasoningEffortMapping(
+                effort=ReasoningEffort.LOW,
+                parameter="reasoning_strength",
+                value="low",
+            ),
+            ReasoningEffortMapping(
+                effort=ReasoningEffort.MEDIUM,
+                parameter="reasoning_strength",
+                value="medium",
+            ),
+            ReasoningEffortMapping(
+                effort=ReasoningEffort.HIGH,
+                parameter="reasoning_strength",
+                value="high",
+            ),
+            ReasoningEffortMapping(
+                effort=ReasoningEffort.XHIGH,
+                parameter="reasoning_strength",
+                value="xhigh",
+            ),
+        ),
     ),
 ]

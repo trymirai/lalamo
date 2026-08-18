@@ -783,7 +783,7 @@ class BatchScheduler(ABC):
         generation_config: GenerationConfig | None = None,
         batch_scheduler_config: BatchSchedulerConfig = BatchSchedulerConfig(),
         *,
-        reasoning_effort: ReasoningEffort = ReasoningEffort.XHIGH,
+        reasoning_effort: ReasoningEffort | None = None,
         keychain: Keychain | None = None,
         vram_bytes: int | None = None,
         batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
@@ -890,7 +890,10 @@ class BatchScheduler(ABC):
                 trimmed_ids = self.model.trim_at_eos(result.token_ids.tolist())
                 yield (
                     idx,
-                    self.model.token_codec.decode_response(trimmed_ids, expect_thinking=reasoning_effort.is_enabled),
+                    self.model.token_codec.decode_response(
+                        trimmed_ids,
+                        expect_thinking=reasoning_effort is not ReasoningEffort.NONE,
+                    ),
                 )
 
 
