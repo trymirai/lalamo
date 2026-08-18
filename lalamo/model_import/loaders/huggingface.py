@@ -139,18 +139,26 @@ def _reverse_uint4_order(array: Array, reverse_order: Array) -> Array:
     return rearrange(array_reordered, "... group pack_factor -> ... (group pack_factor)")
 
 
-def unpack_int32(packed_weights: Array, bits: int) -> Array:
+def unpack_int32(packed_weights: Array, bits: int, unpacked_last_axis_dim: int | None = None) -> Array:
     assert packed_weights.dtype in (jnp.int32, jnp.uint32)
-    assert 32 % bits == 0
+    *_, packed_last_axis_dim = packed_weights.shape
+    if unpacked_last_axis_dim is None:
+        unpacked_last_axis_dim = packed_last_axis_dim * 32 // bits
 
-    shifts = jnp.arange(0, 32, bits, dtype=jnp.uint32)
-    mask = jnp.asarray((2**bits) - 1, dtype=jnp.uint32)
+    bit_offsets = jnp.arange(unpacked_last_axis_dim, dtype=jnp.uint32) * jnp.uint32(bits)
+    word_indices = bit_offsets // jnp.uint32(32)
+    bit_indices = bit_offsets % jnp.uint32(32)
+    next_word_indices = jnp.minimum(word_indices + jnp.uint32(1), jnp.uint32(packed_last_axis_dim - 1))
     packed_unsigned = packed_weights.astype(jnp.uint32)
-    unpacked = jnp.bitwise_and(jnp.right_shift(packed_unsigned[:, :, None], shifts[None, None, :]), mask)
-    return rearrange(
-        unpacked,
-        "rows packed_groups packed_values -> rows (packed_groups packed_values)",
+
+    low_parts = packed_unsigned[..., word_indices] >> bit_indices
+    crosses_word = bit_indices + jnp.uint32(bits) > jnp.uint32(32)
+    high_parts = jnp.where(
+        crosses_word,
+        packed_unsigned[..., next_word_indices] << (jnp.uint32(32) - bit_indices),
+        jnp.uint32(0),
     )
+    return (low_parts | high_parts) & jnp.uint32((1 << bits) - 1)
 
 
 def _fuse_full_precision_weights(
@@ -373,14 +381,14 @@ def _load_packed_mlx_matrix(
     # MLX HF layout: weight [rows, packed_cols], scales [rows, num_groups].
     packed_in = packed_weights.shape[-1]
     num_groups = scales.shape[-1]
-    for bits in (1, 4, 8):
-        if packed_in * (32 // bits) == expected_grouped_channels:
+    for bits in (1, 4, 6, 8):
+        if packed_in * 32 == expected_grouped_channels * bits:
             break
     else:
         raise ValueError(f"Cannot infer MLX bits: packed_in={packed_in}, expected_cols={expected_grouped_channels}")
 
     group_size = expected_grouped_channels // num_groups
-    unpacked_weights = unpack_int32(packed_weights, bits)
+    unpacked_weights = unpack_int32(packed_weights, bits, expected_grouped_channels)
 
     weight_sharding = sharding_config.resolve_sharding(
         layout.weight_partition(unpacked_weights.ndim - 2, is_sharded=template.is_sharded),

@@ -17,7 +17,7 @@ pytestmark = pytest.mark.usefixtures("fake_mesh")
 
 
 def _logical_weights(*leading_dims: int) -> jax.Array:
-    shape = (*leading_dims, 4, 4)
+    shape = (*leading_dims, 8, 8)
     return (jnp.arange(prod(shape), dtype=jnp.float32).reshape(shape) - 3) / 5
 
 
@@ -67,10 +67,10 @@ def _put_on_sharding(matrix: MLXMatrixForInference, sharding: Sharding) -> MLXMa
 
 
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
-@pytest.mark.parametrize("bits", [4, 8])
+@pytest.mark.parametrize("bits", [4, 6, 8])
 def test_mlx_compress_and_decompress_match_manual_min_max_quantization(
     layout: Layout,
-    bits: Literal[4, 8],
+    bits: Literal[4, 6, 8],
 ) -> None:
     weights = _logical_weights()
     spec = MLXSpec(bits=bits, group_size=2, layout=layout)

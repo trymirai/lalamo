@@ -38,6 +38,12 @@ _LFM20_MODELS = [
 
 _LFM25_MODEL_SPECS = (
     ("LiquidAI", "LFM2.5-350M", "350M", None, None),
+    ("LiquidAI", "LFM2.5-350M-MLX-4bit", "350M", 4, None),
+    ("LiquidAI", "LFM2.5-350M-MLX-8bit", "350M", 8, None),
+    ("LiquidAI", "LFM2.5-2.6B-MLX-4bit", "2.6B", 4, None),
+    ("LiquidAI", "LFM2.5-2.6B-MLX-8bit", "2.6B", 8, None),
+    ("LiquidAI", "LFM2.5-230M-MLX-4bit", "230M", 4, None),
+    ("LiquidAI", "LFM2.5-230M-MLX-8bit", "230M", 8, None),
     ("LiquidAI", "LFM2.5-1.2B-Instruct", "1.2B", None, None),
     ("LiquidAI", "LFM2.5-1.2B-Instruct-MLX-4bit", "1.2B", 4, None),
     ("LiquidAI", "LFM2.5-1.2B-Instruct-MLX-8bit", "1.2B", 8, None),
