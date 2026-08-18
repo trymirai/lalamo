@@ -51,11 +51,10 @@ class ReasoningEffort(StrEnum):
 class ReasoningEffortMapping:
     effort: ReasoningEffort
     parameter: str
-    value: str | bool | None
+    value: str | bool
 
 
 ENABLE_THINKING_REASONING_EFFORT_MAPPINGS = (
-    ReasoningEffortMapping(effort=ReasoningEffort.DEFAULT, parameter="enable_thinking", value=True),
     ReasoningEffortMapping(effort=ReasoningEffort.NONE, parameter="enable_thinking", value=False),
 )
 
@@ -120,6 +119,8 @@ class ChatCodecConfig(TokenCodecConfig):
 
     def __post_init__(self) -> None:
         efforts = tuple(mapping.effort for mapping in self.reasoning_effort_mappings)
+        if ReasoningEffort.DEFAULT in efforts:
+            raise ValueError("The default reasoning effort is implicit and cannot have a mapping.")
         if len(efforts) != len(set(efforts)):
             raise ValueError("Reasoning efforts must have unique mappings.")
 
@@ -128,9 +129,9 @@ class ChatCodecConfig(TokenCodecConfig):
             if mapping.effort is effort:
                 return mapping
 
-        supported_efforts = ", ".join(mapping.effort.value for mapping in self.reasoning_effort_mappings)
-        if not supported_efforts:
-            supported_efforts = "none"
+        supported_efforts = ", ".join(
+            (ReasoningEffort.DEFAULT.value, *(mapping.effort.value for mapping in self.reasoning_effort_mappings))
+        )
         raise ValueError(
             f"Reasoning effort {effort.value!r} is not supported by this model; "
             f"supported efforts: {supported_efforts}."
@@ -182,7 +183,7 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         self,
         messages: Iterable[Message],
         tools: Iterable[ToolSchema] | None = None,
-        reasoning_effort: ReasoningEffort | None = None,
+        reasoning_effort: ReasoningEffort = ReasoningEffort.DEFAULT,
     ) -> HuggingFaceRequest:
         converted_messages = [self.message_to_dict(message) for message in messages]
         if self.config.default_system_prompt is not None:  # noqa: SIM102
@@ -197,10 +198,9 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
             bos_token=self.config.bos_token,
             eos_token=self.config.eos_token,
         )
-        if reasoning_effort is not None:
+        if reasoning_effort is not ReasoningEffort.DEFAULT:
             mapping = self.config.reasoning_effort_mapping(reasoning_effort)
-            if mapping.value is not None:
-                cast("dict[str, object]", result)[mapping.parameter] = mapping.value
+            cast("dict[str, object]", result)[mapping.parameter] = mapping.value
         if tools is not None:
             raise NotImplementedError("Tools are not supported yet.")
         return result
@@ -209,7 +209,7 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         self,
         messages: Iterable[Message],
         *,
-        reasoning_effort: ReasoningEffort | None = None,
+        reasoning_effort: ReasoningEffort = ReasoningEffort.DEFAULT,
     ) -> str:
         # TODO(knyazer): the following is an ugly thing that needs to be fixed
         # as soon as shoji is alive (avoid hardcoding random flags)
@@ -220,7 +220,7 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         self,
         request: Iterable[Message],
         *,
-        reasoning_effort: ReasoningEffort | None = None,
+        reasoning_effort: ReasoningEffort = ReasoningEffort.DEFAULT,
     ) -> list[int]:
         return self.encode_text(self.render_request(request, reasoning_effort=reasoning_effort))
 

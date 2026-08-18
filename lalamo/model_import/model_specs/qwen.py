@@ -19,11 +19,6 @@ QWEN_END_OF_THINKING_TAG = "\n</think>"
 
 QWEN38_REASONING_EFFORT_MAPPINGS = (
     ReasoningEffortMapping(
-        effort=ReasoningEffort.DEFAULT,
-        parameter="reasoning_effort",
-        value=None,
-    ),
-    ReasoningEffortMapping(
         effort=ReasoningEffort.LOW,
         parameter="reasoning_effort",
         value="low",

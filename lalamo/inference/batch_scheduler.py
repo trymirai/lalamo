@@ -783,7 +783,7 @@ class BatchScheduler(ABC):
         generation_config: GenerationConfig | None = None,
         batch_scheduler_config: BatchSchedulerConfig = BatchSchedulerConfig(),
         *,
-        reasoning_effort: ReasoningEffort | None = None,
+        reasoning_effort: ReasoningEffort = ReasoningEffort.DEFAULT,
         keychain: Keychain | None = None,
         vram_bytes: int | None = None,
         batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
@@ -892,7 +892,7 @@ class BatchScheduler(ABC):
                     idx,
                     self.model.token_codec.decode_response(
                         trimmed_ids,
-                        expect_thinking=reasoning_effort is not ReasoningEffort.NONE,
+                        expect_thinking=reasoning_effort.is_enabled,
                     ),
                 )
 

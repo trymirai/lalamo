@@ -21,11 +21,6 @@ GPT_OSS_MODELS = [
         end_of_thinking_tag="<|end|><|start|>assistant<|channel|>final<|message|>",
         reasoning_effort_mappings=(
             ReasoningEffortMapping(
-                effort=ReasoningEffort.DEFAULT,
-                parameter="reasoning_effort",
-                value=None,
-            ),
-            ReasoningEffortMapping(
                 effort=ReasoningEffort.LOW,
                 parameter="reasoning_effort",
                 value="low",

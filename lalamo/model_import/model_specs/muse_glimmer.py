@@ -32,11 +32,6 @@ MUSE_GLIMMER_MODELS = [
         end_of_thinking_tag="<|eom|><|start|>assistant to=user<|message|>",
         reasoning_effort_mappings=(
             ReasoningEffortMapping(
-                effort=ReasoningEffort.DEFAULT,
-                parameter="reasoning_strength",
-                value=None,
-            ),
-            ReasoningEffortMapping(
                 effort=ReasoningEffort.LOW,
                 parameter="reasoning_strength",
                 value="low",
