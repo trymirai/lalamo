@@ -524,6 +524,10 @@ QWEN36 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        configs=ConfigMap(
+            # The model card recommends 1.5, but generation_config.json omits presence_penalty.
+            generation_params_overrides=GenerationConfig(presence_penalty=1.5),
+        ),
     ),
 ]
 
