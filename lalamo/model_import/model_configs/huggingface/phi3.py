@@ -70,7 +70,7 @@ class HFPhi3Config(HuggingFaceLMConfig):
 
         rope_config = LongRoPEConfig(
             base=self.rope_theta,
-            max_sequence_length=original_context_length,
+            max_sequence_length=self.max_position_embeddings,
             head_dim=self.rotary_dim,
             short_factor=tuple(self.rope_scaling.short_factor),
             long_factor=tuple(self.rope_scaling.long_factor),
