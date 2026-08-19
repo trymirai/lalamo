@@ -7,7 +7,8 @@ from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpe
 from lalamo.model_import.model_specs.output_parser_regexes import OPTIONAL_THINKING_OUTPUT_PARSER_REGEX
 from lalamo.model_import.origins import HuggingFaceOrigin
 from lalamo.models.chat_codec import (
-    ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+    ENABLE_THINKING_DEFAULT_OFF_REASONING_EFFORT_MAPPINGS,
+    ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
     ReasoningEffort,
     ReasoningEffortMapping,
 )
@@ -56,7 +57,7 @@ def _qwen3_mlx_model_spec(
         config_type=HFQwen3Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", base_repo),
             tokenizer_config=FileSpec("tokenizer_config.json", base_repo),
@@ -127,7 +128,7 @@ QWEN3 = [
         config_type=HFQwen3Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
     ),
     _qwen3_mlx_model_spec(
         name="Qwen3-0.6B-MLX-4bit",
@@ -148,7 +149,7 @@ QWEN3 = [
         config_type=HFQwen3Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
     ),
     _qwen3_mlx_model_spec(
         name="Qwen3-1.7B-MLX-4bit",
@@ -169,7 +170,7 @@ QWEN3 = [
         config_type=HFQwen3Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
     ),
     LanguageModelSpec(
         vendor="Alibaba",
@@ -208,7 +209,7 @@ QWEN3 = [
         config_type=HFQwen3Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
     ),
     _qwen3_mlx_model_spec(
         name="Qwen3-8B-MLX-4bit",
@@ -229,7 +230,7 @@ QWEN3 = [
         config_type=HFQwen3Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
     ),
     _qwen3_mlx_model_spec(
         name="Qwen3-14B-MLX-4bit",
@@ -250,7 +251,7 @@ QWEN3 = [
         config_type=HFQwen3Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
     ),
     _qwen3_mlx_model_spec(
         name="Qwen3-32B-MLX-4bit",
@@ -275,7 +276,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_OFF_REASONING_EFFORT_MAPPINGS,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
             generation_params_overrides=GenerationConfig(
@@ -295,7 +296,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_OFF_REASONING_EFFORT_MAPPINGS,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-0.8B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-0.8B"),
@@ -317,7 +318,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_OFF_REASONING_EFFORT_MAPPINGS,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-0.8B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-0.8B"),
@@ -339,7 +340,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_OFF_REASONING_EFFORT_MAPPINGS,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
             generation_params_overrides=GenerationConfig(
@@ -358,7 +359,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_OFF_REASONING_EFFORT_MAPPINGS,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-2B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-2B"),
@@ -380,7 +381,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_OFF_REASONING_EFFORT_MAPPINGS,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-2B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-2B"),
@@ -401,7 +402,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
             generation_params_overrides=GenerationConfig(
@@ -420,7 +421,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-4B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-4B"),
@@ -441,7 +442,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-4B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-4B"),
@@ -462,7 +463,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
         ),
@@ -476,7 +477,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-9B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-9B"),
@@ -492,7 +493,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-9B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-9B"),
@@ -508,7 +509,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
     ),
     LanguageModelSpec(
         vendor="Alibaba",
@@ -519,7 +520,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-27B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-27B"),
@@ -535,7 +536,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-27B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-27B"),
@@ -551,7 +552,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
     ),
 ]
 
@@ -565,7 +566,7 @@ QWEN36 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
     ),
     LanguageModelSpec(
         vendor="Alibaba",
@@ -576,7 +577,7 @@ QWEN36 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
-        reasoning_effort_mappings=ENABLE_THINKING_REASONING_EFFORT_MAPPINGS,
+        reasoning_effort_mappings=ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS,
     ),
 ]
 

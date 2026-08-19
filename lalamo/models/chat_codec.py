@@ -15,7 +15,8 @@ from tokenizers import Tokenizer
 from lalamo.token_codec import TokenCodec, TokenCodecConfig
 
 __all__ = [
-    "ENABLE_THINKING_REASONING_EFFORT_MAPPINGS",
+    "ENABLE_THINKING_DEFAULT_OFF_REASONING_EFFORT_MAPPINGS",
+    "ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS",
     "AssistantMessage",
     "ChatCodec",
     "ChatCodecConfig",
@@ -54,7 +55,12 @@ class ReasoningEffortMapping:
     value: str | bool
 
 
-ENABLE_THINKING_REASONING_EFFORT_MAPPINGS = (
+ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS = (
+    ReasoningEffortMapping(effort=ReasoningEffort.NONE, parameter="enable_thinking", value=False),
+)
+
+ENABLE_THINKING_DEFAULT_OFF_REASONING_EFFORT_MAPPINGS = (
+    ReasoningEffortMapping(effort=ReasoningEffort.XHIGH, parameter="enable_thinking", value=True),
     ReasoningEffortMapping(effort=ReasoningEffort.NONE, parameter="enable_thinking", value=False),
 )
 
