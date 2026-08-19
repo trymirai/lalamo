@@ -78,10 +78,7 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
     resblock_kernel_sizes: tuple[int, ...]
     resblock_dilation_sizes: tuple[int, ...]
 
-    def to_tts_config(
-        self,
-        context_length: int | None,  # noqa: ARG002
-    ) -> TTSConfig:
+    def to_tts_config(self) -> TTSConfig:
         fsq_config = FiniteScalarQuantizerConfig(
             num_levels=self.num_levels_per_group,
             eps=DEFAULT_FSQ_EPS,

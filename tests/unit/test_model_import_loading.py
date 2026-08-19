@@ -189,7 +189,7 @@ def _classifier_template() -> Classifier:
         id2label={0: "negative", 1: "positive"},
         label2id={"negative": 0, "positive": 1},
     )
-    return config.to_classifier_config(context_length=8).init(
+    return config.to_classifier_config().init(
         EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
     )
 

@@ -66,10 +66,8 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
 
     def to_decoder_config(
         self,
-        context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
         # Embedding
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
@@ -87,7 +85,7 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
         if self.rope_scaling is not None:
             rope_config = YARNRoPEConfig(
                 base=self.rope_theta,
-                max_sequence_length=max_sequence_length,
+                max_sequence_length=self.max_position_embeddings,
                 scaling_factor=self.rope_scaling.factor,
                 original_context_length=self.rope_scaling.original_max_position_embeddings,
                 beta_fast=self.rope_scaling.beta_fast,
@@ -98,7 +96,7 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
         else:
             rope_config = YARNRoPEConfig(
                 base=self.rope_theta,
-                max_sequence_length=max_sequence_length,
+                max_sequence_length=self.max_position_embeddings,
                 scaling_factor=1.0,
                 original_context_length=self.max_position_embeddings,
                 beta_fast=32.0,

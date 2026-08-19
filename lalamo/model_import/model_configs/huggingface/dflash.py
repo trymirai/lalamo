@@ -147,11 +147,10 @@ class HFDFlashConfig:
             self.sliding_window if layer_type == "sliding_attention" else None for layer_type in self.layer_types
         )
 
-    def to_dflash_draft_config(self, context_length: int | None = None) -> DFlashDraftConfig:
+    def to_dflash_draft_config(self) -> DFlashDraftConfig:
         assert self.dflash_config.target_layer_ids
         assert all(0 <= layer_id < self.num_target_layers for layer_id in self.dflash_config.target_layer_ids)
 
-        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
         linear_config = LinearConfig()
         norm_config = NormalizationConfig(
             epsilon=self.rms_norm_eps,
@@ -167,7 +166,7 @@ class HFDFlashConfig:
             gate_clipping=None,
             up_clipping=None,
         )
-        rope_config = self._rope_config(max_sequence_length)
+        rope_config = self._rope_config(self.max_position_embeddings)
         layer_configs = tuple(
             TransformerLayerConfig(
                 pre_mixer_norm_config=norm_config,
