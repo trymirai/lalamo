@@ -111,13 +111,12 @@ def unpack_uint8_to_uint(
     byte_indices = bit_offsets // jnp.uint32(8)
     bit_indices = bit_offsets % jnp.uint32(8)
     next_byte_indices = jnp.minimum(byte_indices + jnp.uint32(1), jnp.uint32(packed_last_dim - 1))
-    unpacked_sharding = sharding_of(values)
 
-    low_parts = values.at[..., byte_indices].get(out_sharding=unpacked_sharding) >> bit_indices
+    low_parts = values[..., byte_indices] >> bit_indices
     crosses_byte = bit_indices + jnp.uint32(bits) > jnp.uint32(8)
     high_parts = jnp.where(
         crosses_byte,
-        values.at[..., next_byte_indices].get(out_sharding=unpacked_sharding) << (jnp.uint32(8) - bit_indices),
+        values[..., next_byte_indices] << (jnp.uint32(8) - bit_indices),
         jnp.uint32(0),
     )
     unpacked = (low_parts | high_parts) & jnp.uint32((1 << bits) - 1)

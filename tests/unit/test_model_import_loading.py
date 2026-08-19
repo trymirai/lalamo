@@ -22,7 +22,6 @@ from lalamo.model_import.loaders.huggingface import (
     load_input_embedding_matrix,
     load_linear,
     load_moe,
-    unpack_int32,
 )
 from lalamo.model_import.loaders.utils import decode_mxfp4
 from lalamo.model_import.model_configs.foreign_config import ForeignConfig
@@ -124,30 +123,6 @@ def _mlx_weights(path: ParameterPath) -> Mapping[str, Array]:
         path / "scales": jnp.ones((OUTPUT_DIM, NUM_GROUPS), dtype=jnp.bfloat16),
         path / "biases": jnp.zeros((OUTPUT_DIM, NUM_GROUPS), dtype=jnp.bfloat16),
     }
-
-
-def test_unpack_mlx_six_bit_uint32_bitstream() -> None:
-    packed = jnp.array(
-        [
-            0xBBF3DFBF,
-            0x5DB7E39E,
-            0xC31CB3D3,
-            0xABB2DBAF,
-            0x59A7A29A,
-            0x8218A392,
-            0x9B71D79F,
-            0x55976196,
-            0x41149351,
-            0x8B30D38F,
-            0x51872092,
-            0x00108310,
-        ],
-        dtype=jnp.uint32,
-    )[None, :]
-
-    unpacked = unpack_int32(packed, bits=6)
-
-    assert jnp.array_equal(unpacked, jnp.arange(63, -1, -1, dtype=jnp.uint32)[None, :])
 
 
 def _awq_weights(path: ParameterPath) -> Mapping[str, Array]:

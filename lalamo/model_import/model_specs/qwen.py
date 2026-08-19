@@ -38,7 +38,7 @@ def _qwen3_mlx_model_spec(
     )
 
 
-def _qwen35_27b_mlx_model_spec(
+def _qwen_27b_mlx_model_spec(
     *,
     family: Literal["Qwen3.6", "Qwen3.8"],
     quantization_bits: Literal[4, 8],
@@ -540,8 +540,8 @@ QWEN36 = [
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
     ),
-    _qwen35_27b_mlx_model_spec(family="Qwen3.6", quantization_bits=4),
-    _qwen35_27b_mlx_model_spec(family="Qwen3.6", quantization_bits=8),
+    _qwen_27b_mlx_model_spec(family="Qwen3.6", quantization_bits=4),
+    _qwen_27b_mlx_model_spec(family="Qwen3.6", quantization_bits=8),
     LanguageModelSpec(
         vendor="Alibaba",
         family="Qwen3.6",
@@ -565,8 +565,8 @@ QWEN38 = [
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
     ),
-    _qwen35_27b_mlx_model_spec(family="Qwen3.8", quantization_bits=4),
-    _qwen35_27b_mlx_model_spec(family="Qwen3.8", quantization_bits=8),
+    _qwen_27b_mlx_model_spec(family="Qwen3.8", quantization_bits=4),
+    _qwen_27b_mlx_model_spec(family="Qwen3.8", quantization_bits=8),
 ]
 
 

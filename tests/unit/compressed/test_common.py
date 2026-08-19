@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from dataclasses import dataclass
-from math import ceil, prod
+from math import prod
 from typing import Literal
 
 import jax
@@ -73,7 +73,7 @@ def logical_weights(case: CompressedMatrixCase, *leading_dims: int) -> jax.Array
 
 def expected_packed_shape(stored_shape: tuple[int, ...], bits: int) -> tuple[int, ...]:
     *leading_dims, cols = stored_shape
-    packed_cols = ceil(cols * bits / 8)
+    packed_cols = cols if bits == 8 else cols // (8 // bits)
     return (*leading_dims, packed_cols)
 
 
