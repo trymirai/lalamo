@@ -93,7 +93,6 @@ extra = [
   "mlx-community/Qwen3.5-27B-4bit",
   "mlx-community/Qwen3.6-27B-4bit",
   "mlx-community/Qwen3.6-27B-8bit",
-  "Qwen/Qwen3.8-27B",
   "mlx-community/Qwen3.8-27B-4bit",
   "mlx-community/Qwen3.8-27B-8bit",
   "Qwen/Qwen3.5-35B-A3B",
