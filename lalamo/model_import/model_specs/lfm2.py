@@ -37,13 +37,17 @@ _LFM20_MODELS = [
 ]
 
 _LFM25_MODEL_SPECS = (
-    ("LiquidAI", "LFM2.5-350M", "350M", None, None),
-    ("LiquidAI", "LFM2.5-1.2B-Instruct", "1.2B", None, None),
-    ("LiquidAI", "LFM2.5-1.2B-Instruct-MLX-4bit", "1.2B", 4, None),
-    ("LiquidAI", "LFM2.5-1.2B-Instruct-MLX-8bit", "1.2B", 8, None),
-    ("LiquidAI", "LFM2.5-1.2B-Thinking", "1.2B", None, OPTIONAL_THINKING_OUTPUT_PARSER_REGEX),
-    ("mlx-community", "LFM2.5-1.2B-Thinking-4bit", "1.2B", 4, OPTIONAL_THINKING_OUTPUT_PARSER_REGEX),
-    ("mlx-community", "LFM2.5-1.2B-Thinking-8bit", "1.2B", 8, OPTIONAL_THINKING_OUTPUT_PARSER_REGEX),
+    ("LiquidAI", "LFM2.5-350M", "350M", None),
+    ("LiquidAI", "LFM2.5-350M-MLX-4bit", "350M", None),
+    ("LiquidAI", "LFM2.5-350M-MLX-8bit", "350M", None),
+    ("LiquidAI", "LFM2.5-2.6B-MLX-8bit", "2.6B", None),
+    ("LiquidAI", "LFM2.5-230M-MLX-8bit", "230M", None),
+    ("LiquidAI", "LFM2.5-1.2B-Instruct", "1.2B", None),
+    ("LiquidAI", "LFM2.5-1.2B-Instruct-MLX-4bit", "1.2B", None),
+    ("LiquidAI", "LFM2.5-1.2B-Instruct-MLX-8bit", "1.2B", None),
+    ("LiquidAI", "LFM2.5-1.2B-Thinking", "1.2B", OPTIONAL_THINKING_OUTPUT_PARSER_REGEX),
+    ("mlx-community", "LFM2.5-1.2B-Thinking-4bit", "1.2B", OPTIONAL_THINKING_OUTPUT_PARSER_REGEX),
+    ("mlx-community", "LFM2.5-1.2B-Thinking-8bit", "1.2B", OPTIONAL_THINKING_OUTPUT_PARSER_REGEX),
 )
 
 _LFM25_MODELS = [
@@ -61,7 +65,7 @@ _LFM25_MODELS = [
         output_parser_regex=output_parser_regex,
         end_of_thinking_tag="\n</think>",
     )
-    for repo_owner, name, size, _quantization_bits, output_parser_regex in _LFM25_MODEL_SPECS
+    for repo_owner, name, size, output_parser_regex in _LFM25_MODEL_SPECS
 ]
 
 LFM2_MODELS = _LFM20_MODELS + _LFM25_MODELS
