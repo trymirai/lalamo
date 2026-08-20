@@ -70,7 +70,7 @@ def test_continuous_vs_fixed_fuzz(
 ) -> None:
     rng = random.Random(seed)
     prompts = [[UserMessage(rng.choice(_FUZZ_PROMPTS))] for _ in range(num_prompts)]
-    tokenized = [fuzz_language_model.token_codec.encode_request(prompt) for prompt in prompts]
+    tokenized = [fuzz_language_model.encode_request(prompt) for prompt in prompts]
 
     generation_config = GenerationConfig(
         temperature=0.0,

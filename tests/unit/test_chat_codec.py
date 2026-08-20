@@ -8,9 +8,11 @@ from lalamo.model_import.model_specs.granite import GRANITE_MODELS
 from lalamo.model_import.model_specs.output_parser_regexes import (
     GEMMA4_OUTPUT_PARSER_REGEX,
     GRANITE_THINKING_OUTPUT_PARSER_REGEX,
+    OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
 )
 from lalamo.model_import.model_specs.qwen import QWEN_MODELS
 from lalamo.models.chat_codec import AssistantMessage, ChatCodec, ChatCodecConfig, ReasoningEffort
+from lalamo.models.language_model import GenerationConfig
 
 
 def _chat_codec(output_parser_regex: str) -> ChatCodec:
@@ -35,13 +37,25 @@ def _chat_codec(output_parser_regex: str) -> ChatCodec:
     ],
 )
 def test_default_off_models_support_xhigh(model_spec: LanguageModelSpec, parameter: str) -> None:
-    mappings = {mapping.effort: mapping for mapping in model_spec.reasoning_effort_mappings}
+    (reasoning_effort_mapping,) = model_spec.reasoning_effort_mappings
+    generation_params = model_spec.configs.generation_params_overrides
 
-    assert set(mappings) == {ReasoningEffort.XHIGH, ReasoningEffort.NONE}
-    assert mappings[ReasoningEffort.XHIGH].parameter == parameter
-    assert mappings[ReasoningEffort.XHIGH].value is True
-    assert mappings[ReasoningEffort.NONE].parameter == parameter
-    assert mappings[ReasoningEffort.NONE].value is False
+    assert generation_params is not None
+    assert generation_params.reasoning_effort is ReasoningEffort.NONE
+    assert reasoning_effort_mapping.effort is ReasoningEffort.XHIGH
+    assert reasoning_effort_mapping.parameter == parameter
+    assert reasoning_effort_mapping.value is True
+
+
+def test_default_off_reasoning_effort_keeps_plain_response() -> None:
+    generation_config = GenerationConfig(reasoning_effort=ReasoningEffort.NONE)
+    reasoning_effort = generation_config.resolve_reasoning_effort(None)
+
+    assert reasoning_effort is ReasoningEffort.NONE
+    assert _chat_codec(OPTIONAL_THINKING_OUTPUT_PARSER_REGEX).parse_response(
+        "answer",
+        expect_thinking=reasoning_effort.is_enabled,
+    ) == AssistantMessage(chain_of_thought=None, response="answer")
 
 
 @pytest.mark.parametrize(
@@ -74,4 +88,4 @@ def test_reasoning_response_parsing(
     response: str,
     expected: AssistantMessage,
 ) -> None:
-    assert _chat_codec(output_parser_regex).parse_response(response) == expected
+    assert _chat_codec(output_parser_regex).parse_response(response, expect_thinking=True) == expected

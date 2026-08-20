@@ -23,6 +23,7 @@ MUSE_GLIMMER_MODELS = [
         configs=ConfigMap(
             chat_template=FileSpec("chat_template.jinja"),
             generation_params_overrides=GenerationConfig(
+                reasoning_effort=ReasoningEffort.HIGH,
                 temperature=1.0,
                 top_k=64,
                 top_p=0.95,
@@ -40,11 +41,6 @@ MUSE_GLIMMER_MODELS = [
                 effort=ReasoningEffort.MEDIUM,
                 parameter="reasoning_strength",
                 value="medium",
-            ),
-            ReasoningEffortMapping(
-                effort=ReasoningEffort.HIGH,
-                parameter="reasoning_strength",
-                value="high",
             ),
             ReasoningEffortMapping(
                 effort=ReasoningEffort.XHIGH,

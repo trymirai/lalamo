@@ -37,7 +37,7 @@ def _generate_texts(model: LanguageModel, prompts: list[str]) -> list[str]:
         )
         return token_ids[:response_length]
 
-    encoded_prompts = [jnp.asarray(model.token_codec.encode_request([UserMessage(prompt)])) for prompt in prompts]
+    encoded_prompts = [jnp.asarray(model.encode_request([UserMessage(prompt)])) for prompt in prompts]
     max_prompt_length = max(prompt.size for prompt in encoded_prompts)
     prompt_lengths = jnp.asarray([prompt.size for prompt in encoded_prompts], dtype=jnp.int32)
     token_ids = jnp.asarray(
@@ -59,7 +59,10 @@ def _generate_texts(model: LanguageModel, prompts: list[str]) -> list[str]:
         keychain=Keychain.init(0, sharding_config=model.sharding_config),
     )
     return [
-        model.token_codec.decode_response(trim_at_stop_token(response_ids.tolist())).response
+        model.token_codec.decode_response(
+            trim_at_stop_token(response_ids.tolist()),
+            expect_thinking=model.config.generation_config.reasoning_effort.is_enabled,
+        ).response
         for response_ids in generated.token_ids
     ]
 

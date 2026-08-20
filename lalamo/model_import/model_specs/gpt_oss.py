@@ -3,6 +3,7 @@ from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpe
 from lalamo.model_import.model_specs.output_parser_regexes import GPT_OSS_OUTPUT_PARSER_REGEX
 from lalamo.model_import.origins import HuggingFaceOrigin
 from lalamo.models.chat_codec import ReasoningEffort, ReasoningEffortMapping
+from lalamo.models.language_model import GenerationConfig
 
 __all__ = ["GPT_OSS_MODELS"]
 
@@ -16,6 +17,7 @@ GPT_OSS_MODELS = [
         config_type=HFGPTOssConfig,
         configs=ConfigMap(
             chat_template=FileSpec("chat_template.jinja"),
+            generation_params_overrides=GenerationConfig(reasoning_effort=ReasoningEffort.MEDIUM),
         ),
         output_parser_regex=GPT_OSS_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag="<|end|><|start|>assistant<|channel|>final<|message|>",
@@ -24,11 +26,6 @@ GPT_OSS_MODELS = [
                 effort=ReasoningEffort.LOW,
                 parameter="reasoning_effort",
                 value="low",
-            ),
-            ReasoningEffortMapping(
-                effort=ReasoningEffort.MEDIUM,
-                parameter="reasoning_effort",
-                value="medium",
             ),
             ReasoningEffortMapping(
                 effort=ReasoningEffort.HIGH,

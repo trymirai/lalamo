@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import StrEnum
 from functools import cached_property
 from re import Pattern
-from typing import NotRequired, TypedDict, cast
+from typing import NotRequired, TypedDict
 
 from jinja2 import Template
 from tokenizers import Tokenizer
@@ -36,7 +36,6 @@ type Image = None  # WIP
 
 
 class ReasoningEffort(StrEnum):
-    DEFAULT = "default"
     XHIGH = "xhigh"
     HIGH = "high"
     MEDIUM = "medium"
@@ -61,7 +60,6 @@ ENABLE_THINKING_DEFAULT_ON_REASONING_EFFORT_MAPPINGS = (
 
 ENABLE_THINKING_DEFAULT_OFF_REASONING_EFFORT_MAPPINGS = (
     ReasoningEffortMapping(effort=ReasoningEffort.XHIGH, parameter="enable_thinking", value=True),
-    ReasoningEffortMapping(effort=ReasoningEffort.NONE, parameter="enable_thinking", value=False),
 )
 
 
@@ -125,18 +123,26 @@ class ChatCodecConfig(TokenCodecConfig):
 
     def __post_init__(self) -> None:
         efforts = tuple(mapping.effort for mapping in self.reasoning_effort_mappings)
-        if ReasoningEffort.DEFAULT in efforts:
-            raise ValueError("The default reasoning effort is implicit and cannot have a mapping.")
         if len(efforts) != len(set(efforts)):
             raise ValueError("Reasoning efforts must have unique mappings.")
 
-    def reasoning_effort_mapping(self, effort: ReasoningEffort) -> ReasoningEffortMapping:
+    def reasoning_effort_mapping(
+        self,
+        effort: ReasoningEffort,
+        *,
+        default_reasoning_effort: ReasoningEffort,
+    ) -> ReasoningEffortMapping | None:
+        if effort is default_reasoning_effort:
+            return None
         for mapping in self.reasoning_effort_mappings:
             if mapping.effort is effort:
                 return mapping
 
         supported_efforts = ", ".join(
-            (ReasoningEffort.DEFAULT.value, *(mapping.effort.value for mapping in self.reasoning_effort_mappings))
+            (
+                default_reasoning_effort.value,
+                *(mapping.effort.value for mapping in self.reasoning_effort_mappings),
+            )
         )
         raise ValueError(
             f"Reasoning effort {effort.value!r} is not supported by this model; "
@@ -189,7 +195,6 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         self,
         messages: Iterable[Message],
         tools: Iterable[ToolSchema] | None = None,
-        reasoning_effort: ReasoningEffort = ReasoningEffort.DEFAULT,
     ) -> HuggingFaceRequest:
         converted_messages = [self.message_to_dict(message) for message in messages]
         if self.config.default_system_prompt is not None:  # noqa: SIM102
@@ -204,9 +209,6 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
             bos_token=self.config.bos_token,
             eos_token=self.config.eos_token,
         )
-        if reasoning_effort is not ReasoningEffort.DEFAULT:
-            mapping = self.config.reasoning_effort_mapping(reasoning_effort)
-            cast("dict[str, object]", result)[mapping.parameter] = mapping.value
         if tools is not None:
             raise NotImplementedError("Tools are not supported yet.")
         return result
@@ -215,25 +217,32 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         self,
         messages: Iterable[Message],
         *,
-        reasoning_effort: ReasoningEffort = ReasoningEffort.DEFAULT,
+        reasoning_effort_mapping: ReasoningEffortMapping | None = None,
     ) -> str:
         # TODO(knyazer): the following is an ugly thing that needs to be fixed
         # as soon as shoji is alive (avoid hardcoding random flags)
-        request_dict = self.request_to_dict(messages, reasoning_effort=reasoning_effort)
-        return self.prompt_template.render({**request_dict, "strftime_now": _strftime_now})
+        template_context: dict[str, object] = {
+            **self.request_to_dict(messages),
+            "strftime_now": _strftime_now,
+        }
+        if reasoning_effort_mapping is not None:
+            template_context[reasoning_effort_mapping.parameter] = reasoning_effort_mapping.value
+        return self.prompt_template.render(template_context)
 
     def encode_request(
         self,
         request: Iterable[Message],
         *,
-        reasoning_effort: ReasoningEffort = ReasoningEffort.DEFAULT,
+        reasoning_effort_mapping: ReasoningEffortMapping | None = None,
     ) -> list[int]:
-        return self.encode_text(self.render_request(request, reasoning_effort=reasoning_effort))
+        return self.encode_text(
+            self.render_request(
+                request,
+                reasoning_effort_mapping=reasoning_effort_mapping,
+            )
+        )
 
-    def encode_requests(self, requests: Iterable[Iterable[Message]]) -> list[list[int]]:
-        return [self.encode_request(request) for request in requests]
-
-    def parse_response(self, response: str, *, expect_thinking: bool = True) -> AssistantMessage:
+    def parse_response(self, response: str, *, expect_thinking: bool) -> AssistantMessage:
         if self.output_parser_regex is None or not expect_thinking:
             return AssistantMessage(chain_of_thought=None, response=response)
         match = self.output_parser_regex.match(response)

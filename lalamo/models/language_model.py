@@ -12,7 +12,7 @@ from tokenizers import Tokenizer
 
 from lalamo.initializer import Initializer
 from lalamo.model import Model, ModelConfig
-from lalamo.models.chat_codec import AssistantMessage, ChatCodec, ChatCodecConfig, Message
+from lalamo.models.chat_codec import AssistantMessage, ChatCodec, ChatCodecConfig, Message, ReasoningEffort
 from lalamo.module import LogicalAxis
 from lalamo.modules import (
     Decoder,
@@ -82,6 +82,12 @@ class GenerationConfig:
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
     suffix_repetition_length: int | None = None
+    reasoning_effort: ReasoningEffort = ReasoningEffort.XHIGH
+
+    def resolve_reasoning_effort(self, reasoning_effort: ReasoningEffort | None) -> ReasoningEffort:
+        if reasoning_effort is None:
+            return self.reasoning_effort
+        return reasoning_effort
 
     def override_with(self, other: Self) -> Self:
         default_config = GenerationConfig()
@@ -135,6 +141,22 @@ class LanguageModelConfig(ModelConfig[ChatCodecConfig]):
 class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
     token_codec: ChatCodec
     decoder: Decoder
+
+    def encode_request(
+        self,
+        messages: Iterable[Message],
+        *,
+        reasoning_effort: ReasoningEffort | None = None,
+    ) -> list[int]:
+        default_reasoning_effort = self.config.generation_config.reasoning_effort
+        reasoning_effort = self.config.generation_config.resolve_reasoning_effort(reasoning_effort)
+        return self.token_codec.encode_request(
+            messages,
+            reasoning_effort_mapping=self.token_codec.config.reasoning_effort_mapping(
+                reasoning_effort,
+                default_reasoning_effort=default_reasoning_effort,
+            ),
+        )
 
     def default_sampling_policy(self) -> SamplingPolicy:
         return self.config.generation_config.default_policy()
@@ -449,11 +471,13 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
         decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
+        reasoning_effort: ReasoningEffort | None = None,
         keychain: Keychain,
     ) -> AssistantMessage:
+        reasoning_effort = self.config.generation_config.resolve_reasoning_effort(reasoning_effort)
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
         token_ids = jax.device_put(
-            jnp.asarray(self.token_codec.encode_request(messages), dtype=jnp.int32)[None, :],
+            jnp.asarray(self.encode_request(messages, reasoning_effort=reasoning_effort), dtype=jnp.int32)[None, :],
             self.sharding_config.make_sharding((batch_axis, None)),
         )
         response_ids = self.generate_tokens(
@@ -464,7 +488,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             decode_forward_pass_config=decode_forward_pass_config,
             keychain=keychain,
         ).token_ids[0]
-        return self.token_codec.decode_response(self.trim_at_eos(response_ids.tolist()))
+        return self.token_codec.decode_response(
+            self.trim_at_eos(response_ids.tolist()),
+            expect_thinking=reasoning_effort.is_enabled,
+        )
 
     def stream_tokens(
         self,
@@ -575,9 +602,11 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
         decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
+        reasoning_effort: ReasoningEffort | None = None,
         keychain: Keychain,
     ) -> Iterable[str]:
-        token_ids = jnp.asarray(self.token_codec.encode_request(messages), dtype=jnp.int32)
+        reasoning_effort = self.config.generation_config.resolve_reasoning_effort(reasoning_effort)
+        token_ids = jnp.asarray(self.encode_request(messages, reasoning_effort=reasoning_effort), dtype=jnp.int32)
         response_token_ids: list[int] = []
         previous_text = ""
         for token_id in self.stream_tokens(
