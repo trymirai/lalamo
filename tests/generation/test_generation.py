@@ -9,7 +9,7 @@ from jax.lax import DotAlgorithmPreset
 
 from lalamo.model_import.model_spec import LanguageModelSpec
 from lalamo.models import LanguageModel
-from lalamo.models.chat_codec import ReasoningEffort, UserMessage
+from lalamo.models.chat_codec import UserMessage
 from lalamo.models.language_model import _COMPILED_PROMPT_LENGTHS, GenerationConfig
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis, ShardingConfig
 from lalamo.modules import DecoderForwardPassConfig
@@ -112,7 +112,7 @@ def replicated_language_model(request: pytest.FixtureRequest, convert_model: Con
 @pytest.mark.parametrize("num_top_logits_to_return", [None, 8])
 def test_eager_generation(language_model: LanguageModel, num_top_logits_to_return: int | None) -> None:
     prompt = [UserMessage("Count from 1 to 10 separated by spaces, using digits.")]
-    raw_token_ids = jnp.array(language_model.token_codec.encode_request(prompt))[None, :]
+    raw_token_ids = jnp.array(language_model.encode_request(prompt))[None, :]
     _, prompt_length = raw_token_ids.shape
     token_ids, prompt_lengths = _sharded_generation_batch(
         language_model,
@@ -151,7 +151,7 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
 
 def test_padding(language_model: LanguageModel) -> None:
     prompt = [UserMessage("Talk about elephants")]
-    raw_token_ids = jnp.array(language_model.token_codec.encode_request(prompt))[None, :]
+    raw_token_ids = jnp.array(language_model.encode_request(prompt))[None, :]
 
     token_ids, prompt_lengths = _sharded_generation_batch(
         language_model,
@@ -190,7 +190,7 @@ def test_batch_generation(language_model: LanguageModel) -> None:
         UserMessage("Talk about apples"),
         UserMessage("Explain why the sky is blue"),
     ]
-    inputs = [jnp.array(language_model.token_codec.encode_request([prompt])) for prompt in prompts]
+    inputs = [jnp.array(language_model.encode_request([prompt])) for prompt in prompts]
     pad_token_id = 0
 
     max_len = max(inp.size for inp in inputs)
@@ -260,9 +260,7 @@ def test_batch_generation(language_model: LanguageModel) -> None:
 
 def test_streaming_vs_eager_consistency(replicated_language_model: LanguageModel) -> None:
     prompt = [UserMessage("What's the largest domestic cat breed?")]
-    token_ids = jnp.array(
-        replicated_language_model.token_codec.encode_request(prompt, reasoning_effort=ReasoningEffort.NONE)
-    )
+    token_ids = jnp.array(replicated_language_model.encode_request(prompt))
 
     generation_config = GenerationConfig(temperature=0.0)
     prefill_forward_pass_config = DecoderForwardPassConfig.for_inference(precision=DotAlgorithmPreset.F32_F32_F32)

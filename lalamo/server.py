@@ -40,7 +40,7 @@ class RequestBody:
     generation_config: GenerationConfig | None = None
     dtype: Literal["bfloat16", "float32"] | None = None
     seed: int | None = None
-    reasoning_effort: ReasoningEffort = ReasoningEffort.XHIGH
+    reasoning_effort: ReasoningEffort | None = None
 
     def shares_batch_params(self, other: Self) -> bool:
         return (

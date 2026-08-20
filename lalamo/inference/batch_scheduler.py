@@ -783,12 +783,13 @@ class BatchScheduler(ABC):
         generation_config: GenerationConfig | None = None,
         batch_scheduler_config: BatchSchedulerConfig = BatchSchedulerConfig(),
         *,
-        reasoning_effort: ReasoningEffort = ReasoningEffort.XHIGH,
+        reasoning_effort: ReasoningEffort | None = None,
         keychain: Keychain | None = None,
         vram_bytes: int | None = None,
         batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
     ) -> Iterator[tuple[int, AssistantMessage]]:
         messages = list(messages)
+        reasoning_effort = self.model.config.generation_config.resolve_reasoning_effort(reasoning_effort)
         keychain = (
             keychain or Keychain.init(0, shape=(len(messages),), sharding_config=self.model.sharding_config)
         ).broadcast((len(messages),))
@@ -799,9 +800,7 @@ class BatchScheduler(ABC):
         if vram_bytes is None and batch_scheduler_config.batch_size is None:
             raise RuntimeError("Specify either batch_scheduler_config.batch_size or vram_bytes.")
 
-        tokenized = [
-            self.model.token_codec.encode_request(message, reasoning_effort=reasoning_effort) for message in messages
-        ]
+        tokenized = [self.model.encode_request(message, reasoning_effort=reasoning_effort) for message in messages]
 
         if batch_scheduler_config.batch_size is not None:
             if batch_scheduler_config.padded_length is None:
@@ -890,7 +889,10 @@ class BatchScheduler(ABC):
                 trimmed_ids = self.model.trim_at_eos(result.token_ids.tolist())
                 yield (
                     idx,
-                    self.model.token_codec.decode_response(trimmed_ids, expect_thinking=reasoning_effort.is_enabled),
+                    self.model.token_codec.decode_response(
+                        trimmed_ids,
+                        expect_thinking=reasoning_effort.is_enabled,
+                    ),
                 )
 
 

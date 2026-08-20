@@ -173,7 +173,12 @@ def chat(
                     console.print(token, end="")
                     response_text_parts.append(token)
                 console.print()
-                messages.append(model.token_codec.parse_response("".join(response_text_parts)))
+                messages.append(
+                    model.token_codec.parse_response(
+                        "".join(response_text_parts),
+                        expect_thinking=model.config.generation_config.reasoning_effort.is_enabled,
+                    )
+                )
                 turn_index += 1
 
         else:
