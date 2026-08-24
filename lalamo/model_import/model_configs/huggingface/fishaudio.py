@@ -331,10 +331,7 @@ class FishAudioConfig(ForeignTTSConfig):
 
         return (transformer_cfg, linear_out_cfg)
 
-    def to_tts_config(
-        self,
-        context_length: int | None,
-    ) -> TTSConfig:
+    def to_tts_config(self) -> TTSConfig:
         audio_decoder_config = instantiate_dac_config_from_fishaudio_config(
             fish_dac_config=get_default_fishaudio_dac_config(),
         )
@@ -373,7 +370,7 @@ class FishAudioConfig(ForeignTTSConfig):
             slow_model_dim=self.dim,
             fast_model_dim=self.fast_dim,
             num_codebooks=self.num_codebooks,
-            max_seq_len=min(context_length, self.max_seq_len) if context_length else self.max_seq_len,
+            max_seq_len=self.max_seq_len,
             scale_codebook_embeddings=self.scale_codebook_embeddings,
         )
         return TTSConfig(

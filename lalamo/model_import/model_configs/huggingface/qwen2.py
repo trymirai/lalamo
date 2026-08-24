@@ -60,10 +60,8 @@ class HFQwen2Config(HuggingFaceLMConfig):
 
     def to_decoder_config(
         self,
-        context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
@@ -77,7 +75,7 @@ class HFQwen2Config(HuggingFaceLMConfig):
         head_dim = self.hidden_size // self.num_attention_heads
         rope_config = UnscaledRoPEConfig(
             base=self.rope_theta,
-            max_sequence_length=max_sequence_length,
+            max_sequence_length=self.max_position_embeddings,
             head_dim=head_dim,
         )
         rmsnorm_config = NormalizationConfig(

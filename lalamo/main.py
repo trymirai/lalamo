@@ -442,13 +442,6 @@ def convert(
             show_default="Saves the converted model in the `models/<model_name>` directory",
         ),
     ] = None,
-    context_length: Annotated[
-        int | None,
-        Option(
-            help="Maximum supported context length. Used to precompute positional embeddings.",
-            show_default="Model's native maximum context length.",
-        ),
-    ] = None,
     overwrite: Annotated[
         bool,
         Option(
@@ -463,7 +456,6 @@ def convert(
         model_repo,
         output_dir,
         dtype,
-        context_length,
         partial(CliConversionCallbacks, overwrite=overwrite),
     )
 
@@ -495,13 +487,6 @@ def speculator_convert(
             show_default="Saves the converted speculator in the `models/<dflash_repo_name>` directory",
         ),
     ] = None,
-    context_length: Annotated[
-        int | None,
-        Option(
-            help="Maximum supported context length. Used to configure RoPE.",
-            show_default="DFlash model's native maximum context length.",
-        ),
-    ] = None,
     overwrite: Annotated[
         bool,
         Option(help="Overwrite existing model files."),
@@ -519,7 +504,7 @@ def speculator_convert(
         shutil.rmtree(output_dir)
 
     console.print(f"🚀 Converting speculator model from [cyan]{dflash_repo_id}[/cyan]...")
-    _convert_speculator(dflash_repo_id, output_dir, weaver, dtype, context_length)
+    _convert_speculator(dflash_repo_id, output_dir, weaver, dtype)
     console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
 
 
