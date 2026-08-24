@@ -21,6 +21,7 @@ __all__ = [
     "ContentBlock",
     "Image",
     "Message",
+    "ReasoningConfig",
     "ReasoningEffort",
     "SystemMessage",
     "ToolSchema",
@@ -34,13 +35,37 @@ type Image = None  # WIP
 
 class ReasoningEffort(StrEnum):
     XHIGH = "xhigh"
+    HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
-    NONE = "none"
+    NO_REASONING = "no_reasoning"
 
-    @property
-    def is_enabled(self) -> bool:
-        return self is not ReasoningEffort.NONE
+
+@dataclass(frozen=True)
+class ReasoningConfig:
+    default_reasoning_effort: ReasoningEffort
+    field_name: str
+    reasoning_effort_to_string: dict[ReasoningEffort, str]
+
+    def __post_init__(self) -> None:
+        if self.default_reasoning_effort not in self.reasoning_effort_to_string:
+            raise ValueError("The default reasoning effort must have a string mapping.")
+
+
+BOOLEAN_REASONING_DEFAULT_ON_CONFIG = ReasoningConfig(
+    default_reasoning_effort=ReasoningEffort.MEDIUM,
+    field_name="enable_thinking",
+    reasoning_effort_to_string={
+        ReasoningEffort.MEDIUM: "true",
+        ReasoningEffort.NO_REASONING: "false",
+    },
+)
+
+BOOLEAN_REASONING_DEFAULT_OFF_CONFIG = ReasoningConfig(
+    default_reasoning_effort=ReasoningEffort.NO_REASONING,
+    field_name=BOOLEAN_REASONING_DEFAULT_ON_CONFIG.field_name,
+    reasoning_effort_to_string=BOOLEAN_REASONING_DEFAULT_ON_CONFIG.reasoning_effort_to_string,
+)
 
 
 def _strftime_now(format_string: str) -> str:
@@ -59,8 +84,6 @@ class HuggingFaceRequest(TypedDict):
     bos_token: str | None
     eos_token: str | None
     messages: list[HuggingFaceMessage]
-    enable_thinking: NotRequired[bool]
-    reasoning_effort: NotRequired[ReasoningEffort]
     tools: NotRequired[dict]
 
 
@@ -97,8 +120,9 @@ class ChatCodecConfig(TokenCodecConfig):
     assistant_role_name: str
     eos_token: str | None
     bos_token: str | None
-    end_of_thinking_tag: str | None
+    end_of_thinking_tag: str | None = None
     default_system_prompt: str | None = None
+    reasoning_config: ReasoningConfig | None = None
 
     def init(self, tokenizer: Tokenizer) -> "ChatCodec":
         return ChatCodec(
@@ -146,7 +170,6 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         self,
         messages: Iterable[Message],
         tools: Iterable[ToolSchema] | None = None,
-        reasoning_effort: ReasoningEffort = ReasoningEffort.XHIGH,
     ) -> HuggingFaceRequest:
         converted_messages = [self.message_to_dict(message) for message in messages]
         if self.config.default_system_prompt is not None:  # noqa: SIM102
@@ -161,8 +184,6 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
             bos_token=self.config.bos_token,
             eos_token=self.config.eos_token,
         )
-        result["enable_thinking"] = reasoning_effort.is_enabled
-        result["reasoning_effort"] = reasoning_effort
         if tools is not None:
             raise NotImplementedError("Tools are not supported yet.")
         return result
@@ -171,26 +192,49 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         self,
         messages: Iterable[Message],
         *,
-        reasoning_effort: ReasoningEffort = ReasoningEffort.XHIGH,
+        reasoning_effort: ReasoningEffort | None = None,
     ) -> str:
         # TODO(knyazer): the following is an ugly thing that needs to be fixed
         # as soon as shoji is alive (avoid hardcoding random flags)
-        request_dict = self.request_to_dict(messages, reasoning_effort=reasoning_effort)
-        return self.prompt_template.render({**request_dict, "strftime_now": _strftime_now})
+        template_context: dict[str, object] = {
+            **self.request_to_dict(messages),
+            "strftime_now": _strftime_now,
+        }
+
+        reasoning_config = self.config.reasoning_config
+        if reasoning_config is None:
+            if reasoning_effort is not None:
+                raise ValueError("This model does not support configurable reasoning effort.")
+        else:
+            if reasoning_effort is None:
+                reasoning_effort = reasoning_config.default_reasoning_effort
+            if reasoning_effort not in reasoning_config.reasoning_effort_to_string:
+                supported_efforts = ", ".join(effort.value for effort in reasoning_config.reasoning_effort_to_string)
+                raise ValueError(
+                    f"Reasoning effort {reasoning_effort.value!r} is not supported by this model; "
+                    f"supported efforts: {supported_efforts}."
+                )
+            reasoning_effort_string = reasoning_config.reasoning_effort_to_string[reasoning_effort]
+            if reasoning_effort_string == "true":
+                template_value: str | bool = True
+            elif reasoning_effort_string == "false":
+                template_value = False
+            else:
+                template_value = reasoning_effort_string
+            template_context[reasoning_config.field_name] = template_value
+
+        return self.prompt_template.render(template_context)
 
     def encode_request(
         self,
         request: Iterable[Message],
         *,
-        reasoning_effort: ReasoningEffort = ReasoningEffort.XHIGH,
+        reasoning_effort: ReasoningEffort | None = None,
     ) -> list[int]:
         return self.encode_text(self.render_request(request, reasoning_effort=reasoning_effort))
 
-    def encode_requests(self, requests: Iterable[Iterable[Message]]) -> list[list[int]]:
-        return [self.encode_request(request) for request in requests]
-
-    def parse_response(self, response: str, *, expect_thinking: bool = True) -> AssistantMessage:
-        if self.output_parser_regex is None or not expect_thinking:
+    def parse_response(self, response: str) -> AssistantMessage:
+        if self.output_parser_regex is None:
             return AssistantMessage(chain_of_thought=None, response=response)
         match = self.output_parser_regex.match(response)
         if match is None:
@@ -216,8 +260,8 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
             else:
                 yield self.tokenizer.decode(list(group), skip_special_tokens=False).encode("utf-8")
 
-    def decode_response(self, response: list[int], *, expect_thinking: bool = True) -> AssistantMessage:
-        return self.parse_response(self.decode_tokens(response), expect_thinking=expect_thinking)
+    def decode_response(self, response: list[int]) -> AssistantMessage:
+        return self.parse_response(self.decode_tokens(response))
 
     def __post_init__(self) -> None:
         if self.output_parser_regex is not None:

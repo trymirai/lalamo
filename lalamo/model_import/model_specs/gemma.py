@@ -4,7 +4,9 @@ from lalamo.model_import.model_configs import (
     HFGemma4Config,
 )
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
+from lalamo.model_import.model_specs.output_parser_regexes import GEMMA4_OUTPUT_PARSER_REGEX
 from lalamo.model_import.origins import HuggingFaceOrigin
+from lalamo.models.chat_codec import BOOLEAN_REASONING_DEFAULT_OFF_CONFIG
 
 __all__ = ["GEMMA_MODELS"]
 
@@ -121,7 +123,12 @@ GEMMA4 = [
         size="5B",
         origin=HuggingFaceOrigin(repo="google/gemma-4-E2B-it"),
         config_type=HFGemma4Config,
-        configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
+        configs=ConfigMap(
+            chat_template=FileSpec("chat_template.jinja"),
+        ),
+        output_parser_regex=GEMMA4_OUTPUT_PARSER_REGEX,
+        end_of_thinking_tag="<channel|>",
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
     ),
     LanguageModelSpec(
         vendor="Google",
@@ -139,7 +146,12 @@ GEMMA4 = [
         size="8B",
         origin=HuggingFaceOrigin(repo="google/gemma-4-E4B-it"),
         config_type=HFGemma4Config,
-        configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
+        configs=ConfigMap(
+            chat_template=FileSpec("chat_template.jinja"),
+        ),
+        output_parser_regex=GEMMA4_OUTPUT_PARSER_REGEX,
+        end_of_thinking_tag="<channel|>",
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
     ),
 ]
 

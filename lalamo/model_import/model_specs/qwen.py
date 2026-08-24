@@ -6,11 +6,27 @@ from lalamo.model_import.model_configs import (
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.model_specs.output_parser_regexes import OPTIONAL_THINKING_OUTPUT_PARSER_REGEX
 from lalamo.model_import.origins import HuggingFaceOrigin
+from lalamo.models.chat_codec import (
+    BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
+    BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
+    ReasoningConfig,
+    ReasoningEffort,
+)
 from lalamo.models.language_model import GenerationConfig
 
 __all__ = ["QWEN_MODELS"]
 
-QWEN_END_OF_THINKING_TAG = "\n</think>"
+QWEN_END_OF_THINKING_TAG = "\\n</think>"
+
+QWEN38_REASONING_CONFIG = ReasoningConfig(
+    default_reasoning_effort=ReasoningEffort.XHIGH,
+    field_name="reasoning_effort",
+    reasoning_effort_to_string={
+        ReasoningEffort.XHIGH: "xhigh",
+        ReasoningEffort.MEDIUM: "medium",
+        ReasoningEffort.LOW: "low",
+    },
+)
 
 
 def _qwen3_mlx_model_spec(
@@ -28,6 +44,7 @@ def _qwen3_mlx_model_spec(
         config_type=HFQwen3Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", base_repo),
             tokenizer_config=FileSpec("tokenizer_config.json", base_repo),
@@ -98,6 +115,7 @@ QWEN3 = [
         config_type=HFQwen3Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
     _qwen3_mlx_model_spec(
         name="Qwen3-0.6B-MLX-4bit",
@@ -118,6 +136,7 @@ QWEN3 = [
         config_type=HFQwen3Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
     _qwen3_mlx_model_spec(
         name="Qwen3-1.7B-MLX-4bit",
@@ -138,6 +157,7 @@ QWEN3 = [
         config_type=HFQwen3Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
     LanguageModelSpec(
         vendor="Alibaba",
@@ -176,6 +196,7 @@ QWEN3 = [
         config_type=HFQwen3Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
     _qwen3_mlx_model_spec(
         name="Qwen3-8B-MLX-4bit",
@@ -196,6 +217,7 @@ QWEN3 = [
         config_type=HFQwen3Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
     _qwen3_mlx_model_spec(
         name="Qwen3-14B-MLX-4bit",
@@ -216,6 +238,7 @@ QWEN3 = [
         config_type=HFQwen3Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
     _qwen3_mlx_model_spec(
         name="Qwen3-32B-MLX-4bit",
@@ -240,6 +263,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
             generation_params_overrides=GenerationConfig(
@@ -259,6 +283,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-0.8B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-0.8B"),
@@ -280,6 +305,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-0.8B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-0.8B"),
@@ -301,6 +327,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
             generation_params_overrides=GenerationConfig(
@@ -319,6 +346,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-2B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-2B"),
@@ -340,6 +368,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-2B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-2B"),
@@ -360,6 +389,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
             generation_params_overrides=GenerationConfig(
@@ -378,6 +408,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-4B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-4B"),
@@ -398,6 +429,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-4B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-4B"),
@@ -418,6 +450,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
         ),
@@ -431,6 +464,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-9B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-9B"),
@@ -446,6 +480,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-9B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-9B"),
@@ -461,6 +496,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
     LanguageModelSpec(
         vendor="Alibaba",
@@ -471,6 +507,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-27B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-27B"),
@@ -486,6 +523,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-27B"),
             tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-27B"),
@@ -501,6 +539,7 @@ QWEN35 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
 ]
 
@@ -514,6 +553,7 @@ QWEN36 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
     LanguageModelSpec(
         vendor="Alibaba",
@@ -524,6 +564,7 @@ QWEN36 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
 ]
 
@@ -537,6 +578,7 @@ QWEN38 = [
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        reasoning_config=QWEN38_REASONING_CONFIG,
     ),
 ]
 
