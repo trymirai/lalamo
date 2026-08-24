@@ -1,7 +1,12 @@
 from .dflash import (
+    CandidateSelector,
+    CandidateSelectorConfig,
     DFlashDraftConfig,
     DFlashDraftModel,
     DFlashDraftState,
+    DFlashGroupedConvolution,
+    DFlashGroupedConvolutionConfig,
+    DFlashLayerGroupedConvolutions,
     DFlashSpeculator,
     DFlashSpeculatorConfig,
 )
@@ -13,9 +18,14 @@ from .weaver import (
 )
 
 __all__ = [
+    "CandidateSelector",
+    "CandidateSelectorConfig",
     "DFlashDraftConfig",
     "DFlashDraftModel",
     "DFlashDraftState",
+    "DFlashGroupedConvolution",
+    "DFlashGroupedConvolutionConfig",
+    "DFlashLayerGroupedConvolutions",
     "DFlashSpeculator",
     "DFlashSpeculatorConfig",
     "Weaver",

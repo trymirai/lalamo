@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Self
+from typing import Protocol, Self, runtime_checkable
 
 import equinox as eqx
 import jax
@@ -11,7 +11,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, LogicalAxis
-from lalamo.weight_matrix import GradientEstimator
+from lalamo.weight_matrix import GradientEstimator, MatmulConfig
 
 from .activations import Activation
 from .linear import Linear, LinearConfig
@@ -36,6 +36,7 @@ __all__ = [
     "TransformerLayerActivationTrace",
     "TransformerLayerConfig",
     "TransformerLayerResult",
+    "TransformerSublayerTransform",
 ]
 
 
@@ -98,6 +99,23 @@ class TransformerLayerResult(Exportable, eqx.Module):
     outputs: Float[Array, "batch suffix_tokens channels"]
     updated_state: StateLayerBase | None
     activation_trace: TransformerLayerActivationTrace | None
+
+
+@runtime_checkable
+class TransformerSublayerTransform(Protocol):
+    def prepare(
+        self,
+        inputs: Float[Array, "batch suffix_tokens channels"],
+        forward_pass_config: MatmulConfig,
+        *,
+        keychain: Keychain,
+    ) -> tuple[Float[Array, "batch suffix_tokens channels"], Array]: ...
+
+    def finish(
+        self,
+        outputs: Float[Array, "batch suffix_tokens channels"],
+        state: Array,
+    ) -> Float[Array, "batch suffix_tokens channels"]: ...
 
 
 @dataclass(frozen=True)
@@ -230,6 +248,8 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         per_layer_input: Float[Array, "batch suffix_tokens ple_dim"] | None = None,
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
+        mixer_transform: TransformerSublayerTransform | None = None,
+        mlp_transform: TransformerSublayerTransform | None = None,
         *,
         keychain: Keychain,
     ) -> TransformerLayerResult:
@@ -251,6 +271,17 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             )
         else:
             normalized_mixer_inputs = inputs
+
+        if mixer_transform is not None:
+            mixer_transform_keychain, mixer_keychain = mixer_keychain.split()
+            transformed_mixer_inputs, mixer_transform_state = mixer_transform.prepare(
+                normalized_mixer_inputs,
+                forward_pass_config.mixer_forward_pass_config.matmul_config,
+                keychain=mixer_transform_keychain,
+            )
+        else:
+            transformed_mixer_inputs = normalized_mixer_inputs
+            mixer_transform_state = None
 
         def call_mixer(
             mixer_inputs: tuple[
@@ -279,7 +310,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         mixer_outputs, updated_state = call_vmapped(
             call_mixer,
             (
-                normalized_mixer_inputs,
+                transformed_mixer_inputs,
                 positional_embeddings,
                 state,
                 lengths_without_padding,
@@ -288,6 +319,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             keychain=mixer_keychain,
             added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )
+        if mixer_transform is not None:
+            assert mixer_transform_state is not None
+            mixer_outputs = mixer_transform.finish(mixer_outputs, mixer_transform_state)
         if self.post_mixer_norm is not None:
             normalized_mixer_outputs = call_vmapped_twice(
                 self.post_mixer_norm,
@@ -326,12 +360,25 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             mlp_inputs,
             forward_pass_config=normalization_forward_pass_config,
         )
+        if mlp_transform is not None:
+            mlp_transform_keychain, mlp_keychain = mlp_keychain.split()
+            transformed_mlp_inputs, mlp_transform_state = mlp_transform.prepare(
+                normalized_mlp_inputs,
+                forward_pass_config.mlp_forward_pass_config.matmul_config,
+                keychain=mlp_transform_keychain,
+            )
+        else:
+            transformed_mlp_inputs = normalized_mlp_inputs
+            mlp_transform_state = None
         mlp_outputs = self.mlp(
-            normalized_mlp_inputs,
+            transformed_mlp_inputs,
             lengths_without_padding=mlp_lengths_without_padding,
             forward_pass_config=forward_pass_config.mlp_forward_pass_config,
             keychain=mlp_keychain,
         )
+        if mlp_transform is not None:
+            assert mlp_transform_state is not None
+            mlp_outputs = mlp_transform.finish(mlp_outputs, mlp_transform_state)
         if self.post_mlp_norm is not None:
             normalized_mlp_outputs = call_vmapped_twice(
                 self.post_mlp_norm,

@@ -11,7 +11,11 @@ from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
-from lalamo.modules.speculators.dflash import DFlashDraftConfig
+from lalamo.modules.speculators.dflash import (
+    CandidateSelectorConfig,
+    DFlashDraftConfig,
+    DFlashGroupedConvolutionConfig,
+)
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
 
@@ -46,13 +50,17 @@ class DFlashRopeParameters:
 class HFDFlashInnerConfig:
     mask_token_id: int
     target_layer_ids: tuple[int, ...]
+    conv_kernel_size: int | None = None
+    conv_group_size: int | None = None
+    selector_rank: int | None = None
+    selector_top_k: int | None = None
 
 
 @dataclass(frozen=True)
 class HFDFlashConfig:
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
 
-    architectures: tuple[Literal["DFlashDraftModel"], ...]
+    architectures: tuple[Literal["DFlashDraftModel", "DFlash2DraftModel"]]
     model_type: Literal["qwen3"]
     hidden_act: Literal["silu"]
     hidden_size: int
@@ -74,6 +82,7 @@ class HFDFlashConfig:
     sliding_window: int | None
     use_sliding_window: bool
     rope_scaling: DFlashYarnRopeScalingConfig | None = None
+    is_causal: bool | None = None
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
@@ -147,7 +156,38 @@ class HFDFlashConfig:
             self.sliding_window if layer_type == "sliding_attention" else None for layer_type in self.layer_types
         )
 
+    def grouped_convolution_config(self, linear_config: LinearConfig) -> DFlashGroupedConvolutionConfig | None:
+        kernel_size = self.dflash_config.conv_kernel_size
+        group_size = self.dflash_config.conv_group_size
+        if kernel_size is None and group_size is None:
+            return None
+        if kernel_size is None or group_size is None:
+            raise ValueError(
+                "DFlash grouped convolution requires both conv_kernel_size and conv_group_size.",
+            )
+        return DFlashGroupedConvolutionConfig(
+            kernel_size=kernel_size,
+            group_size=group_size,
+            kernel_projection_config=linear_config,
+        )
+
+    def candidate_selector_config(self, linear_config: LinearConfig) -> CandidateSelectorConfig | None:
+        rank = self.dflash_config.selector_rank
+        top_k = self.dflash_config.selector_top_k
+        if rank is None and top_k is None:
+            return None
+        if rank is None or top_k is None:
+            raise ValueError("DFlash candidate selector requires both selector_rank and selector_top_k.")
+        if top_k > self.vocab_size:
+            raise ValueError(f"selector_top_k {top_k} exceeds vocab_size {self.vocab_size}.")
+        return CandidateSelectorConfig(
+            rank=rank,
+            top_k=top_k,
+            hidden_projection_config=linear_config,
+        )
+
     def to_dflash_draft_config(self, context_length: int | None = None) -> DFlashDraftConfig:
+        (architecture,) = self.architectures
         assert self.dflash_config.target_layer_ids
         assert all(0 <= layer_id < self.num_target_layers for layer_id in self.dflash_config.target_layer_ids)
 
@@ -168,6 +208,10 @@ class HFDFlashConfig:
             up_clipping=None,
         )
         rope_config = self._rope_config(max_sequence_length)
+        grouped_convolution_config = self.grouped_convolution_config(linear_config)
+        candidate_selector_config = self.candidate_selector_config(linear_config)
+        if architecture == "DFlash2DraftModel" and grouped_convolution_config is None:
+            raise ValueError("DFlash2DraftModel requires a grouped convolution config.")
         layer_configs = tuple(
             TransformerLayerConfig(
                 pre_mixer_norm_config=norm_config,
@@ -179,7 +223,7 @@ class HFDFlashConfig:
                     num_heads=self.num_attention_heads,
                     num_groups=self.num_key_value_heads,
                     head_dim=self.head_dim,
-                    is_causal=sliding_window_size is not None,
+                    is_causal=(self.is_causal if self.is_causal is not None else sliding_window_size is not None),
                     scale=self._attention_scale(),
                     sliding_window_size=sliding_window_size,
                     logit_soft_cap=None,
@@ -208,4 +252,6 @@ class HFDFlashConfig:
             rope_config=rope_config,
             layer_configs=layer_configs,
             output_norm_config=norm_config,
+            grouped_convolution_config=grouped_convolution_config,
+            candidate_selector_config=candidate_selector_config,
         )
