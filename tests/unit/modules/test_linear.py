@@ -184,7 +184,8 @@ def test_linear_mixture_vmapped_over_experts_matches_reference_and_keeps_expert_
         added_sharding_axis=make_test_sharding_config().resolve_axis(LogicalAxis.MIXTURE),
     )
 
-    reference = _split_outputs(jnp.einsum("eoi,ei->eo", _weights(2), inputs))
+    reference_weights = jax.device_put(_weights(2), make_sharding((LogicalAxis.MIXTURE, None, None)))
+    reference = _split_outputs(jnp.einsum("eoi,ei->eo", reference_weights, inputs))
     _assert_close_outputs(outputs, reference)
     _assert_outputs_sharded_like(outputs, make_sharding((LogicalAxis.MIXTURE, None)), fake_mesh)
 
