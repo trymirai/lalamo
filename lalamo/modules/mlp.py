@@ -78,12 +78,8 @@ def _take_moe_expert_leaf(
     if not isinstance(leaf, jax.Array):
         return leaf
 
-    leaf_sharding = sharding_of(leaf)
-    out_sharding = NamedSharding(
-        leaf_sharding.mesh,
-        PartitionSpec(*(None,) * (index.ndim + leaf.ndim - 1)),
-    )
-    return leaf.at[jnp.expand_dims(index, 0)].get(out_sharding=out_sharding)[0]
+    replicated = NamedSharding(sharding_of(leaf).mesh, PartitionSpec())
+    return leaf.at[jnp.expand_dims(index, 0)].get(out_sharding=replicated)[0]
 
 
 @dataclass(frozen=True)
