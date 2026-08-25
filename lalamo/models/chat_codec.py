@@ -45,26 +45,27 @@ class ReasoningEffort(StrEnum):
 class ReasoningConfig:
     default_reasoning_effort: ReasoningEffort
     field_name: str
-    reasoning_effort_to_string: dict[ReasoningEffort, str]
+    # Jinja's `is true`/`is false` tests reject string spellings, while other template fields expect strings.
+    reasoning_effort_to_field_value: dict[ReasoningEffort, str | bool]
 
     def __post_init__(self) -> None:
-        if self.default_reasoning_effort not in self.reasoning_effort_to_string:
-            raise ValueError("The default reasoning effort must have a string mapping.")
+        if self.default_reasoning_effort not in self.reasoning_effort_to_field_value:
+            raise ValueError("The default reasoning effort must have a field value.")
 
 
 BOOLEAN_REASONING_DEFAULT_ON_CONFIG = ReasoningConfig(
     default_reasoning_effort=ReasoningEffort.MEDIUM,
     field_name="enable_thinking",
-    reasoning_effort_to_string={
-        ReasoningEffort.MEDIUM: "true",
-        ReasoningEffort.NO_REASONING: "false",
+    reasoning_effort_to_field_value={
+        ReasoningEffort.MEDIUM: True,
+        ReasoningEffort.NO_REASONING: False,
     },
 )
 
 BOOLEAN_REASONING_DEFAULT_OFF_CONFIG = ReasoningConfig(
     default_reasoning_effort=ReasoningEffort.NO_REASONING,
     field_name=BOOLEAN_REASONING_DEFAULT_ON_CONFIG.field_name,
-    reasoning_effort_to_string=BOOLEAN_REASONING_DEFAULT_ON_CONFIG.reasoning_effort_to_string,
+    reasoning_effort_to_field_value=BOOLEAN_REASONING_DEFAULT_ON_CONFIG.reasoning_effort_to_field_value,
 )
 
 
@@ -202,26 +203,22 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         }
 
         reasoning_config = self.config.reasoning_config
-        if reasoning_config is None:
-            if reasoning_effort is not None:
-                raise ValueError("This model does not support configurable reasoning effort.")
-        else:
+
+        if reasoning_config is None and reasoning_effort is not None:
+            raise ValueError("This model does not support configurable reasoning effort.")
+
+        if reasoning_config is not None:
             if reasoning_effort is None:
                 reasoning_effort = reasoning_config.default_reasoning_effort
-            if reasoning_effort not in reasoning_config.reasoning_effort_to_string:
-                supported_efforts = ", ".join(effort.value for effort in reasoning_config.reasoning_effort_to_string)
+            if reasoning_effort not in reasoning_config.reasoning_effort_to_field_value:
                 raise ValueError(
                     f"Reasoning effort {reasoning_effort.value!r} is not supported by this model; "
-                    f"supported efforts: {supported_efforts}."
+                    f"supported efforts: {reasoning_config.reasoning_effort_to_field_value}."
                 )
-            reasoning_effort_string = reasoning_config.reasoning_effort_to_string[reasoning_effort]
-            if reasoning_effort_string == "true":
-                template_value: str | bool = True
-            elif reasoning_effort_string == "false":
-                template_value = False
-            else:
-                template_value = reasoning_effort_string
-            template_context[reasoning_config.field_name] = template_value
+
+            template_context[reasoning_config.field_name] = reasoning_config.reasoning_effort_to_field_value[
+                reasoning_effort
+            ]
 
         return self.prompt_template.render(template_context)
 

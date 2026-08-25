@@ -33,7 +33,7 @@ MUSE_GLIMMER_MODELS = [
         reasoning_config=ReasoningConfig(
             default_reasoning_effort=ReasoningEffort.HIGH,
             field_name="reasoning_strength",
-            reasoning_effort_to_string={
+            reasoning_effort_to_field_value={
                 ReasoningEffort.LOW: "low",
                 ReasoningEffort.MEDIUM: "medium",
                 ReasoningEffort.HIGH: "high",

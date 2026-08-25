@@ -10,9 +10,9 @@ __all__ = ["GRANITE_MODELS"]
 GRANITE33_REASONING_CONFIG = ReasoningConfig(
     default_reasoning_effort=ReasoningEffort.NO_REASONING,
     field_name="thinking",
-    reasoning_effort_to_string={
-        ReasoningEffort.MEDIUM: "true",
-        ReasoningEffort.NO_REASONING: "false",
+    reasoning_effort_to_field_value={
+        ReasoningEffort.MEDIUM: True,
+        ReasoningEffort.NO_REASONING: False,
     },
 )
 

@@ -20,7 +20,7 @@ GPT_OSS_MODELS = [
         reasoning_config=ReasoningConfig(
             default_reasoning_effort=ReasoningEffort.MEDIUM,
             field_name="reasoning_effort",
-            reasoning_effort_to_string={
+            reasoning_effort_to_field_value={
                 ReasoningEffort.LOW: "low",
                 ReasoningEffort.MEDIUM: "medium",
                 ReasoningEffort.HIGH: "high",

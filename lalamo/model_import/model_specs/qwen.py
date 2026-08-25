@@ -21,7 +21,7 @@ QWEN_END_OF_THINKING_TAG = "\\n</think>"
 QWEN38_REASONING_CONFIG = ReasoningConfig(
     default_reasoning_effort=ReasoningEffort.XHIGH,
     field_name="reasoning_effort",
-    reasoning_effort_to_string={
+    reasoning_effort_to_field_value={
         ReasoningEffort.XHIGH: "xhigh",
         ReasoningEffort.MEDIUM: "medium",
         ReasoningEffort.LOW: "low",
