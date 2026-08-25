@@ -8,6 +8,7 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.utils.dummy_array import dummy_array
+from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import (
     FullPrecisionMatrix,
     FullPrecisionSpec,
@@ -76,6 +77,78 @@ def test_full_precision_dot_matches_logical_matmul_and_preserves_input_sharding(
     assert_named_sharding(result.sharding, fake_mesh)
     assert result.sharding == vector.sharding
     assert_close_arrays(result=result, reference=weights @ vector)
+
+
+@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
+def test_full_precision_ragged_dot_matches_grouped_matmul_and_preserves_input_sharding(
+    fake_mesh: Mesh,
+    layout: Layout,
+) -> None:
+    weights = _logical_weights(4)
+    vectors = jax.device_put(
+        jnp.arange(5 * 4, dtype=jnp.float32).reshape(5, 4) / 10,
+        make_sharding((None, None)),
+    )
+    group_sizes = jax.device_put(
+        jnp.array([2, 0, 1, 2], dtype=jnp.int32),
+        make_sharding((None,)),
+    )
+    matrix = FullPrecisionSpec(layout=layout).compress(
+        weights,
+        sharding_config=make_test_sharding_config(),
+        is_sharded=False,
+    )
+
+    result = matrix.ragged_dot(
+        vectors,
+        group_sizes,
+        keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
+    )
+    reference = jnp.concatenate(
+        (
+            vectors[:2] @ weights[0].T,
+            vectors[2:3] @ weights[2].T,
+            vectors[3:] @ weights[3].T,
+        ),
+    )
+
+    assert_named_sharding(result.sharding, fake_mesh)
+    assert result.sharding == vectors.sharding
+    assert_close_arrays(result=result, reference=reference)
+
+
+def test_full_precision_ragged_dot_rejects_expert_sharded_weights() -> None:
+    matrix = FullPrecisionSpec().compress(
+        _logical_weights(4),
+        sharding_config=make_test_sharding_config(),
+    )
+    vectors = jax.device_put(jnp.ones((5, 4), dtype=jnp.float32), make_sharding((None, None)))
+    group_sizes = jax.device_put(jnp.array([2, 0, 1, 2], dtype=jnp.int32), make_sharding((None,)))
+
+    with pytest.raises(ValueError, match="requires replicated expert weights"):
+        matrix.ragged_dot(
+            vectors,
+            group_sizes,
+            keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
+        )
+
+
+def test_full_precision_ragged_dot_accepts_effectively_replicated_weights() -> None:
+    sharding_config = ShardingConfig.replicated()
+    matrix = FullPrecisionSpec().compress(
+        _logical_weights(2),
+        sharding_config=sharding_config,
+    )
+    vectors = jax.device_put(jnp.ones((2, 4), dtype=jnp.float32), sharding_config.make_sharding((None, None)))
+    group_sizes = jax.device_put(jnp.array([1, 1], dtype=jnp.int32), sharding_config.make_sharding((None,)))
+
+    result = matrix.ragged_dot(
+        vectors,
+        group_sizes,
+        keychain=Keychain.init(0, sharding_config=sharding_config),
+    )
+
+    assert result.shape == (2, 4)
 
 
 def test_initializer_weight_matrix_is_sharded_false_uses_replicated_weight_sharding() -> None:
