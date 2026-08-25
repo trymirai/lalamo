@@ -1,7 +1,14 @@
 """QTIP bitshift-trellis decode with a Gaussian codebook.
 
-The variant the k3 checkpoint uses on 43 of its 272 leaves: (L, k, V) =
-(16, 3, 2), codebook `randn(2**L, V)` from a seeded RNG.
+The variant both shipped checkpoints use: (L, V) = (16, 2) with k = 3 or 2,
+codebook `randn(2**L, V)` from a seeded RNG.
+
+One 512 KiB table serves everything. k only changes kV, the bits injected per
+step -- the table is indexed by the L-bit state either way. So every transformer
+leaf in both checkpoints is a gather from this one table:
+
+    Qwen3.6 k3-final   43 k3 + 183 k2   (2.3962 bpw)
+    Qwen3.8 t0data     97 k3 + 175 k2   (2.3984 bpw)
 
 The codebook is unstructured by design -- i.i.d. standard normals, no lattice,
 no symmetry, no product form. That matches the incoherence-processed weight
@@ -265,8 +272,8 @@ def _bench() -> None:
     steps = cols // p.V
     print(f"QTIP-gauss  L={p.L} k={p.k} V={p.V}  "
           f"{p.bits_per_weight} bits/weight  states={p.num_states}")
-    print(f"full leaf {rows_full}x{cols} = {rows_full * steps / 1e6:.1f}M gathers, "
-          f"43 such leaves in k3")
+    print(f"full leaf {rows_full}x{cols} = {rows_full * steps / 1e6:.1f}M gathers; "
+          f"272 transformer leaves per model decode from this same table")
     print("access pattern: uniform over all 65,536 entries — no locality")
     table = build_gaussian_codebook(p)
     rng = np.random.default_rng(7)
