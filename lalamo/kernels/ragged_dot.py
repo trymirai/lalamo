@@ -9,7 +9,7 @@ from lalamo.utils.sharding import sharding_of
 
 
 @partial(jax.custom_jvp, nondiff_argnums=(3,))
-def _ragged_dot(
+def ragged_dot(
     vectors: Float[Array, "tokens input_channels"],
     expert_weights: Float[Array, "experts input_channels output_channels"],
     group_sizes: Int[Array, " experts"],
@@ -24,7 +24,7 @@ def _ragged_dot(
     )
 
 
-@_ragged_dot.defjvp
+@ragged_dot.defjvp
 def _ragged_dot_jvp(
     precision: DotAlgorithmPreset,
     primals: tuple[Array, Array, Array],
@@ -33,17 +33,7 @@ def _ragged_dot_jvp(
     # JAX's built-in JVP drops explicit out_sharding, so keep both tangent terms on this wrapper.
     vectors, expert_weights, group_sizes = primals
     vector_tangent, weight_tangent, _ = tangents
-    result = _ragged_dot(vectors, expert_weights, group_sizes, precision)
-    tangent = _ragged_dot(vector_tangent, expert_weights, group_sizes, precision)
-    tangent += _ragged_dot(vectors, weight_tangent, group_sizes, precision)
+    result = ragged_dot(vectors, expert_weights, group_sizes, precision)
+    tangent = ragged_dot(vector_tangent, expert_weights, group_sizes, precision)
+    tangent += ragged_dot(vectors, weight_tangent, group_sizes, precision)
     return result, tangent
-
-
-def ragged_dot(
-    vectors: Float[Array, "tokens input_channels"],
-    expert_weights: Float[Array, "experts input_channels output_channels"],
-    group_sizes: Int[Array, " experts"],
-    *,
-    precision: DotAlgorithmPreset,
-) -> Float[Array, "tokens output_channels"]:
-    return _ragged_dot(vectors, expert_weights, group_sizes, precision)
