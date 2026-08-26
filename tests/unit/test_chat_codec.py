@@ -1,4 +1,5 @@
 import pytest
+from frozendict import frozendict
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 
@@ -41,7 +42,7 @@ def test_reasoning_config_requires_a_mapping_for_its_default() -> None:
         ReasoningConfig(
             default_reasoning_effort=ReasoningEffort.MEDIUM,
             field_name="reasoning_effort",
-            reasoning_effort_to_field_value={ReasoningEffort.LOW: "low"},
+            reasoning_effort_to_field_value=frozendict({ReasoningEffort.LOW: "low"}),
         )
 
 
@@ -51,10 +52,12 @@ def test_reasoning_effort_is_rendered_through_the_configured_field() -> None:
         reasoning_config=ReasoningConfig(
             default_reasoning_effort=ReasoningEffort.MEDIUM,
             field_name="reasoning_effort",
-            reasoning_effort_to_field_value={
-                ReasoningEffort.LOW: "low",
-                ReasoningEffort.MEDIUM: "medium",
-            },
+            reasoning_effort_to_field_value=frozendict(
+                {
+                    ReasoningEffort.LOW: "low",
+                    ReasoningEffort.MEDIUM: "medium",
+                }
+            ),
         ),
     )
 

@@ -1,3 +1,5 @@
+from frozendict import frozendict
+
 from lalamo.model_import.model_configs import HFGraniteConfig
 from lalamo.model_import.model_spec import LanguageModelSpec
 from lalamo.model_import.model_specs.output_parser_regexes import GRANITE_THINKING_OUTPUT_PARSER_REGEX
@@ -26,10 +28,12 @@ GRANITE_MODELS = [
             ReasoningConfig(
                 default_reasoning_effort=ReasoningEffort.NO_REASONING,
                 field_name="thinking",
-                reasoning_effort_to_field_value={
-                    ReasoningEffort.MEDIUM: True,
-                    ReasoningEffort.NO_REASONING: False,
-                },
+                reasoning_effort_to_field_value=frozendict(
+                    {
+                        ReasoningEffort.MEDIUM: True,
+                        ReasoningEffort.NO_REASONING: False,
+                    }
+                ),
             ),
         ),
         ("3.1", None, None),

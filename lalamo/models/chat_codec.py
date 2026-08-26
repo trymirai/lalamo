@@ -9,6 +9,7 @@ from functools import cached_property
 from re import Pattern
 from typing import NotRequired, TypedDict
 
+from frozendict import frozendict
 from jinja2 import Template
 from tokenizers import Tokenizer
 
@@ -46,7 +47,7 @@ class ReasoningConfig:
     default_reasoning_effort: ReasoningEffort
     field_name: str
     # Jinja's `is true`/`is false` tests reject string spellings, while other template fields expect strings.
-    reasoning_effort_to_field_value: dict[ReasoningEffort, str | bool]
+    reasoning_effort_to_field_value: frozendict[ReasoningEffort, str | bool]
 
     def __post_init__(self) -> None:
         if self.default_reasoning_effort not in self.reasoning_effort_to_field_value:
@@ -56,10 +57,12 @@ class ReasoningConfig:
 BOOLEAN_REASONING_DEFAULT_ON_CONFIG = ReasoningConfig(
     default_reasoning_effort=ReasoningEffort.MEDIUM,
     field_name="enable_thinking",
-    reasoning_effort_to_field_value={
-        ReasoningEffort.MEDIUM: True,
-        ReasoningEffort.NO_REASONING: False,
-    },
+    reasoning_effort_to_field_value=frozendict(
+        {
+            ReasoningEffort.MEDIUM: True,
+            ReasoningEffort.NO_REASONING: False,
+        }
+    ),
 )
 
 BOOLEAN_REASONING_DEFAULT_OFF_CONFIG = ReasoningConfig(

@@ -8,6 +8,7 @@ dependencies = [
     "click>=8.1.8",
     "einops>=0.8.0",
     "equinox>=0.11.11",
+    "frozendict>=2.4.7",
     "huggingface-hub>=0.27.1",
     "jax>=0.10.0",
     "jaxtyping>=0.2.36",

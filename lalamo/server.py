@@ -22,6 +22,8 @@ from jax import numpy as jnp
 from lalamo.data.huggingface_message import HFMessage
 from lalamo.inference.batch_scheduler import _PROBE_CACHE, BatchSchedulerConfig, ContinuousBatchScheduler
 from lalamo.model_import.common import import_model
+from lalamo.model_import.model_spec import LanguageModelSpec
+from lalamo.model_registry import ModelRegistry
 from lalamo.models import GenerationConfig, LanguageModel
 from lalamo.models.chat_codec import ReasoningEffort
 from lalamo.module import Keychain
@@ -42,14 +44,17 @@ class RequestBody:
     seed: int | None = None
     reasoning_effort: ReasoningEffort | None = None
 
-    def shares_batch_params(self, other: Self) -> bool:
+    def shares_batch_params(self, other: Self, default_reasoning_effort: ReasoningEffort | None) -> bool:
+        self_reasoning_effort = self.reasoning_effort or default_reasoning_effort
+        other_reasoning_effort = other.reasoning_effort or default_reasoning_effort
+
         return (
             self.model == other.model
             and self.max_completion_tokens == other.max_completion_tokens
             and self.generation_config == other.generation_config
             and self.dtype == other.dtype
             and (self.seed is None) == (other.seed is None)
-            and self.reasoning_effort is other.reasoning_effort
+            and self_reasoning_effort is other_reasoning_effort
         )
 
 
@@ -174,8 +179,12 @@ def validate_requests(
         raise HTTPException(400, "Empty request batch.")
 
     reference, *rest = requests
+    model_spec = ModelRegistry.build().repo_to_model.get(reference.model)
+    default_reasoning_effort = None
+    if isinstance(model_spec, LanguageModelSpec) and model_spec.reasoning_config is not None:
+        default_reasoning_effort = model_spec.reasoning_config.default_reasoning_effort
     for request in rest:
-        if not reference.shares_batch_params(request):
+        if not reference.shares_batch_params(request, default_reasoning_effort):
             raise HTTPException(
                 400,
                 "All requests in a batch must specify identical model, sampling params and "

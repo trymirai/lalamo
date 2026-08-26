@@ -1,3 +1,5 @@
+from frozendict import frozendict
+
 from lalamo.model_import.model_configs import (
     HFQwen2Config,
     HFQwen3Config,
@@ -16,16 +18,18 @@ from lalamo.models.language_model import GenerationConfig
 
 __all__ = ["QWEN_MODELS"]
 
-QWEN_END_OF_THINKING_TAG = "\\n</think>"
+QWEN_END_OF_THINKING_TAG = "\n</think>"
 
 QWEN38_REASONING_CONFIG = ReasoningConfig(
     default_reasoning_effort=ReasoningEffort.XHIGH,
     field_name="reasoning_effort",
-    reasoning_effort_to_field_value={
-        ReasoningEffort.XHIGH: "xhigh",
-        ReasoningEffort.MEDIUM: "medium",
-        ReasoningEffort.LOW: "low",
-    },
+    reasoning_effort_to_field_value=frozendict(
+        {
+            ReasoningEffort.XHIGH: "xhigh",
+            ReasoningEffort.MEDIUM: "medium",
+            ReasoningEffort.LOW: "low",
+        }
+    ),
 )
 
 
