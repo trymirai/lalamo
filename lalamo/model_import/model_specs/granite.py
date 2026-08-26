@@ -7,15 +7,6 @@ from lalamo.models.chat_codec import ReasoningConfig, ReasoningEffort
 __all__ = ["GRANITE_MODELS"]
 
 
-GRANITE33_REASONING_CONFIG = ReasoningConfig(
-    default_reasoning_effort=ReasoningEffort.NO_REASONING,
-    field_name="thinking",
-    reasoning_effort_to_field_value={
-        ReasoningEffort.MEDIUM: True,
-        ReasoningEffort.NO_REASONING: False,
-    },
-)
-
 GRANITE_MODELS = [
     LanguageModelSpec(
         vendor="IBM",
@@ -29,7 +20,18 @@ GRANITE_MODELS = [
         reasoning_config=reasoning_config,
     )
     for version, output_parser_regex, reasoning_config in (
-        ("3.3", GRANITE_THINKING_OUTPUT_PARSER_REGEX, GRANITE33_REASONING_CONFIG),
+        (
+            "3.3",
+            GRANITE_THINKING_OUTPUT_PARSER_REGEX,
+            ReasoningConfig(
+                default_reasoning_effort=ReasoningEffort.NO_REASONING,
+                field_name="thinking",
+                reasoning_effort_to_field_value={
+                    ReasoningEffort.MEDIUM: True,
+                    ReasoningEffort.NO_REASONING: False,
+                },
+            ),
+        ),
         ("3.1", None, None),
     )
     for model_size in ("2b", "8b")

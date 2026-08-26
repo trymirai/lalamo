@@ -64,7 +64,7 @@ BOOLEAN_REASONING_DEFAULT_ON_CONFIG = ReasoningConfig(
 
 BOOLEAN_REASONING_DEFAULT_OFF_CONFIG = ReasoningConfig(
     default_reasoning_effort=ReasoningEffort.NO_REASONING,
-    field_name=BOOLEAN_REASONING_DEFAULT_ON_CONFIG.field_name,
+    field_name="enable_thinking",
     reasoning_effort_to_field_value=BOOLEAN_REASONING_DEFAULT_ON_CONFIG.reasoning_effort_to_field_value,
 )
 
@@ -207,18 +207,21 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         if reasoning_config is None and reasoning_effort is not None:
             raise ValueError("This model does not support configurable reasoning effort.")
 
-        if reasoning_config is not None:
-            if reasoning_effort is None:
-                reasoning_effort = reasoning_config.default_reasoning_effort
-            if reasoning_effort not in reasoning_config.reasoning_effort_to_field_value:
-                raise ValueError(
-                    f"Reasoning effort {reasoning_effort.value!r} is not supported by this model; "
-                    f"supported efforts: {reasoning_config.reasoning_effort_to_field_value}."
-                )
+        if reasoning_config is None:
+            return self.prompt_template.render(template_context)
 
-            template_context[reasoning_config.field_name] = reasoning_config.reasoning_effort_to_field_value[
-                reasoning_effort
-            ]
+        if reasoning_effort is None:
+            reasoning_effort = reasoning_config.default_reasoning_effort
+
+        if reasoning_effort not in reasoning_config.reasoning_effort_to_field_value:
+            raise ValueError(
+                f"Reasoning effort {reasoning_effort.value!r} is not supported by this model; "
+                f"supported efforts: {reasoning_config.reasoning_effort_to_field_value}."
+            )
+
+        template_context[reasoning_config.field_name] = reasoning_config.reasoning_effort_to_field_value[
+            reasoning_effort
+        ]
 
         return self.prompt_template.render(template_context)
 
