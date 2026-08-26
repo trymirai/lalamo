@@ -10,7 +10,7 @@ GEMMA4_OUTPUT_PARSER_REGEX = (
 )
 GRANITE_THINKING_OUTPUT_PARSER_REGEX = (
     r"(?s)<think>(?P<chain_of_thought>.*?)"
-    r"(?:</think>\s*<response>(?P<response>.*?)</response>\s*|\Z)\Z"
+    r"(?:</think>\s*(?:<response>\s*)?(?P<response>.*?)(?:</response>\s*)?)?\Z"
 )
 GPT_OSS_OUTPUT_PARSER_REGEX = (
     r"(?s)(?:<\|channel\|>analysis<\|message\|>(?P<chain_of_thought>.*?))?"

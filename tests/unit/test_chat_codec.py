@@ -8,8 +8,8 @@ from lalamo.model_import.model_specs.output_parser_regexes import (
     GRANITE_THINKING_OUTPUT_PARSER_REGEX,
     OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
 )
+from lalamo.model_import.model_specs.reasoning_configs import BOOLEAN_REASONING_DEFAULT_ON_CONFIG
 from lalamo.models.chat_codec import (
-    BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     AssistantMessage,
     ChatCodec,
     ChatCodecConfig,
@@ -93,62 +93,34 @@ def test_boolean_template_field_uses_medium_as_enabled() -> None:
 
 
 @pytest.mark.parametrize(
-    ("response", "expected"),
+    ("output_parser_regex", "full_output"),
     [
-        ("answer", AssistantMessage(chain_of_thought=None, response="answer")),
-        (
-            "<think>reasoning</think>answer",
-            AssistantMessage(chain_of_thought="reasoning", response="answer"),
-        ),
-        (
-            "reasoning</think>answer",
-            AssistantMessage(chain_of_thought="reasoning", response="answer"),
-        ),
-        (
-            "<think>reasoning",
-            AssistantMessage(chain_of_thought="reasoning", response=""),
-        ),
+        (OPTIONAL_THINKING_OUTPUT_PARSER_REGEX, "<think>reasoning</think>answer"),
+        (GRANITE_THINKING_OUTPUT_PARSER_REGEX, "<think>reasoning</think><response>answer</response>"),
+        (GEMMA4_OUTPUT_PARSER_REGEX, "<|channel>thought\nreasoning<channel|>answer<turn|>"),
     ],
+    ids=["optional-thinking", "granite", "gemma4"],
 )
-def test_optional_thinking_response_is_parsed_from_its_markers(
-    response: str,
-    expected: AssistantMessage,
-) -> None:
+def test_generation_is_parsed_at_every_truncation_stage(output_parser_regex: str, full_output: str) -> None:
+    codec = _chat_codec(output_parser_regex=output_parser_regex)
+    mid_thinking = full_output[: full_output.index("reasoning") + len("reas")]
+    mid_response = full_output[: full_output.index("answer") + len("answ")]
+
+    assert codec.parse_response("answer") == AssistantMessage(chain_of_thought=None, response="answer")
+    assert codec.parse_response(mid_thinking) == AssistantMessage(chain_of_thought="reas", response="")
+    assert codec.parse_response(mid_response) == AssistantMessage(chain_of_thought="reasoning", response="answ")
+    assert codec.parse_response(full_output) == AssistantMessage(chain_of_thought="reasoning", response="answer")
+
+
+def test_optional_thinking_parses_response_without_an_opening_tag() -> None:
     codec = _chat_codec(output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX)
 
-    assert codec.parse_response(response) == expected
+    expected = AssistantMessage(chain_of_thought="reasoning", response="answer")
+    assert codec.parse_response("reasoning</think>answer") == expected
 
 
-@pytest.mark.parametrize(
-    ("output_parser_regex", "response", "expected"),
-    [
-        (
-            GRANITE_THINKING_OUTPUT_PARSER_REGEX,
-            "<think>reasoning</think><response>answer</response>",
-            AssistantMessage(chain_of_thought="reasoning", response="answer"),
-        ),
-        (
-            GRANITE_THINKING_OUTPUT_PARSER_REGEX,
-            "answer",
-            AssistantMessage(chain_of_thought=None, response="answer"),
-        ),
-        (
-            GEMMA4_OUTPUT_PARSER_REGEX,
-            "<|channel>thought\nreasoning<channel|>answer<turn|>",
-            AssistantMessage(chain_of_thought="reasoning", response="answer"),
-        ),
-        (
-            GEMMA4_OUTPUT_PARSER_REGEX,
-            "answer<turn|>",
-            AssistantMessage(chain_of_thought=None, response="answer"),
-        ),
-    ],
-)
-def test_model_specific_reasoning_response_parsing(
-    output_parser_regex: str,
-    response: str,
-    expected: AssistantMessage,
-) -> None:
-    codec = _chat_codec(output_parser_regex=output_parser_regex)
+def test_granite_parses_a_response_missing_its_wrapper() -> None:
+    codec = _chat_codec(output_parser_regex=GRANITE_THINKING_OUTPUT_PARSER_REGEX)
 
-    assert codec.parse_response(response) == expected
+    expected = AssistantMessage(chain_of_thought="reasoning", response="answer")
+    assert codec.parse_response("<think>reasoning</think>answer") == expected

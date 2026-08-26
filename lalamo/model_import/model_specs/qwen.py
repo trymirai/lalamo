@@ -7,13 +7,12 @@ from lalamo.model_import.model_configs import (
 )
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.model_specs.output_parser_regexes import OPTIONAL_THINKING_OUTPUT_PARSER_REGEX
-from lalamo.model_import.origins import HuggingFaceOrigin
-from lalamo.models.chat_codec import (
+from lalamo.model_import.model_specs.reasoning_configs import (
     BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
     BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
-    ReasoningConfig,
-    ReasoningEffort,
 )
+from lalamo.model_import.origins import HuggingFaceOrigin
+from lalamo.models.chat_codec import ReasoningConfig, ReasoningEffort
 from lalamo.models.language_model import GenerationConfig
 
 __all__ = ["QWEN_MODELS"]

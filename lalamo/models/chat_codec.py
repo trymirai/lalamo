@@ -53,23 +53,15 @@ class ReasoningConfig:
         if self.default_reasoning_effort not in self.reasoning_effort_to_field_value:
             raise ValueError("The default reasoning effort must have a field value.")
 
-
-BOOLEAN_REASONING_DEFAULT_ON_CONFIG = ReasoningConfig(
-    default_reasoning_effort=ReasoningEffort.MEDIUM,
-    field_name="enable_thinking",
-    reasoning_effort_to_field_value=frozendict(
-        {
-            ReasoningEffort.MEDIUM: True,
-            ReasoningEffort.NO_REASONING: False,
-        }
-    ),
-)
-
-BOOLEAN_REASONING_DEFAULT_OFF_CONFIG = ReasoningConfig(
-    default_reasoning_effort=ReasoningEffort.NO_REASONING,
-    field_name="enable_thinking",
-    reasoning_effort_to_field_value=BOOLEAN_REASONING_DEFAULT_ON_CONFIG.reasoning_effort_to_field_value,
-)
+    def field_value(self, effort: ReasoningEffort | None) -> str | bool:
+        if effort is None:
+            effort = self.default_reasoning_effort
+        if effort not in self.reasoning_effort_to_field_value:
+            raise ValueError(
+                f"Reasoning effort {effort.value!r} is not supported by this model; "
+                f"supported efforts: {self.reasoning_effort_to_field_value}."
+            )
+        return self.reasoning_effort_to_field_value[effort]
 
 
 def _strftime_now(format_string: str) -> str:
@@ -198,33 +190,16 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         *,
         reasoning_effort: ReasoningEffort | None = None,
     ) -> str:
-        # TODO(knyazer): the following is an ugly thing that needs to be fixed
-        # as soon as shoji is alive (avoid hardcoding random flags)
         template_context: dict[str, object] = {
             **self.request_to_dict(messages),
             "strftime_now": _strftime_now,
         }
 
         reasoning_config = self.config.reasoning_config
-
         if reasoning_config is None and reasoning_effort is not None:
             raise ValueError("This model does not support configurable reasoning effort.")
-
-        if reasoning_config is None:
-            return self.prompt_template.render(template_context)
-
-        if reasoning_effort is None:
-            reasoning_effort = reasoning_config.default_reasoning_effort
-
-        if reasoning_effort not in reasoning_config.reasoning_effort_to_field_value:
-            raise ValueError(
-                f"Reasoning effort {reasoning_effort.value!r} is not supported by this model; "
-                f"supported efforts: {reasoning_config.reasoning_effort_to_field_value}."
-            )
-
-        template_context[reasoning_config.field_name] = reasoning_config.reasoning_effort_to_field_value[
-            reasoning_effort
-        ]
+        if reasoning_config is not None:
+            template_context[reasoning_config.field_name] = reasoning_config.field_value(reasoning_effort)
 
         return self.prompt_template.render(template_context)
 

@@ -5,8 +5,8 @@ from lalamo.model_import.model_configs import (
 )
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.model_specs.output_parser_regexes import GEMMA4_OUTPUT_PARSER_REGEX
+from lalamo.model_import.model_specs.reasoning_configs import BOOLEAN_REASONING_DEFAULT_OFF_CONFIG
 from lalamo.model_import.origins import HuggingFaceOrigin
-from lalamo.models.chat_codec import BOOLEAN_REASONING_DEFAULT_OFF_CONFIG
 
 __all__ = ["GEMMA_MODELS"]
 
