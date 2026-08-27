@@ -277,7 +277,6 @@ def _import_language_model(
     model_spec: LanguageModelSpec,
     *,
     sharding_config: ShardingConfig,
-    context_length: int | None = None,
     dtype: DTypeLike | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
@@ -289,7 +288,6 @@ def _import_language_model(
 
     with _load_checkpoint(model_spec, progress_callback) as checkpoint:
         model_config = foreign_decoder_config.to_lalamo_config(
-            context_length=context_length,
             metadata_dict=checkpoint.metadata,
             token_codec_config=token_codec_config,
             generation_config=generation_config,
@@ -311,7 +309,6 @@ def _import_classifier(
     model_spec: ClassifierModelSpec,
     *,
     sharding_config: ShardingConfig,
-    context_length: int | None = None,
     dtype: DTypeLike | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
@@ -319,7 +316,7 @@ def _import_classifier(
     foreign_classifier_config = _load_foreign_config(model_spec, progress_callback=progress_callback)
 
     tokenizer, token_codec_config = _import_chat_codec(model_spec, progress_callback=progress_callback)
-    classifier_config = foreign_classifier_config.to_classifier_config(context_length)
+    classifier_config = foreign_classifier_config.to_classifier_config()
     model_config = ClassifierModelConfig(
         token_codec_config=token_codec_config,
         classifier_config=classifier_config,
@@ -342,7 +339,6 @@ def _import_tts_model(
     model_spec: TTSModelSpec,
     *,
     sharding_config: ShardingConfig,
-    context_length: int | None = None,
     dtype: DTypeLike | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
@@ -378,7 +374,7 @@ def _import_tts_model(
     )
     model_config = TTSModelConfig(
         token_codec_config=token_codec_config,
-        tts_config=foreign_tts_config.to_tts_config(context_length),
+        tts_config=foreign_tts_config.to_tts_config(),
     )
     with _load_checkpoint(model_spec, progress_callback) as checkpoint:
         return _load_model(
@@ -398,7 +394,6 @@ def import_model(
     model_spec: ModelSpec | str,
     *,
     sharding_config: ShardingConfig,
-    context_length: int | None = None,
     dtype: DTypeLike | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
@@ -435,7 +430,6 @@ def import_model(
             model = _import_language_model(
                 model_spec,
                 sharding_config=sharding_config,
-                context_length=context_length,
                 dtype=dtype,
                 progress_callback=progress_callback,
                 implementation=implementation,
@@ -444,7 +438,6 @@ def import_model(
             model = _import_classifier(
                 model_spec,
                 sharding_config=sharding_config,
-                context_length=context_length,
                 dtype=dtype,
                 progress_callback=progress_callback,
                 implementation=implementation,
@@ -453,7 +446,6 @@ def import_model(
             model = _import_tts_model(
                 model_spec,
                 sharding_config=sharding_config,
-                context_length=context_length,
                 dtype=dtype,
                 progress_callback=progress_callback,
                 implementation=implementation,

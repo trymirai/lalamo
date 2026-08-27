@@ -8,7 +8,7 @@ from jaxtyping import Array, Float, Int, Key
 
 from lalamo.compressed.hybrid import HybridMatrix, HybridSpec, IncoherenceProcessingMode
 from lalamo.compressed.low_rank import LowRankSpec
-from lalamo.compressed.utils.hadamard import hadamard_transform
+from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import Keychain
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
