@@ -18,6 +18,7 @@ type SamplingLeaf = Float[Array, "..."] | Int[Array, "..."]
 
 
 class SamplingPolicy(eqx.Module):
+    is_greedy: bool = eqx.field(static=True)
     temperature: Float[Array, "*batch"] | None = None
     top_k: Int[Array, "*batch"] | None = None
     top_p: Float[Array, "*batch"] | None = None
@@ -49,6 +50,7 @@ class SamplingPolicy(eqx.Module):
         if repetition_penalty is not None and repetition_penalty <= 0.0:
             raise ValueError("repetition_penalty must be positive.")
         return cls(
+            is_greedy=temperature == 0.0,
             temperature=(
                 None if temperature is None or temperature == 1.0 else jnp.asarray(temperature, dtype=jnp.float32)
             ),
@@ -105,7 +107,7 @@ class SamplingPolicy(eqx.Module):
             "frequency_penalty": _optional_array(frequency_penalty, default=0.0, dtype=jnp.float32),
         }
         _raise_if_different_batch_sizes(*jax.tree.leaves(arrays))
-        return cls(token_counts=None, token_history=None, **arrays)
+        return cls(is_greedy=False, token_counts=None, token_history=None, **arrays)
 
     @property
     def has_count_penalties(self) -> bool:
@@ -197,6 +199,12 @@ class SamplingPolicy(eqx.Module):
 
     def __call__(self, logits: Float[Array, " vocabulary"], *, keychain: Keychain) -> Int[Array, ""]:
         self._raise_if_batched()
+        if self.is_greedy:
+            logits = self._apply_banned_tokens(logits)
+            logits = self._apply_repetition_penalty(logits)
+            logits = self._apply_presence_penalty(logits)
+            logits = self._apply_frequency_penalty(logits)
+            return jnp.argmax(logits).astype(jnp.int32)
         return jax.random.categorical(keychain.vmapped_keys, self.process_logits(logits))
 
     def _raise_if_batched(self) -> None:

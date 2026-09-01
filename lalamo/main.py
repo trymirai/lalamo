@@ -46,7 +46,6 @@ from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, TTSM
 from lalamo.models.chat_codec import Message, UserMessage
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
-from lalamo.utils.memory import get_available_bytes_on_default_device
 from lalamo.utils.sharding import ShardingConfig
 
 SCRIPT_NAME = Path(sys.argv[0]).name
@@ -608,8 +607,11 @@ def list_models(
     console.print(table)
 
 
-@app.command(help="Start a server for batched inference.")
+# fmt: off
+@app.command(help="Start an OpenAI-compatible continuous-batching server.")
 def server(
+    model_path: Annotated[Path, Argument(help="Converted Lalamo model directory.")],
+    served_model_name: Annotated[str | None, Option(help="Model id exposed by the API.")] = None,
     host: Annotated[
         str,
         Option(help="Host to bind to."),
@@ -618,45 +620,20 @@ def server(
         int,
         Option(help="Port to bind to."),
     ] = 8293,
-    vram_gb: Annotated[
-        float | None,
-        Option(
-            help="Maximum VRAM in GB. Batch sizes are estimated automatically.",
-            show_default="max on default device",
-        ),
-    ] = None,
-    cache_dir: Annotated[
-        Path | None,
-        Option(
-            help="Directory to persist completed batches to.",
-            show_default="~/.cache/lalamo/batches",
-        ),
-    ] = None,
     tensor_parallel: Annotated[
         bool,
         Option(help="Shard model weight matrices across visible devices."),
     ] = False,
 ) -> None:
     try:
+        from lalamo.inference.continuous_batching import ContinuousBatchingConfig  # noqa: PLC0415
         from lalamo.server import start_server  # noqa: PLC0415
     except ImportError as error:
         err_console.print("Server extras not installed. Install with: uv add 'lalamo[server]'")
         raise Exit(1) from error
 
-    if vram_gb is not None:
-        vram_bytes = int(vram_gb * 1000 * 1000 * 1000)
-    elif (vram_bytes := get_available_bytes_on_default_device()) is None:
-        err_console.print("Cannot get the default device's memory stats, use --vram-gb")
-        raise Exit(1)
-
-    if cache_dir is None:
-        cache_dir = Path.home() / ".cache" / "lalamo" / "batches"
-
-    start_server(
-        host=host,
-        port=port,
-        vram_bytes=vram_bytes,
-        cache_dir=cache_dir,
+    start_server(model_path=model_path, model_name=served_model_name or model_path.name, host=host, port=port,
+        batching_config=ContinuousBatchingConfig(),
         sharding_config=ShardingConfig.tensor_parallel() if tensor_parallel else ShardingConfig.replicated(),
     )
 

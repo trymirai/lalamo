@@ -10,7 +10,7 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int
 from lalamo.modules.token_mixer import StateLayerBase
 from lalamo.utils.sharding import ShardingConfig
 
-__all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
+__all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "PagedKVCacheLayer", "StaticKVCacheLayer"]
 
 
 @eqx.filter_jit
@@ -122,6 +122,13 @@ class KVCacheLayer(StateLayerBase):
         added_values: Float[Array, "new_tokens groups head_channels"],
         added_length: Int[Array, ""] | int | None = None,
     ) -> Self: ...
+
+
+class PagedKVCacheLayer(StateLayerBase):
+    keys: Float[Array, "groups total_pages page_size head_channels"]
+    values: Float[Array, "groups total_pages page_size head_channels"]
+    block_tables: Int[Array, "batch pages_per_sequence"]
+    lengths: Int[Array, " batch"]
 
 
 class DynamicKVCacheLayer(KVCacheLayer):

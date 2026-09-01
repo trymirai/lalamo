@@ -25,6 +25,8 @@ from .token_mixer import (
     TokenMixerBase,
     TokenMixerConfig,
 )
+from .token_mixers.attention import Attention
+from .token_mixers.kv_cache import PagedKVCacheLayer
 from .utils import call_vmapped, call_vmapped_twice, gather_suffix_tokens
 
 __all__ = [
@@ -264,18 +266,28 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 keychain=keychain,
             )
 
-        mixer_outputs, updated_state = call_vmapped(
-            call_mixer,
-            (
+        if isinstance(state, PagedKVCacheLayer):
+            assert isinstance(self.mixer, Attention) and lengths_without_padding is None
+            mixer_outputs, updated_state = self.mixer.paged_decode(
                 normalized_mixer_inputs,
                 positional_embeddings,
                 state,
-                lengths_without_padding,
-                attention_parent_indices,
-            ),
-            keychain=mixer_keychain,
-            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
-        )
+                forward_pass_config.mixer_forward_pass_config,
+                keychain=mixer_keychain,
+            )
+        else:
+            mixer_outputs, updated_state = call_vmapped(
+                call_mixer,
+                (
+                    normalized_mixer_inputs,
+                    positional_embeddings,
+                    state,
+                    lengths_without_padding,
+                    attention_parent_indices,
+                ),
+                keychain=mixer_keychain,
+                added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
+            )
         if self.post_mixer_norm is not None:
             normalized_mixer_outputs = call_vmapped_twice(self.post_mixer_norm, mixer_outputs)
             mlp_inputs = inputs + normalized_mixer_outputs

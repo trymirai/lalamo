@@ -230,6 +230,9 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         errors = "ignore" if hide_invalid_utf_chars else "replace"
         return "".join(codecs.iterdecode(self._token_groups(tokens), "utf-8", errors=errors))
 
+    def token_bytes(self, token_id: int) -> bytes:
+        return b"".join(self._token_groups([token_id]))
+
     def _token_groups(self, tokens: list[int]) -> Iterable[bytes]:
         byte_token_ids = self._byte_token_ids
         for is_byte, group in itertools.groupby(tokens, key=lambda tid: tid in byte_token_ids):

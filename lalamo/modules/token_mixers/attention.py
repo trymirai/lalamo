@@ -1,14 +1,18 @@
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 import equinox as eqx
 import jax
 from einops import rearrange
 from jax import numpy as jnp
+from jax.experimental.pallas.ops.gpu.decode_attention import gqa
+from jax.experimental.pallas.ops.gpu.paged_attention import paged_attention
+from jax.sharding import AbstractDevice, AbstractMesh, use_abstract_mesh
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.kernels.attention import pallas_decode_attention, stable_reduction_attention, xla_attention
-from lalamo.module import Keychain
+from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
@@ -22,7 +26,7 @@ from lalamo.modules.token_mixer import (
 )
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
-from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
+from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, PagedKVCacheLayer, StaticKVCacheLayer
 
 __all__ = [
     "Attention",
@@ -356,6 +360,89 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             outputs=result,
             state=updated_state,
         )
+
+    # fmt: off
+    def paged_decode(
+        self, inputs: Float[Array, "batch 1 channels"],
+        positional_embeddings: PositionalEmbeddings | None,
+        state: PagedKVCacheLayer,
+        forward_pass_config: MixerForwardPassConfig,
+        *, keychain: Keychain,
+    ) -> TokenMixerResult[PagedKVCacheLayer]:
+        qkvg_keychain, out_keychain = keychain.split(2)
+        batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
+        projections = call_vmapped_twice(
+            self.qkvg_projection, inputs, forward_pass_config=forward_pass_config.matmul_config,
+            keychain=qkvg_keychain, added_sharding_axes=(batch_axis, None),
+        )
+        queries = call_vmapped(
+            lambda projection, embeddings: self._prepare_heads(
+                projection, self.config.num_heads, self.query_norm, embeddings),
+            projections[0], positional_embeddings, added_sharding_axis=batch_axis,
+        )
+        if self.config.is_kv_sharing:
+            updated_keys, updated_values, updated_lengths = state.keys, state.values, state.lengths
+        else:
+            keys = call_vmapped(
+                lambda projection, embeddings: self._prepare_heads(
+                    projection, self.config.num_groups, self.key_norm, embeddings),
+                projections[1], positional_embeddings, added_sharding_axis=batch_axis,
+            )
+            values = rearrange(
+                projections[2], "batch 1 (groups channels) -> batch groups channels",
+                groups=self.config.num_groups, channels=self.config.head_dim)
+            if self.config.normalize_values:
+                values = _rms_normalize(values, eps=1e-6)
+            physical_lengths = state.lengths + int(self.has_sinks)
+            physical_pages = jnp.take_along_axis(state.block_tables,
+                                                 (physical_lengths // state.keys.shape[2])[:, None], axis=1)[:, 0]
+            offsets = physical_lengths % state.keys.shape[2]
+            groups = jnp.arange(state.keys.shape[0], dtype=jnp.int32)[:, None]
+            updated_keys, updated_values = (
+                cache.at[groups, physical_pages[None], offsets[None]].set(
+                    rearrange(update.astype(cache.dtype), "batch groups channels -> groups batch channels"))
+                for cache, update in zip((state.keys, state.values), (keys[:, 0], values), strict=True)
+            )
+            updated_lengths = physical_lengths + 1
+
+        queries = queries[:, 0].astype(updated_keys.dtype)
+        first_device, *_ = self.sharding_config.mesh.devices.flat
+        scale = self.config.scale if self.config.scale is not None else queries.shape[-1] ** -0.5
+        device_context = nullcontext()
+        if float(getattr(first_device, "compute_capability", 0)) == 8.6:
+            device = AbstractDevice("NVIDIA A10", num_cores=1, platform="gpu")
+            device_context = use_abstract_mesh(AbstractMesh((), (), abstract_device=device))
+        with device_context:
+            if self.config.sliding_window_size is None:
+                attention_output = paged_attention(
+                    queries * scale, updated_keys, updated_values, state.block_tables, updated_lengths,
+                    pages_per_compute_block=1, k_splits=min(state.block_tables.shape[1], 16),
+                    num_stages=1, attn_logits_soft_cap=self.config.logit_soft_cap)
+            else:
+                required_pages = (self.config.sliding_window_size + 2 * state.keys.shape[2] - 2) // state.keys.shape[2]
+                page_count = min(state.block_tables.shape[1], 1 << (required_pages - 1).bit_length())
+                first_page = jnp.maximum(0, (updated_lengths - 1) // state.keys.shape[2] - page_count + 1)
+                logical_pages = first_page[:, None] + jnp.arange(page_count, dtype=jnp.int32)
+                physical_pages = jnp.take_along_axis(state.block_tables, logical_pages, axis=1)
+                keys, values = (
+                    rearrange(cache[:, physical_pages],
+                              "groups batch pages page channels -> batch (pages page) groups channels")
+                    for cache in (updated_keys, updated_values))
+                offsets = first_page * state.keys.shape[2]
+                with jax.numpy_dtype_promotion("standard"):
+                    attention_output = gqa(
+                        queries, keys, values,
+                        jnp.maximum(0, updated_lengths - self.config.sliding_window_size) - offsets,
+                        updated_lengths - offsets, sm_scale=scale, k_splits=min(page_count, 16)).astype(queries.dtype)
+
+        attention_output = rearrange(attention_output, "batch heads channels -> batch 1 (heads channels)")
+        if self.config.has_gate:
+            attention_output *= jax.nn.sigmoid(projections[-1])
+        (outputs,) = call_vmapped_twice(
+            self.out_projection, attention_output, forward_pass_config=forward_pass_config.matmul_config,
+            keychain=out_keychain, added_sharding_axes=(batch_axis, None))
+        updated_state = PagedKVCacheLayer(updated_keys, updated_values, state.block_tables, updated_lengths)
+        return TokenMixerResult(outputs, updated_state)
 
     def init_static_state(self, capacity: int, dtype: DTypeLike) -> StaticKVCacheLayer:
         return StaticKVCacheLayer.init(
