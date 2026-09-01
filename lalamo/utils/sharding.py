@@ -6,11 +6,13 @@ from typing import TypeGuard
 import jax
 from jax import Array, ShapeDtypeStruct, typeof
 from jax.sharding import AxisType, Mesh, NamedSharding, PartitionSpec
+from jax.typing import ArrayLike
 from jaxtyping import Int, Shaped
 
 __all__ = [
     "LogicalAxis",
     "ShardingConfig",
+    "device_put_from_cpu",
     "is_sharded",
     "lookup_sharded_indices",
     "reshard_as",
@@ -103,6 +105,11 @@ class ShardingConfig:
         if len(set(sharded_axes)) != len(sharded_axes):
             raise ValueError(f"Cannot shard multiple array axes over the same mesh axis: {physical_axes}")
         return NamedSharding(self.mesh, PartitionSpec(*physical_axes))
+
+
+def device_put_from_cpu(value: ArrayLike, sharding: NamedSharding) -> Array:
+    cpu_value = jax.device_put(value, jax.devices("cpu")[0])
+    return jax.device_put(cpu_value, sharding)
 
 
 def is_sharded(sharding: object) -> TypeGuard[NamedSharding]:
