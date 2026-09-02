@@ -35,6 +35,7 @@ from .mlp import (
     MLPBase,
     MLPConfig,
     MLPForwardPassConfig,
+    MoERoutingTrace,
     RoutingFunction,
     SoftmaxRouting,
 )
@@ -157,6 +158,7 @@ __all__ = [
     "MixerForwardPassConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "MoERoutingTrace",
     "Normalization",
     "NormalizationConfig",
     "NormalizationForwardPassConfig",

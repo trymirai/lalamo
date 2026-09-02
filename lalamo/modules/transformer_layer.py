@@ -15,7 +15,7 @@ from lalamo.weight_matrix import GradientEstimator
 
 from .activations import Activation
 from .linear import Linear, LinearConfig
-from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
+from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig, MoERoutingTrace
 from .normalization import Normalization, NormalizationConfig, NormalizationForwardPassConfig
 from .rope import PositionalEmbeddings, RoPEConfig
 from .token_mixer import (
@@ -98,6 +98,7 @@ class TransformerLayerResult(Exportable, eqx.Module):
     outputs: Float[Array, "batch suffix_tokens channels"]
     updated_state: StateLayerBase | None
     activation_trace: TransformerLayerActivationTrace | None
+    routing_trace: MoERoutingTrace | None = None
 
 
 @dataclass(frozen=True)
@@ -225,6 +226,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         state: StateLayerBase | None = None,
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
+        return_routing_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
         per_layer_input: Float[Array, "batch suffix_tokens ple_dim"] | None = None,
@@ -238,8 +240,8 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 f"Inputs to decoder layers must be a 3D arrays of size (batch_size, sequence_length, hidden_dim),"
                 f" got {inputs.shape}",
             )
-        if return_suffix_tokens is not None and return_activation_trace:
-            raise ValueError("return_suffix_tokens cannot be combined with return_activation_trace.")
+        if return_suffix_tokens is not None and (return_activation_trace or return_routing_trace):
+            raise ValueError("return_suffix_tokens cannot be combined with activation or routing traces.")
         mixer_keychain, mlp_keychain, ple_keychain = keychain.split(3)
         normalization_forward_pass_config = forward_pass_config.normalization_forward_pass_config
 
@@ -332,6 +334,16 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             forward_pass_config=forward_pass_config.mlp_forward_pass_config,
             keychain=mlp_keychain,
         )
+        if return_routing_trace:
+            # Same inputs and keychain as the real MLP call above, so the shadow router pass in
+            # MixtureOfExperts.routing_trace is CSE'd with the dispatch under jit.
+            routing_trace = self.mlp.routing_trace(
+                normalized_mlp_inputs,
+                forward_pass_config=forward_pass_config.mlp_forward_pass_config,
+                keychain=mlp_keychain,
+            )
+        else:
+            routing_trace = None
         if self.post_mlp_norm is not None:
             normalized_mlp_outputs = call_vmapped_twice(
                 self.post_mlp_norm,
@@ -374,6 +386,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             outputs=outputs,
             updated_state=updated_state,
             activation_trace=activation_trace,
+            routing_trace=routing_trace,
         )
 
     def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> StateLayerBase:

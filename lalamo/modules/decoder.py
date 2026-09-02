@@ -17,6 +17,7 @@ from lalamo.weight_matrix import GradientEstimator
 
 from .embedding import EmbeddingBase, EmbeddingConfig, EmbeddingForwardPassConfig
 from .linear import Linear, LinearConfig
+from .mlp import MoERoutingTrace
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
 from .token_mixer import State
@@ -94,6 +95,7 @@ class DecoderResult(Exportable, eqx.Module):
     logits: Float[Array, "batch suffix_tokens vocabulary"]
     updated_state: State | None = None
     activation_trace: DecoderActivationTrace | None = None
+    routing_traces: tuple[MoERoutingTrace | None, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -208,6 +210,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         state: State | None = None,
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
+        return_routing_traces: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
@@ -231,8 +234,8 @@ class Decoder(LalamoModule[DecoderConfig]):
                     f"return_suffix_tokens must be between 1 and the sequence length {sequence_length},"
                     f" got {return_suffix_tokens}",
                 )
-            if return_activation_trace:
-                raise ValueError("return_suffix_tokens cannot be combined with return_activation_trace.")
+            if return_activation_trace or return_routing_traces:
+                raise ValueError("return_suffix_tokens cannot be combined with activation or routing traces.")
         embedding_keychain, ple_keychain, transformer_keychain, readout_keychain = keychain.split(4)
         inner_features = self.embedding.embed(
             token_ids,
@@ -252,6 +255,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             return_updated_state=return_updated_state,
             return_layer_results=return_activation_trace,
             return_positional_embeddings=return_activation_trace,
+            return_routing_traces=return_routing_traces,
             lengths_without_padding=lengths_without_padding,
             forward_pass_config=forward_pass_config.transformer_forward_pass_config,
             per_layer_inputs=per_layer_inputs,
@@ -282,10 +286,17 @@ class Decoder(LalamoModule[DecoderConfig]):
         else:
             activation_trace = None
 
+        if return_routing_traces:
+            assert transformer_result.layer_results is not None
+            routing_traces = tuple(layer_result.routing_trace for layer_result in transformer_result.layer_results)
+        else:
+            routing_traces = None
+
         return DecoderResult(
             logits=logits,
             updated_state=transformer_result.updated_state,
             activation_trace=activation_trace,
+            routing_traces=routing_traces,
         )
 
     def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> State:

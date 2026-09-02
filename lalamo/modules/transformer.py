@@ -102,6 +102,7 @@ class Transformer(LalamoModule[TransformerConfig]):
         return_layer_results: bool,
         return_positional_embeddings: bool,
         lengths_without_padding: Int[Array, " batch"] | None,
+        return_routing_traces: bool = False,
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
         per_layer_inputs: tuple[Float[Array, "batch suffix_tokens ple_dim"], ...] | None = None,
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
@@ -120,10 +121,10 @@ class Transformer(LalamoModule[TransformerConfig]):
                 f" got {token_positions.shape}",
             )
         if return_suffix_tokens is not None:
-            if return_layer_results or return_positional_embeddings:
+            if return_layer_results or return_positional_embeddings or return_routing_traces:
                 raise ValueError(
-                    "return_suffix_tokens cannot be combined with return_layer_results"
-                    " or return_positional_embeddings.",
+                    "return_suffix_tokens cannot be combined with return_layer_results,"
+                    " return_positional_embeddings or return_routing_traces.",
                 )
             if attention_parent_indices is not None:
                 raise ValueError("return_suffix_tokens cannot be combined with attention_parent_indices.")
@@ -222,6 +223,7 @@ class Transformer(LalamoModule[TransformerConfig]):
                 state=effective_state,
                 return_updated_state=must_return_state,
                 return_activation_trace=return_layer_results,
+                return_routing_trace=return_routing_traces,
                 lengths_without_padding=None if runs_on_suffix_only else lengths_without_padding,
                 forward_pass_config=forward_pass_config,
                 per_layer_input=per_layer_input,
@@ -257,7 +259,7 @@ class Transformer(LalamoModule[TransformerConfig]):
         return TransformerResult(
             outputs=normalized_outputs,
             updated_state=compact_state,
-            layer_results=tuple(layer_results) if return_layer_results else None,
+            layer_results=tuple(layer_results) if (return_layer_results or return_routing_traces) else None,
             rope_embeddings=rope_embeddings if return_positional_embeddings else None,
             pre_norm_outputs=pre_norm_outputs,
         )

@@ -492,7 +492,8 @@ def load_moe(
             (up_projection, down_projection),
         )
     elif (
-        (experts_path / "gate_up_proj.weight") in weights_dict
+        (experts_path / "gate_up_proj") in weights_dict
+        or (experts_path / "gate_up_proj.weight") in weights_dict
         or (experts_path / "gate_up_proj" / "weight") in weights_dict
         or _has_prefix(weights_dict, experts_path / "gate_up_proj")
     ):
@@ -500,7 +501,12 @@ def load_moe(
         # Check for both flat and nested key formats
         gate_up_path = experts_path / "gate_up_proj"
         down_path = experts_path / "down_proj"
-        if (gate_up_path / "weight") in weights_dict:
+        if (experts_path / "gate_up_proj") in weights_dict:
+            # Bare nn.Parameter layout (e.g. Qwen3.5/3.6-MoE): the fused tensors sit directly on
+            # the experts module, so the state-dict keys carry no ".weight" suffix.
+            gate_up_weights = weights_dict[experts_path / "gate_up_proj"]
+            down_weights = weights_dict[experts_path / "down_proj"]
+        elif (gate_up_path / "weight") in weights_dict:
             gate_up_weights = weights_dict[gate_up_path / "weight"]
             down_weights = weights_dict[down_path / "weight"]
         elif (experts_path / "gate_up_proj.weight") in weights_dict:
