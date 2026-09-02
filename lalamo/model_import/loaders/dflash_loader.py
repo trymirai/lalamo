@@ -22,6 +22,14 @@ __all__ = [
 ]
 
 
+def _reshape_muse_glimmer_weights(weights_dict: Mapping[str, Array]) -> Mapping[str, Array]:
+    path_mapping = {
+        ParameterPath("encoder.fc.weight"): ParameterPath("fc.weight"),
+        ParameterPath("encoder.output_norm_enc.weight"): ParameterPath("hidden_norm.weight"),
+    }
+    return {path_mapping.get(ParameterPath(path), path): weights for path, weights in weights_dict.items()}
+
+
 def load_dflash_draft_model(
     module: DFlashDraftModel,
     weights_dict: Mapping[str, Array],
@@ -102,6 +110,6 @@ def load_hf_dflash_draft_model(
         checkpoint = _combine_weight_shards(weight_shards)
         return load_dflash_draft_model(
             template,
-            checkpoint.weights,
+            _reshape_muse_glimmer_weights(checkpoint.weights),
             implementation=implementation,
         )
