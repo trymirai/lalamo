@@ -39,6 +39,7 @@ __all__ = [
     "MLPForwardPassConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "MoERoutingTrace",
     "RoutingFunction",
     "SoftmaxRouting",
 ]
@@ -69,6 +70,23 @@ def _add_moe_expert_outputs(
         expert_outputs,
         mode="drop",
         out_sharding=out_sharding,
+    )
+
+
+def _collapse_keychain(keychain: Keychain) -> Keychain:
+    """Collapse per-sequence vmapped keys down to a scalar keychain.
+
+    The ContinuousBatchScheduler hands MoE prefill a keychain with one key per sequence; axes that
+    do not correspond to sequences (the chunk scan over flattened tokens, the shared-expert fan-out)
+    cannot absorb that structure, so it is reduced to a single key first. Inference consumes no
+    randomness, and for stochastic passes the reduction is deterministic.
+    """
+    if keychain.vmapped_keys.ndim == 0:
+        return keychain
+    return Keychain(
+        vmapped_keys=jnp.reshape(keychain.vmapped_keys, (-1,))[0],
+        batch_key=keychain.batch_key,
+        sharding_config=keychain.sharding_config,
     )
 
 
@@ -138,6 +156,15 @@ class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]: ...
+
+    def routing_trace(
+        self,
+        inputs: Float[Array, "batch suffix_tokens channels"],  # noqa: ARG002
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: ARG002
+        *,
+        keychain: Keychain,  # noqa: ARG002
+    ) -> "MoERoutingTrace | None":
+        return None
 
 
 @dataclass(frozen=True)
@@ -281,6 +308,12 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
 class RoutingMap(eqx.Module):
     expert_mask: Bool[Array, "*batch_and_tokens experts"]
     expert_weights: Float[Array, "*batch_and_tokens experts"]
+
+
+class MoERoutingTrace(eqx.Module):
+    router_logits: Float[Array, "batch suffix_tokens experts"]
+    active_expert_indices: Int[Array, "batch suffix_tokens active_experts"]
+    shared_expert_gate: Float[Array, "batch suffix_tokens shared_experts"] | None
 
 
 @dataclass(frozen=True)
@@ -514,9 +547,16 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         mixture_vector_sharding = self.sharding_config.resolve_sharding((LogicalAxis.MIXTURE,))
 
         def flatten_token_keychain(token_keychain: Keychain) -> Keychain:
+            # A scalar keychain (single-shot prefill) is expanded over (batch, tokens) wholesale;
+            # a keychain already carrying per-sequence keys (the ContinuousBatchScheduler path)
+            # only gains the token axis. Until now only dense models went through the scheduler,
+            # so the MoE prefill assumed the scalar case.
+            broadcast_mode = (
+                KeychainBroadcastMode.PREFIX if token_keychain.vmapped_keys.ndim == 0 else KeychainBroadcastMode.SUFFIX
+            )
             token_keychain = token_keychain.broadcast(
                 (batch_size, sequence_length),
-                mode=KeychainBroadcastMode.PREFIX,
+                mode=broadcast_mode,
             )
             return Keychain(
                 vmapped_keys=rearrange(token_keychain.vmapped_keys, "batch suffix_tokens -> (batch suffix_tokens)"),
@@ -563,6 +603,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         )
 
         num_chunks = chunked_token_indices.shape[0]
+        chunk_keychain = _collapse_keychain(chunk_keychain)
         chunk_vmapped_keys = chunk_keychain.broadcast((num_chunks,)).vmapped_keys
         chunk_batch_keys = jax.random.split(chunk_keychain.batch_key, num_chunks)
         chunk_batch_keys = with_sharding(
@@ -696,7 +737,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 run_shared_expert_token,
                 shared_expert_indices,
                 flattened_inputs,
-                keychain=shared_expert_keychain,
+                keychain=_collapse_keychain(shared_expert_keychain),
                 in_axes=((0, None), (None, 0)),
                 added_sharding_axes=(
                     self.sharding_config.resolve_axis(LogicalAxis.MIXTURE),
@@ -709,4 +750,81 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             expert_result,
             "(batch suffix_tokens) channels -> batch suffix_tokens channels",
             batch=batch_size,
+        )
+
+    @eqx.filter_jit
+    def routing_trace(
+        self,
+        inputs: Float[Array, "batch suffix_tokens channels"],
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> MoERoutingTrace:
+        # Shadow pass over the router only: repeats the exact router matmul and top-k of the
+        # dispatch paths, so under jit XLA CSEs it with the real forward and jax.lax.top_k on the
+        # same logits reproduces the dispatched expert set bit-exactly (top-k tie-breaks are
+        # deterministic). Valid for deterministic (inference) forward passes; a stochastic
+        # (QAT-noise) Linear would make the shadow logits diverge from the dispatch.
+        batch_size, sequence_length, _ = inputs.shape
+        flattened_inputs = rearrange(inputs, "batch suffix_tokens channels -> (batch suffix_tokens) channels")
+        batch_sharding = self.sharding_config.resolve_sharding((LogicalAxis.BATCH, None))
+
+        def flatten_token_keychain(token_keychain: Keychain) -> Keychain:
+            # Mirrors flatten_token_keychain in call_prefill_mode, including the ndim-based mode.
+            broadcast_mode = (
+                KeychainBroadcastMode.PREFIX if token_keychain.vmapped_keys.ndim == 0 else KeychainBroadcastMode.SUFFIX
+            )
+            token_keychain = token_keychain.broadcast(
+                (batch_size, sequence_length),
+                mode=broadcast_mode,
+            )
+            return Keychain(
+                vmapped_keys=rearrange(token_keychain.vmapped_keys, "batch suffix_tokens -> (batch suffix_tokens)"),
+                batch_key=token_keychain.batch_key,
+                sharding_config=token_keychain.sharding_config,
+            )
+
+        # Same split layout as call_prefill_mode so the shadow router sees identical keychains.
+        router_keychain, _, shared_weight_keychain, _ = keychain.split(4)
+        (router_logits,) = call_vmapped(
+            self.router,
+            flattened_inputs,
+            forward_pass_config=forward_pass_config.matmul_config,
+            keychain=flatten_token_keychain(router_keychain),
+            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
+        )
+        router_logits = with_sharding(router_logits, batch_sharding)
+        _, active_indices = jax.lax.top_k(router_logits, self.config.num_active_routed_experts)
+
+        if self.config.num_shared_experts > 0:
+            shared_expert_weight = partial(
+                self._shared_expert_weight,
+                forward_pass_config=forward_pass_config,
+            )
+            shared_gate = call_vmapped(
+                shared_expert_weight,
+                flattened_inputs,
+                keychain=flatten_token_keychain(shared_weight_keychain),
+                added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
+            )
+            shared_gate = rearrange(
+                shared_gate,
+                "(batch suffix_tokens) shared -> batch suffix_tokens shared",
+                batch=batch_size,
+            )
+        else:
+            shared_gate = None
+
+        return MoERoutingTrace(
+            router_logits=rearrange(
+                router_logits,
+                "(batch suffix_tokens) experts -> batch suffix_tokens experts",
+                batch=batch_size,
+            ),
+            active_expert_indices=rearrange(
+                active_indices,
+                "(batch suffix_tokens) active -> batch suffix_tokens active",
+                batch=batch_size,
+            ),
+            shared_expert_gate=shared_gate,
         )
