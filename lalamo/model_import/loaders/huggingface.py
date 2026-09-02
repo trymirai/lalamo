@@ -93,6 +93,46 @@ def _stack_gpt_oss_gate_up(blocks: Array, scales: Array) -> tuple[Array, Array]:
     return blocks, scales
 
 
+def _load_mobilemoe_int4_matrix(
+    template: WeightMatrix,
+    packed_weights: Array,
+    scales: Array,
+    *,
+    layout: Layout,
+    implementation: CompressionImplementation,
+) -> WeightMatrix:
+    if packed_weights.dtype != jnp.dtype(jnp.uint8):
+        raise ValueError(f"MobileMoE INT4 weights must be U8, got {packed_weights.dtype}")
+    if packed_weights.shape[:-1] != scales.shape[:-1]:
+        raise ValueError(
+            f"MobileMoE INT4 weight/scale shape mismatch: weights={packed_weights.shape}, scales={scales.shape}",
+        )
+
+    unpacked_channels = packed_weights.shape[-1] * 2
+    num_groups = scales.shape[-1]
+    if unpacked_channels % num_groups != 0:
+        raise ValueError(
+            f"MobileMoE INT4 channels {unpacked_channels} are not divisible by {num_groups} scale groups",
+        )
+
+    # MobileMoE stores signed nibbles in two's complement; Lalamo stores the same
+    # grid as offset-binary unsigned values, so flipping each sign bit is lossless.
+    packed_weights = jnp.bitwise_xor(packed_weights, jnp.uint8(0x88))
+    return IntSpec(
+        bits=4,
+        group_size=unpacked_channels // num_groups,
+        is_symmetric=True,
+        layout=layout,
+    ).from_packed_parameters(
+        packed_weights=packed_weights,
+        scales=scales.astype(template.dtype),
+        packed_zero_points=None,
+        implementation=implementation,
+        sharding_config=template.sharding_config,
+        is_sharded=template.is_sharded,
+    )
+
+
 def _dense_mlp_projections(module: DenseMLP) -> tuple[Linear, Linear]:
     return module.up_projection, module.down_projection
 
@@ -192,6 +232,19 @@ def _fuse_awq_weights(
     )
 
 
+def _fuse_mobilemoe_int4_weights(
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    sublayers_to_fuse: list[str] | None,
+) -> tuple[Array, Array]:
+    if sublayers_to_fuse is None:
+        return weights_dict[path / "qweight"], weights_dict[path / "weight_scale"]
+    return (
+        jnp.concatenate([weights_dict[path / name / "qweight"] for name in sublayers_to_fuse], axis=0),
+        jnp.concatenate([weights_dict[path / name / "weight_scale"] for name in sublayers_to_fuse], axis=0),
+    )
+
+
 def _fuse_mlx_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
@@ -237,6 +290,15 @@ def _is_awq(weights_dict: Mapping[str, Array], path: ParameterPath, sublayers_to
     return (probe / "qweight") in weights_dict
 
 
+def _is_mobilemoe_int4(
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    sublayers_to_fuse: list[str] | None,
+) -> bool:
+    probe = path / sublayers_to_fuse[0] if sublayers_to_fuse else path
+    return (probe / "qweight") in weights_dict and (probe / "weight_scale") in weights_dict
+
+
 def _is_mlx(weights_dict: Mapping[str, Array], path: ParameterPath, sublayers_to_fuse: list[str] | None) -> bool:
     probe = path / sublayers_to_fuse[0] if sublayers_to_fuse else path
     return (probe / "scales") in weights_dict
@@ -254,6 +316,15 @@ def _load_matrix(
     implementation: CompressionImplementation,
 ) -> WeightMatrix:
     sharding_config = template.sharding_config
+    if _is_mobilemoe_int4(weights_dict, path, sublayers_to_fuse):
+        packed_weights, scales = _fuse_mobilemoe_int4_weights(weights_dict, path, sublayers_to_fuse)
+        return _load_mobilemoe_int4_matrix(
+            template,
+            packed_weights,
+            scales,
+            layout=layout,
+            implementation=implementation,
+        )
     if _is_awq(weights_dict, path, sublayers_to_fuse):
         return _load_awq_array(
             weights_dict,
@@ -461,6 +532,117 @@ def load_mlp(
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
 
+def _load_stacked_experts(
+    module: DenseMLP,
+    weights_dict: Mapping[str, Array],
+    expert_paths: Sequence[ParameterPath],
+) -> DenseMLP:
+    up_weights = jnp.stack([weights_dict[expert_path / "up_proj.weight"] for expert_path in expert_paths])
+    gate_weights = jnp.stack([weights_dict[expert_path / "gate_proj.weight"] for expert_path in expert_paths])
+    down_weights = jnp.stack([weights_dict[expert_path / "down_proj.weight"] for expert_path in expert_paths])
+
+    if module.up_projection.has_biases:
+        up_biases = jnp.stack([weights_dict[expert_path / "up_proj.bias"] for expert_path in expert_paths])
+        gate_biases = jnp.stack([weights_dict[expert_path / "gate_proj.bias"] for expert_path in expert_paths])
+        up_biases = jnp.concatenate((up_biases, gate_biases), axis=1)
+    else:
+        up_biases = None
+    if module.down_projection.has_biases:
+        down_biases = jnp.stack([weights_dict[expert_path / "down_proj.bias"] for expert_path in expert_paths])
+    else:
+        down_biases = None
+
+    up_projection = _update_linear(
+        module.up_projection,
+        load_full_precision(
+            module.up_projection.weights,
+            jnp.concatenate((up_weights, gate_weights), axis=1),
+        ),
+        up_biases,
+    )
+    down_projection = _update_linear(
+        module.down_projection,
+        load_full_precision(module.down_projection.weights, down_weights),
+        down_biases,
+    )
+    return load_as_at(
+        _dense_mlp_projections,
+        module,
+        (up_projection, down_projection),
+    )
+
+
+def _load_mobilemoe_shared_experts(
+    module: DenseMLP,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation,
+) -> DenseMLP:
+    num_shared_experts = module.mixture_size
+    if num_shared_experts is None:
+        raise ValueError("MobileMoE shared experts require a mixture DenseMLP.")
+
+    up_path = path / "up_proj"
+    gate_path = path / "gate_proj"
+    down_path = path / "down_proj"
+    up_packed = rearrange(
+        weights_dict[up_path / "qweight"],
+        "(experts hidden) packed_input -> experts hidden packed_input",
+        experts=num_shared_experts,
+    )
+    gate_packed = rearrange(
+        weights_dict[gate_path / "qweight"],
+        "(experts hidden) packed_input -> experts hidden packed_input",
+        experts=num_shared_experts,
+    )
+    up_scales = rearrange(
+        weights_dict[up_path / "weight_scale"],
+        "(experts hidden) groups -> experts hidden groups",
+        experts=num_shared_experts,
+    )
+    gate_scales = rearrange(
+        weights_dict[gate_path / "weight_scale"],
+        "(experts hidden) groups -> experts hidden groups",
+        experts=num_shared_experts,
+    )
+    up_projection = _update_linear(
+        module.up_projection,
+        _load_mobilemoe_int4_matrix(
+            module.up_projection.weights,
+            jnp.concatenate((up_packed, gate_packed), axis=1),
+            jnp.concatenate((up_scales, gate_scales), axis=1),
+            layout=Layout.OUTPUT_INPUT,
+            implementation=implementation,
+        ),
+        None,
+    )
+    down_projection = _update_linear(
+        module.down_projection,
+        _load_mobilemoe_int4_matrix(
+            module.down_projection.weights,
+            rearrange(
+                weights_dict[down_path / "qweight"],
+                "output (experts packed_hidden) -> experts output packed_hidden",
+                experts=num_shared_experts,
+            ),
+            rearrange(
+                weights_dict[down_path / "weight_scale"],
+                "output (experts groups) -> experts output groups",
+                experts=num_shared_experts,
+            ),
+            layout=Layout.OUTPUT_INPUT,
+            implementation=implementation,
+        ),
+        None,
+    )
+    return load_as_at(
+        _dense_mlp_projections,
+        module,
+        (up_projection, down_projection),
+    )
+
+
 def load_moe(
     module: MixtureOfExperts,
     weights_dict: Mapping[str, Array],
@@ -480,8 +662,6 @@ def load_moe(
 
     num_routed = module.config.num_routed_experts
     num_shared = module.config.num_shared_experts
-    has_up_biases = module.experts.up_projection.has_biases
-    has_down_biases = module.experts.down_projection.has_biases
 
     experts_path = path / "experts"
     gate_up_path = experts_path / "gate_up_proj"
@@ -535,7 +715,47 @@ def load_moe(
         )
 
         experts = load_as_at(
-            lambda m: (m.up_projection, m.down_projection),
+            _dense_mlp_projections,
+            module.experts,
+            (up_projection, down_projection),
+        )
+    elif (experts_path / "gate_up_qweight") in weights_dict:
+        gate_up_packed = weights_dict[experts_path / "gate_up_qweight"]
+        gate_up_scales = weights_dict[experts_path / "gate_up_scale"]
+        packed_half = gate_up_packed.shape[-1] // 2
+        scale_half = gate_up_scales.shape[-1] // 2
+        gate_up_packed = jnp.concatenate(
+            (gate_up_packed[..., packed_half:], gate_up_packed[..., :packed_half]),
+            axis=-1,
+        )
+        gate_up_scales = jnp.concatenate(
+            (gate_up_scales[..., scale_half:], gate_up_scales[..., :scale_half]),
+            axis=-1,
+        )
+        up_projection = _update_linear(
+            module.experts.up_projection,
+            _load_mobilemoe_int4_matrix(
+                module.experts.up_projection.weights,
+                gate_up_packed,
+                gate_up_scales,
+                layout=Layout.INPUT_OUTPUT,
+                implementation=implementation,
+            ),
+            None,
+        )
+        down_projection = _update_linear(
+            module.experts.down_projection,
+            _load_mobilemoe_int4_matrix(
+                module.experts.down_projection.weights,
+                weights_dict[experts_path / "down_qweight"],
+                weights_dict[experts_path / "down_scale"],
+                layout=Layout.INPUT_OUTPUT,
+                implementation=implementation,
+            ),
+            None,
+        )
+        experts = load_as_at(
+            _dense_mlp_projections,
             module.experts,
             (up_projection, down_projection),
         )
@@ -555,25 +775,6 @@ def load_moe(
 
         # Combine up and gate for our format: (num_experts, hidden*2, model_dim)
         combined_up_gate_weights = jnp.concatenate([up_weights, gate_weights], axis=1)
-        if num_shared > 0:
-            if num_shared != 1:
-                raise ValueError("Single shared expert path found but num_shared_experts != 1.")
-            shared_expert_path = path / "shared_expert"
-            shared_up_gate_weights = jnp.concatenate(
-                [
-                    weights_dict[shared_expert_path / "up_proj.weight"],
-                    weights_dict[shared_expert_path / "gate_proj.weight"],
-                ],
-                axis=0,
-            )
-            combined_up_gate_weights = jnp.concatenate(
-                [combined_up_gate_weights, shared_up_gate_weights[None, ...]],
-                axis=0,
-            )
-            down_weights = jnp.concatenate(
-                [down_weights, weights_dict[shared_expert_path / "down_proj.weight"][None, ...]],
-                axis=0,
-            )
 
         up_projection = _update_linear(
             module.experts.up_projection,
@@ -594,78 +795,39 @@ def load_moe(
         )
 
         experts = load_as_at(
-            lambda m: (m.up_projection, m.down_projection),
+            _dense_mlp_projections,
             module.experts,
             (up_projection, down_projection),
         )
     else:
-        # Collect expert weight paths: routed experts first, then shared experts.
-        expert_paths: list[ParameterPath] = [experts_path / str(idx) for idx in range(num_routed)]
-
-        if num_shared > 0:
-            if (path / "shared_expert" / "up_proj.weight") in weights_dict:
-                if num_shared != 1:
-                    raise ValueError("Single shared expert path found but num_shared_experts != 1.")
-                expert_paths.append(path / "shared_expert")
-            elif (path / "shared_experts" / "0" / "up_proj.weight") in weights_dict:
-                expert_paths.extend(path / "shared_experts" / str(idx) for idx in range(num_shared))
-            else:
-                raise KeyError("Could not find shared expert weights in HF checkpoint.")
-
-        up_weight_list: list[Array] = []
-        gate_weight_list: list[Array] = []
-        down_weight_list: list[Array] = []
-        up_bias_list: list[Array] | None = [] if has_up_biases else None
-        gate_bias_list: list[Array] | None = [] if has_up_biases else None
-        down_bias_list: list[Array] | None = [] if has_down_biases else None
-
-        for expert_path in expert_paths:
-            up_weight_list.append(weights_dict[expert_path / "up_proj.weight"])
-            gate_weight_list.append(weights_dict[expert_path / "gate_proj.weight"])
-            down_weight_list.append(weights_dict[expert_path / "down_proj.weight"])
-            if up_bias_list is not None:
-                assert gate_bias_list is not None
-                up_bias_list.append(weights_dict[expert_path / "up_proj.bias"])
-                gate_bias_list.append(weights_dict[expert_path / "gate_proj.bias"])
-            if down_bias_list is not None:
-                down_bias_list.append(weights_dict[expert_path / "down_proj.bias"])
-
-        stacked_up = jnp.stack(up_weight_list, axis=0)
-        stacked_gate = jnp.stack(gate_weight_list, axis=0)
-        combined_up_gate_weights = jnp.concatenate([stacked_up, stacked_gate], axis=1)
-        if up_bias_list is None:
-            combined_up_gate_biases = None
-        else:
-            assert gate_bias_list is not None
-            stacked_up_biases = jnp.stack(up_bias_list, axis=0)
-            stacked_gate_biases = jnp.stack(gate_bias_list, axis=0)
-            combined_up_gate_biases = jnp.concatenate([stacked_up_biases, stacked_gate_biases], axis=1)
-
-        up_projection = _update_linear(
-            module.experts.up_projection,
-            load_full_precision(
-                module.experts.up_projection.weights,
-                combined_up_gate_weights,
-            ),
-            combined_up_gate_biases,
-        )
-
-        stacked_down = jnp.stack(down_weight_list, axis=0)
-        stacked_down_biases = jnp.stack(down_bias_list, axis=0) if down_bias_list is not None else None
-        down_projection = _update_linear(
-            module.experts.down_projection,
-            load_full_precision(
-                module.experts.down_projection.weights,
-                stacked_down,
-            ),
-            stacked_down_biases,
-        )
-
-        experts = load_as_at(
-            lambda m: (m.up_projection, m.down_projection),
+        experts = _load_stacked_experts(
             module.experts,
-            (up_projection, down_projection),
+            weights_dict,
+            [experts_path / str(idx) for idx in range(num_routed)],
         )
+
+    shared_experts = module.shared_experts
+    if shared_experts is not None:
+        shared_expert_path = path / "shared_expert"
+        if (shared_expert_path / "up_proj" / "qweight") in weights_dict:
+            shared_experts = _load_mobilemoe_shared_experts(
+                shared_experts,
+                weights_dict,
+                shared_expert_path,
+                implementation=implementation,
+            )
+        elif (shared_expert_path / "up_proj.weight") in weights_dict:
+            if num_shared != 1:
+                raise ValueError("Single shared expert path found but num_shared_experts != 1.")
+            shared_experts = _load_stacked_experts(shared_experts, weights_dict, [shared_expert_path])
+        elif (path / "shared_experts" / "0" / "up_proj.weight") in weights_dict:
+            shared_experts = _load_stacked_experts(
+                shared_experts,
+                weights_dict,
+                [path / "shared_experts" / str(idx) for idx in range(num_shared)],
+            )
+        else:
+            raise KeyError("Could not find shared expert weights in HF checkpoint.")
 
     gate = None
     if module.gate is not None:
@@ -678,10 +840,14 @@ def load_moe(
             raise KeyError("Could not find shared expert gate weights in HF checkpoint.")
         gate = load_linear(module.gate, weights_dict, gate_path, implementation=implementation)
 
+    routing_bias = module.routing_bias
+    if routing_bias is not None:
+        routing_bias = weights_dict[path / "expert_bias"].astype(routing_bias.dtype)
+
     return load_as_at(
-        lambda m: (m.router, m.experts, m.gate),
+        lambda m: (m.router, m.experts, m.shared_experts, m.gate, m.routing_bias),
         module,
-        (router, experts, gate),
+        (router, experts, shared_experts, gate, routing_bias),
     )
 
 
@@ -763,6 +929,33 @@ def _reorder_gated_attention_weights(
     return reordered_weights
 
 
+def _reorder_mobilemoe_rope_weights(
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    num_heads: int,
+    num_groups: int,
+) -> dict[str, Array]:
+    # MobileMoE rotates adjacent real/imaginary pairs. Lalamo rotates split
+    # halves, so Q/K output channels are permuted once at the import boundary.
+    reordered_weights: dict[str, Array] = {}
+    for projection_name, heads in (("q_proj", num_heads), ("k_proj", num_groups)):
+        projection_path = path / projection_name
+        for parameter_name in ("qweight", "weight_scale"):
+            parameter_path = projection_path / parameter_name
+            reordered_weights[parameter_path] = rearrange(
+                weights_dict[parameter_path],
+                "(heads pairs two) ... -> (heads two pairs) ...",
+                heads=heads,
+                two=2,
+            )
+
+    value_path = path / "v_proj"
+    for parameter_name in ("qweight", "weight_scale"):
+        parameter_path = value_path / parameter_name
+        reordered_weights[parameter_path] = weights_dict[parameter_path]
+    return reordered_weights
+
+
 def load_attention(
     module: Attention,
     weights_dict: Mapping[str, Array],
@@ -772,6 +965,13 @@ def load_attention(
 ) -> Attention:
     projection_sublayers = ["q_proj"] if module.config.is_kv_sharing else ["q_proj", "k_proj", "v_proj"]
     projection_weights = weights_dict
+    if _is_mobilemoe_int4(weights_dict, path, ["q_proj"]):
+        projection_weights = _reorder_mobilemoe_rope_weights(
+            weights_dict,
+            path,
+            module.config.num_heads,
+            module.config.num_groups,
+        )
     if module.config.has_gate:
         if (path / "gate_proj" / "weight") in weights_dict or (path / "gate_proj" / "qweight") in weights_dict:
             projection_sublayers = [*projection_sublayers, "gate_proj"]
@@ -1271,6 +1471,9 @@ def _decoder_load_layout(
         norm_key="norm",
         lm_head_path=lm_head_path,
     )
+
+    if (decoder_path / "layers" / "0" / "feed_forward" / "expert_bias") in weights_dict:
+        return replace(standard_layout, mlp_key="feed_forward")
 
     backbone_path = root_path / "backbone"
     if _has_prefix(weights_dict, backbone_path):

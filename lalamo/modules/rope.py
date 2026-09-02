@@ -133,6 +133,9 @@ class LlamaRoPEConfig(RoPEConfig):
 
         high_frequency_mask = wavelengths < high_frequency_wavelength
         low_frequency_mask = wavelengths > low_frequency_wavelength
+        if self.high_frequency_factor == self.low_frequency_factor:
+            return jnp.where(high_frequency_mask, inverse_frequencies, inverse_frequencies / self.scaling_factor)
+
         mid_frequency_mask = (~high_frequency_mask) & (~low_frequency_mask)
 
         smoothing_factors = self.original_context_length / wavelengths - self.low_frequency_factor

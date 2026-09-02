@@ -36,6 +36,7 @@ from .mlp import (
     MLPConfig,
     MLPForwardPassConfig,
     RoutingFunction,
+    SigmoidRouting,
     SoftmaxRouting,
 )
 from .normalization import (
@@ -167,6 +168,7 @@ __all__ = [
     "ShortConv",
     "ShortConvConfig",
     "SiLU",
+    "SigmoidRouting",
     "SoftmaxRouting",
     "Speculator",
     "SpeculatorConfig",

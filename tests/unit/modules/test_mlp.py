@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jax.sharding import Mesh, NamedSharding, Sharding
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
 from lalamo.modules.activations import Identity, SiLU
@@ -15,6 +15,7 @@ from lalamo.modules.mlp import (
     MixtureOfExperts,
     MixtureOfExpertsConfig,
     MLPForwardPassConfig,
+    SigmoidRouting,
     SoftmaxRouting,
 )
 from lalamo.weight_matrix import FullPrecisionSpec
@@ -39,9 +40,14 @@ def _moe_array(shape: tuple[int, ...], *, offset: int = 0) -> jax.Array:
     return (jnp.arange(offset, offset + prod(shape), dtype=jnp.float32).reshape(shape) / 50) - 0.5
 
 
-def _linear(weights: Array, biases: Array | None, output_dims: tuple[int, ...]) -> Linear:
+def _linear(
+    weights: Array,
+    biases: Array | None,
+    output_dims: tuple[int, ...],
+    config: LinearConfig = LinearConfig(),
+) -> Linear:
     return Linear(
-        config=LinearConfig(),
+        config=config,
         sharding_config=make_test_sharding_config(),
         weights=FullPrecisionSpec().compress(weights, sharding_config=make_test_sharding_config()),
         biases=biases,
@@ -79,6 +85,8 @@ def _moe(
     *,
     num_active_routed_experts: int = 1,
     num_shared_experts: int = 0,
+    expert_dtype: DTypeLike = jnp.float32,
+    router_config: LinearConfig = LinearConfig(),
 ) -> MixtureOfExperts:
     expert_config = DenseMLPConfig(
         linear_config=LinearConfig(),
@@ -90,7 +98,7 @@ def _moe(
     )
     config = MixtureOfExpertsConfig(
         expert_config=expert_config,
-        router_config=LinearConfig(),
+        router_config=router_config,
         routing_function=SoftmaxRouting(),
         num_routed_experts=NUM_ROUTED_EXPERTS,
         num_active_routed_experts=num_active_routed_experts,
@@ -99,8 +107,30 @@ def _moe(
         expert_hidden_dim=HIDDEN_DIM,
         gate_config=None,
     )
-    mixture_size = NUM_ROUTED_EXPERTS + num_shared_experts
     expert_bias_sharding = make_sharding((None, None))
+
+    def expert_mixture(mixture_size: int, offset: int) -> DenseMLP:
+        return DenseMLP(
+            config=expert_config,
+            sharding_config=make_test_sharding_config(),
+            up_projection=_linear(
+                _moe_array((mixture_size, 2 * HIDDEN_DIM, MODEL_DIM), offset=200 + offset).astype(expert_dtype),
+                jax.device_put(
+                    _moe_array((mixture_size, 2 * HIDDEN_DIM), offset=300 + offset).astype(expert_dtype),
+                    expert_bias_sharding,
+                ),
+                (HIDDEN_DIM, HIDDEN_DIM),
+            ),
+            down_projection=_linear(
+                _moe_array((mixture_size, MODEL_DIM, HIDDEN_DIM), offset=400 + offset).astype(expert_dtype),
+                jax.device_put(
+                    _moe_array((mixture_size, MODEL_DIM), offset=500 + offset).astype(expert_dtype),
+                    expert_bias_sharding,
+                ),
+                (MODEL_DIM,),
+            ),
+        )
+
     return MixtureOfExperts(
         config=config,
         sharding_config=make_test_sharding_config(),
@@ -108,22 +138,12 @@ def _moe(
             _moe_array((NUM_ROUTED_EXPERTS, MODEL_DIM)),
             _moe_array((NUM_ROUTED_EXPERTS,), offset=100),
             (NUM_ROUTED_EXPERTS,),
+            router_config,
         ),
-        experts=DenseMLP(
-            config=expert_config,
-            sharding_config=make_test_sharding_config(),
-            up_projection=_linear(
-                _moe_array((mixture_size, 2 * HIDDEN_DIM, MODEL_DIM), offset=200),
-                jax.device_put(_moe_array((mixture_size, 2 * HIDDEN_DIM), offset=300), expert_bias_sharding),
-                (HIDDEN_DIM, HIDDEN_DIM),
-            ),
-            down_projection=_linear(
-                _moe_array((mixture_size, MODEL_DIM, HIDDEN_DIM), offset=400),
-                jax.device_put(_moe_array((mixture_size, MODEL_DIM), offset=500), expert_bias_sharding),
-                (MODEL_DIM,),
-            ),
-        ),
+        experts=expert_mixture(NUM_ROUTED_EXPERTS, 0),
+        shared_experts=expert_mixture(num_shared_experts, 1000) if num_shared_experts > 0 else None,
         gate=None,
+        routing_bias=None,
     )
 
 
@@ -147,6 +167,8 @@ def _reference(module: DenseMLP, inputs: Array) -> Array:
 
 
 def _router_logits_reference(module: MixtureOfExperts, inputs: Array) -> Array:
+    if module.router.config.dtype is not None:
+        inputs = inputs.astype(module.router.config.dtype)
     router_weights = jnp.asarray(jax.device_get(module.router.weights.decompress()))
     logits = router_weights @ inputs
     if module.router.biases is not None:
@@ -154,18 +176,18 @@ def _router_logits_reference(module: MixtureOfExperts, inputs: Array) -> Array:
     return logits
 
 
-def _expert_reference(module: MixtureOfExperts, expert_idx: int, inputs: Array) -> Array:
-    up_weights = jnp.asarray(jax.device_get(module.experts.up_projection.weights.decompress()))[expert_idx]
-    down_weights = jnp.asarray(jax.device_get(module.experts.down_projection.weights.decompress()))[expert_idx]
+def _expert_reference(experts: DenseMLP, expert_idx: int, inputs: Array) -> Array:
+    up_weights = jnp.asarray(jax.device_get(experts.up_projection.weights.decompress()))[expert_idx]
+    down_weights = jnp.asarray(jax.device_get(experts.down_projection.weights.decompress()))[expert_idx]
     up_result = up_weights @ inputs
-    if module.experts.up_projection.biases is not None:
-        up_biases = jnp.asarray(jax.device_get(module.experts.up_projection.biases))
+    if experts.up_projection.biases is not None:
+        up_biases = jnp.asarray(jax.device_get(experts.up_projection.biases))
         up_result = up_result + up_biases[expert_idx]
-    up_projection, gate = jnp.split(up_result, (module.experts.hidden_dim,))
-    hidden = up_projection * module.experts.config.activation(gate)
+    up_projection, gate = jnp.split(up_result, (experts.hidden_dim,))
+    hidden = up_projection * experts.config.activation(gate)
     result = down_weights @ hidden
-    if module.experts.down_projection.biases is not None:
-        down_biases = jnp.asarray(jax.device_get(module.experts.down_projection.biases))
+    if experts.down_projection.biases is not None:
+        down_biases = jnp.asarray(jax.device_get(experts.down_projection.biases))
         result = result + down_biases[expert_idx]
     return result
 
@@ -176,9 +198,12 @@ def _routed_moe_token_reference(module: MixtureOfExperts, inputs: Array) -> Arra
     active_weights = jax.nn.softmax(active_logits)
     result = jnp.zeros((module.model_dim,), dtype=inputs.dtype)
     for active_idx, active_weight in zip(jax.device_get(active_indices), active_weights, strict=True):
-        result = result + _expert_reference(module, int(active_idx), inputs) * active_weight
-    for expert_idx in range(module.config.num_routed_experts, module.config.mixture_size):
-        result = result + _expert_reference(module, expert_idx, inputs)
+        expert_output = _expert_reference(module.experts, int(active_idx), inputs)
+        weighted_output = expert_output.astype(active_weight.dtype) * active_weight
+        result = result + weighted_output.astype(result.dtype)
+    if module.shared_experts is not None:
+        for expert_idx in range(module.config.num_shared_experts):
+            result = result + _expert_reference(module.shared_experts, expert_idx, inputs)
     return result
 
 
@@ -255,6 +280,23 @@ def test_softmax_routing_call_unbatched_selects_top_k_and_normalizes_weights() -
     assert_close(result=jnp.sum(result.expert_weights), reference=jnp.array(1.0, dtype=jnp.float32))
 
 
+def test_sigmoid_routing_biases_selection_and_scales_normalized_weights() -> None:
+    routing = SigmoidRouting(scale=2.5)
+    logits = jnp.array([1.0, 3.0, 2.0], dtype=jnp.float32)
+    routing_bias = jnp.array([1.0, 0.0, 0.0], dtype=jnp.bfloat16)
+
+    result = routing.call_unbatched(logits, num_active=2, routing_bias=routing_bias)
+
+    scores = jax.nn.sigmoid(logits)
+    active_indices = jnp.array([0, 1])
+    expected_weights = jnp.zeros_like(logits)
+    expected_weights = expected_weights.at[active_indices].set(
+        scores[active_indices] / scores[active_indices].sum() * 2.5,
+    )
+    assert jnp.array_equal(result.expert_mask, jnp.array([True, True, False]))
+    assert_close(result=result.expert_weights, reference=expected_weights)
+
+
 @pytest.mark.parametrize("mode", MOE_MODES)
 @pytest.mark.usefixtures("fake_mesh")
 def test_routed_moe_matches_direct_reference(mode: ForwardPassMode) -> None:
@@ -275,6 +317,54 @@ def test_routed_moe_matches_direct_reference(mode: ForwardPassMode) -> None:
         keychain=Keychain.init(7, sharding_config=make_test_sharding_config()),
     )
 
+    _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
+
+
+@pytest.mark.parametrize("mode", MOE_MODES)
+@pytest.mark.usefixtures("fake_mesh")
+def test_routed_moe_with_shared_experts_matches_direct_reference(mode: ForwardPassMode) -> None:
+    module = _moe(num_active_routed_experts=2, num_shared_experts=2)
+    sequence_length = _moe_sequence_length(mode)
+    inputs = _sharded_tokens(
+        jnp.arange(2 * sequence_length * MODEL_DIM, dtype=jnp.float32).reshape(
+            2,
+            sequence_length,
+            MODEL_DIM,
+        )
+        / 10
+    )
+
+    result = module(
+        inputs,
+        forward_pass_config=MLPForwardPassConfig(mode=mode, moe_chunk_size_ratio=0.5),
+        keychain=Keychain.init(8, sharding_config=make_test_sharding_config()),
+    )
+
+    _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
+
+
+@pytest.mark.parametrize("mode", MOE_MODES)
+@pytest.mark.usefixtures("fake_mesh")
+def test_routed_moe_with_float32_router_preserves_bfloat16_expert_dtype(mode: ForwardPassMode) -> None:
+    module = _moe(
+        num_active_routed_experts=2,
+        expert_dtype=jnp.bfloat16,
+        router_config=LinearConfig(dtype="float32"),
+    )
+    sequence_length = _moe_sequence_length(mode)
+    inputs = _sharded_tokens(
+        (jnp.arange(2 * sequence_length * MODEL_DIM).reshape(2, sequence_length, MODEL_DIM) / 10).astype(
+            jnp.bfloat16,
+        ),
+    )
+
+    result = module(
+        inputs,
+        forward_pass_config=MLPForwardPassConfig(mode=mode, moe_chunk_size_ratio=0.5),
+        keychain=Keychain.init(10, sharding_config=make_test_sharding_config()),
+    )
+
+    assert result.dtype == jnp.bfloat16
     _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
 
 

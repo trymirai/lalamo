@@ -18,6 +18,7 @@ from lalamo.compressed.mlx import MLXMatrixForInference, MLXMatrixForTraining
 from lalamo.initializer import EmptyInitializer, Initializer
 from lalamo.model import Model, ModelConfig
 from lalamo.model_import.loaders.huggingface import (
+    load_attention,
     load_huggingface_classifier,
     load_input_embedding_matrix,
     load_linear,
@@ -38,10 +39,11 @@ from lalamo.modules.mlp import (
     DenseMLPConfig,
     MixtureOfExperts,
     MixtureOfExpertsConfig,
+    SigmoidRouting,
     SoftmaxRouting,
 )
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.token_mixers.attention import Attention
+from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.weight_matrix import (
@@ -73,6 +75,20 @@ def _pack_int32(values: Array, bits: int) -> Array:
     grouped = values.reshape(rows, cols // values_per_word, values_per_word).astype(jnp.uint32)
     shifts = jnp.arange(values_per_word, dtype=jnp.uint32) * jnp.uint32(bits)
     return jnp.sum(grouped << shifts, axis=-1, dtype=jnp.uint32).astype(jnp.int32)
+
+
+def _pack_mobilemoe_int4(values: Array) -> Array:
+    *leading_dims, channels = values.shape
+    unsigned_values = jnp.bitwise_and(values.astype(jnp.int16), jnp.int16(0x0F)).astype(jnp.uint8)
+    grouped_values = unsigned_values.reshape(*leading_dims, channels // 2, 2)
+    return grouped_values[..., 0] | (grouped_values[..., 1] << jnp.uint8(4))
+
+
+def _mobilemoe_int4_weights(path: ParameterPath, values: Array, group_size: int = 2) -> Mapping[str, Array]:
+    return {
+        path / "qweight": _pack_mobilemoe_int4(values),
+        path / "weight_scale": jnp.ones((*values.shape[:-1], values.shape[-1] // group_size), dtype=jnp.float16),
+    }
 
 
 def _linear_template(dtype: DTypeLike | None, layout: Layout = Layout.OUTPUT_INPUT) -> Linear:
@@ -114,6 +130,29 @@ def _gpt_oss_moe_template() -> MixtureOfExperts:
     )
     initializer = EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config())
     return config.init(initializer, model_dim=64, hidden_dim=64)
+
+
+def _mobilemoe_moe_template() -> MixtureOfExperts:
+    expert_config = DenseMLPConfig(
+        linear_config=LinearConfig(),
+        activation=SiLU(),
+        has_up_biases=False,
+        has_down_biases=False,
+        gate_clipping=None,
+        up_clipping=None,
+    )
+    config = MixtureOfExpertsConfig(
+        expert_config=expert_config,
+        router_config=LinearConfig(dtype="float32"),
+        routing_function=SigmoidRouting(scale=2.5),
+        num_routed_experts=2,
+        num_active_routed_experts=1,
+        router_has_biases=False,
+        num_shared_experts=2,
+        expert_hidden_dim=4,
+    )
+    initializer = EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config())
+    return config.init(initializer, model_dim=INPUT_DIM, hidden_dim=4)
 
 
 def _mlx_weights(path: ParameterPath) -> Mapping[str, Array]:
@@ -331,6 +370,62 @@ def test_load_linear_symmetric_awq_without_qzeros_uses_symmetric_spec() -> None:
     assert loaded.weights.packed_zero_points is None
 
 
+def test_load_linear_preserves_mobilemoe_signed_int4_payload() -> None:
+    path = ParameterPath("layer")
+    values = (jnp.arange(OUTPUT_DIM * INPUT_DIM, dtype=jnp.int16) % 16 - 8).reshape(OUTPUT_DIM, INPUT_DIM)
+
+    loaded = load_linear(
+        _linear_template(jnp.bfloat16),
+        _mobilemoe_int4_weights(path, values),
+        path,
+    )
+
+    assert isinstance(loaded.weights, IntMatrixForInference)
+    assert loaded.weights.spec == IntSpec(bits=4, group_size=2, is_symmetric=True)
+    np.testing.assert_array_equal(loaded.weights.decompress(), values.astype(jnp.bfloat16))
+
+
+def test_load_attention_reorders_mobilemoe_adjacent_rope_pairs() -> None:
+    config = AttentionConfig(
+        qkvg_projection_config=LinearConfig(),
+        out_projection_config=LinearConfig(),
+        query_norm_config=None,
+        key_norm_config=None,
+        num_heads=2,
+        num_groups=1,
+        head_dim=4,
+        is_causal=True,
+        scale=None,
+        sliding_window_size=None,
+        logit_soft_cap=None,
+        has_sinks=False,
+        has_qkvg_biases=False,
+        has_out_biases=False,
+    )
+    module = config.init(
+        EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config()),
+        model_dim=INPUT_DIM,
+    )
+    path = ParameterPath("attention")
+    q_values = (jnp.arange(8 * INPUT_DIM, dtype=jnp.int16) % 16 - 8).reshape(8, INPUT_DIM)
+    k_values = ((jnp.arange(4 * INPUT_DIM, dtype=jnp.int16) + 1) % 16 - 8).reshape(4, INPUT_DIM)
+    v_values = ((jnp.arange(4 * INPUT_DIM, dtype=jnp.int16) + 2) % 16 - 8).reshape(4, INPUT_DIM)
+    o_values = ((jnp.arange(8 * INPUT_DIM, dtype=jnp.int16) + 3) % 16 - 8).reshape(8, INPUT_DIM)
+    weights = {
+        **_mobilemoe_int4_weights(path / "q_proj", q_values),
+        **_mobilemoe_int4_weights(path / "k_proj", k_values),
+        **_mobilemoe_int4_weights(path / "v_proj", v_values),
+        **_mobilemoe_int4_weights(path / "o_proj", o_values),
+    }
+
+    loaded = load_attention(module, weights, path)
+
+    q_values = q_values.reshape(2, 2, 2, INPUT_DIM).transpose(0, 2, 1, 3).reshape(8, INPUT_DIM)
+    k_values = k_values.reshape(1, 2, 2, INPUT_DIM).transpose(0, 2, 1, 3).reshape(4, INPUT_DIM)
+    expected_qkv = jnp.concatenate((q_values, k_values, v_values), axis=0).astype(jnp.bfloat16)
+    np.testing.assert_array_equal(loaded.qkvg_projection.weights.decompress(), expected_qkv)
+
+
 def test_load_linear_full_precision_weak_template_preserves_checkpoint_dtype() -> None:
     path = ParameterPath("layer")
     weights = jnp.arange(OUTPUT_DIM * INPUT_DIM, dtype=jnp.float32).reshape(OUTPUT_DIM, INPUT_DIM).astype(jnp.bfloat16)
@@ -425,6 +520,66 @@ def test_load_gpt_oss_moe_preserves_native_mxfp4_payload_and_canonical_rows() ->
     assert jnp.array_equal(loaded.experts.up_projection.biases[..., :32], expected_up_bias)
     assert jnp.array_equal(loaded.experts.up_projection.biases[..., 32:], expected_gate_bias)
     assert jnp.array_equal(loaded.experts.down_projection.biases, jnp.broadcast_to(down_bias, (2, 64)))
+
+
+def test_load_mobilemoe_moe_preserves_routed_and_shared_int4_layouts() -> None:
+    module = _mobilemoe_moe_template()
+    path = ParameterPath("feed_forward")
+    experts_path = path / "experts"
+
+    def signed_values(shape: tuple[int, ...], offset: int) -> Array:
+        return (jnp.arange(prod(shape), dtype=jnp.int16).reshape(shape) + offset) % 16 - 8
+
+    gate_up_values = signed_values((2, 8, 8), 0)
+    down_values = signed_values((2, 4, 8), 1)
+    shared_up_values = signed_values((8, 8), 2)
+    shared_gate_values = signed_values((8, 8), 3)
+    shared_down_values = signed_values((8, 8), 4)
+    routing_bias = jnp.array([0.25, -0.5], dtype=jnp.bfloat16)
+    weights: Mapping[str, Array] = {
+        path / "router" / "weight": jnp.zeros((2, 8), dtype=jnp.float32),
+        path / "expert_bias": routing_bias,
+        experts_path / "gate_up_qweight": _pack_mobilemoe_int4(gate_up_values),
+        experts_path / "gate_up_scale": jnp.ones((2, 8, 4), dtype=jnp.float16),
+        experts_path / "down_qweight": _pack_mobilemoe_int4(down_values),
+        experts_path / "down_scale": jnp.ones((2, 4, 4), dtype=jnp.float16),
+        **_mobilemoe_int4_weights(path / "shared_expert" / "up_proj", shared_up_values),
+        **_mobilemoe_int4_weights(path / "shared_expert" / "gate_proj", shared_gate_values),
+        **_mobilemoe_int4_weights(path / "shared_expert" / "down_proj", shared_down_values),
+    }
+
+    loaded = load_moe(module, weights, path)
+
+    assert loaded.router.weights.dtype == jnp.float32
+    assert loaded.routing_bias is not None
+    np.testing.assert_array_equal(loaded.routing_bias, routing_bias)
+    assert isinstance(loaded.experts.up_projection.weights, IntMatrixForInference)
+    assert loaded.experts.up_projection.weights.spec.layout == Layout.INPUT_OUTPUT
+    canonical_gate_up = jnp.concatenate((gate_up_values[..., 4:], gate_up_values[..., :4]), axis=-1)
+    np.testing.assert_array_equal(
+        loaded.experts.up_projection.weights.decompress(),
+        canonical_gate_up.swapaxes(-1, -2).astype(jnp.bfloat16),
+    )
+    np.testing.assert_array_equal(
+        loaded.experts.down_projection.weights.decompress(),
+        down_values.swapaxes(-1, -2).astype(jnp.bfloat16),
+    )
+    assert loaded.shared_experts is not None
+    assert loaded.shared_experts.up_projection.weights.spec.layout == Layout.OUTPUT_INPUT
+    np.testing.assert_array_equal(
+        loaded.shared_experts.up_projection.weights.decompress(),
+        jnp.concatenate(
+            (
+                shared_up_values.reshape(2, 4, 8),
+                shared_gate_values.reshape(2, 4, 8),
+            ),
+            axis=1,
+        ).astype(jnp.bfloat16),
+    )
+    np.testing.assert_array_equal(
+        loaded.shared_experts.down_projection.weights.decompress(),
+        shared_down_values.reshape(8, 2, 4).transpose(1, 0, 2).astype(jnp.bfloat16),
+    )
 
 
 def test_load_huggingface_classifier_uses_hf_embedding_layout() -> None:

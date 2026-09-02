@@ -14,7 +14,7 @@ from lalamo.utils.surgery import (
     map_nodes_of_type,
     zip_nodes_with,
 )
-from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec
+from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, Layout
 from tests.helpers import make_sharding, make_test_sharding_config
 
 
@@ -89,6 +89,19 @@ def test_load_as_treats_weight_matrices_as_leaf_nodes() -> None:
     result = load_as(template, value)
 
     assert result["matrix"] is value["matrix"]
+
+
+def test_load_as_accepts_matching_logical_shapes_with_different_layouts() -> None:
+    template = _matrix(shape=(2, 3))
+    value = FullPrecisionSpec(layout=Layout.INPUT_OUTPUT).compress(
+        jnp.ones((2, 3), dtype=jnp.float32),
+        sharding_config=make_test_sharding_config(),
+    )
+
+    result = load_as(template, value)
+
+    assert result.spec.layout == Layout.INPUT_OUTPUT
+    assert result.shape == (3, 2)
 
 
 def test_load_as_switches_weight_matrix_sharding_to_template(fake_mesh: Mesh) -> None:
