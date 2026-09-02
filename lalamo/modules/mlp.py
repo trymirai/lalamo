@@ -468,6 +468,25 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             return jax.nn.sigmoid(gate_value)
         return jnp.ones((1,), dtype=inputs.dtype)
 
+    def _call_router(
+        self,
+        inputs: Float[Array, " channels"],
+        forward_pass_config: MLPForwardPassConfig,
+        *,
+        keychain: Keychain,
+    ) -> Float[Array, " experts"]:
+        weights = self.router.weights
+        if isinstance(self.config.routing_function, SigmoidRouting):
+            weights = weights.astype(jnp.float32)
+        logits = weights.dot(
+            inputs.astype(weights.dtype),
+            keychain=keychain,
+            forward_pass_config=forward_pass_config.matmul_config,
+        )
+        if self.router.biases is not None:
+            logits = logits + self.router.biases.astype(logits.dtype)
+        return logits
+
     def _call_decode_token(
         self,
         token_input: Float[Array, " channels"],
@@ -476,10 +495,10 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         keychain: Keychain,
     ) -> Float[Array, " channels"]:
         router_keychain, shared_weight_keychain, routed_expert_keychain, shared_expert_keychain = keychain.split(4)
-        (router_logits,) = self.router(
+        router_logits = self._call_router(
             token_input,
+            forward_pass_config,
             keychain=router_keychain,
-            forward_pass_config=forward_pass_config.matmul_config,
         )
         router_logits = jax.device_put(router_logits, self.sharding_config.make_sharding((None,)))
         routing = self.config.routing_function.call_unbatched(
@@ -494,7 +513,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             expert_weights: Float[Array, " active_experts"],
             expert_keychain: Keychain,
         ) -> Float[Array, " channels"]:
-            num_experts = expert_indices.shape[0]
+            (num_experts,) = expert_indices.shape
             expert_vmapped_keys = expert_keychain.broadcast((num_experts,)).vmapped_keys
             expert_batch_keys = jax.random.split(expert_keychain.batch_key, num_experts)
 
@@ -598,10 +617,10 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             )
 
         router_keychain, chunk_keychain, shared_weight_keychain, shared_expert_keychain = keychain.split(4)
-        (router_logits,) = call_vmapped(
-            self.router,
+        router_logits = call_vmapped(
+            self._call_router,
             flattened_inputs,
-            forward_pass_config=forward_pass_config.matmul_config,
+            forward_pass_config=forward_pass_config,
             keychain=flatten_token_keychain(router_keychain),
             added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )

@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from lalamo.modules.activations import SiLU
@@ -62,14 +62,12 @@ class HFMobileMoEConfig(HuggingFaceLMConfig):
     num_local_experts: int
     num_experts_per_tok: int
     interleave_moe_layer_step: int
-    no_rope_layers: list[Literal[1]]
-    layer_types: list[Literal["full_attention"]]
+    no_rope_layers: list[Literal[0, 1]]
     use_qk_norm: Literal[True]
     attn_temperature_tuning: Literal[False]
     tie_word_embeddings: Literal[True]
     torch_dtype: Literal["bfloat16"]
     attention_bias: Literal[False]
-    attention_dropout: float
     routed_scaling_factor: float
     norm_topk_prob: Literal[True]
     quantization: MobileMoEQuantizationConfig
@@ -78,16 +76,8 @@ class HFMobileMoEConfig(HuggingFaceLMConfig):
         self,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        if self.interleave_moe_layer_step != 1:
-            raise ValueError("MobileMoE requires an MoE block in every layer.")
-        if self.no_rope_layers != [1] * self.num_hidden_layers:
-            raise ValueError("MobileMoE requires RoPE in every layer.")
-        if self.layer_types != ["full_attention"] * self.num_hidden_layers:
-            raise ValueError("MobileMoE supports only full-attention layers.")
-        if self.rope_scaling.low_freq_factor != 1.0 or self.rope_scaling.high_freq_factor != 1.0:
-            raise ValueError("MobileMoE requires equal unit RoPE frequency factors.")
-        if self.attention_dropout != 0.0:
-            raise ValueError("MobileMoE does not support attention dropout.")
+        if self.interleave_moe_layer_step < 1:
+            raise ValueError("MobileMoE interleave_moe_layer_step must be positive.")
         if self.intermediate_size_mlp % self.intermediate_size != 0:
             raise ValueError("MobileMoE shared expert width must be divisible by routed expert width.")
 
@@ -124,7 +114,7 @@ class HFMobileMoEConfig(HuggingFaceLMConfig):
         )
         moe_config = MixtureOfExpertsConfig(
             expert_config=expert_config,
-            router_config=LinearConfig(dtype="float32"),
+            router_config=linear_config,
             routing_function=SigmoidRouting(scale=self.routed_scaling_factor),
             num_routed_experts=self.num_local_experts,
             num_active_routed_experts=self.num_experts_per_tok,
@@ -148,7 +138,7 @@ class HFMobileMoEConfig(HuggingFaceLMConfig):
             scale=None,
             sliding_window_size=None,
         )
-        layer_config = TransformerLayerConfig(
+        moe_layer_config = TransformerLayerConfig(
             pre_mixer_norm_config=rmsnorm_config,
             mixer_config=attention_config,
             post_mixer_norm_config=None,
@@ -157,8 +147,28 @@ class HFMobileMoEConfig(HuggingFaceLMConfig):
             post_mlp_norm_config=None,
             rope_config=rope_config,
         )
+        dense_layer_config = replace(
+            moe_layer_config,
+            mlp_config=expert_config,
+            hidden_dim=self.intermediate_size_mlp,
+        )
         transformer_config = TransformerConfig(
-            layer_configs=tuple(layer_config for _ in range(self.num_hidden_layers)),
+            layer_configs=tuple(
+                replace(
+                    moe_layer_config
+                    if (layer_index + 1) % self.interleave_moe_layer_step == 0
+                    else dense_layer_config,
+                    mixer_config=attention_config
+                    if use_rope
+                    else replace(attention_config, query_norm_config=None, key_norm_config=None),
+                    rope_config=rope_config if use_rope else None,
+                )
+                for layer_index, use_rope in zip(
+                    range(self.num_hidden_layers),
+                    self.no_rope_layers,
+                    strict=True,
+                )
+            ),
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,

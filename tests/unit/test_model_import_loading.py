@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from einops import rearrange
 from jaxtyping import Array, DTypeLike
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
@@ -81,13 +82,15 @@ def _pack_mobilemoe_int4(values: Array) -> Array:
     *leading_dims, channels = values.shape
     unsigned_values = jnp.bitwise_and(values.astype(jnp.int16), jnp.int16(0x0F)).astype(jnp.uint8)
     grouped_values = unsigned_values.reshape(*leading_dims, channels // 2, 2)
-    return grouped_values[..., 0] | (grouped_values[..., 1] << jnp.uint8(4))
+    low_nibbles, high_nibbles = jnp.moveaxis(grouped_values, -1, 0)
+    return low_nibbles | (high_nibbles << jnp.uint8(4))
 
 
 def _mobilemoe_int4_weights(path: ParameterPath, values: Array, group_size: int = 2) -> Mapping[str, Array]:
+    *leading_dims, channels = values.shape
     return {
         path / "qweight": _pack_mobilemoe_int4(values),
-        path / "weight_scale": jnp.ones((*values.shape[:-1], values.shape[-1] // group_size), dtype=jnp.float16),
+        path / "weight_scale": jnp.ones((*leading_dims, channels // group_size), dtype=jnp.float16),
     }
 
 
@@ -143,7 +146,7 @@ def _mobilemoe_moe_template() -> MixtureOfExperts:
     )
     config = MixtureOfExpertsConfig(
         expert_config=expert_config,
-        router_config=LinearConfig(dtype="float32"),
+        router_config=LinearConfig(),
         routing_function=SigmoidRouting(scale=2.5),
         num_routed_experts=2,
         num_active_routed_experts=1,
@@ -420,8 +423,18 @@ def test_load_attention_reorders_mobilemoe_adjacent_rope_pairs() -> None:
 
     loaded = load_attention(module, weights, path)
 
-    q_values = q_values.reshape(2, 2, 2, INPUT_DIM).transpose(0, 2, 1, 3).reshape(8, INPUT_DIM)
-    k_values = k_values.reshape(1, 2, 2, INPUT_DIM).transpose(0, 2, 1, 3).reshape(4, INPUT_DIM)
+    q_values = rearrange(
+        q_values,
+        "(heads pairs pair_channels) input -> (heads pair_channels pairs) input",
+        heads=2,
+        pairs=2,
+    )
+    k_values = rearrange(
+        k_values,
+        "(heads pairs pair_channels) input -> (heads pair_channels pairs) input",
+        heads=1,
+        pairs=2,
+    )
     expected_qkv = jnp.concatenate((q_values, k_values, v_values), axis=0).astype(jnp.bfloat16)
     np.testing.assert_array_equal(loaded.qkvg_projection.weights.decompress(), expected_qkv)
 
@@ -550,19 +563,20 @@ def test_load_mobilemoe_moe_preserves_routed_and_shared_int4_layouts() -> None:
 
     loaded = load_moe(module, weights, path)
 
-    assert loaded.router.weights.dtype == jnp.float32
+    assert loaded.router.weights.dtype == jnp.bfloat16
     assert loaded.routing_bias is not None
     np.testing.assert_array_equal(loaded.routing_bias, routing_bias)
     assert isinstance(loaded.experts.up_projection.weights, IntMatrixForInference)
     assert loaded.experts.up_projection.weights.spec.layout == Layout.INPUT_OUTPUT
-    canonical_gate_up = jnp.concatenate((gate_up_values[..., 4:], gate_up_values[..., :4]), axis=-1)
+    gate_values, up_values = jnp.split(gate_up_values, 2, axis=-1)
+    canonical_gate_up = jnp.concatenate((up_values, gate_values), axis=-1)
     np.testing.assert_array_equal(
         loaded.experts.up_projection.weights.decompress(),
-        canonical_gate_up.swapaxes(-1, -2).astype(jnp.bfloat16),
+        rearrange(canonical_gate_up, "experts input output -> experts output input").astype(jnp.bfloat16),
     )
     np.testing.assert_array_equal(
         loaded.experts.down_projection.weights.decompress(),
-        down_values.swapaxes(-1, -2).astype(jnp.bfloat16),
+        rearrange(down_values, "experts input output -> experts output input").astype(jnp.bfloat16),
     )
     assert loaded.shared_experts is not None
     assert loaded.shared_experts.up_projection.weights.spec.layout == Layout.OUTPUT_INPUT
@@ -578,7 +592,11 @@ def test_load_mobilemoe_moe_preserves_routed_and_shared_int4_layouts() -> None:
     )
     np.testing.assert_array_equal(
         loaded.shared_experts.down_projection.weights.decompress(),
-        shared_down_values.reshape(8, 2, 4).transpose(1, 0, 2).astype(jnp.bfloat16),
+        rearrange(
+            shared_down_values,
+            "output (experts hidden) -> experts output hidden",
+            experts=2,
+        ).astype(jnp.bfloat16),
     )
 
 

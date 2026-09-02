@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from itertools import accumulate
-from typing import Literal
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -18,8 +17,6 @@ __all__ = [
 
 @dataclass(frozen=True)
 class LinearConfig(LalamoConfig):
-    dtype: Literal["float32"] | None = None
-
     def init(
         self,
         initializer: Initializer,
@@ -30,12 +27,11 @@ class LinearConfig(LalamoConfig):
         is_sharded: bool = True,
     ) -> "Linear":
         total_output_dim = sum(output_dims)
-        dtype = jnp.dtype(self.dtype) if self.dtype is not None else None
         return Linear(
             config=self,
             sharding_config=initializer.sharding_config,
-            weights=initializer.weight_matrix(total_output_dim, input_dim, dtype=dtype, is_sharded=is_sharded),
-            biases=initializer.zeros((total_output_dim,), dtype=dtype) if has_biases else None,
+            weights=initializer.weight_matrix(total_output_dim, input_dim, is_sharded=is_sharded),
+            biases=initializer.zeros((total_output_dim,)) if has_biases else None,
             output_dims=output_dims,
         )
 
@@ -50,9 +46,8 @@ class LinearConfig(LalamoConfig):
         is_sharded: bool = True,
     ) -> "Linear":
         total_output_dim = sum(output_dims)
-        dtype = jnp.dtype(self.dtype) if self.dtype is not None else None
         if has_biases:
-            biases = initializer.zeros((mixture_size, total_output_dim), dtype=dtype)
+            biases = initializer.zeros((mixture_size, total_output_dim))
         else:
             biases = None
         return Linear(
@@ -62,7 +57,6 @@ class LinearConfig(LalamoConfig):
                 total_output_dim,
                 input_dim,
                 mixture_size,
-                dtype=dtype,
                 is_sharded=is_sharded,
             ),
             biases=biases,
@@ -112,8 +106,6 @@ class Linear(LalamoModule[LinearConfig]):
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> tuple[Float[Array, " out_channels"], ...]:
-        if self.config.dtype is not None:
-            inputs = inputs.astype(self.config.dtype)
         result = self.weights.dot(inputs, keychain=keychain, forward_pass_config=forward_pass_config)
         if self.biases is not None:
             result = result + self.biases.astype(result.dtype)

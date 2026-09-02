@@ -86,7 +86,6 @@ def _moe(
     num_active_routed_experts: int = 1,
     num_shared_experts: int = 0,
     expert_dtype: DTypeLike = jnp.float32,
-    router_config: LinearConfig = LinearConfig(),
 ) -> MixtureOfExperts:
     expert_config = DenseMLPConfig(
         linear_config=LinearConfig(),
@@ -98,7 +97,7 @@ def _moe(
     )
     config = MixtureOfExpertsConfig(
         expert_config=expert_config,
-        router_config=router_config,
+        router_config=LinearConfig(),
         routing_function=SoftmaxRouting(),
         num_routed_experts=NUM_ROUTED_EXPERTS,
         num_active_routed_experts=num_active_routed_experts,
@@ -138,7 +137,7 @@ def _moe(
             _moe_array((NUM_ROUTED_EXPERTS, MODEL_DIM)),
             _moe_array((NUM_ROUTED_EXPERTS,), offset=100),
             (NUM_ROUTED_EXPERTS,),
-            router_config,
+            config.router_config,
         ),
         experts=expert_mixture(NUM_ROUTED_EXPERTS, 0),
         shared_experts=expert_mixture(num_shared_experts, 1000) if num_shared_experts > 0 else None,
@@ -167,8 +166,7 @@ def _reference(module: DenseMLP, inputs: Array) -> Array:
 
 
 def _router_logits_reference(module: MixtureOfExperts, inputs: Array) -> Array:
-    if module.router.config.dtype is not None:
-        inputs = inputs.astype(module.router.config.dtype)
+    inputs = inputs.astype(module.router.weights.dtype)
     router_weights = jnp.asarray(jax.device_get(module.router.weights.decompress()))
     logits = router_weights @ inputs
     if module.router.biases is not None:
@@ -349,7 +347,6 @@ def test_routed_moe_with_float32_router_preserves_bfloat16_expert_dtype(mode: Fo
     module = _moe(
         num_active_routed_experts=2,
         expert_dtype=jnp.bfloat16,
-        router_config=LinearConfig(dtype="float32"),
     )
     sequence_length = _moe_sequence_length(mode)
     inputs = _sharded_tokens(

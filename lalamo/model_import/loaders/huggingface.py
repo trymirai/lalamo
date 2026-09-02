@@ -103,13 +103,14 @@ def _load_mobilemoe_int4_matrix(
 ) -> WeightMatrix:
     if packed_weights.dtype != jnp.dtype(jnp.uint8):
         raise ValueError(f"MobileMoE INT4 weights must be U8, got {packed_weights.dtype}")
-    if packed_weights.shape[:-1] != scales.shape[:-1]:
+    *weight_leading_dims, packed_channels = packed_weights.shape
+    *scale_leading_dims, num_groups = scales.shape
+    if weight_leading_dims != scale_leading_dims:
         raise ValueError(
             f"MobileMoE INT4 weight/scale shape mismatch: weights={packed_weights.shape}, scales={scales.shape}",
         )
 
-    unpacked_channels = packed_weights.shape[-1] * 2
-    num_groups = scales.shape[-1]
+    unpacked_channels = packed_channels * 2
     if unpacked_channels % num_groups != 0:
         raise ValueError(
             f"MobileMoE INT4 channels {unpacked_channels} are not divisible by {num_groups} scale groups",
@@ -295,7 +296,10 @@ def _is_mobilemoe_int4(
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
 ) -> bool:
-    probe = path / sublayers_to_fuse[0] if sublayers_to_fuse else path
+    probe = path
+    if sublayers_to_fuse:
+        first_sublayer, *_ = sublayers_to_fuse
+        probe /= first_sublayer
     return (probe / "qweight") in weights_dict and (probe / "weight_scale") in weights_dict
 
 
@@ -722,16 +726,10 @@ def load_moe(
     elif (experts_path / "gate_up_qweight") in weights_dict:
         gate_up_packed = weights_dict[experts_path / "gate_up_qweight"]
         gate_up_scales = weights_dict[experts_path / "gate_up_scale"]
-        packed_half = gate_up_packed.shape[-1] // 2
-        scale_half = gate_up_scales.shape[-1] // 2
-        gate_up_packed = jnp.concatenate(
-            (gate_up_packed[..., packed_half:], gate_up_packed[..., :packed_half]),
-            axis=-1,
-        )
-        gate_up_scales = jnp.concatenate(
-            (gate_up_scales[..., scale_half:], gate_up_scales[..., :scale_half]),
-            axis=-1,
-        )
+        gate_packed, up_packed = jnp.split(gate_up_packed, 2, axis=-1)
+        gate_scales, up_scales = jnp.split(gate_up_scales, 2, axis=-1)
+        gate_up_packed = jnp.concatenate((up_packed, gate_packed), axis=-1)
+        gate_up_scales = jnp.concatenate((up_scales, gate_scales), axis=-1)
         up_projection = _update_linear(
             module.experts.up_projection,
             _load_mobilemoe_int4_matrix(
