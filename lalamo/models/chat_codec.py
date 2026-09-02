@@ -1,8 +1,6 @@
-import codecs
-import itertools
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from functools import cached_property
@@ -12,6 +10,7 @@ from typing import NotRequired, TypedDict
 from frozendict import frozendict
 from jinja2 import Template
 from tokenizers import Tokenizer
+from tokenizers.decoders import ByteLevel, DecodeStream
 
 from lalamo.token_codec import TokenCodec, TokenCodecConfig
 
@@ -227,19 +226,49 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         return self.tokenizer.encode(text, add_special_tokens=False).ids
 
     def decode_tokens(self, tokens: list[int], *, hide_invalid_utf_chars: bool = False) -> str:
-        errors = "ignore" if hide_invalid_utf_chars else "replace"
-        return "".join(codecs.iterdecode(self._token_groups(tokens), "utf-8", errors=errors))
+        if hide_invalid_utf_chars:
+            return DecodeStream(skip_special_tokens=False).step(self.tokenizer, tokens) or ""
+        return self.tokenizer.decode(tokens, skip_special_tokens=False)
 
     def token_bytes(self, token_id: int) -> bytes:
-        return b"".join(self._token_groups([token_id]))
+        if token_id in self._byte_token_ids:
+            return bytes((self._byte_token_ids[token_id],))
 
-    def _token_groups(self, tokens: list[int]) -> Iterable[bytes]:
-        byte_token_ids = self._byte_token_ids
-        for is_byte, group in itertools.groupby(tokens, key=lambda tid: tid in byte_token_ids):
-            if is_byte:
-                yield bytes(byte_token_ids[tid] for tid in group)
-            else:
-                yield self.tokenizer.decode(list(group), skip_special_tokens=False).encode("utf-8")
+        token = self.tokenizer.id_to_token(token_id)
+        if token is None:
+            raise ValueError(f"Unknown token id: {token_id}.")
+
+        if self._byte_level_decoder is not None and all(character in self._byte_level_decoder for character in token):
+            return bytes(self._byte_level_decoder[character] for character in token)
+
+        return self.tokenizer.decode([token_id], skip_special_tokens=False).encode()
+
+    @cached_property
+    def _byte_level_decoder(self) -> dict[str, int] | None:
+        if not isinstance(self.tokenizer.decoder, ByteLevel):
+            return None
+
+        byte_values = [
+            *range(ord("!"), ord("~") + 1),
+            *range(ord("¡"), ord("¬") + 1),
+            *range(ord("®"), ord("ÿ") + 1),
+        ]
+        unicode_codepoints = [*byte_values]
+        next_codepoint = 256
+        for byte in range(256):
+            if byte not in byte_values:
+                byte_values.append(byte)
+                unicode_codepoints.append(next_codepoint)
+                next_codepoint += 1
+        return {chr(codepoint): byte for byte, codepoint in zip(byte_values, unicode_codepoints, strict=True)}
+
+    def decode_stream(self, reasoning_effort: ReasoningEffort | None = None) -> "ChatDecodeStream":
+        reasoning_config = self.config.reasoning_config
+        response_started = self.output_parser_regex is None
+        if reasoning_config is not None:
+            effective_effort = reasoning_effort or reasoning_config.default_reasoning_effort
+            response_started = response_started or effective_effort is ReasoningEffort.NO_REASONING
+        return ChatDecodeStream(self, response_started=response_started)
 
     def decode_response(self, response: list[int]) -> AssistantMessage:
         return self.parse_response(self.decode_tokens(response))
@@ -258,3 +287,32 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
             for group_name in required_fields:
                 if group_name not in named_groups:
                     raise ValueError(f"Missing required output field: {group_name}")
+
+
+@dataclass
+class ChatDecodeStream:
+    codec: ChatCodec
+    decoder: DecodeStream = field(default_factory=DecodeStream)
+    token_ids: list[int] = field(default_factory=list)
+    raw_response: str = ""
+    response_started: bool = False
+
+    def step(self, token_id: int) -> str:
+        self.token_ids.append(token_id)
+        decoded = self.decoder.step(self.codec.tokenizer, token_id) or ""
+        self.raw_response += decoded
+
+        if self.codec.output_parser_regex is None:
+            return decoded
+        if self.response_started:
+            return decoded
+
+        end_of_thinking_tag = self.codec.config.end_of_thinking_tag
+        if end_of_thinking_tag is None or end_of_thinking_tag not in self.raw_response:
+            return ""
+
+        self.response_started = True
+        return self.codec.parse_response(self.raw_response).response
+
+    def finish(self) -> str:
+        return self.codec.decode_response(self.token_ids).response

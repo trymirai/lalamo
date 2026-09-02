@@ -607,7 +607,6 @@ def list_models(
     console.print(table)
 
 
-# fmt: off
 @app.command(help="Start an OpenAI-compatible continuous-batching server.")
 def server(
     model_path: Annotated[Path, Argument(help="Converted Lalamo model directory.")],
@@ -632,7 +631,11 @@ def server(
         err_console.print("Server extras not installed. Install with: uv add 'lalamo[server]'")
         raise Exit(1) from error
 
-    start_server(model_path=model_path, model_name=served_model_name or model_path.name, host=host, port=port,
+    start_server(
+        model_path=model_path,
+        model_name=served_model_name or model_path.name,
+        host=host,
+        port=port,
         batching_config=ContinuousBatchingConfig(),
         sharding_config=ShardingConfig.tensor_parallel() if tensor_parallel else ShardingConfig.replicated(),
     )
