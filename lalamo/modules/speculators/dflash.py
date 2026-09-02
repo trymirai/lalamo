@@ -128,9 +128,16 @@ class DFlashDraftConfig(LalamoConfig):
     rope_config: RoPEConfig
     layer_configs: tuple[DFlashDraftLayerConfig, ...]
     output_norm_config: NormalizationConfig
+    # Width of ONE target hidden state in `target_features`. The context projection reads
+    # `len(target_layer_ids)` of them concatenated, so its input width is `len(target_layer_ids) *
+    # context_model_dim`. `None` (the default, and what every HF config produces) means the target and
+    # the draft model share a width -- the DFlash setting. Set it explicitly for a draft model that is
+    # narrower than the target it attends to.
+    context_model_dim: int | None = None
 
     def init(self, initializer: Initializer) -> "DFlashDraftModel":
-        context_feature_dim = len(self.target_layer_ids) * self.model_dim
+        context_model_dim = self.model_dim if self.context_model_dim is None else self.context_model_dim
+        context_feature_dim = len(self.target_layer_ids) * context_model_dim
         return DFlashDraftModel(
             config=self,
             sharding_config=initializer.sharding_config,
