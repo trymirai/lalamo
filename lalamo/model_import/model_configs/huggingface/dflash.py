@@ -12,7 +12,6 @@ from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
 from lalamo.modules.speculators.dflash import (
-    CandidateSelectorConfig,
     DFlashDraftConfig,
     DFlashGroupedConvolutionConfig,
 )
@@ -52,8 +51,6 @@ class HFDFlashInnerConfig:
     target_layer_ids: tuple[int, ...]
     conv_kernel_size: int | None = None
     conv_group_size: int | None = None
-    selector_rank: int | None = None
-    selector_top_k: int | None = None
 
 
 @dataclass(frozen=True)
@@ -171,21 +168,6 @@ class HFDFlashConfig:
             kernel_projection_config=linear_config,
         )
 
-    def candidate_selector_config(self, linear_config: LinearConfig) -> CandidateSelectorConfig | None:
-        rank = self.dflash_config.selector_rank
-        top_k = self.dflash_config.selector_top_k
-        if rank is None and top_k is None:
-            return None
-        if rank is None or top_k is None:
-            raise ValueError("DFlash candidate selector requires both selector_rank and selector_top_k.")
-        if top_k > self.vocab_size:
-            raise ValueError(f"selector_top_k {top_k} exceeds vocab_size {self.vocab_size}.")
-        return CandidateSelectorConfig(
-            rank=rank,
-            top_k=top_k,
-            hidden_projection_config=linear_config,
-        )
-
     def to_dflash_draft_config(self) -> DFlashDraftConfig:
         (architecture,) = self.architectures
         assert self.dflash_config.target_layer_ids
@@ -208,7 +190,6 @@ class HFDFlashConfig:
         )
         rope_config = self._rope_config(self.max_position_embeddings)
         grouped_convolution_config = self.grouped_convolution_config(linear_config)
-        candidate_selector_config = self.candidate_selector_config(linear_config)
         if architecture == "DFlash2DraftModel" and grouped_convolution_config is None:
             raise ValueError("DFlash2DraftModel requires a grouped convolution config.")
         layer_configs = tuple(
@@ -252,5 +233,4 @@ class HFDFlashConfig:
             layer_configs=layer_configs,
             output_norm_config=norm_config,
             grouped_convolution_config=grouped_convolution_config,
-            candidate_selector_config=candidate_selector_config,
         )

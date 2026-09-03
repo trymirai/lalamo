@@ -22,8 +22,6 @@ from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 from lalamo.weight_matrix import MatmulConfig
 
 __all__ = [
-    "CandidateSelector",
-    "CandidateSelectorConfig",
     "DFlashDraftConfig",
     "DFlashDraftModel",
     "DFlashDraftState",
@@ -149,36 +147,6 @@ class DFlashLayerGroupedConvolutions(eqx.Module):
 
 
 @dataclass(frozen=True)
-class CandidateSelectorConfig(LalamoConfig):
-    rank: int
-    top_k: int
-    hidden_projection_config: LinearConfig
-
-    def init(self, initializer: Initializer, model_dim: int, vocab_size: int) -> "CandidateSelector":
-        if self.top_k > vocab_size:
-            raise ValueError(f"top_k {self.top_k} exceeds vocab_size {vocab_size}.")
-        return CandidateSelector(
-            config=self,
-            sharding_config=initializer.sharding_config,
-            predecessor_codebook=initializer.normal(1.0 / sqrt(self.rank), (vocab_size, self.rank)),
-            successor_codebook=initializer.normal(1.0 / sqrt(self.rank), (vocab_size, self.rank)),
-            hidden_projection=self.hidden_projection_config.init(
-                initializer,
-                input_dim=model_dim,
-                output_dims=(self.rank,),
-                has_biases=False,
-                is_sharded=False,
-            ),
-        )
-
-
-class CandidateSelector(LalamoModule[CandidateSelectorConfig]):
-    predecessor_codebook: Float[Array, "vocabulary rank"]
-    successor_codebook: Float[Array, "vocabulary rank"]
-    hidden_projection: Linear
-
-
-@dataclass(frozen=True)
 class DFlashDraftConfig(LalamoConfig):
     model_dim: int
     hidden_dim: int
@@ -193,7 +161,6 @@ class DFlashDraftConfig(LalamoConfig):
     layer_configs: tuple[TransformerLayerConfig, ...]
     output_norm_config: NormalizationConfig
     grouped_convolution_config: DFlashGroupedConvolutionConfig | None = None
-    candidate_selector_config: CandidateSelectorConfig | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -238,11 +205,6 @@ class DFlashDraftConfig(LalamoConfig):
                     for _ in self.layer_configs
                 )
                 if self.grouped_convolution_config is not None
-                else None
-            ),
-            candidate_selector=(
-                self.candidate_selector_config.init(initializer, self.model_dim, self.vocab_size)
-                if self.candidate_selector_config is not None
                 else None
             ),
         )
@@ -314,7 +276,6 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
     layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
     layer_grouped_convolutions: tuple[DFlashLayerGroupedConvolutions, ...] | None
-    candidate_selector: CandidateSelector | None
 
     def state_kv_projection_from_layers(self, layers: tuple[TransformerLayer, ...]) -> Linear:
         qkvg_projections = tuple(_layer_attention(layer).qkvg_projection for layer in layers)

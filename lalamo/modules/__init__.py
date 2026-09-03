@@ -54,8 +54,6 @@ from .rope import (
 )
 from .speculator import Speculator, SpeculatorConfig
 from .speculators import (
-    CandidateSelector,
-    CandidateSelectorConfig,
     DFlashDraftConfig,
     DFlashDraftModel,
     DFlashDraftState,
@@ -115,8 +113,6 @@ __all__ = [
     "Attention",
     "AttentionConfig",
     "AttentionImplementation",
-    "CandidateSelector",
-    "CandidateSelectorConfig",
     "Classifier",
     "ClassifierActivationTrace",
     "ClassifierConfig",

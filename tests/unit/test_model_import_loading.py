@@ -17,7 +17,7 @@ from lalamo.compressed.microfloat import MicrofloatMatrixForInference
 from lalamo.compressed.mlx import MLXMatrixForInference, MLXMatrixForTraining
 from lalamo.initializer import EmptyInitializer, Initializer
 from lalamo.model import Model, ModelConfig
-from lalamo.model_import.loaders.dflash_loader import load_candidate_selector, load_dflash_grouped_convolution
+from lalamo.model_import.loaders.dflash_loader import load_dflash_grouped_convolution
 from lalamo.model_import.loaders.huggingface import (
     load_huggingface_classifier,
     load_input_embedding_matrix,
@@ -648,24 +648,16 @@ def test_model_export_load_with_strong_initializer_forces_saved_float_dtypes(tmp
     assert restored.module.fp16_values.dtype == jnp.bfloat16
 
 
-def test_load_dflash2_components() -> None:
+def test_load_dflash2_grouped_convolution() -> None:
     config = HFDFlashConfig.from_dict(_dflash_hf_config(dflash2=True)).to_dflash_draft_config()
     model = config.init(EmptyInitializer(jnp.float32, make_test_sharding_config()))
     assert model.layer_grouped_convolutions is not None
-    assert model.candidate_selector is not None
     convolution = model.layer_grouped_convolutions[0].attention
-    selector = model.candidate_selector
     base_kernel = jnp.arange(16, dtype=jnp.float32).reshape(2, 2, 4)
     kernel_projection = jnp.arange(32, dtype=jnp.float32).reshape(8, 4)
-    predecessor_codebook = jnp.arange(32, dtype=jnp.float32).reshape(16, 2)
-    successor_codebook = predecessor_codebook + 1
-    hidden_projection = jnp.arange(8, dtype=jnp.float32).reshape(2, 4)
     weights = {
         "attention_conv.base_kernel": base_kernel,
         "attention_conv.kernel_projection.weight": kernel_projection,
-        "candidate_selector.predecessor_codebook": predecessor_codebook,
-        "candidate_selector.successor_codebook": successor_codebook,
-        "candidate_selector.hidden_projection.weight": hidden_projection,
     }
 
     loaded_convolution = load_dflash_grouped_convolution(
@@ -673,10 +665,6 @@ def test_load_dflash2_components() -> None:
         weights,
         ParameterPath("attention_conv"),
     )
-    loaded_selector = load_candidate_selector(selector, weights, ParameterPath("candidate_selector"))
 
     assert_close(result=loaded_convolution.base_kernel, reference=base_kernel)
     assert_close(result=loaded_convolution.kernel_projection.weights.decompress(), reference=kernel_projection)
-    assert_close(result=loaded_selector.predecessor_codebook, reference=predecessor_codebook)
-    assert_close(result=loaded_selector.successor_codebook, reference=successor_codebook)
-    assert_close(result=loaded_selector.hidden_projection.weights.decompress(), reference=hidden_projection)
