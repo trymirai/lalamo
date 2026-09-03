@@ -57,6 +57,9 @@ from .speculators import (
     DFlashDraftConfig,
     DFlashDraftModel,
     DFlashDraftState,
+    DFlashGroupedConvolution,
+    DFlashGroupedConvolutionConfig,
+    DFlashLayerGroupedConvolutions,
     DFlashSpeculator,
     DFlashSpeculatorConfig,
     Weaver,
@@ -101,6 +104,7 @@ from .transformer_layer import (
     TransformerLayerActivationTrace,
     TransformerLayerConfig,
     TransformerLayerResult,
+    TransformerSublayerTransform,
 )
 
 __all__ = [
@@ -117,6 +121,9 @@ __all__ = [
     "DFlashDraftConfig",
     "DFlashDraftModel",
     "DFlashDraftState",
+    "DFlashGroupedConvolution",
+    "DFlashGroupedConvolutionConfig",
+    "DFlashLayerGroupedConvolutions",
     "DFlashSpeculator",
     "DFlashSpeculatorConfig",
     "Decoder",
@@ -186,6 +193,7 @@ __all__ = [
     "TransformerLayerConfig",
     "TransformerLayerResult",
     "TransformerResult",
+    "TransformerSublayerTransform",
     "UnscaledRoPEConfig",
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
