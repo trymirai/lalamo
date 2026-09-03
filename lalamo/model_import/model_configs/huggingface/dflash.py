@@ -186,12 +186,11 @@ class HFDFlashConfig:
             hidden_projection_config=linear_config,
         )
 
-    def to_dflash_draft_config(self, context_length: int | None = None) -> DFlashDraftConfig:
+    def to_dflash_draft_config(self) -> DFlashDraftConfig:
         (architecture,) = self.architectures
         assert self.dflash_config.target_layer_ids
         assert all(0 <= layer_id < self.num_target_layers for layer_id in self.dflash_config.target_layer_ids)
 
-        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
         linear_config = LinearConfig()
         norm_config = NormalizationConfig(
             epsilon=self.rms_norm_eps,
@@ -207,7 +206,7 @@ class HFDFlashConfig:
             gate_clipping=None,
             up_clipping=None,
         )
-        rope_config = self._rope_config(max_sequence_length)
+        rope_config = self._rope_config(self.max_position_embeddings)
         grouped_convolution_config = self.grouped_convolution_config(linear_config)
         candidate_selector_config = self.candidate_selector_config(linear_config)
         if architecture == "DFlash2DraftModel" and grouped_convolution_config is None:

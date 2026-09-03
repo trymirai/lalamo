@@ -132,7 +132,6 @@ class ConversionCallbacks:
     model_spec: ModelSpec
     output_dir: Path
     dtype: DType | None
-    context_length: int | None
 
     def started(self) -> None:
         pass
@@ -163,13 +162,11 @@ def convert(
     model_spec: ModelSpec,
     output_dir: Path,
     dtype: DType | None = None,
-    context_length: int | None = None,
     callbacks_type: Callable[
         [
             ModelSpec,
             Path,
             DType | None,
-            int | None,
         ],
         ConversionCallbacks,
     ] = ConversionCallbacks,
@@ -179,7 +176,6 @@ def convert(
         model_spec,
         output_dir,
         effective_dtype,
-        context_length,
     )
 
     if output_dir.exists():
@@ -202,7 +198,6 @@ def convert(
         model_spec,
         sharding_config=ShardingConfig.replicated(),
         dtype=jnp.dtype(effective_dtype.value),
-        context_length=context_length,
         progress_callback=progress_callback,
     )
     callbacks.saving_model()
@@ -216,7 +211,6 @@ def convert_speculator(
     output_dir: Path,
     weaver_repo_id: str | None = None,
     dtype: DType | None = None,
-    context_length: int | None = None,
 ) -> None:
     sharding_config = ShardingConfig.replicated()
     effective_dtype = jnp.dtype((dtype or DType.BFLOAT16).value)
@@ -226,7 +220,6 @@ def convert_speculator(
         dflash_path,
         sharding_config=sharding_config,
         dtype=effective_dtype,
-        context_length=context_length,
     )
 
     weaver = None

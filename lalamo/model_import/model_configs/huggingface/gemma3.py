@@ -71,10 +71,8 @@ class HFGemma3TextConfigRaw:
 
     def to_decoder_config(
         self,
-        context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
         input_scale = self.hidden_size**0.5
         attention_scale = self.query_pre_attn_scalar**-0.5
         embedding_config = TiedEmbeddingConfig(
@@ -109,7 +107,7 @@ class HFGemma3TextConfigRaw:
         elif self.rope_scaling is None:
             global_rope_config = UnscaledRoPEConfig(
                 base=self.rope_theta,
-                max_sequence_length=max_sequence_length,
+                max_sequence_length=self.max_position_embeddings,
                 head_dim=self.head_dim,
             )
         else:
@@ -117,7 +115,7 @@ class HFGemma3TextConfigRaw:
 
         local_rope_config = UnscaledRoPEConfig(
             base=self.rope_local_base_freq,
-            max_sequence_length=max_sequence_length,
+            max_sequence_length=self.max_position_embeddings,
             head_dim=self.head_dim,
         )
 
@@ -214,10 +212,6 @@ class HFGemma3Config(HuggingFaceLMConfig):
 
     def to_decoder_config(
         self,
-        context_length: int | None,
         metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
-        return self.text_config.to_decoder_config(
-            context_length=context_length,
-            metadata_dict=metadata_dict,
-        )
+        return self.text_config.to_decoder_config(metadata_dict=metadata_dict)

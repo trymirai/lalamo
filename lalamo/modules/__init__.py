@@ -41,8 +41,6 @@ from .mlp import (
 from .normalization import (
     Normalization,
     NormalizationConfig,
-    NormalizationForwardPassConfig,
-    NormalizationImplementation,
     UpcastMode,
 )
 from .rope import (
@@ -166,8 +164,6 @@ __all__ = [
     "MixtureOfExpertsConfig",
     "Normalization",
     "NormalizationConfig",
-    "NormalizationForwardPassConfig",
-    "NormalizationImplementation",
     "PLELayer",
     "PLELayerConfig",
     "PLEModelConfig",

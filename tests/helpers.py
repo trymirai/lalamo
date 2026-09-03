@@ -68,7 +68,7 @@ def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]
     model_dim = 8
     hidden_dim = 16
     vocab_size = 32
-    context_length = 16
+    max_sequence_length = 16
 
     norm_config = NormalizationConfig(
         epsilon=1e-5,
@@ -86,7 +86,7 @@ def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]
     )
     rope_config = UnscaledRoPEConfig(
         base=10_000.0,
-        max_sequence_length=context_length,
+        max_sequence_length=max_sequence_length,
         head_dim=4,
     )
 

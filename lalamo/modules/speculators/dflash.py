@@ -361,7 +361,6 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
         return call_vmapped_twice(
             self.context_norm,
             target_hidden,
-            forward_pass_config=forward_pass_config.normalization_forward_pass_config,
             added_sharding_axes=(batch_axis, None),
         )
 
@@ -477,7 +476,6 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
         return call_vmapped_twice(
             self.output_norm,
             hidden_states,
-            forward_pass_config=forward_pass_config.normalization_forward_pass_config,
             added_sharding_axes=(batch_axis, None),
         )
 

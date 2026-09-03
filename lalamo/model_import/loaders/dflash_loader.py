@@ -172,12 +172,11 @@ def load_hf_dflash_draft_model(
     *,
     sharding_config: ShardingConfig,
     dtype: DTypeLike | None = None,
-    context_length: int | None = None,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> DFlashDraftModel:
     hf_model_dir = Path(hf_model_dir)
     config = HFDFlashConfig.from_json(hf_model_dir / "config.json")
-    draft_config = config.to_dflash_draft_config(context_length=context_length)
+    draft_config = config.to_dflash_draft_config()
     template = draft_config.init(EmptyInitializer(dtype, sharding_config))
 
     weight_files = tuple(path.name for path in sorted(hf_model_dir.glob(f"*{WeightFormat.SAFETENSORS.value}")))
