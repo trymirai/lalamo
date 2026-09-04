@@ -10,7 +10,7 @@ from typing import NotRequired, TypedDict
 from frozendict import frozendict
 from jinja2 import Template
 from tokenizers import Tokenizer
-from tokenizers.decoders import ByteLevel, DecodeStream
+from tokenizers.decoders import DecodeStream
 
 from lalamo.token_codec import TokenCodec, TokenCodecConfig
 
@@ -129,14 +129,6 @@ class ChatCodecConfig(TokenCodecConfig):
 @dataclass(frozen=True)
 class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]):
     @cached_property
-    def _byte_token_ids(self) -> dict[int, int]:
-        return {
-            token_id: byte_value
-            for byte_value in range(256)
-            if (token_id := self.tokenizer.token_to_id(f"<0x{byte_value:02X}>")) is not None
-        }
-
-    @cached_property
     def prompt_template(self) -> Template:
         return Template(self.config.prompt_template)
 
@@ -230,38 +222,6 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
             return DecodeStream(skip_special_tokens=False).step(self.tokenizer, tokens) or ""
         return self.tokenizer.decode(tokens, skip_special_tokens=False)
 
-    def token_bytes(self, token_id: int) -> bytes:
-        if token_id in self._byte_token_ids:
-            return bytes((self._byte_token_ids[token_id],))
-
-        token = self.tokenizer.id_to_token(token_id)
-        if token is None:
-            raise ValueError(f"Unknown token id: {token_id}.")
-
-        if self._byte_level_decoder is not None and all(character in self._byte_level_decoder for character in token):
-            return bytes(self._byte_level_decoder[character] for character in token)
-
-        return self.tokenizer.decode([token_id], skip_special_tokens=False).encode()
-
-    @cached_property
-    def _byte_level_decoder(self) -> dict[str, int] | None:
-        if not isinstance(self.tokenizer.decoder, ByteLevel):
-            return None
-
-        byte_values = [
-            *range(ord("!"), ord("~") + 1),
-            *range(ord("¡"), ord("¬") + 1),
-            *range(ord("®"), ord("ÿ") + 1),
-        ]
-        unicode_codepoints = [*byte_values]
-        next_codepoint = 256
-        for byte in range(256):
-            if byte not in byte_values:
-                byte_values.append(byte)
-                unicode_codepoints.append(next_codepoint)
-                next_codepoint += 1
-        return {chr(codepoint): byte for byte, codepoint in zip(byte_values, unicode_codepoints, strict=True)}
-
     def decode_stream(self, reasoning_effort: ReasoningEffort | None = None) -> "ChatDecodeStream":
         reasoning_config = self.config.reasoning_config
         response_started = self.output_parser_regex is None
@@ -292,27 +252,23 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
 @dataclass
 class ChatDecodeStream:
     codec: ChatCodec
+    response_started: bool
     decoder: DecodeStream = field(default_factory=DecodeStream)
-    token_ids: list[int] = field(default_factory=list)
     raw_response: str = ""
-    response_started: bool = False
+    response: str = ""
 
     def step(self, token_id: int) -> str:
-        self.token_ids.append(token_id)
-        decoded = self.decoder.step(self.codec.tokenizer, token_id) or ""
-        self.raw_response += decoded
-
-        if self.codec.output_parser_regex is None:
-            return decoded
-        if self.response_started:
-            return decoded
-
+        piece = self.decoder.step(self.codec.tokenizer, token_id) or ""
+        self.raw_response += piece
         end_of_thinking_tag = self.codec.config.end_of_thinking_tag
-        if end_of_thinking_tag is None or end_of_thinking_tag not in self.raw_response:
+        self.response_started |= end_of_thinking_tag is not None and end_of_thinking_tag in self.raw_response
+        if not self.response_started:
             return ""
-
-        self.response_started = True
-        return self.codec.parse_response(self.raw_response).response
+        # Until the first visible character the parser may still strip leading whitespace or opening tags.
+        if not self.response:
+            piece = self.codec.parse_response(self.raw_response).response
+        self.response += piece
+        return piece
 
     def finish(self) -> str:
-        return self.codec.decode_response(self.token_ids).response
+        return self.codec.parse_response(self.raw_response).response

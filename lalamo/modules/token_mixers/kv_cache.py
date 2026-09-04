@@ -4,13 +4,14 @@ from typing import Self
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from einops import rearrange
 from jax.lax import dynamic_update_slice_in_dim
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.modules.token_mixer import StateLayerBase
 from lalamo.utils.sharding import ShardingConfig
 
-__all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "PagedKVCacheLayer", "StaticKVCacheLayer"]
+__all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "PagedKVCacheLayer", "PagedKVCachePool", "StaticKVCacheLayer"]
 
 
 @eqx.filter_jit
@@ -124,11 +125,70 @@ class KVCacheLayer(StateLayerBase):
     ) -> Self: ...
 
 
-class PagedKVCacheLayer(StateLayerBase):
+class PagedKVCachePool(StateLayerBase):
     keys: Float[Array, "groups total_pages page_size head_channels"]
     values: Float[Array, "groups total_pages page_size head_channels"]
+
+    @property
+    def page_size(self) -> int:
+        return self.keys.shape[2]
+
+    def write_pages(
+        self,
+        page_indices: Int[Array, "batch pages"],
+        keys: Float[Array, "batch tokens groups head_channels"],
+        values: Float[Array, "batch tokens groups head_channels"],
+    ) -> "PagedKVCachePool":
+        paged_keys, paged_values = (
+            rearrange(
+                cache.astype(self.keys.dtype),
+                "batch (pages page) groups channels -> groups batch pages page channels",
+                page=self.page_size,
+            )
+            for cache in (keys, values)
+        )
+        return PagedKVCachePool(
+            self.keys.at[:, page_indices].set(paged_keys),
+            self.values.at[:, page_indices].set(paged_values),
+        )
+
+
+class PagedKVCacheLayer(PagedKVCachePool):
     block_tables: Int[Array, "batch pages_per_sequence"]
     lengths: Int[Array, " batch"]
+
+    def append(
+        self,
+        keys: Float[Array, "batch groups head_channels"],
+        values: Float[Array, "batch groups head_channels"],
+    ) -> "PagedKVCacheLayer":
+        pages = jnp.take_along_axis(self.block_tables, (self.lengths // self.page_size)[:, None], axis=1)[:, 0]
+        offsets = self.lengths % self.page_size
+        groups = jnp.arange(self.keys.shape[0])[:, None]
+        written_keys, written_values = (
+            cache.at[groups, pages[None], offsets[None]].set(
+                rearrange(update.astype(cache.dtype), "batch groups channels -> groups batch channels")
+            )
+            for cache, update in ((self.keys, keys), (self.values, values))
+        )
+        return PagedKVCacheLayer(written_keys, written_values, self.block_tables, self.lengths + 1)
+
+    def last_pages(
+        self,
+        page_count: int,
+    ) -> tuple[
+        Float[Array, "batch tokens groups head_channels"],
+        Float[Array, "batch tokens groups head_channels"],
+        Int[Array, " batch"],
+    ]:
+        """Gathers the last `page_count` pages of every sequence and the position of the first gathered token."""
+        first_page = jnp.maximum(0, (self.lengths - 1) // self.page_size - page_count + 1)
+        physical_pages = jnp.take_along_axis(self.block_tables, first_page[:, None] + jnp.arange(page_count), axis=1)
+        keys, values = (
+            rearrange(cache[:, physical_pages], "groups batch pages page dims -> batch (pages page) groups dims")
+            for cache in (self.keys, self.values)
+        )
+        return keys, values, first_page * self.page_size
 
 
 class DynamicKVCacheLayer(KVCacheLayer):
