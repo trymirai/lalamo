@@ -255,20 +255,44 @@ class ChatDecodeStream:
     response_started: bool
     decoder: DecodeStream = field(default_factory=DecodeStream)
     raw_response: str = ""
+    reasoning: str = ""
     response: str = ""
 
-    def step(self, token_id: int) -> str:
+    def step(self, token_id: int) -> tuple[str, str]:
+        """Returns the newly visible reasoning and response text."""
         piece = self.decoder.step(self.codec.tokenizer, token_id) or ""
         self.raw_response += piece
-        end_of_thinking_tag = self.codec.config.end_of_thinking_tag
-        self.response_started |= end_of_thinking_tag is not None and end_of_thinking_tag in self.raw_response
+        reasoning = ""
         if not self.response_started:
-            return ""
+            end_of_thinking_tag = self.codec.config.end_of_thinking_tag
+            if end_of_thinking_tag is None:
+                return "", ""
+            tag_position = self.raw_response.find(end_of_thinking_tag)
+            if tag_position < 0:
+                # Hold back a suffix that may still grow into the end-of-thinking tag.
+                held_back = max(
+                    (
+                        n
+                        for n in range(1, len(end_of_thinking_tag))
+                        if self.raw_response.endswith(end_of_thinking_tag[:n])
+                    ),
+                    default=0,
+                )
+                return self._take_reasoning(len(self.raw_response) - held_back), ""
+            self.response_started = True
+            reasoning = self._take_reasoning(tag_position)
         # Until the first visible character the parser may still strip leading whitespace or opening tags.
         if not self.response:
             piece = self.codec.parse_response(self.raw_response).response
         self.response += piece
+        return reasoning, piece
+
+    def _take_reasoning(self, end: int) -> str:
+        piece = self.raw_response[len(self.reasoning) : end]
+        self.reasoning += piece
         return piece
 
-    def finish(self) -> str:
-        return self.codec.parse_response(self.raw_response).response
+    def finish(self) -> AssistantMessage:
+        if not self.response_started:
+            return AssistantMessage(chain_of_thought=self.raw_response, response="")
+        return self.codec.parse_response(self.raw_response)

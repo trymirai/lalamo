@@ -1,19 +1,20 @@
 import asyncio
 import json
+import logging
 import secrets
 import threading
 import time
 import traceback
 from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NamedTuple
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from lalamo.inference.continuous_batching import (
     ContinuousBatchingConfig,
@@ -27,6 +28,8 @@ from lalamo.model_import.common import import_model
 from lalamo.models import GenerationConfig, LanguageModel
 from lalamo.models.chat_codec import AssistantMessage, Message, ReasoningEffort, SystemMessage, UserMessage
 from lalamo.utils.sharding import ShardingConfig
+
+logger = logging.getLogger("lalamo.server")
 
 
 class ChatRole(StrEnum):
@@ -47,6 +50,7 @@ class ChatMessageParam(BaseModel):
     role: ChatRole
     content: str | list[TextPart] | None
     name: str | None = None
+    reasoning_content: str | None = None
 
     def to_message(self) -> Message:
         content = self.content or ""
@@ -67,6 +71,13 @@ class StreamOptions(BaseModel):
     include_obfuscation: bool | None = False
 
 
+class ChatTemplateKwargs(BaseModel):
+    """llama.cpp's chat-template switches; `enable_thinking` maps to medium or no reasoning effort."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    enable_thinking: bool | None = None
+
+
 class ChatCompletionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     model: str
@@ -77,11 +88,14 @@ class ChatCompletionRequest(BaseModel):
     top_k: Annotated[int, Field(ge=0)] | None = None
     top_p: Annotated[float, Field(gt=0, le=1)] | None = None
     min_p: Annotated[float, Field(ge=0, le=1)] | None = None
-    repetition_penalty: Annotated[float, Field(gt=0)] | None = None
+    repetition_penalty: Annotated[float, Field(gt=0)] | None = Field(
+        None, validation_alias=AliasChoices("repetition_penalty", "repeat_penalty")
+    )
     presence_penalty: Annotated[float, Field(ge=-2, le=2)] | None = None
     frequency_penalty: Annotated[float, Field(ge=-2, le=2)] | None = None
     seed: Annotated[int, Field(ge=0, le=2**32 - 1)] | None = None
     reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] | None = None
+    chat_template_kwargs: ChatTemplateKwargs | None = None
     logprobs: bool | None = False
     top_logprobs: Annotated[int, Field(ge=0, le=20)] | None = None
     stream: bool | None = False
@@ -112,11 +126,20 @@ class ChatCompletionRequest(BaseModel):
 
     @property
     def effective_reasoning_effort(self) -> ReasoningEffort | None:
-        if self.reasoning_effort is None:
-            return None
         if self.reasoning_effort == "none":
             return ReasoningEffort.NO_REASONING
-        return ReasoningEffort(self.reasoning_effort)
+        if self.reasoning_effort is not None:
+            return ReasoningEffort(self.reasoning_effort)
+        if self.chat_template_kwargs is None or self.chat_template_kwargs.enable_thinking is None:
+            return None
+        return ReasoningEffort.MEDIUM if self.chat_template_kwargs.enable_thinking else ReasoningEffort.NO_REASONING
+
+
+class Chunk(NamedTuple):
+    reasoning: str
+    content: str
+    logprobs: list[dict[str, Any]]
+    finished: SequenceFinished | None
 
 
 def _openai_error(message: str, status: int, param: str | None = None, code: str | None = None) -> JSONResponse:
@@ -187,6 +210,11 @@ def create_app(model: LanguageModel, model_name: str, config: ContinuousBatching
 
     model_object = {"id": model_name, "object": "model", "created": 0, "owned_by": "lalamo"}
 
+    @api.get("/health")
+    @api.get("/v1/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
     @api.get("/v1/models")
     async def list_models() -> dict[str, object]:
         return {"object": "list", "data": [model_object]}
@@ -205,8 +233,8 @@ def create_app(model: LanguageModel, model_name: str, config: ContinuousBatching
             body = ChatCompletionRequest.model_validate_json(await request.body())
         except ValidationError as error:
             (first_error, *_) = error.errors()
-            message = first_error["msg"].removeprefix("Value error, ")
-            return _openai_error(message, 400, ".".join(map(str, first_error["loc"])) or None)
+            error_message = first_error["msg"].removeprefix("Value error, ")
+            return _openai_error(error_message, 400, ".".join(map(str, first_error["loc"])) or None)
         if body.model != model_name:
             return _openai_error(f"Model {body.model!r} does not exist.", 404, "model", "model_not_found")
 
@@ -219,9 +247,11 @@ def create_app(model: LanguageModel, model_name: str, config: ContinuousBatching
             return _openai_error(
                 "The requested reasoning_effort is not supported by this model.", 400, "reasoning_effort"
             )
-        max_tokens = body.max_completion_tokens or body.max_tokens or engine.context_limit - len(prompt_token_ids)
-        if max_tokens < 1 or len(prompt_token_ids) + max_tokens > engine.context_limit:
-            return _openai_error("The prompt and requested output exceed the model context length.", 400, "messages")
+        # Like llama.cpp, the requested output budget is clamped to the room left after the prompt.
+        remaining_context = engine.context_limit - len(prompt_token_ids)
+        max_tokens = min(body.max_completion_tokens or body.max_tokens or remaining_context, remaining_context)
+        if max_tokens < 1:
+            return _openai_error("The prompt exceeds the model context length.", 400, "messages")
 
         generation_config = model.config.generation_config.override_with(
             GenerationConfig(
@@ -234,8 +264,10 @@ def create_app(model: LanguageModel, model_name: str, config: ContinuousBatching
                 frequency_penalty=body.frequency_penalty,
             )
         )
+        request_id = f"chatcmpl-{secrets.token_hex(16)}"
         loop = asyncio.get_running_loop()
         event_batches: asyncio.Queue[Sequence[TokenEvent]] = asyncio.Queue()
+        submitted_at = time.monotonic()
         engine.submit(
             tuple(prompt_token_ids),
             max_tokens,
@@ -246,13 +278,16 @@ def create_app(model: LanguageModel, model_name: str, config: ContinuousBatching
         )
         top_logprobs_count = body.top_logprobs or 0
 
-        async def incoming_events() -> AsyncIterator[TokenEvent]:
+        async def incoming_events() -> AsyncIterator[TokenEvent | None]:
+            """Yields None once per idle second so the stream can keep the connection alive while queued."""
             while not await request.is_disconnected():
                 if engine_errors:
                     raise RuntimeError("Continuous inference engine failed.") from engine_errors[0]
-                with suppress(TimeoutError):
+                try:
                     for event in await asyncio.wait_for(event_batches.get(), 1.0):
                         yield event
+                except TimeoutError:
+                    yield None
 
         def logprob_entry(event: GeneratedToken, text: str) -> dict[str, Any]:
             assert event.logprobs is not None
@@ -266,26 +301,58 @@ def create_app(model: LanguageModel, model_name: str, config: ContinuousBatching
             ]
             return _logprob_entry(text, event.logprobs.logprob) | {"top_logprobs": alternatives}
 
-        async def generate() -> AsyncIterator[tuple[str, list[dict[str, Any]], SequenceFinished | None]]:
+        def log_request(finished: SequenceFinished | None, first_token_at: float | None) -> None:
+            now = time.monotonic()
+            decode_seconds = None if first_token_at is None else now - first_token_at
+            logger.info(
+                json.dumps(
+                    {
+                        "request": request_id,
+                        "prompt_tokens": len(prompt_token_ids),
+                        "completion_tokens": None if finished is None else finished.completion_tokens,
+                        "finish_reason": None if finished is None else finished.reason,
+                        "seconds_to_first_token": None
+                        if first_token_at is None
+                        else round(first_token_at - submitted_at, 3),
+                        "seconds_total": round(now - submitted_at, 3),
+                        "decode_tokens_per_second": (
+                            None
+                            if finished is None or not decode_seconds
+                            else round(finished.completion_tokens / decode_seconds, 2)
+                        ),
+                    }
+                )
+            )
+
+        async def generate() -> AsyncIterator[Chunk]:
             decoder = model.token_codec.decode_stream(reasoning_effort)
             pending: list[tuple[GeneratedToken, str]] = []
             text = ""
             sent = ""
             completion_tokens = 0
+            first_token_at = None
             async for event in incoming_events():
+                if event is None:
+                    yield Chunk("", "", [], None)
+                    continue
                 finished = None
+                reasoning = ""
                 if isinstance(event, GeneratedToken):
                     completion_tokens += 1
-                    piece = decoder.step(event.token_id)
+                    first_token_at = first_token_at or time.monotonic()
+                    reasoning, piece = decoder.step(event.token_id)
                     if decoder.response_started:
                         pending.append((event, piece))
                         text += piece
                 else:
                     finished = event
-                    final_response = decoder.finish()
-                    if not final_response.startswith(sent):
+                    message = decoder.finish()
+                    chain_of_thought = message.chain_of_thought or ""
+                    if chain_of_thought.startswith(decoder.reasoning):
+                        reasoning = chain_of_thought[len(decoder.reasoning) :]
+                    if not message.response.startswith(sent):
                         raise RuntimeError("The parsed response changed after content was streamed.")
-                    text = final_response[len(sent) :]
+                    text = message.response[len(sent) :]
 
                 stop_position = min(
                     (position for stop in body.stop_strings if (position := text.find(stop)) >= 0), default=-1
@@ -312,16 +379,14 @@ def create_app(model: LanguageModel, model_name: str, config: ContinuousBatching
                 logprobs = [logprob_entry(event, token_text) for event, token_text in ready] if body.logprobs else []
                 text = text[len(visible) :]
                 sent += visible
-                if visible or logprobs or finished is not None:
-                    yield visible, logprobs, finished
+                if reasoning or visible or logprobs or finished is not None:
+                    yield Chunk(reasoning, visible, logprobs, finished)
                 if finished is not None:
+                    log_request(finished, first_token_at)
                     return
+            log_request(None, first_token_at)
 
-        response_identity: dict[str, Any] = {
-            "id": f"chatcmpl-{secrets.token_hex(16)}",
-            "created": int(time.time()),
-            "model": model_name,
-        }
+        response_identity: dict[str, Any] = {"id": request_id, "created": int(time.time()), "model": model_name}
         chunk_identity = response_identity | {"object": "chat.completion.chunk"}
         include_usage = bool(body.stream_options and body.stream_options.include_usage)
         if include_usage:
@@ -336,9 +401,14 @@ def create_app(model: LanguageModel, model_name: str, config: ContinuousBatching
 
         async def stream() -> AsyncIterator[str]:
             yield _sse(chunk_identity | {"choices": [_choice(delta={"role": "assistant", "content": ""})]})
-            async for piece, logprobs, finished in generate():
-                if piece or logprobs:
-                    delta = {"content": piece}
+            async for reasoning, content, logprobs, finished in generate():
+                if not (reasoning or content or logprobs or finished):
+                    yield ": keep-alive\n\n"
+                    continue
+                if reasoning or content or logprobs:
+                    delta: dict[str, str] = {"content": content} if content or not reasoning else {}
+                    if reasoning:
+                        delta["reasoning_content"] = reasoning
                     choice = _choice(delta=delta, logprobs={"content": logprobs} if body.logprobs else None)
                     yield _sse(chunk_identity | {"choices": [choice]})
                 if finished is not None:
@@ -349,14 +419,17 @@ def create_app(model: LanguageModel, model_name: str, config: ContinuousBatching
 
         if body.stream:
             return StreamingResponse(stream(), media_type="text/event-stream")
-        results = [result async for result in generate()]
-        finished = results[-1][2] if results else None
+        chunks = [chunk async for chunk in generate()]
+        finished = chunks[-1].finished if chunks else None
         if finished is None:
             return Response(status_code=499)
+        message: dict[str, Any] = {"role": "assistant", "content": "".join(chunk.content for chunk in chunks)}
+        if reasoning := "".join(chunk.reasoning for chunk in chunks):
+            message["reasoning_content"] = reasoning
         choice = _choice(
-            message={"role": "assistant", "content": "".join(piece for piece, _, _ in results)},
+            message=message,
             finish_reason=finished.reason,
-            logprobs={"content": [entry for _, entries, _ in results for entry in entries]} if body.logprobs else None,
+            logprobs={"content": [entry for chunk in chunks for entry in chunk.logprobs]} if body.logprobs else None,
         )
         return JSONResponse(
             content=response_identity | {"object": "chat.completion", "choices": [choice], "usage": usage(finished)}
@@ -373,6 +446,7 @@ def start_server(
     batching_config: ContinuousBatchingConfig,
     sharding_config: ShardingConfig,
 ) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s", force=True)
     imported = import_model(str(model_path), sharding_config=sharding_config).model
     if not isinstance(imported, LanguageModel):
         raise TypeError(f"Expected a language model, got {type(imported).__name__}.")

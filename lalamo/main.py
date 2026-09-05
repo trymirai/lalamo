@@ -623,6 +623,12 @@ def server(
         bool,
         Option(help="Shard model weight matrices across visible devices."),
     ] = False,
+    max_context_length: Annotated[
+        int | None, Option(help="Context length per sequence. Defaults to the model's maximum.")
+    ] = None,
+    slot_count: Annotated[
+        int | None, Option(help="Cap on concurrently decoding sequences. Defaults to what fits in memory.")
+    ] = None,
 ) -> None:
     try:
         from lalamo.inference.continuous_batching import ContinuousBatchingConfig  # noqa: PLC0415
@@ -636,7 +642,7 @@ def server(
         model_name=served_model_name or model_path.name,
         host=host,
         port=port,
-        batching_config=ContinuousBatchingConfig(),
+        batching_config=ContinuousBatchingConfig(slot_count=slot_count, max_context_length=max_context_length),
         sharding_config=ShardingConfig.tensor_parallel() if tensor_parallel else ShardingConfig.replicated(),
     )
 

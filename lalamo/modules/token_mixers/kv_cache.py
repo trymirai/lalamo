@@ -152,6 +152,16 @@ class PagedKVCachePool(StateLayerBase):
             self.values.at[:, page_indices].set(paged_values),
         )
 
+    def read_pages(
+        self,
+        page_indices: Int[Array, "batch pages"],
+    ) -> tuple[Float[Array, "batch tokens groups head_channels"], Float[Array, "batch tokens groups head_channels"]]:
+        keys, values = (
+            rearrange(cache[:, page_indices], "groups batch pages page dims -> batch (pages page) groups dims")
+            for cache in (self.keys, self.values)
+        )
+        return keys, values
+
 
 class PagedKVCacheLayer(PagedKVCachePool):
     block_tables: Int[Array, "batch pages_per_sequence"]

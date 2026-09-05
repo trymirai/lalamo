@@ -206,9 +206,12 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: DecoderForwardPassConfig | None = None,
         chunk_size: int = 512,
+        initial_state: State | None = None,
+        prefix_lengths: Int[Array, " batch"] | None = None,
         *,
         keychain: Keychain,
     ) -> PrefillResults:
+        """Prefills `token_ids`; with `initial_state`, they continue each row's `prefix_lengths` cached tokens."""
         batch_size, sequence_length = token_ids.shape
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
         batch_vector_sharding = self.sharding_config.make_sharding((batch_axis,))
@@ -221,13 +224,16 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             forward_pass_config = DecoderForwardPassConfig.for_inference()
 
         chunks = self._make_attention_chunks(token_ids, lengths_without_padding, chunk_size)
+        if prefix_lengths is not None:
+            chunks = eqx.tree_at(lambda chunk: chunk.indices, chunks, chunks.indices + prefix_lengths[None, :, None])
         num_chunks, _, chunk_size = chunks.tokens.shape
         state_dtype = forward_pass_config.embedding_forward_pass_config.activation_dtype
-        state = self.decoder.init_static_state(
-            batch_size,
-            max(state_capacity, num_chunks * chunk_size),
-            state_dtype,
-        )
+        if initial_state is None:
+            state = self.decoder.init_static_state(
+                batch_size, max(state_capacity, num_chunks * chunk_size), state_dtype
+            )
+        else:
+            state = initial_state
         logits_like = jax.device_put(
             jnp.zeros((batch_size, self.decoder.vocab_size), dtype=jnp.float32),
             self.sharding_config.make_sharding((batch_axis, None)),

@@ -20,7 +20,7 @@ from lalamo.inference.continuous_batching import (
     TokenEvent,
 )
 from lalamo.models import GenerationConfig, LanguageModel
-from lalamo.models.chat_codec import ReasoningEffort, UserMessage
+from lalamo.models.chat_codec import AssistantMessage, ReasoningEffort, UserMessage
 from lalamo.module import ForwardPassMode, Keychain, ShardingConfig
 from lalamo.modules import DecoderForwardPassConfig
 from lalamo.server import create_app
@@ -39,11 +39,13 @@ def test_standard_openai_client_chat_completions_streaming_errors_and_concurrenc
 
     unicode_token_ids = model.token_codec.encode_text("👩‍💻")
     unicode_decoder = model.token_codec.decode_stream(ReasoningEffort.NO_REASONING)
-    assert "".join(unicode_decoder.step(token_id) for token_id in unicode_token_ids) == "👩‍💻"
+    assert "".join(unicode_decoder.step(token_id)[1] for token_id in unicode_token_ids) == "👩‍💻"
     protocol_token_ids = model.token_codec.encode_text("private\n</think>\n\npublic")
     protocol_decoder = model.token_codec.decode_stream(ReasoningEffort.MEDIUM)
-    assert "".join(protocol_decoder.step(token_id) for token_id in protocol_token_ids) == "public"
-    assert protocol_decoder.finish() == "public"
+    pieces = [protocol_decoder.step(token_id) for token_id in protocol_token_ids]
+    assert "".join(reasoning for reasoning, _ in pieces) == "private"
+    assert "".join(response for _, response in pieces) == "public"
+    assert protocol_decoder.finish() == AssistantMessage(chain_of_thought="private\n", response="public")
 
     request: dict[str, Any] = {
         "model": "org/test-model",
@@ -68,9 +70,10 @@ def test_standard_openai_client_chat_completions_streaming_errors_and_concurrenc
         ):
             client = AsyncOpenAI(api_key="test", base_url="http://test/v1", http_client=http)
             assert (await client.models.retrieve("org/test-model")).id == "org/test-model"
+            assert (await http.get("http://test/v1/health")).json() == {"status": "ok"}
 
             async def complete(**overrides: Any) -> ChatCompletion:  # noqa: ANN401
-                return cast("ChatCompletion", await client.chat.completions.create(**request, **overrides))
+                return cast("ChatCompletion", await client.chat.completions.create(**(request | overrides)))
 
             chat, concurrent = await asyncio.gather(
                 complete(logprobs=True, top_logprobs=20, metadata={"test": "api"}), complete()
@@ -105,6 +108,28 @@ def test_standard_openai_client_chat_completions_streaming_errors_and_concurrenc
             assert all(chunk.usage is None for chunk in chunks[:-1]) and chunks[-1].usage is not None
 
             stopped = await complete(stop=stop)
+            assert stopped.choices[0].message.content == "" and stopped.choices[0].finish_reason == "stop"
+
+            thinking = await complete(
+                reasoning_effort=None,
+                extra_body={"chat_template_kwargs": {"enable_thinking": True}, "repeat_penalty": 1.1},
+            )
+            thinking_message = thinking.choices[0].message
+            assert thinking_message.content == "" and thinking_message.model_extra
+            assert len(thinking_message.model_extra["reasoning_content"]) > 0
+            thinking_extra_body = request["extra_body"] | {"chat_template_kwargs": {"enable_thinking": True}}
+            thinking_stream = await client.chat.completions.create(
+                **request | {"reasoning_effort": None, "extra_body": thinking_extra_body}, stream=True
+            )
+            thinking_chunks = [
+                cast("ChatCompletionChunk", chunk) async for chunk in cast("AsyncStream", thinking_stream)
+            ]
+            streamed_reasoning = "".join(
+                chunk.choices[0].delta.model_extra.get("reasoning_content") or ""
+                for chunk in thinking_chunks
+                if chunk.choices and chunk.choices[0].delta.model_extra
+            )
+            assert streamed_reasoning == thinking_message.model_extra["reasoning_content"]
             assert stopped.choices[0].message.content == "" and stopped.choices[0].finish_reason == "stop"
             with pytest.raises(BadRequestError):
                 await client.chat.completions.create(
@@ -167,6 +192,12 @@ def test_fuzz_engine_matches_dense_greedy_decoding(
     for _ in range(rng.randint(1, 8)):
         max_output_length = rng.randint(1, 40)
         prompt = tuple(source[: rng.randint(1, engine.context_limit - max_output_length)])
+        if requests and rng.random() < 0.5:
+            # Extend an earlier prompt so that the finished prompt's cached prefix can be reused.
+            base = rng.choice(requests).prompt
+            longest = engine.context_limit - max_output_length
+            if len(base) < longest:
+                prompt = tuple(source[: rng.randint(len(base) + 1, longest)])
         stop_token_ids: tuple[int, ...] = ()
         if rng.random() < 0.5:
             greedy = GenerationConfig(stop_token_ids=(), temperature=0.0)
@@ -191,7 +222,31 @@ def test_fuzz_engine_matches_dense_greedy_decoding(
         step += 1
         if not busy and step > max(request.arrival_step for request in requests):
             break
-    assert len(engine._free_pages) == config.total_pages and len(engine._free_slots) == config.slot_count  # noqa: SLF001
+    assert engine._available_pages() == config.total_pages and len(engine._free_slots) == config.slot_count  # noqa: SLF001
+
+    # A prompt extending a finished prompt must consume that prompt's cached prefix and still match dense decoding.
+    cached_prompts = {prefix.token_ids for prefix in engine._prefix_cache}  # noqa: SLF001
+    extendable = [
+        request
+        for request in requests
+        if request.prompt in cached_prompts and len(request.prompt) + 16 <= engine.context_limit
+    ]
+    if extendable:
+        base = rng.choice(extendable)
+        follow_up = FuzzRequest(tuple(source[: len(base.prompt) + 8]), 8, (), 0, return_logprobs=True)
+        requests.append(follow_up)
+        events.append([])
+        engine.submit(
+            follow_up.prompt,
+            8,
+            GenerationConfig(stop_token_ids=(), temperature=0.0),
+            0,
+            return_logprobs=True,
+            on_events=events[-1].extend,
+        )
+        assert engine.step() and base.prompt not in {prefix.token_ids for prefix in engine._prefix_cache}  # noqa: SLF001
+        while not isinstance(events[-1][-1] if events[-1] else None, SequenceFinished):
+            assert engine.step()
 
     for request, sequence_events in zip(requests, events, strict=True):
         *tokens, finished = sequence_events
@@ -215,6 +270,7 @@ def test_fuzz_engine_matches_dense_greedy_decoding(
                 continue
             assert event.token_id == event.logprobs.top_token_ids[0]
             assert abs(event.logprobs.logprob - row[event.token_id]) < 1.0
-            assert (
-                np.max(np.abs(np.asarray(event.logprobs.top_logprobs) - row[list(event.logprobs.top_token_ids)])) < 1.0
-            )
+            # bf16 logits cannot resolve the deep tail, so only entries above 1e-4 probability are compared.
+            dense_top = row[list(event.logprobs.top_token_ids)]
+            comparable = dense_top > -10
+            assert np.max(np.abs(np.asarray(event.logprobs.top_logprobs)[comparable] - dense_top[comparable])) < 1.0
