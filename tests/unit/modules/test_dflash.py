@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -5,11 +7,11 @@ import pytest
 from lalamo.initializer import RandomInitializer
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.linear import LinearConfig
-from lalamo.modules.speculators.dflash import DFlashSublayerTransformConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv, SeparableCausalConvConfig
+from lalamo.modules.transformer_layer import TransformerSublayerTransformConfig
 from lalamo.weight_matrix import MatmulConfig
 from tests.common import assert_close
-from tests.helpers import make_test_sharding_config
+from tests.helpers import build_tiny_attention_decoder, make_test_sharding_config
 
 
 def reference_convolution(
@@ -38,7 +40,7 @@ def reference_convolution(
 @pytest.mark.parametrize("group_size", [1, 2])
 def test_dflash_sublayer_transform_matches_explicit_reference(group_size: int) -> None:
     sharding_config = make_test_sharding_config()
-    config = DFlashSublayerTransformConfig(
+    config = TransformerSublayerTransformConfig(
         conv_config=SeparableCausalConvConfig(has_biases=False),
         kernel_projection_config=LinearConfig(),
         kernel_size=2,
@@ -61,3 +63,28 @@ def test_dflash_sublayer_transform_matches_explicit_reference(group_size: int) -
 
     assert_close(result=prepared, reference=reference_prepared)
     assert_close(result=module.finish(prepared, finishing_coefficients), reference=reference_finished)
+
+
+def test_sublayer_transform_preserves_suffix() -> None:
+    decoder = build_tiny_attention_decoder((None,))
+    config = replace(
+        decoder.transformer.layers[0].config,
+        sublayer_transform_config=TransformerSublayerTransformConfig(
+            conv_config=SeparableCausalConvConfig(has_biases=False),
+            kernel_projection_config=LinearConfig(),
+            kernel_size=2,
+            group_size=2,
+        ),
+    )
+    layer = config.init(
+        RandomInitializer(jnp.float32, decoder.sharding_config, key=jax.random.key(0)),
+        model_dim=8,
+        hidden_dim=16,
+    )
+    inputs = jnp.arange(2 * 4 * 8, dtype=jnp.float32).reshape(2, 4, 8) / 10
+    keychain = Keychain.init(0, sharding_config=decoder.sharding_config)
+
+    full_result = layer(inputs, None, keychain=keychain)
+    suffix_result = layer(inputs, None, return_suffix_tokens=1, keychain=keychain)
+
+    assert_close(result=suffix_result.outputs, reference=full_result.outputs[:, -1:])

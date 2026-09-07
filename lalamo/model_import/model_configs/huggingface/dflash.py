@@ -11,10 +11,10 @@ from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
-from lalamo.modules.speculators.dflash import DFlashDraftConfig, DFlashSublayerTransformConfig
+from lalamo.modules.speculators.dflash import DFlashDraftConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig, TransformerSublayerTransformConfig
 
 __all__ = [
     "DFlashYarnRopeScalingConfig",
@@ -177,7 +177,7 @@ class HFDFlashConfig:
             group_size = self.dflash_config.conv_group_size
             if kernel_size is None or group_size is None:
                 raise ValueError("DFlash2DraftModel requires both conv_kernel_size and conv_group_size.")
-            sublayer_transform_config = DFlashSublayerTransformConfig(
+            sublayer_transform_config = TransformerSublayerTransformConfig(
                 conv_config=SeparableCausalConvConfig(has_biases=False),
                 kernel_projection_config=linear_config,
                 kernel_size=kernel_size,
@@ -209,6 +209,7 @@ class HFDFlashConfig:
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
                 rope_config=rope_config,
+                sublayer_transform_config=sublayer_transform_config,
             )
             for sliding_window_size in self._layer_sliding_window_sizes()
         )
@@ -225,5 +226,4 @@ class HFDFlashConfig:
             rope_config=rope_config,
             layer_configs=layer_configs,
             output_norm_config=norm_config,
-            sublayer_transform_config=sublayer_transform_config,
         )

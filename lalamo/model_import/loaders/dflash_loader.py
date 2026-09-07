@@ -2,7 +2,6 @@ from collections.abc import Mapping
 from contextlib import ExitStack
 from pathlib import Path
 
-import equinox as eqx
 import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike
@@ -11,7 +10,8 @@ from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.common import _combine_weight_shards
 from lalamo.model_import.model_configs.huggingface.dflash import HFDFlashConfig
 from lalamo.model_import.origins import LocalOrigin, WeightFormat
-from lalamo.modules.speculators.dflash import DFlashDraftModel, DFlashSublayerTransform
+from lalamo.modules.speculators.dflash import DFlashDraftModel
+from lalamo.modules.transformer_layer import TransformerSublayerTransform
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at
@@ -27,12 +27,14 @@ __all__ = [
 
 
 def load_dflash_sublayer_transform(
-    module: DFlashSublayerTransform,
+    module: TransformerSublayerTransform | None,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-) -> DFlashSublayerTransform:
+) -> TransformerSublayerTransform | None:
+    if module is None:
+        return None
     base_kernel = rearrange(
         jnp.flip(weights_dict[path / "base_kernel"], axis=1),
         "sides kernel channels -> sides channels kernel",
@@ -86,30 +88,26 @@ def load_dflash_draft_model(
         )
         for layer_index, layer in enumerate(module.layers)
     )
-    layer_transforms = (
-        tuple(
-            eqx.tree_at(
-                lambda transforms: (transforms.attention, transforms.mlp),
-                transforms,
-                (
-                    load_dflash_sublayer_transform(
-                        transforms.attention,
-                        weights_dict,
-                        path / "layers" / layer_index / "attention_conv",
-                        implementation=implementation,
-                    ),
-                    load_dflash_sublayer_transform(
-                        transforms.mlp,
-                        weights_dict,
-                        path / "layers" / layer_index / "mlp_conv",
-                        implementation=implementation,
-                    ),
+    layers = tuple(
+        load_as_at(
+            lambda layer: (layer.mixer_transform, layer.mlp_transform),
+            layer,
+            (
+                load_dflash_sublayer_transform(
+                    layer.mixer_transform,
+                    weights_dict,
+                    path / "layers" / layer_index / "attention_conv",
+                    implementation=implementation,
                 ),
-            )
-            for layer_index, transforms in enumerate(module.layer_transforms)
+                load_dflash_sublayer_transform(
+                    layer.mlp_transform,
+                    weights_dict,
+                    path / "layers" / layer_index / "mlp_conv",
+                    implementation=implementation,
+                ),
+            ),
         )
-        if module.layer_transforms is not None
-        else None
+        for layer_index, layer in enumerate(layers)
     )
     state_kv_projection = module.state_kv_projection_from_layers(layers)
     output_norm = load_rmsnorm(module.output_norm, weights_dict, path / "norm")
@@ -121,7 +119,6 @@ def load_dflash_draft_model(
             draft_model.state_kv_projection,
             draft_model.layers,
             draft_model.output_norm,
-            draft_model.layer_transforms,
         ),
         module,
         (
@@ -130,7 +127,6 @@ def load_dflash_draft_model(
             state_kv_projection,
             layers,
             output_norm,
-            layer_transforms,
         ),
     )
 
