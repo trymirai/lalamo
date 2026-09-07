@@ -118,7 +118,7 @@ def _stochastic_round_to_sorted_lut_table_indices(
     lower_values = lut_values_at(lower_indices, table)
     upper_values = lut_values_at(upper_indices, table)
     upper_probability = jnp.clip(
-        (values - lower_values) / jnp.maximum(upper_values - lower_values, jnp.finfo(values.dtype).eps),
+        (values - lower_values) / jnp.maximum(upper_values - lower_values, jnp.finfo(values.dtype).tiny),
         0,
         1,
     )

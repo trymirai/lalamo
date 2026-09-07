@@ -78,14 +78,17 @@ def _manual_int_affine_parameters(
     max_values = jnp.max(grouped, axis=-1)
     if is_symmetric:
         scales = jnp.nan_to_num(
-            jnp.maximum(jnp.abs(min_values), jnp.abs(max_values)) / ((2 ** (bits - 1)) - 1),
-            nan=jnp.finfo(stored_weights.dtype).eps,
+            jnp.maximum(
+                jnp.maximum(jnp.abs(min_values), jnp.abs(max_values)) / ((2 ** (bits - 1)) - 1),
+                jnp.finfo(stored_weights.dtype).tiny,
+            ),
+            nan=jnp.finfo(stored_weights.dtype).tiny,
             posinf=jnp.finfo(stored_weights.dtype).max,
-            neginf=jnp.finfo(stored_weights.dtype).eps,
+            neginf=jnp.finfo(stored_weights.dtype).tiny,
         )
         zero_points = None
     else:
-        scales = jnp.maximum((max_values - min_values) / ((2**bits) - 1), jnp.finfo(stored_weights.dtype).eps)
+        scales = jnp.maximum((max_values - min_values) / ((2**bits) - 1), jnp.finfo(stored_weights.dtype).tiny)
         zero_points = jnp.nan_to_num(-min_values, nan=0, posinf=jnp.finfo(stored_weights.dtype).max, neginf=0)
     return scales, zero_points
 
@@ -260,3 +263,15 @@ def test_int_symmetric_from_packed_parameters_rejects_zero_points() -> None:
             packed_zero_points=original.packed_zero_points,
             sharding_config=make_test_sharding_config(),
         )
+
+
+@pytest.mark.parametrize("is_symmetric", [False, True])
+def test_int_compress_all_zero_groups_decompress_to_zeros(is_symmetric: bool) -> None:
+    weights = jnp.zeros((4, 4), dtype=jnp.float32)
+    spec = IntSpec(bits=4, group_size=2, is_symmetric=is_symmetric)
+
+    compressed = spec.compress(
+        weights, implementation=CompressionImplementation.INFERENCE, sharding_config=make_test_sharding_config()
+    )
+
+    compressed_common.assert_close_arrays(result=compressed.decompress(), reference=weights)
