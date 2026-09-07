@@ -57,7 +57,14 @@ def _linear(weights: Array, biases: Array | None, output_dims: tuple[int, ...], 
     )
 
 
-def _moe(*, num_shared_experts: int = 0, with_gate: bool = False) -> MixtureOfExperts:
+def _moe(
+    *,
+    num_shared_experts: int = 0,
+    with_gate: bool = False,
+    replicated_experts: bool = False,
+) -> MixtureOfExperts:
+    # `replicated_experts=True` keeps the routed expert weights unsharded, which is the condition under
+    # which the prefill path takes the ragged_dot dispatch instead of the chunked one.
     expert_config = DenseMLPConfig(
         linear_config=LinearConfig(),
         activation=Identity(),
@@ -77,7 +84,25 @@ def _moe(*, num_shared_experts: int = 0, with_gate: bool = False) -> MixtureOfEx
         expert_hidden_dim=HIDDEN_DIM,
         gate_config=LinearConfig() if with_gate else None,
     )
-    mixture_size = NUM_ROUTED_EXPERTS + num_shared_experts
+
+    def experts(mixture_size: int, *, seed: int, is_sharded: bool) -> DenseMLP:
+        return DenseMLP(
+            config=expert_config,
+            sharding_config=make_test_sharding_config(),
+            up_projection=_linear(
+                _rng_array((mixture_size, 2 * HIDDEN_DIM, MODEL_DIM), seed=seed),
+                None,
+                (HIDDEN_DIM, HIDDEN_DIM),
+                is_sharded=is_sharded,
+            ),
+            down_projection=_linear(
+                _rng_array((mixture_size, MODEL_DIM, HIDDEN_DIM), seed=seed + 1),
+                None,
+                (MODEL_DIM,),
+                is_sharded=is_sharded,
+            ),
+        )
+
     return MixtureOfExperts(
         config=config,
         sharding_config=make_test_sharding_config(),
@@ -86,20 +111,8 @@ def _moe(*, num_shared_experts: int = 0, with_gate: bool = False) -> MixtureOfEx
             _rng_array((NUM_ROUTED_EXPERTS,), seed=1),
             (NUM_ROUTED_EXPERTS,),
         ),
-        experts=DenseMLP(
-            config=expert_config,
-            sharding_config=make_test_sharding_config(),
-            up_projection=_linear(
-                _rng_array((mixture_size, 2 * HIDDEN_DIM, MODEL_DIM), seed=2),
-                None,
-                (HIDDEN_DIM, HIDDEN_DIM),
-            ),
-            down_projection=_linear(
-                _rng_array((mixture_size, MODEL_DIM, HIDDEN_DIM), seed=3),
-                None,
-                (MODEL_DIM,),
-            ),
-        ),
+        routed_experts=experts(NUM_ROUTED_EXPERTS, seed=2, is_sharded=not replicated_experts),
+        shared_experts=experts(num_shared_experts, seed=5, is_sharded=False) if num_shared_experts > 0 else None,
         gate=_linear(_rng_array((1, MODEL_DIM), seed=4), None, (1,), is_sharded=False) if with_gate else None,
     )
 
@@ -146,12 +159,14 @@ def test_routing_trace_matches_independent_router_reference() -> None:
 
 @pytest.mark.parametrize("mode", MOE_MODES)
 @pytest.mark.usefixtures("fake_mesh")
-def test_routing_trace_indices_cover_experts_used_by_dispatch(mode: ForwardPassMode) -> None:
+@pytest.mark.parametrize("replicated_experts", [False, True], ids=["chunked-dispatch", "ragged-dispatch"])
+def test_routing_trace_indices_cover_experts_used_by_dispatch(mode: ForwardPassMode, replicated_experts: bool) -> None:
     # Metamorphic check against the dispatch itself: zeroing the traced experts' outputs is
     # impossible from outside, but the module output must equal the weighted sum over exactly the
     # traced experts (softmax over their logits) -- computed here with an independent float64
     # expert reference. Catches a trace that reports different experts than the dispatch uses.
-    module = _moe()
+    # Both prefill dispatches (chunked over sharded experts, ragged_dot over replicated ones) must agree.
+    module = _moe(replicated_experts=replicated_experts)
     inputs = _trace_inputs(batch=2, tokens=4 if mode == ForwardPassMode.MULTI_TOKEN else 1)
     keychain = Keychain.init(7, sharding_config=make_test_sharding_config())
 
@@ -163,8 +178,8 @@ def test_routing_trace_indices_cover_experts_used_by_dispatch(mode: ForwardPassM
     trace = module.routing_trace(inputs, keychain=keychain)
     assert trace is not None
 
-    up = np.asarray(jax.device_get(module.experts.up_projection.weights.decompress()), dtype=np.float64)
-    down = np.asarray(jax.device_get(module.experts.down_projection.weights.decompress()), dtype=np.float64)
+    up = np.asarray(jax.device_get(module.routed_experts.up_projection.weights.decompress()), dtype=np.float64)
+    down = np.asarray(jax.device_get(module.routed_experts.down_projection.weights.decompress()), dtype=np.float64)
     x = np.asarray(jax.device_get(inputs), dtype=np.float64)
     logits = np.asarray(jax.device_get(trace.router_logits), dtype=np.float64)
     indices = np.asarray(jax.device_get(trace.active_expert_indices))
@@ -233,13 +248,14 @@ def test_dense_mlp_routing_trace_is_none() -> None:
 
 @pytest.mark.parametrize("mode", MOE_MODES)
 @pytest.mark.usefixtures("fake_mesh")
-def test_moe_accepts_per_sequence_keychain(mode: ForwardPassMode) -> None:
+@pytest.mark.parametrize("replicated_experts", [False, True], ids=["chunked-dispatch", "ragged-dispatch"])
+def test_moe_accepts_per_sequence_keychain(mode: ForwardPassMode, replicated_experts: bool) -> None:
     # Regression: the ContinuousBatchScheduler hands the MLP a keychain with one key PER SEQUENCE
     # (vmapped_keys shape (batch,)); the MoE prefill path used to assume a scalar keychain and
     # crashed on keychain broadcasts (router flatten, chunk scan, shared-expert fan-out). The
     # deterministic inference forward consumes no randomness, so outputs must match the
-    # scalar-keychain outputs exactly.
-    module = _moe(num_shared_experts=2, with_gate=True)
+    # scalar-keychain outputs exactly. Covers both prefill dispatches (chunked and ragged_dot).
+    module = _moe(num_shared_experts=2, with_gate=True, replicated_experts=replicated_experts)
     tokens = 4 if mode == ForwardPassMode.MULTI_TOKEN else 1
     inputs = _trace_inputs(batch=2, tokens=tokens)
     config = MLPForwardPassConfig(mode=mode, moe_chunk_size_ratio=0.5)
