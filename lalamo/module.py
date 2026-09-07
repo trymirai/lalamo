@@ -15,7 +15,7 @@ from jaxtyping import Array, DTypeLike, Key
 from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.json import JSON
 from lalamo.utils.registry_abc import make_registry_abc_converter
-from lalamo.utils.sharding import LogicalAxis, ShardingConfig
+from lalamo.utils.sharding import LogicalAxis, ShardingConfig, device_put_from_cpu
 
 from .exportable import Exportable
 
@@ -116,11 +116,11 @@ class Keychain(eqx.Module):
         vmapped_keys, batch_key = jax.random.split(jax.random.key(seed))
         if shape:
             vmapped_keys = jnp.reshape(jax.random.split(vmapped_keys, prod(shape)), shape)
-        vmapped_keys = jax.device_put(
+        vmapped_keys = device_put_from_cpu(
             vmapped_keys,
             sharding_config.make_sharding((None,) * len(vmapped_keys.shape)),
         )
-        batch_key = jax.device_put(batch_key, sharding_config.make_sharding(()))
+        batch_key = device_put_from_cpu(batch_key, sharding_config.make_sharding(()))
         return cls(vmapped_keys=vmapped_keys, batch_key=batch_key, sharding_config=sharding_config)
 
     def broadcast(
