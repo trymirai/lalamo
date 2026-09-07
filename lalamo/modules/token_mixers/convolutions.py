@@ -113,7 +113,6 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
                 self.weights.astype(output_dtype),
             ).squeeze(0)
         else:
-            input_windows = _causal_conv_windows(convolution_inputs, self.kernel_size).squeeze(0)
             weights = self.weights.astype(output_dtype)[None] + repeat(
                 coefficient_deltas.astype(output_dtype),
                 "suffix_tokens kernel groups -> suffix_tokens (groups group_size) kernel",
@@ -122,11 +121,7 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
                 groups=self.input_dim // self.config.group_size,
                 group_size=self.config.group_size,
             )
-            results = einsum(
-                input_windows,
-                weights,
-                "suffix_tokens channels kernel, suffix_tokens channels kernel -> suffix_tokens channels",
-            )
+            results = _dynamic_depthwise_conv(convolution_inputs.squeeze(0), weights)
         if self.biases is not None:
             results = results + self.biases.astype(output_dtype)
 
@@ -206,6 +201,18 @@ def _causal_conv_windows(
     token_indices = suffix_positions[:, None] + kernel_positions[None, :]
     windows = jnp.take(inputs, token_indices, axis=-2)
     return rearrange(windows, "... suffix_tokens kernel channels -> ... suffix_tokens channels kernel")
+
+
+def _dynamic_depthwise_conv(
+    inputs: Float[Array, "context_tokens channels"],
+    weights: Float[Array, "suffix_tokens channels kernel"],
+) -> Float[Array, "suffix_tokens channels"]:
+    input_windows = _causal_conv_windows(inputs, weights.shape[-1])
+    return einsum(
+        input_windows,
+        weights,
+        "suffix_tokens channels kernel, suffix_tokens channels kernel -> suffix_tokens channels",
+    )
 
 
 def _separable_causal_conv_forward(
