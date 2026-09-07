@@ -1,10 +1,10 @@
 from dataclasses import dataclass
-from math import sqrt
 from typing import Self
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from einops import rearrange
 from jax.sharding import NamedSharding
 from jaxtyping import Array, DTypeLike, Float, Int
 
@@ -16,6 +16,7 @@ from lalamo.modules.rope import PositionalEmbeddings, RoPE, RoPEConfig
 from lalamo.modules.speculator import Speculator, SpeculatorConfig
 from lalamo.modules.speculators.weaver import Weaver, WeaverConfig
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from lalamo.modules.token_mixers.kv_cache import StaticKVCacheLayer
 from lalamo.modules.transformer_layer import TransformerForwardPassConfig, TransformerLayer, TransformerLayerConfig
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
@@ -25,9 +26,9 @@ __all__ = [
     "DFlashDraftConfig",
     "DFlashDraftModel",
     "DFlashDraftState",
-    "DFlashGroupedConvolution",
-    "DFlashGroupedConvolutionConfig",
-    "DFlashLayerGroupedConvolutions",
+    "DFlashLayerTransforms",
+    "DFlashSublayerTransform",
+    "DFlashSublayerTransformConfig",
 ]
 
 
@@ -46,68 +47,31 @@ def _layer_attention(layer: TransformerLayer) -> Attention:
 
 
 @dataclass(frozen=True)
-class DFlashGroupedConvolutionConfig(LalamoConfig):
-    kernel_size: int
-    group_size: int
+class DFlashSublayerTransformConfig(LalamoConfig):
+    conv_config: SeparableCausalConvConfig
     kernel_projection_config: LinearConfig
+    kernel_size: int
 
-    def init(self, initializer: Initializer, model_dim: int) -> "DFlashGroupedConvolution":
-        if model_dim % self.group_size != 0:
-            raise ValueError(f"group_size {self.group_size} must divide model_dim {model_dim}.")
-        num_groups = model_dim // self.group_size
-        return DFlashGroupedConvolution(
+    def init(self, initializer: Initializer, model_dim: int) -> "DFlashSublayerTransform":
+        return DFlashSublayerTransform(
             config=self,
             sharding_config=initializer.sharding_config,
-            base_kernel=initializer.normal(
-                1.0 / sqrt(self.kernel_size),
-                (2, self.kernel_size, model_dim),
-            ),
+            pre_conv=self.conv_config.init(initializer, model_dim, self.kernel_size),
+            post_conv=self.conv_config.init(initializer, model_dim, self.kernel_size),
             kernel_projection=self.kernel_projection_config.init(
                 initializer,
                 input_dim=model_dim,
-                output_dims=(2 * self.kernel_size * num_groups,),
+                output_dims=(2 * self.kernel_size * (model_dim // self.conv_config.group_size),),
                 has_biases=False,
                 is_sharded=False,
             ),
         )
 
 
-class DFlashGroupedConvolution(LalamoModule[DFlashGroupedConvolutionConfig]):
-    base_kernel: Float[Array, "sides taps channels"]
+class DFlashSublayerTransform(LalamoModule[DFlashSublayerTransformConfig]):
+    pre_conv: SeparableCausalConv
+    post_conv: SeparableCausalConv
     kernel_projection: Linear
-
-    @property
-    def num_groups(self) -> int:
-        _, _, model_dim = self.base_kernel.shape
-        return model_dim // self.config.group_size
-
-    def convolve(
-        self,
-        hidden_states: Float[Array, "batch block channels"],
-        coefficient_deltas: Float[Array, "batch block taps groups"],
-        side: int,
-    ) -> Float[Array, "batch block channels"]:
-        batch_size, block_size, model_dim = hidden_states.shape
-        hidden_groups = hidden_states.reshape(
-            batch_size,
-            block_size,
-            self.num_groups,
-            self.config.group_size,
-        )
-        base_kernel = self.base_kernel[side].reshape(
-            self.config.kernel_size,
-            self.num_groups,
-            self.config.group_size,
-        )
-        coefficients = base_kernel.astype(hidden_states.dtype)[None, None] + coefficient_deltas[..., None]
-        outputs = coefficients[:, :, 0] * hidden_groups
-        for tap in range(1, self.config.kernel_size):
-            shifted = jnp.pad(
-                hidden_groups[:, :-tap],
-                ((0, 0), (tap, 0), (0, 0), (0, 0)),
-            )
-            outputs = outputs + coefficients[:, :, tap] * shifted
-        return outputs.reshape(batch_size, block_size, model_dim)
 
     def prepare(
         self,
@@ -115,8 +79,7 @@ class DFlashGroupedConvolution(LalamoModule[DFlashGroupedConvolutionConfig]):
         forward_pass_config: MatmulConfig,
         *,
         keychain: Keychain,
-    ) -> tuple[Float[Array, "batch block channels"], Float[Array, "batch block taps groups"]]:
-        batch_size, block_size, _ = inputs.shape
+    ) -> tuple[Float[Array, "batch block channels"], Float[Array, "batch block kernel groups"]]:
         (projected_coefficients,) = call_vmapped_twice(
             self.kernel_projection,
             inputs,
@@ -124,26 +87,38 @@ class DFlashGroupedConvolution(LalamoModule[DFlashGroupedConvolutionConfig]):
             keychain=keychain,
             added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
-        coefficients = projected_coefficients.reshape(
-            batch_size,
-            block_size,
-            2,
-            self.config.kernel_size,
-            self.num_groups,
+        coefficients = jnp.flip(
+            rearrange(
+                projected_coefficients,
+                "batch block (sides kernel groups) -> batch block sides kernel groups",
+                sides=2,
+                kernel=self.config.kernel_size,
+                groups=self.pre_conv.input_dim // self.config.conv_config.group_size,
+            ),
+            axis=3,
         )
-        return self.convolve(inputs, coefficients[:, :, 0], side=0), coefficients[:, :, 1]
+        outputs = call_vmapped(
+            lambda inputs, deltas: self.pre_conv(inputs, coefficient_deltas=deltas).outputs,
+            inputs,
+            coefficients[:, :, 0],
+        )
+        return outputs, coefficients[:, :, 1]
 
     def finish(
         self,
         outputs: Float[Array, "batch block channels"],
-        coefficients: Float[Array, "batch block taps groups"],
+        coefficients: Float[Array, "batch block kernel groups"],
     ) -> Float[Array, "batch block channels"]:
-        return self.convolve(outputs, coefficients, side=1)
+        return call_vmapped(
+            lambda outputs, deltas: self.post_conv(outputs, coefficient_deltas=deltas).outputs,
+            outputs,
+            coefficients,
+        )
 
 
-class DFlashLayerGroupedConvolutions(eqx.Module):
-    attention: DFlashGroupedConvolution
-    mlp: DFlashGroupedConvolution
+class DFlashLayerTransforms(eqx.Module):
+    attention: DFlashSublayerTransform
+    mlp: DFlashSublayerTransform
 
 
 @dataclass(frozen=True)
@@ -160,15 +135,12 @@ class DFlashDraftConfig(LalamoConfig):
     rope_config: RoPEConfig
     layer_configs: tuple[TransformerLayerConfig, ...]
     output_norm_config: NormalizationConfig
-    grouped_convolution_config: DFlashGroupedConvolutionConfig | None = None
+    sublayer_transform_config: DFlashSublayerTransformConfig | None = None
 
     def __post_init__(self) -> None:
-        if (
-            self.grouped_convolution_config is not None
-            and self.grouped_convolution_config.kernel_size > self.block_size
-        ):
+        if self.sublayer_transform_config is not None and self.sublayer_transform_config.kernel_size > self.block_size:
             raise ValueError(
-                f"grouped convolution kernel_size {self.grouped_convolution_config.kernel_size}"
+                f"convolution kernel_size {self.sublayer_transform_config.kernel_size}"
                 f" exceeds block_size {self.block_size}.",
             )
 
@@ -196,15 +168,15 @@ class DFlashDraftConfig(LalamoConfig):
                 layer_config.init(initializer, self.model_dim, self.hidden_dim) for layer_config in self.layer_configs
             ),
             output_norm=self.output_norm_config.init(initializer, self.model_dim),
-            layer_grouped_convolutions=(
+            layer_transforms=(
                 tuple(
-                    DFlashLayerGroupedConvolutions(
-                        attention=self.grouped_convolution_config.init(initializer, self.model_dim),
-                        mlp=self.grouped_convolution_config.init(initializer, self.model_dim),
+                    DFlashLayerTransforms(
+                        attention=self.sublayer_transform_config.init(initializer, self.model_dim),
+                        mlp=self.sublayer_transform_config.init(initializer, self.model_dim),
                     )
                     for _ in self.layer_configs
                 )
-                if self.grouped_convolution_config is not None
+                if self.sublayer_transform_config is not None
                 else None
             ),
         )
@@ -275,7 +247,7 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
     state_kv_projection: Linear
     layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
-    layer_grouped_convolutions: tuple[DFlashLayerGroupedConvolutions, ...] | None
+    layer_transforms: tuple[DFlashLayerTransforms, ...] | None
 
     def state_kv_projection_from_layers(self, layers: tuple[TransformerLayer, ...]) -> Linear:
         qkvg_projections = tuple(_layer_attention(layer).qkvg_projection for layer in layers)
@@ -420,16 +392,14 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
         for layer_index, (layer, layer_state, layer_keychain) in enumerate(
             zip(self.layers, state.layer_states, layer_keychains, strict=True),
         ):
-            grouped_convolutions = (
-                self.layer_grouped_convolutions[layer_index] if self.layer_grouped_convolutions is not None else None
-            )
+            transforms = self.layer_transforms[layer_index] if self.layer_transforms is not None else None
             layer_result = layer(
                 hidden_states,
                 positional_embeddings,
                 layer_state,
                 forward_pass_config=forward_pass_config,
-                mixer_transform=grouped_convolutions.attention if grouped_convolutions is not None else None,
-                mlp_transform=grouped_convolutions.mlp if grouped_convolutions is not None else None,
+                mixer_transform=transforms.attention if transforms is not None else None,
+                mlp_transform=transforms.mlp if transforms is not None else None,
                 keychain=layer_keychain,
             )
             hidden_states = layer_result.outputs

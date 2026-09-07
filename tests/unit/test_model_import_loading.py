@@ -17,7 +17,7 @@ from lalamo.compressed.microfloat import MicrofloatMatrixForInference
 from lalamo.compressed.mlx import MLXMatrixForInference, MLXMatrixForTraining
 from lalamo.initializer import EmptyInitializer, Initializer
 from lalamo.model import Model, ModelConfig
-from lalamo.model_import.loaders.dflash_loader import load_dflash_grouped_convolution
+from lalamo.model_import.loaders.dflash_loader import load_dflash_sublayer_transform
 from lalamo.model_import.loaders.huggingface import (
     load_huggingface_classifier,
     load_input_embedding_matrix,
@@ -648,11 +648,11 @@ def test_model_export_load_with_strong_initializer_forces_saved_float_dtypes(tmp
     assert restored.module.fp16_values.dtype == jnp.bfloat16
 
 
-def test_load_dflash2_grouped_convolution() -> None:
+def test_load_dflash2_sublayer_transform() -> None:
     config = HFDFlashConfig.from_dict(_dflash_hf_config(dflash2=True)).to_dflash_draft_config()
     model = config.init(EmptyInitializer(jnp.float32, make_test_sharding_config()))
-    assert model.layer_grouped_convolutions is not None
-    convolution = model.layer_grouped_convolutions[0].attention
+    assert model.layer_transforms is not None
+    transform = model.layer_transforms[0].attention
     base_kernel = jnp.arange(16, dtype=jnp.float32).reshape(2, 2, 4)
     kernel_projection = jnp.arange(32, dtype=jnp.float32).reshape(8, 4)
     weights = {
@@ -660,11 +660,12 @@ def test_load_dflash2_grouped_convolution() -> None:
         "attention_conv.kernel_projection.weight": kernel_projection,
     }
 
-    loaded_convolution = load_dflash_grouped_convolution(
-        convolution,
+    loaded_transform = load_dflash_sublayer_transform(
+        transform,
         weights,
         ParameterPath("attention_conv"),
     )
 
-    assert_close(result=loaded_convolution.base_kernel, reference=base_kernel)
-    assert_close(result=loaded_convolution.kernel_projection.weights.decompress(), reference=kernel_projection)
+    assert_close(result=loaded_transform.pre_conv.weights, reference=base_kernel[0, ::-1].T)
+    assert_close(result=loaded_transform.post_conv.weights, reference=base_kernel[1, ::-1].T)
+    assert_close(result=loaded_transform.kernel_projection.weights.decompress(), reference=kernel_projection)

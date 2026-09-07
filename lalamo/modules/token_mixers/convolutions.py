@@ -6,7 +6,7 @@ from typing import NamedTuple
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from einops import einsum, rearrange
+from einops import einsum, rearrange, repeat
 from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
@@ -29,6 +29,7 @@ class CausalConvResult(NamedTuple):
 @dataclass(frozen=True)
 class SeparableCausalConvConfig(LalamoConfig):
     has_biases: bool
+    group_size: int = 1
 
     def init(
         self,
@@ -36,6 +37,8 @@ class SeparableCausalConvConfig(LalamoConfig):
         input_dim: int,
         kernel_size: int,
     ) -> "SeparableCausalConv":
+        if input_dim % self.group_size != 0:
+            raise ValueError(f"group_size {self.group_size} must divide input_dim {input_dim}.")
         scale = 1 / math.sqrt(kernel_size * input_dim)
         weights = initializer.normal(scale, (input_dim, kernel_size), dtype=jnp.float32)
         if self.has_biases:
@@ -81,6 +84,8 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         state: Float[Array, "prefix_tokens channels"] | None = None,
         return_updated_state: bool = False,
         precision: ConvPrecision = ConvPrecision.MATCH_INPUTS,
+        *,
+        coefficient_deltas: Float[Array, "suffix_tokens kernel groups"] | None = None,
     ) -> CausalConvResult:
         match precision:
             case ConvPrecision.MATCH_WEIGHTS:
@@ -101,12 +106,27 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         required_context = num_suffix_tokens + self.kernel_size - 1
 
         inputs_with_history = _causal_conv_context(state, inputs_for_state)
-        conv_outputs = _separable_causal_conv(
-            inputs_with_history[None, -required_context:, :].astype(output_dtype),
-            self.weights.astype(output_dtype),
-        )
-
-        results = conv_outputs.squeeze(0)
+        convolution_inputs = inputs_with_history[None, -required_context:, :].astype(output_dtype)
+        if coefficient_deltas is None:
+            results = _separable_causal_conv(
+                convolution_inputs,
+                self.weights.astype(output_dtype),
+            ).squeeze(0)
+        else:
+            input_windows = _causal_conv_windows(convolution_inputs, self.kernel_size).squeeze(0)
+            weights = self.weights.astype(output_dtype)[None] + repeat(
+                coefficient_deltas.astype(output_dtype),
+                "suffix_tokens kernel groups -> suffix_tokens (groups group_size) kernel",
+                suffix_tokens=num_suffix_tokens,
+                kernel=self.kernel_size,
+                groups=self.input_dim // self.config.group_size,
+                group_size=self.config.group_size,
+            )
+            results = einsum(
+                input_windows,
+                weights,
+                "suffix_tokens channels kernel, suffix_tokens channels kernel -> suffix_tokens channels",
+            )
         if self.biases is not None:
             results = results + self.biases.astype(output_dtype)
 

@@ -11,11 +11,9 @@ from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
-from lalamo.modules.speculators.dflash import (
-    DFlashDraftConfig,
-    DFlashGroupedConvolutionConfig,
-)
+from lalamo.modules.speculators.dflash import DFlashDraftConfig, DFlashSublayerTransformConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 __all__ = [
@@ -153,21 +151,6 @@ class HFDFlashConfig:
             self.sliding_window if layer_type == "sliding_attention" else None for layer_type in self.layer_types
         )
 
-    def grouped_convolution_config(self, linear_config: LinearConfig) -> DFlashGroupedConvolutionConfig | None:
-        kernel_size = self.dflash_config.conv_kernel_size
-        group_size = self.dflash_config.conv_group_size
-        if kernel_size is None and group_size is None:
-            return None
-        if kernel_size is None or group_size is None:
-            raise ValueError(
-                "DFlash grouped convolution requires both conv_kernel_size and conv_group_size.",
-            )
-        return DFlashGroupedConvolutionConfig(
-            kernel_size=kernel_size,
-            group_size=group_size,
-            kernel_projection_config=linear_config,
-        )
-
     def to_dflash_draft_config(self) -> DFlashDraftConfig:
         (architecture,) = self.architectures
         assert self.dflash_config.target_layer_ids
@@ -189,8 +172,19 @@ class HFDFlashConfig:
             up_clipping=None,
         )
         rope_config = self._rope_config(self.max_position_embeddings)
-        grouped_convolution_config = self.grouped_convolution_config(linear_config)
-        if architecture == "DFlash2DraftModel" and grouped_convolution_config is None:
+        kernel_size = self.dflash_config.conv_kernel_size
+        group_size = self.dflash_config.conv_group_size
+        if kernel_size is None and group_size is None:
+            sublayer_transform_config = None
+        elif kernel_size is None or group_size is None:
+            raise ValueError("DFlash grouped convolution requires both conv_kernel_size and conv_group_size.")
+        else:
+            sublayer_transform_config = DFlashSublayerTransformConfig(
+                conv_config=SeparableCausalConvConfig(has_biases=False, group_size=group_size),
+                kernel_projection_config=linear_config,
+                kernel_size=kernel_size,
+            )
+        if architecture == "DFlash2DraftModel" and sublayer_transform_config is None:
             raise ValueError("DFlash2DraftModel requires a grouped convolution config.")
         layer_configs = tuple(
             TransformerLayerConfig(
@@ -232,5 +226,5 @@ class HFDFlashConfig:
             rope_config=rope_config,
             layer_configs=layer_configs,
             output_norm_config=norm_config,
-            grouped_convolution_config=grouped_convolution_config,
+            sublayer_transform_config=sublayer_transform_config,
         )

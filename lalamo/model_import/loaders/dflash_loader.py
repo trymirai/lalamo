@@ -3,13 +3,15 @@ from contextlib import ExitStack
 from pathlib import Path
 
 import equinox as eqx
+import jax.numpy as jnp
+from einops import rearrange
 from jaxtyping import Array, DTypeLike
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.common import _combine_weight_shards
 from lalamo.model_import.model_configs.huggingface.dflash import HFDFlashConfig
 from lalamo.model_import.origins import LocalOrigin, WeightFormat
-from lalamo.modules.speculators.dflash import DFlashDraftModel, DFlashGroupedConvolution
+from lalamo.modules.speculators.dflash import DFlashDraftModel, DFlashSublayerTransform
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at
@@ -19,23 +21,29 @@ from .huggingface import load_linear, load_rmsnorm, load_transformer_layer
 
 __all__ = [
     "load_dflash_draft_model",
-    "load_dflash_grouped_convolution",
+    "load_dflash_sublayer_transform",
     "load_hf_dflash_draft_model",
 ]
 
 
-def load_dflash_grouped_convolution(
-    module: DFlashGroupedConvolution,
+def load_dflash_sublayer_transform(
+    module: DFlashSublayerTransform,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-) -> DFlashGroupedConvolution:
+) -> DFlashSublayerTransform:
+    base_kernel = rearrange(
+        jnp.flip(weights_dict[path / "base_kernel"], axis=1),
+        "sides kernel channels -> sides channels kernel",
+        sides=2,
+    )
     return load_as_at(
-        lambda convolution: (convolution.base_kernel, convolution.kernel_projection),
+        lambda transform: (transform.pre_conv.weights, transform.post_conv.weights, transform.kernel_projection),
         module,
         (
-            weights_dict[path / "base_kernel"],
+            base_kernel[0],
+            base_kernel[1],
             load_linear(
                 module.kernel_projection,
                 weights_dict,
@@ -78,29 +86,29 @@ def load_dflash_draft_model(
         )
         for layer_index, layer in enumerate(module.layers)
     )
-    layer_grouped_convolutions = (
+    layer_transforms = (
         tuple(
             eqx.tree_at(
-                lambda convolutions: (convolutions.attention, convolutions.mlp),
-                convolutions,
+                lambda transforms: (transforms.attention, transforms.mlp),
+                transforms,
                 (
-                    load_dflash_grouped_convolution(
-                        convolutions.attention,
+                    load_dflash_sublayer_transform(
+                        transforms.attention,
                         weights_dict,
                         path / "layers" / layer_index / "attention_conv",
                         implementation=implementation,
                     ),
-                    load_dflash_grouped_convolution(
-                        convolutions.mlp,
+                    load_dflash_sublayer_transform(
+                        transforms.mlp,
                         weights_dict,
                         path / "layers" / layer_index / "mlp_conv",
                         implementation=implementation,
                     ),
                 ),
             )
-            for layer_index, convolutions in enumerate(module.layer_grouped_convolutions)
+            for layer_index, transforms in enumerate(module.layer_transforms)
         )
-        if module.layer_grouped_convolutions is not None
+        if module.layer_transforms is not None
         else None
     )
     state_kv_projection = module.state_kv_projection_from_layers(layers)
@@ -113,7 +121,7 @@ def load_dflash_draft_model(
             draft_model.state_kv_projection,
             draft_model.layers,
             draft_model.output_norm,
-            draft_model.layer_grouped_convolutions,
+            draft_model.layer_transforms,
         ),
         module,
         (
@@ -122,7 +130,7 @@ def load_dflash_draft_model(
             state_kv_projection,
             layers,
             output_norm,
-            layer_grouped_convolutions,
+            layer_transforms,
         ),
     )
 
