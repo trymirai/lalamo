@@ -51,8 +51,11 @@ class DFlashSublayerTransformConfig(LalamoConfig):
     conv_config: SeparableCausalConvConfig
     kernel_projection_config: LinearConfig
     kernel_size: int
+    group_size: int
 
     def init(self, initializer: Initializer, model_dim: int) -> "DFlashSublayerTransform":
+        if model_dim % self.group_size != 0:
+            raise ValueError(f"group_size {self.group_size} must divide model_dim {model_dim}.")
         return DFlashSublayerTransform(
             config=self,
             sharding_config=initializer.sharding_config,
@@ -61,7 +64,7 @@ class DFlashSublayerTransformConfig(LalamoConfig):
             kernel_projection=self.kernel_projection_config.init(
                 initializer,
                 input_dim=model_dim,
-                output_dims=(2 * self.kernel_size * (model_dim // self.conv_config.group_size),),
+                output_dims=(2 * self.kernel_size * (model_dim // self.group_size),),
                 has_biases=False,
                 is_sharded=False,
             ),
@@ -93,7 +96,7 @@ class DFlashSublayerTransform(LalamoModule[DFlashSublayerTransformConfig]):
                 "batch block (sides kernel groups) -> batch block sides kernel groups",
                 sides=2,
                 kernel=self.config.kernel_size,
-                groups=self.pre_conv.input_dim // self.config.conv_config.group_size,
+                groups=self.pre_conv.input_dim // self.config.group_size,
             ),
             axis=3,
         )

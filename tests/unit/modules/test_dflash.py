@@ -18,7 +18,7 @@ def reference_convolution(
     coefficient_deltas: jax.Array,
 ) -> jax.Array:
     batch_size, block_size, model_dim = hidden_states.shape
-    group_size = convolution.config.group_size
+    group_size = model_dim // coefficient_deltas.shape[-1]
     num_groups = model_dim // group_size
     hidden_groups = hidden_states.reshape(batch_size, block_size, num_groups, group_size)
     output_rows = []
@@ -39,9 +39,10 @@ def reference_convolution(
 def test_dflash_sublayer_transform_matches_explicit_reference(group_size: int) -> None:
     sharding_config = make_test_sharding_config()
     config = DFlashSublayerTransformConfig(
-        conv_config=SeparableCausalConvConfig(has_biases=False, group_size=group_size),
+        conv_config=SeparableCausalConvConfig(has_biases=False),
         kernel_projection_config=LinearConfig(),
         kernel_size=2,
+        group_size=group_size,
     )
     module = config.init(RandomInitializer(jnp.float32, sharding_config, key=jax.random.key(0)), model_dim=4)
     inputs = jax.device_put(

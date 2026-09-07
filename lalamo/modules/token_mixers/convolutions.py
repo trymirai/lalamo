@@ -29,7 +29,6 @@ class CausalConvResult(NamedTuple):
 @dataclass(frozen=True)
 class SeparableCausalConvConfig(LalamoConfig):
     has_biases: bool
-    group_size: int = 1
 
     def init(
         self,
@@ -37,8 +36,6 @@ class SeparableCausalConvConfig(LalamoConfig):
         input_dim: int,
         kernel_size: int,
     ) -> "SeparableCausalConv":
-        if input_dim % self.group_size != 0:
-            raise ValueError(f"group_size {self.group_size} must divide input_dim {input_dim}.")
         scale = 1 / math.sqrt(kernel_size * input_dim)
         weights = initializer.normal(scale, (input_dim, kernel_size), dtype=jnp.float32)
         if self.has_biases:
@@ -118,8 +115,7 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
                 "suffix_tokens kernel groups -> suffix_tokens (groups group_size) kernel",
                 suffix_tokens=num_suffix_tokens,
                 kernel=self.kernel_size,
-                groups=self.input_dim // self.config.group_size,
-                group_size=self.config.group_size,
+                group_size=self.input_dim // coefficient_deltas.shape[-1],
             )
             results = _dynamic_depthwise_conv(convolution_inputs.squeeze(0), weights)
         if self.biases is not None:

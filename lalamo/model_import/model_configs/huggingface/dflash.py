@@ -178,9 +178,10 @@ class HFDFlashConfig:
             if kernel_size is None or group_size is None:
                 raise ValueError("DFlash2DraftModel requires both conv_kernel_size and conv_group_size.")
             sublayer_transform_config = DFlashSublayerTransformConfig(
-                conv_config=SeparableCausalConvConfig(has_biases=False, group_size=group_size),
+                conv_config=SeparableCausalConvConfig(has_biases=False),
                 kernel_projection_config=linear_config,
                 kernel_size=kernel_size,
+                group_size=group_size,
             )
         else:
             sublayer_transform_config = None

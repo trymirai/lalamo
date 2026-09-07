@@ -33,9 +33,9 @@ def _biases() -> jax.Array:
     return jnp.array([-0.25, 0.0, 0.25, 0.5], dtype=jnp.float32)
 
 
-def _conv(has_biases: bool = True, *, group_size: int = 1) -> SeparableCausalConv:
+def _conv(has_biases: bool = True) -> SeparableCausalConv:
     return SeparableCausalConv(
-        config=SeparableCausalConvConfig(has_biases=has_biases, group_size=group_size),
+        config=SeparableCausalConvConfig(has_biases=has_biases),
         sharding_config=make_test_sharding_config(),
         weights=_weights(),
         biases=_biases() if has_biases else None,
@@ -60,9 +60,8 @@ def _reference(
     windows = jnp.stack([history[token : token + module.kernel_size] for token in range(inputs.shape[0])])
     result = jnp.einsum("tkc,ck->tc", windows, weights)
     if coefficient_deltas is not None:
-        channel_coefficients = jax.device_get(coefficient_deltas)[
-            ..., np.arange(module.input_dim) // module.config.group_size
-        ]
+        group_size = module.input_dim // coefficient_deltas.shape[-1]
+        channel_coefficients = jax.device_get(coefficient_deltas)[..., np.arange(module.input_dim) // group_size]
         result = result + jnp.einsum("tkc,tkc->tc", windows, channel_coefficients)
     if module.biases is not None:
         result = result + jnp.asarray(jax.device_get(module.biases)).astype(result.dtype)
@@ -91,7 +90,7 @@ def test_separable_causal_conv_matches_reference_and_keeps_unsharded_features(
     fake_mesh: Mesh,
     group_size: int | None,
 ) -> None:
-    module = _conv(group_size=group_size or 1)
+    module = _conv()
     inputs = _sharded_sequence(jnp.arange(5 * CHANNELS, dtype=jnp.float32).reshape(5, CHANNELS) / 10)
     coefficient_deltas = None
     if group_size is not None:
