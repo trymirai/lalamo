@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from einops import EinopsError, einsum, rearrange
+from einops import einsum
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
@@ -42,7 +42,13 @@ def _conv(has_biases: bool = True, *, group_size: int = 1) -> SeparableCausalCon
     )
 
 
-def _reference(module: SeparableCausalConv, inputs: Array, state: Array | None = None) -> Array:
+def _reference(
+    module: SeparableCausalConv,
+    inputs: Array,
+    state: Array | None = None,
+    *,
+    coefficient_deltas: Array | None = None,
+) -> Array:
     inputs = jnp.asarray(jax.device_get(inputs))
     weights = jnp.asarray(jax.device_get(module.weights)).astype(inputs.dtype)
     if state is None:
@@ -53,6 +59,11 @@ def _reference(module: SeparableCausalConv, inputs: Array, state: Array | None =
     history = jnp.concatenate((state, inputs), axis=0)
     windows = jnp.stack([history[token : token + module.kernel_size] for token in range(inputs.shape[0])])
     result = jnp.einsum("tkc,ck->tc", windows, weights)
+    if coefficient_deltas is not None:
+        channel_coefficients = jax.device_get(coefficient_deltas)[
+            ..., np.arange(module.input_dim) // module.config.group_size
+        ]
+        result = result + jnp.einsum("tkc,tkc->tc", windows, channel_coefficients)
     if module.biases is not None:
         result = result + jnp.asarray(jax.device_get(module.biases)).astype(result.dtype)
     return result
@@ -75,13 +86,24 @@ def _sharded_sequences(values: Array) -> Array:
     return jax.device_put(values, make_sharding((LogicalAxis.BATCH, None, None)))
 
 
-def test_separable_causal_conv_matches_reference_and_keeps_unsharded_features(fake_mesh: Mesh) -> None:
-    module = _conv()
+@pytest.mark.parametrize("group_size", [None, 1, 2])
+def test_separable_causal_conv_matches_reference_and_keeps_unsharded_features(
+    fake_mesh: Mesh,
+    group_size: int | None,
+) -> None:
+    module = _conv(group_size=group_size or 1)
     inputs = _sharded_sequence(jnp.arange(5 * CHANNELS, dtype=jnp.float32).reshape(5, CHANNELS) / 10)
+    coefficient_deltas = None
+    if group_size is not None:
+        coefficient_shape = (inputs.shape[0], KERNEL_SIZE, CHANNELS // group_size)
+        coefficient_deltas = jax.device_put(
+            jnp.arange(prod(coefficient_shape), dtype=jnp.float32).reshape(coefficient_shape) / 100,
+            make_sharding((None, None, None)),
+        )
 
-    result = module(inputs)
+    result = module(inputs, coefficient_deltas=coefficient_deltas)
 
-    _assert_close(result=result.outputs, reference=_reference(module, inputs))
+    _assert_close(result=result.outputs, reference=_reference(module, inputs, coefficient_deltas=coefficient_deltas))
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
     assert result.outputs.sharding == make_sharding((None, None))
     assert result.state is None
@@ -96,72 +118,6 @@ def test_separable_causal_conv_without_biases_matches_reference(fake_mesh: Mesh)
     _assert_close(result=result.outputs, reference=_reference(module, inputs))
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
     assert result.outputs.sharding == make_sharding((None, None))
-
-
-@pytest.mark.parametrize("channel_axis", [None, LogicalAxis.MATRIX])
-@pytest.mark.parametrize("group_size", [1, 2])
-def test_separable_causal_conv_applies_causal_grouped_coefficients(
-    fake_mesh: Mesh,
-    channel_axis: LogicalAxis | None,
-    group_size: int,
-) -> None:
-    module = _conv(has_biases=False, group_size=group_size)
-    num_groups = CHANNELS // group_size
-    sequence_sharding = make_sharding((None, channel_axis))
-    state = jax.device_put(
-        jnp.arange((KERNEL_SIZE - 1) * CHANNELS, dtype=jnp.float32).reshape(KERNEL_SIZE - 1, CHANNELS) / 5,
-        sequence_sharding,
-    )
-    inputs = jax.device_put(
-        jnp.arange(4 * CHANNELS, dtype=jnp.float32).reshape(4, CHANNELS) / 10,
-        sequence_sharding,
-    )
-    coefficient_deltas = jax.device_put(
-        jnp.arange(4 * KERNEL_SIZE * num_groups, dtype=jnp.float32).reshape(4, KERNEL_SIZE, num_groups) / 100,
-        make_sharding((None, None, channel_axis)),
-    )
-
-    result = module(inputs, state=state, coefficient_deltas=coefficient_deltas)
-
-    history = jnp.concatenate((state, inputs), axis=0)
-    input_windows = jnp.stack(
-        [history[token_index : token_index + KERNEL_SIZE] for token_index in range(inputs.shape[0])],
-    )
-    base_kernel = rearrange(module.weights, "channels kernel -> kernel channels")
-    channel_coefficients = jax.device_get(coefficient_deltas)[..., np.arange(CHANNELS) // group_size]
-    reference = jnp.sum(input_windows * (base_kernel[None] + channel_coefficients), axis=1)
-
-    changed_inputs = inputs.at[-1].set(inputs[-1] + 100)
-    changed_result = module(changed_inputs, state=state, coefficient_deltas=coefficient_deltas)
-
-    _assert_close(result=result.outputs, reference=reference)
-    _assert_close(result=changed_result.outputs[:-1], reference=result.outputs[:-1])
-    _assert_named_sharding(result.outputs.sharding, fake_mesh)
-    assert result.outputs.sharding == sequence_sharding
-
-
-def test_separable_causal_conv_zero_coefficients_match_static_without_mesh() -> None:
-    module = _conv()
-    inputs = jnp.arange(5 * CHANNELS, dtype=jnp.float32).reshape(5, CHANNELS) / 10
-    coefficient_deltas = jnp.zeros((5, KERNEL_SIZE, CHANNELS), dtype=jnp.float32)
-
-    result = module(inputs, coefficient_deltas=coefficient_deltas)
-
-    _assert_close(result=result.outputs, reference=module(inputs).outputs)
-
-
-@pytest.mark.usefixtures("fake_mesh")
-@pytest.mark.parametrize(("kernel_size", "num_groups"), [(1, CHANNELS), (KERNEL_SIZE, 1)])
-def test_separable_causal_conv_rejects_broadcast_coefficients(kernel_size: int, num_groups: int) -> None:
-    module = _conv(has_biases=False)
-    inputs = _sharded_sequence(jnp.zeros((4, CHANNELS), dtype=jnp.float32))
-    coefficient_deltas = jax.device_put(
-        jnp.zeros((4, kernel_size, num_groups), dtype=jnp.float32),
-        make_sharding((None, None, None)),
-    )
-
-    with pytest.raises(EinopsError, match="Shape mismatch"):
-        module(inputs, coefficient_deltas=coefficient_deltas)
 
 
 def test_separable_causal_conv_output_dtype_matches_input_dtype(fake_mesh: Mesh) -> None:

@@ -172,20 +172,18 @@ class HFDFlashConfig:
             up_clipping=None,
         )
         rope_config = self._rope_config(self.max_position_embeddings)
-        kernel_size = self.dflash_config.conv_kernel_size
-        group_size = self.dflash_config.conv_group_size
-        if kernel_size is None and group_size is None:
-            sublayer_transform_config = None
-        elif kernel_size is None or group_size is None:
-            raise ValueError("DFlash grouped convolution requires both conv_kernel_size and conv_group_size.")
-        else:
+        if architecture == "DFlash2DraftModel":
+            kernel_size = self.dflash_config.conv_kernel_size
+            group_size = self.dflash_config.conv_group_size
+            if kernel_size is None or group_size is None:
+                raise ValueError("DFlash2DraftModel requires both conv_kernel_size and conv_group_size.")
             sublayer_transform_config = DFlashSublayerTransformConfig(
                 conv_config=SeparableCausalConvConfig(has_biases=False, group_size=group_size),
                 kernel_projection_config=linear_config,
                 kernel_size=kernel_size,
             )
-        if architecture == "DFlash2DraftModel" and sublayer_transform_config is None:
-            raise ValueError("DFlash2DraftModel requires a grouped convolution config.")
+        else:
+            sublayer_transform_config = None
         layer_configs = tuple(
             TransformerLayerConfig(
                 pre_mixer_norm_config=norm_config,
