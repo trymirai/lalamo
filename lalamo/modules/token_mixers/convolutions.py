@@ -11,7 +11,7 @@ from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
-from lalamo.utils.sharding import sharding_of
+from lalamo.utils.sharding import auto_sharded
 
 __all__ = [
     "CausalConvResult",
@@ -117,7 +117,16 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
                 kernel=self.kernel_size,
                 group_size=self.input_dim // coefficient_deltas.shape[-1],
             )
-            results = _dynamic_depthwise_conv(convolution_inputs.squeeze(0), weights)
+            input_windows = rearrange(
+                _causal_conv_windows(convolution_inputs, self.kernel_size),
+                "1 tokens channels kernel -> 1 kernel (channels tokens)",
+            )
+            weights = rearrange(weights, "tokens channels kernel -> (channels tokens) kernel")
+            results = rearrange(
+                _separable_causal_conv(input_windows, weights),
+                "1 1 (channels tokens) -> tokens channels",
+                tokens=num_suffix_tokens,
+            )
         if self.biases is not None:
             results = results + self.biases.astype(output_dtype)
 
@@ -162,6 +171,7 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         return output, new_state
 
 
+@auto_sharded
 def _separable_causal_conv_impl(
     inputs: Float[Array, "batch context_tokens channels"],
     weights: Float[Array, "channels kernel"],
@@ -174,7 +184,6 @@ def _separable_causal_conv_impl(
         feature_group_count=input_dim,
         padding="VALID",
         dimension_numbers=("NTC", "OTI", "NTC"),
-        out_sharding=sharding_of(inputs),
     )
 
 
@@ -197,18 +206,6 @@ def _causal_conv_windows(
     token_indices = suffix_positions[:, None] + kernel_positions[None, :]
     windows = jnp.take(inputs, token_indices, axis=-2)
     return rearrange(windows, "... suffix_tokens kernel channels -> ... suffix_tokens channels kernel")
-
-
-def _dynamic_depthwise_conv(
-    inputs: Float[Array, "context_tokens channels"],
-    weights: Float[Array, "suffix_tokens channels kernel"],
-) -> Float[Array, "suffix_tokens channels"]:
-    input_windows = _causal_conv_windows(inputs, weights.shape[-1])
-    return einsum(
-        input_windows,
-        weights,
-        "suffix_tokens channels kernel, suffix_tokens channels kernel -> suffix_tokens channels",
-    )
 
 
 def _separable_causal_conv_forward(

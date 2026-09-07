@@ -1,7 +1,8 @@
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TypeGuard
+from functools import wraps
+from typing import Concatenate, TypeGuard
 
 import jax
 from jax import Array, ShapeDtypeStruct, typeof
@@ -11,6 +12,7 @@ from jaxtyping import Int, Shaped
 __all__ = [
     "LogicalAxis",
     "ShardingConfig",
+    "auto_sharded",
     "is_sharded",
     "lookup_sharded_indices",
     "reshard_as",
@@ -130,6 +132,17 @@ def with_sharding(array: Array, sharding: NamedSharding) -> Array:
 
 def reshard_as(array: Array, reference: Array) -> Array:
     return with_sharding(array, sharding_of(reference))
+
+
+def auto_sharded[**Params](
+    function: Callable[Concatenate[Array, Params], Array],
+) -> Callable[Concatenate[Array, Params], Array]:
+    @wraps(function)
+    def wrapped(inputs: Array, /, *args: Params.args, **kwargs: Params.kwargs) -> Array:
+        sharded_function = jax.sharding.auto_axes(out_sharding=sharding_of(inputs))(function)
+        return sharded_function(inputs, *args, **kwargs)
+
+    return wrapped
 
 
 def lookup_sharded_indices(
