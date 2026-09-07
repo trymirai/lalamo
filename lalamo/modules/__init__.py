@@ -30,14 +30,20 @@ from .linear import Linear, LinearConfig
 from .mlp import (
     DenseMLP,
     DenseMLPConfig,
+    IdentityRoutingIntervention,
     MixtureOfExperts,
     MixtureOfExpertsConfig,
     MLPBase,
     MLPConfig,
     MLPForwardPassConfig,
+    MLPResult,
     MoERoutingTrace,
     RoutingFunction,
+    RoutingIntervention,
+    RoutingMap,
+    RoutingPhase,
     SoftmaxRouting,
+    with_routing_intervention,
 )
 from .normalization import (
     Normalization,
@@ -74,6 +80,7 @@ from .token_mixer import (
     TokenMixerBase,
     TokenMixerConfig,
     TokenMixerResult,
+    TransformerLayerState,
 )
 from .token_mixers import (
     Attention,
@@ -135,6 +142,7 @@ __all__ = [
     "EmbeddingForwardPassConfig",
     "ForwardPassMode",
     "Identity",
+    "IdentityRoutingIntervention",
     "KVCacheLayer",
     "Keychain",
     "KeychainBroadcastMode",
@@ -147,6 +155,7 @@ __all__ = [
     "MLPBase",
     "MLPConfig",
     "MLPForwardPassConfig",
+    "MLPResult",
     "Mamba2",
     "Mamba2Config",
     "MixerForwardPassConfig",
@@ -164,6 +173,9 @@ __all__ = [
     "RoPE",
     "RoPEConfig",
     "RoutingFunction",
+    "RoutingIntervention",
+    "RoutingMap",
+    "RoutingPhase",
     "SeparableCausalConv",
     "SeparableCausalConvConfig",
     "ShortConv",
@@ -187,6 +199,7 @@ __all__ = [
     "TransformerLayerActivationTrace",
     "TransformerLayerConfig",
     "TransformerLayerResult",
+    "TransformerLayerState",
     "TransformerResult",
     "UnscaledRoPEConfig",
     "UntiedEmbedding",
@@ -199,4 +212,5 @@ __all__ = [
     "YARNRoPEConfig",
     "build_tree_attention_mask",
     "tree_ancestor_mask",
+    "with_routing_intervention",
 ]

@@ -381,7 +381,7 @@ def test_routed_moe_matches_direct_reference(mode: ForwardPassMode) -> None:
         inputs,
         forward_pass_config=MLPForwardPassConfig(mode=mode, moe_chunk_size_ratio=0.5),
         keychain=Keychain.init(7, sharding_config=make_test_sharding_config()),
-    )
+    ).outputs
 
     _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
 
@@ -432,7 +432,7 @@ def test_full_precision_routed_moe_preserves_input_dtype(mode: ForwardPassMode) 
         inputs,
         forward_pass_config=MLPForwardPassConfig(mode=mode),
         keychain=Keychain.init(8, sharding_config=make_test_sharding_config()),
-    )
+    ).outputs
 
     assert result.dtype == inputs.dtype
 
@@ -451,7 +451,7 @@ def test_full_precision_moe_prefill_with_gated_shared_experts_and_padding_matche
         lengths_without_padding=lengths_without_padding,
         forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.0),
         keychain=Keychain.init(9, sharding_config=make_test_sharding_config()),
-    )
+    ).outputs
 
     _assert_close(
         result=result,
@@ -475,7 +475,7 @@ def test_full_precision_moe_training_gradients_match_dense_reference() -> None:
             lengths_without_padding=lengths_without_padding,
             forward_pass_config=MLPForwardPassConfig.for_training(),
             keychain=Keychain.init(10, sharding_config=make_test_sharding_config()),
-        )
+        ).outputs
         return jnp.square(outputs).sum()
 
     def reference_loss(module_and_inputs: tuple[MixtureOfExperts, Array]) -> Array:
@@ -517,7 +517,7 @@ def test_gated_shared_quantized_moe_decode_matches_reference() -> None:
         inputs,
         forward_pass_config=MLPForwardPassConfig(mode=ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(10, sharding_config=make_test_sharding_config()),
-    )
+    ).outputs
 
     _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
 
@@ -536,7 +536,7 @@ def test_quantized_moe_prefill_keeps_chunked_fallback() -> None:
         lengths_without_padding=lengths_without_padding,
         forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
         keychain=Keychain.init(11, sharding_config=make_test_sharding_config()),
-    )
+    ).outputs
 
     _assert_close(
         result=result,
@@ -558,7 +558,7 @@ def test_expert_sharded_full_precision_moe_prefill_keeps_chunked_fallback() -> N
         lengths_without_padding=lengths_without_padding,
         forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
         keychain=Keychain.init(12, sharding_config=make_test_sharding_config()),
-    )
+    ).outputs
 
     _assert_close(
         result=result,

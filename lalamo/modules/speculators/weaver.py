@@ -165,7 +165,7 @@ class WeaverBlock(LalamoModule[WeaverConfig]):
         )
         x = x + projected
         normalized = call_vmapped_twice(self.pre_mlp_norm, x)
-        return x + self.mlp(normalized, keychain=keychain)
+        return x + self.mlp(normalized, keychain=keychain).outputs
 
     def prefix_forward(
         self,

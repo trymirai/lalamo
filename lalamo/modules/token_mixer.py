@@ -26,11 +26,20 @@ __all__ = [
     "TokenMixerBase",
     "TokenMixerConfig",
     "TokenMixerResult",
+    "TransformerLayerState",
 ]
 
 
 class StateLayerBase(Exportable, eqx.Module):
     pass
+
+
+class TransformerLayerState(StateLayerBase):
+    """The state one transformer layer carries across calls: its token mixer's (KV cache or recurrent
+    state) and, for a mixture of experts under a stateful routing intervention, the routing state."""
+
+    mixer: StateLayerBase
+    routing: StateLayerBase | None
 
 
 @register_pytree_node_class

@@ -1,7 +1,10 @@
+import hashlib
+import json
 import math
 from abc import abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
+from enum import StrEnum
 from functools import partial
 from typing import Self
 
@@ -11,7 +14,7 @@ import jax.numpy as jnp
 from einops import rearrange
 from jax.lax import DotAlgorithmPreset
 from jax.sharding import NamedSharding, PartitionSpec
-from jaxtyping import Array, Bool, Float, Int, Key
+from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key
 
 from lalamo.initializer import Initializer
 from lalamo.module import (
@@ -28,19 +31,26 @@ from lalamo.weight_matrix import FullPrecisionMatrix, GradientEstimator, MatmulC
 
 from .activations import Activation
 from .linear import Linear, LinearConfig
+from .token_mixer import StateLayerBase
 from .utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
     "DenseMLP",
     "DenseMLPConfig",
+    "IdentityRoutingIntervention",
     "MLPBase",
     "MLPConfig",
     "MLPForwardPassConfig",
+    "MLPResult",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
     "MoERoutingTrace",
     "RoutingFunction",
+    "RoutingIntervention",
+    "RoutingMap",
+    "RoutingPhase",
     "SoftmaxRouting",
+    "with_routing_intervention",
 ]
 
 
@@ -155,18 +165,18 @@ class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
+        generation_mask: Bool[Array, "batch suffix_tokens"] | None = None,
+        routing_state: StateLayerBase | None = None,
         *,
         keychain: Keychain,
-    ) -> Float[Array, "batch suffix_tokens channels"]: ...
+    ) -> "MLPResult": ...
 
-    def routing_trace(
-        self,
-        inputs: Float[Array, "batch suffix_tokens channels"],  # noqa: ARG002
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: ARG002
-        *,
-        keychain: Keychain,  # noqa: ARG002
-    ) -> "MoERoutingTrace | None":
+    def init_routing_state(self, dtype: DTypeLike) -> StateLayerBase | None:  # noqa: ARG002
         return None
+
+    @property
+    def keeps_routing_state(self) -> bool:
+        return self.init_routing_state(jnp.float32) is not None
 
 
 @dataclass(frozen=True)
@@ -249,19 +259,22 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,  # noqa: ARG002
         forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
+        generation_mask: Bool[Array, "batch suffix_tokens"] | None = None,  # noqa: ARG002
+        routing_state: StateLayerBase | None = None,  # noqa: ARG002
         *,
         keychain: Keychain,
-    ) -> Float[Array, "batch suffix_tokens channels"]:
+    ) -> "MLPResult":
         call_unbatched = partial(
             self.call_unbatched,
             forward_pass_config=forward_pass_config,
         )
-        return call_vmapped_twice(
+        outputs = call_vmapped_twice(
             call_unbatched,
             inputs,
             keychain=keychain,
             added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
+        return MLPResult(outputs=outputs)
 
     @eqx.filter_jit
     def call_unbatched(
@@ -359,6 +372,23 @@ class MoERoutingTrace(eqx.Module):
     shared_expert_gate: Float[Array, "batch suffix_tokens shared_experts"] | None
 
 
+class MLPResult(eqx.Module):
+    outputs: Float[Array, "batch suffix_tokens channels"]
+    updated_routing_state: StateLayerBase | None = None
+    routing_trace: MoERoutingTrace | None = None
+
+
+class RoutingPhase(StrEnum):
+    """The semantic phase of a token: context whose state is being built, or a token the model generated.
+
+    It is independent of the kernel path (`ForwardPassMode`): a teacher-forced pass may decode context
+    tokens one by one or prefill generated ones, so callers that know the phase pass it explicitly.
+    """
+
+    CONTEXT = "context"
+    GENERATION = "generation"
+
+
 @dataclass(frozen=True)
 class RoutingFunction(LalamoConfig, RegistryABC):
     def __call__(self, logits: Float[Array, "batch_tokens experts"], num_active: int) -> RoutingMap:
@@ -380,6 +410,53 @@ class SoftmaxRouting(RoutingFunction):
 
 
 @dataclass(frozen=True)
+class RoutingIntervention(LalamoConfig, RegistryABC):
+    """A causal modification of expert routing, active on the tokens whose phase is in `phases`.
+
+    `route` runs one time step over the batch: it sees the router logits of the current token, the
+    per-sequence state accumulated over the previous tokens, and returns the routing map together with
+    the updated state. It may therefore depend on the past of the sequence but never on its future,
+    which is what makes a chunked or fully parallel prefill equivalent to token-by-token decoding.
+    Stateless rules leave `init_state` at its default (None).
+    """
+
+    phases: tuple[RoutingPhase, ...]
+
+    def init_state(self, num_experts: int, dtype: DTypeLike) -> StateLayerBase | None:  # noqa: ARG002
+        return None
+
+    @abstractmethod
+    def route(
+        self,
+        router_logits: Float[Array, "batch experts"],
+        active: Bool[Array, " batch"],
+        state: StateLayerBase | None,
+        routing_function: RoutingFunction,
+        num_active: int,
+    ) -> tuple[RoutingMap, StateLayerBase | None]: ...
+
+    def digest(self) -> str:
+        return hashlib.sha256(json.dumps(self.to_json(), sort_keys=True).encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class IdentityRoutingIntervention(RoutingIntervention):
+    """The neutral element: the base routing on every token and no state."""
+
+    phases: tuple[RoutingPhase, ...] = ()
+
+    def route(
+        self,
+        router_logits: Float[Array, "batch experts"],
+        active: Bool[Array, " batch"],  # noqa: ARG002
+        state: StateLayerBase | None,
+        routing_function: RoutingFunction,
+        num_active: int,
+    ) -> tuple[RoutingMap, StateLayerBase | None]:
+        return routing_function(router_logits, num_active), state
+
+
+@dataclass(frozen=True)
 class MixtureOfExpertsConfig(MLPConfig):
     expert_config: DenseMLPConfig
     router_config: LinearConfig
@@ -392,6 +469,7 @@ class MixtureOfExpertsConfig(MLPConfig):
     num_shared_experts: int
     expert_hidden_dim: int
     gate_config: LinearConfig | None = None
+    routing_intervention: RoutingIntervention | None = None
 
     @property
     def mixture_size(self) -> int:
@@ -458,27 +536,125 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     def hidden_dim(self) -> int:
         return self.routed_experts.hidden_dim
 
+    def init_routing_state(self, dtype: DTypeLike) -> StateLayerBase | None:
+        if self.config.routing_intervention is None:
+            return None
+        return self.config.routing_intervention.init_state(self.config.num_routed_experts, dtype)
+
     @eqx.filter_jit
     def __call__(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
+        generation_mask: Bool[Array, "batch suffix_tokens"] | None = None,
+        routing_state: StateLayerBase | None = None,
         *,
         keychain: Keychain,
-    ) -> Float[Array, "batch suffix_tokens channels"]:
+    ) -> MLPResult:
+        if routing_state is None and self.keeps_routing_state:
+            raise ValueError(
+                "The routing intervention keeps a per-sequence state: pass the routing state initialised by"
+                " init_routing_state (TransformerLayer.init_static_state does it for whole models).",
+            )
         match forward_pass_config.mode:
             case ForwardPassMode.MULTI_TOKEN:
                 return self.call_prefill_mode(
                     inputs,
                     lengths_without_padding,
                     forward_pass_config,
+                    generation_mask,
+                    routing_state,
                     keychain=keychain,
                 )
             case ForwardPassMode.SINGLE_TOKEN:
-                return self.call_decode_mode(inputs, forward_pass_config, keychain=keychain)
+                return self.call_decode_mode(
+                    inputs,
+                    forward_pass_config,
+                    generation_mask,
+                    routing_state,
+                    keychain=keychain,
+                )
             case _:
                 raise ValueError(f"Unsupported forward pass mode: {forward_pass_config.mode}")
+
+    def _active_tokens(
+        self,
+        intervention: RoutingIntervention,
+        generation_mask: Bool[Array, "batch suffix_tokens"] | None,
+        shape: tuple[int, int],
+        mode: ForwardPassMode,
+    ) -> Bool[Array, "batch suffix_tokens"]:
+        # Without an explicit phase mask the kernel path decides: a prefill builds context, a decode
+        # step generates. Teacher-forced callers know better and pass the mask.
+        if generation_mask is None:
+            generation_mask = jnp.full(shape, mode == ForwardPassMode.SINGLE_TOKEN, dtype=jnp.bool_)
+        applies_to_generation = RoutingPhase.GENERATION in intervention.phases
+        applies_to_context = RoutingPhase.CONTEXT in intervention.phases
+        return jnp.where(generation_mask, applies_to_generation, applies_to_context)
+
+    def _route_tokens(
+        self,
+        router_logits: Float[Array, "batch_tokens experts"],
+        batch_size: int,
+        padding_mask: Bool[Array, "batch suffix_tokens"] | None,
+        generation_mask: Bool[Array, "batch suffix_tokens"] | None,
+        mode: ForwardPassMode,
+        routing_state: StateLayerBase | None,
+    ) -> tuple[RoutingMap, StateLayerBase | None]:
+        """Routing of every (batch, token) slot in flattened order, plus the routing state after the last token.
+
+        Without an intervention this is the plain routing function. With one, the tokens of each sequence
+        are routed in time order by a scan whose carry is the intervention state, so the rule at token t
+        sees exactly the tokens before t -- the same computation a token-by-token decode performs.
+        """
+        num_active = self.config.num_active_routed_experts
+        intervention = self.config.routing_intervention
+        if intervention is None:
+            return self.config.routing_function(router_logits, num_active), None
+
+        logits_by_time = rearrange(
+            router_logits,
+            "(batch suffix_tokens) experts -> suffix_tokens batch experts",
+            batch=batch_size,
+        )
+        sequence_length = logits_by_time.shape[0]
+        active = self._active_tokens(intervention, generation_mask, (batch_size, sequence_length), mode)
+        if padding_mask is None:
+            padding_mask = jnp.ones((batch_size, sequence_length), dtype=jnp.bool_)
+
+        def route_step(
+            state: StateLayerBase | None,
+            step_inputs: tuple[Float[Array, "batch experts"], Bool[Array, " batch"], Bool[Array, " batch"]],
+        ) -> tuple[StateLayerBase | None, RoutingMap]:
+            step_logits, step_active, step_valid = step_inputs
+            routing, updated = intervention.route(
+                step_logits, step_active, state, self.config.routing_function, num_active
+            )
+            if state is not None:
+                # Padding slots are routed like any other (their outputs are discarded downstream) but
+                # must not advance the state of their sequence.
+                updated = jax.tree.map(
+                    lambda new, old: jnp.where(step_valid.reshape((-1, *([1] * (old.ndim - 1)))), new, old),
+                    updated,
+                    state,
+                )
+            return updated, routing
+
+        final_state, routing_by_time = jax.lax.scan(
+            route_step,
+            routing_state,
+            (
+                logits_by_time,
+                rearrange(active, "batch suffix_tokens -> suffix_tokens batch"),
+                rearrange(padding_mask, "batch suffix_tokens -> suffix_tokens batch"),
+            ),
+        )
+        routing = jax.tree.map(
+            lambda leaf: rearrange(leaf, "suffix_tokens batch active -> (batch suffix_tokens) active"),
+            routing_by_time,
+        )
+        return routing, final_state
 
     def _shared_expert_weight(
         self,
@@ -499,21 +675,12 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     def _call_decode_token(
         self,
         token_input: Float[Array, " channels"],
+        routing: RoutingMap,
         forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
         *,
         keychain: Keychain,
-    ) -> Float[Array, " channels"]:
-        router_keychain, routed_keychain, shared_weight_keychain, shared_keychain = keychain.split(4)
-        (router_logits,) = self.router(
-            token_input,
-            keychain=router_keychain,
-            forward_pass_config=forward_pass_config.matmul_config,
-        )
-        router_logits = jax.device_put(router_logits, self.sharding_config.make_sharding((None,)))
-        routing = self.config.routing_function.call_unbatched(
-            router_logits,
-            num_active=self.config.num_active_routed_experts,
-        )
+    ) -> tuple[Float[Array, " channels"], Float[Array, " one"] | None]:
+        routed_keychain, shared_weight_keychain, shared_keychain = keychain.split(3)
         active_routed_experts = jax.tree_util.tree_map(
             partial(_take_moe_expert_leaf, index=routing.active_expert_indices),
             self.routed_experts,
@@ -528,7 +695,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         )
         routed_result = (routed_outputs * routing.active_expert_weights[:, None]).sum(axis=0)
         if self.shared_experts is None:
-            return routed_result
+            return routed_result, None
 
         shared_weight = self._shared_expert_weight(
             token_input,
@@ -543,23 +710,60 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             keychain=shared_keychain,
             in_axes=(0, None),
         )
-        return routed_result + shared_weight * shared_outputs.sum(axis=0)
+        return routed_result + shared_weight * shared_outputs.sum(axis=0), shared_weight
 
     @eqx.filter_jit
     def call_decode_mode(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
         forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
+        generation_mask: Bool[Array, "batch suffix_tokens"] | None = None,
+        routing_state: StateLayerBase | None = None,
         *,
         keychain: Keychain,
-    ) -> Float[Array, "batch suffix_tokens channels"]:
-        return call_vmapped_twice(
+    ) -> MLPResult:
+        batch_size, _, _ = inputs.shape
+        batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
+        router_keychain, experts_keychain = keychain.split(2)
+        (router_logits,) = call_vmapped_twice(
+            self.router,
+            inputs,
+            forward_pass_config=forward_pass_config.matmul_config,
+            keychain=router_keychain,
+            added_sharding_axes=(batch_axis, None),
+        )
+        flat_logits = with_sharding(
+            rearrange(router_logits, "batch suffix_tokens experts -> (batch suffix_tokens) experts"),
+            self.sharding_config.resolve_sharding((LogicalAxis.BATCH, None)),
+        )
+        flat_routing, updated_routing_state = self._route_tokens(
+            flat_logits,
+            batch_size,
+            None,
+            generation_mask,
+            forward_pass_config.mode,
+            routing_state,
+        )
+        routing_map = jax.tree.map(
+            lambda leaf: rearrange(
+                leaf, "(batch suffix_tokens) active -> batch suffix_tokens active", batch=batch_size
+            ),
+            flat_routing,
+        )
+        outputs, shared_gate = call_vmapped_twice(
             self._call_decode_token,
             inputs,
+            routing_map,
             forward_pass_config=forward_pass_config,
-            keychain=keychain,
-            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
+            keychain=experts_keychain,
+            added_sharding_axes=(batch_axis, None),
         )
+        routing_trace = MoERoutingTrace(
+            router_logits=router_logits,
+            active_expert_indices=routing_map.active_expert_indices,
+            shared_expert_gate=shared_gate,
+        )
+        return MLPResult(outputs=outputs, updated_routing_state=updated_routing_state, routing_trace=routing_trace)
 
     def _call_ragged_routed_experts(
         self,
@@ -774,9 +978,11 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
+        generation_mask: Bool[Array, "batch suffix_tokens"] | None = None,
+        routing_state: StateLayerBase | None = None,
         *,
         keychain: Keychain,
-    ) -> Float[Array, "batch suffix_tokens channels"]:
+    ) -> MLPResult:
         batch_size, sequence_length, _ = inputs.shape
         if lengths_without_padding is None:
             lengths_without_padding = jnp.ones(batch_size, dtype=jnp.int32) * sequence_length
@@ -812,7 +1018,14 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )
         router_logits = with_sharding(router_logits, batch_sharding)
-        routing_map = self.config.routing_function(router_logits, self.config.num_active_routed_experts)
+        routing_map, updated_routing_state = self._route_tokens(
+            router_logits,
+            batch_size,
+            padding_mask,
+            generation_mask,
+            forward_pass_config.mode,
+            routing_state,
+        )
 
         up_weights = self.routed_experts.up_projection.weights
         down_weights = self.routed_experts.down_projection.weights
@@ -840,77 +1053,8 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             )
 
         expert_result = routed_expert_result
+        shared_gate = None
         if self.shared_experts is not None:
-            shared_expert_weight = partial(
-                self._shared_expert_weight,
-                forward_pass_config=forward_pass_config,
-            )
-            shared_weights = call_vmapped(
-                shared_expert_weight,
-                flattened_inputs,
-                keychain=flatten_token_keychain(shared_weight_keychain),
-                added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
-            )
-            shared_weights = jnp.where(flattened_padding_mask[:, None], shared_weights, 0.0)
-
-            shared_outputs = self.shared_experts.call_mixture(
-                flattened_inputs,
-                forward_pass_config,
-                keychain=_collapse_keychain(shared_expert_keychain),
-            )
-            expert_result = routed_expert_result + shared_weights * shared_outputs.sum(axis=0)
-
-        return rearrange(
-            expert_result,
-            "(batch suffix_tokens) channels -> batch suffix_tokens channels",
-            batch=batch_size,
-        )
-
-    @eqx.filter_jit
-    def routing_trace(
-        self,
-        inputs: Float[Array, "batch suffix_tokens channels"],
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
-        *,
-        keychain: Keychain,
-    ) -> MoERoutingTrace:
-        # Shadow pass over the router only: repeats the exact router matmul and top-k of the
-        # dispatch paths, so under jit XLA CSEs it with the real forward and jax.lax.top_k on the
-        # same logits reproduces the dispatched expert set bit-exactly (top-k tie-breaks are
-        # deterministic). Valid for deterministic (inference) forward passes; a stochastic
-        # (QAT-noise) Linear would make the shadow logits diverge from the dispatch.
-        batch_size, sequence_length, _ = inputs.shape
-        flattened_inputs = rearrange(inputs, "batch suffix_tokens channels -> (batch suffix_tokens) channels")
-        batch_sharding = self.sharding_config.resolve_sharding((LogicalAxis.BATCH, None))
-
-        def flatten_token_keychain(token_keychain: Keychain) -> Keychain:
-            # Mirrors flatten_token_keychain in call_prefill_mode, including the ndim-based mode.
-            broadcast_mode = (
-                KeychainBroadcastMode.PREFIX if token_keychain.vmapped_keys.ndim == 0 else KeychainBroadcastMode.SUFFIX
-            )
-            token_keychain = token_keychain.broadcast(
-                (batch_size, sequence_length),
-                mode=broadcast_mode,
-            )
-            return Keychain(
-                vmapped_keys=rearrange(token_keychain.vmapped_keys, "batch suffix_tokens -> (batch suffix_tokens)"),
-                batch_key=token_keychain.batch_key,
-                sharding_config=token_keychain.sharding_config,
-            )
-
-        # Same split layout as call_prefill_mode so the shadow router sees identical keychains.
-        router_keychain, _, shared_weight_keychain, _ = keychain.split(4)
-        (router_logits,) = call_vmapped(
-            self.router,
-            flattened_inputs,
-            forward_pass_config=forward_pass_config.matmul_config,
-            keychain=flatten_token_keychain(router_keychain),
-            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
-        )
-        router_logits = with_sharding(router_logits, batch_sharding)
-        _, active_indices = jax.lax.top_k(router_logits, self.config.num_active_routed_experts)
-
-        if self.config.num_shared_experts > 0:
             shared_expert_weight = partial(
                 self._shared_expert_weight,
                 forward_pass_config=forward_pass_config,
@@ -921,24 +1065,47 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 keychain=flatten_token_keychain(shared_weight_keychain),
                 added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
             )
-            shared_gate = rearrange(
-                shared_gate,
-                "(batch suffix_tokens) shared -> batch suffix_tokens shared",
-                batch=batch_size,
-            )
-        else:
-            shared_gate = None
+            shared_weights = jnp.where(flattened_padding_mask[:, None], shared_gate, 0.0)
 
-        return MoERoutingTrace(
-            router_logits=rearrange(
-                router_logits,
-                "(batch suffix_tokens) experts -> batch suffix_tokens experts",
-                batch=batch_size,
-            ),
-            active_expert_indices=rearrange(
-                active_indices,
+            shared_outputs = self.shared_experts.call_mixture(
+                flattened_inputs,
+                forward_pass_config,
+                keychain=_collapse_keychain(shared_expert_keychain),
+            )
+            expert_result = routed_expert_result + shared_weights * shared_outputs.sum(axis=0)
+
+        def by_token(flat: Array, pattern: str) -> Array:
+            return rearrange(flat, pattern, batch=batch_size)
+
+        # The trace is a view of the routing that was dispatched, not a second router pass.
+        routing_trace = MoERoutingTrace(
+            router_logits=by_token(router_logits, "(batch suffix_tokens) experts -> batch suffix_tokens experts"),
+            active_expert_indices=by_token(
+                routing_map.active_expert_indices,
                 "(batch suffix_tokens) active -> batch suffix_tokens active",
-                batch=batch_size,
             ),
-            shared_expert_gate=shared_gate,
+            shared_expert_gate=(
+                by_token(shared_gate, "(batch suffix_tokens) shared -> batch suffix_tokens shared")
+                if shared_gate is not None
+                else None
+            ),
         )
+        return MLPResult(
+            outputs=by_token(expert_result, "(batch suffix_tokens) channels -> batch suffix_tokens channels"),
+            updated_routing_state=updated_routing_state,
+            routing_trace=routing_trace,
+        )
+
+
+def with_routing_intervention[TreeT](tree: TreeT, intervention: RoutingIntervention | None) -> TreeT:
+    """`tree` with every MixtureOfExperts routing under `intervention` (None removes it); weights untouched.
+
+    A runtime overlay: the configs of the mixture modules change, the checkpoint configuration a model was
+    loaded from does not -- the intervention is recorded by the caller next to the results it produced.
+    """
+    from lalamo.utils.surgery import map_nodes_of_type  # noqa: PLC0415
+
+    def overlay(mixture: MixtureOfExperts) -> MixtureOfExperts:
+        return replace(mixture, config=replace(mixture.config, routing_intervention=intervention))
+
+    return map_nodes_of_type(MixtureOfExperts, overlay, tree)

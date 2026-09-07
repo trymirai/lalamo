@@ -14,6 +14,7 @@ from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings, RoPE, RoPEConfig
 from lalamo.modules.speculator import Speculator, SpeculatorConfig
 from lalamo.modules.speculators.weaver import Weaver, WeaverConfig
+from lalamo.modules.token_mixer import TransformerLayerState
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.kv_cache import StaticKVCacheLayer
 from lalamo.modules.transformer_layer import TransformerForwardPassConfig, TransformerLayer, TransformerLayerConfig
@@ -289,10 +290,12 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
 
         hidden_states = noise_embeddings
         for layer, layer_state, layer_keychain in zip(self.layers, state.layer_states, layer_keychains, strict=True):
+            # The draft keeps bare KV caches; a transformer layer expects its composite state (mixer plus
+            # routing), and the draft's dense MLPs carry no routing state.
             layer_result = layer(
                 hidden_states,
                 positional_embeddings,
-                layer_state,
+                TransformerLayerState(mixer=layer_state, routing=None),
                 forward_pass_config=forward_pass_config,
                 keychain=layer_keychain,
             )

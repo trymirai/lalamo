@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 import equinox as eqx
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
@@ -9,7 +9,7 @@ from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, fie
 
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
-from .token_mixer import State, StateLayerBase
+from .token_mixer import State, TransformerLayerState
 from .transformer_layer import (
     TransformerForwardPassConfig,
     TransformerLayer,
@@ -107,6 +107,7 @@ class Transformer(LalamoModule[TransformerConfig]):
         per_layer_inputs: tuple[Float[Array, "batch suffix_tokens ple_dim"], ...] | None = None,
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
+        generation_mask: Bool[Array, "batch suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
     ) -> TransformerResult:
@@ -143,11 +144,16 @@ class Transformer(LalamoModule[TransformerConfig]):
                     "return_suffix_tokens > 1 on padded batches requires a preallocated state"
                     " when the model has trailing KV-sharing layers.",
                 )
-        state_by_layer = (
-            {layer_index: state[state_index] for state_index, layer_index in enumerate(self.kv_source_layer_indices)}
-            if state is not None
-            else {}
-        )
+        state_by_layer: dict[int, TransformerLayerState] = {}
+        if state is not None:
+            for state_index, layer_index in enumerate(self.kv_source_layer_indices):
+                layer_state = state[state_index]
+                if not isinstance(layer_state, TransformerLayerState):
+                    raise TypeError(
+                        f"State entry {state_index} is a {type(layer_state).__name__}; states are built by"
+                        " init_static_state and carry a TransformerLayerState per state-owning layer.",
+                    )
+                state_by_layer[layer_index] = layer_state
         mixer_forward_pass_config = forward_pass_config.mixer_forward_pass_config
         rope_embeddings = tuple(
             call_vmapped(
@@ -188,7 +194,7 @@ class Transformer(LalamoModule[TransformerConfig]):
 
         residual_dtype = inner_features.dtype
         layer_keychains = keychain.split(len(self.layers))
-        updated_states: dict[int, StateLayerBase | None] = {}
+        updated_states: dict[int, TransformerLayerState | None] = {}
         layer_results = []
 
         for layer_index, (layer, layer_keychain) in enumerate(zip(self.layers, layer_keychains, strict=True)):
@@ -212,10 +218,27 @@ class Transformer(LalamoModule[TransformerConfig]):
             if kv_source_layer_index is None:
                 effective_state = state_by_layer.get(layer_index)
             else:
-                effective_state = updated_states.get(
+                # A KV-sharing layer reads its source's cache but owns no state entry, so it cannot hold
+                # routing state of its own.
+                if layer.mlp.keeps_routing_state:
+                    raise ValueError(
+                        f"Layer {layer_index} shares the KV cache of layer {kv_source_layer_index} and owns no"
+                        " state entry; a stateful routing intervention on its MLP has nowhere to keep its state.",
+                    )
+                source_state = updated_states.get(
                     kv_source_layer_index,
                     state_by_layer.get(kv_source_layer_index),
                 )
+                effective_state = (
+                    None if source_state is None else TransformerLayerState(mixer=source_state.mixer, routing=None)
+                )
+            layer_generation_mask = (
+                gather_suffix_tokens(
+                    generation_mask, lengths_without_padding, return_suffix_tokens, self.sharding_config
+                )
+                if runs_on_suffix_only and generation_mask is not None and return_suffix_tokens is not None
+                else generation_mask
+            )
 
             layer_result = layer(
                 inner_features,
@@ -229,6 +252,7 @@ class Transformer(LalamoModule[TransformerConfig]):
                 per_layer_input=per_layer_input,
                 attention_parent_indices=attention_parent_indices,
                 return_suffix_tokens=return_suffix_tokens if layer_index == last_state_owner_index else None,
+                generation_mask=layer_generation_mask,
                 keychain=layer_keychain,
             )
 

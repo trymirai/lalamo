@@ -21,6 +21,8 @@ from lalamo.modules import (
     ForwardPassMode,
     Keychain,
     KeychainBroadcastMode,
+    RoutingIntervention,
+    with_routing_intervention,
 )
 from lalamo.modules.token_mixer import State
 from lalamo.modules.utils import call_vmapped
@@ -138,6 +140,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
 
     def default_sampling_policy(self) -> SamplingPolicy:
         return self.config.generation_config.default_policy()
+
+    def with_routing_intervention(self, intervention: RoutingIntervention | None) -> Self:
+        """The model with every mixture-of-experts layer routing under `intervention` (None removes it)."""
+        return with_routing_intervention(self, intervention)
 
     def trim_at_eos(self, token_ids: list[int]) -> list[int]:
         if not self.config.generation_config.stop_token_ids:

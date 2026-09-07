@@ -6,7 +6,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax.lax import DotAlgorithmPreset
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
@@ -24,6 +24,7 @@ from .token_mixer import (
     StateLayerBase,
     TokenMixerBase,
     TokenMixerConfig,
+    TransformerLayerState,
 )
 from .utils import call_vmapped, call_vmapped_twice, gather_suffix_tokens
 
@@ -77,7 +78,7 @@ class TransformerForwardPassConfig:
 class TransformerLayerActivationTrace(Exportable, eqx.Module):
     inputs: Float[Array, "batch suffix_tokens channels"]
     positional_embeddings: PositionalEmbeddings | None
-    state: StateLayerBase | None
+    state: TransformerLayerState | None
 
     mlp_inputs: Float[Array, "batch suffix_tokens channels"]
     pre_mixer_norm: Float[Array, "batch suffix_tokens channels"]
@@ -90,7 +91,7 @@ class TransformerLayerActivationTrace(Exportable, eqx.Module):
 
 class TransformerLayerResult(Exportable, eqx.Module):
     outputs: Float[Array, "batch suffix_tokens channels"]
-    updated_state: StateLayerBase | None
+    updated_state: TransformerLayerState | None
     activation_trace: TransformerLayerActivationTrace | None
     routing_trace: MoERoutingTrace | None = None
 
@@ -216,7 +217,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
         positional_embeddings: PositionalEmbeddings | None,
-        state: StateLayerBase | None = None,
+        state: TransformerLayerState | None = None,
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
         return_routing_trace: bool = False,
@@ -225,6 +226,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         per_layer_input: Float[Array, "batch suffix_tokens ple_dim"] | None = None,
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
+        generation_mask: Bool[Array, "batch suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
     ) -> TransformerLayerResult:
@@ -235,6 +237,8 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             )
         if return_suffix_tokens is not None and (return_activation_trace or return_routing_trace):
             raise ValueError("return_suffix_tokens cannot be combined with activation or routing traces.")
+        mixer_state = state.mixer if state is not None else None
+        routing_state = state.routing if state is not None else None
         mixer_keychain, mlp_keychain, ple_keychain = keychain.split(3)
 
         if self.pre_mixer_norm is not None:
@@ -266,12 +270,12 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 keychain=keychain,
             )
 
-        mixer_outputs, updated_state = call_vmapped(
+        mixer_outputs, updated_mixer_state = call_vmapped(
             call_mixer,
             (
                 normalized_mixer_inputs,
                 positional_embeddings,
-                state,
+                mixer_state,
                 lengths_without_padding,
                 attention_parent_indices,
             ),
@@ -287,20 +291,19 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
 
         assert mlp_inputs.dtype == inputs.dtype
 
-        if return_suffix_tokens is not None:
-            mlp_inputs = gather_suffix_tokens(
-                mlp_inputs,
-                lengths_without_padding,
-                return_suffix_tokens,
-                self.sharding_config,
-            )
+        def suffix_window(values: Array) -> Array:
+            assert return_suffix_tokens is not None
+            return gather_suffix_tokens(values, lengths_without_padding, return_suffix_tokens, self.sharding_config)
+
+        # A stateful routing intervention must see every token of the sequence, so its MLP runs on the
+        # full sequence even in suffix mode and only the layer's outputs are narrowed to the window.
+        mlp_runs_on_suffix = return_suffix_tokens is not None and not self.mlp.keeps_routing_state
+        if mlp_runs_on_suffix:
+            mlp_inputs = suffix_window(mlp_inputs)
             if per_layer_input is not None:
-                per_layer_input = gather_suffix_tokens(
-                    per_layer_input,
-                    lengths_without_padding,
-                    return_suffix_tokens,
-                    self.sharding_config,
-                )
+                per_layer_input = suffix_window(per_layer_input)
+            if generation_mask is not None:
+                generation_mask = suffix_window(generation_mask)
             # The gathered window is tail-aligned, while MLP padding masks assume the valid tokens
             # form a prefix, so the window is treated as fully valid instead.
             mlp_lengths_without_padding = None
@@ -308,28 +311,27 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             mlp_lengths_without_padding = lengths_without_padding
 
         normalized_mlp_inputs = call_vmapped_twice(self.pre_mlp_norm, mlp_inputs)
-        mlp_outputs = self.mlp(
+        mlp_result = self.mlp(
             normalized_mlp_inputs,
             lengths_without_padding=mlp_lengths_without_padding,
             forward_pass_config=forward_pass_config.mlp_forward_pass_config,
+            generation_mask=generation_mask,
+            routing_state=routing_state,
             keychain=mlp_keychain,
         )
-        if return_routing_trace:
-            # Same inputs and keychain as the real MLP call above, so the shadow router pass in
-            # MixtureOfExperts.routing_trace is CSE'd with the dispatch under jit.
-            routing_trace = self.mlp.routing_trace(
-                normalized_mlp_inputs,
-                forward_pass_config=forward_pass_config.mlp_forward_pass_config,
-                keychain=mlp_keychain,
-            )
-        else:
-            routing_trace = None
+        mlp_outputs = mlp_result.outputs
+        routing_trace = mlp_result.routing_trace if return_routing_trace else None
         if self.post_mlp_norm is not None:
             normalized_mlp_outputs = call_vmapped_twice(self.post_mlp_norm, mlp_outputs)
             outputs = mlp_inputs + normalized_mlp_outputs
         else:
             normalized_mlp_outputs = None
             outputs = mlp_inputs + mlp_outputs
+
+        if return_suffix_tokens is not None and not mlp_runs_on_suffix:
+            outputs = suffix_window(outputs)
+            if per_layer_input is not None:
+                per_layer_input = suffix_window(per_layer_input)
 
         if self.ple is not None and per_layer_input is not None:
             outputs = self.ple(
@@ -357,6 +359,13 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             activation_trace = None
 
         assert outputs.dtype == inputs.dtype
+        if updated_mixer_state is None:
+            updated_state = None
+        else:
+            updated_state = TransformerLayerState(
+                mixer=updated_mixer_state,
+                routing=mlp_result.updated_routing_state,
+            )
         return TransformerLayerResult(
             outputs=outputs,
             updated_state=updated_state,
@@ -364,11 +373,18 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             routing_trace=routing_trace,
         )
 
-    def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> StateLayerBase:
-        return jax.tree.map(
-            lambda array: jax.device_put(
-                jnp.repeat(array[None, ...], batch_size, axis=0),
-                self.sharding_config.resolve_sharding((LogicalAxis.BATCH, *((None,) * array.ndim))),
-            ),
-            self.mixer.init_static_state(capacity, dtype),
+    def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> TransformerLayerState:
+        def batched(template: StateLayerBase) -> StateLayerBase:
+            return jax.tree.map(
+                lambda array: jax.device_put(
+                    jnp.repeat(array[None, ...], batch_size, axis=0),
+                    self.sharding_config.resolve_sharding((LogicalAxis.BATCH, *((None,) * array.ndim))),
+                ),
+                template,
+            )
+
+        routing_template = self.mlp.init_routing_state(dtype)
+        return TransformerLayerState(
+            mixer=batched(self.mixer.init_static_state(capacity, dtype)),
+            routing=None if routing_template is None else batched(routing_template),
         )

@@ -7,7 +7,7 @@ import equinox as eqx
 import jax
 from einops import rearrange
 from jax.lax import DotAlgorithmPreset
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
@@ -232,6 +232,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
+        generation_mask: Bool[Array, "batch suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
     ) -> DecoderResult:
@@ -243,6 +244,10 @@ class Decoder(LalamoModule[DecoderConfig]):
             raise ValueError(
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
+            )
+        if generation_mask is not None and generation_mask.shape != token_ids.shape:
+            raise ValueError(
+                f"generation_mask must have the shape of token_ids {token_ids.shape}, got {generation_mask.shape}",
             )
         if return_suffix_tokens is not None:
             _, sequence_length = token_ids.shape
@@ -288,6 +293,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             per_layer_inputs=per_layer_inputs,
             attention_parent_indices=attention_parent_indices,
             return_suffix_tokens=return_suffix_tokens,
+            generation_mask=generation_mask,
             keychain=transformer_keychain,
         )
 
