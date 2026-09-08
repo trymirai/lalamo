@@ -11,7 +11,7 @@ from jaxtyping import Array, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
-from lalamo.utils.sharding import auto_sharded
+from lalamo.utils.sharding import sharding_of
 
 __all__ = [
     "CausalConvResult",
@@ -117,15 +117,11 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
                 kernel=self.kernel_size,
                 group_size=self.input_dim // coefficient_deltas.shape[-1],
             )
-            input_windows = rearrange(
-                _causal_conv_windows(convolution_inputs, self.kernel_size),
-                "1 tokens channels kernel -> 1 kernel (channels tokens)",
-            )
-            weights = rearrange(weights, "tokens channels kernel -> (channels tokens) kernel")
-            results = rearrange(
-                _separable_causal_conv(input_windows, weights),
-                "1 1 (channels tokens) -> tokens channels",
-                tokens=num_suffix_tokens,
+            input_windows = _causal_conv_windows(convolution_inputs.squeeze(0), self.kernel_size)
+            results = einsum(
+                input_windows,
+                weights,
+                "suffix_tokens channels kernel, suffix_tokens channels kernel -> suffix_tokens channels",
             )
         if self.biases is not None:
             results = results + self.biases.astype(output_dtype)
@@ -171,7 +167,6 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         return output, new_state
 
 
-@auto_sharded
 def _separable_causal_conv_impl(
     inputs: Float[Array, "batch context_tokens channels"],
     weights: Float[Array, "channels kernel"],
@@ -184,6 +179,7 @@ def _separable_causal_conv_impl(
         feature_group_count=input_dim,
         padding="VALID",
         dimension_numbers=("NTC", "OTI", "NTC"),
+        out_sharding=sharding_of(inputs),
     )
 
 
