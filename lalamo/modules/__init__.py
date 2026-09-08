@@ -59,6 +59,7 @@ from .rope import (
     UnscaledRoPEConfig,
     YARNRoPEConfig,
 )
+from .routing_interventions import CacheConditionalRouting, ExpertCacheState
 from .speculator import Speculator, SpeculatorConfig
 from .speculators import (
     DFlashDraftConfig,
@@ -117,6 +118,7 @@ __all__ = [
     "Attention",
     "AttentionConfig",
     "AttentionImplementation",
+    "CacheConditionalRouting",
     "Classifier",
     "ClassifierActivationTrace",
     "ClassifierConfig",
@@ -140,6 +142,7 @@ __all__ = [
     "EmbeddingBase",
     "EmbeddingConfig",
     "EmbeddingForwardPassConfig",
+    "ExpertCacheState",
     "ForwardPassMode",
     "Identity",
     "IdentityRoutingIntervention",
