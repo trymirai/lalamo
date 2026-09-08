@@ -1,3 +1,4 @@
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from math import prod
@@ -17,6 +18,7 @@ from lalamo.compressed.microfloat import MicrofloatMatrixForInference
 from lalamo.compressed.mlx import MLXMatrixForInference, MLXMatrixForTraining
 from lalamo.initializer import EmptyInitializer, Initializer
 from lalamo.model import Model, ModelConfig
+from lalamo.model_import.loaders.dflash_loader import load_hf_dflash_draft_model
 from lalamo.model_import.loaders.huggingface import (
     load_huggingface_classifier,
     load_input_embedding_matrix,
@@ -25,7 +27,7 @@ from lalamo.model_import.loaders.huggingface import (
 )
 from lalamo.model_import.loaders.utils import decode_mxfp4
 from lalamo.model_import.model_configs.foreign_config import ForeignConfig
-from lalamo.model_import.model_configs.huggingface import ModernBERTConfig
+from lalamo.model_import.model_configs.huggingface import HFDFlashConfig, ModernBERTConfig
 from lalamo.models.chat_codec import ChatCodec, ChatCodecConfig
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
 from lalamo.modules.activations import SiLU
@@ -42,8 +44,10 @@ from lalamo.modules.mlp import (
 )
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.token_mixers.attention import Attention
+from lalamo.safetensors import safe_write
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
@@ -65,6 +69,9 @@ CLASSIFIER_HIDDEN_SIZE = 4
 CLASSIFIER_INTERMEDIATE_SIZE = 8
 CLASSIFIER_NUM_HEADS = 2
 CLASSIFIER_NUM_LABELS = 2
+DFLASH_MODEL_DIM = 8
+DFLASH_HIDDEN_DIM = 16
+DFLASH_HEAD_DIM = 4
 
 
 def _pack_int32(values: Array, bits: int) -> Array:
@@ -145,6 +152,116 @@ def _symmetric_awq_weights(path: ParameterPath) -> Mapping[str, Array]:
 
 def _classifier_tensor(shape: tuple[int, ...]) -> Array:
     return jnp.arange(prod(shape), dtype=jnp.float32).reshape(shape)
+
+
+def _dflash_tensor(shape: tuple[int, ...], offset: int) -> Array:
+    values = jnp.arange(prod(shape), dtype=jnp.float32) + offset
+    return values.reshape(shape).astype(jnp.bfloat16)
+
+
+def _muse_glimmer_dflash_config() -> dict[str, object]:
+    return {
+        "architectures": ["MuseGlimmerAssistantModel"],
+        "attention_dropout": 0,
+        "block_size": 4,
+        "bos_token_id": 0,
+        "dtype": "bfloat16",
+        "eos_token_id": 1,
+        "head_dim": DFLASH_HEAD_DIM,
+        "hidden_act": "silu",
+        "hidden_size": DFLASH_MODEL_DIM,
+        "intermediate_size": DFLASH_HIDDEN_DIM,
+        "layer_types": ["sliding_attention"],
+        "mask_token_id": 31,
+        "max_position_embeddings": 64,
+        "model_type": "muse_glimmer_assistant",
+        "num_attention_heads": 2,
+        "num_hidden_layers": 1,
+        "num_key_value_heads": 1,
+        "pad_token_id": 2,
+        "rms_norm_eps": 1e-5,
+        "rope_parameters": {"rope_theta": 10_000.0, "rope_type": "default"},
+        "sliding_window": 16,
+        "target_layer_ids": [1, 3],
+        "transformers_version": "5.15.0.dev0",
+    }
+
+
+def _muse_glimmer_dflash_weights() -> dict[str, Array]:
+    q_dim = 2 * DFLASH_HEAD_DIM
+    kv_dim = DFLASH_HEAD_DIM
+    context_dim = 2 * DFLASH_MODEL_DIM
+    return {
+        "encoder.fc.weight": _dflash_tensor((DFLASH_MODEL_DIM, context_dim), 1),
+        "encoder.output_norm_enc.weight": _dflash_tensor((DFLASH_MODEL_DIM,), 2),
+        "layers.0.input_layernorm.weight": _dflash_tensor((DFLASH_MODEL_DIM,), 3),
+        "layers.0.mlp.down_proj.weight": _dflash_tensor((DFLASH_MODEL_DIM, DFLASH_HIDDEN_DIM), 4),
+        "layers.0.mlp.gate_proj.weight": _dflash_tensor((DFLASH_HIDDEN_DIM, DFLASH_MODEL_DIM), 5),
+        "layers.0.mlp.up_proj.weight": _dflash_tensor((DFLASH_HIDDEN_DIM, DFLASH_MODEL_DIM), 6),
+        "layers.0.post_attention_layernorm.weight": _dflash_tensor((DFLASH_MODEL_DIM,), 7),
+        "layers.0.self_attn.k_norm.weight": _dflash_tensor((DFLASH_HEAD_DIM,), 8),
+        "layers.0.self_attn.k_proj.weight": _dflash_tensor((kv_dim, DFLASH_MODEL_DIM), 9),
+        "layers.0.self_attn.o_proj.weight": _dflash_tensor((DFLASH_MODEL_DIM, q_dim), 10),
+        "layers.0.self_attn.q_norm.weight": _dflash_tensor((DFLASH_HEAD_DIM,), 11),
+        "layers.0.self_attn.q_proj.weight": _dflash_tensor((q_dim, DFLASH_MODEL_DIM), 12),
+        "layers.0.self_attn.v_proj.weight": _dflash_tensor((kv_dim, DFLASH_MODEL_DIM), 13),
+        "norm.weight": _dflash_tensor((DFLASH_MODEL_DIM,), 14),
+    }
+
+
+def test_load_muse_glimmer_checkpoint_reshapes_to_qwen_dflash(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    with config_path.open("w") as config_file:
+        json.dump(_muse_glimmer_dflash_config(), config_file)
+
+    weights = _muse_glimmer_dflash_weights()
+    with (tmp_path / "model.safetensors").open("wb") as weights_file:
+        safe_write(weights_file, weights)
+
+    reshaped_config = HFDFlashConfig.from_json(config_path)
+    sharding_config = ShardingConfig.replicated()
+    with jax.set_mesh(sharding_config.mesh):
+        model = load_hf_dflash_draft_model(
+            tmp_path,
+            sharding_config=sharding_config,
+            dtype=jnp.bfloat16,
+        )
+
+        assert reshaped_config.model_type == "qwen3"
+        assert reshaped_config.architectures == ("DFlashDraftModel",)
+        assert reshaped_config.num_target_layers == 52
+        assert reshaped_config.vocab_size == 202_048
+        assert reshaped_config.dflash_config.mask_token_id == 31
+        assert reshaped_config.dflash_config.target_layer_ids == (1, 3)
+        assert reshaped_config.sliding_window == 32
+        assert not reshaped_config.sliding_attention_is_causal
+
+        assert model.context_norm.scales is not None
+        assert model.output_norm.scales is not None
+        assert np.array_equal(model.context_projection.weights.decompress(), weights["encoder.fc.weight"])
+        assert np.array_equal(model.context_norm.scales, weights["encoder.output_norm_enc.weight"])
+        assert np.array_equal(model.output_norm.scales, weights["norm.weight"])
+
+        (layer,) = model.layers
+        assert isinstance(layer.mixer, Attention)
+        assert isinstance(layer.mlp, DenseMLP)
+        assert not layer.mixer.config.is_causal
+        assert layer.mixer.config.sliding_window_size == 32
+        expected_qkv = np.concatenate(
+            tuple(weights[f"layers.0.self_attn.{projection}_proj.weight"] for projection in ("q", "k", "v")),
+            axis=0,
+        )
+        expected_up_gate = np.concatenate(
+            tuple(weights[f"layers.0.mlp.{projection}_proj.weight"] for projection in ("up", "gate")),
+            axis=0,
+        )
+        expected_state_kv = np.concatenate(
+            tuple(weights[f"layers.0.self_attn.{projection}_proj.weight"] for projection in ("k", "v")),
+            axis=0,
+        )
+        assert np.array_equal(layer.mixer.qkvg_projection.weights.decompress(), expected_qkv)
+        assert np.array_equal(layer.mlp.up_projection.weights.decompress(), expected_up_gate)
+        assert np.array_equal(model.state_kv_projection.weights.decompress(), expected_state_kv)
 
 
 def _classifier_template() -> Classifier:
