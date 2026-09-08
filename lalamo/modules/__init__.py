@@ -101,8 +101,6 @@ from .transformer_layer import (
     TransformerLayerActivationTrace,
     TransformerLayerConfig,
     TransformerLayerResult,
-    TransformerSublayerTransform,
-    TransformerSublayerTransformConfig,
 )
 
 __all__ = [
@@ -188,8 +186,6 @@ __all__ = [
     "TransformerLayerConfig",
     "TransformerLayerResult",
     "TransformerResult",
-    "TransformerSublayerTransform",
-    "TransformerSublayerTransformConfig",
     "UnscaledRoPEConfig",
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",

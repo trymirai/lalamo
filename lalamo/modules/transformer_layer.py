@@ -38,8 +38,6 @@ __all__ = [
     "TransformerLayerActivationTrace",
     "TransformerLayerConfig",
     "TransformerLayerResult",
-    "TransformerSublayerTransform",
-    "TransformerSublayerTransformConfig",
 ]
 
 
@@ -96,79 +94,6 @@ class TransformerLayerResult(Exportable, eqx.Module):
     outputs: Float[Array, "batch suffix_tokens channels"]
     updated_state: StateLayerBase | None
     activation_trace: TransformerLayerActivationTrace | None
-
-
-@dataclass(frozen=True)
-class TransformerSublayerTransformConfig(LalamoConfig):
-    conv_config: SeparableCausalConvConfig
-    kernel_projection_config: LinearConfig
-    kernel_size: int
-    group_size: int
-
-    def init(self, initializer: Initializer, model_dim: int) -> "TransformerSublayerTransform":
-        if model_dim % self.group_size != 0:
-            raise ValueError(f"group_size {self.group_size} must divide model_dim {model_dim}.")
-        return TransformerSublayerTransform(
-            config=self,
-            sharding_config=initializer.sharding_config,
-            pre_conv=self.conv_config.init(initializer, model_dim, self.kernel_size),
-            post_conv=self.conv_config.init(initializer, model_dim, self.kernel_size),
-            kernel_projection=self.kernel_projection_config.init(
-                initializer,
-                input_dim=model_dim,
-                output_dims=(2 * self.kernel_size * (model_dim // self.group_size),),
-                has_biases=False,
-                is_sharded=False,
-            ),
-        )
-
-
-class TransformerSublayerTransform(LalamoModule[TransformerSublayerTransformConfig]):
-    pre_conv: SeparableCausalConv
-    post_conv: SeparableCausalConv
-    kernel_projection: Linear
-
-    def prepare(
-        self,
-        inputs: Float[Array, "batch suffix_tokens channels"],
-        forward_pass_config: MatmulConfig,
-        *,
-        keychain: Keychain,
-    ) -> tuple[Float[Array, "batch suffix_tokens channels"], Float[Array, "batch suffix_tokens kernel groups"]]:
-        (projected_coefficients,) = call_vmapped_twice(
-            self.kernel_projection,
-            inputs,
-            forward_pass_config=forward_pass_config,
-            keychain=keychain,
-            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
-        )
-        coefficients = jnp.flip(
-            rearrange(
-                projected_coefficients,
-                "batch tokens (sides kernel groups) -> batch tokens sides kernel groups",
-                sides=2,
-                kernel=self.config.kernel_size,
-                groups=self.pre_conv.input_dim // self.config.group_size,
-            ),
-            axis=3,
-        )
-        outputs = call_vmapped(
-            lambda inputs, deltas: self.pre_conv(inputs, coefficient_deltas=deltas).outputs,
-            inputs,
-            coefficients[:, :, 0],
-        )
-        return outputs, coefficients[:, :, 1]
-
-    def finish(
-        self,
-        outputs: Float[Array, "batch suffix_tokens channels"],
-        coefficients: Float[Array, "batch suffix_tokens kernel groups"],
-    ) -> Float[Array, "batch suffix_tokens channels"]:
-        return call_vmapped(
-            lambda outputs, deltas: self.post_conv(outputs, coefficient_deltas=deltas).outputs,
-            outputs,
-            coefficients,
-        )
 
 
 @dataclass(frozen=True)
@@ -244,7 +169,34 @@ class TransformerLayerConfig(LalamoConfig):
     has_post_layer_scalar: bool = False
     kv_source_layer_index: int | None = None
     rope_config: RoPEConfig | None = None
-    sublayer_transform_config: TransformerSublayerTransformConfig | None = None
+    conv_config: SeparableCausalConvConfig | None = None
+    kernel_projection_config: LinearConfig | None = None
+    kernel_size: int | None = None
+    group_size: int | None = None
+
+    def init_sublayer_transform(
+        self,
+        initializer: Initializer,
+        model_dim: int,
+    ) -> tuple[SeparableCausalConv, SeparableCausalConv, Linear] | tuple[None, None, None]:
+        if self.conv_config is None:
+            return None, None, None
+        assert self.kernel_projection_config is not None
+        assert self.kernel_size is not None
+        assert self.group_size is not None
+        if model_dim % self.group_size != 0:
+            raise ValueError(f"group_size {self.group_size} must divide model_dim {model_dim}.")
+        return (
+            self.conv_config.init(initializer, model_dim, self.kernel_size),
+            self.conv_config.init(initializer, model_dim, self.kernel_size),
+            self.kernel_projection_config.init(
+                initializer,
+                input_dim=model_dim,
+                output_dims=(2 * self.kernel_size * (model_dim // self.group_size),),
+                has_biases=False,
+                is_sharded=False,
+            ),
+        )
 
     def init(
         self,
@@ -264,11 +216,8 @@ class TransformerLayerConfig(LalamoConfig):
         post_mlp_norm = self.post_mlp_norm_config.init(initializer, model_dim) if self.post_mlp_norm_config else None
         ple = self.ple_config.init(initializer, model_dim) if self.ple_config else None
         post_layer_scalar = initializer.ones((1,)) if self.has_post_layer_scalar else None
-        if self.sublayer_transform_config is not None:
-            mixer_transform = self.sublayer_transform_config.init(initializer, model_dim)
-            mlp_transform = self.sublayer_transform_config.init(initializer, model_dim)
-        else:
-            mixer_transform = mlp_transform = None
+        pre_mixer_conv, post_mixer_conv, mixer_kernel_projection = self.init_sublayer_transform(initializer, model_dim)
+        pre_mlp_conv, post_mlp_conv, mlp_kernel_projection = self.init_sublayer_transform(initializer, model_dim)
         return TransformerLayer(
             config=self,
             sharding_config=initializer.sharding_config,
@@ -280,8 +229,12 @@ class TransformerLayerConfig(LalamoConfig):
             post_mlp_norm=post_mlp_norm,
             ple=ple,
             post_layer_scalar=post_layer_scalar,
-            mixer_transform=mixer_transform,
-            mlp_transform=mlp_transform,
+            pre_mixer_conv=pre_mixer_conv,
+            post_mixer_conv=post_mixer_conv,
+            mixer_kernel_projection=mixer_kernel_projection,
+            pre_mlp_conv=pre_mlp_conv,
+            post_mlp_conv=post_mlp_conv,
+            mlp_kernel_projection=mlp_kernel_projection,
         )
 
 
@@ -294,8 +247,56 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     post_mlp_norm: Normalization | None
     ple: PLELayer | None
     post_layer_scalar: Float[Array, "1"] | None
-    mixer_transform: TransformerSublayerTransform | None
-    mlp_transform: TransformerSublayerTransform | None
+    pre_mixer_conv: SeparableCausalConv | None
+    post_mixer_conv: SeparableCausalConv | None
+    mixer_kernel_projection: Linear | None
+    pre_mlp_conv: SeparableCausalConv | None
+    post_mlp_conv: SeparableCausalConv | None
+    mlp_kernel_projection: Linear | None
+
+    def prepare_sublayer(
+        self,
+        inputs: Float[Array, "batch suffix_tokens channels"],
+        pre_conv: SeparableCausalConv,
+        kernel_projection: Linear,
+        forward_pass_config: MatmulConfig,
+        *,
+        keychain: Keychain,
+    ) -> tuple[Float[Array, "batch suffix_tokens channels"], Float[Array, "batch suffix_tokens kernel groups"]]:
+        (projected_coefficients,) = call_vmapped_twice(
+            kernel_projection,
+            inputs,
+            forward_pass_config=forward_pass_config,
+            keychain=keychain,
+            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
+        )
+        coefficients = jnp.flip(
+            rearrange(
+                projected_coefficients,
+                "batch tokens (sides kernel groups) -> batch tokens sides kernel groups",
+                sides=2,
+                kernel=pre_conv.kernel_size,
+            ),
+            axis=3,
+        )
+        outputs = call_vmapped(
+            lambda inputs, deltas: pre_conv(inputs, coefficient_deltas=deltas).outputs,
+            inputs,
+            coefficients[:, :, 0],
+        )
+        return outputs, coefficients[:, :, 1]
+
+    @staticmethod
+    def finish_sublayer(
+        outputs: Float[Array, "batch suffix_tokens channels"],
+        post_conv: SeparableCausalConv,
+        coefficients: Float[Array, "batch suffix_tokens kernel groups"],
+    ) -> Float[Array, "batch suffix_tokens channels"]:
+        return call_vmapped(
+            lambda outputs, deltas: post_conv(outputs, coefficient_deltas=deltas).outputs,
+            outputs,
+            coefficients,
+        )
 
     @eqx.filter_jit
     def __call__(
@@ -327,10 +328,13 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         else:
             normalized_mixer_inputs = inputs
 
-        if self.mixer_transform is not None:
+        if self.pre_mixer_conv is not None:
+            assert self.mixer_kernel_projection is not None
             mixer_transform_keychain, mixer_keychain = mixer_keychain.split()
-            transformed_mixer_inputs, mixer_transform_state = self.mixer_transform.prepare(
+            transformed_mixer_inputs, mixer_transform_state = self.prepare_sublayer(
                 normalized_mixer_inputs,
+                self.pre_mixer_conv,
+                self.mixer_kernel_projection,
                 forward_pass_config.mixer_forward_pass_config.matmul_config,
                 keychain=mixer_transform_keychain,
             )
@@ -374,9 +378,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             keychain=mixer_keychain,
             added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )
-        if self.mixer_transform is not None:
+        if self.post_mixer_conv is not None:
             assert mixer_transform_state is not None
-            mixer_outputs = self.mixer_transform.finish(mixer_outputs, mixer_transform_state)
+            mixer_outputs = self.finish_sublayer(mixer_outputs, self.post_mixer_conv, mixer_transform_state)
         if self.post_mixer_norm is not None:
             normalized_mixer_outputs = call_vmapped_twice(self.post_mixer_norm, mixer_outputs)
             mlp_inputs = inputs + normalized_mixer_outputs
@@ -386,7 +390,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
 
         assert mlp_inputs.dtype == inputs.dtype
 
-        if return_suffix_tokens is not None and self.mlp_transform is None:
+        if return_suffix_tokens is not None and self.pre_mlp_conv is None:
             mlp_inputs = gather_suffix_tokens(
                 mlp_inputs,
                 lengths_without_padding,
@@ -407,10 +411,13 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             mlp_lengths_without_padding = lengths_without_padding
 
         normalized_mlp_inputs = call_vmapped_twice(self.pre_mlp_norm, mlp_inputs)
-        if self.mlp_transform is not None:
+        if self.pre_mlp_conv is not None:
+            assert self.mlp_kernel_projection is not None
             mlp_transform_keychain, mlp_keychain = mlp_keychain.split()
-            transformed_mlp_inputs, mlp_transform_state = self.mlp_transform.prepare(
+            transformed_mlp_inputs, mlp_transform_state = self.prepare_sublayer(
                 normalized_mlp_inputs,
+                self.pre_mlp_conv,
+                self.mlp_kernel_projection,
                 forward_pass_config.mlp_forward_pass_config.matmul_config,
                 keychain=mlp_transform_keychain,
             )
@@ -423,9 +430,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             forward_pass_config=forward_pass_config.mlp_forward_pass_config,
             keychain=mlp_keychain,
         )
-        if self.mlp_transform is not None:
+        if self.post_mlp_conv is not None:
             assert mlp_transform_state is not None
-            mlp_outputs = self.mlp_transform.finish(mlp_outputs, mlp_transform_state)
+            mlp_outputs = self.finish_sublayer(mlp_outputs, self.post_mlp_conv, mlp_transform_state)
         if self.post_mlp_norm is not None:
             normalized_mlp_outputs = call_vmapped_twice(self.post_mlp_norm, mlp_outputs)
             outputs = mlp_inputs + normalized_mlp_outputs
@@ -433,7 +440,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             normalized_mlp_outputs = None
             outputs = mlp_inputs + mlp_outputs
 
-        if return_suffix_tokens is not None and self.mlp_transform is not None:
+        if return_suffix_tokens is not None and self.pre_mlp_conv is not None:
             outputs = gather_suffix_tokens(
                 outputs,
                 lengths_without_padding,
