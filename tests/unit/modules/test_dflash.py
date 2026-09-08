@@ -47,8 +47,8 @@ def test_dflash_sublayer_transform_matches_explicit_reference(group_size: int) -
         build_tiny_attention_decoder_config((None,)).transformer_config.layer_configs[0],
         conv_config=SeparableCausalConvConfig(has_biases=False),
         kernel_projection_config=LinearConfig(),
-        kernel_size=2,
-        group_size=group_size,
+        conv_kernel_size=2,
+        conv_group_size=group_size,
     )
     module = config.init(
         RandomInitializer(jnp.float32, sharding_config, key=jax.random.key(0)),
@@ -91,8 +91,8 @@ def test_sublayer_transform_preserves_suffix() -> None:
         decoder.transformer.layers[0].config,
         conv_config=SeparableCausalConvConfig(has_biases=False),
         kernel_projection_config=LinearConfig(),
-        kernel_size=2,
-        group_size=2,
+        conv_kernel_size=2,
+        conv_group_size=2,
     )
     layer = config.init(
         RandomInitializer(jnp.float32, decoder.sharding_config, key=jax.random.key(0)),

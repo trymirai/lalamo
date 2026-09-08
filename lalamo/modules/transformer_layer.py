@@ -171,8 +171,8 @@ class TransformerLayerConfig(LalamoConfig):
     rope_config: RoPEConfig | None = None
     conv_config: SeparableCausalConvConfig | None = None
     kernel_projection_config: LinearConfig | None = None
-    kernel_size: int | None = None
-    group_size: int | None = None
+    conv_kernel_size: int | None = None
+    conv_group_size: int | None = None
 
     def init_sublayer_transform(
         self,
@@ -182,17 +182,17 @@ class TransformerLayerConfig(LalamoConfig):
         if self.conv_config is None:
             return None, None, None
         assert self.kernel_projection_config is not None
-        assert self.kernel_size is not None
-        assert self.group_size is not None
-        if model_dim % self.group_size != 0:
-            raise ValueError(f"group_size {self.group_size} must divide model_dim {model_dim}.")
+        assert self.conv_kernel_size is not None
+        assert self.conv_group_size is not None
+        if model_dim % self.conv_group_size != 0:
+            raise ValueError(f"conv_group_size {self.conv_group_size} must divide model_dim {model_dim}.")
         return (
-            self.conv_config.init(initializer, model_dim, self.kernel_size),
-            self.conv_config.init(initializer, model_dim, self.kernel_size),
+            self.conv_config.init(initializer, model_dim, self.conv_kernel_size),
+            self.conv_config.init(initializer, model_dim, self.conv_kernel_size),
             self.kernel_projection_config.init(
                 initializer,
                 input_dim=model_dim,
-                output_dims=(2 * self.kernel_size * (model_dim // self.group_size),),
+                output_dims=(2 * self.conv_kernel_size * (model_dim // self.conv_group_size),),
                 has_biases=False,
                 is_sharded=False,
             ),

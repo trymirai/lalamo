@@ -173,17 +173,17 @@ class HFDFlashConfig:
         )
         rope_config = self._rope_config(self.max_position_embeddings)
         if architecture == "DFlash2DraftModel":
-            kernel_size = self.dflash_config.conv_kernel_size
-            group_size = self.dflash_config.conv_group_size
-            if kernel_size is None or group_size is None:
+            conv_kernel_size = self.dflash_config.conv_kernel_size
+            conv_group_size = self.dflash_config.conv_group_size
+            if conv_kernel_size is None or conv_group_size is None:
                 raise ValueError("DFlash2DraftModel requires both conv_kernel_size and conv_group_size.")
             conv_config = SeparableCausalConvConfig(has_biases=False)
             kernel_projection_config = linear_config
         else:
             conv_config = None
             kernel_projection_config = None
-            kernel_size = None
-            group_size = None
+            conv_kernel_size = None
+            conv_group_size = None
         layer_configs = tuple(
             TransformerLayerConfig(
                 pre_mixer_norm_config=norm_config,
@@ -210,8 +210,8 @@ class HFDFlashConfig:
                 rope_config=rope_config,
                 conv_config=conv_config,
                 kernel_projection_config=kernel_projection_config,
-                kernel_size=kernel_size,
-                group_size=group_size,
+                conv_kernel_size=conv_kernel_size,
+                conv_group_size=conv_group_size,
             )
             for sliding_window_size in self._layer_sliding_window_sizes()
         )
