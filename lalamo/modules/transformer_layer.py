@@ -187,8 +187,8 @@ class TransformerLayerConfig(LalamoConfig):
         if model_dim % self.conv_group_size != 0:
             raise ValueError(f"conv_group_size {self.conv_group_size} must divide model_dim {model_dim}.")
         return (
-            self.conv_config.init(initializer, model_dim, self.conv_kernel_size),
-            self.conv_config.init(initializer, model_dim, self.conv_kernel_size),
+            self.conv_config.init(initializer, model_dim, self.conv_kernel_size, dtype=initializer.default_dtype),
+            self.conv_config.init(initializer, model_dim, self.conv_kernel_size, dtype=initializer.default_dtype),
             self.kernel_projection_config.init(
                 initializer,
                 input_dim=model_dim,

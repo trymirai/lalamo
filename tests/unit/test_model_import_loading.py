@@ -648,12 +648,14 @@ def test_model_export_load_with_strong_initializer_forces_saved_float_dtypes(tmp
     assert restored.module.fp16_values.dtype == jnp.bfloat16
 
 
-def test_load_dflash2_sublayer_transform() -> None:
+@pytest.mark.parametrize("dtype", [None, jnp.float32, jnp.bfloat16])
+def test_load_dflash2_sublayer_transform(dtype: DTypeLike | None) -> None:
     config = HFDFlashConfig.from_dict(_dflash_hf_config(dflash2=True)).to_dflash_draft_config()
-    model = config.init(EmptyInitializer(jnp.float32, make_test_sharding_config()))
+    model = config.init(EmptyInitializer(dtype, make_test_sharding_config()))
     layer = model.layers[0]
-    base_kernel = jnp.arange(16, dtype=jnp.float32).reshape(2, 2, 4)
-    kernel_projection = jnp.arange(32, dtype=jnp.float32).reshape(8, 4)
+    source_dtype = dtype or jnp.bfloat16
+    base_kernel = jnp.arange(16, dtype=source_dtype).reshape(2, 2, 4)
+    kernel_projection = jnp.arange(32, dtype=source_dtype).reshape(8, 4)
     weights = {
         "attention_conv.base_kernel": base_kernel,
         "attention_conv.kernel_projection.weight": kernel_projection,
@@ -670,6 +672,6 @@ def test_load_dflash2_sublayer_transform() -> None:
     assert pre_conv is not None
     assert post_conv is not None
     assert projection is not None
-    assert_close(result=pre_conv.weights, reference=base_kernel[0, ::-1].T)
-    assert_close(result=post_conv.weights, reference=base_kernel[1, ::-1].T)
+    assert_close(result=pre_conv.export().arrays["weights"], reference=base_kernel[0, ::-1].T)
+    assert_close(result=post_conv.export().arrays["weights"], reference=base_kernel[1, ::-1].T)
     assert_close(result=projection.weights.decompress(), reference=kernel_projection)

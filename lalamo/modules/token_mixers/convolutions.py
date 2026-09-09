@@ -7,7 +7,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import einsum, rearrange, repeat
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
@@ -35,11 +35,13 @@ class SeparableCausalConvConfig(LalamoConfig):
         initializer: Initializer,
         input_dim: int,
         kernel_size: int,
+        *,
+        dtype: DTypeLike | None = jnp.float32,
     ) -> "SeparableCausalConv":
         scale = 1 / math.sqrt(kernel_size * input_dim)
-        weights = initializer.normal(scale, (input_dim, kernel_size), dtype=jnp.float32)
+        weights = initializer.normal(scale, (input_dim, kernel_size), dtype=dtype)
         if self.has_biases:
-            biases = initializer.zeros((input_dim,), dtype=jnp.float32)
+            biases = initializer.zeros((input_dim,), dtype=dtype)
         else:
             biases = None
         return SeparableCausalConv(
