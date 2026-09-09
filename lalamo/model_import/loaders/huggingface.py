@@ -468,8 +468,6 @@ def load_moe(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> MixtureOfExperts:
-    # Load router via the standard linear loader.
-    # Qwen-MoE often names the router layer "gate" in HF weights.
     if (path / "router.weight") in weights_dict or (path / "router.qweight") in weights_dict:
         router_path = path / "router"
     elif (path / "gate.weight") in weights_dict or (path / "gate.qweight") in weights_dict:
@@ -480,21 +478,72 @@ def load_moe(
 
     num_routed = module.config.num_routed_experts
     num_shared = module.config.num_shared_experts
-    has_up_biases = module.experts.up_projection.has_biases
-    has_down_biases = module.experts.down_projection.has_biases
-
     experts_path = path / "experts"
     gate_up_path = experts_path / "gate_up_proj"
     down_path = experts_path / "down_proj"
     batched_gate_up_path = _first_path(weights_dict, (gate_up_path, gate_up_path / "weight"))
 
-    # Preserve MXFP4 while restoring Lalamo's canonical [all up, all gate] rows.
+    def load_projection(template: Linear, weights: Array, biases: Array | None) -> Linear:
+        return _update_linear(
+            template,
+            load_full_precision(template.weights, weights),
+            biases,
+        )
+
+    def load_dense_experts(
+        template: DenseMLP,
+        gate_up_weights: Array,
+        gate_up_biases: Array | None,
+        down_weights: Array,
+        down_biases: Array | None,
+    ) -> DenseMLP:
+        return load_as_at(
+            _dense_mlp_projections,
+            template,
+            (
+                load_projection(template.up_projection, gate_up_weights, gate_up_biases),
+                load_projection(template.down_projection, down_weights, down_biases),
+            ),
+        )
+
+    def stack_experts(template: DenseMLP, expert_paths: Sequence[ParameterPath]) -> DenseMLP:
+        def stack(name: str) -> Array:
+            return jnp.stack([weights_dict[expert_path / name] for expert_path in expert_paths], axis=0)
+
+        gate_up_weights = jnp.concatenate([stack("up_proj.weight"), stack("gate_proj.weight")], axis=1)
+        gate_up_biases = (
+            jnp.concatenate([stack("up_proj.bias"), stack("gate_proj.bias")], axis=1)
+            if template.up_projection.has_biases
+            else None
+        )
+        down_biases = stack("down_proj.bias") if template.down_projection.has_biases else None
+        return load_dense_experts(
+            template,
+            gate_up_weights,
+            gate_up_biases,
+            stack("down_proj.weight"),
+            down_biases,
+        )
+
+    def load_shared_experts() -> DenseMLP | None:
+        if module.shared_experts is None:
+            return None
+        if (path / "shared_expert" / "up_proj.weight") in weights_dict:
+            if num_shared != 1:
+                raise ValueError("Single shared expert path found but num_shared_experts != 1.")
+            shared_paths = (path / "shared_expert",)
+        elif (path / "shared_experts" / "0" / "up_proj.weight") in weights_dict:
+            shared_paths = tuple(path / "shared_experts" / str(idx) for idx in range(num_shared))
+        else:
+            raise KeyError("Could not find shared expert weights in HF checkpoint.")
+        return stack_experts(module.shared_experts, shared_paths)
+
     if (experts_path / "gate_up_proj_blocks") in weights_dict:
         gate_up_blocks = weights_dict[experts_path / "gate_up_proj_blocks"]
         gate_up_scales = weights_dict[experts_path / "gate_up_proj_scales"]
         gate_up_blocks, gate_up_scales = _stack_gpt_oss_gate_up(gate_up_blocks, gate_up_scales)
         gate_up_weights = _load_mxfp4_matrix(
-            module.experts.up_projection.weights,
+            module.routed_experts.up_projection.weights,
             gate_up_blocks,
             gate_up_scales,
             group_size=16,
@@ -512,14 +561,14 @@ def load_moe(
         gate_up_bias = jnp.concatenate((up_bias, gate_bias), axis=-1)
 
         up_projection = _update_linear(
-            module.experts.up_projection,
+            module.routed_experts.up_projection,
             gate_up_weights,
             gate_up_bias,
         )
 
         down_blocks = weights_dict[experts_path / "down_proj_blocks"]
         down_weights = _load_mxfp4_matrix(
-            module.experts.down_projection.weights,
+            module.routed_experts.down_projection.weights,
             down_blocks,
             weights_dict[experts_path / "down_proj_scales"],
             implementation=implementation,
@@ -529,143 +578,41 @@ def load_moe(
             down_biases = jnp.broadcast_to(down_biases, (down_blocks.shape[0], down_biases.shape[0]))
 
         down_projection = _update_linear(
-            module.experts.down_projection,
+            module.routed_experts.down_projection,
             down_weights,
             down_biases,
         )
 
-        experts = load_as_at(
+        routed_experts = load_as_at(
             lambda m: (m.up_projection, m.down_projection),
-            module.experts,
+            module.routed_experts,
             (up_projection, down_projection),
         )
+        shared_experts = load_shared_experts()
     elif batched_gate_up_path is not None:
-        # MLX/Qwen2Moe batched expert format: gate_up_proj fused, shape (num_experts, hidden*2, model_dim)
         suffix = batched_gate_up_path.removeprefix(gate_up_path)
         gate_up_weights = weights_dict[batched_gate_up_path]
         down_weights = weights_dict[ParameterPath(f"{down_path}{suffix}")]
 
-        # gate_up_proj is [num_experts, intermediate_size*2, hidden_size] - split into gate and up
         intermediate_size_2 = gate_up_weights.shape[1]
         intermediate_size = intermediate_size_2 // 2
-
-        # Split gate and up: first half is gate, second half is up (or vice versa depending on model)
         gate_weights = gate_up_weights[:, :intermediate_size, :]
         up_weights = gate_up_weights[:, intermediate_size:, :]
-
-        # Combine up and gate for our format: (num_experts, hidden*2, model_dim)
         combined_up_gate_weights = jnp.concatenate([up_weights, gate_weights], axis=1)
-        if num_shared > 0:
-            if num_shared != 1:
-                raise ValueError("Single shared expert path found but num_shared_experts != 1.")
-            shared_expert_path = path / "shared_expert"
-            shared_up_gate_weights = jnp.concatenate(
-                [
-                    weights_dict[shared_expert_path / "up_proj.weight"],
-                    weights_dict[shared_expert_path / "gate_proj.weight"],
-                ],
-                axis=0,
-            )
-            combined_up_gate_weights = jnp.concatenate(
-                [combined_up_gate_weights, shared_up_gate_weights[None, ...]],
-                axis=0,
-            )
-            down_weights = jnp.concatenate(
-                [down_weights, weights_dict[shared_expert_path / "down_proj.weight"][None, ...]],
-                axis=0,
-            )
-
-        up_projection = _update_linear(
-            module.experts.up_projection,
-            load_full_precision(
-                module.experts.up_projection.weights,
-                combined_up_gate_weights,
-            ),
+        routed_experts = load_dense_experts(
+            module.routed_experts,
+            combined_up_gate_weights,
+            None,
+            down_weights,
             None,
         )
-
-        down_projection = _update_linear(
-            module.experts.down_projection,
-            load_full_precision(
-                module.experts.down_projection.weights,
-                down_weights,
-            ),
-            None,
-        )
-
-        experts = load_as_at(
-            lambda m: (m.up_projection, m.down_projection),
-            module.experts,
-            (up_projection, down_projection),
-        )
+        shared_experts = load_shared_experts()
     else:
-        # Collect expert weight paths: routed experts first, then shared experts.
-        expert_paths: list[ParameterPath] = [experts_path / str(idx) for idx in range(num_routed)]
-
-        if num_shared > 0:
-            if (path / "shared_expert" / "up_proj.weight") in weights_dict:
-                if num_shared != 1:
-                    raise ValueError("Single shared expert path found but num_shared_experts != 1.")
-                expert_paths.append(path / "shared_expert")
-            elif (path / "shared_experts" / "0" / "up_proj.weight") in weights_dict:
-                expert_paths.extend(path / "shared_experts" / str(idx) for idx in range(num_shared))
-            else:
-                raise KeyError("Could not find shared expert weights in HF checkpoint.")
-
-        up_weight_list: list[Array] = []
-        gate_weight_list: list[Array] = []
-        down_weight_list: list[Array] = []
-        up_bias_list: list[Array] | None = [] if has_up_biases else None
-        gate_bias_list: list[Array] | None = [] if has_up_biases else None
-        down_bias_list: list[Array] | None = [] if has_down_biases else None
-
-        for expert_path in expert_paths:
-            up_weight_list.append(weights_dict[expert_path / "up_proj.weight"])
-            gate_weight_list.append(weights_dict[expert_path / "gate_proj.weight"])
-            down_weight_list.append(weights_dict[expert_path / "down_proj.weight"])
-            if up_bias_list is not None:
-                assert gate_bias_list is not None
-                up_bias_list.append(weights_dict[expert_path / "up_proj.bias"])
-                gate_bias_list.append(weights_dict[expert_path / "gate_proj.bias"])
-            if down_bias_list is not None:
-                down_bias_list.append(weights_dict[expert_path / "down_proj.bias"])
-
-        stacked_up = jnp.stack(up_weight_list, axis=0)
-        stacked_gate = jnp.stack(gate_weight_list, axis=0)
-        combined_up_gate_weights = jnp.concatenate([stacked_up, stacked_gate], axis=1)
-        if up_bias_list is None:
-            combined_up_gate_biases = None
-        else:
-            assert gate_bias_list is not None
-            stacked_up_biases = jnp.stack(up_bias_list, axis=0)
-            stacked_gate_biases = jnp.stack(gate_bias_list, axis=0)
-            combined_up_gate_biases = jnp.concatenate([stacked_up_biases, stacked_gate_biases], axis=1)
-
-        up_projection = _update_linear(
-            module.experts.up_projection,
-            load_full_precision(
-                module.experts.up_projection.weights,
-                combined_up_gate_weights,
-            ),
-            combined_up_gate_biases,
+        routed_experts = stack_experts(
+            module.routed_experts,
+            tuple(experts_path / str(idx) for idx in range(num_routed)),
         )
-
-        stacked_down = jnp.stack(down_weight_list, axis=0)
-        stacked_down_biases = jnp.stack(down_bias_list, axis=0) if down_bias_list is not None else None
-        down_projection = _update_linear(
-            module.experts.down_projection,
-            load_full_precision(
-                module.experts.down_projection.weights,
-                stacked_down,
-            ),
-            stacked_down_biases,
-        )
-
-        experts = load_as_at(
-            lambda m: (m.up_projection, m.down_projection),
-            module.experts,
-            (up_projection, down_projection),
-        )
+        shared_experts = load_shared_experts()
 
     gate = None
     if module.gate is not None:
@@ -679,9 +626,9 @@ def load_moe(
         gate = load_linear(module.gate, weights_dict, gate_path, implementation=implementation)
 
     return load_as_at(
-        lambda m: (m.router, m.experts, m.gate),
+        lambda m: (m.router, m.routed_experts, m.shared_experts, m.gate),
         module,
-        (router, experts, gate),
+        (router, routed_experts, shared_experts, gate),
     )
 
 
