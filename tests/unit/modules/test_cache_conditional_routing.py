@@ -352,3 +352,19 @@ class _NotSoftmax(RoutingFunction):
 
 def _unused(module: MixtureOfExperts) -> None:  # pragma: no cover - keeps the import meaningful for pyrefly
     del module
+
+
+@pytest.mark.parametrize("forced_top", [NUM_ACTIVE, NUM_ACTIVE + 1])
+def test_a_floor_at_or_above_the_top_k_is_refused(forced_top: int) -> None:
+    # With J >= k every slot is pinned to the router's own ranking and the cache prior cannot change the
+    # selection: the rule equals the base routing, so such a spec is a control disguised as an intervention.
+    intervention = CacheConditionalRouting(phases=BOTH_PHASES, bias=0.5, forced_top=forced_top)
+    logits = _rng_array((2, NUM_EXPERTS), seed=0)
+    with pytest.raises(ValueError, match="leaves no slot to the cache prior"):
+        intervention.route(
+            logits,
+            jnp.ones((2,), dtype=bool),
+            _state(intervention, 2),
+            SoftmaxRouting(),
+            NUM_ACTIVE,
+        )

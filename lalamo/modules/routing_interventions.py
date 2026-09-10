@@ -107,6 +107,14 @@ class CacheConditionalRouting(RoutingIntervention):
             # The mixing weights below are the softmax of the original logits over the selected set, which is
             # what SoftmaxRouting computes; another routing function would need its own weight rule.
             raise TypeError(f"CacheConditionalRouting assumes SoftmaxRouting, got {type(routing_function).__name__}")
+        if self.forced_top >= num_active:
+            # With J >= k every slot is pinned to the router's own ranking, the cache prior can never
+            # change the selection, and the rule silently becomes the base routing -- a spec that looks
+            # like an intervention and measures like a control.
+            raise ValueError(
+                f"forced_top (J) = {self.forced_top} leaves no slot to the cache prior at top-{num_active};"
+                " the rule would degrade to the base routing"
+            )
         batch_size, num_experts = router_logits.shape
         base = routing_function(router_logits, num_active)
 

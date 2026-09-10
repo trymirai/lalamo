@@ -143,13 +143,15 @@ def unpack_int32(packed_weights: Array, bits: int) -> Array:
     assert packed_weights.dtype in (jnp.int32, jnp.uint32)
     assert 32 % bits == 0
 
+    # Leading axes pass through: stacked MoE experts arrive as [experts, rows, packed_cols], and only
+    # the last axis is packed. For a plain [rows, packed_cols] matrix this is the same computation.
     shifts = jnp.arange(0, 32, bits, dtype=jnp.uint32)
     mask = jnp.asarray((2**bits) - 1, dtype=jnp.uint32)
     packed_unsigned = packed_weights.astype(jnp.uint32)
-    unpacked = jnp.bitwise_and(jnp.right_shift(packed_unsigned[:, :, None], shifts[None, None, :]), mask)
+    unpacked = jnp.bitwise_and(jnp.right_shift(packed_unsigned[..., None], shifts), mask)
     return rearrange(
         unpacked,
-        "rows packed_groups packed_values -> rows (packed_groups packed_values)",
+        "... packed_groups packed_values -> ... (packed_groups packed_values)",
     )
 
 
@@ -196,7 +198,12 @@ def _fuse_mlx_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
+    *,
+    axis: int = 0,
 ) -> tuple[Array, Array, Array]:
+    # MLX stores `weight [rows, packed_cols]` and `scales [rows, num_groups]`, so fusing along the
+    # output axis leaves both the packing and the grouping untouched. That axis is 0 for a plain
+    # matrix, but stacked experts put the expert axis first, and there the output axis is -2.
     if sublayers_to_fuse is None:
         return (
             weights_dict[path / "weight"],
@@ -204,9 +211,9 @@ def _fuse_mlx_weights(
             weights_dict[path / "scales"],
         )
     return (
-        jnp.concatenate([weights_dict[path / layer_name / "weight"] for layer_name in sublayers_to_fuse], axis=0),
-        jnp.concatenate([weights_dict[path / layer_name / "biases"] for layer_name in sublayers_to_fuse], axis=0),
-        jnp.concatenate([weights_dict[path / layer_name / "scales"] for layer_name in sublayers_to_fuse], axis=0),
+        jnp.concatenate([weights_dict[path / layer_name / "weight"] for layer_name in sublayers_to_fuse], axis=axis),
+        jnp.concatenate([weights_dict[path / layer_name / "biases"] for layer_name in sublayers_to_fuse], axis=axis),
+        jnp.concatenate([weights_dict[path / layer_name / "scales"] for layer_name in sublayers_to_fuse], axis=axis),
     )
 
 
@@ -478,7 +485,12 @@ def load_moe(
 
     num_routed = module.config.num_routed_experts
     num_shared = module.config.num_shared_experts
-    experts_path = path / "experts"
+    # MLX conversions of Qwen MoE call the stacked experts `switch_mlp`; HF checkpoints call the same
+    # thing `experts`. Only the path segment differs -- both hold one stack per projection.
+    if (path / "switch_mlp" / "up_proj" / "scales") in weights_dict:
+        experts_path = path / "switch_mlp"
+    else:
+        experts_path = path / "experts"
     gate_up_path = experts_path / "gate_up_proj"
     down_path = experts_path / "down_proj"
     batched_gate_up_path = _first_path(weights_dict, (gate_up_path, gate_up_path / "weight"))
@@ -525,9 +537,63 @@ def load_moe(
             down_biases,
         )
 
+    def load_mlx_experts(template: DenseMLP, base: ParameterPath, *, stacked: bool) -> DenseMLP:
+        """Experts stored as MLX affine triplets: `weight` packed into uint32, plus `scales`/`biases`.
+
+        `stacked` says the tensors already carry the leading expert axis. A lone shared expert does
+        not, so its triplets get one added -- the template keeps that axis either way. Gate and up
+        live in separate tensors here and are fused along the output axis in the `[up, gate]` order
+        the rest of this loader uses.
+        """
+
+        def triplet(name: str) -> tuple[Array, Array, Array]:
+            packed, biases, scales = _fuse_mlx_weights(weights_dict, base / name, None)
+            if stacked:
+                return packed, biases, scales
+            return jnp.expand_dims(packed, 0), jnp.expand_dims(biases, 0), jnp.expand_dims(scales, 0)
+
+        up_packed, up_biases, up_scales = triplet("up_proj")
+        gate_packed, gate_biases, gate_scales = triplet("gate_proj")
+        down_packed, down_biases, down_scales = triplet("down_proj")
+
+        gate_up_matrix = _load_packed_mlx_matrix(
+            jnp.concatenate([up_packed, gate_packed], axis=-2),
+            jnp.concatenate([up_biases, gate_biases], axis=-2),
+            jnp.concatenate([up_scales, gate_scales], axis=-2),
+            template.up_projection.input_dim,
+            template=template.up_projection.weights,
+            layout=Layout.OUTPUT_INPUT,
+            implementation=implementation,
+            sharding_config=template.up_projection.weights.sharding_config,
+        )
+        down_matrix = _load_packed_mlx_matrix(
+            down_packed,
+            down_biases,
+            down_scales,
+            template.down_projection.input_dim,
+            template=template.down_projection.weights,
+            layout=Layout.OUTPUT_INPUT,
+            implementation=implementation,
+            sharding_config=template.down_projection.weights.sharding_config,
+        )
+        return load_as_at(
+            _dense_mlp_projections,
+            template,
+            (
+                _update_linear(template.up_projection, gate_up_matrix, None),
+                _update_linear(template.down_projection, down_matrix, None),
+            ),
+        )
+
     def load_shared_experts() -> DenseMLP | None:
         if module.shared_experts is None:
             return None
+        # The MLX probe has to come first: MLX keeps its packed matrix under `weight` too, so the
+        # full-precision branch below would happily read uint32 payloads as dense weights.
+        if _is_mlx(weights_dict, path / "shared_expert" / "up_proj", None):
+            if num_shared != 1:
+                raise ValueError("MLX shared experts are only supported as a single expert.")
+            return load_mlx_experts(module.shared_experts, path / "shared_expert", stacked=False)
         if (path / "shared_expert" / "up_proj.weight") in weights_dict:
             if num_shared != 1:
                 raise ValueError("Single shared expert path found but num_shared_experts != 1.")
@@ -588,6 +654,11 @@ def load_moe(
             module.routed_experts,
             (up_projection, down_projection),
         )
+        shared_experts = load_shared_experts()
+    elif _is_mlx(weights_dict, experts_path / "up_proj", None):
+        # Must precede the batched branch: MLX packs its weights into `weight`, so a checkpoint that
+        # named the stack `experts` would match `batched_gate_up_path` and load uint32 as dense.
+        routed_experts = load_mlx_experts(module.routed_experts, experts_path, stacked=True)
         shared_experts = load_shared_experts()
     elif batched_gate_up_path is not None:
         suffix = batched_gate_up_path.removeprefix(gate_up_path)

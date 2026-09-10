@@ -69,19 +69,6 @@ def _take_moe_chunk_inputs(
     )
 
 
-def _add_moe_expert_outputs(
-    accumulator: Float[Array, "tokens channels"],
-    token_indices: Int[Array, "experts tokens_per_chunk"],
-    expert_outputs: Float[Array, "experts tokens_per_chunk channels"],
-    out_sharding: NamedSharding,
-) -> Float[Array, "tokens channels"]:
-    return accumulator.at[token_indices].add(
-        expert_outputs,
-        mode="drop",
-        out_sharding=out_sharding,
-    )
-
-
 def _collapse_keychain(keychain: Keychain) -> Keychain:
     """Collapse per-sequence vmapped keys down to a scalar keychain.
 
@@ -470,6 +457,12 @@ class MixtureOfExpertsConfig(MLPConfig):
     expert_hidden_dim: int
     gate_config: LinearConfig | None = None
     routing_intervention: RoutingIntervention | None = None
+    # Compute the router in float32 even when the activations are bf16. The weights are unchanged: the
+    # widening is exact, and the only thing it buys is the resolution of near-ties in the top-k, which
+    # llama.cpp gets for free by keeping `ffn_gate_inp` in f32 whatever the experts are quantized to.
+    # On Qwen3.6-35B-A3B the median gap between the 8th and 9th logit equals one bf16 step, so under
+    # bf16 roughly a quarter of (token, layer) pairs have a selection that rounding can reorder.
+    router_in_fp32: bool = False
 
     @property
     def mixture_size(self) -> int:
@@ -592,6 +585,29 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         applies_to_generation = RoutingPhase.GENERATION in intervention.phases
         applies_to_context = RoutingPhase.CONTEXT in intervention.phases
         return jnp.where(generation_mask, applies_to_generation, applies_to_context)
+
+    def _router_inputs(self, inputs: Float[Array, "*batch channels"]) -> Float[Array, "*batch channels"]:
+        """Router input, widened to float32 when the config asks for it.
+
+        Widening the INPUT is what moves the whole matmul to float32: `FullPrecisionMatrix.dot` casts the
+        weights to the dtype of its vector argument, so a float32 vector upcasts the bf16 router weights
+        (exactly) and the logits come out in float32. Upcasting the logits afterwards would be useless --
+        by then the rounding has already happened.
+        """
+        if not self.config.router_in_fp32:
+            return inputs
+        return inputs.astype(jnp.float32)
+
+    def _restore_weight_dtype(self, routing: RoutingMap, dtype: DTypeLike) -> RoutingMap:
+        """Mixing weights back in the activation dtype.
+
+        A float32 router is meant to change WHICH experts are selected and nothing else. Left in float32,
+        the weights would promote the expert combination as well and the layer would start returning
+        float32 -- a second change riding on top of the one being measured.
+        """
+        if not self.config.router_in_fp32:
+            return routing
+        return replace(routing, active_expert_weights=routing.active_expert_weights.astype(dtype))
 
     def _route_tokens(
         self,
@@ -727,7 +743,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         router_keychain, experts_keychain = keychain.split(2)
         (router_logits,) = call_vmapped_twice(
             self.router,
-            inputs,
+            self._router_inputs(inputs),
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=router_keychain,
             added_sharding_axes=(batch_axis, None),
@@ -744,6 +760,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             forward_pass_config.mode,
             routing_state,
         )
+        flat_routing = self._restore_weight_dtype(flat_routing, inputs.dtype)
         routing_map = jax.tree.map(
             lambda leaf: rearrange(
                 leaf, "(batch suffix_tokens) active -> batch suffix_tokens active", batch=batch_size
@@ -827,7 +844,18 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             routed_outputs * expert_weights[:, None],
             0.0,
         )
-        routed_result = jnp.zeros_like(replicated_inputs).at[token_indices].add(weighted_outputs)
+        # Summing the k contributions of a token with `.at[token_indices].add(...)` would be a scatter
+        # with colliding indices, and XLA implements that with atomics: the order in which blocks add
+        # their partial sums depends on scheduling, float addition is not associative, and the result
+        # changes from run to run (measured 2026-09-09: 7.3% of this layer's outputs move between two
+        # calls of the same compiled code, which the router then amplifies into different expert sets
+        # downstream). `assignment_order` is a permutation of the flat (token, slot) index, so undoing
+        # it puts each token's k contributions back into adjacent rows and the sum becomes a reduction
+        # over a fixed axis -- same arithmetic, no collisions, reproducible without XLA-wide flags.
+        inverse_order = jnp.argsort(assignment_order)
+        num_tokens, num_channels = replicated_inputs.shape
+        per_token_outputs = weighted_outputs.at[inverse_order].get(out_sharding=replicated_matrix_sharding)
+        routed_result = per_token_outputs.reshape(num_tokens, num_active, num_channels).sum(axis=1)
         return with_sharding(
             routed_result,
             self.sharding_config.resolve_sharding((LogicalAxis.BATCH, None)),
@@ -878,6 +906,27 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         )
 
         num_chunks = chunked_token_indices.shape[0]
+
+        # Where each (token, slot) contribution will land inside its expert's row. `flatnonzero` above
+        # packs the tokens an expert was given into the leading slots, so that position is just the
+        # prefix sum of the assignment mask. Knowing it lets the accumulation below gather the
+        # contributions instead of scattering them: `.at[token_indices].add(...)` collides k times per
+        # token, XLA runs that with atomics, and the result then depends on block scheduling. Same
+        # arithmetic, fixed order, reproducible without XLA-wide flags -- which matter here because on
+        # this path the determinism flag costs 36-89x (measured 2026-09-10 on a 4-bit build).
+        pair_experts = with_sharding(
+            routing_map.active_expert_indices,
+            self.sharding_config.make_sharding((None, None)),
+        )
+        position_in_expert = jnp.cumsum(token_mask, axis=1, dtype=jnp.int32) - 1
+        pair_positions = position_in_expert.at[
+            pair_experts,
+            jnp.arange(num_tokens, dtype=jnp.int32)[:, None],
+        ].get(out_sharding=self.sharding_config.make_sharding((None, None)))
+        pair_chunks = pair_positions // chunk_size
+        pair_offsets = jnp.remainder(pair_positions, chunk_size)
+        # A padded token is assigned to no expert, so its position is meaningless; the mask drops it.
+        pair_live = jnp.broadcast_to(flattened_padding_mask[:, None], pair_experts.shape)
         keychain = _collapse_keychain(keychain)
         chunk_vmapped_keys = keychain.broadcast((num_chunks,)).vmapped_keys
         chunk_batch_keys = with_sharding(
@@ -887,9 +936,9 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
 
         def loop_iteration(
             expert_accumulator: Float[Array, "tokens channels"],
-            chunk_inputs: tuple[Int[Array, "experts chunk_tokens"], Key[Array, ""], Key[Array, ""]],
+            chunk_inputs: tuple[Int[Array, ""], Int[Array, "experts chunk_tokens"], Key[Array, ""], Key[Array, ""]],
         ) -> tuple[Float[Array, "tokens channels"], None]:
-            token_indices_for_chunk, chunk_vmapped_key, chunk_batch_key = chunk_inputs
+            chunk_index, token_indices_for_chunk, chunk_vmapped_key, chunk_batch_key = chunk_inputs
             current_chunk_keychain = Keychain(
                 vmapped_keys=chunk_vmapped_key,
                 batch_key=chunk_batch_key,
@@ -950,15 +999,14 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 ),
                 added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.MIXTURE),
             )
-            return (
-                _add_moe_expert_outputs(
-                    expert_accumulator,
-                    token_indices_for_chunk,
-                    expert_outputs,
-                    batch_sharding,
-                ),
-                None,
+            contributions = expert_outputs.at[pair_experts, pair_offsets].get(
+                mode="fill",
+                fill_value=0.0,
+                out_sharding=self.sharding_config.make_sharding((None, None, None)),
             )
+            in_this_chunk = pair_live & (pair_chunks == chunk_index)
+            chunk_delta = jnp.where(in_this_chunk[..., None], contributions, 0.0).sum(axis=1)
+            return expert_accumulator + with_sharding(chunk_delta, batch_sharding), None
 
         routed_accumulator = jnp.zeros(
             flattened_inputs.shape,
@@ -968,7 +1016,12 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         routed_result, _ = jax.lax.scan(
             loop_iteration,
             routed_accumulator,
-            (chunked_token_indices, chunk_vmapped_keys, chunk_batch_keys),
+            (
+                jnp.arange(num_chunks, dtype=jnp.int32),
+                chunked_token_indices,
+                chunk_vmapped_keys,
+                chunk_batch_keys,
+            ),
         )
         return routed_result
 
@@ -1012,7 +1065,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         router_keychain, routed_expert_keychain, shared_weight_keychain, shared_expert_keychain = keychain.split(4)
         (router_logits,) = call_vmapped(
             self.router,
-            flattened_inputs,
+            self._router_inputs(flattened_inputs),
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=flatten_token_keychain(router_keychain),
             added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
@@ -1026,6 +1079,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             forward_pass_config.mode,
             routing_state,
         )
+        routing_map = self._restore_weight_dtype(routing_map, flattened_inputs.dtype)
 
         up_weights = self.routed_experts.up_projection.weights
         down_weights = self.routed_experts.down_projection.weights
