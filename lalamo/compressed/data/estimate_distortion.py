@@ -10,6 +10,7 @@ from lalamo.compressed.data.distortion import DISTORTION_CSV, DistortionKey
 from lalamo.compressed.lloyd_max import LloydMaxSpec
 from lalamo.compressed.microfloat import MicrofloatScaleMode, MicrofloatSpec
 from lalamo.compressed.quantized_spec import QuantizedSpec
+from lalamo.compressed.trellis import TrellisSpec
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import CompressionImplementation
 
@@ -17,6 +18,9 @@ DEFAULT_LLOYD_MAX_BITS = (2, 3, 4, 6, 8)
 DEFAULT_GROUP_SIZES = (2, 4, 16, 32, 64, 128)
 DEFAULT_BIAS_BITS = (2, 3, 4, 6, 8)
 DEFAULT_MICROFLOAT_SCALE_MODES = ("mxfp4", "nvfp4")
+DEFAULT_TRELLIS_BITS = (1, 2, 3, 4)
+DEFAULT_TRELLIS_WINDOW_BITS = 16
+DEFAULT_TRELLIS_RESTART_COLUMNS = (16, 32, 64, 128)
 DEFAULT_SAMPLE_GROUPS = 8192
 MAX_BIAS_SEARCH_ELEMENTS_PER_CHUNK = 8_388_608
 
@@ -60,6 +64,16 @@ def _default_configs() -> tuple[DistortionKey, ...]:
         for bits in DEFAULT_LLOYD_MAX_BITS
         for bias_bits in (None, *DEFAULT_BIAS_BITS)
     )
+    configs.extend(
+        DistortionKey(
+            format_name="trellis",
+            bits=bits,
+            group_size=restart_columns,
+            window_bits=DEFAULT_TRELLIS_WINDOW_BITS,
+        )
+        for restart_columns in DEFAULT_TRELLIS_RESTART_COLUMNS
+        for bits in DEFAULT_TRELLIS_BITS
+    )
     return tuple(configs)
 
 
@@ -72,6 +86,15 @@ def _spec_from_key(key: DistortionKey) -> QuantizedSpec:
             bits=cast("Literal[2, 3, 4, 6, 8]", key.bits),
             group_size=key.group_size,
             bias_bits=cast("Literal[2, 3, 4, 6, 8] | None", key.bias_bits),
+        )
+
+    if key.format_name == "trellis":
+        if key.window_bits is None:
+            raise ValueError("Trellis distortion keys require window_bits")
+        return TrellisSpec(
+            bits=cast("Literal[1, 2, 3, 4]", key.bits),
+            window_bits=key.window_bits,
+            restart_columns=key.group_size,
         )
 
     raise ValueError(f"Unsupported quantized format {key.format_name!r}")
@@ -117,6 +140,7 @@ def _write_distortions(path: Path, rows: list[_DistortionRow]) -> None:
                 "scale_mode",
                 "scale_normalization",
                 "residual_scale",
+                "window_bits",
                 "distortion",
             )
         )
@@ -130,6 +154,7 @@ def _write_distortions(path: Path, rows: list[_DistortionRow]) -> None:
                     row.key.scale_mode,
                     _format_optional_float(row.key.scale_normalization),
                     _format_optional_float(row.key.residual_scale),
+                    _format_optional_int(row.key.window_bits),
                     f"{row.distortion:.17g}",
                 )
             )
