@@ -7,6 +7,7 @@ from lalamo.compressed.lloyd_max import LloydMaxSpec
 from lalamo.compressed.microfloat import MicrofloatScaleMode, MicrofloatSpec
 from lalamo.compressed.mlx import MLXSpec
 from lalamo.compressed.quantized_spec import QuantizedSpec
+from lalamo.compressed.trellis import TrellisSpec
 from lalamo.weight_matrix import CompressionImplementation, Layout
 from tests.common import assert_close_arrays
 from tests.helpers import make_test_sharding_config
@@ -65,6 +66,8 @@ def test_microfloat_rate_matches_compressed_array_byte_count(
         LloydMaxSpec(bits=4, group_size=32, bias_bits=4),
         MicrofloatSpec(group_size=32),
         MicrofloatSpec(group_size=16, scale_mode=MicrofloatScaleMode.NVFP4),
+        TrellisSpec(bits=2, window_bits=16, restart_columns=64),
+        TrellisSpec(bits=3, window_bits=16, restart_columns=64),
     ],
 )
 @pytest.mark.slow
@@ -108,6 +111,8 @@ def test_microfloat_distortion_matches_inference_quantization_error(
         LloydMaxSpec(bits=3, group_size=4, layout=Layout.INPUT_OUTPUT),
         MicrofloatSpec(group_size=4, layout=Layout.OUTPUT_INPUT),
         MicrofloatSpec(group_size=4, layout=Layout.INPUT_OUTPUT),
+        TrellisSpec(bits=2, window_bits=12, restart_columns=8, layout=Layout.OUTPUT_INPUT),
+        TrellisSpec(bits=2, window_bits=12, restart_columns=8, layout=Layout.INPUT_OUTPUT),
     ],
 )
 def test_quantized_spec_quantize_block_matches_inference_compression(spec: QuantizedSpec) -> None:
