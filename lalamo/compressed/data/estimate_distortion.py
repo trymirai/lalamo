@@ -1,4 +1,5 @@
 import csv
+from math import ceil
 from pathlib import Path
 from typing import Annotated, Literal, NamedTuple, cast
 
@@ -120,7 +121,7 @@ def _estimate_distortion(key: DistortionKey, sample_groups: int) -> float:
     for chunk_start in range(0, sample_groups, chunk_size):
         current_chunk_size = min(chunk_size, sample_groups - chunk_start)
         chunk_key = jax.random.fold_in(random_key, chunk_start)
-        weights_shape = (current_chunk_size // groups_per_row, groups_per_row * key.group_size)
+        weights_shape = (ceil(current_chunk_size / groups_per_row), groups_per_row * key.group_size)
         weights = jax.random.normal(chunk_key, weights_shape, dtype=jnp.float32)
         compressed = spec.compress(
             weights,

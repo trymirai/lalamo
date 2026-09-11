@@ -96,9 +96,9 @@ def _states_to_levels(states: UInt32[Array, "..."]) -> Int8[Array, "... 4"]:
     return (jnp.uint32(8) * pairs + dither).astype(jnp.int32).astype(jnp.int8) - jnp.int8(54)
 
 
-def _states_to_codewords(states: UInt32[Array, "... steps"], dtype: DTypeLike) -> Float[Array, "... cols"]:
+def _states_to_codewords(states: UInt32[Array, "... steps"]) -> Float[Array, "... cols"]:
     levels = rearrange(_states_to_levels(states), "... steps weights -> ... (steps weights)")
-    return levels.astype(dtype) * jnp.asarray(_codebook_scale(), dtype)
+    return levels.astype(jnp.float32) * jnp.float32(_codebook_scale())
 
 
 def _codebook(window_bits: int) -> Float[Array, "states 4"]:
@@ -288,7 +288,7 @@ def _weights_to_packed_parameters(
     targets = with_sharding(weights, scratch_sharding).astype(jnp.float32)
     search_scales = _search_scales(targets)
     states = _weights_to_states(targets / search_scales[..., None], layout)
-    scales = _least_squares_scales(targets, _states_to_codewords(states, jnp.float32))
+    scales = _least_squares_scales(targets, _states_to_codewords(states))
     return _PackedParameters(_states_to_tape(states, layout), scales.astype(weights.dtype))
 
 
@@ -299,8 +299,10 @@ def _packed_parameters_to_weights(
     layout: _TapeLayout,
     dtype: DTypeLike,
 ) -> Float[Array, "... cols"]:
-    codewords = _states_to_codewords(_tape_to_states(packed_tape, layout), dtype)
-    return codewords * scales.astype(dtype)[..., None]
+    levels = _states_to_levels(_tape_to_states(packed_tape, layout))
+    levels = rearrange(levels, "... steps weights -> ... (steps weights)").astype(jnp.float32)
+    combined_scales = scales.astype(jnp.float32) * jnp.float32(_codebook_scale())
+    return (levels * combined_scales[..., None]).astype(dtype)
 
 
 @dataclass(frozen=True)
@@ -453,7 +455,7 @@ class TrellisMatrix(EmbeddingMatrix[TrellisSpec]):
     def export(self) -> ExportResults:
         return ExportResults(
             arrays={"weights": self.packed_tape, "scales": self.scales},
-            metadata={"spec": self.spec.to_json()},
+            metadata={"spec": self.spec.to_json(), "cols": self.cols},
         )
 
     def load_exported(
@@ -467,6 +469,9 @@ class TrellisMatrix(EmbeddingMatrix[TrellisSpec]):
         loaded_spec = WeightMatrixSpec.from_json(exported_data.metadata[prefix / "spec"])
         if loaded_spec != self.spec:
             raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
+        loaded_cols = exported_data.metadata[prefix / "cols"]
+        if loaded_cols != self.cols:
+            raise ValueError(f"WeightMatrix cols mismatch: expected {self.cols}, got {loaded_cols}")
         return TrellisMatrix(
             spec=self.spec,
             sharding_config=self.sharding_config,
