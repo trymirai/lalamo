@@ -21,6 +21,7 @@ DEFAULT_MICROFLOAT_SCALE_MODES = ("mxfp4", "nvfp4")
 DEFAULT_TRELLIS_BITS = (1, 2, 3, 4)
 DEFAULT_TRELLIS_WINDOW_BITS = 16
 DEFAULT_TRELLIS_RESTART_COLUMNS = (16, 32, 64, 128)
+DEFAULT_TRELLIS_SAMPLE_COLUMNS = 1024
 DEFAULT_SAMPLE_GROUPS = 8192
 MAX_BIAS_SEARCH_ELEMENTS_PER_CHUNK = 8_388_608
 
@@ -109,13 +110,18 @@ def _estimate_distortion(key: DistortionKey, sample_groups: int) -> float:
         chunk_size = MAX_BIAS_SEARCH_ELEMENTS_PER_CHUNK // (key.group_size * bias_levels)
         chunk_size = max(1, min(sample_groups, chunk_size))
 
+    groups_per_row = 1
+    if key.format_name == "trellis":
+        groups_per_row = DEFAULT_TRELLIS_SAMPLE_COLUMNS // key.group_size
+
     squared_error_sum = 0.0
     value_count = 0
     random_key = jax.random.PRNGKey(0)
     for chunk_start in range(0, sample_groups, chunk_size):
         current_chunk_size = min(chunk_size, sample_groups - chunk_start)
         chunk_key = jax.random.fold_in(random_key, chunk_start)
-        weights = jax.random.normal(chunk_key, (current_chunk_size, key.group_size), dtype=jnp.float32)
+        weights_shape = (current_chunk_size // groups_per_row, groups_per_row * key.group_size)
+        weights = jax.random.normal(chunk_key, weights_shape, dtype=jnp.float32)
         compressed = spec.compress(
             weights,
             implementation=CompressionImplementation.TRAINING,

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from functools import cache, cached_property, partial
-from math import sqrt
+from math import ceil, sqrt
 from typing import Literal, NamedTuple
 
 import jax
@@ -13,7 +13,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, Int8, Key, UInt, UInt8, UInt
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.dummy_array import supports_dummy_arrays
+from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import ShardingConfig, lookup_sharded_indices, with_sharding
@@ -38,7 +38,8 @@ __all__ = [
 
 _WEIGHTS_PER_STATE = 4
 _CODEBOOK_SEED = 1234
-_MAX_BACKPOINTERS_PER_CHUNK = 268_435_456
+_MAX_SEARCH_WINDOW_BITS = 24
+_MAX_STATES_PER_CHUNK = 16_777_216
 
 
 class _HashParameters(NamedTuple):
@@ -110,23 +111,9 @@ class _TapeLayout:
     spec: "TrellisSpec"
     cols: int
 
-    @classmethod
-    def from_row_bytes(cls, spec: "TrellisSpec", row_bytes: int) -> "_TapeLayout":
-        block_bits = cls(spec, spec.restart_columns).block_bits
-        layout = cls(spec, 8 * row_bytes // block_bits * spec.restart_columns)
-        if layout.row_bytes != row_bytes:
-            raise ValueError(
-                f"A {row_bytes}-byte tape row does not hold a whole number of {spec.restart_columns}-column blocks"
-            )
-        return layout
-
-    @property
-    def code_bits(self) -> int:
-        return self.spec.bits * _WEIGHTS_PER_STATE
-
-    @property
-    def steps_per_block(self) -> int:
-        return self.spec.restart_columns // _WEIGHTS_PER_STATE
+    def __post_init__(self) -> None:
+        if self.cols % self.spec.restart_columns != 0:
+            raise ValueError(f"cols={self.cols} must be divisible by restart_columns={self.spec.restart_columns}")
 
     @property
     def blocks(self) -> int:
@@ -134,19 +121,15 @@ class _TapeLayout:
 
     @property
     def steps(self) -> int:
-        return self.blocks * self.steps_per_block
-
-    @property
-    def block_bits(self) -> int:
-        return self.spec.window_bits + (self.steps_per_block - 1) * self.code_bits
+        return self.blocks * self.spec.steps_per_block
 
     @property
     def row_bytes(self) -> int:
-        return -(-self.blocks * self.block_bits // 8)
+        return ceil(self.blocks * self.spec.block_bits / 8)
 
     @property
     def word_count(self) -> int:
-        return -(-self.blocks * self.block_bits // 32) + 1
+        return ceil(self.blocks * self.spec.block_bits / 32) + 1
 
     @property
     def state_mask(self) -> int:
@@ -154,15 +137,15 @@ class _TapeLayout:
 
     @property
     def code_mask(self) -> int:
-        return (1 << self.code_bits) - 1
+        return (1 << self.spec.code_bits) - 1
 
-    def window_bit_offsets(self) -> np.ndarray:
-        block_starts = np.arange(self.blocks) * self.block_bits
-        step_offsets = (self.steps_per_block - 1 - np.arange(self.steps_per_block)) * self.code_bits
+    def window_bit_offsets(self) -> UInt32[np.ndarray, " steps"]:
+        block_starts = np.arange(self.blocks) * self.spec.block_bits
+        step_offsets = (self.spec.steps_per_block - 1 - np.arange(self.spec.steps_per_block)) * self.spec.code_bits
         return (block_starts[:, None] + step_offsets[None, :]).reshape(-1).astype(np.uint32)
 
-    def field_bit_masks(self) -> np.ndarray:
-        is_header = np.arange(self.steps) % self.steps_per_block == 0
+    def field_bit_masks(self) -> UInt32[np.ndarray, " steps"]:
+        is_header = np.arange(self.steps) % self.spec.steps_per_block == 0
         return np.where(is_header, self.state_mask, self.code_mask).astype(np.uint32)
 
 
@@ -227,21 +210,24 @@ def _segment_states(
         with use_dot_algorithm_preset(DotAlgorithmPreset.F32_F32_F32):
             return codeword_norms - jnp.float32(2) * (codebook @ target)
 
+    # The predecessors of a state are the states whose low window_bits - code_bits bits equal its high bits,
+    # predecessor = high * num_suffixes + (state >> code_bits), so one backpointer per suffix covers all states.
     def forward(
         costs: Float[Array, " states"],
         target: Float[Array, " 4"],
-    ) -> tuple[Float[Array, " states"], UInt[Array, " states"]]:
+    ) -> tuple[Float[Array, " states"], UInt[Array, " suffixes"]]:
         grouped = rearrange(costs, "(predecessors suffixes) -> predecessors suffixes", suffixes=num_suffixes)
         best_predecessors = jnp.argmin(grouped, axis=0).astype(backpointer_dtype)
         costs = branch_costs(target) + jnp.repeat(jnp.min(grouped, axis=0), num_predecessors)
-        return costs, jnp.repeat(best_predecessors, num_predecessors)
+        return costs, best_predecessors
 
     def backward(
         state: UInt32[Array, ""],
-        backpointers: UInt[Array, " states"],
+        backpointers: UInt[Array, " suffixes"],
     ) -> tuple[UInt32[Array, ""], UInt32[Array, ""]]:
-        predecessor = backpointers[state].astype(jnp.uint32) << jnp.uint32(window_bits - code_bits)
-        return predecessor | (state >> jnp.uint32(code_bits)), state
+        suffix = state >> jnp.uint32(code_bits)
+        predecessor = backpointers[suffix].astype(jnp.uint32) << jnp.uint32(window_bits - code_bits)
+        return predecessor | suffix, state
 
     first_target, later_targets = targets[0], targets[1:]
     final_costs, backpointers = jax.lax.scan(forward, branch_costs(first_target), later_targets)
@@ -255,23 +241,23 @@ def _weights_to_states(weights: Float[Array, "... cols"], layout: _TapeLayout) -
     segments = rearrange(
         weights.reshape(-1, cols),
         "rows (blocks steps weights) -> (rows blocks) steps weights",
-        steps=layout.steps_per_block,
+        steps=layout.spec.steps_per_block,
         weights=_WEIGHTS_PER_STATE,
     )
     codebook = _codebook(layout.spec.window_bits)
     num_states, _ = codebook.shape
-    segments_per_chunk = max(1, _MAX_BACKPOINTERS_PER_CHUNK // (num_states * layout.steps_per_block))
+    segments_per_chunk = max(1, _MAX_STATES_PER_CHUNK // num_states)
     fit_segment = partial(
         _segment_states,
         codebook=codebook,
         window_bits=layout.spec.window_bits,
-        code_bits=layout.code_bits,
+        code_bits=layout.spec.code_bits,
     )
     states = jax.lax.map(fit_segment, segments, batch_size=segments_per_chunk)
     return states.reshape(*leading_dims, layout.steps)
 
 
-def _weights_to_scales(weights: Float[Array, "... cols"]) -> Float[Array, "..."]:
+def _search_scales(weights: Float[Array, "... cols"]) -> Float[Array, "..."]:
     scales = jnp.sqrt(jnp.mean(jnp.square(weights), axis=-1))
     return jnp.where(scales == 0, 1, scales)
 
@@ -294,20 +280,19 @@ class _PackedParameters(NamedTuple):
 @supports_dummy_arrays()
 def _weights_to_packed_parameters(
     weights: Float[Array, "... cols"],
-    spec: "TrellisSpec",
+    layout: _TapeLayout,
     *,
     sharding_config: ShardingConfig,
 ) -> _PackedParameters:
-    *_, cols = weights.shape
-    layout = _TapeLayout(spec, cols)
     scratch_sharding = sharding_config.make_sharding((None,) * weights.ndim)
     targets = with_sharding(weights, scratch_sharding).astype(jnp.float32)
-    fit_scales = _weights_to_scales(targets)
-    states = _weights_to_states(targets / fit_scales[..., None], layout)
+    search_scales = _search_scales(targets)
+    states = _weights_to_states(targets / search_scales[..., None], layout)
     scales = _least_squares_scales(targets, _states_to_codewords(states, jnp.float32))
     return _PackedParameters(_states_to_tape(states, layout), scales.astype(weights.dtype))
 
 
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
 def _packed_parameters_to_weights(
     packed_tape: UInt8[Array, "... packed_cols"],
     scales: Float[Array, "..."],
@@ -326,15 +311,28 @@ class TrellisSpec(QuantizedSpec):
     layout: Layout = Layout.OUTPUT_INPUT
 
     def __post_init__(self) -> None:
-        code_bits = self.bits * _WEIGHTS_PER_STATE
-        if not 8 <= self.window_bits <= 32:
-            raise ValueError(f"window_bits must be between 8 and 32, got {self.window_bits}")
-        if self.window_bits < code_bits:
-            raise ValueError(f"window_bits={self.window_bits} must be at least {code_bits} for bits={self.bits}")
+        if self.bits not in (1, 2, 3, 4):
+            raise ValueError(f"bits must be 1, 2, 3 or 4, got {self.bits}")
+        if not self.code_bits <= self.window_bits <= 32:
+            raise ValueError(
+                f"window_bits must be between {self.code_bits} and 32 for bits={self.bits}, got {self.window_bits}"
+            )
         if self.restart_columns <= 0 or self.restart_columns % _WEIGHTS_PER_STATE != 0:
             raise ValueError(
                 f"restart_columns must be a positive multiple of {_WEIGHTS_PER_STATE}, got {self.restart_columns}"
             )
+
+    @property
+    def code_bits(self) -> int:
+        return self.bits * _WEIGHTS_PER_STATE
+
+    @property
+    def steps_per_block(self) -> int:
+        return self.restart_columns // _WEIGHTS_PER_STATE
+
+    @property
+    def block_bits(self) -> int:
+        return self.window_bits + (self.steps_per_block - 1) * self.code_bits
 
     @property
     def input_block_size(self) -> int:
@@ -350,7 +348,7 @@ class TrellisSpec(QuantizedSpec):
 
     @property
     def rate(self) -> float:
-        return self.bits + (self.window_bits - self.bits * _WEIGHTS_PER_STATE) / self.restart_columns
+        return self.block_bits / self.restart_columns
 
     @cached_property
     def distortion(self) -> float:
@@ -373,18 +371,23 @@ class TrellisSpec(QuantizedSpec):
     ) -> "TrellisMatrix":
         if preconditioner is not None:
             raise ValueError("Trellis compression does not support preconditioning.")
+        if self.window_bits > _MAX_SEARCH_WINDOW_BITS:
+            raise ValueError(
+                f"Searching 2**{self.window_bits} states is not supported, "
+                f"compression needs window_bits of at most {_MAX_SEARCH_WINDOW_BITS}"
+            )
 
         weight_axes = self.layout.weight_partition(weights.ndim - 2, is_sharded=is_sharded)
         weight_sharding = sharding_config.resolve_sharding(weight_axes)
         stored_weights = self.layout.from_output_input(weights, sharding=weight_sharding)
         *_, cols = stored_weights.shape
-        if cols % self.restart_columns != 0:
-            raise ValueError(f"cols={cols} must be divisible by restart_columns={self.restart_columns}")
+        layout = _TapeLayout(self, cols)
 
-        packed_parameters = _weights_to_packed_parameters(stored_weights, self, sharding_config=sharding_config)
+        packed_parameters = _weights_to_packed_parameters(stored_weights, layout, sharding_config=sharding_config)
         return self.from_packed_parameters(
             packed_tape=packed_parameters.packed_tape,
             scales=packed_parameters.scales,
+            cols=cols,
             sharding_config=sharding_config,
             is_sharded=is_sharded,
         )
@@ -394,35 +397,35 @@ class TrellisSpec(QuantizedSpec):
         *,
         packed_tape: UInt8[Array, "*components rows packed_cols"],
         scales: Float[Array, "*components rows"],
+        cols: int,
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "TrellisMatrix":
+        layout = _TapeLayout(self, cols)
         *_, row_bytes = packed_tape.shape
-        _TapeLayout.from_row_bytes(self, row_bytes)
+        if row_bytes != layout.row_bytes:
+            raise ValueError(f"Expected {layout.row_bytes}-byte tape rows for cols={cols}, got {row_bytes}")
 
         *parameter_axes, _cols_axis = self.layout.weight_partition(scales.ndim - 1, is_sharded=is_sharded)
         return TrellisMatrix(
             spec=self,
             sharding_config=sharding_config,
             is_sharded=is_sharded,
+            cols=cols,
             packed_tape=with_sharding(packed_tape, sharding_config.resolve_sharding((*parameter_axes, None))),
             scales=with_sharding(scales, sharding_config.resolve_sharding(tuple(parameter_axes))),
         )
 
 
 class TrellisMatrix(EmbeddingMatrix[TrellisSpec]):
+    cols: int = field(static=True)
     packed_tape: UInt8[Array, "*components rows packed_cols"]
     scales: Float[Array, "*components rows"] = field(norm=ParameterNorm.L_INF)
 
     @property
-    def _tape_layout(self) -> _TapeLayout:
-        *_, row_bytes = self.packed_tape.shape
-        return _TapeLayout.from_row_bytes(self.spec, row_bytes)
-
-    @property
     def shape(self) -> tuple[int, ...]:
         *leading_dims, _ = self.packed_tape.shape
-        return (*leading_dims, self._tape_layout.cols)
+        return (*leading_dims, self.cols)
 
     @property
     def dtype(self) -> DTypeLike:
@@ -433,8 +436,18 @@ class TrellisMatrix(EmbeddingMatrix[TrellisSpec]):
             spec=self.spec,
             sharding_config=self.sharding_config,
             is_sharded=self.is_sharded,
+            cols=self.cols,
             packed_tape=self.packed_tape,
             scales=self.scales.astype(dtype),
+        )
+
+    def switch_sharding_config(self, sharding_config: ShardingConfig) -> "TrellisMatrix":
+        return self.spec.from_packed_parameters(
+            packed_tape=self.packed_tape,
+            scales=self.scales,
+            cols=self.cols,
+            sharding_config=sharding_config,
+            is_sharded=self.is_sharded,
         )
 
     def export(self) -> ExportResults:
@@ -458,6 +471,7 @@ class TrellisMatrix(EmbeddingMatrix[TrellisSpec]):
             spec=self.spec,
             sharding_config=self.sharding_config,
             is_sharded=self.is_sharded,
+            cols=self.cols,
             packed_tape=load_as(self.packed_tape, exported_data.arrays[prefix / "weights"]),
             scales=load_as(self.scales, exported_data.arrays[prefix / "scales"]),
         )
@@ -508,10 +522,11 @@ class TrellisMatrix(EmbeddingMatrix[TrellisSpec]):
         dtype: DTypeLike,
         row_index: int | Int[Array, "*batch"] | None = None,
     ) -> Float[Array, "... cols"]:
+        layout = _TapeLayout(self.spec, self.cols)
         if row_index is not None:
             packed_tape = lookup_sharded_indices(self.packed_tape, row_index)
             scales = lookup_sharded_indices(self.scales, row_index)
-            return _packed_parameters_to_weights(packed_tape, scales, self._tape_layout, dtype)
-        weights = _packed_parameters_to_weights(self.packed_tape, self.scales, self._tape_layout, dtype)
+            return _packed_parameters_to_weights(packed_tape, scales, layout, dtype)
+        weights = _packed_parameters_to_weights(self.packed_tape, self.scales, layout, dtype)
         weight_axes = self.spec.layout.weight_partition(self.scales.ndim - 1, is_sharded=self.is_sharded)
         return with_sharding(weights, self._resolve_sharding(weight_axes))
