@@ -1,6 +1,7 @@
 from math import prod
 from typing import Literal
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -13,17 +14,17 @@ from lalamo.compressed.trellis import (
     _codebook,
     _codebook_scale,
     _level_table,
+    _search_scales,
     _states_to_levels,
     _states_to_tape,
     _tape_to_states,
     _TapeLayout,
-    _weights_to_scales,
 )
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.utils.sharding import is_sharded
-from lalamo.weight_matrix import CompressionImplementation, Layout, WeightMatrixSpec
+from lalamo.utils.sharding import ShardingConfig, is_sharded
+from lalamo.weight_matrix import Layout, WeightMatrixSpec
 from tests.common import assert_close_arrays
 from tests.helpers import make_sharding, make_test_sharding_config
 
@@ -67,8 +68,8 @@ _GOLDEN_STATES = (
 
 
 def _logical_weights(*leading_dims: int) -> jax.Array:
-    shape = (*leading_dims, 8, 16)
-    return (jnp.arange(prod(shape), dtype=jnp.float32).reshape(shape) - 61) / 17
+    shape = (*leading_dims, 16, 16)
+    return (jnp.arange(prod(shape), dtype=jnp.float32).reshape(shape) - 131) / 37
 
 
 def _gaussian_weights(rows: int, cols: int) -> jax.Array:
@@ -80,6 +81,7 @@ def _put_on_sharding(matrix: TrellisMatrix, tape_sharding: Sharding, scale_shard
         spec=matrix.spec,
         sharding_config=matrix.sharding_config,
         is_sharded=matrix.is_sharded,
+        cols=matrix.cols,
         packed_tape=jax.device_put(matrix.packed_tape, tape_sharding),
         scales=jax.device_put(matrix.scales, scale_sharding),
     )
@@ -195,9 +197,7 @@ def test_trellis_tape_roundtrips_states_that_follow_the_recurrence(
     layout = _TapeLayout(spec, cols)
     generator = np.random.default_rng(0)
     headers = generator.integers(0, 1 << window_bits, size=(3, layout.blocks), dtype=np.uint64)
-    codes = generator.integers(
-        0, 1 << (4 * bits), size=(3, layout.blocks, layout.steps_per_block - 1), dtype=np.uint64
-    )
+    codes = generator.integers(0, 1 << (4 * bits), size=(3, layout.blocks, spec.steps_per_block - 1), dtype=np.uint64)
     states = jnp.asarray(_recurrence_states(spec, headers, codes))
 
     packed_tape = _states_to_tape(states, layout)
@@ -219,7 +219,7 @@ def test_trellis_viterbi_matches_brute_force_search() -> None:
 
     matrix = spec.compress(weights, sharding_config=make_test_sharding_config())
 
-    targets = np.asarray(weights / _weights_to_scales(weights)[:, None], dtype=np.float64)
+    targets = np.asarray(weights / _search_scales(weights)[:, None], dtype=np.float64)
     rows, cols = weights.shape
     layout = _TapeLayout(spec, cols)
     fitted_codewords = codebook[np.asarray(_tape_to_states(matrix.packed_tape, layout))].reshape(rows, cols)
@@ -251,7 +251,19 @@ def test_trellis_compress_and_decompress_match_manual_decode(layout: Layout) -> 
     assert_close_arrays(result=matrix.decompress(), reference=reference)
 
 
-def test_trellis_quantization_error_is_near_the_gaussian_rate_distortion_bound() -> None:
+@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
+def test_trellis_fitted_states_follow_the_recurrence_within_every_block(layout: Layout) -> None:
+    spec = TrellisSpec(bits=2, window_bits=12, restart_columns=8, layout=layout)
+
+    matrix = spec.compress(_logical_weights(), sharding_config=make_test_sharding_config())
+
+    states = np.asarray(_tape_to_states(matrix.packed_tape, _TapeLayout(spec, matrix.cols)), dtype=np.uint64)
+    headers = states[:, :: spec.steps_per_block]
+    codes = states.reshape(*headers.shape, spec.steps_per_block)[..., 1:] & ((1 << spec.code_bits) - 1)
+    assert np.array_equal(states, _recurrence_states(spec, headers, codes).astype(np.uint64))
+
+
+def test_trellis_gaussian_quantization_error_stays_below_threshold() -> None:
     spec = TrellisSpec(bits=2, window_bits=16, restart_columns=64)
     weights = _gaussian_weights(64, 256)
 
@@ -284,6 +296,7 @@ def test_trellis_dot_gradient_flows_to_scales_only() -> None:
                 spec=matrix.spec,
                 sharding_config=matrix.sharding_config,
                 is_sharded=matrix.is_sharded,
+                cols=matrix.cols,
                 packed_tape=matrix.packed_tape,
                 scales=scales,
             ).dot(vector, keychain=keychain)
@@ -293,20 +306,36 @@ def test_trellis_dot_gradient_flows_to_scales_only() -> None:
 
     codewords = matrix.decompress() / matrix.scales[:, None]
     assert_close_arrays(result=gradient, reference=codewords @ vector)
-    assert not jnp.issubdtype(matrix.packed_tape.dtype, jnp.floating)
+    inexact_leaves = jax.tree_util.tree_leaves(eqx.filter(matrix, eqx.is_inexact_array))
+    assert len(inexact_leaves) == 1
+    assert inexact_leaves[0] is matrix.scales
 
 
-def test_trellis_training_and_inference_share_one_implementation() -> None:
+def test_trellis_compress_mixture_matches_per_component_compress() -> None:
     spec = TrellisSpec(bits=2, window_bits=12, restart_columns=8)
+    weights = _logical_weights(2) * jnp.array([1.0, -0.5], dtype=jnp.float32)[:, None, None]
 
-    matrix = spec.compress(
-        _logical_weights(),
-        implementation=CompressionImplementation.TRAINING,
-        sharding_config=make_test_sharding_config(),
+    matrix = spec.compress(weights, sharding_config=make_test_sharding_config())
+
+    reference = jnp.stack(
+        [spec.compress(weights[index], sharding_config=make_test_sharding_config()).decompress() for index in range(2)]
     )
+    assert matrix.shape == weights.shape
+    assert matrix.packed_tape.shape == (2, 16, _TapeLayout(spec, cols=16).row_bytes)
+    assert matrix.scales.shape == (2, 16)
+    assert_close_arrays(result=matrix.decompress(), reference=reference)
 
-    assert isinstance(matrix, TrellisMatrix)
-    assert matrix.switch_implementation(CompressionImplementation.INFERENCE) is matrix
+
+def test_trellis_switch_sharding_config_keeps_the_tape() -> None:
+    spec = TrellisSpec(bits=2, window_bits=12, restart_columns=8)
+    matrix = spec.compress(_logical_weights(), sharding_config=make_test_sharding_config())
+
+    switched = matrix.switch_sharding_config(ShardingConfig.replicated())
+
+    assert switched.spec == spec
+    assert switched.cols == matrix.cols
+    assert np.array_equal(np.asarray(switched.packed_tape), np.asarray(matrix.packed_tape))
+    assert np.array_equal(np.asarray(switched.scales), np.asarray(matrix.scales))
 
 
 @pytest.mark.parametrize(
@@ -318,12 +347,15 @@ def test_trellis_training_and_inference_share_one_implementation() -> None:
         TrellisSpec(bits=4, window_bits=16, restart_columns=32),
     ],
 )
-def test_trellis_rate_matches_tape_bytes(spec: TrellisSpec) -> None:
+def test_trellis_rate_matches_tape_bytes_plus_one_scale_per_row(spec: TrellisSpec) -> None:
     weights = _gaussian_weights(8, 256)
 
     matrix = spec.compress(weights, sharding_config=make_test_sharding_config())
 
-    assert 8 * matrix.packed_tape.size == pytest.approx(spec.rate * weights.size)
+    byte_count = sum(array.size * array.dtype.itemsize for array in matrix.export().arrays.values())
+    *_, cols = weights.shape
+    scale_bits_per_weight = 8 * jnp.dtype(matrix.scales.dtype).itemsize / cols
+    assert 8 * byte_count / weights.size == pytest.approx(spec.rate + scale_bits_per_weight)
 
 
 def test_trellis_spec_json_roundtrip() -> None:
@@ -337,7 +369,7 @@ def test_trellis_spec_json_roundtrip() -> None:
     [
         (2, 4, 64, "between 8 and 32"),
         (2, 33, 64, "between 8 and 32"),
-        (4, 12, 64, "at least 16"),
+        (4, 12, 64, "between 16 and 32"),
         (2, 16, 6, "positive multiple of 4"),
         (2, 16, 0, "positive multiple of 4"),
     ],
@@ -352,11 +384,25 @@ def test_trellis_spec_rejects_invalid_configurations(
         TrellisSpec(bits=bits, window_bits=window_bits, restart_columns=restart_columns)  # type: ignore[arg-type]
 
 
+def test_trellis_spec_rejects_bits_outside_the_codebook_range() -> None:
+    with pytest.raises((TypeError, ValueError), match="1, 2, 3"):
+        TrellisSpec(bits=5, window_bits=20, restart_columns=64)  # type: ignore[arg-type]
+
+
 def test_trellis_compress_rejects_columns_not_divisible_by_restart_columns() -> None:
     weights = jnp.ones((4, 24), dtype=jnp.float32)
 
     with pytest.raises(ValueError, match="divisible"):
         TrellisSpec(bits=2, window_bits=12, restart_columns=16).compress(
+            weights, sharding_config=make_test_sharding_config()
+        )
+
+
+def test_trellis_compress_rejects_windows_too_wide_to_search() -> None:
+    weights = jnp.ones((2, 68), dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="at most 24"):
+        TrellisSpec(bits=3, window_bits=32, restart_columns=68).compress(
             weights, sharding_config=make_test_sharding_config()
         )
 
@@ -373,13 +419,14 @@ def test_trellis_compress_rejects_preconditioner() -> None:
         )
 
 
-def test_trellis_from_packed_parameters_rejects_partial_blocks() -> None:
+def test_trellis_from_packed_parameters_rejects_tape_rows_of_the_wrong_length() -> None:
     spec = TrellisSpec(bits=2, window_bits=16, restart_columns=64)
 
-    with pytest.raises(ValueError, match="whole number"):
+    with pytest.raises(ValueError, match="Expected 34-byte tape rows"):
         spec.from_packed_parameters(
             packed_tape=jnp.zeros((4, 20), dtype=jnp.uint8),
             scales=jnp.ones((4,), dtype=jnp.float32),
+            cols=128,
             sharding_config=make_test_sharding_config(),
         )
 
@@ -399,6 +446,7 @@ def test_trellis_export_load_roundtrips_and_preserves_template_sharding(fake_mes
 
     restored = template.load_exported(original.export())
 
+    assert template.decompress().shape == weights.shape
     assert restored.spec == spec
     assert isinstance(restored, TrellisMatrix)
     assert_close_arrays(result=restored.decompress(), reference=reference)
