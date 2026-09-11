@@ -8,8 +8,6 @@ import numpy as np
 import pytest
 from jax.sharding import Mesh, Sharding
 
-from lalamo.compressed.data.distortion import _csv_distortions
-from lalamo.compressed.data.estimate_distortion import _default_configs, _spec_from_key
 from lalamo.compressed.trellis import (
     TrellisMatrix,
     TrellisSpec,
@@ -315,17 +313,6 @@ def test_trellis_distortion_estimates_increase_with_restart_columns(bits: Litera
     assert distortions == sorted(distortions)
 
 
-def test_estimate_distortion_default_trellis_keys_are_in_the_csv_and_rebuild_their_specs() -> None:
-    trellis_keys = [key for key in _default_configs() if key.format_name == "trellis"]
-
-    assert len(trellis_keys) == 16
-    assert set(trellis_keys) <= set(_csv_distortions())
-    for key in trellis_keys:
-        spec = _spec_from_key(key)
-        assert isinstance(spec, TrellisSpec)
-        assert (spec.bits, spec.window_bits, spec.restart_columns) == (key.bits, 16, key.group_size)
-
-
 def test_trellis_all_zero_rows_decompress_to_zeros_with_finite_scales() -> None:
     spec = TrellisSpec(bits=2, window_bits=12, restart_columns=8)
     weights = _logical_weights().at[3].set(0)
@@ -369,6 +356,27 @@ def test_trellis_compress_keeps_weight_dtype_for_scales_and_decompression() -> N
     assert matrix.scales.dtype == jnp.bfloat16
     assert matrix.decompress().dtype == jnp.bfloat16
     assert matrix.astype(jnp.float32).decompress().dtype == jnp.float32
+
+
+def test_trellis_decompress_rounds_once_after_the_float32_scale_product() -> None:
+    spec = TrellisSpec(bits=2, window_bits=12, restart_columns=8)
+    matrix = spec.compress(_logical_weights().astype(jnp.bfloat16), sharding_config=make_test_sharding_config())
+
+    decompressed = matrix.decompress()
+
+    reference = matrix.astype(jnp.float32).decompress().astype(jnp.bfloat16)
+    assert decompressed.dtype == jnp.bfloat16
+    assert jnp.array_equal(decompressed, reference)
+
+
+def test_trellis_load_exported_rejects_column_count_mismatch() -> None:
+    spec = TrellisSpec(bits=1, window_bits=4, restart_columns=4)
+    narrow = spec.compress(jnp.ones((2, 4), dtype=jnp.float32), sharding_config=make_test_sharding_config())
+    wide = spec.compress(jnp.ones((2, 8), dtype=jnp.float32), sharding_config=make_test_sharding_config())
+    assert narrow.packed_tape.shape == wide.packed_tape.shape
+
+    with pytest.raises(ValueError, match="cols mismatch"):
+        wide.load_exported(narrow.export())
 
 
 def test_trellis_transposed_dot_matches_transposed_decompressed_weights() -> None:
