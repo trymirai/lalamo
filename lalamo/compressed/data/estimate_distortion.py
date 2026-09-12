@@ -1,4 +1,5 @@
 import csv
+from math import ceil
 from pathlib import Path
 from typing import Annotated, Literal, NamedTuple, cast
 
@@ -10,6 +11,7 @@ from lalamo.compressed.data.distortion import DISTORTION_CSV, DistortionKey
 from lalamo.compressed.lloyd_max import LloydMaxSpec
 from lalamo.compressed.microfloat import MicrofloatScaleMode, MicrofloatSpec
 from lalamo.compressed.quantized_spec import QuantizedSpec
+from lalamo.compressed.trellis import TrellisSpec
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import CompressionImplementation
 
@@ -17,6 +19,10 @@ DEFAULT_LLOYD_MAX_BITS = (2, 3, 4, 6, 8)
 DEFAULT_GROUP_SIZES = (2, 4, 16, 32, 64, 128)
 DEFAULT_BIAS_BITS = (2, 3, 4, 6, 8)
 DEFAULT_MICROFLOAT_SCALE_MODES = ("mxfp4", "nvfp4")
+DEFAULT_TRELLIS_BITS = (1, 2, 3, 4)
+DEFAULT_TRELLIS_WINDOW_BITS = 16
+DEFAULT_TRELLIS_RESTART_COLUMNS = (16, 32, 64, 128)
+DEFAULT_TRELLIS_SAMPLE_COLUMNS = 1024
 DEFAULT_SAMPLE_GROUPS = 8192
 MAX_BIAS_SEARCH_ELEMENTS_PER_CHUNK = 8_388_608
 
@@ -60,6 +66,16 @@ def _default_configs() -> tuple[DistortionKey, ...]:
         for bits in DEFAULT_LLOYD_MAX_BITS
         for bias_bits in (None, *DEFAULT_BIAS_BITS)
     )
+    configs.extend(
+        DistortionKey(
+            format_name="trellis",
+            bits=bits,
+            group_size=restart_columns,
+            window_bits=DEFAULT_TRELLIS_WINDOW_BITS,
+        )
+        for restart_columns in DEFAULT_TRELLIS_RESTART_COLUMNS
+        for bits in DEFAULT_TRELLIS_BITS
+    )
     return tuple(configs)
 
 
@@ -74,6 +90,15 @@ def _spec_from_key(key: DistortionKey) -> QuantizedSpec:
             bias_bits=cast("Literal[2, 3, 4, 6, 8] | None", key.bias_bits),
         )
 
+    if key.format_name == "trellis":
+        if key.window_bits is None:
+            raise ValueError("Trellis distortion keys require window_bits")
+        return TrellisSpec(
+            bits=cast("Literal[1, 2, 3, 4]", key.bits),
+            window_bits=key.window_bits,
+            restart_columns=key.group_size,
+        )
+
     raise ValueError(f"Unsupported quantized format {key.format_name!r}")
 
 
@@ -86,13 +111,18 @@ def _estimate_distortion(key: DistortionKey, sample_groups: int) -> float:
         chunk_size = MAX_BIAS_SEARCH_ELEMENTS_PER_CHUNK // (key.group_size * bias_levels)
         chunk_size = max(1, min(sample_groups, chunk_size))
 
+    groups_per_row = 1
+    if key.format_name == "trellis":
+        groups_per_row = DEFAULT_TRELLIS_SAMPLE_COLUMNS // key.group_size
+
     squared_error_sum = 0.0
     value_count = 0
     random_key = jax.random.PRNGKey(0)
     for chunk_start in range(0, sample_groups, chunk_size):
         current_chunk_size = min(chunk_size, sample_groups - chunk_start)
         chunk_key = jax.random.fold_in(random_key, chunk_start)
-        weights = jax.random.normal(chunk_key, (current_chunk_size, key.group_size), dtype=jnp.float32)
+        weights_shape = (ceil(current_chunk_size / groups_per_row), groups_per_row * key.group_size)
+        weights = jax.random.normal(chunk_key, weights_shape, dtype=jnp.float32)
         compressed = spec.compress(
             weights,
             implementation=CompressionImplementation.TRAINING,
@@ -117,6 +147,7 @@ def _write_distortions(path: Path, rows: list[_DistortionRow]) -> None:
                 "scale_mode",
                 "scale_normalization",
                 "residual_scale",
+                "window_bits",
                 "distortion",
             )
         )
@@ -130,6 +161,7 @@ def _write_distortions(path: Path, rows: list[_DistortionRow]) -> None:
                     row.key.scale_mode,
                     _format_optional_float(row.key.scale_normalization),
                     _format_optional_float(row.key.residual_scale),
+                    _format_optional_int(row.key.window_bits),
                     f"{row.distortion:.17g}",
                 )
             )

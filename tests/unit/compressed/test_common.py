@@ -12,6 +12,7 @@ from lalamo.compressed.int import IntSpec
 from lalamo.compressed.lloyd_max import LloydMaxSpec
 from lalamo.compressed.microfloat import MicrofloatSpec
 from lalamo.compressed.mlx import MLXSpec
+from lalamo.compressed.trellis import TrellisSpec
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -52,6 +53,12 @@ def _microfloat_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> We
     return MicrofloatSpec(group_size=group_size, layout=layout)
 
 
+def _trellis_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> WeightMatrixSpec:
+    if bits != 4:
+        raise ValueError(f"Trellis supports at most 4-bit weights, got {bits}")
+    return TrellisSpec(bits=bits, window_bits=20, restart_columns=4 * group_size, layout=layout)
+
+
 COMPRESSED_MATRIX_CASES = (
     pytest.param(CompressedMatrixCase("int", _int_spec, weight_offset=7, weight_divisor=8), id="int"),
     pytest.param(CompressedMatrixCase("mlx", _mlx_spec, weight_offset=3, weight_divisor=5), id="mlx"),
@@ -62,6 +69,10 @@ COMPRESSED_MATRIX_CASES = (
     pytest.param(
         CompressedMatrixCase("microfloat", _microfloat_spec, weight_offset=4, weight_divisor=4),
         id="microfloat",
+    ),
+    pytest.param(
+        CompressedMatrixCase("trellis", _trellis_spec, weight_offset=9, weight_divisor=6),
+        id="trellis",
     ),
 )
 
@@ -87,7 +98,7 @@ def host_decompressed(matrix: EmbeddingMatrix[WeightMatrixSpec]) -> jax.Array:
 
 def host_embedding_table(matrix: EmbeddingMatrix[WeightMatrixSpec]) -> jax.Array:
     match matrix.spec:
-        case IntSpec() | MLXSpec() | LloydMaxSpec() | MicrofloatSpec() | FullPrecisionSpec() as spec:
+        case IntSpec() | MLXSpec() | LloydMaxSpec() | MicrofloatSpec() | TrellisSpec() | FullPrecisionSpec() as spec:
             weights = matrix.decompress()
             return host_array(
                 spec.layout.from_output_input(
