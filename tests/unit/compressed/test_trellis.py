@@ -369,6 +369,29 @@ def test_trellis_decompress_rounds_once_after_the_float32_scale_product() -> Non
     assert jnp.array_equal(decompressed, reference)
 
 
+def test_trellis_dummy_template_loads_a_window_too_wide_to_search() -> None:
+    spec = TrellisSpec(bits=3, window_bits=32, restart_columns=68)
+    golden_row = np.frombuffer(bytes.fromhex(_GOLDEN_TAPE), dtype=np.uint8)
+    tape = jnp.asarray(np.stack([golden_row, golden_row]))
+    original = spec.from_packed_parameters(
+        packed_tape=tape,
+        scales=jnp.array([1.0, -0.5], dtype=jnp.float32),
+        cols=68,
+        sharding_config=make_test_sharding_config(),
+    )
+    template = spec.compress(
+        dummy_array((2, 68), jnp.float32, make_sharding((None, None))),
+        sharding_config=make_test_sharding_config(),
+    )
+
+    restored = template.load_exported(original.export())
+
+    assert template.packed_tape.shape == tape.shape
+    assert template.decompress().shape == (2, 68)
+    assert jnp.array_equal(restored.packed_tape, tape)
+    assert_close_arrays(result=restored.decompress(), reference=original.decompress())
+
+
 def test_trellis_load_exported_rejects_column_count_mismatch() -> None:
     spec = TrellisSpec(bits=1, window_bits=4, restart_columns=4)
     narrow = spec.compress(jnp.ones((2, 4), dtype=jnp.float32), sharding_config=make_test_sharding_config())

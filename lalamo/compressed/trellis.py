@@ -13,7 +13,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, Int8, Key, UInt, UInt8, UInt
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.dummy_array import preserve_first_input_sharding, supports_dummy_arrays
+from lalamo.utils.dummy_array import dummy_array, is_dummy_array, preserve_first_input_sharding, supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import ShardingConfig, lookup_sharded_indices, with_sharding
@@ -40,6 +40,7 @@ _WEIGHTS_PER_STATE = 4
 _CODEBOOK_SEED = 1234
 _MAX_SEARCH_WINDOW_BITS = 24
 _MAX_STATES_PER_CHUNK = 16_777_216
+_MAX_BACKPOINTERS_PER_CHUNK = 67_108_864
 
 
 class _HashParameters(NamedTuple):
@@ -246,7 +247,11 @@ def _weights_to_states(weights: Float[Array, "... cols"], layout: _TapeLayout) -
     )
     codebook = _codebook(layout.spec.window_bits)
     num_states, _ = codebook.shape
-    segments_per_chunk = max(1, _MAX_STATES_PER_CHUNK // num_states)
+    backpointers_per_segment = (num_states >> layout.spec.code_bits) * layout.spec.steps_per_block
+    segments_per_chunk = max(
+        1,
+        min(_MAX_STATES_PER_CHUNK // num_states, _MAX_BACKPOINTERS_PER_CHUNK // backpointers_per_segment),
+    )
     fit_segment = partial(
         _segment_states,
         codebook=codebook,
@@ -373,22 +378,34 @@ class TrellisSpec(QuantizedSpec):
     ) -> "TrellisMatrix":
         if preconditioner is not None:
             raise ValueError("Trellis compression does not support preconditioning.")
-        if self.window_bits > _MAX_SEARCH_WINDOW_BITS:
-            raise ValueError(
-                f"Searching 2**{self.window_bits} states is not supported, "
-                f"compression needs window_bits of at most {_MAX_SEARCH_WINDOW_BITS}"
-            )
 
         weight_axes = self.layout.weight_partition(weights.ndim - 2, is_sharded=is_sharded)
+        *parameter_axes, _ = weight_axes
         weight_sharding = sharding_config.resolve_sharding(weight_axes)
         stored_weights = self.layout.from_output_input(weights, sharding=weight_sharding)
-        *_, cols = stored_weights.shape
+        *leading_dims, cols = stored_weights.shape
         layout = _TapeLayout(self, cols)
 
-        packed_parameters = _weights_to_packed_parameters(stored_weights, layout, sharding_config=sharding_config)
+        if is_dummy_array(weights):
+            packed_tape = dummy_array(
+                (*leading_dims, layout.row_bytes),
+                jnp.uint8,
+                sharding_config.resolve_sharding((*parameter_axes, None)),
+            )
+            scales = dummy_array(tuple(leading_dims), weights.dtype, sharding_config.resolve_sharding(parameter_axes))
+        else:
+            if self.window_bits > _MAX_SEARCH_WINDOW_BITS:
+                raise ValueError(
+                    f"Searching 2**{self.window_bits} states is not supported, "
+                    f"compression needs window_bits of at most {_MAX_SEARCH_WINDOW_BITS}"
+                )
+            packed_tape, scales = _weights_to_packed_parameters(
+                stored_weights, layout, sharding_config=sharding_config
+            )
+
         return self.from_packed_parameters(
-            packed_tape=packed_parameters.packed_tape,
-            scales=packed_parameters.scales,
+            packed_tape=packed_tape,
+            scales=scales,
             cols=cols,
             sharding_config=sharding_config,
             is_sharded=is_sharded,
