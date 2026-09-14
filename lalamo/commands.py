@@ -1,4 +1,5 @@
 import shutil
+import struct
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -61,6 +62,14 @@ def _download_file(url: str, dest_path: Path) -> None:
                 f.write(chunk)
 
 
+def _download_safetensors_header(url: str, dest_path: Path) -> None:
+    with requests.get(url, headers={"Accept-Encoding": "identity"}, stream=True, timeout=60) as response:
+        response.raise_for_status()
+        header_size_bytes = response.raw.read(8)
+        (header_size,) = struct.unpack("<Q", header_size_bytes)
+        dest_path.write_bytes(header_size_bytes + response.raw.read(header_size))
+
+
 def _suggest_similar_models(query: str, repo_ids: list[str], limit: int = 3, min_score: int = 70) -> str:
     ranked_matches = thefuzz.process.extract(query, repo_ids, limit=limit, scorer=thefuzz.fuzz.ratio)
     similar_repos = [repo for repo, score in ranked_matches if score >= min_score]
@@ -81,6 +90,8 @@ def pull(
         PullCallbacks,
     ] = PullCallbacks,
     overwrite: bool = False,
+    *,
+    weights: bool = True,
 ) -> None:
     callbacks = callbacks_type(model_spec, output_dir, overwrite)
 
@@ -100,7 +111,10 @@ def pull(
                 raise RuntimeError(f"Invalid filename from registry: {file_spec.name!r}.")
             file_path.parent.mkdir(parents=True, exist_ok=True)
             try:
-                _download_file(file_spec.url, file_path)
+                if not weights and file_path.suffix == ".safetensors":
+                    _download_safetensors_header(file_spec.url, file_path)
+                else:
+                    _download_file(file_spec.url, file_path)
             except requests.RequestException as e:
                 raise RuntimeError(f"Failed to download {file_spec.name}: {e}") from e
 

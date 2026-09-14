@@ -535,6 +535,10 @@ def pull(
             help="Overwrite existing model files without prompting.",
         ),
     ] = False,
+    weights: Annotated[
+        bool,
+        Option(help="Download weights; --no-weights downloads safetensors headers only."),
+    ] = True,
 ) -> None:
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / PurePosixPath(model_spec.artifact_repo_id).name
@@ -544,6 +548,7 @@ def pull(
         output_dir,
         partial(CliPullCallbacks),
         overwrite=overwrite,
+        weights=weights,
     )
 
 
