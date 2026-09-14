@@ -64,7 +64,7 @@ def make_sharding(logical_axes: tuple[LogicalAxis | None, ...]) -> NamedSharding
     return sharding_config.resolve_sharding(logical_axes)
 
 
-def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]) -> Decoder:
+def build_tiny_attention_decoder_config(kv_source_layer_indices: tuple[int | None, ...]) -> DecoderConfig:
     model_dim = 8
     hidden_dim = 16
     vocab_size = 32
@@ -128,7 +128,7 @@ def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]
         model_dim=model_dim,
         hidden_dim=hidden_dim,
     )
-    decoder_config = DecoderConfig(
+    return DecoderConfig(
         embedding_config=TiedEmbeddingConfig(
             input_scale=None,
             logit_soft_cap=None,
@@ -136,7 +136,10 @@ def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]
         transformer_config=transformer_config,
         vocab_size=vocab_size,
     )
-    return decoder_config.init(
+
+
+def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]) -> Decoder:
+    return build_tiny_attention_decoder_config(kv_source_layer_indices).init(
         RandomInitializer(
             default_dtype=jnp.float32,
             sharding_config=ShardingConfig.replicated(jax.devices("cpu")[:8]),
@@ -148,6 +151,7 @@ def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]
 __all__ = [
     "UNITS",
     "build_tiny_attention_decoder",
+    "build_tiny_attention_decoder_config",
     "make_sharding",
     "make_test_sharding_config",
     "si",

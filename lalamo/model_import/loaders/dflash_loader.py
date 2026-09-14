@@ -2,13 +2,17 @@ from collections.abc import Mapping
 from contextlib import ExitStack
 from pathlib import Path
 
+import jax.numpy as jnp
+from einops import rearrange
 from jaxtyping import Array, DTypeLike
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.common import _combine_weight_shards
 from lalamo.model_import.model_configs.huggingface.dflash import HFDFlashConfig
 from lalamo.model_import.origins import LocalOrigin, WeightFormat
+from lalamo.modules.linear import Linear
 from lalamo.modules.speculators.dflash import DFlashDraftModel
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConv
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at
@@ -18,8 +22,39 @@ from .huggingface import load_linear, load_rmsnorm, load_transformer_layer
 
 __all__ = [
     "load_dflash_draft_model",
+    "load_dflash_sublayer_transform",
     "load_hf_dflash_draft_model",
 ]
+
+
+def load_dflash_sublayer_transform(
+    pre_conv: SeparableCausalConv | None,
+    post_conv: SeparableCausalConv | None,
+    kernel_projection: Linear | None,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> tuple[SeparableCausalConv, SeparableCausalConv, Linear] | tuple[None, None, None]:
+    if pre_conv is None:
+        return None, None, None
+    assert post_conv is not None
+    assert kernel_projection is not None
+    base_kernel = rearrange(
+        jnp.flip(weights_dict[path / "base_kernel"], axis=1),
+        "sides kernel channels -> sides channels kernel",
+        sides=2,
+    )
+    return (
+        load_as_at(lambda conv: (conv.weights,), pre_conv, (base_kernel[0],)),
+        load_as_at(lambda conv: (conv.weights,), post_conv, (base_kernel[1],)),
+        load_linear(
+            kernel_projection,
+            weights_dict,
+            path / "kernel_projection",
+            implementation=implementation,
+        ),
+    )
 
 
 def load_dflash_draft_model(
@@ -53,6 +88,38 @@ def load_dflash_draft_model(
             implementation=implementation,
         )
         for layer_index, layer in enumerate(module.layers)
+    )
+    layers = tuple(
+        load_as_at(
+            lambda layer: (
+                layer.pre_mixer_conv,
+                layer.post_mixer_conv,
+                layer.mixer_kernel_projection,
+                layer.pre_mlp_conv,
+                layer.post_mlp_conv,
+                layer.mlp_kernel_projection,
+            ),
+            layer,
+            (
+                *load_dflash_sublayer_transform(
+                    layer.pre_mixer_conv,
+                    layer.post_mixer_conv,
+                    layer.mixer_kernel_projection,
+                    weights_dict,
+                    path / "layers" / layer_index / "attention_conv",
+                    implementation=implementation,
+                ),
+                *load_dflash_sublayer_transform(
+                    layer.pre_mlp_conv,
+                    layer.post_mlp_conv,
+                    layer.mlp_kernel_projection,
+                    weights_dict,
+                    path / "layers" / layer_index / "mlp_conv",
+                    implementation=implementation,
+                ),
+            ),
+        )
+        for layer_index, layer in enumerate(layers)
     )
     state_kv_projection = module.state_kv_projection_from_layers(layers)
     output_norm = load_rmsnorm(module.output_norm, weights_dict, path / "norm")
