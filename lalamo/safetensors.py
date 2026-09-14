@@ -3,7 +3,7 @@ import struct
 from collections.abc import Mapping
 from dataclasses import dataclass
 from io import BufferedReader, BufferedWriter
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, Self, cast
 
 import cattrs
 import jax
@@ -66,7 +66,9 @@ class SFTensorInfo:
         return self._converter.unstructure(self)
 
 
-def safe_read(fd: BufferedReader) -> tuple[dict[str, str] | None, LazyDict[str, Array]]:
+def safe_read(
+    fd: BufferedReader, *, empty_weights: bool = False
+) -> tuple[dict[str, str] | None, LazyDict[str, Array]]:
     header_size = struct.unpack("<Q", fd.read(8))[0]
     header: dict[str, dict[str, Any]] = json.loads(fd.read(header_size))
     metadata: dict[str, str] | None = header.pop("__metadata__", None)
@@ -74,6 +76,8 @@ def safe_read(fd: BufferedReader) -> tuple[dict[str, str] | None, LazyDict[str, 
 
     def _load_tensor(key: str) -> Array:
         info = SFTensorInfo.from_dict(header[key])
+        if empty_weights:
+            return cast("Array", jax.ShapeDtypeStruct(info.shape, info.dtype))
         fd.seek(data_offset + info.start)
         return jnp.asarray(np.fromfile(fd, info.dtype, info.size // info.dtype.itemsize)).reshape(info.shape)
 
