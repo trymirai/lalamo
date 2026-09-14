@@ -41,7 +41,7 @@ def test_safe_read_without_weights_reads_shapes_from_header_only_file(tmp_path: 
         fd.truncate(8 + header_size)
 
     with path.open("rb") as fd:
-        metadata, restored_tensors = safe_read(fd, weights=False)
+        metadata, restored_tensors = safe_read(fd, empty_weights=True)
         restored = {name: restored_tensors[name] for name in tensors}
 
     assert metadata == {"key": "value"}

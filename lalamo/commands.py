@@ -91,7 +91,7 @@ def pull(
     ] = PullCallbacks,
     overwrite: bool = False,
     *,
-    weights: bool = True,
+    empty_weights: bool = False,
 ) -> None:
     callbacks = callbacks_type(model_spec, output_dir, overwrite)
 
@@ -111,7 +111,7 @@ def pull(
                 raise RuntimeError(f"Invalid filename from registry: {file_spec.name!r}.")
             file_path.parent.mkdir(parents=True, exist_ok=True)
             try:
-                if not weights and file_path.suffix == ".safetensors":
+                if empty_weights and file_path.suffix == ".safetensors":
                     _download_safetensors_header(file_spec.url, file_path)
                 else:
                     _download_file(file_spec.url, file_path)
