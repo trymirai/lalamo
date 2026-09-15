@@ -102,7 +102,6 @@ def test_full_precision_ragged_dot_matches_grouped_matmul_and_preserves_input_sh
     result = matrix.ragged_dot(
         vectors,
         group_sizes,
-        keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
     )
     reference = jnp.concatenate(
         (
@@ -129,7 +128,6 @@ def test_full_precision_ragged_dot_rejects_expert_sharded_weights() -> None:
         matrix.ragged_dot(
             vectors,
             group_sizes,
-            keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
         )
 
 
@@ -145,7 +143,6 @@ def test_full_precision_ragged_dot_accepts_effectively_replicated_weights() -> N
     result = matrix.ragged_dot(
         vectors,
         group_sizes,
-        keychain=Keychain.init(0, sharding_config=sharding_config),
     )
 
     assert result.shape == (2, 4)

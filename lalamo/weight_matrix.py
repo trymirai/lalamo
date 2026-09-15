@@ -438,7 +438,6 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         vectors: Float[Array, "tokens input_channels"],
         group_sizes: Int[Array, " experts"],
         *,
-        keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, "tokens output_channels"]:
         if self.ndim != 3:

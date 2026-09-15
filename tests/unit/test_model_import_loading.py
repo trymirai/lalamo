@@ -27,7 +27,7 @@ from lalamo.model_import.loaders.utils import decode_mxfp4
 from lalamo.model_import.model_configs.foreign_config import ForeignConfig
 from lalamo.model_import.model_configs.huggingface import ModernBERTConfig
 from lalamo.models.chat_codec import ChatCodec, ChatCodecConfig
-from lalamo.module import Keychain, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, LogicalAxis
 from lalamo.modules.activations import SiLU
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.decoder import PerLayerEmbedding, PLEModelConfig
@@ -38,6 +38,7 @@ from lalamo.modules.mlp import (
     DenseMLPConfig,
     MixtureOfExperts,
     MixtureOfExpertsConfig,
+    MLPForwardPassConfig,
     SoftmaxRouting,
 )
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
@@ -452,7 +453,8 @@ def test_load_gpt_oss_moe_preserves_native_mxfp4_payload_and_canonical_rows() ->
     assert jnp.array_equal(loaded.routed_experts.down_projection.biases, jnp.broadcast_to(down_bias, (2, 64)))
 
 
-def test_load_moe_keeps_routed_and_shared_experts_in_separate_storage() -> None:
+@pytest.mark.parametrize("mode", [ForwardPassMode.MULTI_TOKEN, ForwardPassMode.SINGLE_TOKEN])
+def test_load_moe_preserves_expert_sharding_and_outputs(mode: ForwardPassMode) -> None:
     module = _split_moe_template()
     path = ParameterPath("moe")
 
@@ -505,6 +507,22 @@ def test_load_moe_keeps_routed_and_shared_experts_in_separate_storage() -> None:
     )
     assert loaded.gate is not None
     np.testing.assert_array_equal(loaded.gate.weights.decompress(), gate)
+
+    token_input = jnp.full((INPUT_DIM,), 0.001, dtype=jnp.float32)
+    inputs = jax.device_put(
+        jnp.broadcast_to(token_input, (2, 1, INPUT_DIM)),
+        make_sharding((LogicalAxis.BATCH, None, None)),
+    )
+    result = loaded(
+        inputs,
+        forward_pass_config=MLPForwardPassConfig(mode=mode),
+        keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
+    )
+    # Positive inputs select the second routed expert, whose router weights are larger.
+    routed_result = routed_down[1] @ ((routed_up[1] @ token_input) * jax.nn.silu(routed_gate[1] @ token_input))
+    shared_result = shared_down @ ((shared_up @ token_input) * jax.nn.silu(shared_gate @ token_input))
+    reference = routed_result + jax.nn.sigmoid(gate @ token_input) * shared_result
+    np.testing.assert_allclose(result, jnp.broadcast_to(reference, result.shape), rtol=1e-5)
 
 
 def test_load_huggingface_classifier_uses_hf_embedding_layout() -> None:
