@@ -67,10 +67,10 @@ class IntAffineParameters(NamedTuple):
             finfo = jnp.finfo(weights.dtype)
             max_abs = jnp.maximum(jnp.abs(group_min_max.min), jnp.abs(group_min_max.max))
             scales = jnp.nan_to_num(
-                max_abs / ((2 ** (bits - 1)) - 1),
-                nan=finfo.eps,
+                jnp.maximum(max_abs / ((2 ** (bits - 1)) - 1), finfo.tiny),
+                nan=finfo.tiny,
                 posinf=finfo.max,
-                neginf=finfo.eps,
+                neginf=finfo.tiny,
             )
             zero_points = None
         else:
