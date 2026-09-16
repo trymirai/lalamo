@@ -5,9 +5,10 @@ from typing import Self
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Key
 
+from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.dummy_array import is_dummy_evaluation, supports_dummy_arrays
+from lalamo.utils.dummy_array import is_dummy_array
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -19,17 +20,19 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
+from .s_trellis import STrellisMatrix, STrellisSpec
+
 
 @dataclass(frozen=True)
 class RowStackSpec(WeightMatrixSpec):
-    parts: tuple[tuple[int, WeightMatrixSpec], ...]
+    parts: tuple[tuple[int, STrellisSpec], ...]
     layout: Layout = Layout.OUTPUT_INPUT
 
     def __post_init__(self) -> None:
         if self.layout != Layout.OUTPUT_INPUT or not self.parts or any(rows <= 0 for rows, _ in self.parts):
             raise ValueError("Row stacks require nonempty output-input matrices")
+        assert all(isinstance(spec, STrellisSpec) for _, spec in self.parts)
 
-    @supports_dummy_arrays()
     def compress(
         self,
         weights: Float[Array, "out_channels in_channels"],
@@ -40,12 +43,13 @@ class RowStackSpec(WeightMatrixSpec):
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "RowStackMatrix":
-        if not is_dummy_evaluation():
+        if not is_dummy_array(weights):
             raise ValueError("Row stacks must be constructed from existing matrices")
         assert sum(rows for rows, _ in self.parts) == weights.shape[0]
+        initializer = EmptyInitializer(weights.dtype, sharding_config)
         parts = tuple(
             spec.compress(
-                jnp.zeros((rows, weights.shape[1]), weights.dtype),
+                initializer.zeros((rows, weights.shape[1])),
                 sharding_config=sharding_config,
                 is_sharded=is_sharded,
             )
@@ -55,7 +59,7 @@ class RowStackSpec(WeightMatrixSpec):
 
 
 class RowStackMatrix(WeightMatrix[RowStackSpec]):
-    parts: tuple[WeightMatrix, ...]
+    parts: tuple[STrellisMatrix, ...]
 
     def __check_init__(self) -> None:
         assert tuple((part.shape[0], part.spec) for part in self.parts) == self.spec.parts

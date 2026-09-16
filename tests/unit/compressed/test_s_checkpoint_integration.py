@@ -84,15 +84,31 @@ def test_s_checkpoint_preserves_every_packed_weight(model: LanguageModel) -> Non
                 np.testing.assert_array_equal(value, original)
 
 
-def test_s_checkpoint_runs_a_complete_forward_pass(model: LanguageModel) -> None:
-    tokens = jnp.array([[1]], dtype=jnp.int32)
-    state = model.decoder.init_static_state(batch_size=1, capacity=32, dtype=jnp.bfloat16)
-    result = model.decoder(
-        tokens,
-        jnp.zeros_like(tokens),
+def test_s_checkpoint_prefill_matches_cached_continuation(model: LanguageModel) -> None:
+    tokens = jnp.array([[1, 42, 7]], dtype=jnp.int32)
+    positions = jnp.arange(3, dtype=jnp.int32)[None]
+    state = model.decoder.init_static_state(batch_size=1, capacity=4, dtype=jnp.bfloat16)
+    keychain = Keychain.init(0, sharding_config=model.sharding_config)
+    config = DecoderForwardPassConfig.for_inference()
+    full = model.decoder(tokens, positions, state=state, keychain=keychain, forward_pass_config=config)
+    prefix = model.decoder(
+        tokens[:, :2],
+        positions[:, :2],
         state=state,
-        keychain=Keychain.init(0, sharding_config=model.sharding_config),
-        forward_pass_config=DecoderForwardPassConfig.for_inference(),
+        return_updated_state=True,
+        keychain=keychain,
+        forward_pass_config=config,
     )
-    assert result.logits.shape == (1, 1, 248320)
-    assert bool(jnp.all(jnp.isfinite(result.logits)))
+    assert prefix.updated_state is not None
+    continued = model.decoder(
+        tokens[:, 2:],
+        positions[:, 2:],
+        state=prefix.updated_state,
+        keychain=keychain,
+        forward_pass_config=config,
+    )
+    assert full.logits.shape == (1, 3, 248320)
+    assert bool(jnp.all(jnp.isfinite(full.logits)))
+    np.testing.assert_allclose(
+        continued.logits.astype(jnp.float32), full.logits[:, -1:].astype(jnp.float32), atol=0.125, rtol=0.02
+    )

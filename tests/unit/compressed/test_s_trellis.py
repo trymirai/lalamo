@@ -1,5 +1,4 @@
 from dataclasses import replace
-from pathlib import Path
 
 import equinox as eqx
 import jax
@@ -10,8 +9,10 @@ import pytest
 from lalamo.compressed.s_trellis import STrellisMatrix, STrellisSpec, full_rotation
 from lalamo.module import Keychain
 from lalamo.utils.dummy_array import dummy_array
+from lalamo.utils.sharding import LogicalAxis, ShardingConfig, sharding_of, with_sharding
 from lalamo.weight_matrix import MatmulConfig, ShapeDtypeSpec
 from tests.helpers import make_sharding, make_test_sharding_config
+from tests.unit.compressed.s_trellis_fixture import load_saved_trellis
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
@@ -19,20 +20,7 @@ pytestmark = pytest.mark.usefixtures("fake_mesh")
 @pytest.fixture(params=[("v2_k2", 2, 4, 0), ("v2_k3", 2, 6, 0), ("v4_k2", 4, 8, 64)])
 def matrix(request: pytest.FixtureRequest) -> STrellisMatrix:
     name, width, bits, restart = request.param
-    # First four complete rows from the HYB036 physical checkpoint. Tables,
-    # signs, scales and gains are copied from the artifact, not regenerated.
-    with np.load(Path(__file__).parent / "data/s_trellis_hyb036.npz") as data:
-        return STrellisMatrix(
-            spec=STrellisSpec(width, bits, restart),
-            sharding_config=make_test_sharding_config(),
-            is_sharded=True,
-            codes=jnp.asarray(data[f"{name}_codes"]),
-            scales=jnp.asarray(data[f"{name}_scales"]),
-            gains=jax.lax.bitcast_convert_type(jnp.asarray(data[f"{name}_gains_bits"]), jnp.bfloat16),
-            table=jnp.asarray(data[f"table_v{width}"]),
-            signs=jnp.asarray(data[f"{name}_signs"]),
-            small_q=jnp.asarray(data[f"{name}_small_q"]),
-        ).switch_sharding_config(make_test_sharding_config())
+    return load_saved_trellis(name, STrellisSpec(width, bits, restart))
 
 
 def reference_states(matrix: STrellisMatrix) -> np.ndarray:
@@ -135,3 +123,19 @@ def test_s_trellis_dot_crosses_decode_batch_boundary(matrix: STrellisMatrix) -> 
     expected = np.tile(np.asarray(matrix.decompress().astype(x.dtype) @ x), 80)
     actual = repeated.dot(x, keychain=Keychain.init(0, sharding_config=matrix.sharding_config))
     np.testing.assert_allclose(actual, expected, atol=2e-5, rtol=2e-5)
+
+
+@pytest.mark.parametrize("mode", ["fully_sharded_data_parallel", "tensor_parallel", "data_parallel"])
+def test_s_trellis_batched_dot_sharding(matrix: STrellisMatrix, mode: str) -> None:
+    config = getattr(ShardingConfig, mode)(jax.devices("cpu")[:4])
+    with jax.set_mesh(config.mesh):
+        matrix = matrix.switch_sharding_config(config).astype(jnp.float32)
+        inputs = with_sharding(
+            jnp.linspace(-1, 1, 4 * matrix.shape[1]).reshape(4, -1),
+            config.resolve_sharding((LogicalAxis.BATCH, None)),
+        )
+        keychain = Keychain.init(0, sharding_config=config)
+        actual = jax.jit(jax.vmap(lambda x: matrix.dot(x, keychain=keychain)))(inputs)
+        expected = np.asarray(inputs) @ np.asarray(matrix.decompress()).T
+        np.testing.assert_allclose(actual, expected, atol=2e-5, rtol=2e-5)
+        assert sharding_of(actual).spec == sharding_of(inputs).spec

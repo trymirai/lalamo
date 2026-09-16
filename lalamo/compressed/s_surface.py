@@ -2,15 +2,15 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Self
 
-import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec
 from jaxtyping import Array, DTypeLike, Float, Int, Int8, Key, UInt8
 
+from lalamo.initializer import EmptyInitializer
 from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.dummy_array import is_dummy_evaluation, supports_dummy_arrays
+from lalamo.utils.dummy_array import is_dummy_array
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import ShardingConfig, lookup_sharded_indices, sharding_of, with_sharding
 from lalamo.weight_matrix import (
@@ -24,6 +24,7 @@ from lalamo.weight_matrix import (
 )
 
 from .utils.packing import unpack_uint8_to_uint
+from .utils.row_dot import row_batched_dot
 
 
 class SSurfaceKind(StrEnum):
@@ -52,7 +53,6 @@ class SSurfaceSpec(WeightMatrixSpec):
             return columns // 4
         return columns * 3 // 8
 
-    @supports_dummy_arrays()
     def compress(
         self,
         weights: Float[Array, "out_channels in_channels"],
@@ -63,20 +63,21 @@ class SSurfaceSpec(WeightMatrixSpec):
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "SSurfaceMatrix":
-        if not is_dummy_evaluation():
+        if not is_dummy_array(weights):
             raise ValueError("S surfaces must be loaded from saved parameters; fitting is not supported")
-        rows, columns = self.layout.from_output_input(weights, sharding=sharding_of(weights)).shape
+        rows, columns = self.layout.weight_shape((), *weights.shape)
         states = 256 if self.kind == SSurfaceKind.D4 else 8
+        initializer = EmptyInitializer(weights.dtype, sharding_config)
         return SSurfaceMatrix(
             spec=self,
             sharding_config=sharding_config,
             is_sharded=is_sharded,
-            codes=jnp.zeros((rows, self.code_bytes(columns)), jnp.uint8),
-            row_scales=jnp.zeros((rows,), weights.dtype),
-            ladder_indices=jnp.zeros((rows, columns // 128), jnp.uint8),
-            ladder=jnp.zeros((16,), jnp.float16),
-            table=jnp.zeros((states, self.vector_width), jnp.int8),
-            signs=jnp.zeros((columns,), jnp.int32),
+            codes=initializer.zeros((rows, self.code_bytes(columns)), dtype=jnp.uint8),
+            row_scales=initializer.zeros((rows,)),
+            ladder_indices=initializer.zeros((rows, columns // 128), dtype=jnp.uint8),
+            ladder=initializer.zeros((16,), dtype=jnp.float16),
+            table=initializer.zeros((states, self.vector_width), dtype=jnp.int8),
+            signs=initializer.zeros((columns,), dtype=jnp.int32),
         ).switch_sharding_config(sharding_config)
 
 
@@ -112,9 +113,7 @@ class SSurfaceMatrix(EmbeddingMatrix[SSurfaceSpec]):
 
     def switch_sharding_config(self, sharding_config: ShardingConfig) -> Self:
         # Vocabulary rows are independently decodable; all transforms stay local.
-        row_axis = None
-        if self.is_sharded:
-            row_axis = self.spec.layout.weight_partition(0)[0]
+        row_axis, _ = self.spec.layout.weight_partition(0, is_sharded=self.is_sharded)
         return replace(
             self,
             sharding_config=sharding_config,
@@ -176,25 +175,14 @@ class SSurfaceMatrix(EmbeddingMatrix[SSurfaceSpec]):
     ) -> Array:
         if transposed or self.spec.layout != Layout.OUTPUT_INPUT:
             weights = self.decompress().astype(vector.dtype)
-            if transposed:
-                weights = weights.T
+            layout = Layout.INPUT_OUTPUT if transposed else Layout.OUTPUT_INPUT
             with use_dot_algorithm_preset(forward_pass_config.precision):
-                return weights @ vector
-        vector = with_sharding(vector, self.sharding_config.make_sharding((None,)))
+                return layout.matmul(weights, vector)
 
-        def shard_dot(matrix: SSurfaceMatrix, inputs: Array) -> Array:
-            def row_dot(row: tuple[Array, Array, Array]) -> Array:
-                codes, scale, indices = row
-                weights = matrix._decode(codes, scale, indices, matrix.dtype)
-                return weights.astype(inputs.dtype) @ inputs
+        def decode_row(row: tuple[Array, Array, Array]) -> Array:
+            codes, scale, indices = row
+            return self._decode(codes, scale, indices, self.dtype)
 
-            return jax.lax.map(row_dot, (matrix.codes, matrix.row_scales, matrix.ladder_indices), batch_size=128)
-
-        row_axis, _ = sharding_of(self.codes).spec
-        with use_dot_algorithm_preset(forward_pass_config.precision):
-            return jax.shard_map(
-                shard_dot,
-                mesh=self.sharding_config.mesh,
-                in_specs=(jax.tree.map(lambda array: sharding_of(array).spec, self), PartitionSpec(None)),
-                out_specs=PartitionSpec(row_axis),
-            )(self, vector)
+        return row_batched_dot(
+            decode_row, (self.codes, self.row_scales, self.ladder_indices), vector, forward_pass_config.precision
+        )
