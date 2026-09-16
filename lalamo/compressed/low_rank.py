@@ -11,7 +11,7 @@ from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.precision import use_dot_algorithm_preset
-from lalamo.utils.sharding import LogicalAxis, ShardingConfig, sharding_of
+from lalamo.utils.sharding import LogicalAxis, ShardingConfig, sharding_of, with_sharding
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
@@ -128,6 +128,25 @@ class LowRankMatrix(WeightMatrix[LowRankSpec]):
             is_sharded=self.is_sharded,
             up_projection=self.up_projection.astype(dtype),
             down_projection=self.down_projection.astype(dtype),
+        )
+
+    def switch_sharding_config(self, sharding_config: ShardingConfig) -> "LowRankMatrix":
+        if sharding_config == self.sharding_config:
+            return self
+        leading_dims = self.up_projection.ndim - 2
+        up_projection_axes = Layout.OUTPUT_INPUT.weight_partition(leading_dims, is_sharded=self.is_sharded)
+        if self.is_sharded:
+            down_projection_axes = (LogicalAxis.MIXTURE,) * leading_dims + (None, None)
+        else:
+            down_projection_axes = Layout.OUTPUT_INPUT.weight_partition(leading_dims, is_sharded=False)
+        return LowRankMatrix(
+            spec=self.spec,
+            sharding_config=sharding_config,
+            is_sharded=self.is_sharded,
+            up_projection=with_sharding(self.up_projection, sharding_config.resolve_sharding(up_projection_axes)),
+            down_projection=with_sharding(
+                self.down_projection, sharding_config.resolve_sharding(down_projection_axes)
+            ),
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:

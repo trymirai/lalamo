@@ -1,6 +1,7 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache, cached_property, partial
-from math import ceil, prod, sqrt
+from math import ceil, sqrt
 from typing import Literal, NamedTuple
 
 import jax
@@ -188,9 +189,7 @@ def _states_to_tape(states: UInt32[Array, "... steps"], layout: _TapeLayout) -> 
 def _backpointer_dtype(code_bits: int) -> DTypeLike:
     if code_bits <= 8:
         return jnp.uint8
-    if code_bits <= 16:
-        return jnp.uint16
-    raise ValueError(f"Backpointers cover at most 16 code bits, got {code_bits}")
+    return jnp.uint16
 
 
 def _segment_states(
@@ -259,22 +258,22 @@ def _weights_to_states(weights: Float[Array, "... cols"], layout: _TapeLayout) -
     return states.reshape(*leading_dims, layout.steps)
 
 
-def _search_states(weights: Float[Array, "... cols"], layout: _TapeLayout) -> UInt32[Array, "... steps"]:
+def _shard_rows_only(weights: Float[Array, "... rows cols"]) -> Float[Array, "... rows cols"]:
     sharding = sharding_of(weights)
     if not is_sharded(sharding):
-        return _weights_to_states(weights, layout)
-    *row_axes, _ = tuple(sharding.spec) + (None,) * (weights.ndim - len(sharding.spec))
-    row_partition = PartitionSpec(*row_axes, None)
-    rows_sharded = with_sharding(weights, NamedSharding(sharding.mesh, row_partition))
-    if all(axis is None for axis in row_axes):
-        return _weights_to_states(rows_sharded, layout)
-    search = jax.shard_map(
-        partial(_weights_to_states, layout=layout),
-        mesh=sharding.mesh,
-        in_specs=row_partition,
-        out_specs=row_partition,
-    )
-    return search(rows_sharded)
+        return weights
+    *row_axes, cols_axis = tuple(sharding.spec) + (None,) * (weights.ndim - len(sharding.spec))
+    *_, rows, _ = weights.shape
+    if cols_axis is not None and row_axes[-1] is None and rows % sharding.mesh.shape[cols_axis] == 0:
+        row_axes[-1] = cols_axis
+    return with_sharding(weights, NamedSharding(sharding.mesh, PartitionSpec(*row_axes, None)))
+
+
+def _map_over_rows[ResultT](function: Callable[[Array], ResultT], rows: Array) -> ResultT:
+    sharding = sharding_of(rows)
+    if not is_sharded(sharding) or all(axis is None for axis in sharding.spec):
+        return function(rows)
+    return jax.shard_map(function, mesh=sharding.mesh, in_specs=sharding.spec, out_specs=sharding.spec)(rows)
 
 
 def _search_scales(weights: Float[Array, "... cols"]) -> Float[Array, "..."]:
@@ -297,17 +296,12 @@ class _PackedParameters(NamedTuple):
     scales: Float[Array, "..."]
 
 
-def _weights_to_packed_parameters(
-    weights: Float[Array, "... cols"],
-    layout: _TapeLayout,
-    *,
-    sharding_config: ShardingConfig,
-) -> _PackedParameters:
-    targets = weights.astype(jnp.float32)
-    states = _search_states(targets / _search_scales(targets)[..., None], layout)
+def _weights_to_packed_parameters(weights: Float[Array, "... cols"], layout: _TapeLayout) -> _PackedParameters:
+    targets = _shard_rows_only(weights.astype(jnp.float32))
+    normalized_targets = targets / _search_scales(targets)[..., None]
+    states = _map_over_rows(partial(_weights_to_states, layout=layout), normalized_targets)
     scales = _least_squares_scales(targets, _states_to_codewords(states))
-    scratch_sharding = sharding_config.make_sharding((None,) * weights.ndim)
-    packed_tape = _states_to_tape(with_sharding(states, scratch_sharding), layout)
+    packed_tape = _map_over_rows(partial(_states_to_tape, layout=layout), states)
     return _PackedParameters(packed_tape, scales.astype(weights.dtype))
 
 
@@ -320,46 +314,25 @@ def _levels_to_weights(
     return (levels.astype(jnp.float32) * folded_scales[..., None]).astype(dtype)
 
 
+def _divides_mesh(sharding: NamedSharding, size: int) -> bool:
+    *_, axis = sharding.spec
+    return axis is None or size % sharding.mesh.shape[axis] == 0
+
+
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
 def _packed_parameters_to_weights(
     packed_tape: UInt8[Array, "... packed_cols"],
     scales: Float[Array, "..."],
     layout: _TapeLayout,
     dtype: DTypeLike,
-) -> Float[Array, "... cols"]:
-    levels = _states_to_levels(_tape_to_states(packed_tape, layout))
-    return _levels_to_weights(rearrange(levels, "... steps weights -> ... (steps weights)"), scales, dtype)
-
-
-def _blocks_divide_mesh(grouped_sharding: NamedSharding, blocks: int) -> bool:
-    *_, blocks_axes, _ = grouped_sharding.spec
-    if blocks_axes is None:
-        return True
-    if isinstance(blocks_axes, str):
-        blocks_axes = (blocks_axes,)
-    return blocks % prod(grouped_sharding.mesh.shape[axis] for axis in blocks_axes) == 0
-
-
-@supports_dummy_arrays()
-def _packed_parameters_to_sharded_weights(
-    packed_tape: UInt8[Array, "*components rows packed_cols"],
-    scales: Float[Array, "*components rows"],
-    layout: _TapeLayout,
-    dtype: DTypeLike,
     *,
-    grouped_sharding: NamedSharding,
-    weight_sharding: NamedSharding,
-) -> Float[Array, "*components rows cols"]:
-    states = rearrange(
-        _tape_to_states(packed_tape, layout),
-        "... (blocks steps) -> ... blocks steps",
-        steps=layout.spec.steps_per_block,
-    )
-    levels = _states_to_levels(with_sharding(states, grouped_sharding))
-    *row_dims, blocks, steps, weights_per_step = levels.shape
-    levels = jax.lax.reshape(levels, (*row_dims, blocks, steps * weights_per_step), out_sharding=grouped_sharding)
-    weights = _levels_to_weights(levels, scales[..., None], dtype)
-    return jax.lax.reshape(weights, (*row_dims, layout.cols), out_sharding=weight_sharding)
+    states_sharding: NamedSharding | None = None,
+) -> Float[Array, "... cols"]:
+    states = _tape_to_states(packed_tape, layout)
+    if states_sharding is not None:
+        states = with_sharding(states, states_sharding)
+    levels = rearrange(_states_to_levels(states), "... steps weights -> ... (steps weights)")
+    return _levels_to_weights(levels, scales, dtype)
 
 
 @dataclass(frozen=True)
@@ -370,6 +343,8 @@ class TrellisSpec(QuantizedSpec):
     layout: Layout = Layout.OUTPUT_INPUT
 
     def __post_init__(self) -> None:
+        if self.bits not in (1, 2, 3, 4):
+            raise ValueError(f"bits must be 1, 2, 3 or 4, got {self.bits}")
         if not self.code_bits <= self.window_bits <= 32:
             raise ValueError(
                 f"window_bits must be between {self.code_bits} and 32 for bits={self.bits}, got {self.window_bits}"
@@ -451,23 +426,18 @@ class TrellisSpec(QuantizedSpec):
         *leading_dims, cols = stored_weights.shape
         layout = _TapeLayout(self, cols)
 
-        if is_dummy_array(weights):
+        if is_dummy_array(weights) or is_dummy_evaluation():
             tape_sharding = sharding_config.make_sharding((None,) * stored_weights.ndim)
             scale_sharding = sharding_config.make_sharding((None,) * len(leading_dims))
             packed_tape = dummy_array((*leading_dims, layout.row_bytes), jnp.uint8, tape_sharding)
             scales = dummy_array(tuple(leading_dims), weights.dtype, scale_sharding)
-        elif is_dummy_evaluation():
-            packed_tape = jnp.zeros((*leading_dims, layout.row_bytes), dtype=jnp.uint8)
-            scales = jnp.zeros(tuple(leading_dims), dtype=weights.dtype)
         else:
             if self.window_bits > _MAX_SEARCH_WINDOW_BITS:
                 raise ValueError(
                     f"Searching 2**{self.window_bits} states is not supported, "
                     f"compression needs window_bits of at most {_MAX_SEARCH_WINDOW_BITS}"
                 )
-            packed_tape, scales = _weights_to_packed_parameters(
-                stored_weights, layout, sharding_config=sharding_config
-            )
+            packed_tape, scales = _weights_to_packed_parameters(stored_weights, layout)
 
         return self.from_packed_parameters(
             packed_tape=packed_tape,
@@ -618,16 +588,15 @@ class TrellisMatrix(EmbeddingMatrix[TrellisSpec]):
             is_sharded=self.is_sharded,
         )
         layout = _TapeLayout(self.spec, self.cols)
-        grouped_sharding = self._resolve_sharding((*parameter_axes, cols_axis, None))
         weight_sharding = self._resolve_sharding((*parameter_axes, cols_axis))
-        if not _blocks_divide_mesh(grouped_sharding, layout.blocks):
-            weights = _packed_parameters_to_weights(self.packed_tape, self.scales, layout, dtype)
-            return with_sharding(weights, weight_sharding)
-        return _packed_parameters_to_sharded_weights(
+        states_sharding = weight_sharding
+        if not _divides_mesh(states_sharding, layout.steps):
+            states_sharding = self._resolve_sharding((*parameter_axes, None))
+        weights = _packed_parameters_to_weights(
             self.packed_tape,
             self.scales,
             layout,
             dtype,
-            grouped_sharding=grouped_sharding,
-            weight_sharding=weight_sharding,
+            states_sharding=states_sharding,
         )
+        return with_sharding(weights, weight_sharding)

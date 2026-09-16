@@ -5,6 +5,7 @@ from typing import Literal
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.tree_util as jtu
 from jax.core import Tracer
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
@@ -12,7 +13,7 @@ from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
-from lalamo.utils.sharding import ShardingConfig, sharding_of
+from lalamo.utils.sharding import ShardingConfig, sharding_of, with_sharding
 from lalamo.weight_matrix import (
     CompressionImplementation,
     EmbeddingMatrix,
@@ -102,13 +103,7 @@ class IncoherenceSigns(eqx.Module):
 
     def switch_sharding_config(self, sharding_config: ShardingConfig) -> "IncoherenceSigns":
         sharding = sharding_config.make_sharding((None,))
-        input_signs = self.input_signs
-        if input_signs is not None:
-            input_signs = jax.device_put(input_signs, sharding)
-        output_signs = self.output_signs
-        if output_signs is not None:
-            output_signs = jax.device_put(output_signs, sharding)
-        return IncoherenceSigns(input_signs=input_signs, output_signs=output_signs)
+        return jtu.tree_map(lambda signs: with_sharding(signs, sharding), self)
 
     @classmethod
     def random_init(
