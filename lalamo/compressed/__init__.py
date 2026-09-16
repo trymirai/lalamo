@@ -16,6 +16,9 @@ from .microfloat import (
 )
 from .mlx import MLXMatrix, MLXMatrixForInference, MLXMatrixForTraining, MLXSpec
 from .quantized_spec import QuantizedSpec
+from .row_stack import RowStackMatrix, RowStackSpec
+from .s_surface import SSurfaceKind, SSurfaceMatrix, SSurfaceSpec
+from .s_trellis import STrellisMatrix, STrellisSpec
 from .trellis import TrellisMatrix, TrellisSpec
 
 __all__ = [
@@ -41,6 +44,13 @@ __all__ = [
     "MicrofloatScaleMode",
     "MicrofloatSpec",
     "QuantizedSpec",
+    "RowStackMatrix",
+    "RowStackSpec",
+    "SSurfaceKind",
+    "SSurfaceMatrix",
+    "SSurfaceSpec",
+    "STrellisMatrix",
+    "STrellisSpec",
     "TrellisMatrix",
     "TrellisSpec",
 ]

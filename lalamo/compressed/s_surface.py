@@ -1,0 +1,200 @@
+from dataclasses import dataclass, replace
+from enum import StrEnum
+from typing import Self
+
+import jax
+import jax.numpy as jnp
+from jax.sharding import PartitionSpec
+from jaxtyping import Array, DTypeLike, Float, Int, Int8, Key, UInt8
+
+from lalamo.kernels.hadamard import hadamard_transform
+from lalamo.module import Keychain, field
+from lalamo.preconditioner import Preconditioner
+from lalamo.utils.dummy_array import is_dummy_evaluation, supports_dummy_arrays
+from lalamo.utils.precision import use_dot_algorithm_preset
+from lalamo.utils.sharding import ShardingConfig, lookup_sharded_indices, sharding_of, with_sharding
+from lalamo.weight_matrix import (
+    CompressionImplementation,
+    EmbeddingMatrix,
+    FullPrecisionMatrix,
+    FullPrecisionSpec,
+    Layout,
+    MatmulConfig,
+    WeightMatrixSpec,
+)
+
+from .utils.packing import unpack_uint8_to_uint
+
+
+class SSurfaceKind(StrEnum):
+    D4 = "d4"
+    I3 = "i3"
+
+
+@dataclass(frozen=True)
+class SSurfaceSpec(WeightMatrixSpec):
+    kind: SSurfaceKind
+    layout: Layout
+
+    @property
+    def vector_width(self) -> int:
+        match self.kind:
+            case SSurfaceKind.D4:
+                return 4
+            case SSurfaceKind.I3:
+                return 1
+        raise ValueError(f"Unknown S surface kind: {self.kind}")
+
+    def code_bytes(self, columns: int) -> int:
+        if columns <= 0 or columns % 128:
+            raise ValueError("S surfaces require a positive multiple of 128 columns")
+        if self.kind == SSurfaceKind.D4:
+            return columns // 4
+        return columns * 3 // 8
+
+    @supports_dummy_arrays()
+    def compress(
+        self,
+        weights: Float[Array, "out_channels in_channels"],
+        *,
+        key: Key[Array, ""] | None = None,  # noqa: ARG002
+        preconditioner: Preconditioner | None = None,  # noqa: ARG002
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
+        sharding_config: ShardingConfig,
+        is_sharded: bool = True,
+    ) -> "SSurfaceMatrix":
+        if not is_dummy_evaluation():
+            raise ValueError("S surfaces must be loaded from saved parameters; fitting is not supported")
+        rows, columns = self.layout.from_output_input(weights, sharding=sharding_of(weights)).shape
+        states = 256 if self.kind == SSurfaceKind.D4 else 8
+        return SSurfaceMatrix(
+            spec=self,
+            sharding_config=sharding_config,
+            is_sharded=is_sharded,
+            codes=jnp.zeros((rows, self.code_bytes(columns)), jnp.uint8),
+            row_scales=jnp.zeros((rows,), weights.dtype),
+            ladder_indices=jnp.zeros((rows, columns // 128), jnp.uint8),
+            ladder=jnp.zeros((16,), jnp.float16),
+            table=jnp.zeros((states, self.vector_width), jnp.int8),
+            signs=jnp.zeros((columns,), jnp.int32),
+        ).switch_sharding_config(sharding_config)
+
+
+class SSurfaceMatrix(EmbeddingMatrix[SSurfaceSpec]):
+    codes: UInt8[Array, "rows bytes"]
+    row_scales: Float[Array, " rows"]
+    ladder_indices: UInt8[Array, "rows groups"]
+    ladder: Float[Array, "16"] = field(trainable=False)
+    table: Int8[Array, "states width"] = field(trainable=False)
+    signs: Int[Array, " columns"] = field(trainable=False)
+
+    def __check_init__(self) -> None:
+        rows, columns = self.shape
+        assert self.codes.shape == (rows, self.spec.code_bytes(columns))
+        assert self.ladder_indices.shape == (rows, columns // 128)
+        assert self.row_scales.shape == (rows,)
+        assert self.codes.dtype == self.ladder_indices.dtype == jnp.uint8
+        assert self.ladder.shape == (16,) and self.ladder.dtype == jnp.float16
+        states = 256 if self.spec.kind == SSurfaceKind.D4 else 8
+        assert self.table.shape == (states, self.spec.vector_width) and self.table.dtype == jnp.int8
+        assert self.signs.dtype == jnp.int32
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return self.codes.shape[0], self.signs.shape[0]
+
+    @property
+    def dtype(self) -> DTypeLike:
+        return self.row_scales.dtype
+
+    def astype(self, dtype: DTypeLike) -> Self:
+        return replace(self, row_scales=self.row_scales.astype(dtype))
+
+    def switch_sharding_config(self, sharding_config: ShardingConfig) -> Self:
+        # Vocabulary rows are independently decodable; all transforms stay local.
+        row_axis = None
+        if self.is_sharded:
+            row_axis = self.spec.layout.weight_partition(0)[0]
+        return replace(
+            self,
+            sharding_config=sharding_config,
+            codes=with_sharding(self.codes, sharding_config.resolve_sharding((row_axis, None))),
+            row_scales=with_sharding(self.row_scales, sharding_config.resolve_sharding((row_axis,))),
+            ladder_indices=with_sharding(self.ladder_indices, sharding_config.resolve_sharding((row_axis, None))),
+            ladder=with_sharding(self.ladder, sharding_config.resolve_sharding((None,))),
+            table=with_sharding(self.table, sharding_config.resolve_sharding((None, None))),
+            signs=with_sharding(self.signs, sharding_config.resolve_sharding((None,))),
+        )
+
+    def _decode(self, codes: Array, row_scales: Array, ladder_indices: Array, dtype: DTypeLike) -> Array:
+        columns = self.signs.shape[0]
+        indices = codes
+        if self.spec.kind == SSurfaceKind.I3:
+            indices = unpack_uint8_to_uint(codes, 3, unpacked_last_axis_dim=columns)
+        row_axes = tuple(sharding_of(codes).spec)[:-1]
+        values = self.table.at[indices].get(out_sharding=PartitionSpec(*row_axes, None, None))
+        values = values.reshape(*codes.shape[:-1], columns).astype(jnp.float32)
+        groups = unpack_uint8_to_uint(ladder_indices, 4, unpacked_last_axis_dim=columns // 64)
+        ladder = self.ladder.at[groups].get(out_sharding=PartitionSpec(*row_axes, None))
+        scales = row_scales.astype(jnp.float32)[..., None] * ladder.astype(jnp.float32)
+        rotated = values * jnp.repeat(scales, 64, axis=-1)
+        return (hadamard_transform(rotated, 32) * self.signs.astype(jnp.float32)).astype(dtype)
+
+    def decompress(self) -> Array:
+        stored = self._decode(self.codes, self.row_scales, self.ladder_indices, self.dtype)
+        return self.spec.layout.to_output_input(stored)
+
+    def to_full_precision(self) -> FullPrecisionMatrix:
+        return FullPrecisionSpec(self.spec.layout).compress(
+            self.decompress(), sharding_config=self.sharding_config, is_sharded=self.is_sharded
+        )
+
+    def lookup_embedding(
+        self,
+        row_index: int | Int[Array, "*batch"],
+        *,
+        keychain: Keychain,  # noqa: ARG002
+        dtype: DTypeLike | None = None,
+        forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
+    ) -> Array:
+        if self.spec.layout != Layout.INPUT_OUTPUT:
+            raise ValueError("Embedding lookup requires input-output layout")
+        return self._decode(
+            lookup_sharded_indices(self.codes, row_index),
+            lookup_sharded_indices(self.row_scales, row_index),
+            lookup_sharded_indices(self.ladder_indices, row_index),
+            self.dtype if dtype is None else dtype,
+        )
+
+    def dot(
+        self,
+        vector: Float[Array, " source_channels"],
+        *,
+        keychain: Keychain,  # noqa: ARG002
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        transposed: bool = False,
+    ) -> Array:
+        if transposed or self.spec.layout != Layout.OUTPUT_INPUT:
+            weights = self.decompress().astype(vector.dtype)
+            if transposed:
+                weights = weights.T
+            with use_dot_algorithm_preset(forward_pass_config.precision):
+                return weights @ vector
+        vector = with_sharding(vector, self.sharding_config.make_sharding((None,)))
+
+        def shard_dot(matrix: SSurfaceMatrix, inputs: Array) -> Array:
+            def row_dot(row: tuple[Array, Array, Array]) -> Array:
+                codes, scale, indices = row
+                weights = matrix._decode(codes, scale, indices, matrix.dtype)
+                return weights.astype(inputs.dtype) @ inputs
+
+            return jax.lax.map(row_dot, (matrix.codes, matrix.row_scales, matrix.ladder_indices), batch_size=128)
+
+        row_axis, _ = sharding_of(self.codes).spec
+        with use_dot_algorithm_preset(forward_pass_config.precision):
+            return jax.shard_map(
+                shard_dot,
+                mesh=self.sharding_config.mesh,
+                in_specs=(jax.tree.map(lambda array: sharding_of(array).spec, self), PartitionSpec(None)),
+                out_specs=PartitionSpec(row_axis),
+            )(self, vector)
