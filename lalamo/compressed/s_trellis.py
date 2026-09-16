@@ -7,9 +7,10 @@ from jax.lax import DotAlgorithmPreset
 from jax.sharding import PartitionSpec
 from jaxtyping import Array, DTypeLike, Float, Key, UInt8
 
+from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.dummy_array import is_dummy_evaluation, supports_dummy_arrays
+from lalamo.utils.dummy_array import is_dummy_array
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import ShardingConfig, sharding_of, with_sharding
 from lalamo.weight_matrix import (
@@ -23,6 +24,7 @@ from lalamo.weight_matrix import (
 )
 
 from .utils.packing import unpack_uint8_to_uint
+from .utils.row_dot import row_batched_dot
 
 
 def full_rotation(values: Array, small_q: Array) -> Array:
@@ -83,7 +85,6 @@ class STrellisSpec(WeightMatrixSpec):
             states = states | (previous << (distance * self.transition_bits))
         return (states & jnp.uint32(65535)).reshape(codes.shape[0], blocks * steps)
 
-    @supports_dummy_arrays()
     def compress(
         self,
         weights: Float[Array, "out_channels in_channels"],
@@ -94,21 +95,22 @@ class STrellisSpec(WeightMatrixSpec):
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "STrellisMatrix":
-        if not is_dummy_evaluation():
+        if not is_dummy_array(weights):
             raise ValueError("S checkpoints must be loaded from saved parameters; fitting is not supported")
         rows, columns = weights.shape
         blocks, _, block_bytes = self.tape_shape(columns)
         order = columns // (columns & -columns)
+        initializer = EmptyInitializer(weights.dtype, sharding_config)
         return STrellisMatrix(
             spec=self,
             sharding_config=sharding_config,
             is_sharded=is_sharded,
-            codes=jnp.zeros((rows, blocks * block_bytes), jnp.uint8),
-            scales=jnp.zeros((rows,), jnp.float16),
-            gains=jnp.zeros((rows,), weights.dtype),
-            table=jnp.zeros((65536, self.vector_width), jnp.float32),
-            signs=jnp.zeros((columns,), jnp.float32),
-            small_q=jnp.zeros((order, order), jnp.float32),
+            codes=initializer.zeros((rows, blocks * block_bytes), dtype=jnp.uint8),
+            scales=initializer.zeros((rows,), dtype=jnp.float16),
+            gains=initializer.zeros((rows,)),
+            table=initializer.zeros((65536, self.vector_width), dtype=jnp.float32),
+            signs=initializer.zeros((columns,), dtype=jnp.float32),
+            small_q=initializer.zeros((order, order), dtype=jnp.float32),
         ).switch_sharding_config(sharding_config)
 
 
@@ -186,23 +188,13 @@ class STrellisMatrix(WeightMatrix[STrellisSpec]):
     ) -> Array:
         if transposed:
             with use_dot_algorithm_preset(forward_pass_config.precision):
-                return self.decompress().T.astype(vector.dtype) @ vector
-        vector = with_sharding(vector, self.sharding_config.make_sharding((None,)))
+                return Layout.INPUT_OUTPUT.matmul(self.decompress().astype(vector.dtype), vector)
 
-        def shard_dot(matrix: STrellisMatrix, inputs: Array) -> Array:
-            def row_dot(row: tuple[Array, Array, Array]) -> Array:
-                codes, scale, gain = row
-                rotated = matrix._rotated_rows(codes[None], scale[None], gain[None])[0]
-                weights = (full_rotation(rotated, matrix.small_q) * matrix.signs).astype(matrix.dtype)
-                return weights.astype(inputs.dtype) @ inputs
+        def decode_row(row: tuple[Array, Array, Array]) -> Array:
+            codes, scale, gain = row
+            rotated = self._rotated_rows(codes[None], scale[None], gain[None])[0]
+            return (full_rotation(rotated, self.small_q) * self.signs).astype(self.dtype)
 
-            return jax.lax.map(row_dot, (matrix.codes, matrix.scales, matrix.gains), batch_size=128)
-
-        row_axis, _ = sharding_of(self.codes).spec
-        with use_dot_algorithm_preset(forward_pass_config.precision):
-            return jax.shard_map(
-                shard_dot,
-                mesh=self.sharding_config.mesh,
-                in_specs=(jax.tree.map(lambda array: sharding_of(array).spec, self), PartitionSpec(None)),
-                out_specs=PartitionSpec(row_axis),
-            )(self, vector)
+        return row_batched_dot(
+            decode_row, (self.codes, self.scales, self.gains), vector, forward_pass_config.precision
+        )

@@ -9,6 +9,7 @@ import pytest
 from lalamo.compressed.s_surface import SSurfaceKind, SSurfaceMatrix, SSurfaceSpec
 from lalamo.module import Keychain
 from lalamo.utils.dummy_array import dummy_array
+from lalamo.utils.sharding import LogicalAxis, ShardingConfig, sharding_of, with_sharding
 from lalamo.weight_matrix import Layout, ShapeDtypeSpec
 from tests.helpers import make_sharding, make_test_sharding_config
 
@@ -124,3 +125,20 @@ def test_s_readout_crosses_decode_batch_boundary(matrix: SSurfaceMatrix) -> None
     expected = np.tile(np.asarray(matrix.decompress() @ x), 80)
     actual = repeated.dot(x, keychain=Keychain.init(0, sharding_config=matrix.sharding_config))
     np.testing.assert_allclose(actual, expected, atol=2e-5, rtol=2e-5)
+
+
+@pytest.mark.parametrize("mode", ["fully_sharded_data_parallel", "tensor_parallel", "data_parallel"])
+def test_s_surface_batched_dot_sharding(matrix: SSurfaceMatrix, mode: str) -> None:
+    config = getattr(ShardingConfig, mode)(jax.devices("cpu")[:4])
+    with jax.set_mesh(config.mesh):
+        matrix = replace(matrix, spec=SSurfaceSpec(matrix.spec.kind, Layout.OUTPUT_INPUT))
+        matrix = matrix.switch_sharding_config(config)
+        inputs = with_sharding(
+            jnp.linspace(-1, 1, 4 * matrix.shape[1]).reshape(4, -1),
+            config.resolve_sharding((LogicalAxis.BATCH, None)),
+        )
+        keychain = Keychain.init(0, sharding_config=config)
+        actual = jax.jit(jax.vmap(lambda x: matrix.dot(x, keychain=keychain)))(inputs)
+        expected = np.asarray(inputs) @ np.asarray(matrix.decompress()).T
+        np.testing.assert_allclose(actual, expected, atol=2e-5, rtol=2e-5)
+        assert sharding_of(actual).spec == sharding_of(inputs).spec
