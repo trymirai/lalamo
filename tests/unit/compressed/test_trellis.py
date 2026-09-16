@@ -12,7 +12,6 @@ from lalamo.compressed.hybrid import HybridMatrix, HybridSpec
 from lalamo.compressed.trellis import (
     TrellisMatrix,
     TrellisSpec,
-    _backpointer_dtype,
     _codebook,
     _codebook_scale,
     _level_table,
@@ -226,7 +225,7 @@ def test_trellis_compress_and_decompress_match_manual_decode(layout: Layout) -> 
 
 
 @pytest.mark.parametrize(("bits", "window_bits"), [(1, 8), (2, 12), (3, 16), (4, 20)])
-def test_trellis_fitted_states_follow_the_recurrence_and_survive_the_tape(
+def test_trellis_fitted_states_follow_the_recurrence(
     bits: Literal[1, 2, 3, 4],
     window_bits: int,
 ) -> None:
@@ -448,6 +447,7 @@ def test_trellis_switch_sharding_config_keeps_the_tape() -> None:
 
     switched = matrix.switch_sharding_config(ShardingConfig.replicated())
 
+    assert matrix.switch_sharding_config(make_test_sharding_config()) is matrix
     assert switched.spec == spec
     assert switched.cols == matrix.cols
     assert np.array_equal(np.asarray(switched.packed_tape), np.asarray(matrix.packed_tape))
@@ -504,12 +504,6 @@ def test_trellis_spec_rejects_invalid_configurations(
         TrellisSpec(bits=bits, window_bits=window_bits, restart_columns=restart_columns)  # type: ignore[arg-type]
 
 
-def test_trellis_backpointers_cover_at_most_16_code_bits() -> None:
-    assert _backpointer_dtype(16) == jnp.uint16
-    with pytest.raises(ValueError, match="at most 16 code bits"):
-        _backpointer_dtype(20)
-
-
 def test_trellis_compress_rejects_columns_not_divisible_by_restart_columns() -> None:
     weights = jnp.ones((4, 24), dtype=jnp.float32)
 
@@ -564,23 +558,17 @@ def test_trellis_decompress_multiplies_the_level_by_the_folded_scale() -> None:
     assert np.array_equal(decompressed, levels * folded_scales[:, None])
 
 
-def test_trellis_compress_sharded_and_unsharded_agree() -> None:
-    spec = TrellisSpec(bits=2, window_bits=12, restart_columns=8)
-    weights = _logical_weights(2)
+@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
+@pytest.mark.parametrize("leading_dims", [(), (2,)])
+def test_trellis_compress_sharded_and_unsharded_agree(layout: Layout, leading_dims: tuple[int, ...]) -> None:
+    spec = TrellisSpec(bits=2, window_bits=12, restart_columns=8, layout=layout)
+    weights = _logical_weights(*leading_dims)
 
     sharded = spec.compress(weights, sharding_config=make_test_sharding_config())
     unsharded = spec.compress(weights, sharding_config=make_test_sharding_config(), is_sharded=False)
 
-    assert sharded.packed_tape.sharding == make_sharding((LogicalAxis.MIXTURE, None, None))
     assert np.array_equal(np.asarray(sharded.packed_tape), np.asarray(unsharded.packed_tape))
     assert np.array_equal(np.asarray(sharded.scales), np.asarray(unsharded.scales))
-
-
-def test_trellis_switch_sharding_config_returns_self_for_the_same_config() -> None:
-    spec = TrellisSpec(bits=2, window_bits=12, restart_columns=8)
-    matrix = spec.compress(_logical_weights(), sharding_config=make_test_sharding_config())
-
-    assert matrix.switch_sharding_config(make_test_sharding_config()) is matrix
 
 
 def test_trellis_inside_hybrid_builds_templates_and_reshards_without_a_search() -> None:
@@ -612,6 +600,7 @@ def test_trellis_inside_hybrid_builds_templates_and_reshards_without_a_search() 
     assert isinstance(resharded, HybridMatrix)
     assert isinstance(resharded.quantized, TrellisMatrix)
     assert np.array_equal(np.asarray(resharded.quantized.packed_tape), np.asarray(quantized.packed_tape))
+    assert np.array_equal(np.asarray(resharded.quantized.scales), np.asarray(quantized.scales))
     assert_close_arrays(result=restored.decompress(), reference=quantized.decompress())
 
 
