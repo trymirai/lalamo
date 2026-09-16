@@ -50,13 +50,20 @@ class BaseModel[ConfigT: BaseModelConfig](LalamoModule[ConfigT]):
             json.dump(self.config.to_json(), config_file, indent=4)
 
     @classmethod
-    def load(cls, directory: Path | str, sharding_config: ShardingConfig, dtype: DTypeLike | None = None) -> Self:
+    def load(
+        cls,
+        directory: Path | str,
+        sharding_config: ShardingConfig,
+        dtype: DTypeLike | None = None,
+        *,
+        empty_weights: bool = False,
+    ) -> Self:
         directory = Path(directory)
         with (directory / "config.json").open() as config_file:
             config = BaseModelConfig.from_json(json.load(config_file))
 
         with (directory / "model.safetensors").open("rb") as weights_file:
-            metadata, arrays = safe_read(weights_file)
+            metadata, arrays = safe_read(weights_file, empty_weights=empty_weights)
             decoded_metadata = {}
             if metadata is not None:
                 decoded_metadata = {key: json.loads(value) for key, value in metadata.items()}
