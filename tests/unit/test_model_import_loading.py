@@ -661,17 +661,14 @@ def test_load_dflash2_sublayer_transform(dtype: DTypeLike | None) -> None:
         "attention_conv.kernel_projection.weight": kernel_projection,
     }
 
-    pre_conv, post_conv, projection = load_dflash_sublayer_transform(
-        layer.pre_mixer_conv,
-        layer.post_mixer_conv,
-        layer.mixer_kernel_projection,
+    module = load_dflash_sublayer_transform(
+        layer.mixer_conv,
         weights,
         ParameterPath("attention_conv"),
     )
 
-    assert pre_conv is not None
-    assert post_conv is not None
-    assert projection is not None
-    assert_close(result=pre_conv.export().arrays["weights"], reference=base_kernel[0, ::-1].T)
-    assert_close(result=post_conv.export().arrays["weights"], reference=base_kernel[1, ::-1].T)
-    assert_close(result=projection.weights.decompress(), reference=kernel_projection)
+    assert module is not None
+    exported = module.export()
+    assert_close(result=exported.arrays["pre_conv.weights"], reference=base_kernel[0, ::-1].T)
+    assert_close(result=exported.arrays["post_conv.weights"], reference=base_kernel[1, ::-1].T)
+    assert_close(result=module.kernel_projection.weights.decompress(), reference=kernel_projection)
