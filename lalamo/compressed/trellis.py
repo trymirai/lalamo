@@ -38,6 +38,7 @@ from lalamo.weight_matrix import (
 
 from .data.distortion import distortion_estimate
 from .quantized_spec import QuantizedSpec
+from .utils.yaqa import yaqa_round_blockwise
 
 __all__ = [
     "TrellisMatrix",
@@ -296,6 +297,47 @@ class _PackedParameters(NamedTuple):
     scales: Float[Array, "..."]
 
 
+def _scaled_preconditioner(
+    preconditioner: Preconditioner,
+    scales: Float[Array, "*components rows"],
+    layout: Layout,
+) -> Preconditioner:
+    input_block = preconditioner.input_block
+    output_block = preconditioner.output_block
+    outer = scales[..., :, None] * scales[..., None, :]
+    if layout == Layout.INPUT_OUTPUT and input_block is not None:
+        input_block = input_block * outer.astype(input_block.dtype)
+    if layout == Layout.OUTPUT_INPUT and output_block is not None:
+        output_block = output_block * outer.astype(output_block.dtype)
+    return Preconditioner.init(input_block=input_block, output_block=output_block)
+
+
+def _row_metric(preconditioner: Preconditioner, layout: Layout) -> Float[Array, "*components cols cols"] | None:
+    if layout == Layout.INPUT_OUTPUT:
+        return preconditioner.output_block
+    return preconditioner.input_block
+
+
+def _metric_least_squares_scales(
+    weights: Float[Array, "... cols"],
+    codewords: Float[Array, "... cols"],
+    metric: Float[Array, "... cols cols"] | None,
+) -> Float[Array, "..."]:
+    if metric is None:
+        return _least_squares_scales(weights, codewords)
+    with use_dot_algorithm_preset(DotAlgorithmPreset.F32_F32_F32):
+        weighted_codewords = jnp.einsum(
+            "...rc,...cd->...rd",
+            codewords,
+            metric.astype(jnp.float32),
+            out_sharding=sharding_of(codewords),
+        )
+    correlations = jnp.sum(weights * weighted_codewords, axis=-1)
+    energies = jnp.sum(codewords * weighted_codewords, axis=-1)
+    safe_energies = jnp.where(energies == 0, 1, energies)
+    return jnp.where(energies == 0, 0, correlations / safe_energies)
+
+
 def _weights_to_packed_parameters(weights: Float[Array, "... cols"], layout: _TapeLayout) -> _PackedParameters:
     targets = _shard_rows_only(weights.astype(jnp.float32))
     normalized_targets = targets / _search_scales(targets)[..., None]
@@ -388,11 +430,19 @@ class TrellisSpec(QuantizedSpec):
 
     def quantize_block(
         self,
-        weights: Float[Array, "*blocks out_block_channels in_block_channels"],  # noqa: ARG002
+        weights: Float[Array, "*blocks out_block_channels in_block_channels"],
         *,
         sharding_config: ShardingConfig,  # noqa: ARG002
     ) -> Float[Array, "*blocks out_block_channels in_block_channels"]:
-        raise ValueError("Trellis blocks share one row scale, so a block cannot be quantized on its own.")
+        expected_shape = (self.output_block_size, self.input_block_size)
+        *_, output_block_size, input_block_size = weights.shape
+        actual_shape = (output_block_size, input_block_size)
+        if actual_shape != expected_shape:
+            raise ValueError(f"Expected quantization block shape {expected_shape}, got {actual_shape}")
+        rows = self.layout.from_output_input(weights.astype(jnp.float32), sharding=sharding_of(weights))
+        states = _weights_to_states(rows, _TapeLayout(self, self.restart_columns))
+        codewords = _states_to_codewords(states).reshape(rows.shape)
+        return self.layout.to_output_input(codewords).astype(weights.dtype)
 
     @property
     def rate(self) -> float:
@@ -417,9 +467,6 @@ class TrellisSpec(QuantizedSpec):
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "TrellisMatrix":
-        if preconditioner is not None:
-            raise ValueError("Trellis compression does not support preconditioning.")
-
         weight_axes = self.layout.weight_partition(weights.ndim - 2, is_sharded=is_sharded)
         weight_sharding = sharding_config.resolve_sharding(weight_axes)
         stored_weights = self.layout.from_output_input(weights, sharding=weight_sharding)
@@ -437,7 +484,15 @@ class TrellisSpec(QuantizedSpec):
                     f"Searching 2**{self.window_bits} states is not supported, "
                     f"compression needs window_bits of at most {_MAX_SEARCH_WINDOW_BITS}"
                 )
-            packed_tape, scales = _weights_to_packed_parameters(stored_weights, layout)
+            if preconditioner is None:
+                packed_tape, scales = _weights_to_packed_parameters(stored_weights, layout)
+            else:
+                packed_tape, scales = self._preconditioned_packed_parameters(
+                    weights,
+                    preconditioner,
+                    layout,
+                    sharding_config=sharding_config,
+                )
 
         return self.from_packed_parameters(
             packed_tape=packed_tape,
@@ -446,6 +501,34 @@ class TrellisSpec(QuantizedSpec):
             sharding_config=sharding_config,
             is_sharded=is_sharded,
         )
+
+    def _preconditioned_packed_parameters(
+        self,
+        weights: Float[Array, "*components out_channels in_channels"],
+        preconditioner: Preconditioner,
+        layout: _TapeLayout,
+        *,
+        sharding_config: ShardingConfig,
+    ) -> _PackedParameters:
+        weight_sharding = sharding_of(weights)
+        stored_weights = _shard_rows_only(self.layout.from_output_input(weights, sharding=weight_sharding))
+        scales = _search_scales(stored_weights.astype(jnp.float32))
+        normalized_weights = self.layout.to_output_input(
+            stored_weights / scales.astype(stored_weights.dtype)[..., None]
+        )
+        rounded_weights = yaqa_round_blockwise(
+            normalized_weights,
+            _scaled_preconditioner(preconditioner, scales, self.layout),
+            self,
+            sharding_config=sharding_config,
+        )
+        codewords = _shard_rows_only(self.layout.from_output_input(rounded_weights, sharding=weight_sharding))
+        codewords = codewords.astype(jnp.float32)
+        states = _map_over_rows(partial(_weights_to_states, layout=layout), codewords)
+        targets = with_sharding(stored_weights.astype(jnp.float32), sharding_of(codewords))
+        scales = _metric_least_squares_scales(targets, codewords, _row_metric(preconditioner, self.layout))
+        packed_tape = _map_over_rows(partial(_states_to_tape, layout=layout), states)
+        return _PackedParameters(packed_tape, scales.astype(weights.dtype))
 
     def from_packed_parameters(
         self,

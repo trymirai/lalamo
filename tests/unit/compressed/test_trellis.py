@@ -16,6 +16,7 @@ from lalamo.compressed.trellis import (
     _codebook_scale,
     _level_table,
     _search_scales,
+    _states_to_codewords,
     _states_to_levels,
     _states_to_tape,
     _tape_to_states,
@@ -363,6 +364,57 @@ def test_trellis_dummy_template_loads_a_window_too_wide_to_search() -> None:
     assert_close_arrays(result=restored.decompress(), reference=original.decompress())
 
 
+def _positive_definite_block(size: int, seed: int) -> jax.Array:
+    factor = jax.random.normal(jax.random.key(seed), (size, size), dtype=jnp.float32)
+    return factor @ factor.T + jnp.identity(size, dtype=jnp.float32) * size
+
+
+def _input_quadratic_objective(weights: jax.Array, decompressed: jax.Array, input_block: jax.Array) -> float:
+    residual = np.asarray(weights, dtype=np.float64) - np.asarray(decompressed, dtype=np.float64)
+    return float(np.einsum("oi,ij,oj->", residual, np.asarray(input_block, dtype=np.float64), residual))
+
+
+def test_trellis_quantize_block_returns_unit_scale_codewords() -> None:
+    spec = TrellisSpec(bits=2, window_bits=12, restart_columns=8)
+    blocks = _gaussian_weights(6, 8)[:, None, :]
+
+    codewords = spec.quantize_block(blocks, sharding_config=make_test_sharding_config())
+
+    states = _weights_to_states(blocks[:, 0, :], _TapeLayout(spec, cols=8))
+    assert_close_arrays(result=codewords[:, 0, :], reference=_states_to_codewords(states))
+
+
+@pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
+def test_trellis_identity_preconditioner_matches_the_plain_fit(layout: Layout) -> None:
+    spec = TrellisSpec(bits=2, window_bits=12, restart_columns=8, layout=layout)
+    weights = _gaussian_weights(16, 16)
+    preconditioner = Preconditioner.init(
+        input_block=jnp.identity(16, dtype=jnp.float32),
+        output_block=jnp.identity(16, dtype=jnp.float32),
+    )
+
+    plain = spec.compress(weights, sharding_config=make_test_sharding_config())
+    preconditioned = spec.compress(weights, preconditioner=preconditioner, sharding_config=make_test_sharding_config())
+
+    assert np.array_equal(np.asarray(preconditioned.packed_tape), np.asarray(plain.packed_tape))
+    assert_close_arrays(result=preconditioned.scales, reference=plain.scales)
+
+
+def test_trellis_input_preconditioner_lowers_the_input_weighted_error() -> None:
+    spec = TrellisSpec(bits=2, window_bits=12, restart_columns=8)
+    weights = _gaussian_weights(16, 32)
+    input_block = _positive_definite_block(32, seed=7)
+    preconditioner = Preconditioner.init(input_block=input_block)
+
+    plain = spec.compress(weights, sharding_config=make_test_sharding_config())
+    preconditioned = spec.compress(weights, preconditioner=preconditioner, sharding_config=make_test_sharding_config())
+
+    plain_objective = _input_quadratic_objective(weights, plain.decompress(), input_block)
+    preconditioned_objective = _input_quadratic_objective(weights, preconditioned.decompress(), input_block)
+    assert preconditioned_objective < plain_objective
+    assert preconditioned.packed_tape.shape == plain.packed_tape.shape
+
+
 def test_trellis_load_exported_rejects_column_count_mismatch() -> None:
     spec = TrellisSpec(bits=1, window_bits=4, restart_columns=4)
     narrow = spec.compress(jnp.ones((2, 4), dtype=jnp.float32), sharding_config=make_test_sharding_config())
@@ -522,18 +574,6 @@ def test_trellis_compress_rejects_windows_too_wide_to_search() -> None:
         )
 
 
-def test_trellis_compress_rejects_preconditioner() -> None:
-    weights = jnp.ones((4, 16), dtype=jnp.float32)
-    preconditioner = Preconditioner.init(input_block=jnp.eye(16), output_block=jnp.eye(4))
-
-    with pytest.raises(ValueError, match="preconditioning"):
-        TrellisSpec(bits=2, window_bits=12, restart_columns=8).compress(
-            weights,
-            preconditioner=preconditioner,
-            sharding_config=make_test_sharding_config(),
-        )
-
-
 def test_trellis_from_packed_parameters_rejects_tape_rows_of_the_wrong_length() -> None:
     spec = TrellisSpec(bits=2, window_bits=16, restart_columns=64)
 
@@ -614,13 +654,6 @@ def test_trellis_from_packed_parameters_rejects_scales_that_are_not_one_per_row(
             cols=64,
             sharding_config=make_test_sharding_config(),
         )
-
-
-def test_trellis_quantize_block_is_refused() -> None:
-    spec = TrellisSpec(bits=2, window_bits=12, restart_columns=8)
-
-    with pytest.raises(ValueError, match="share one row scale"):
-        spec.quantize_block(jnp.ones((1, 8), dtype=jnp.float32), sharding_config=make_test_sharding_config())
 
 
 def test_trellis_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
