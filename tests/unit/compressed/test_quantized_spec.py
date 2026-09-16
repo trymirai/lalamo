@@ -111,8 +111,6 @@ def test_microfloat_distortion_matches_inference_quantization_error(
         LloydMaxSpec(bits=3, group_size=4, layout=Layout.INPUT_OUTPUT),
         MicrofloatSpec(group_size=4, layout=Layout.OUTPUT_INPUT),
         MicrofloatSpec(group_size=4, layout=Layout.INPUT_OUTPUT),
-        TrellisSpec(bits=2, window_bits=12, restart_columns=8, layout=Layout.OUTPUT_INPUT),
-        TrellisSpec(bits=2, window_bits=12, restart_columns=8, layout=Layout.INPUT_OUTPUT),
     ],
 )
 def test_quantized_spec_quantize_block_matches_inference_compression(spec: QuantizedSpec) -> None:

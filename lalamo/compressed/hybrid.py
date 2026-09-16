@@ -100,6 +100,16 @@ class IncoherenceSigns(eqx.Module):
     input_signs: Int[Array, " in_channels"] | None = field(trainable=False)
     output_signs: Int[Array, " out_channels"] | None = field(trainable=False)
 
+    def switch_sharding_config(self, sharding_config: ShardingConfig) -> "IncoherenceSigns":
+        sharding = sharding_config.make_sharding((None,))
+        input_signs = self.input_signs
+        if input_signs is not None:
+            input_signs = jax.device_put(input_signs, sharding)
+        output_signs = self.output_signs
+        if output_signs is not None:
+            output_signs = jax.device_put(output_signs, sharding)
+        return IncoherenceSigns(input_signs=input_signs, output_signs=output_signs)
+
     @classmethod
     def random_init(
         cls,
@@ -352,6 +362,24 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
             quantized=quantized,
             adapter=adapter,
             incoherence_signs=self.incoherence_signs,
+        )
+
+    def switch_sharding_config(self, sharding_config: ShardingConfig) -> "HybridMatrix":
+        if sharding_config == self.sharding_config:
+            return self
+        adapter = self.adapter
+        if adapter is not None:
+            adapter = adapter.switch_sharding_config(sharding_config)
+        incoherence_signs = self.incoherence_signs
+        if incoherence_signs is not None:
+            incoherence_signs = incoherence_signs.switch_sharding_config(sharding_config)
+        return HybridMatrix(
+            spec=self.spec,
+            sharding_config=sharding_config,
+            is_sharded=self.is_sharded,
+            quantized=self.quantized.switch_sharding_config(sharding_config),
+            adapter=adapter,
+            incoherence_signs=incoherence_signs,
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
