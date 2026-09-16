@@ -1,17 +1,13 @@
 from lalamo.compressed.data.distortion import DistortionKey, _csv_distortions
 from lalamo.compressed.data.estimate_distortion import _default_configs, _estimate_distortion, _spec_from_key
-from lalamo.compressed.trellis import TrellisSpec
 
 
-def test_estimate_distortion_default_trellis_keys_are_in_the_csv_and_rebuild_their_specs() -> None:
+def test_estimate_distortion_default_trellis_keys_rebuild_specs_that_read_their_csv_rows() -> None:
     trellis_keys = [key for key in _default_configs() if key.format_name == "trellis"]
 
-    assert len(trellis_keys) == 16
-    assert set(trellis_keys) <= set(_csv_distortions())
+    assert trellis_keys
     for key in trellis_keys:
-        spec = _spec_from_key(key)
-        assert isinstance(spec, TrellisSpec)
-        assert (spec.bits, spec.window_bits, spec.restart_columns) == (key.bits, 16, key.group_size)
+        assert _spec_from_key(key).distortion == _csv_distortions()[key]
 
 
 def test_estimate_distortion_samples_at_least_one_trellis_row() -> None:

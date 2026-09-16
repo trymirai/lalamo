@@ -113,7 +113,7 @@ def _estimate_distortion(key: DistortionKey, sample_groups: int) -> float:
 
     groups_per_row = 1
     if key.format_name == "trellis":
-        groups_per_row = DEFAULT_TRELLIS_SAMPLE_COLUMNS // key.group_size
+        groups_per_row = max(1, DEFAULT_TRELLIS_SAMPLE_COLUMNS // key.group_size)
 
     squared_error_sum = 0.0
     value_count = 0
