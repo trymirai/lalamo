@@ -9,6 +9,7 @@ from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike
 
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
+from lalamo.compressed.s_direction import SDirectionMatrix, SDirectionSpec
 from lalamo.compressed.s_surface import SSurfaceKind, SSurfaceMatrix, SSurfaceSpec
 from lalamo.compressed.s_trellis import STrellisMatrix, STrellisSpec
 from lalamo.initializer import EmptyInitializer
@@ -18,6 +19,7 @@ from lalamo.modules.rope import SavedRoPEConfig, UnscaledRoPEConfig
 from lalamo.safetensors import safe_read
 from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.registry_abc import make_registry_abc_converter
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, Layout, ShapeDtypeMatrix, WeightMatrix
@@ -110,6 +112,8 @@ def load_s_checkpoint(
                         is_sharded=is_sharded,
                     )
                 case "QtipGaussianSpec":
+                    table_name = saved.pop("table", f"qtip_shared.codebook_v{saved['vector_width']}")
+                    assert isinstance(table_name, str)
                     spec = converter.structure(saved, STrellisSpec)
                     matrix = STrellisMatrix(
                         spec=spec,
@@ -118,7 +122,7 @@ def load_s_checkpoint(
                         codes=parameter(path / "codes"),
                         scales=parameter(path / "scales"),
                         gains=parameter(path / "gains"),
-                        table=parameter(f"qtip_shared.codebook_v{spec.vector_width}"),
+                        table=parameter(table_name),
                         signs=parameter(f"qtip_shared.signs_{columns}"),
                         small_q=parameter(f"qtip_shared.q_{columns}"),
                         pre_gains=tuple(
@@ -127,6 +131,21 @@ def load_s_checkpoint(
                         post_gains=tuple(
                             parameter(path / f"post_gains.{index}") for index in range(len(spec.post_gain_axes))
                         ),
+                    )
+                case "RowStackSpec":
+                    stack = make_registry_abc_converter(forbid_extra_keys=True).structure(
+                        {"type": "RowStackSpec", **saved}, RowStackSpec
+                    )
+                    parts = []
+                    for index in range(len(stack.parts)):
+                        part = weight(path / "parts" / index, template)
+                        assert isinstance(part, STrellisMatrix | SSurfaceMatrix)
+                        parts.append(part)
+                    matrix = RowStackMatrix(
+                        spec=stack,
+                        sharding_config=sharding_config,
+                        is_sharded=is_sharded,
+                        parts=tuple(parts),
                     )
                 case "D4S4Spec" | "I3S4Spec" | "I4S4Spec" as kind_name:
                     assert "kind" not in saved
@@ -156,6 +175,17 @@ def load_s_checkpoint(
                         post_gains=tuple(
                             parameter(path / f"post_gains.{index}") for index in range(len(surface.post_gain_axes))
                         ),
+                    )
+                case "SDirectionSpec":
+                    matrix = SDirectionMatrix(
+                        spec=converter.structure(saved, SDirectionSpec),
+                        sharding_config=sharding_config,
+                        is_sharded=is_sharded,
+                        codes=parameter(path / "codes"),
+                        levels=parameter(path / "levels"),
+                        unit_scale=parameter(path / "unit_scale"),
+                        mean_norm=parameter(path / "mean_norm"),
+                        tail=parameter(path / "tail"),
                     )
                 case other:
                     raise ValueError(f"Unsupported S checkpoint weight format {other!r} at {path}")

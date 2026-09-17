@@ -41,9 +41,10 @@ def full_rotation(values: Array, small_q: Array) -> Array:
         left, right = grouped[..., 0, :, :], grouped[..., 1, :, :]
         result = jnp.concatenate((left + right, left - right), axis=-2).reshape(result.shape)
         stride *= 2
-    return jnp.matmul(
-        result / jnp.sqrt(jnp.float32(width)), small_q, precision=DotAlgorithmPreset.F32_F32_F32
-    ).reshape(values.shape)
+    result = result / jnp.sqrt(jnp.asarray(width, dtype=values.dtype))
+    if order == 1:
+        return (result * small_q[0, 0]).reshape(values.shape)
+    return jnp.matmul(result, small_q, precision=DotAlgorithmPreset.F32_F32_F32).reshape(values.shape)
 
 
 @dataclass(frozen=True)
