@@ -20,6 +20,7 @@ from .row_stack import RowStackMatrix, RowStackSpec
 from .s_surface import SSurfaceKind, SSurfaceMatrix, SSurfaceSpec
 from .s_trellis import STrellisMatrix, STrellisSpec
 from .trellis import TrellisMatrix, TrellisSpec
+from .utils.s_gains import SScaleAxis
 
 __all__ = [
     "HybridMatrix",
@@ -46,6 +47,7 @@ __all__ = [
     "QuantizedSpec",
     "RowStackMatrix",
     "RowStackSpec",
+    "SScaleAxis",
     "SSurfaceKind",
     "SSurfaceMatrix",
     "SSurfaceSpec",

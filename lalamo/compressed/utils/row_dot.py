@@ -9,8 +9,8 @@ from lalamo.utils.sharding import sharding_of, with_sharding
 
 
 def row_batched_dot(
-    decode_row: Callable[[tuple[Array, Array, Array]], Array],
-    rows: tuple[Array, Array, Array],
+    decode_row: Callable[[tuple[Array, ...]], Array],
+    rows: tuple[Array, ...],
     vector: Array,
     precision: DotAlgorithmPreset,
 ) -> Array:
@@ -21,7 +21,7 @@ def row_batched_dot(
         with_sharding(array, NamedSharding(sharding.mesh, PartitionSpec(*((None,) * array.ndim)))) for array in rows
     )
 
-    def dot(row: tuple[Array, Array, Array]) -> Array:
+    def dot(row: tuple[Array, ...]) -> Array:
         return jax.lax.dot_general(
             decode_row(row).astype(vector.dtype),
             vector,

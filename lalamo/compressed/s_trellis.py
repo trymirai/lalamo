@@ -25,6 +25,7 @@ from lalamo.weight_matrix import (
 
 from .utils.packing import unpack_uint8_to_uint
 from .utils.row_dot import row_batched_dot
+from .utils.s_gains import SScaleAxis, apply_post_gains
 
 
 def full_rotation(values: Array, small_q: Array) -> Array:
@@ -51,13 +52,21 @@ class STrellisSpec(WeightMatrixSpec):
     transition_bits: Literal[4, 6, 8]
     restart_columns: Literal[0, 64]
     layout: Layout = Layout.OUTPUT_INPUT
+    scale_dtype: Literal["float16", "float32"] = "float16"
+    pre_gain_count: int = 0
+    post_gain_axes: tuple[SScaleAxis, ...] = ()
 
     def __post_init__(self) -> None:
+        assert self.scale_dtype in ("float16", "float32")
+        assert self.pre_gain_count >= 0
+        assert all(isinstance(axis, SScaleAxis) for axis in self.post_gain_axes)
         if self.layout != Layout.OUTPUT_INPUT:
             raise ValueError("S trellis matrices require output-input layout")
         if (self.vector_width, self.transition_bits, self.restart_columns) not in (
             (2, 4, 0),
             (2, 6, 0),
+            (2, 8, 0),
+            (4, 8, 0),
             (4, 8, 64),
         ):
             raise ValueError("Unsupported S trellis layout")
@@ -106,11 +115,16 @@ class STrellisSpec(WeightMatrixSpec):
             sharding_config=sharding_config,
             is_sharded=is_sharded,
             codes=initializer.zeros((rows, blocks * block_bytes), dtype=jnp.uint8),
-            scales=initializer.zeros((rows,), dtype=jnp.float16),
+            scales=initializer.zeros((rows,), dtype=jnp.dtype(self.scale_dtype)),
             gains=initializer.zeros((rows,)),
             table=initializer.zeros((65536, self.vector_width), dtype=jnp.float32),
             signs=initializer.zeros((columns,), dtype=jnp.float32),
             small_q=initializer.zeros((order, order), dtype=jnp.float32),
+            pre_gains=tuple(initializer.zeros((rows,), dtype=jnp.float32) for _ in range(self.pre_gain_count)),
+            post_gains=tuple(
+                initializer.zeros((rows if axis == SScaleAxis.ROW else columns,), dtype=jnp.float32)
+                for axis in self.post_gain_axes
+            ),
         ).switch_sharding_config(sharding_config)
 
 
@@ -121,6 +135,8 @@ class STrellisMatrix(WeightMatrix[STrellisSpec]):
     table: Float[Array, "65536 width"] = field(trainable=False)
     signs: Float[Array, " columns"] = field(trainable=False)
     small_q: Float[Array, "order order"] = field(trainable=False)
+    pre_gains: tuple[Array, ...] = ()
+    post_gains: tuple[Array, ...] = ()
 
     def __check_init__(self) -> None:
         rows, columns = self.shape
@@ -128,11 +144,16 @@ class STrellisMatrix(WeightMatrix[STrellisSpec]):
         assert self.codes.shape == (rows, blocks * block_bytes)
         assert self.codes.dtype == jnp.uint8
         assert self.scales.shape == self.gains.shape == (rows,)
-        assert self.scales.dtype == jnp.float16
+        assert self.scales.dtype == jnp.dtype(self.spec.scale_dtype)
         assert self.table.shape == (65536, self.spec.vector_width)
         assert self.table.dtype == self.signs.dtype == self.small_q.dtype == jnp.float32
         order = columns // (columns & -columns)
         assert self.small_q.shape == (order, order)
+        assert len(self.pre_gains) == self.spec.pre_gain_count
+        assert all(gain.shape == (rows,) and gain.dtype == jnp.float32 for gain in self.pre_gains)
+        for axis, gain in zip(self.spec.post_gain_axes, self.post_gains, strict=True):
+            assert gain.shape == (rows if axis == SScaleAxis.ROW else columns,)
+            assert gain.dtype == jnp.float32
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -156,22 +177,33 @@ class STrellisMatrix(WeightMatrix[STrellisSpec]):
             table=with_sharding(self.table, sharding_config.resolve_sharding((None, None))),
             signs=with_sharding(self.signs, sharding_config.resolve_sharding((None,))),
             small_q=with_sharding(self.small_q, sharding_config.resolve_sharding((None, None))),
+            pre_gains=tuple(
+                with_sharding(gain, sharding_config.resolve_sharding((row_axis,))) for gain in self.pre_gains
+            ),
+            post_gains=tuple(
+                with_sharding(gain, sharding_config.resolve_sharding((row_axis if axis == SScaleAxis.ROW else None,)))
+                for axis, gain in zip(self.spec.post_gain_axes, self.post_gains, strict=True)
+            ),
         )
 
     def rotated_weights(self) -> Array:
-        return self._rotated_rows(self.codes, self.scales, self.gains)
+        return self._rotated_rows(self.codes, self.scales, self.gains, self.pre_gains)
 
-    def _rotated_rows(self, codes: Array, scales: Array, gains: Array) -> Array:
+    def _rotated_rows(self, codes: Array, scales: Array, gains: Array, pre_gains: tuple[Array, ...]) -> Array:
         states = self.spec.states(codes, self.shape[1])
         row_axis, _ = sharding_of(codes).spec
         values = self.table.at[states].get(out_sharding=PartitionSpec(row_axis, None, None))
         values = values.reshape(codes.shape[0], self.shape[1])
         # The checkpoint's two FP32 multiplies must not be folded into one scale.
         scaled = jax.lax.optimization_barrier(values * scales.astype(jnp.float32)[:, None])
-        return scaled * gains.astype(jnp.float32)[:, None]
+        scaled = jax.lax.optimization_barrier(scaled * gains.astype(jnp.float32)[:, None])
+        for gain in pre_gains:
+            scaled = jax.lax.optimization_barrier(scaled * gain[:, None])
+        return scaled
 
     def decompress(self) -> Array:
-        return (full_rotation(self.rotated_weights(), self.small_q) * self.signs).astype(self.dtype)
+        weights = full_rotation(self.rotated_weights(), self.small_q) * self.signs
+        return apply_post_gains(weights, self.spec.post_gain_axes, self.post_gains, self.dtype)
 
     def to_full_precision(self) -> FullPrecisionMatrix:
         return FullPrecisionSpec().compress(
@@ -190,11 +222,26 @@ class STrellisMatrix(WeightMatrix[STrellisSpec]):
             with use_dot_algorithm_preset(forward_pass_config.precision):
                 return Layout.INPUT_OUTPUT.matmul(self.decompress().astype(vector.dtype), vector)
 
-        def decode_row(row: tuple[Array, Array, Array]) -> Array:
-            codes, scale, gain = row
-            rotated = self._rotated_rows(codes[None], scale[None], gain[None])[0]
-            return (full_rotation(rotated, self.small_q) * self.signs).astype(self.dtype)
+        def decode_row(row: tuple[Array, ...]) -> Array:
+            codes, scale, gain, *factors = row
+            pre_gains = tuple(factor[None] for factor in factors[: self.spec.pre_gain_count])
+            row_gains = iter(factors[self.spec.pre_gain_count :])
+            post_gains = tuple(
+                next(row_gains) if axis == SScaleAxis.ROW else factor
+                for axis, factor in zip(self.spec.post_gain_axes, self.post_gains, strict=True)
+            )
+            rotated = self._rotated_rows(codes[None], scale[None], gain[None], pre_gains)[0]
+            weights = full_rotation(rotated, self.small_q) * self.signs
+            return apply_post_gains(weights, self.spec.post_gain_axes, post_gains, self.dtype)
 
+        row_gains = tuple(
+            gain
+            for axis, gain in zip(self.spec.post_gain_axes, self.post_gains, strict=True)
+            if axis == SScaleAxis.ROW
+        )
         return row_batched_dot(
-            decode_row, (self.codes, self.scales, self.gains), vector, forward_pass_config.precision
+            decode_row,
+            (self.codes, self.scales, self.gains, *self.pre_gains, *row_gains),
+            vector,
+            forward_pass_config.precision,
         )

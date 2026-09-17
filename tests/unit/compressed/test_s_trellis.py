@@ -1,4 +1,6 @@
 from dataclasses import replace
+from pathlib import Path
+from typing import Literal
 
 import equinox as eqx
 import jax
@@ -7,6 +9,7 @@ import numpy as np
 import pytest
 
 from lalamo.compressed.s_trellis import STrellisMatrix, STrellisSpec, full_rotation
+from lalamo.compressed.utils.s_gains import SScaleAxis
 from lalamo.module import Keychain
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig, sharding_of, with_sharding
@@ -17,7 +20,15 @@ from tests.unit.compressed.s_trellis_fixture import load_saved_trellis
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
 
-@pytest.fixture(params=[("v2_k2", 2, 4, 0), ("v2_k3", 2, 6, 0), ("v4_k2", 4, 8, 64)])
+@pytest.fixture(
+    params=[
+        ("v2_k2", 2, 4, 0),
+        ("v2_k3", 2, 6, 0),
+        ("v4_k2", 4, 8, 64),
+        ("v4_k2_connected", 4, 8, 0),
+        ("v2_k4_connected", 2, 8, 0),
+    ]
+)
 def matrix(request: pytest.FixtureRequest) -> STrellisMatrix:
     name, width, bits, restart = request.param
     return load_saved_trellis(name, STrellisSpec(width, bits, restart))
@@ -50,6 +61,71 @@ def test_saved_s_tapes_and_two_stage_scales_decode_exactly(matrix: STrellisMatri
     np.testing.assert_array_equal(matrix.spec.states(matrix.codes, matrix.shape[1]), states)
     np.testing.assert_array_equal(matrix.rotated_weights(), expected)
     np.testing.assert_array_equal(eqx.filter_jit(lambda m: m.rotated_weights())(matrix), expected)
+
+
+@pytest.mark.parametrize(
+    "name,width,bits,restart",
+    [
+        ("v2_k2", 2, 4, 0),
+        ("v2_k3", 2, 6, 0),
+        ("v4_k2", 4, 8, 64),
+        ("v4_k2_connected", 4, 8, 0),
+        ("v2_k4_connected", 2, 8, 0),
+    ],
+)
+def test_s_tapes_reproduce_torch_hessian_fit(
+    name: str, width: Literal[2, 4], bits: Literal[4, 6, 8], restart: Literal[0, 64]
+) -> None:
+    matrix = load_saved_trellis(name, STrellisSpec(width, bits, restart))
+    filename = "s_trellis_muse.npz" if name.endswith("_connected") else "s_trellis_hyb036.npz"
+    with np.load(Path(__file__).parent / "data" / filename) as data:
+        np.testing.assert_array_equal(matrix.rotated_weights(), data[f"{name}_rotated"])
+
+
+def test_qat_rounds_after_rotation_and_preserves_saved_gains() -> None:
+    original = load_saved_trellis("v4_k2_connected", STrellisSpec(4, 8, 0))
+    with np.load(Path(__file__).parent / "data/s_qat_rows.npz") as data:
+        gain = jnp.asarray(data["muse_up_gain"])
+    matrix = replace(
+        original,
+        spec=replace(original.spec, post_gain_axes=(SScaleAxis.ROW,)),
+        post_gains=(gain,),
+    ).switch_sharding_config(original.sharding_config)
+    expected = (np.asarray(original.decompress(), dtype=np.float32) * np.asarray(gain)[:, None]).astype(jnp.bfloat16)
+    np.testing.assert_array_equal(matrix.decompress(), expected)
+    template = ShapeDtypeSpec().compress(
+        dummy_array(matrix.shape, None, make_sharding((None, None))),
+        sharding_config=matrix.sharding_config,
+    )
+    restored = template.load_exported(matrix.export())
+    np.testing.assert_array_equal(restored.decompress(), expected)
+    assert restored.dtype == jnp.bfloat16
+
+
+def test_reround_fp32_scales_and_kept_old_gain_stages_survive_native_load() -> None:
+    original = load_saved_trellis("v4_k2", STrellisSpec(4, 8, 64))
+    extra = jnp.array([0.995, 1.003, 1.004, 1.011], dtype=jnp.float32)
+    matrix = replace(
+        original,
+        spec=replace(original.spec, scale_dtype="float32", pre_gain_count=1),
+        scales=original.scales.astype(jnp.float32) * jnp.float32(1.0003),
+        pre_gains=(extra,),
+    ).switch_sharding_config(original.sharding_config)
+    states = reference_states(matrix)
+    expected = np.asarray(matrix.table)[states].reshape(matrix.shape)
+    expected = expected * np.asarray(matrix.scales)[:, None]
+    expected = expected * np.asarray(matrix.gains, dtype=np.float32)[:, None]
+    expected = expected * np.asarray(extra)[:, None]
+    np.testing.assert_array_equal(matrix.rotated_weights(), expected)
+    np.testing.assert_array_equal(eqx.filter_jit(lambda m: m.rotated_weights())(matrix), expected)
+    template = ShapeDtypeSpec().compress(
+        dummy_array(matrix.shape, None, make_sharding((None, None))),
+        sharding_config=matrix.sharding_config,
+    )
+    restored = template.load_exported(matrix.export())
+    assert isinstance(restored, STrellisMatrix)
+    np.testing.assert_array_equal(restored.scales, matrix.scales)
+    np.testing.assert_array_equal(restored.rotated_weights(), expected)
 
 
 def test_s_checkpoint_export_load_and_resharding_preserve_payload(matrix: STrellisMatrix) -> None:

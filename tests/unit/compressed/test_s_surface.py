@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from lalamo.compressed.s_surface import SSurfaceKind, SSurfaceMatrix, SSurfaceSpec
+from lalamo.compressed.utils.s_gains import SScaleAxis
 from lalamo.module import Keychain
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig, sharding_of, with_sharding
@@ -16,22 +17,27 @@ from tests.helpers import make_sharding, make_test_sharding_config
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
 
-@pytest.fixture(params=[SSurfaceKind.D4, SSurfaceKind.I3])
+@pytest.fixture(params=list(SSurfaceKind))
 def matrix(request: pytest.FixtureRequest) -> SSurfaceMatrix:
     kind = request.param
     layout = Layout.INPUT_OUTPUT if kind == SSurfaceKind.D4 else Layout.OUTPUT_INPUT
-    with np.load(Path(__file__).parent / "data/s_surfaces_hyb036.npz") as data:
+    filename = "s_surface_i4.npz" if kind == SSurfaceKind.I4 else "s_surfaces_hyb036.npz"
+    prefix = "" if kind == SSurfaceKind.I4 else f"{kind}_"
+    states = 1 << SSurfaceSpec(kind, layout).code_bits
+    with np.load(Path(__file__).parent / "data" / filename) as data:
         table = (
-            jnp.asarray(data["table"]) if kind == SSurfaceKind.D4 else jnp.arange(-7, 8, 2, dtype=jnp.int8)[:, None]
+            jnp.asarray(data["table"])
+            if kind == SSurfaceKind.D4
+            else jnp.arange(1 - states, states, 2, dtype=jnp.int8)[:, None]
         )
         return (
             SSurfaceMatrix(
                 spec=SSurfaceSpec(kind, layout),
                 sharding_config=make_test_sharding_config(),
                 is_sharded=True,
-                codes=jnp.asarray(data[f"{kind}_codes"]),
-                row_scales=jax.lax.bitcast_convert_type(jnp.asarray(data[f"{kind}_row_scale_bits"]), jnp.bfloat16),
-                ladder_indices=jnp.asarray(data[f"{kind}_ladder_indices"]),
+                codes=jnp.asarray(data[f"{prefix}codes"]),
+                row_scales=jax.lax.bitcast_convert_type(jnp.asarray(data[f"{prefix}row_scale_bits"]), jnp.bfloat16),
+                ladder_indices=jnp.asarray(data[f"{prefix}ladder_indices"]),
                 ladder=jnp.asarray(data["ladder"]),
                 table=table,
                 signs=jnp.asarray(data["signs"]),
@@ -46,10 +52,18 @@ def reference_weights(matrix: SSurfaceMatrix) -> np.ndarray:
     codes = np.asarray(matrix.codes)
     if matrix.spec.kind == SSurfaceKind.D4:
         levels = np.asarray(matrix.table)[codes].reshape(rows, columns)
-    else:
+    elif matrix.spec.kind == SSurfaceKind.I3:
         levels = np.array(
             [
                 [2 * ((int.from_bytes(row.tobytes(), "little") >> (3 * col)) & 7) - 7 for col in range(columns)]
+                for row in codes
+            ],
+            dtype=np.float32,
+        )
+    else:
+        levels = np.array(
+            [
+                [2 * ((int(row[col // 2]) >> (4 if col % 2 == 0 else 0)) & 15) - 15 for col in range(columns)]
                 for row in codes
             ],
             dtype=np.float32,
@@ -68,11 +82,45 @@ def reference_weights(matrix: SSurfaceMatrix) -> np.ndarray:
     )
 
 
-def test_s_surface_matches_saved_packed_rows(matrix: SSurfaceMatrix) -> None:
-    expected = reference_weights(matrix)
+def test_s_surface_matches_torch_fitted_rows(matrix: SSurfaceMatrix) -> None:
+    kind = matrix.spec.kind
+    filename = "s_surface_i4.npz" if kind == SSurfaceKind.I4 else "s_surfaces_hyb036.npz"
+    prefix = "" if kind == SSurfaceKind.I4 else f"{kind}_"
+    with np.load(Path(__file__).parent / "data" / filename) as data:
+        expected = data[f"{prefix}expected"]
     if matrix.spec.layout == Layout.INPUT_OUTPUT:
         expected = expected.T
     np.testing.assert_allclose(matrix.decompress(), expected, atol=2e-7, rtol=1e-6)
+
+
+@pytest.mark.parametrize("matrix", [SSurfaceKind.I4], indirect=True)
+def test_i4_qat_stages_match_torch_bf16_weights(matrix: SSurfaceMatrix) -> None:
+    axes = (SScaleAxis.ROW, SScaleAxis.ROW, SScaleAxis.ROW, SScaleAxis.COLUMN)
+    with np.load(Path(__file__).parent / "data/s_qat_rows.npz") as data:
+        matrix = replace(
+            matrix,
+            spec=replace(matrix.spec, post_gain_axes=axes),
+            post_gains=tuple(jnp.asarray(data[name]) for name in ("i4_t0", "i4_t5", "i4_row_gain", "i4_column_gain")),
+        ).switch_sharding_config(matrix.sharding_config)
+        expected = jax.lax.bitcast_convert_type(jnp.asarray(data["i4_expected_bits"]), jnp.bfloat16)
+    # The producer's dense H32 matmul leaves tiny residuals at exact cancellation zeros.
+    actual = np.asarray(matrix.decompress())
+    nonzero = actual != 0
+    np.testing.assert_array_equal(actual[nonzero], np.asarray(expected)[nonzero])
+    np.testing.assert_allclose(actual[~nonzero], np.asarray(expected)[~nonzero], atol=1e-8, rtol=0)
+    template = ShapeDtypeSpec().compress(
+        dummy_array(matrix.shape, None, make_sharding((None, None))),
+        sharding_config=matrix.sharding_config,
+    )
+    restored = template.load_exported(matrix.export())
+    np.testing.assert_array_equal(restored.decompress(), matrix.decompress())
+    inputs = jnp.linspace(-1, 1, matrix.shape[1], dtype=jnp.float32)
+    keychain = Keychain.init(0, sharding_config=matrix.sharding_config)
+    np.testing.assert_allclose(matrix.dot(inputs, keychain=keychain), expected.astype(jnp.float32) @ inputs, atol=2e-5)
+    embedding = replace(matrix, spec=replace(matrix.spec, layout=Layout.INPUT_OUTPUT))
+    np.testing.assert_array_equal(
+        embedding.lookup_embedding(0, keychain=keychain, dtype=jnp.float32), np.asarray(matrix.decompress())[0]
+    )
 
 
 def test_s_surface_native_reload_preserves_payload(matrix: SSurfaceMatrix) -> None:
