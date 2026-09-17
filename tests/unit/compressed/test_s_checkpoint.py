@@ -6,63 +6,21 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jax.sharding import Mesh
-from tokenizers import Tokenizer
-from tokenizers.models import WordLevel
 
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
 from lalamo.compressed.s_surface import SSurfaceKind, SSurfaceMatrix, SSurfaceSpec
 from lalamo.compressed.s_trellis import STrellisMatrix, STrellisSpec
 from lalamo.compressed.utils.s_gains import SScaleAxis
-from lalamo.initializer import RandomInitializer
 from lalamo.model_import.loaders.s_checkpoint import load_s_checkpoint
-from lalamo.models.chat_codec import ChatCodecConfig
-from lalamo.models.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
+from lalamo.models.language_model import LanguageModel
 from lalamo.module import Keychain
 from lalamo.modules.decoder import DecoderForwardPassConfig
 from lalamo.modules.rope import SavedRoPE
-from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
+from lalamo.modules.token_mixers.attention import Attention
 from lalamo.safetensors import safe_write
-from lalamo.utils.sharding import LogicalAxis, ShardingConfig
+from lalamo.utils.sharding import LogicalAxis
 from lalamo.weight_matrix import Layout
 from tests.conftest import RunLalamo
-from tests.helpers import build_tiny_attention_decoder, make_test_sharding_config
-
-
-@pytest.fixture
-def model(fake_mesh: Mesh) -> LanguageModel:
-    with jax.set_mesh(ShardingConfig.replicated(jax.devices("cpu")[:8]).mesh):
-        decoder = build_tiny_attention_decoder((None,))
-    transformer = decoder.config.transformer_config
-    layer = transformer.layer_configs[0]
-    assert isinstance(layer.mixer_config, AttentionConfig)
-    transformer = replace(
-        transformer,
-        model_dim=128,
-        layer_configs=(replace(layer, mixer_config=replace(layer.mixer_config, has_gate=True)),),
-    )
-    config = LanguageModelConfig(
-        token_codec_config=ChatCodecConfig(
-            prompt_template="{{ messages[0]['content'] }}",
-            output_parser_regex=None,
-            system_role_name="system",
-            user_role_name="user",
-            assistant_role_name="assistant",
-            eos_token=None,
-            bos_token=None,
-        ),
-        decoder_config=replace(decoder.config, transformer_config=transformer),
-        generation_config=GenerationConfig(),
-    )
-    tokenizer = Tokenizer(WordLevel(vocab={f"token{i}": i for i in range(32)}, unk_token="token0"))
-    with jax.set_mesh(fake_mesh):
-        result = config.init(
-            tokenizer,
-            RandomInitializer(jnp.bfloat16, make_test_sharding_config(), key=jax.random.key(9)),
-        )
-        return jax.tree.map(
-            lambda value: value.astype(jnp.bfloat16) if isinstance(value, jax.Array) else value, result
-        )
 
 
 @pytest.mark.parametrize("legacy_attention", [False, True], ids=["muse_fused", "qwen_separate"])
@@ -154,13 +112,13 @@ def test_saved_rope_tables_survive_jit_import_and_native_reload(model: LanguageM
             np.testing.assert_array_equal(actual.sines, tables.sines)
 
 
-@pytest.mark.parametrize("kind", ["trellis", "int4", "mixed"])
+@pytest.mark.parametrize("kind", ["trellis", "int4", "mixed", "stacked"])
 def test_s_packed_import_preserves_saved_gain_stages(model: LanguageModel, tmp_path: Path, kind: str) -> None:
     prefix = "decoder.transformer.layers.0.mixer.qkvg_projection.weights."
     exported = model.export()
     arrays, metadata = dict(exported.arrays), dict(exported.metadata)
     rows, columns = arrays.pop(prefix + "weights").shape
-    trellis_rows = 24 if kind == "mixed" else rows
+    trellis_rows = {"mixed": 24, "stacked": 8}.get(kind, rows)
     spec = STrellisSpec(
         2, 4, 0, scale_dtype="float32", pre_gain_count=1, post_gain_axes=(SScaleAxis.ROW, SScaleAxis.COLUMN)
     )
@@ -185,7 +143,7 @@ def test_s_packed_import_preserves_saved_gain_stages(model: LanguageModel, tmp_p
         matrix: STrellisMatrix | SSurfaceMatrix | RowStackMatrix = trellis
         parts = {prefix: trellis}
         if kind != "trellis":
-            surface_rows = 8 if kind == "mixed" else rows
+            surface_rows = {"mixed": 8, "stacked": 16}.get(kind, rows)
             surface = SSurfaceMatrix(
                 spec=SSurfaceSpec(SSurfaceKind.I4, Layout.OUTPUT_INPUT, (SScaleAxis.ROW,) * 3 + (SScaleAxis.COLUMN,)),
                 sharding_config=model.sharding_config,
@@ -212,7 +170,17 @@ def test_s_packed_import_preserves_saved_gain_stages(model: LanguageModel, tmp_p
                 )
                 parts = {prefix.replace("qkvg", "qkv"): trellis, prefix.replace("qkvg", "gate"): surface}
                 metadata.pop(prefix + "spec")
-        for path, part in parts.items():
+            elif kind == "stacked":
+                bands = (trellis, surface, replace(trellis, table=trellis.table * 2))
+                matrix = RowStackMatrix(
+                    spec=RowStackSpec(tuple((band.shape[0], band.spec) for band in bands)),
+                    sharding_config=model.sharding_config,
+                    is_sharded=True,
+                    parts=bands,
+                )
+                metadata[prefix + "spec"] = matrix.spec.to_json()
+                parts = {prefix + f"parts.{index}.": band for index, band in enumerate(bands)}
+        for index, (path, part) in enumerate(parts.items()):
             packed = part.export()
             packed_arrays = dict(packed.arrays)
             saved_spec = packed.metadata["spec"]
@@ -222,6 +190,9 @@ def test_s_packed_import_preserves_saved_gain_stages(model: LanguageModel, tmp_p
             if isinstance(part, STrellisMatrix):
                 saved_spec["type"] = "QtipGaussianSpec"
                 shared = {"table": "codebook_v2", "signs": f"signs_{columns}", "small_q": f"q_{columns}"}
+                if kind == "stacked":
+                    shared["table"] = f"codebook_v2_{index}"
+                    saved_spec["table"] = "qtip_shared." + shared["table"]
             else:
                 saved_spec["type"] = "I4S4Spec"
                 saved_spec.pop("kind")
