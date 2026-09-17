@@ -488,9 +488,10 @@ class TrellisSpec(QuantizedSpec):
                 packed_tape, scales = _weights_to_packed_parameters(stored_weights, layout)
             else:
                 packed_tape, scales = self._preconditioned_packed_parameters(
-                    weights,
+                    stored_weights,
                     preconditioner,
                     layout,
+                    weight_sharding=weight_sharding,
                     sharding_config=sharding_config,
                 )
 
@@ -504,21 +505,24 @@ class TrellisSpec(QuantizedSpec):
 
     def _preconditioned_packed_parameters(
         self,
-        weights: Float[Array, "*components out_channels in_channels"],
+        stored_weights: Float[Array, "*components rows cols"],
         preconditioner: Preconditioner,
         layout: _TapeLayout,
         *,
+        weight_sharding: NamedSharding,
         sharding_config: ShardingConfig,
     ) -> _PackedParameters:
-        weight_sharding = sharding_of(weights)
-        stored_weights = _shard_rows_only(self.layout.from_output_input(weights, sharding=weight_sharding))
+        stored_weights = _shard_rows_only(stored_weights)
         scales = _search_scales(stored_weights.astype(jnp.float32))
-        normalized_weights = self.layout.to_output_input(
-            stored_weights / scales.astype(stored_weights.dtype)[..., None]
+        # The sweep replicates its inputs; hand them over replicated so nothing depends on the caller's sharding.
+        replicated_scales = with_sharding(scales, sharding_config.make_sharding((None,) * scales.ndim))
+        normalized_weights = with_sharding(
+            self.layout.to_output_input(stored_weights / scales.astype(stored_weights.dtype)[..., None]),
+            sharding_config.make_sharding((None,) * stored_weights.ndim),
         )
         rounded_weights = yaqa_round_blockwise(
             normalized_weights,
-            _scaled_preconditioner(preconditioner, scales, self.layout),
+            _scaled_preconditioner(preconditioner, replicated_scales, self.layout),
             self,
             sharding_config=sharding_config,
         )
@@ -528,7 +532,7 @@ class TrellisSpec(QuantizedSpec):
         targets = with_sharding(stored_weights.astype(jnp.float32), sharding_of(codewords))
         scales = _metric_least_squares_scales(targets, codewords, _row_metric(preconditioner, self.layout))
         packed_tape = _map_over_rows(partial(_states_to_tape, layout=layout), states)
-        return _PackedParameters(packed_tape, scales.astype(weights.dtype))
+        return _PackedParameters(packed_tape, scales.astype(stored_weights.dtype))
 
     def from_packed_parameters(
         self,

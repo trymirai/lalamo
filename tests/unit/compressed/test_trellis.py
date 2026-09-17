@@ -415,6 +415,19 @@ def test_trellis_input_preconditioner_lowers_the_input_weighted_error() -> None:
     assert preconditioned.packed_tape.shape == plain.packed_tape.shape
 
 
+def test_trellis_preconditioned_fit_does_not_depend_on_the_input_sharding() -> None:
+    spec = TrellisSpec(bits=2, window_bits=12, restart_columns=8)
+    weights = _gaussian_weights(16, 32)
+    preconditioner = Preconditioner.init(input_block=_positive_definite_block(32, seed=7))
+    config = make_test_sharding_config()
+
+    from_device = spec.compress(weights, preconditioner=preconditioner, sharding_config=config)
+    from_host = spec.compress(jnp.asarray(np.asarray(weights)), preconditioner=preconditioner, sharding_config=config)
+
+    assert np.array_equal(np.asarray(from_host.packed_tape), np.asarray(from_device.packed_tape))
+    assert np.array_equal(np.asarray(from_host.scales), np.asarray(from_device.scales))
+
+
 def test_trellis_load_exported_rejects_column_count_mismatch() -> None:
     spec = TrellisSpec(bits=1, window_bits=4, restart_columns=4)
     narrow = spec.compress(jnp.ones((2, 4), dtype=jnp.float32), sharding_config=make_test_sharding_config())
