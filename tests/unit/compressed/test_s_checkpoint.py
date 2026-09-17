@@ -10,6 +10,8 @@ from jax.sharding import Mesh
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 
+from lalamo.compressed.s_trellis import STrellisMatrix, STrellisSpec
+from lalamo.compressed.utils.s_gains import SScaleAxis
 from lalamo.initializer import RandomInitializer
 from lalamo.model_import.loaders.s_checkpoint import load_s_checkpoint
 from lalamo.models.chat_codec import ChatCodecConfig
@@ -17,7 +19,7 @@ from lalamo.models.language_model import GenerationConfig, LanguageModel, Langua
 from lalamo.module import Keychain
 from lalamo.modules.decoder import DecoderForwardPassConfig
 from lalamo.modules.rope import SavedRoPE
-from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.safetensors import safe_write
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 from tests.conftest import RunLalamo
@@ -145,3 +147,55 @@ def test_saved_rope_tables_survive_jit_import_and_native_reload(model: LanguageM
             actual = saved_rope(positions)
             np.testing.assert_array_equal(actual.cosines, tables.cosines)
             np.testing.assert_array_equal(actual.sines, tables.sines)
+
+
+def test_s_trellis_import_preserves_saved_gain_stages(model: LanguageModel, tmp_path: Path) -> None:
+    prefix = "decoder.transformer.layers.0.mixer.qkvg_projection.weights."
+    exported = model.export()
+    arrays, metadata = dict(exported.arrays), dict(exported.metadata)
+    rows, columns = arrays.pop(prefix + "weights").shape
+    spec = STrellisSpec(
+        2, 4, 0, scale_dtype="float32", pre_gain_count=1, post_gain_axes=(SScaleAxis.ROW, SScaleAxis.COLUMN)
+    )
+    with jax.set_mesh(model.sharding_config.mesh):
+        matrix = STrellisMatrix(
+            spec=spec,
+            sharding_config=model.sharding_config,
+            is_sharded=True,
+            codes=jnp.arange(rows * spec.tape_shape(columns)[2], dtype=jnp.uint8).reshape(rows, -1),
+            scales=jnp.linspace(0.9, 1.1, rows, dtype=jnp.float32),
+            gains=jnp.ones(rows, dtype=jnp.bfloat16),
+            table=jnp.arange(65536 * 2, dtype=jnp.float32).reshape(65536, 2) / 65536,
+            signs=jnp.ones(columns, dtype=jnp.float32),
+            small_q=jnp.ones((1, 1), dtype=jnp.float32),
+            pre_gains=(jnp.linspace(0.95, 1.05, rows, dtype=jnp.float32),),
+            post_gains=(
+                jnp.linspace(1.05, 0.95, rows, dtype=jnp.float32),
+                jnp.linspace(0.9, 1.1, columns, dtype=jnp.float32),
+            ),
+        ).switch_sharding_config(model.sharding_config)
+        packed = matrix.export()
+        saved_spec = packed.metadata["spec"]
+        assert isinstance(saved_spec, dict)
+        metadata[prefix + "spec"] = {**saved_spec, "type": "QtipGaussianSpec"}
+        shared = {"table": "codebook_v2", "signs": f"signs_{columns}", "small_q": f"q_{columns}"}
+        for name, value in packed.arrays.items():
+            arrays["qtip_shared." + shared[name] if name in shared else prefix + name] = value
+        (tmp_path / "config.json").write_text(json.dumps(model.config.to_json()))
+        model.token_codec.tokenizer.save(str(tmp_path / "tokenizer.json"))
+        with (tmp_path / "model.safetensors").open("wb") as stream:
+            safe_write(stream, arrays, metadata={key: json.dumps(value) for key, value in metadata.items()})
+
+        restored = LanguageModel.load(tmp_path, model.sharding_config)
+        restored.save(tmp_path / "native")
+        for candidate in (restored, LanguageModel.load(tmp_path / "native", model.sharding_config)):
+            attention = candidate.decoder.transformer.layers[0].mixer
+            assert isinstance(attention, Attention)
+            actual = attention.qkvg_projection.weights
+            assert isinstance(actual, STrellisMatrix)
+            assert actual.spec == matrix.spec
+            for name, expected in packed.arrays.items():
+                saved = actual.export().arrays[name]
+                assert saved.dtype == expected.dtype
+                np.testing.assert_array_equal(saved, expected)
+            np.testing.assert_array_equal(actual.decompress(), matrix.decompress())
