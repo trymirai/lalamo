@@ -44,7 +44,7 @@ def _native_config(value: JSON) -> JSON:
 
 def is_s_checkpoint(config: JSON, metadata: dict[str, JSON]) -> bool:
     return _native_config(config) != config or any(
-        isinstance(spec, dict) and spec.get("type") in ("QtipGaussianSpec", "D4S4Spec", "I3S4Spec")
+        isinstance(spec, dict) and spec.get("type") in ("QtipGaussianSpec", "D4S4Spec", "I3S4Spec", "I4S4Spec")
         for spec in metadata.values()
     )
 
@@ -128,9 +128,9 @@ def load_s_checkpoint(
                             parameter(path / f"post_gains.{index}") for index in range(len(spec.post_gain_axes))
                         ),
                     )
-                case "D4S4Spec" | "I3S4Spec" as kind_name:
+                case "D4S4Spec" | "I3S4Spec" | "I4S4Spec" as kind_name:
                     assert "kind" not in saved
-                    kind = SSurfaceKind.D4 if kind_name == "D4S4Spec" else SSurfaceKind.I3
+                    kind = SSurfaceKind(kind_name[:2].lower())
                     surface = converter.structure({**saved, "kind": kind}, SSurfaceSpec)
                     states = 1 << surface.code_bits
                     table = (
@@ -153,6 +153,9 @@ def load_s_checkpoint(
                         ladder=parameter(path / "ladder"),
                         table=table,
                         signs=parameter(path / sign_name),
+                        post_gains=tuple(
+                            parameter(path / f"post_gains.{index}") for index in range(len(surface.post_gain_axes))
+                        ),
                     )
                 case other:
                     raise ValueError(f"Unsupported S checkpoint weight format {other!r} at {path}")
@@ -173,7 +176,8 @@ def load_s_checkpoint(
                             leaf,
                             replace(qkv, weights=jnp.concatenate((qkv.weights, gate.weights))),
                         )
-                    assert isinstance(qkv, STrellisMatrix) and isinstance(gate, STrellisMatrix)
+                    assert isinstance(qkv, STrellisMatrix | SSurfaceMatrix)
+                    assert isinstance(gate, STrellisMatrix | SSurfaceMatrix)
                     parts = (qkv, gate)
                     matrix = RowStackMatrix(
                         spec=RowStackSpec(tuple((part.shape[0], part.spec) for part in parts)),
