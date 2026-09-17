@@ -51,15 +51,22 @@ class BaseModel[ConfigT: BaseModelConfig](LalamoModule[ConfigT]):
 
     @classmethod
     def load(cls, directory: Path | str, sharding_config: ShardingConfig, dtype: DTypeLike | None = None) -> Self:
+        from lalamo.model_import.loaders.s_checkpoint import is_s_checkpoint, load_s_checkpoint  # noqa: PLC0415
+
         directory = Path(directory)
         with (directory / "config.json").open() as config_file:
-            config = BaseModelConfig.from_json(json.load(config_file))
+            config_json = json.load(config_file)
 
         with (directory / "model.safetensors").open("rb") as weights_file:
             metadata, arrays = safe_read(weights_file)
             decoded_metadata = {}
             if metadata is not None:
                 decoded_metadata = {key: json.loads(value) for key, value in metadata.items()}
+            if is_s_checkpoint(config_json, decoded_metadata):
+                result = load_s_checkpoint(directory, sharding_config, dtype)
+                assert isinstance(result, cls)
+                return result
+            config = BaseModelConfig.from_json(config_json)
             template = config.init_from_directory(directory, EmptyInitializer(dtype, sharding_config))
             result = Exportable.load_exported(
                 template,
