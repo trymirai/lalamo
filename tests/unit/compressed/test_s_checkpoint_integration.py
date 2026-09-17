@@ -1,5 +1,4 @@
 import os
-from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -18,13 +17,11 @@ from lalamo.modules.decoder import DecoderForwardPassConfig
 from lalamo.safetensors import safe_read
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
-from lalamo.weight_matrix import Layout, WeightMatrix
+from lalamo.weight_matrix import FullPrecisionMatrix, Layout, WeightMatrix
 
 pytestmark = [
     pytest.mark.slow,
-    pytest.mark.skipif(
-        "S_CHECKPOINT_DIRECTORY" not in os.environ, reason="requires the original physical HYB036 S checkpoint"
-    ),
+    pytest.mark.skipif("S_CHECKPOINT_DIRECTORY" not in os.environ, reason="requires an original S checkpoint package"),
 ]
 
 
@@ -35,9 +32,10 @@ def model() -> Iterator[LanguageModel]:
         yield load_s_checkpoint(Path(os.environ["S_CHECKPOINT_DIRECTORY"]), config)
 
 
-def test_s_checkpoint_preserves_every_packed_weight(model: LanguageModel) -> None:
+def test_s_checkpoint_preserves_every_parameter(model: LanguageModel) -> None:
     path = Path(os.environ["S_CHECKPOINT_DIRECTORY"]) / "model.safetensors"
     matrices = []
+    auxiliary = {}
     for jax_path, leaf in jax.tree_util.tree_leaves_with_path(model, is_leaf=lambda x: isinstance(x, WeightMatrix)):
         prefix = ParameterPath() / jax_path
         if isinstance(leaf, RowStackMatrix):
@@ -48,12 +46,29 @@ def test_s_checkpoint_preserves_every_packed_weight(model: LanguageModel) -> Non
             )
         elif isinstance(leaf, WeightMatrix):
             matrices.append((prefix, leaf))
-    assert Counter(type(matrix).__name__ for _, matrix in matrices) == {"STrellisMatrix": 272, "SSurfaceMatrix": 2}
+        elif isinstance(leaf, jax.Array):
+            auxiliary[prefix] = leaf
     with path.open("rb") as stream:
         _, saved = safe_read(stream)
+        for name, value in auxiliary.items():
+            original = saved[name]
+            assert value.dtype == original.dtype
+            np.testing.assert_array_equal(value, original)
         for prefix, matrix in matrices:
             assert matrix.dtype == jnp.bfloat16
-            if isinstance(matrix, STrellisMatrix):
+            if isinstance(matrix, FullPrecisionMatrix):
+                if prefix / "weights" in saved:
+                    parameters = {"weights": matrix.weights}
+                else:
+                    assert prefix.endswith(".qkvg_projection.weights")
+                    parent = prefix.removesuffix("qkvg_projection.weights")
+                    qkv = saved[parent + "qkv_projection.weights.weights"]
+                    gate = saved[parent + "gate_projection.weights.weights"]
+                    assert matrix.dtype == qkv.dtype == gate.dtype
+                    np.testing.assert_array_equal(matrix.weights[: qkv.shape[0]], qkv)
+                    np.testing.assert_array_equal(matrix.weights[qkv.shape[0] :], gate)
+                    continue
+            elif isinstance(matrix, STrellisMatrix):
                 parameters = {"codes": matrix.codes, "scales": matrix.scales, "gains": matrix.gains}
                 shared = {
                     f"codebook_v{matrix.spec.vector_width}": matrix.table,
@@ -87,9 +102,10 @@ def test_s_checkpoint_preserves_every_packed_weight(model: LanguageModel) -> Non
 def test_s_checkpoint_prefill_matches_cached_continuation(model: LanguageModel) -> None:
     tokens = jnp.array([[1, 42, 7]], dtype=jnp.int32)
     positions = jnp.arange(3, dtype=jnp.int32)[None]
-    state = model.decoder.init_static_state(batch_size=1, capacity=4, dtype=jnp.bfloat16)
+    state = model.decoder.init_static_state(batch_size=1, capacity=4, dtype=jnp.float32)
     keychain = Keychain.init(0, sharding_config=model.sharding_config)
-    config = DecoderForwardPassConfig.for_inference()
+    # Stable FP32 reductions isolate cache correctness from BF16 kernel differences.
+    config = DecoderForwardPassConfig.for_tracer_tests()
     full = model.decoder(tokens, positions, state=state, keychain=keychain, forward_pass_config=config)
     prefix = model.decoder(
         tokens[:, :2],
@@ -107,8 +123,6 @@ def test_s_checkpoint_prefill_matches_cached_continuation(model: LanguageModel) 
         keychain=keychain,
         forward_pass_config=config,
     )
-    assert full.logits.shape == (1, 3, 248320)
+    assert full.logits.shape == (1, 3, model.decoder.vocab_size)
     assert bool(jnp.all(jnp.isfinite(full.logits)))
-    np.testing.assert_allclose(
-        continued.logits.astype(jnp.float32), full.logits[:, -1:].astype(jnp.float32), atol=0.125, rtol=0.02
-    )
+    np.testing.assert_allclose(continued.logits, full.logits[:, -1:], atol=2e-3, rtol=2e-4)

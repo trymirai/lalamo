@@ -20,18 +20,22 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
+from .s_surface import SSurfaceMatrix, SSurfaceSpec
 from .s_trellis import STrellisMatrix, STrellisSpec
 
 
 @dataclass(frozen=True)
 class RowStackSpec(WeightMatrixSpec):
-    parts: tuple[tuple[int, STrellisSpec], ...]
+    parts: tuple[tuple[int, STrellisSpec | SSurfaceSpec], ...]
     layout: Layout = Layout.OUTPUT_INPUT
 
     def __post_init__(self) -> None:
         if self.layout != Layout.OUTPUT_INPUT or not self.parts or any(rows <= 0 for rows, _ in self.parts):
             raise ValueError("Row stacks require nonempty output-input matrices")
-        assert all(isinstance(spec, STrellisSpec) for _, spec in self.parts)
+        assert all(
+            isinstance(spec, STrellisSpec | SSurfaceSpec) and spec.layout == Layout.OUTPUT_INPUT
+            for _, spec in self.parts
+        )
 
     def compress(
         self,
@@ -59,7 +63,7 @@ class RowStackSpec(WeightMatrixSpec):
 
 
 class RowStackMatrix(WeightMatrix[RowStackSpec]):
-    parts: tuple[STrellisMatrix, ...]
+    parts: tuple[STrellisMatrix | SSurfaceMatrix, ...]
 
     def __check_init__(self) -> None:
         assert tuple((part.shape[0], part.spec) for part in self.parts) == self.spec.parts
