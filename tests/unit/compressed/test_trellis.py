@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.sharding import Mesh, Sharding
+from jaxtyping import DTypeLike
 
 from lalamo.compressed.hybrid import HybridMatrix, HybridSpec
 from lalamo.compressed.trellis import (
@@ -385,9 +386,10 @@ def test_trellis_quantize_block_returns_unit_scale_codewords() -> None:
 
 
 @pytest.mark.parametrize("layout", [Layout.OUTPUT_INPUT, Layout.INPUT_OUTPUT])
-def test_trellis_identity_preconditioner_matches_the_plain_fit(layout: Layout) -> None:
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
+def test_trellis_identity_preconditioner_matches_the_plain_fit(layout: Layout, dtype: DTypeLike) -> None:
     spec = TrellisSpec(bits=2, window_bits=12, restart_columns=8, layout=layout)
-    weights = _gaussian_weights(16, 16)
+    weights = jax.random.normal(jax.random.key(917), (16, 16), dtype=jnp.float32).astype(dtype)
     preconditioner = Preconditioner.init(
         input_block=jnp.identity(16, dtype=jnp.float32),
         output_block=jnp.identity(16, dtype=jnp.float32),
@@ -396,8 +398,10 @@ def test_trellis_identity_preconditioner_matches_the_plain_fit(layout: Layout) -
     plain = spec.compress(weights, sharding_config=make_test_sharding_config())
     preconditioned = spec.compress(weights, preconditioner=preconditioner, sharding_config=make_test_sharding_config())
 
+    assert preconditioned.dtype == weights.dtype
     assert np.array_equal(np.asarray(preconditioned.packed_tape), np.asarray(plain.packed_tape))
-    assert_close_arrays(result=preconditioned.scales, reference=plain.scales)
+    assert np.array_equal(np.asarray(preconditioned.scales), np.asarray(plain.scales))
+    assert np.array_equal(np.asarray(preconditioned.decompress()), np.asarray(plain.decompress()))
 
 
 def test_trellis_input_preconditioner_lowers_the_input_weighted_error() -> None:

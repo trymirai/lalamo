@@ -517,7 +517,7 @@ class TrellisSpec(QuantizedSpec):
         # The sweep replicates its inputs; hand them over replicated so nothing depends on the caller's sharding.
         replicated_scales = with_sharding(scales, sharding_config.make_sharding((None,) * scales.ndim))
         normalized_weights = with_sharding(
-            self.layout.to_output_input(stored_weights / scales.astype(stored_weights.dtype)[..., None]),
+            self.layout.to_output_input(stored_weights.astype(jnp.float32) / scales[..., None]),
             sharding_config.make_sharding((None,) * stored_weights.ndim),
         )
         rounded_weights = yaqa_round_blockwise(
