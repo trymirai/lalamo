@@ -5,6 +5,7 @@ from typing import Literal
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.tree_util as jtu
 from jax.core import Tracer
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
@@ -12,7 +13,7 @@ from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
-from lalamo.utils.sharding import ShardingConfig, sharding_of
+from lalamo.utils.sharding import ShardingConfig, sharding_of, with_sharding
 from lalamo.weight_matrix import (
     CompressionImplementation,
     EmbeddingMatrix,
@@ -99,6 +100,10 @@ class IncoherenceProcessingMode(StrEnum):
 class IncoherenceSigns(eqx.Module):
     input_signs: Int[Array, " in_channels"] | None = field(trainable=False)
     output_signs: Int[Array, " out_channels"] | None = field(trainable=False)
+
+    def switch_sharding_config(self, sharding_config: ShardingConfig) -> "IncoherenceSigns":
+        sharding = sharding_config.make_sharding((None,))
+        return jtu.tree_map(lambda signs: with_sharding(signs, sharding), self)
 
     @classmethod
     def random_init(
@@ -352,6 +357,24 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
             quantized=quantized,
             adapter=adapter,
             incoherence_signs=self.incoherence_signs,
+        )
+
+    def switch_sharding_config(self, sharding_config: ShardingConfig) -> "HybridMatrix":
+        if sharding_config == self.sharding_config:
+            return self
+        adapter = self.adapter
+        if adapter is not None:
+            adapter = adapter.switch_sharding_config(sharding_config)
+        incoherence_signs = self.incoherence_signs
+        if incoherence_signs is not None:
+            incoherence_signs = incoherence_signs.switch_sharding_config(sharding_config)
+        return HybridMatrix(
+            spec=self.spec,
+            sharding_config=sharding_config,
+            is_sharded=self.is_sharded,
+            quantized=self.quantized.switch_sharding_config(sharding_config),
+            adapter=adapter,
+            incoherence_signs=incoherence_signs,
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:

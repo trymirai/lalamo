@@ -7,7 +7,14 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 from lalamo.module import LogicalAxis
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.utils.sharding import ShardingConfig, is_sharded, reshard_as, sharding_of, with_sharding
+from lalamo.utils.sharding import (
+    ShardingConfig,
+    is_sharded,
+    lookup_sharded_indices,
+    reshard_as,
+    sharding_of,
+    with_sharding,
+)
 from tests.helpers import make_sharding
 
 
@@ -151,3 +158,17 @@ def test_reshard_as_replicates_shape_dtype_struct_when_reference_has_none(fake_m
     assert result.sharding.mesh == fake_mesh
     assert result.sharding.spec == PartitionSpec(None)
     assert not is_sharded(result.sharding)
+
+
+def test_lookup_sharded_indices_supports_one_dimensional_arrays(fake_mesh: Mesh) -> None:
+    del fake_mesh
+    values = jax.device_put(jnp.arange(8, dtype=jnp.float32), make_sharding((LogicalAxis.MATRIX,)))
+    row_index = jax.device_put(jnp.array([6, 1]), make_sharding((LogicalAxis.BATCH,)))
+
+    single = lookup_sharded_indices(values, 6)
+    batched = lookup_sharded_indices(values, row_index)
+
+    assert single.shape == ()
+    assert float(single) == 6.0
+    assert jnp.array_equal(batched, jnp.array([6.0, 1.0]))
+    assert batched.sharding == make_sharding((LogicalAxis.BATCH,))
