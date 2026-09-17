@@ -121,6 +121,12 @@ def load_s_checkpoint(
                         table=parameter(f"qtip_shared.codebook_v{spec.vector_width}"),
                         signs=parameter(f"qtip_shared.signs_{columns}"),
                         small_q=parameter(f"qtip_shared.q_{columns}"),
+                        pre_gains=tuple(
+                            parameter(path / f"pre_gains.{index}") for index in range(spec.pre_gain_count)
+                        ),
+                        post_gains=tuple(
+                            parameter(path / f"post_gains.{index}") for index in range(len(spec.post_gain_axes))
+                        ),
                     )
                 case "D4S4Spec" | "I3S4Spec" as kind_name:
                     assert "kind" not in saved
