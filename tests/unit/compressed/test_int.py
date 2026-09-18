@@ -11,7 +11,7 @@ from lalamo.compressed.utils.yaqa import yaqa_round_fixpoint
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import is_sharded
-from lalamo.weight_matrix import CompressionImplementation, Layout
+from lalamo.weight_matrix import CompressionImplementation, Layout, QuantParamsLayout
 from tests.helpers import make_sharding, make_test_sharding_config
 from tests.unit.compressed import test_common as compressed_common
 
@@ -141,7 +141,7 @@ def test_int_compress_and_decompress_match_manual_quantization(
     is_symmetric: bool,
 ) -> None:
     weights = _logical_weights()
-    spec = IntSpec(bits=bits, group_size=2, is_symmetric=is_symmetric, layout=layout)
+    spec = IntSpec(bits=bits, group_size=2, is_symmetric=is_symmetric, weight_layout=layout)
     stored_weights = _stored_weights(layout, weights)
     expected_scales, expected_zero_points = _manual_int_affine_parameters(
         stored_weights,
@@ -216,7 +216,12 @@ def test_int_export_load_roundtrips_and_preserves_template_sharding(
     fake_mesh: Mesh,
 ) -> None:
     weights = _logical_weights()
-    spec = IntSpec(bits=4, group_size=2, layout=Layout.INPUT_OUTPUT)
+    spec = IntSpec(
+        bits=4,
+        group_size=2,
+        weight_layout=Layout.INPUT_OUTPUT,
+        params_layout=QuantParamsLayout.GROUP_OUTPUT,
+    )
     saved_sharding = make_sharding((None, None))
     assert saved_sharding is not None
     original = spec.compress(
@@ -247,12 +252,12 @@ def test_int_export_load_roundtrips_and_preserves_template_sharding(
 
 
 def test_int_symmetric_from_packed_parameters_rejects_zero_points() -> None:
-    original = IntSpec(bits=4, group_size=2, layout=Layout.INPUT_OUTPUT).compress(
+    original = IntSpec(bits=4, group_size=2, weight_layout=Layout.INPUT_OUTPUT).compress(
         _logical_weights(),
         implementation=CompressionImplementation.INFERENCE,
         sharding_config=make_test_sharding_config(),
     )
-    spec = IntSpec(bits=4, group_size=2, is_symmetric=True, layout=Layout.INPUT_OUTPUT)
+    spec = IntSpec(bits=4, group_size=2, is_symmetric=True, weight_layout=Layout.INPUT_OUTPUT)
     assert isinstance(original, IntMatrixForInference)
     assert original.packed_zero_points is not None
 

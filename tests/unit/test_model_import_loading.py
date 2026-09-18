@@ -23,6 +23,7 @@ from lalamo.model_import.loaders.huggingface import (
     load_input_embedding_matrix,
     load_linear,
     load_moe,
+    load_untied_embedding,
 )
 from lalamo.model_import.loaders.utils import decode_mxfp4
 from lalamo.model_import.model_configs.foreign_config import ForeignConfig
@@ -32,7 +33,7 @@ from lalamo.module import Keychain, LalamoConfig, LalamoModule
 from lalamo.modules.activations import SiLU
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.decoder import PerLayerEmbedding, PLEModelConfig
-from lalamo.modules.embedding import TiedEmbedding
+from lalamo.modules.embedding import TiedEmbedding, UntiedEmbeddingConfig
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.mlp import (
     DenseMLP,
@@ -52,6 +53,7 @@ from lalamo.weight_matrix import (
     GradientEstimator,
     Layout,
     MatmulConfig,
+    QuantParamsLayout,
     WeightMatrix,
 )
 from tests.common import assert_close
@@ -307,6 +309,7 @@ def test_load_linear_quantized_checkpoint_uses_requested_dtype_and_implementatio
 
     assert isinstance(loaded.weights, expected_type)
     assert loaded.weights.spec.layout == Layout.OUTPUT_INPUT
+    assert loaded.weights.spec.params_layout == QuantParamsLayout.GROUP_OUTPUT
     assert loaded.weights.dtype == jnp.bfloat16
 
 
@@ -321,6 +324,7 @@ def test_mlx_quantized_per_layer_embedding_forwards_training_config() -> None:
     )
     assert isinstance(token_embedding, MLXMatrixForTraining)
     assert token_embedding.spec.bits == 8
+    assert token_embedding.spec.params_layout == QuantParamsLayout.OUTPUT_GROUP
 
     config = PLEModelConfig(
         ple_dim=OUTPUT_DIM,
@@ -358,6 +362,28 @@ def test_mlx_quantized_per_layer_embedding_forwards_training_config() -> None:
             forward_pass_config=forward_pass_config,
             keychain=Keychain.init(0, sharding_config=initializer.sharding_config),
         )
+
+
+def test_untied_quantized_readout_uses_output_group_metadata() -> None:
+    initializer = EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config())
+    module = UntiedEmbeddingConfig(input_scale=None, logit_soft_cap=None).init(
+        initializer,
+        model_dim=INPUT_DIM,
+        vocab_size=OUTPUT_DIM,
+    )
+    input_path = ParameterPath("input")
+    output_path = ParameterPath("output")
+    weights = {
+        **_mlx_weights(input_path),
+        **_mlx_weights(output_path),
+    }
+
+    loaded = load_untied_embedding(module, weights, input_path, output_path)
+
+    assert isinstance(loaded.input_embedding, MLXMatrixForInference)
+    assert isinstance(loaded.output_embedding, MLXMatrixForInference)
+    assert loaded.input_embedding.spec.params_layout == QuantParamsLayout.OUTPUT_GROUP
+    assert loaded.output_embedding.spec.params_layout == QuantParamsLayout.OUTPUT_GROUP
 
 
 def test_load_linear_symmetric_awq_without_qzeros_uses_symmetric_spec() -> None:

@@ -25,7 +25,7 @@ from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at
-from lalamo.weight_matrix import CompressionImplementation, EmbeddingMatrix, Layout, WeightMatrix
+from lalamo.weight_matrix import CompressionImplementation, EmbeddingMatrix, Layout, QuantParamsLayout, WeightMatrix
 
 from .common import load_full_precision
 
@@ -252,6 +252,7 @@ def _load_matrix(
     expected_grouped_channels: int,
     full_precision_weights: Callable[[], Array],
     implementation: CompressionImplementation,
+    params_layout: QuantParamsLayout,
 ) -> WeightMatrix:
     sharding_config = template.sharding_config
     if _is_awq(weights_dict, path, sublayers_to_fuse):
@@ -263,6 +264,7 @@ def _load_matrix(
             layout=layout,
             implementation=implementation,
             sharding_config=sharding_config,
+            params_layout=params_layout,
         )
     if _is_mlx(weights_dict, path, sublayers_to_fuse):
         return _load_mlx_matrix(
@@ -274,6 +276,7 @@ def _load_matrix(
             layout=layout,
             implementation=implementation,
             sharding_config=sharding_config,
+            params_layout=params_layout,
         )
     return load_full_precision(template, full_precision_weights())
 
@@ -287,6 +290,7 @@ def _load_awq_array(
     layout: Layout,
     implementation: CompressionImplementation,
     sharding_config: ShardingConfig,
+    params_layout: QuantParamsLayout,
 ) -> IntMatrix:
     packed_qweights, packed_qzeros, scales = _fuse_awq_weights(weights_dict, path, sublayers_to_fuse)
     # AutoAWQ HF layout: qweight [in_channels, out_packed], scales [num_groups, out_channels]
@@ -319,7 +323,8 @@ def _load_awq_array(
         bits=_supported_quantization_bits(bits),
         group_size=group_size,
         is_symmetric=zero_point_values is None,
-        layout=layout,
+        weight_layout=layout,
+        params_layout=params_layout,
     )
     if zero_point_values is None:
         packed_zero_points = None
@@ -345,6 +350,7 @@ def _load_mlx_matrix(
     layout: Layout,
     implementation: CompressionImplementation,
     sharding_config: ShardingConfig,
+    params_layout: QuantParamsLayout,
 ) -> MLXMatrix:
     packed_weights, deq_biases, scales = _fuse_mlx_weights(weights_dict, path, sublayers_to_fuse)
     return _load_packed_mlx_matrix(
@@ -356,6 +362,7 @@ def _load_mlx_matrix(
         layout=layout,
         implementation=implementation,
         sharding_config=sharding_config,
+        params_layout=params_layout,
     )
 
 
@@ -369,6 +376,7 @@ def _load_packed_mlx_matrix(
     layout: Layout,
     implementation: CompressionImplementation,
     sharding_config: ShardingConfig,
+    params_layout: QuantParamsLayout,
 ) -> MLXMatrix:
     # MLX HF layout: weight [rows, packed_cols], scales [rows, num_groups].
     packed_in = packed_weights.shape[-1]
@@ -389,7 +397,12 @@ def _load_packed_mlx_matrix(
     scale_values = jax.device_put(scales.astype(template.dtype), weight_sharding)
     bias_values = jax.device_put(deq_biases.astype(template.dtype), weight_sharding)
 
-    spec = MLXSpec(bits=bits, group_size=group_size, layout=layout)
+    spec = MLXSpec(
+        bits=bits,
+        group_size=group_size,
+        weight_layout=layout,
+        params_layout=params_layout,
+    )
     return spec.from_packed_parameters(
         packed_weights=pack_uint_to_uint8(weight_values, bits, sharding_config=sharding_config),
         scales=scale_values,
@@ -419,6 +432,7 @@ def load_linear(
         expected_grouped_channels=module.input_dim,
         full_precision_weights=lambda: _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse),
         implementation=implementation,
+        params_layout=QuantParamsLayout.GROUP_OUTPUT,
     )
     return _update_linear(module, weights, bias)
 
@@ -1005,6 +1019,7 @@ def load_delta_net_attention(
                 layout=Layout.OUTPUT_INPUT,
                 implementation=implementation,
                 sharding_config=module.in_proj.weights.sharding_config,
+                params_layout=QuantParamsLayout.GROUP_OUTPUT,
             )
         in_proj = _update_linear(module.in_proj, new_weights, None)
     conv = _load_conv(module.conv, weights_dict, path, permute_conv)
@@ -1123,7 +1138,7 @@ def load_transformer_layer(
     )
 
 
-def _load_weight_matrix(
+def _load_output_embedding_matrix(
     matrix: WeightMatrix,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
@@ -1139,6 +1154,7 @@ def _load_weight_matrix(
         expected_grouped_channels=matrix.shape[-1],
         full_precision_weights=lambda: weights_dict[path / "weight"],
         implementation=implementation,
+        params_layout=QuantParamsLayout.OUTPUT_GROUP,
     )
 
 
@@ -1158,6 +1174,7 @@ def load_input_embedding_matrix(
         expected_grouped_channels=matrix.shape[-1],
         full_precision_weights=lambda: jnp.matrix_transpose(weights_dict[path / "weight"]),
         implementation=implementation,
+        params_layout=QuantParamsLayout.OUTPUT_GROUP,
     )
     assert isinstance(loaded, EmbeddingMatrix)
     return loaded
@@ -1193,7 +1210,7 @@ def load_untied_embedding(
         embedding_path,
         implementation=implementation,
     )
-    output_emb = _load_weight_matrix(
+    output_emb = _load_output_embedding_matrix(
         module.output_embedding,
         weights_dict,
         lm_head_path,
