@@ -98,12 +98,12 @@ def test_microfloat_distortion_matches_inference_quantization_error(
 @pytest.mark.parametrize(
     "spec",
     [
-        IntSpec(bits=4, group_size=4, layout=Layout.OUTPUT_INPUT),
-        IntSpec(bits=4, group_size=4, is_symmetric=True, layout=Layout.OUTPUT_INPUT),
-        IntSpec(bits=8, group_size=4, layout=Layout.INPUT_OUTPUT),
-        IntSpec(bits=8, group_size=4, is_symmetric=True, layout=Layout.INPUT_OUTPUT),
-        MLXSpec(bits=4, group_size=4, layout=Layout.OUTPUT_INPUT),
-        MLXSpec(bits=8, group_size=4, layout=Layout.INPUT_OUTPUT),
+        IntSpec(bits=4, group_size=4, weight_layout=Layout.OUTPUT_INPUT),
+        IntSpec(bits=4, group_size=4, is_symmetric=True, weight_layout=Layout.OUTPUT_INPUT),
+        IntSpec(bits=8, group_size=4, weight_layout=Layout.INPUT_OUTPUT),
+        IntSpec(bits=8, group_size=4, is_symmetric=True, weight_layout=Layout.INPUT_OUTPUT),
+        MLXSpec(bits=4, group_size=4, weight_layout=Layout.OUTPUT_INPUT),
+        MLXSpec(bits=8, group_size=4, weight_layout=Layout.INPUT_OUTPUT),
         LloydMaxSpec(bits=4, group_size=4, layout=Layout.OUTPUT_INPUT),
         LloydMaxSpec(bits=3, group_size=4, layout=Layout.INPUT_OUTPUT),
         MicrofloatSpec(group_size=4, layout=Layout.OUTPUT_INPUT),

@@ -35,11 +35,11 @@ class CompressedMatrixCase:
 
 
 def _int_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> WeightMatrixSpec:
-    return IntSpec(bits=bits, group_size=group_size, layout=layout)
+    return IntSpec(bits=bits, group_size=group_size, weight_layout=layout)
 
 
 def _mlx_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> WeightMatrixSpec:
-    return MLXSpec(bits=bits, group_size=group_size, layout=layout)
+    return MLXSpec(bits=bits, group_size=group_size, weight_layout=layout)
 
 
 def _lloyd_max_spec(bits: Literal[4, 8], group_size: int, layout: Layout) -> WeightMatrixSpec:

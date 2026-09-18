@@ -36,6 +36,7 @@ __all__ = [
     "GradientEstimator",
     "Layout",
     "MatmulConfig",
+    "QuantParamsLayout",
     "WeightMatrix",
     "WeightMatrixSpec",
 ]
@@ -50,6 +51,11 @@ class GradientEstimator(StrEnum):
 class CompressionImplementation(StrEnum):
     TRAINING = "training"
     INFERENCE = "inference"
+
+
+class QuantParamsLayout(StrEnum):
+    OUTPUT_GROUP = "output_group"
+    GROUP_OUTPUT = "group_output"
 
 
 @dataclass(frozen=True)
@@ -81,7 +87,7 @@ class MatmulConfig:
 
 @dataclass(frozen=True)
 class WeightMatrixSpec(RegistryABC):
-    _converter: ClassVar[GenConverter] = make_registry_abc_converter()
+    _converter: ClassVar[GenConverter] = make_registry_abc_converter(forbid_extra_keys=True)
 
     @classmethod
     def from_json(cls, json_object: JSON) -> Self:
