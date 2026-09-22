@@ -23,9 +23,10 @@ from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
-from lalamo.initializer import Initializer
-from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.initializer import EmptyInitializer, Initializer
+from lalamo.module import LalamoConfig, LalamoModule, field
 from lalamo.utils.registry_abc import RegistryABC
+from lalamo.utils.sharding import lookup_sharded_indices
 
 __all__ = [
     "LinearScalingRoPEConfig",
@@ -34,6 +35,7 @@ __all__ = [
     "PositionalEmbeddings",
     "RoPE",
     "RoPEConfig",
+    "SavedRoPEConfig",
     "UnscaledRoPEConfig",
     "YARNRoPEConfig",
 ]
@@ -113,6 +115,34 @@ class RoPE(LalamoModule[RoPEConfig]):
 
 class UnscaledRoPEConfig(RoPEConfig):
     pass
+
+
+class SavedRoPEConfig(RoPEConfig):
+    def init(self, initializer: Initializer) -> "SavedRoPE":
+        assert isinstance(initializer, EmptyInitializer), "Saved RoPE requires checkpoint tables"
+        shape = (self.max_sequence_length, self.head_dim)
+        return SavedRoPE(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            cosines=initializer.zeros(shape, dtype=jnp.float32),
+            sines=initializer.zeros(shape, dtype=jnp.float32),
+        )
+
+
+class SavedRoPE(RoPE):
+    cosines: Float[Array, "positions head_channels"] = field(trainable=False)
+    sines: Float[Array, "positions head_channels"] = field(trainable=False)
+
+    def __check_init__(self) -> None:
+        assert self.cosines.shape == self.sines.shape == (self.config.max_sequence_length, self.config.head_dim)
+        assert self.cosines.dtype == self.sines.dtype == jnp.float32
+
+    @eqx.filter_jit
+    def __call__(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
+        return PositionalEmbeddings(
+            cosines=lookup_sharded_indices(self.cosines, timesteps),
+            sines=lookup_sharded_indices(self.sines, timesteps),
+        )
 
 
 @dataclass(frozen=True, kw_only=True)

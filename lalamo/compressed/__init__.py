@@ -16,7 +16,12 @@ from .microfloat import (
 )
 from .mlx import MLXMatrix, MLXMatrixForInference, MLXMatrixForTraining, MLXSpec
 from .quantized_spec import QuantizedSpec
+from .row_stack import RowStackMatrix, RowStackSpec
+from .s_direction import SDirectionMatrix, SDirectionSpec
+from .s_surface import SSurfaceKind, SSurfaceMatrix, SSurfaceSpec
+from .s_trellis import STrellisMatrix, STrellisSpec
 from .trellis import TrellisMatrix, TrellisSpec
+from .utils.s_gains import SScaleAxis
 
 __all__ = [
     "HybridMatrix",
@@ -41,6 +46,16 @@ __all__ = [
     "MicrofloatScaleMode",
     "MicrofloatSpec",
     "QuantizedSpec",
+    "RowStackMatrix",
+    "RowStackSpec",
+    "SDirectionMatrix",
+    "SDirectionSpec",
+    "SScaleAxis",
+    "SSurfaceKind",
+    "SSurfaceMatrix",
+    "SSurfaceSpec",
+    "STrellisMatrix",
+    "STrellisSpec",
     "TrellisMatrix",
     "TrellisSpec",
 ]
