@@ -216,22 +216,25 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
     sequence_ids = [request.sequence_id for request in requests]
     batch_scheduler = ContinuousBatchScheduler(model=model)
 
-    for reply_idx, reply in batch_scheduler.reply_many(
-        dataset,
-        generation_config=reference.generation_config,
-        batch_scheduler_config=BatchSchedulerConfig(
-            max_output_length=reference.max_completion_tokens,
-            batch_size=None,
-        ),
-        reasoning_effort=reference.reasoning_effort,
-        keychain=keychain,
-        vram_bytes=app.state.vram_bytes,
-    ):
-        yield ResponseBody(
-            sequence_id=sequence_ids[reply_idx],
-            chain_of_thought=reply.chain_of_thought,
-            response=reply.response,
-        )
+    # Explicit-axis arrays resolve their sharding against the ambient mesh, and batches run on a worker
+    # thread whose context starts empty, so the mesh has to be entered here rather than at startup.
+    with jax.set_mesh(model.sharding_config.mesh):
+        for reply_idx, reply in batch_scheduler.reply_many(
+            dataset,
+            generation_config=reference.generation_config,
+            batch_scheduler_config=BatchSchedulerConfig(
+                max_output_length=reference.max_completion_tokens,
+                batch_size=None,
+            ),
+            reasoning_effort=reference.reasoning_effort,
+            keychain=keychain,
+            vram_bytes=app.state.vram_bytes,
+        ):
+            yield ResponseBody(
+                sequence_id=sequence_ids[reply_idx],
+                chain_of_thought=reply.chain_of_thought,
+                response=reply.response,
+            )
 
 
 async def execute_batch(batch: Batch, requests: list[RequestBody]) -> None:
