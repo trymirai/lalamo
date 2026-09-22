@@ -636,6 +636,10 @@ def server(
         bool,
         Option(help="Shard model weight matrices across visible devices."),
     ] = False,
+    batch_size: Annotated[
+        int | None,
+        Option(help="Fixed batch size, bypassing VRAM-based estimation."),
+    ] = None,
 ) -> None:
     try:
         from lalamo.server import start_server  # noqa: PLC0415
@@ -658,6 +662,7 @@ def server(
         vram_bytes=vram_bytes,
         cache_dir=cache_dir,
         sharding_config=ShardingConfig.tensor_parallel() if tensor_parallel else ShardingConfig.replicated(),
+        batch_size=batch_size,
     )
 
 

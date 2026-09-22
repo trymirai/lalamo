@@ -224,11 +224,11 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
             generation_config=reference.generation_config,
             batch_scheduler_config=BatchSchedulerConfig(
                 max_output_length=reference.max_completion_tokens,
-                batch_size=None,
+                batch_size=app.state.batch_size,
             ),
             reasoning_effort=reference.reasoning_effort,
             keychain=keychain,
-            vram_bytes=app.state.vram_bytes,
+            vram_bytes=None if app.state.batch_size is not None else app.state.vram_bytes,
         ):
             yield ResponseBody(
                 sequence_id=sequence_ids[reply_idx],
@@ -360,8 +360,16 @@ async def create_chat_completion(request: ChatCompletionRequest) -> Response:
     return StreamingResponse(chunks(), media_type="text/event-stream")
 
 
-def start_server(host: str, port: int, vram_bytes: int, cache_dir: Path, sharding_config: ShardingConfig) -> None:
+def start_server(
+    host: str,
+    port: int,
+    vram_bytes: int,
+    cache_dir: Path,
+    sharding_config: ShardingConfig,
+    batch_size: int | None,
+) -> None:
     app.state.vram_bytes = vram_bytes
+    app.state.batch_size = batch_size
     app.state.cache_dir = cache_dir
     app.state.sharding_config = sharding_config
     uvicorn.run(app, host=host, port=port)
