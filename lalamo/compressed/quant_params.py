@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+from einops import rearrange
 from jaxtyping import Array
 
 from lalamo.utils.sharding import ShardingConfig
@@ -17,14 +18,15 @@ def for_export(
     sharding_config: ShardingConfig,
 ) -> Array:
     columns, groups = shape
-    _check_shape(params, (columns, _stored_width(groups, bits)))
+    _validate_plane(params, columns, groups, bits)
     if layout == Layout.INPUT_OUTPUT:
         return params
 
-    stride = (columns + 3) // 4 * 4
-    logical = _unpack(params, bits, groups)
-    logical = jnp.pad(jnp.swapaxes(logical, -2, -1), [(0, 0)] * (logical.ndim - 1) + [(0, stride - columns)])
-    return _pack(logical, bits, sharding_config)
+    padded_columns = _group_output_columns(columns)
+    output_group = _unpack(params, bits, groups)
+    group_output = rearrange(output_group, "... output group -> ... group output")
+    padding = [(0, 0)] * (group_output.ndim - 1) + [(0, padded_columns - columns)]
+    return _pack(jnp.pad(group_output, padding), bits, sharding_config)
 
 
 def from_export(
@@ -38,14 +40,19 @@ def from_export(
 ) -> Array:
     columns, groups = shape
     if layout == Layout.INPUT_OUTPUT:
-        _check_shape(stored, (columns, _stored_width(groups, bits)))
+        _validate_plane(stored, columns, groups, bits)
         return load_as(like, stored)
 
-    stride = (columns + 3) // 4 * 4
-    _check_shape(stored, (groups, _stored_width(stride, bits)))
-    logical = _unpack(stored, bits, stride)
-    logical = jnp.swapaxes(logical[..., :columns], -2, -1)
-    return load_as(like, _pack(logical, bits, sharding_config))
+    padded_columns = _group_output_columns(columns)
+    _validate_plane(stored, groups, padded_columns, bits)
+    group_output = _unpack(stored, bits, padded_columns)
+    output_group = rearrange(group_output[..., :columns], "... group output -> ... output group")
+    return load_as(like, _pack(output_group, bits, sharding_config))
+
+
+def _group_output_columns(columns: int) -> int:
+    columns_per_load = 4
+    return columns + (-columns % columns_per_load)
 
 
 def _unpack(array: Array, bits: int, width: int) -> Array:
@@ -60,12 +67,12 @@ def _pack(array: Array, bits: int, sharding_config: ShardingConfig) -> Array:
     return array
 
 
-def _stored_width(width: int, bits: int) -> int:
+def _validate_plane(array: Array, rows: int, columns: int, bits: int) -> None:
+    if rows <= 0 or columns <= 0:
+        raise ValueError(f"quantization parameter dimensions must be positive: rows={rows}, columns={columns}")
     if bits in (4, 8):
-        return packed_last_axis_dim(width, bits)
-    return width
-
-
-def _check_shape(array: Array, expected_tail: tuple[int, int]) -> None:
-    if tuple(array.shape[-2:]) != expected_tail:
-        raise ValueError(f"quantization parameter shape {array.shape} does not match *{expected_tail}")
+        columns = packed_last_axis_dim(columns, bits)
+    elif bits not in (16, 32):
+        raise ValueError(f"unsupported quantization parameter width: {bits}")
+    if tuple(array.shape[-2:]) != (rows, columns):
+        raise ValueError(f"quantization parameter shape {array.shape} does not end with {(rows, columns)}")
