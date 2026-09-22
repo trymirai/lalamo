@@ -139,7 +139,8 @@ class _TapeLayout:
 
     @property
     def word_count(self) -> int:
-        return ceil(self.blocks * self.spec.block_bits / 32) + 1
+        payload_words = ceil(self.blocks * self.spec.block_bits / 32)
+        return payload_words + 1
 
     def window_bit_offsets(self) -> UInt32[np.ndarray, " steps"]:
         block_starts = np.arange(self.blocks) * self.spec.block_bits
