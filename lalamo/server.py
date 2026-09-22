@@ -16,7 +16,7 @@ import cattrs
 import jax
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from jax import numpy as jnp
 
 from lalamo.data.huggingface_message import HFMessage
@@ -291,6 +291,73 @@ async def get_batch(batch_id: str) -> Batch:
             return replace(batch, results=())
         return batch
     raise HTTPException(404, "batch not found")
+
+
+@dataclass(frozen=True)
+class ChatCompletionRequest:
+    """The subset of the OpenAI chat-completions body this server can honour."""
+
+    model: str
+    messages: list[HFMessage]
+    max_completion_tokens: int = 8192
+    reasoning_effort: ReasoningEffort | None = None
+    seed: int | None = None
+    stream: bool = False
+    tools: list[dict] | None = None
+
+    def as_request_body(self) -> RequestBody:
+        if self.tools is not None:
+            raise HTTPException(400, "Tool calling is not supported; messages carry a role and content only.")
+        return RequestBody(
+            sequence_id=uuid.uuid4().hex,
+            messages=self.messages,
+            model=self.model,
+            max_completion_tokens=self.max_completion_tokens,
+            reasoning_effort=self.reasoning_effort,
+            seed=self.seed,
+        )
+
+
+def _chat_completion_payload(model: str, reply: ResponseBody, *, streaming: bool) -> dict:
+    key = "delta" if streaming else "message"
+    return {
+        "id": f"chatcmpl-{reply.sequence_id}",
+        "object": "chat.completion.chunk" if streaming else "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                key: {
+                    "role": "assistant",
+                    "content": reply.response,
+                    "reasoning_content": reply.chain_of_thought,
+                },
+                "finish_reason": "stop",
+            },
+        ],
+    }
+
+
+@app.post("/v1/chat/completions")
+async def create_chat_completion(request: ChatCompletionRequest) -> Response:
+    """Run one conversation through the batch machinery and answer in the OpenAI shape.
+
+    Generation is not incremental here, so a streaming request receives the finished reply as a single chunk.
+    """
+    body = request.as_request_body()
+    async with gpu_lock:
+        replies = await asyncio.to_thread(lambda: list(generate_replies([body])))
+    reply, *_ = replies
+
+    if not request.stream:
+        return JSONResponse(_chat_completion_payload(request.model, reply, streaming=False))
+
+    async def chunks() -> AsyncIterator[str]:
+        yield f"data: {json.dumps(_chat_completion_payload(request.model, reply, streaming=True))}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(chunks(), media_type="text/event-stream")
 
 
 def start_server(host: str, port: int, vram_bytes: int, cache_dir: Path, sharding_config: ShardingConfig) -> None:
