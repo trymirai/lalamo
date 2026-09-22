@@ -53,7 +53,6 @@ from lalamo.weight_matrix import (
     GradientEstimator,
     Layout,
     MatmulConfig,
-    QuantParamsLayout,
     WeightMatrix,
 )
 from tests.common import assert_close
@@ -309,7 +308,6 @@ def test_load_linear_quantized_checkpoint_uses_requested_dtype_and_implementatio
 
     assert isinstance(loaded.weights, expected_type)
     assert loaded.weights.spec.layout == Layout.OUTPUT_INPUT
-    assert loaded.weights.spec.params_layout == QuantParamsLayout.GROUP_OUTPUT
     assert loaded.weights.dtype == jnp.bfloat16
 
 
@@ -324,7 +322,7 @@ def test_mlx_quantized_per_layer_embedding_forwards_training_config() -> None:
     )
     assert isinstance(token_embedding, MLXMatrixForTraining)
     assert token_embedding.spec.bits == 8
-    assert token_embedding.spec.params_layout == QuantParamsLayout.OUTPUT_GROUP
+    assert token_embedding.spec.layout == Layout.INPUT_OUTPUT
 
     config = PLEModelConfig(
         ple_dim=OUTPUT_DIM,
@@ -364,7 +362,7 @@ def test_mlx_quantized_per_layer_embedding_forwards_training_config() -> None:
         )
 
 
-def test_untied_quantized_readout_uses_output_group_metadata() -> None:
+def test_untied_quantized_readout_uses_layout_metadata() -> None:
     initializer = EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config())
     module = UntiedEmbeddingConfig(input_scale=None, logit_soft_cap=None).init(
         initializer,
@@ -382,8 +380,8 @@ def test_untied_quantized_readout_uses_output_group_metadata() -> None:
 
     assert isinstance(loaded.input_embedding, MLXMatrixForInference)
     assert isinstance(loaded.output_embedding, MLXMatrixForInference)
-    assert loaded.input_embedding.spec.params_layout == QuantParamsLayout.OUTPUT_GROUP
-    assert loaded.output_embedding.spec.params_layout == QuantParamsLayout.OUTPUT_GROUP
+    assert loaded.input_embedding.spec.layout == Layout.INPUT_OUTPUT
+    assert loaded.output_embedding.spec.layout == Layout.OUTPUT_INPUT
 
 
 def test_load_linear_symmetric_awq_without_qzeros_uses_symmetric_spec() -> None:

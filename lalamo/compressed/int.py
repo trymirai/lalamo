@@ -27,7 +27,6 @@ from lalamo.weight_matrix import (
     FullPrecisionSpec,
     Layout,
     MatmulConfig,
-    QuantParamsLayout,
     WeightMatrixSpec,
 )
 
@@ -243,12 +242,7 @@ class IntSpec(QuantizedSpec):
     bits: Literal[4, 8]
     group_size: int
     is_symmetric: bool = False
-    weight_layout: Layout = Layout.OUTPUT_INPUT
-    params_layout: QuantParamsLayout = QuantParamsLayout.OUTPUT_GROUP
-
-    @property
-    def layout(self) -> Layout:
-        return self.weight_layout
+    layout: Layout = Layout.OUTPUT_INPUT
 
     @property
     def input_block_size(self) -> int:
@@ -421,7 +415,7 @@ class IntMatrix(EmbeddingMatrix[IntSpec]):
             "scales": quant_params.for_export(
                 self.scales,
                 shape=params_shape,
-                layout=self.spec.params_layout,
+                layout=self.spec.layout,
                 bits=self.scales.dtype.itemsize * 8,
                 sharding_config=self.sharding_config,
             ),
@@ -431,7 +425,7 @@ class IntMatrix(EmbeddingMatrix[IntSpec]):
             arrays["zero_points"] = quant_params.for_export(
                 packed_zero_points,
                 shape=params_shape,
-                layout=self.spec.params_layout,
+                layout=self.spec.layout,
                 bits=self.spec.bits,
                 sharding_config=self.sharding_config,
             )
@@ -468,7 +462,7 @@ class IntMatrix(EmbeddingMatrix[IntSpec]):
             exported_data.arrays[prefix / "scales"],
             like=self.scales,
             shape=params_shape,
-            layout=self.spec.params_layout,
+            layout=self.spec.layout,
             bits=self.scales.dtype.itemsize * 8,
             sharding_config=self.sharding_config,
         )
@@ -478,7 +472,7 @@ class IntMatrix(EmbeddingMatrix[IntSpec]):
                 exported_data.arrays[prefix / "zero_points"],
                 like=packed_zero_points,
                 shape=params_shape,
-                layout=self.spec.params_layout,
+                layout=self.spec.layout,
                 bits=self.spec.bits,
                 sharding_config=self.sharding_config,
             )

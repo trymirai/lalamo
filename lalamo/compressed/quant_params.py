@@ -3,27 +3,28 @@ from jaxtyping import Array
 
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as
-from lalamo.weight_matrix import QuantParamsLayout
+from lalamo.weight_matrix import Layout
 
-from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
+from .utils.packing import pack_uint_to_uint8, packed_last_axis_dim, unpack_uint8_to_uint
 
 
 def for_export(
     params: Array,
     *,
     shape: tuple[int, int],
-    layout: QuantParamsLayout,
+    layout: Layout,
     bits: int,
     sharding_config: ShardingConfig,
 ) -> Array:
-    return _convert(
-        params,
-        shape,
-        bits,
-        QuantParamsLayout.OUTPUT_GROUP,
-        layout,
-        sharding_config,
-    )
+    columns, groups = shape
+    _check_shape(params, (columns, _stored_width(groups, bits)))
+    if layout == Layout.INPUT_OUTPUT:
+        return params
+
+    stride = (columns + 3) // 4 * 4
+    logical = _unpack(params, bits, groups)
+    logical = jnp.pad(jnp.swapaxes(logical, -2, -1), [(0, 0)] * (logical.ndim - 1) + [(0, stride - columns)])
+    return _pack(logical, bits, sharding_config)
 
 
 def from_export(
@@ -31,61 +32,40 @@ def from_export(
     *,
     like: Array,
     shape: tuple[int, int],
-    layout: QuantParamsLayout,
+    layout: Layout,
     bits: int,
-    sharding_config: ShardingConfig,
-) -> Array:
-    return load_as(
-        like,
-        _convert(
-            stored,
-            shape,
-            bits,
-            layout,
-            QuantParamsLayout.OUTPUT_GROUP,
-            sharding_config,
-        ),
-    )
-
-
-def _convert(
-    array: Array,
-    shape: tuple[int, int],
-    bits: int,
-    source_layout: QuantParamsLayout,
-    target_layout: QuantParamsLayout,
     sharding_config: ShardingConfig,
 ) -> Array:
     columns, groups = shape
-    if source_layout == target_layout:
-        return array
-    if columns <= 0 or groups <= 0:
-        raise ValueError(f"quantization parameter dimensions must be positive: columns={columns}, groups={groups}")
-    if bits not in (4, 8, 16, 32):
-        raise ValueError(f"unsupported quantization parameter width: {bits}")
+    if layout == Layout.INPUT_OUTPUT:
+        _check_shape(stored, (columns, _stored_width(groups, bits)))
+        return load_as(like, stored)
 
     stride = (columns + 3) // 4 * 4
-    source_last_dim = groups if source_layout == QuantParamsLayout.OUTPUT_GROUP else stride
-    if bits in (4, 8):
-        logical = unpack_uint8_to_uint(array, bits=bits, unpacked_last_axis_dim=source_last_dim)
-        source_last_dim = (source_last_dim * bits + 7) // 8
-    else:
-        logical = array
-    expected_shape = (
-        *array.shape[:-2],
-        columns if source_layout == QuantParamsLayout.OUTPUT_GROUP else groups,
-        source_last_dim,
-    )
-    if tuple(array.shape[-2:]) != expected_shape[-2:]:
-        raise ValueError(f"quantization parameter shape {array.shape} does not match {expected_shape}")
+    _check_shape(stored, (groups, _stored_width(stride, bits)))
+    logical = _unpack(stored, bits, stride)
+    logical = jnp.swapaxes(logical[..., :columns], -2, -1)
+    return load_as(like, _pack(logical, bits, sharding_config))
 
-    if source_layout == QuantParamsLayout.OUTPUT_GROUP:
-        logical = jnp.swapaxes(logical, -2, -1)
-        stride = (columns + 3) // 4 * 4
-        logical = jnp.pad(logical, [(0, 0)] * (logical.ndim - 1) + [(0, stride - columns)])
-    else:
-        logical = jnp.swapaxes(logical[..., :columns], -2, -1)
 
+def _unpack(array: Array, bits: int, width: int) -> Array:
     if bits in (4, 8):
-        return pack_uint_to_uint8(logical, bits, sharding_config=sharding_config)
-    return logical
+        return unpack_uint8_to_uint(array, bits=bits, unpacked_last_axis_dim=width)
+    return array
+
+
+def _pack(array: Array, bits: int, sharding_config: ShardingConfig) -> Array:
+    if bits in (4, 8):
+        return pack_uint_to_uint8(array, bits, sharding_config=sharding_config)
+    return array
+
+
+def _stored_width(width: int, bits: int) -> int:
+    if bits in (4, 8):
+        return packed_last_axis_dim(width, bits)
+    return width
+
+
+def _check_shape(array: Array, expected_tail: tuple[int, int]) -> None:
+    if tuple(array.shape[-2:]) != expected_tail:
+        raise ValueError(f"quantization parameter shape {array.shape} does not match *{expected_tail}")

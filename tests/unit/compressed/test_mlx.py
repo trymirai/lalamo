@@ -8,7 +8,7 @@ from jax.sharding import Mesh, Sharding
 
 from lalamo.compressed.mlx import MLXMatrixForInference, MLXMatrixForTraining, MLXSpec
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.weight_matrix import CompressionImplementation, Layout, QuantParamsLayout
+from lalamo.weight_matrix import CompressionImplementation, Layout
 from tests.common import assert_close_arrays, assert_named_sharding
 from tests.helpers import make_sharding, make_test_sharding_config
 from tests.unit.compressed import test_common as compressed_common
@@ -73,7 +73,7 @@ def test_mlx_compress_and_decompress_match_manual_min_max_quantization(
     bits: Literal[4, 8],
 ) -> None:
     weights = _logical_weights()
-    spec = MLXSpec(bits=bits, group_size=2, weight_layout=layout)
+    spec = MLXSpec(bits=bits, group_size=2, layout=layout)
     stored_weights = _stored_weights(layout, weights)
     expected_scales, expected_biases = _manual_mlx_affine_parameters(stored_weights, bits=bits, group_size=2)
     expected_decompressed = _manual_mlx_dequantize(
@@ -118,8 +118,7 @@ def test_mlx_export_load_roundtrips_and_preserves_template_sharding(
     spec = MLXSpec(
         bits=4,
         group_size=2,
-        weight_layout=Layout.INPUT_OUTPUT,
-        params_layout=QuantParamsLayout.GROUP_OUTPUT,
+        layout=Layout.INPUT_OUTPUT,
     )
     saved_sharding = make_sharding((None, None))
     assert saved_sharding is not None

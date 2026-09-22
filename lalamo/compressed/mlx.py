@@ -23,7 +23,6 @@ from lalamo.weight_matrix import (
     FullPrecisionSpec,
     Layout,
     MatmulConfig,
-    QuantParamsLayout,
     WeightMatrixSpec,
 )
 
@@ -129,12 +128,7 @@ def _packed_weights_to_master_weights(
 class MLXSpec(QuantizedSpec):
     bits: Literal[1, 4, 8]
     group_size: int
-    weight_layout: Layout = Layout.OUTPUT_INPUT
-    params_layout: QuantParamsLayout = QuantParamsLayout.OUTPUT_GROUP
-
-    @property
-    def layout(self) -> Layout:
-        return self.weight_layout
+    layout: Layout = Layout.OUTPUT_INPUT
 
     @property
     def input_block_size(self) -> int:
@@ -273,14 +267,14 @@ class MLXMatrix(EmbeddingMatrix[MLXSpec]):
                 "scales": quant_params.for_export(
                     self.scales,
                     shape=params_shape,
-                    layout=self.spec.params_layout,
+                    layout=self.spec.layout,
                     bits=self.scales.dtype.itemsize * 8,
                     sharding_config=self.sharding_config,
                 ),
                 "biases": quant_params.for_export(
                     self.biases,
                     shape=params_shape,
-                    layout=self.spec.params_layout,
+                    layout=self.spec.layout,
                     bits=self.biases.dtype.itemsize * 8,
                     sharding_config=self.sharding_config,
                 ),
@@ -315,7 +309,7 @@ class MLXMatrix(EmbeddingMatrix[MLXSpec]):
             exported_data.arrays[prefix / "scales"],
             like=self.scales,
             shape=params_shape,
-            layout=self.spec.params_layout,
+            layout=self.spec.layout,
             bits=self.scales.dtype.itemsize * 8,
             sharding_config=self.sharding_config,
         )
@@ -323,7 +317,7 @@ class MLXMatrix(EmbeddingMatrix[MLXSpec]):
             exported_data.arrays[prefix / "biases"],
             like=self.biases,
             shape=params_shape,
-            layout=self.spec.params_layout,
+            layout=self.spec.layout,
             bits=self.biases.dtype.itemsize * 8,
             sharding_config=self.sharding_config,
         )

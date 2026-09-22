@@ -1,59 +1,63 @@
 import jax
 import jax.numpy as jnp
 import pytest
+from jaxtyping import DTypeLike
 
 from lalamo.compressed import quant_params
-from lalamo.compressed.utils.packing import pack_uint_to_uint8
-from lalamo.utils.sharding import ShardingConfig
-from lalamo.weight_matrix import QuantParamsLayout
+from lalamo.compressed.utils.packing import pack_uint_to_uint8, packed_last_axis_dim
+from lalamo.weight_matrix import Layout
 from tests.helpers import make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
 
-def _shard(array: jax.Array, sharding_config: ShardingConfig) -> jax.Array:
-    return jax.device_put(array, sharding_config.resolve_sharding((None,) * array.ndim))
-
-
-@pytest.mark.parametrize("bits", [4, 8, 16, 32])
-@pytest.mark.parametrize("columns", [4, 5])
-def test_params_layout_roundtrip_with_padding(bits: int, columns: int) -> None:
+@pytest.mark.parametrize(
+    ("bits", "dtype"),
+    [(4, jnp.uint8), (8, jnp.uint8), (16, jnp.bfloat16), (32, jnp.float32)],
+)
+@pytest.mark.parametrize(
+    ("layout", "columns", "stored_shape"),
+    [
+        (Layout.OUTPUT_INPUT, 4, (3, 4)),
+        (Layout.OUTPUT_INPUT, 5, (3, 8)),
+        (Layout.INPUT_OUTPUT, 5, (5, 3)),
+    ],
+)
+def test_storage_roundtrip(
+    bits: int, dtype: DTypeLike, layout: Layout, columns: int, stored_shape: tuple[int, int]
+) -> None:
     sharding_config = make_test_sharding_config()
     groups = 3
-    if bits in (4, 8):
-        logical = jnp.arange(columns * groups, dtype=jnp.uint8).reshape(columns, groups)
-        source = pack_uint_to_uint8(
-            _shard(logical, sharding_config),
-            bits,
-            sharding_config=sharding_config,
-        )
-    else:
-        dtype = jnp.bfloat16 if bits == 16 else jnp.float32
-        source = jnp.arange(columns * groups, dtype=dtype).reshape(columns, groups)
-    source = _shard(source, sharding_config)
+    source = jnp.arange(columns * groups, dtype=dtype).reshape(columns, groups)
+    source = jax.device_put(source, sharding_config.resolve_sharding((None, None)))
+    packed = bits in (4, 8)
+    if packed:
+        source = pack_uint_to_uint8(source, bits, sharding_config=sharding_config)
 
-    group_output = quant_params.for_export(
+    stored = quant_params.for_export(
         source,
         shape=(columns, groups),
-        layout=QuantParamsLayout.GROUP_OUTPUT,
+        layout=layout,
         bits=bits,
         sharding_config=sharding_config,
     )
-    stride = (columns + 3) // 4 * 4
-    expected_width = stride if bits in (16, 32) else (stride * bits + 7) // 8
-    assert group_output.shape[-2:] == (groups, expected_width)
-
     restored = quant_params.from_export(
-        group_output,
+        stored,
         like=source,
         shape=(columns, groups),
-        layout=QuantParamsLayout.GROUP_OUTPUT,
+        layout=layout,
         bits=bits,
         sharding_config=sharding_config,
     )
+
+    stored_rows, stored_columns = stored_shape
+    if packed:
+        stored_columns = packed_last_axis_dim(stored_columns, bits)
+    assert stored.shape[-2:] == (stored_rows, stored_columns)
     assert jnp.array_equal(restored, source)
 
-    if bits == 4 and columns % 4:
-        first_partial_byte = columns // 2
-        assert jnp.all((group_output[..., first_partial_byte] & 0xF0) == 0)
-        assert jnp.all(group_output[..., first_partial_byte + 1 :] == 0)
+    if layout == Layout.OUTPUT_INPUT and bits == 4 and columns == 5:
+        partial_byte = packed_last_axis_dim(columns, bits) - 1
+        unused_nibble_mask = ((1 << bits) - 1) << bits
+        assert jnp.all((stored[..., partial_byte] & unused_nibble_mask) == 0)
+        assert jnp.all(stored[..., partial_byte + 1 :] == 0)

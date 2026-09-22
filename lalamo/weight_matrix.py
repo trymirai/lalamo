@@ -36,7 +36,6 @@ __all__ = [
     "GradientEstimator",
     "Layout",
     "MatmulConfig",
-    "QuantParamsLayout",
     "WeightMatrix",
     "WeightMatrixSpec",
 ]
@@ -51,11 +50,6 @@ class GradientEstimator(StrEnum):
 class CompressionImplementation(StrEnum):
     TRAINING = "training"
     INFERENCE = "inference"
-
-
-class QuantParamsLayout(StrEnum):
-    OUTPUT_GROUP = "output_group"
-    GROUP_OUTPUT = "group_output"
 
 
 @dataclass(frozen=True)
