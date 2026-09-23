@@ -81,7 +81,7 @@ class MatmulConfig:
 
 @dataclass(frozen=True)
 class WeightMatrixSpec(RegistryABC):
-    _converter: ClassVar[GenConverter] = make_registry_abc_converter()
+    _converter: ClassVar[GenConverter] = make_registry_abc_converter(forbid_extra_keys=True)
 
     @classmethod
     def from_json(cls, json_object: JSON) -> Self:

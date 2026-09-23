@@ -30,6 +30,7 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
+from . import quant_params
 from .quantized_spec import QuantizedSpec
 from .utils.gaussian_order_statistics import standard_normal_absmax_squared, standard_normal_range_squared
 from .utils.grouping import (
@@ -407,13 +408,27 @@ class IntMatrix(EmbeddingMatrix[IntSpec]):
     def _packed_quantized_zero_points(self) -> UInt8[Array, "*components rows packed_groups"] | None: ...
 
     def export(self) -> ExportResults:
+        columns, groups = self.scales.shape[-2:]
+        params_shape = (columns, groups)
         arrays = {
             "weights": self._packed_quantized_weights,
-            "scales": self.scales,
+            "scales": quant_params.for_export(
+                self.scales,
+                shape=params_shape,
+                layout=self.spec.layout,
+                bits=self.scales.dtype.itemsize * 8,
+                sharding_config=self.sharding_config,
+            ),
         }
         packed_zero_points = self._packed_quantized_zero_points
         if packed_zero_points is not None:
-            arrays["zero_points"] = packed_zero_points
+            arrays["zero_points"] = quant_params.for_export(
+                packed_zero_points,
+                shape=params_shape,
+                layout=self.spec.layout,
+                bits=self.spec.bits,
+                sharding_config=self.sharding_config,
+            )
 
         return ExportResults(
             arrays=arrays,
@@ -427,6 +442,48 @@ class IntMatrix(EmbeddingMatrix[IntSpec]):
         *,
         prefix: ParameterPath | None = None,
     ) -> "IntMatrix": ...
+
+    def _load_exported(
+        self,
+        exported_data: ExportResults,
+        implementation: CompressionImplementation,
+        prefix: ParameterPath | None,
+    ) -> "IntMatrix":
+        if prefix is None:
+            prefix = ParameterPath()
+        loaded_spec = WeightMatrixSpec.from_json(exported_data.metadata[prefix / "spec"])
+        if loaded_spec != self.spec:
+            raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
+
+        packed_weights = load_as(self._packed_quantized_weights, exported_data.arrays[prefix / "weights"])
+        columns, groups = self.scales.shape[-2:]
+        params_shape = (columns, groups)
+        scales = quant_params.from_export(
+            exported_data.arrays[prefix / "scales"],
+            like=self.scales,
+            shape=params_shape,
+            layout=self.spec.layout,
+            bits=self.scales.dtype.itemsize * 8,
+            sharding_config=self.sharding_config,
+        )
+        packed_zero_points = self._packed_quantized_zero_points
+        if packed_zero_points is not None:
+            packed_zero_points = quant_params.from_export(
+                exported_data.arrays[prefix / "zero_points"],
+                like=packed_zero_points,
+                shape=params_shape,
+                layout=self.spec.layout,
+                bits=self.spec.bits,
+                sharding_config=self.sharding_config,
+            )
+        return self.spec.from_packed_parameters(
+            packed_weights=packed_weights,
+            scales=scales,
+            packed_zero_points=packed_zero_points,
+            implementation=implementation,
+            sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
+        )
 
     @abstractmethod
     def switch_implementation(self, implementation: CompressionImplementation) -> "IntMatrix": ...
@@ -563,34 +620,10 @@ class IntMatrixForTraining(IntMatrix):
         *,
         prefix: ParameterPath | None = None,
     ) -> IntMatrix:
-        if prefix is None:
-            prefix = ParameterPath()
-        saved_spec = exported_data.metadata[prefix / "spec"]
-        loaded_spec = WeightMatrixSpec.from_json(saved_spec)
-        if loaded_spec != self.spec:
-            raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
-
-        packed_weights = load_as(
-            self._packed_quantized_weights,
-            exported_data.arrays[prefix / "weights"],
-        )
-        scales = load_as(
-            self.scales,
-            exported_data.arrays[prefix / "scales"],
-        )
-        packed_zero_points = self._packed_quantized_zero_points
-        if packed_zero_points is not None:
-            packed_zero_points = load_as(
-                packed_zero_points,
-                exported_data.arrays[prefix / "zero_points"],
-            )
-        return self.spec.from_packed_parameters(
-            packed_weights=packed_weights,
-            scales=scales,
-            packed_zero_points=packed_zero_points,
-            implementation=CompressionImplementation.TRAINING,
-            sharding_config=self.sharding_config,
-            is_sharded=self.is_sharded,
+        return self._load_exported(
+            exported_data,
+            CompressionImplementation.TRAINING,
+            prefix,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> IntMatrix:
@@ -644,34 +677,10 @@ class IntMatrixForInference(IntMatrix):
         *,
         prefix: ParameterPath | None = None,
     ) -> IntMatrix:
-        if prefix is None:
-            prefix = ParameterPath()
-        saved_spec = exported_data.metadata[prefix / "spec"]
-        loaded_spec = WeightMatrixSpec.from_json(saved_spec)
-        if loaded_spec != self.spec:
-            raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
-
-        packed_weights = load_as(
-            self.packed_weights,
-            exported_data.arrays[prefix / "weights"],
-        )
-        scales = load_as(
-            self.scales,
-            exported_data.arrays[prefix / "scales"],
-        )
-        packed_zero_points = self._packed_quantized_zero_points
-        if packed_zero_points is not None:
-            packed_zero_points = load_as(
-                packed_zero_points,
-                exported_data.arrays[prefix / "zero_points"],
-            )
-        return IntMatrixForInference(
-            spec=self.spec,
-            sharding_config=self.sharding_config,
-            is_sharded=self.is_sharded,
-            packed_weights=packed_weights,
-            scales=scales,
-            packed_zero_points=packed_zero_points,
+        return self._load_exported(
+            exported_data,
+            CompressionImplementation.INFERENCE,
+            prefix,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> IntMatrix:
