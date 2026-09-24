@@ -1,8 +1,6 @@
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Literal, Self
+from typing import Literal
 
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
@@ -50,7 +48,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
     conv_bias: bool
     conv_dim: int
     conv_use_xavier_init: bool
-    eos_token_id: int
+    eos_token_id: int | list[int]
     hidden_size: int
     initializer_range: float
     max_position_embeddings: int
@@ -79,17 +77,6 @@ class HFLFM2Config(HuggingFaceLMConfig):
     rope_parameters: RopeParameters | None = None
     quantization: QuantizationConfig | None = None
     quantization_config: QuantizationConfig | None = None
-
-    @classmethod
-    def from_json(cls, json_path: Path | str) -> Self:
-        json_path = Path(json_path)
-        with json_path.open() as config_file:
-            config = json.load(config_file)
-        eos_token_id = config["eos_token_id"]
-        if isinstance(eos_token_id, list):
-            [eos_token_id] = eos_token_id
-            config["eos_token_id"] = eos_token_id
-        return cls._converter.structure(config, cls)
 
     @property
     def resolved_rope_theta(self) -> float:
