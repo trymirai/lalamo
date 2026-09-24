@@ -25,3 +25,4 @@ def test_safe_write_roundtrips_float8_tensors(tmp_path: Path) -> None:
         restored_tensor = restored[name]
         assert restored_tensor.dtype == tensor.dtype
         assert jnp.array_equal(restored_tensor, tensor)
+        assert all(device.platform == "cpu" for device in restored_tensor.devices())

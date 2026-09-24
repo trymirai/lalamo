@@ -7,7 +7,14 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 from lalamo.module import LogicalAxis
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.utils.sharding import ShardingConfig, is_sharded, reshard_as, sharding_of, with_sharding
+from lalamo.utils.sharding import (
+    ShardingConfig,
+    device_put_from_cpu,
+    is_sharded,
+    reshard_as,
+    sharding_of,
+    with_sharding,
+)
 from tests.helpers import make_sharding
 
 
@@ -68,6 +75,16 @@ def test_resolve_sharding_rejects_duplicate_physical_axes() -> None:
 
     with pytest.raises(ValueError, match="same mesh axis"):
         config.resolve_sharding((LogicalAxis.BATCH, LogicalAxis.MATRIX))
+
+
+def test_device_put_from_cpu_replicates_values_on_every_device() -> None:
+    sharding = make_sharding((None,))
+
+    result = device_put_from_cpu(jnp.arange(4, dtype=jnp.int32), sharding)
+
+    assert result.sharding == sharding
+    for shard in result.addressable_shards:
+        np.testing.assert_array_equal(shard.data, np.arange(4, dtype=np.int32))
 
 
 def test_sharding_of_returns_concrete_array_sharding(fake_mesh: Mesh) -> None:

@@ -1,6 +1,7 @@
 import asyncio
 import gc
 import json
+import logging
 import os
 import random
 import time
@@ -27,9 +28,12 @@ from lalamo.model_registry import ModelRegistry
 from lalamo.models import GenerationConfig, LanguageModel
 from lalamo.models.chat_codec import ReasoningEffort
 from lalamo.module import Keychain
-from lalamo.utils.sharding import ShardingConfig
+from lalamo.utils.sharding import ShardingConfig, device_put_from_cpu
 
 BatchStatus = Literal["in_progress", "completed", "failed"]
+
+progress_logger = logging.getLogger("uvicorn.error.lalamo")
+progress_logger.disabled = True
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,7 @@ def _load_resident_model(model_path: str, dtype: str | None) -> LanguageModel:
     if _resident_model is not None:
         cached_key, cached_model = _resident_model
         if cached_key == cache_key:
+            progress_logger.info("model cache hit path=%s dtype=%s", model_path, dtype)
             return cached_model
 
         # Free the old model's device buffers before importing the new one (avoid two full models in VRAM).
@@ -123,6 +128,8 @@ def _load_resident_model(model_path: str, dtype: str | None) -> LanguageModel:
         _PROBE_CACHE.clear()  # its entries are id(model)-keyed and must not outlive this model
         gc.collect()
 
+    started_at = time.perf_counter()
+    progress_logger.info("model load start path=%s dtype=%s", model_path, dtype)
     model = import_model(
         model_path,
         sharding_config=app.state.sharding_config,
@@ -132,6 +139,12 @@ def _load_resident_model(model_path: str, dtype: str | None) -> LanguageModel:
         raise TypeError(f"Expected a language model, got {type(model).__name__}")
 
     _resident_model = (cache_key, model)
+    progress_logger.info(
+        "model load complete path=%s dtype=%s elapsed_seconds=%.1f",
+        model_path,
+        dtype,
+        time.perf_counter() - started_at,
+    )
     return model
 
 
@@ -211,6 +224,8 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
     else:
         batch_key, split_key = jax.random.split(jax.random.key(random.getrandbits(32)))
         keys = jax.random.split(split_key, len(requests))
+    keys = device_put_from_cpu(keys, model.sharding_config.make_sharding((None,)))
+    batch_key = device_put_from_cpu(batch_key, model.sharding_config.make_sharding(()))
     keychain = Keychain(vmapped_keys=keys, batch_key=batch_key, sharding_config=model.sharding_config)
 
     sequence_ids = [request.sequence_id for request in requests]
@@ -221,7 +236,7 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
         generation_config=reference.generation_config,
         batch_scheduler_config=BatchSchedulerConfig(
             max_output_length=reference.max_completion_tokens,
-            batch_size=None,
+            batch_size=app.state.batch_size,
         ),
         reasoning_effort=reference.reasoning_effort,
         keychain=keychain,
@@ -240,7 +255,14 @@ async def execute_batch(batch: Batch, requests: list[RequestBody]) -> None:
     def run_generate_replies_with_stats() -> None:
         for response in generate_replies(requests):
             collected.append(response)
-            replace(batch, completed=len(collected)).save()
+            replace(batch, completed=len(collected), results=tuple(collected)).save()
+            progress_logger.info(
+                "batch progress id=%s completed=%d/%d sequence_id=%s",
+                batch.id,
+                len(collected),
+                batch.total,
+                response.sequence_id,
+            )
 
     try:
         async with gpu_lock:
@@ -255,6 +277,14 @@ async def execute_batch(batch: Batch, requests: list[RequestBody]) -> None:
                 batch, results=tuple(collected), completed=len(collected), status="failed", error="interrupted"
             )
         batch.save()
+        progress_logger.info(
+            "batch finished id=%s status=%s completed=%d/%d error=%s",
+            batch.id,
+            batch.status,
+            batch.completed,
+            batch.total,
+            batch.error,
+        )
 
 
 def finish_batch_task(task: asyncio.Task, batch_id: str) -> None:
@@ -274,6 +304,7 @@ async def create_batch(
 
         batch = Batch.init(total=len(requests))
         batch.save()
+        progress_logger.info("batch accepted id=%s total=%d", batch.id, batch.total)
         active_batches.add(batch.id)
         task = asyncio.create_task(execute_batch(batch, requests))
         app.state.tasks.add(task)
@@ -284,14 +315,27 @@ async def create_batch(
 @app.get("/batches/{batch_id}")
 async def get_batch(batch_id: str) -> Batch:
     if (batch := Batch.from_id(batch_id)) is not None:
-        if batch.status == "in_progress":
-            return replace(batch, results=())
         return batch
     raise HTTPException(404, "batch not found")
 
 
-def start_server(host: str, port: int, vram_bytes: int, cache_dir: Path, sharding_config: ShardingConfig) -> None:
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+def start_server(
+    host: str,
+    port: int,
+    vram_bytes: int | None,
+    batch_size: int | None,
+    cache_dir: Path,
+    sharding_config: ShardingConfig,
+    log_progress: bool = False,
+) -> None:
     app.state.vram_bytes = vram_bytes
+    app.state.batch_size = batch_size
     app.state.cache_dir = cache_dir
     app.state.sharding_config = sharding_config
-    uvicorn.run(app, host=host, port=port)
+    progress_logger.disabled = not log_progress
+    uvicorn.run(app, host=host, port=port, access_log=not log_progress)

@@ -1,4 +1,5 @@
 import functools
+import logging
 import threading
 import time
 import warnings
@@ -22,6 +23,7 @@ from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
 from lalamo.modules import DecoderForwardPassConfig, State
 from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy
+from lalamo.utils.sharding import device_put_from_cpu
 
 __all__ = [
     "BatchScheduler",
@@ -44,6 +46,9 @@ MAX_BOUNDARY_BATCH_PADDING_FRACTION: float = 0.05
 # Auto-batch probe results {(id(model), vram, max_output_length): {padded_length: batch_size}}: lets a
 # resident server skip the throwaway probe compiles. Keyed on max_output_length since state_capacity scales with it.
 _PROBE_CACHE: dict[tuple[int, int, int], dict[int, int]] = {}
+
+progress_logger = logging.getLogger("uvicorn.error.lalamo")
+progress_logger.disabled = True
 
 
 @dataclass(frozen=True)
@@ -151,11 +156,18 @@ def estimate_batchsize_for_memory_budget(
     remaining_steps = num_steps
 
     while True:
+        progress_logger.info(
+            "batch-size probe start batch_size=%d memory_budget_bytes=%d",
+            batch_size,
+            memory_budget,
+        )
         try:
             peak_bytes_in_use = _measure_peak_bytes_in_use(functools.partial(fn, batch_size))
         except (JaxRuntimeError, ValueError) as error:
             if not _is_oom_error(error):
                 raise
+
+            progress_logger.info("batch-size probe OOM batch_size=%d", batch_size)
 
             next_batch_size = max(1, batch_size // 2)
             if next_batch_size == batch_size:
@@ -174,6 +186,11 @@ def estimate_batchsize_for_memory_budget(
             batch_size = next_batch_size
             continue
 
+        progress_logger.info(
+            "batch-size probe complete batch_size=%d peak_bytes_in_use=%d",
+            batch_size,
+            peak_bytes_in_use,
+        )
         last_successful_batch_size = batch_size
         proportional_estimate = max(1, int(batch_size * memory_budget / peak_bytes_in_use))
         estimated_batch_size = proportional_estimate
@@ -311,7 +328,7 @@ def pad_sequences(
     *,
     dtype: DTypeLike,
     pad_value: int = 0,
-) -> jnp.ndarray:
+) -> np.ndarray:
     batch_size, sequence_length = shape
     sequences_list = list(sequences)
     if len(sequences_list) > batch_size:
@@ -324,7 +341,7 @@ def pad_sequences(
             raise RuntimeError(f"Sequence length {sequence_array.size} exceeds target length {sequence_length}")
         padded[idx, : sequence_array.size] = sequence_array
 
-    return jnp.asarray(padded)
+    return padded
 
 
 def _decrease_batchsize_on_oom[T](
@@ -430,21 +447,19 @@ class PrefillSource:
 
         selected_indices = np.zeros(self.prefill_batch_size, dtype=np.int32)
         selected_indices[:num_designated] = np.arange(self.cursor, self.cursor + num_designated)
-        selected_indices_array = jnp.asarray(selected_indices)
+        selected_indices_array = device_put_from_cpu(selected_indices, batch_vector_sharding)
 
         sequences = self.tokenized_messages[self.cursor : self.cursor + num_designated]
         lengths_without_padding = np.zeros(self.prefill_batch_size, dtype=np.int32)
         lengths_without_padding[:num_designated] = [len(sequence) for sequence in sequences]
-        padded_sequences = jax.device_put(
+        padded_sequences = device_put_from_cpu(
             pad_sequences(sequences, (self.prefill_batch_size, self.padded_length), dtype=jnp.int32),
             batch_token_sharding,
         )
-        lengths_without_padding_array = jax.device_put(jnp.asarray(lengths_without_padding), batch_vector_sharding)
+        lengths_without_padding_array = device_put_from_cpu(lengths_without_padding, batch_vector_sharding)
         mask = np.zeros(self.prefill_batch_size, dtype=bool)
         mask[:num_designated] = True
-        mask_array = jax.device_put(jnp.asarray(mask), batch_vector_sharding)
-        sequence_ids = jax.device_put(selected_indices_array, batch_vector_sharding)
-
+        mask_array = device_put_from_cpu(mask, batch_vector_sharding)
         selected_keys = self.keychain.vmapped_keys.at[selected_indices_array].get(out_sharding=batch_vector_sharding)
         selected_keychain = Keychain(
             vmapped_keys=selected_keys,
@@ -469,7 +484,7 @@ class PrefillSource:
             else:
                 sharding_axes = (None,) * leaf.ndim
             leaf_sharding = model.sharding_config.make_sharding(sharding_axes)
-            return jax.device_put(leaf, leaf_sharding)
+            return device_put_from_cpu(leaf, leaf_sharding)
 
         sampling_policy = jax.tree.map(shard_sampling_leaf, sampling_policy)
         # Avoid materializing batch x vocab token count storage unless a count-based penalty needs it.
@@ -489,9 +504,9 @@ class PrefillSource:
             prefill_results=prefilled_state,
             sampling_policy=sampling_policy,
             mask=mask_array,
-            sampling_keys=jax.device_put(sampling_keychain.vmapped_keys, batch_vector_sharding),
-            decoding_keys=jax.device_put(decoding_keychain.vmapped_keys, batch_vector_sharding),
-            sequence_ids=sequence_ids,
+            sampling_keys=device_put_from_cpu(sampling_keychain.vmapped_keys, batch_vector_sharding),
+            decoding_keys=device_put_from_cpu(decoding_keychain.vmapped_keys, batch_vector_sharding),
+            sequence_ids=selected_indices_array,
         )
         return replace(self, cursor=self.cursor + num_designated), batch
 
@@ -551,31 +566,40 @@ class BlockContinuousState(eqx.Module):
             else:
                 sharding_axes = (None,) * leaf.ndim
             leaf_sharding = model.sharding_config.make_sharding(sharding_axes)
-            return jax.device_put(leaf, leaf_sharding)
+            return device_put_from_cpu(leaf, leaf_sharding)
 
         sampling_policy = jax.tree.map(shard_sampling_leaf, sampling_policy)
 
         return BlockContinuousState(
-            last_token_logits=jax.device_put(
-                jnp.zeros((num_lines, model.decoder.vocab_size), dtype=jnp.float32),
+            last_token_logits=device_put_from_cpu(
+                np.zeros((num_lines, model.decoder.vocab_size), dtype=np.float32),
                 batch_token_sharding,
             ),
-            last_token_indices=jax.device_put(jnp.zeros(num_lines, dtype=jnp.int32), batch_vector_sharding),
+            last_token_indices=device_put_from_cpu(np.zeros(num_lines, dtype=np.int32), batch_vector_sharding),
             kv_state=model.decoder.init_static_state(
                 num_lines,
                 state_capacity,
                 model.decoder.embedding.embedding_matrix.dtype,
             ),
             sampling_policy=sampling_policy,
-            stop_flags=jax.device_put(jnp.ones(num_lines, dtype=bool), batch_vector_sharding),
-            token_buffer=jax.device_put(
-                jnp.zeros((num_lines, max_output_length), dtype=jnp.int32),
+            stop_flags=device_put_from_cpu(np.ones(num_lines, dtype=bool), batch_vector_sharding),
+            token_buffer=device_put_from_cpu(
+                np.zeros((num_lines, max_output_length), dtype=np.int32),
                 batch_token_sharding,
             ),
-            num_generated=jax.device_put(jnp.zeros(num_lines, dtype=jnp.int32), batch_vector_sharding),
-            sampling_keys=jax.device_put(jax.random.split(jax.random.key(0), num_lines), batch_vector_sharding),
-            decoding_keys=jax.device_put(jax.random.split(jax.random.key(1), num_lines), batch_vector_sharding),
-            in_batch_index_to_sequence_id=jax.device_put(jnp.zeros(num_lines, dtype=jnp.int32), batch_vector_sharding),
+            num_generated=device_put_from_cpu(np.zeros(num_lines, dtype=np.int32), batch_vector_sharding),
+            sampling_keys=device_put_from_cpu(
+                jax.random.split(jax.random.key(0), num_lines),
+                batch_vector_sharding,
+            ),
+            decoding_keys=device_put_from_cpu(
+                jax.random.split(jax.random.key(1), num_lines),
+                batch_vector_sharding,
+            ),
+            in_batch_index_to_sequence_id=device_put_from_cpu(
+                np.zeros(num_lines, dtype=np.int32),
+                batch_vector_sharding,
+            ),
         )
 
     def empty_lines(self) -> list[int]:
@@ -852,7 +876,6 @@ class BatchScheduler(ABC):
                     break
             capped_batch_size_per_bucket[padded_length] = candidate
         batch_size_per_bucket = capped_batch_size_per_bucket
-
         if batch_sizes_callback is not None:
             batch_sizes = tuple(
                 BatchSizeInfo(
@@ -873,8 +896,12 @@ class BatchScheduler(ABC):
                 batch_size=bucket_batch_size,
                 padded_length=padded_length,
             )
+            sequence_indices = device_put_from_cpu(
+                np.asarray(sequence_ids, dtype=np.int32),
+                self.model.sharding_config.make_sharding((None,)),
+            )
             bucket_keychain = Keychain(
-                vmapped_keys=keychain.vmapped_keys[jnp.asarray(sequence_ids)],
+                vmapped_keys=keychain.vmapped_keys[sequence_indices],
                 batch_key=keychain.batch_key,
                 sharding_config=keychain.sharding_config,
             )
@@ -933,16 +960,19 @@ class FixedSizeBatchScheduler(BatchScheduler):
                 real_batch = [tokens for _, tokens in batch_with_ids]
                 padded_length = batch_scheduler_config.padded_length or max(len(tokens) for tokens in real_batch)
                 num_padding_rows = current_batch_size - len(real_batch)
-                lengths = jax.device_put(
-                    jnp.asarray([len(tokens) for tokens in real_batch] + [1] * num_padding_rows, dtype=jnp.int32),
+                lengths = device_put_from_cpu(
+                    np.asarray([len(tokens) for tokens in real_batch] + [1] * num_padding_rows, dtype=np.int32),
                     batch_vector_sharding,
                 )
-                padded = jax.device_put(
+                padded = device_put_from_cpu(
                     pad_sequences(real_batch, (current_batch_size, padded_length), dtype=jnp.int32),
                     batch_token_sharding,
                 )
                 padded_batch_indices = batch_indices + [0] * num_padding_rows
-                padded_batch_indices_array = jnp.asarray(padded_batch_indices)
+                padded_batch_indices_array = device_put_from_cpu(
+                    np.asarray(padded_batch_indices, dtype=np.int32),
+                    batch_vector_sharding,
+                )
                 batch_keychain = Keychain(
                     vmapped_keys=keychain.vmapped_keys.at[padded_batch_indices_array].get(
                         out_sharding=batch_vector_sharding,
@@ -1029,6 +1059,19 @@ class ContinuousBatchScheduler(BatchScheduler):
 
         block_size = min(self.block_size, max_output_length)
         state_capacity = padded_length + max_output_length + 1
+        progress_logger.info(
+            "scheduler start requests=%d batch_size=%d prompt_tokens_min=%d prompt_tokens_max=%d "
+            "padded_length=%d max_output_length=%d state_capacity=%d block_size=%d",
+            len(tokenized),
+            batch_size,
+            min(map(len, tokenized)),
+            max(map(len, tokenized)),
+            padded_length,
+            max_output_length,
+            state_capacity,
+            block_size,
+        )
+        scheduler_started_at = time.perf_counter()
         requested_prefill_batch_size = (
             batch_size
             if sampling_policy.has_count_penalties
@@ -1080,9 +1123,33 @@ class ContinuousBatchScheduler(BatchScheduler):
         prefills, state = prefills.fill(decoder, state, jitted_fill_lines)
         jitted_decode = jitted_decode.lower(state).compile()  # type: ignore[missing-attribute]
 
+        progress_logger.info(
+            "decode ready elapsed_seconds=%.1f",
+            time.perf_counter() - scheduler_started_at,
+        )
+        decode_started_at = time.perf_counter()
+        decoded_blocks = 0
+        completed_sequences = 0
+
         while True:
+            block_started_at = time.perf_counter()
             state, completed_mask = jitted_decode(state)
-            yield from state.extract_completed_sequences(completed_mask)
+            completed = list(state.extract_completed_sequences(completed_mask))
+            decoded_blocks += 1
+            completed_sequences += len(completed)
+            block_elapsed = time.perf_counter() - block_started_at
+            decoded_token_slots = decoded_blocks * block_size * batch_size
+            progress_logger.info(
+                "decode progress blocks=%d token_slots=%d token_slots_per_second=%.1f "
+                "block_seconds=%.1f completed=%d/%d",
+                decoded_blocks,
+                decoded_token_slots,
+                decoded_token_slots / (time.perf_counter() - decode_started_at),
+                block_elapsed,
+                completed_sequences,
+                len(tokenized),
+            )
+            yield from completed
 
             if state.is_empty() and prefills.exhausted:
                 break
