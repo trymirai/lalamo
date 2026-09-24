@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from contextvars import ContextVar
 from functools import wraps
 from typing import TypeGuard, cast
 
@@ -15,11 +16,19 @@ __all__ = [
     "contains_dummy_arrays",
     "dummy_array",
     "is_dummy_array",
+    "is_dummy_evaluation",
     "preserve_first_input_sharding",
     "supports_dummy_arrays",
 ]
 
 type OutShardingRule = Callable[[tuple[NamedSharding, ...]], NamedSharding]
+
+
+_dummy_evaluation: ContextVar[bool] = ContextVar("dummy_evaluation", default=False)
+
+
+def is_dummy_evaluation() -> bool:
+    return _dummy_evaluation.get()
 
 
 def dummy_array(
@@ -113,7 +122,11 @@ def supports_dummy_arrays[**Params, ResultT](
             if not contains_dummy_arrays(inputs):
                 return function(*args, **kwargs)
 
-            result = eqx.filter_eval_shape(function, *args, **kwargs)
+            token = _dummy_evaluation.set(True)
+            try:
+                result = eqx.filter_eval_shape(function, *args, **kwargs)
+            finally:
+                _dummy_evaluation.reset(token)
             input_shardings = _input_named_shardings(inputs)
             if out_sharding_rule is None:
                 return cast(
