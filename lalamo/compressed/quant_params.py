@@ -2,7 +2,7 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array
 
-from lalamo.utils.sharding import ShardingConfig
+from lalamo.utils.sharding import ShardingConfig, reshard_as
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import Layout
 
@@ -47,7 +47,7 @@ def from_export(
     _validate_plane(stored, groups, padded_columns, bits)
     group_output = _unpack(stored, bits, padded_columns)
     output_group = rearrange(group_output[..., :columns], "... group output -> ... output group")
-    return load_as(like, _pack(output_group, bits, sharding_config))
+    return load_as(like, _pack(reshard_as(output_group, like), bits, sharding_config))
 
 
 def _group_output_columns(columns: int) -> int:
