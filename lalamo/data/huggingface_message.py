@@ -10,10 +10,11 @@ from lalamo.models.chat_codec import AssistantMessage, Message, SystemMessage, U
 
 @dataclass(frozen=True)
 class HFMessage:
-    _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
+    _converter: ClassVar[cattrs.Converter] = cattrs.Converter(forbid_extra_keys=True)
 
     role: str
     content: str
+    reasoning_content: str | None = None
 
     @classmethod
     def from_dict(cls, obj: dict) -> Self:
@@ -26,7 +27,7 @@ class HFMessage:
             case "system" | "developer":
                 return SystemMessage(self.content)
             case "assistant":
-                return AssistantMessage(None, self.content)
+                return AssistantMessage(self.reasoning_content, self.content)
             case other:
                 raise ValueError(f"Cannot convert {other} message")
 
