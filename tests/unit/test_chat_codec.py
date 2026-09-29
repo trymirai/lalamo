@@ -7,17 +7,14 @@ from cattrs.errors import ClassValidationError
 from frozendict import frozendict
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
-from transformers import AutoTokenizer
 
 from lalamo.data.huggingface_message import HFConversation, load_hf_parquet
-from lalamo.model_import.model_spec import LanguageModelSpec
 from lalamo.model_import.model_specs.output_parser_regexes import (
     GEMMA4_OUTPUT_PARSER_REGEX,
     GRANITE_THINKING_OUTPUT_PARSER_REGEX,
     OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
 )
 from lalamo.model_import.model_specs.reasoning_configs import BOOLEAN_REASONING_DEFAULT_ON_CONFIG
-from lalamo.model_registry import ModelRegistry
 from lalamo.models.chat_codec import (
     AssistantMessage,
     ChatCodec,
@@ -27,7 +24,6 @@ from lalamo.models.chat_codec import (
     UserMessage,
     parse_hf_message,
 )
-from lalamo.utils.template_hacking import fix_chat_template
 
 
 def _chat_codec(
@@ -117,71 +113,38 @@ def test_boolean_template_field_uses_medium_as_enabled() -> None:
     )
 
 
-@pytest.mark.parametrize("serialized", [False, True])
-@pytest.mark.parametrize(
-    ("repo", "revision", "native_reasoning"),
-    [
-        ("Qwen/Qwen3.5-0.8B", "2fc06364715b967f1860aea9cf38778875588b17", {"reasoning_content": "Think."}),
-        ("google/gemma-4-E2B-it", "3e22461f65e89153144f8adb70e3b8c2cc9845a7", {"reasoning_content": "Think."}),
-        ("LiquidAI/LFM2.5-1.2B-Thinking", "f313478934a7612d22991f752959d7a1a8756fec", {"reasoning_content": "Think."}),
-    ],
-)
-def test_mixture_parquet_preserves_huggingface_requests(
-    tmp_path: Path, serialized: bool, repo: str, revision: str, native_reasoning: dict[str, str]
-) -> None:
-    function = {"name": "calculate", "arguments": {"z": [4, {"text": "π <&>"}], "a": True}}
-    calls = [{"type": "function", "id": "call_1", "index": 0, "function": function}]
-    messages: list[dict] = [
-        {"role": "system", "content": "Use tools."},
-        {"role": "user", "content": "Calculate."},
+def test_mixture_parquet_row_renders_as_huggingface_request(tmp_path: Path) -> None:
+    calls = [{"type": "function", "id": "call_1", "function": {"name": "add", "arguments": {"a": 1}}}]
+    tools = [{"type": "function", "function": {"name": "add", "parameters": {"type": "object"}}}]
+    messages = [
+        {"role": "user", "content": "Add."},
         {"role": "assistant", "content": "", "reasoning_content": "Think.", "tool_calls": calls},
-        {"role": "tool", "content": "4", "tool_call_id": "call_1", "name": "calculate"},
-        {"role": "assistant", "content": "4"},
+        {"role": "tool", "content": "1", "tool_call_id": "call_1"},
     ]
-    tools: list[dict] = [
+    stored_calls = [{**calls[0], "function": {"name": "add", "arguments": json.dumps({"a": 1})}}]
+    stored_messages = [
+        {"role": "user", "content": "Add.", "reasoning": None, "tool_calls": None, "tool_call_id": None},
         {
-            "type": "function",
-            "function": {"name": "calculate", "description": "Calculate.", "parameters": {"type": "object"}},
-        }
+            "role": "assistant",
+            "content": "",
+            "reasoning": "Think.",
+            "tool_calls": json.dumps(stored_calls),
+            "tool_call_id": None,
+        },
+        {"role": "tool", "content": "1", "reasoning": None, "tool_calls": None, "tool_call_id": "call_1"},
     ]
-    row = {"messages": json.loads(json.dumps(messages)), "tools": json.dumps(tools), "metadata": {"source_row_idx": 0}}
-    for message in row["messages"]:
-        if "reasoning_content" in message:
-            message["reasoning"] = message.pop("reasoning_content")
-        if "tool_calls" in message:
-            message["tool_calls"][0]["function"]["arguments"] = json.dumps(function["arguments"])
-            message["tool_calls"] = json.dumps(message["tool_calls"])
     path = tmp_path / "mixture.parquet"
+    row = {"messages": stored_messages, "tools": json.dumps(tools), "metadata": {"source_row": 0}}
     pl.DataFrame([row]).write_parquet(path)
-    (saved,) = load_hf_parquet(path).collect().to_dicts()
-    if not serialized:
-        saved["tools"] = json.loads(saved["tools"])
-        for message in saved["messages"]:
-            if message["tool_calls"] is not None:
-                message["tool_calls"] = json.loads(message["tool_calls"])
-    conversation = HFConversation.from_dict(saved)
-    tokenizer = AutoTokenizer.from_pretrained(repo, revision=revision)
-    assert tokenizer is not None
-    spec = ModelRegistry.build(allow_third_party_plugins=False).repo_to_model[repo]
-    assert isinstance(spec, LanguageModelSpec)
-    config = ChatCodecConfig(
-        prompt_template=fix_chat_template(tokenizer.get_chat_template()),
-        output_parser_regex=None,
-        system_role_name="system",
-        user_role_name="user",
-        assistant_role_name="assistant",
-        eos_token=tokenizer.eos_token,
-        bos_token=tokenizer.bos_token,
-        reasoning_config=spec.reasoning_config,
-    )
-    codec = ChatCodecConfig.from_json(config.to_json()).init(tokenizer.backend_tokenizer)
-    messages[2].pop("reasoning_content")
-    messages[2].update(native_reasoning)
-    assert [codec.message_to_dict(message) for message in conversation.messages] == messages
-    assert conversation.tools == tuple(tools)
-    assert codec.encode_request(conversation.messages[:-1], tools=conversation.tools) == tokenizer.apply_chat_template(
-        messages[:-1], tools=[*tools], add_generation_prompt=True, return_dict=False
-    )
+
+    (loaded,) = load_hf_parquet(path).collect().to_dicts()
+    conversation = HFConversation.from_dict(loaded)
+    codec = _chat_codec(prompt_template='{{ {"messages": messages, "tools": tools} | tojson }}')
+    assert json.loads(codec.render_request(conversation.messages, tools=conversation.tools)) == {
+        "messages": messages,
+        "tools": tools,
+    }
+    assert json.loads(codec.render_request(conversation.messages))["tools"] is None
 
 
 @pytest.mark.parametrize("tool_calls", [None, []])

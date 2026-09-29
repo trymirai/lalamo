@@ -5,14 +5,12 @@ from typing import Self
 import polars as pl
 
 from lalamo.models.chat_codec import Message, ToolSchema, message_converter
-from lalamo.utils.json import JSON
 
 
 @dataclass(frozen=True)
 class HFConversation:
     messages: tuple[Message, ...]
     tools: tuple[ToolSchema, ...] | None
-    metadata: dict[str, JSON]
 
     @classmethod
     def from_dict(cls, obj: dict) -> Self:
@@ -20,7 +18,7 @@ class HFConversation:
 
 
 def load_hf_parquet(path: Path | str) -> pl.LazyFrame:
-    return pl.scan_parquet(Path(path))
+    return pl.scan_parquet(Path(path)).drop("metadata")
 
 
 def shuffle_dataset(frame: pl.LazyFrame, seed: int = 1337) -> pl.DataFrame:

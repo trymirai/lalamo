@@ -104,7 +104,7 @@ class HuggingFaceRequest(TypedDict):
     bos_token: str | None
     eos_token: str | None
     messages: list[HuggingFaceMessage]
-    tools: NotRequired[list[ToolSchema]]
+    tools: list[ToolSchema] | None
 
 
 @dataclass(frozen=True)
@@ -257,15 +257,13 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
                     HuggingFaceMessage(role=self.config.system_role_name, content=self.config.default_system_prompt),
                     *converted_messages,
                 ]
-        result = HuggingFaceRequest(
+        return HuggingFaceRequest(
             add_generation_prompt=True,
             messages=converted_messages,
             bos_token=self.config.bos_token,
             eos_token=self.config.eos_token,
+            tools=None if tools is None else list(tools),
         )
-        if tools is not None:
-            result["tools"] = list(tools)
-        return result
 
     def render_request(
         self,

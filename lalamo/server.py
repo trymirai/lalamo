@@ -9,6 +9,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from functools import cached_property
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, Self
 
@@ -19,12 +20,13 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from jax import numpy as jnp
 
+from lalamo.data.huggingface_message import HFConversation
 from lalamo.inference.batch_scheduler import _PROBE_CACHE, BatchSchedulerConfig, ContinuousBatchScheduler
 from lalamo.model_import.common import import_model
 from lalamo.model_import.model_spec import LanguageModelSpec
 from lalamo.model_registry import ModelRegistry
 from lalamo.models import GenerationConfig, LanguageModel
-from lalamo.models.chat_codec import ReasoningEffort, parse_hf_message
+from lalamo.models.chat_codec import ReasoningEffort
 from lalamo.module import Keychain
 from lalamo.utils.sharding import ShardingConfig
 
@@ -36,12 +38,17 @@ class RequestBody:
     sequence_id: str
     messages: list[dict]
     model: str
+    tools: list[dict] | None = None
     max_completion_tokens: int = 8192
 
     generation_config: GenerationConfig | None = None
     dtype: Literal["bfloat16", "float32"] | None = None
     seed: int | None = None
     reasoning_effort: ReasoningEffort | None = None
+
+    @cached_property
+    def conversation(self) -> HFConversation:
+        return HFConversation.from_dict({"messages": self.messages, "tools": self.tools or None})
 
     def shares_batch_params(self, other: Self, default_reasoning_effort: ReasoningEffort | None) -> bool:
         self_reasoning_effort = self.reasoning_effort or default_reasoning_effort
@@ -192,10 +199,9 @@ def validate_requests(
 
     try:
         for request in requests:
-            for message in request.messages:
-                parse_hf_message(message)
-    except (TypeError, ValueError, cattrs.BaseValidationError) as error:
-        raise HTTPException(422, f"Invalid message: {error}") from error
+            _ = request.conversation
+    except Exception as error:
+        raise HTTPException(422, traceback.format_exc()) from error
 
     sequence_ids = [request.sequence_id for request in requests]
     if len(set(sequence_ids)) != len(sequence_ids):
@@ -209,8 +215,6 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
 
     model = _load_resident_model(reference.model, reference.dtype)
 
-    dataset = [[parse_hf_message(message) for message in request.messages] for request in requests]
-
     if reference.seed is not None:
         batch_key = jax.random.key(0)
         keys = jnp.stack([jax.random.fold_in(batch_key, jnp.uint32(request.seed)) for request in requests])
@@ -223,7 +227,7 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
     batch_scheduler = ContinuousBatchScheduler(model=model)
 
     for reply_idx, reply in batch_scheduler.reply_many(
-        dataset,
+        [request.conversation for request in requests],
         generation_config=reference.generation_config,
         batch_scheduler_config=BatchSchedulerConfig(
             max_output_length=reference.max_completion_tokens,
