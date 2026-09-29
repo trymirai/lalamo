@@ -18,7 +18,7 @@ class HFConversation:
 
 
 def load_hf_parquet(path: Path | str) -> pl.LazyFrame:
-    return pl.scan_parquet(Path(path)).drop("metadata")
+    return pl.scan_parquet(Path(path)).drop("metadata", strict=False)
 
 
 def shuffle_dataset(frame: pl.LazyFrame, seed: int = 1337) -> pl.DataFrame:
