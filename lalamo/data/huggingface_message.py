@@ -1,42 +1,27 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Self
+from typing import Self
 
-import cattrs
 import polars as pl
 
-from lalamo.models.chat_codec import AssistantMessage, Message, SystemMessage, UserMessage
+from lalamo.models.chat_codec import Message, ToolSchema, message_converter
+from lalamo.utils.json import JSON
 
 
 @dataclass(frozen=True)
-class HFMessage:
-    _converter: ClassVar[cattrs.Converter] = cattrs.Converter(forbid_extra_keys=True)
-
-    role: str
-    content: str
-    reasoning_content: str | None = None
+class HFConversation:
+    messages: tuple[Message, ...]
+    tools: tuple[ToolSchema, ...] | None
+    metadata: dict[str, JSON]
 
     @classmethod
     def from_dict(cls, obj: dict) -> Self:
-        return cls._converter.structure(obj, cls)
-
-    def as_message(self) -> Message:
-        match self.role:
-            case "user" | "human":
-                return UserMessage(self.content)
-            case "system" | "developer":
-                return SystemMessage(self.content)
-            case "assistant":
-                return AssistantMessage(self.reasoning_content, self.content)
-            case other:
-                raise ValueError(f"Cannot convert {other} message")
+        return message_converter.structure(obj, cls)
 
 
 def load_hf_parquet(path: Path | str) -> pl.LazyFrame:
-    path = Path(path)
-    return pl.scan_parquet(path)
+    return pl.scan_parquet(Path(path))
 
 
 def shuffle_dataset(frame: pl.LazyFrame, seed: int = 1337) -> pl.DataFrame:
-    df: pl.DataFrame = frame.collect()
-    return df.sample(fraction=1.0, shuffle=True, seed=seed)
+    return frame.collect().sample(fraction=1.0, shuffle=True, seed=seed)

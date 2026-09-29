@@ -19,13 +19,12 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from jax import numpy as jnp
 
-from lalamo.data.huggingface_message import HFMessage
 from lalamo.inference.batch_scheduler import _PROBE_CACHE, BatchSchedulerConfig, ContinuousBatchScheduler
 from lalamo.model_import.common import import_model
 from lalamo.model_import.model_spec import LanguageModelSpec
 from lalamo.model_registry import ModelRegistry
 from lalamo.models import GenerationConfig, LanguageModel
-from lalamo.models.chat_codec import ReasoningEffort
+from lalamo.models.chat_codec import ReasoningEffort, parse_hf_message
 from lalamo.module import Keychain
 from lalamo.utils.sharding import ShardingConfig
 
@@ -35,7 +34,7 @@ BatchStatus = Literal["in_progress", "completed", "failed"]
 @dataclass(frozen=True)
 class RequestBody:
     sequence_id: str
-    messages: list[HFMessage]
+    messages: list[dict]
     model: str
     max_completion_tokens: int = 8192
 
@@ -191,6 +190,13 @@ def validate_requests(
                 f"token limits, got incompatible {reference} and {request}.",
             )
 
+    try:
+        for request in requests:
+            for message in request.messages:
+                parse_hf_message(message)
+    except (TypeError, ValueError, cattrs.BaseValidationError) as error:
+        raise HTTPException(422, f"Invalid message: {error}") from error
+
     sequence_ids = [request.sequence_id for request in requests]
     if len(set(sequence_ids)) != len(sequence_ids):
         raise HTTPException(400, "All requests in a batch must specify distinct ids, but found duplicates.")
@@ -203,7 +209,7 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
 
     model = _load_resident_model(reference.model, reference.dtype)
 
-    dataset = [[hf_message.as_message() for hf_message in request.messages] for request in requests]
+    dataset = [[parse_hf_message(message) for message in request.messages] for request in requests]
 
     if reference.seed is not None:
         batch_key = jax.random.key(0)
