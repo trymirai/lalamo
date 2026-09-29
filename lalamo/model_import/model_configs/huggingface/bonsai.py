@@ -55,12 +55,10 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
 
     def to_decoder_config(
         self,
-        context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         assert isinstance(self.quantization, MLXQuantizationConfig), "HFBonsaiConfig requires MLX quantization config"
         assert not self.use_sliding_window, "Sliding window attention is not supported for Bonsai"
-        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
@@ -74,7 +72,7 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
 
         rope_config = YARNRoPEConfig(
             base=self.rope_theta,
-            max_sequence_length=max_sequence_length,
+            max_sequence_length=self.max_position_embeddings,
             head_dim=self.head_dim,
             scaling_factor=self.rope_scaling.factor,
             original_context_length=self.rope_scaling.original_max_position_embeddings,

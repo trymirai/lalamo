@@ -41,8 +41,6 @@ from .mlp import (
 from .normalization import (
     Normalization,
     NormalizationConfig,
-    NormalizationForwardPassConfig,
-    NormalizationImplementation,
     UpcastMode,
 )
 from .rope import (
@@ -102,6 +100,8 @@ from .transformer_layer import (
     TransformerLayer,
     TransformerLayerActivationTrace,
     TransformerLayerConfig,
+    TransformerLayerConv,
+    TransformerLayerConvConfig,
     TransformerLayerResult,
 )
 
@@ -155,8 +155,6 @@ __all__ = [
     "MixtureOfExpertsConfig",
     "Normalization",
     "NormalizationConfig",
-    "NormalizationForwardPassConfig",
-    "NormalizationImplementation",
     "PLELayer",
     "PLELayerConfig",
     "PLEModelConfig",
@@ -188,6 +186,8 @@ __all__ = [
     "TransformerLayer",
     "TransformerLayerActivationTrace",
     "TransformerLayerConfig",
+    "TransformerLayerConv",
+    "TransformerLayerConvConfig",
     "TransformerLayerResult",
     "TransformerResult",
     "UnscaledRoPEConfig",

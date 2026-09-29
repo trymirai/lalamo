@@ -389,7 +389,11 @@ def _load_packed_mlx_matrix(
     scale_values = jax.device_put(scales.astype(template.dtype), weight_sharding)
     bias_values = jax.device_put(deq_biases.astype(template.dtype), weight_sharding)
 
-    spec = MLXSpec(bits=bits, group_size=group_size, layout=layout)
+    spec = MLXSpec(
+        bits=bits,
+        group_size=group_size,
+        layout=layout,
+    )
     return spec.from_packed_parameters(
         packed_weights=pack_uint_to_uint8(weight_values, bits, sharding_config=sharding_config),
         scales=scale_values,
@@ -1123,7 +1127,7 @@ def load_transformer_layer(
     )
 
 
-def _load_weight_matrix(
+def _load_output_embedding_matrix(
     matrix: WeightMatrix,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
@@ -1193,7 +1197,7 @@ def load_untied_embedding(
         embedding_path,
         implementation=implementation,
     )
-    output_emb = _load_weight_matrix(
+    output_emb = _load_output_embedding_matrix(
         module.output_embedding,
         weights_dict,
         lm_head_path,

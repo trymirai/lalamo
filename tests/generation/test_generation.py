@@ -9,7 +9,7 @@ from jax.lax import DotAlgorithmPreset
 
 from lalamo.model_import.model_spec import LanguageModelSpec
 from lalamo.models import LanguageModel
-from lalamo.models.chat_codec import ReasoningEffort, UserMessage
+from lalamo.models.chat_codec import UserMessage
 from lalamo.models.language_model import _COMPILED_PROMPT_LENGTHS, GenerationConfig
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis, ShardingConfig
 from lalamo.modules import DecoderForwardPassConfig
@@ -260,9 +260,7 @@ def test_batch_generation(language_model: LanguageModel) -> None:
 
 def test_streaming_vs_eager_consistency(replicated_language_model: LanguageModel) -> None:
     prompt = [UserMessage("What's the largest domestic cat breed?")]
-    token_ids = jnp.array(
-        replicated_language_model.token_codec.encode_request(prompt, reasoning_effort=ReasoningEffort.NONE)
-    )
+    token_ids = jnp.array(replicated_language_model.token_codec.encode_request(prompt))
 
     generation_config = GenerationConfig(temperature=0.0)
     prefill_forward_pass_config = DecoderForwardPassConfig.for_inference(precision=DotAlgorithmPreset.F32_F32_F32)

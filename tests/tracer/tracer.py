@@ -486,7 +486,6 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
         imported_model = import_model(
             test_spec.model_repo,
             sharding_config=sharding_config,
-            context_length=test_spec.num_tokens * test_spec.token_stride,
             dtype=import_dtype,
         )
         model = imported_model.model

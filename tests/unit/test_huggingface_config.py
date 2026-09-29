@@ -20,7 +20,6 @@ class QuantizedConfig(HuggingFaceLMConfig):
 
     def to_decoder_config(
         self,
-        context_length: int | None,
         metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
         raise NotImplementedError

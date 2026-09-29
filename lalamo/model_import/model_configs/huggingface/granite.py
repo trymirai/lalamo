@@ -52,11 +52,9 @@ class HFGraniteConfig(HuggingFaceLMConfig):
 
     def to_decoder_config(
         self,
-        context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         assert self.rope_scaling is None, "Granite with rope scaling is not supported"
-        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
         head_dim = self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads
 
         assert self.tie_word_embeddings, "Granite always ties word embeddings"
@@ -67,7 +65,7 @@ class HFGraniteConfig(HuggingFaceLMConfig):
 
         rope_config = UnscaledRoPEConfig(
             base=self.rope_theta,
-            max_sequence_length=max_sequence_length,
+            max_sequence_length=self.max_position_embeddings,
             head_dim=head_dim,
         )
 

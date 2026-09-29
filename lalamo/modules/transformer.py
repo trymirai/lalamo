@@ -238,11 +238,7 @@ class Transformer(LalamoModule[TransformerConfig]):
 
         assert inner_features.dtype == residual_dtype
         pre_norm_outputs = inner_features if return_suffix_tokens is not None else None
-        normalized_outputs = call_vmapped_twice(
-            self.output_norm,
-            inner_features,
-            forward_pass_config=forward_pass_config.normalization_forward_pass_config,
-        )
+        normalized_outputs = call_vmapped_twice(self.output_norm, inner_features)
 
         if return_updated_state:
             compact_state_layers = []

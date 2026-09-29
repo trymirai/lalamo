@@ -18,7 +18,6 @@ from lalamo.model_import.loaders.utils import decode_mxfp4
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.utils.sharding import is_sharded
 from lalamo.weight_matrix import CompressionImplementation, Layout
 from tests.common import assert_close_arrays
 from tests.helpers import make_sharding, make_test_sharding_config
@@ -244,9 +243,9 @@ def test_microfloat_compress_rejects_group_size_that_does_not_divide_stored_last
 
 
 def test_microfloat_export_load_roundtrips_and_preserves_template_sharding(fake_mesh: Mesh) -> None:
-    weights = _logical_weights()
+    weights = _logical_weights(2)
     spec = MicrofloatSpec(group_size=4, layout=Layout.INPUT_OUTPUT)
-    saved_sharding = make_sharding((LogicalAxis.MATRIX, None))
+    saved_sharding = make_sharding((None, LogicalAxis.MATRIX, None))
     assert saved_sharding is not None
     original = spec.compress(
         weights, implementation=CompressionImplementation.INFERENCE, sharding_config=make_test_sharding_config()
@@ -255,7 +254,7 @@ def test_microfloat_export_load_roundtrips_and_preserves_template_sharding(fake_
     reference = original.decompress()
     original = _put_on_sharding(original, saved_sharding)
     template = spec.compress(
-        dummy_array(weights.shape, weights.dtype, make_sharding((None, None))),
+        dummy_array(weights.shape, weights.dtype, make_sharding((None, None, None))),
         implementation=CompressionImplementation.INFERENCE,
         sharding_config=make_test_sharding_config(),
     )
@@ -268,6 +267,6 @@ def test_microfloat_export_load_roundtrips_and_preserves_template_sharding(fake_
     assert isinstance(template, MicrofloatMatrixForInference)
     assert_close_arrays(result=restored.decompress(), reference=reference)
     del fake_mesh
-    assert not is_sharded(restored.packed_scales.sharding)
+    assert restored.packed_scales.sharding == template.packed_scales.sharding
     assert restored.packed_scales.sharding != saved_sharding
-    assert not is_sharded(restored.packed_weights.sharding)
+    assert restored.packed_weights.sharding == template.packed_weights.sharding

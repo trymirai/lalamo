@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from jax.core import Tracer
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.compressed.utils.hadamard import hadamard_transform
+from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
@@ -208,8 +208,7 @@ class IncoherenceSigns(eqx.Module):
             signs = self.output_signs
         if signs is None:
             return vector
-        signs = signs.astype(vector.dtype)
-        return hadamard_transform(vector * signs, block_size)
+        return hadamard_transform(vector * signs.astype(vector.dtype), block_size)
 
     def output_transform(
         self,
@@ -424,17 +423,15 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
         if transposed and self.adapter is not None:
             raise TypeError("Hybrid transposed matmul does not support adapters.")
 
-        if self.incoherence_signs is None:
-            transformed_vector = vector
-        else:
+        quantized_keychain, adapter_keychain = keychain.split(2)
+        transformed_vector = vector
+        if self.incoherence_signs is not None:
             assert self.spec.incoherence_block_size is not None
             transformed_vector = self.incoherence_signs.input_transform(
                 vector,
                 self.spec.incoherence_block_size,
                 transposed=transposed,
             )
-
-        quantized_keychain, adapter_keychain = keychain.split(2)
         result = self.quantized.dot(
             transformed_vector,
             keychain=quantized_keychain,
