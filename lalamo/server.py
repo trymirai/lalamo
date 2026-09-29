@@ -9,6 +9,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from functools import cached_property
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, Self
 
@@ -19,7 +20,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from jax import numpy as jnp
 
-from lalamo.data.huggingface_message import HFMessage
+from lalamo.data.huggingface_message import HFConversation
 from lalamo.inference.batch_scheduler import _PROBE_CACHE, BatchSchedulerConfig, ContinuousBatchScheduler
 from lalamo.model_import.common import import_model
 from lalamo.model_import.model_spec import LanguageModelSpec
@@ -35,14 +36,19 @@ BatchStatus = Literal["in_progress", "completed", "failed"]
 @dataclass(frozen=True)
 class RequestBody:
     sequence_id: str
-    messages: list[HFMessage]
+    messages: list[dict]
     model: str
+    tools: list[dict] | None = None
     max_completion_tokens: int = 8192
 
     generation_config: GenerationConfig | None = None
     dtype: Literal["bfloat16", "float32"] | None = None
     seed: int | None = None
     reasoning_effort: ReasoningEffort | None = None
+
+    @cached_property
+    def conversation(self) -> HFConversation:
+        return HFConversation.from_dict({"messages": self.messages, "tools": self.tools or None})
 
     def shares_batch_params(self, other: Self, default_reasoning_effort: ReasoningEffort | None) -> bool:
         self_reasoning_effort = self.reasoning_effort or default_reasoning_effort
@@ -191,6 +197,12 @@ def validate_requests(
                 f"token limits, got incompatible {reference} and {request}.",
             )
 
+    try:
+        for request in requests:
+            _ = request.conversation
+    except Exception as error:
+        raise HTTPException(422, traceback.format_exc()) from error
+
     sequence_ids = [request.sequence_id for request in requests]
     if len(set(sequence_ids)) != len(sequence_ids):
         raise HTTPException(400, "All requests in a batch must specify distinct ids, but found duplicates.")
@@ -202,8 +214,6 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
     reference, *_ = requests
 
     model = _load_resident_model(reference.model, reference.dtype)
-
-    dataset = [[hf_message.as_message() for hf_message in request.messages] for request in requests]
 
     if reference.seed is not None:
         batch_key = jax.random.key(0)
@@ -217,7 +227,7 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
     batch_scheduler = ContinuousBatchScheduler(model=model)
 
     for reply_idx, reply in batch_scheduler.reply_many(
-        dataset,
+        [request.conversation for request in requests],
         generation_config=reference.generation_config,
         batch_scheduler_config=BatchSchedulerConfig(
             max_output_length=reference.max_completion_tokens,

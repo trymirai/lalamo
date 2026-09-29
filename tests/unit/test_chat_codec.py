@@ -1,8 +1,14 @@
+import json
+from pathlib import Path
+
+import polars as pl
 import pytest
+from cattrs.errors import ClassValidationError
 from frozendict import frozendict
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 
+from lalamo.data.huggingface_message import HFConversation, load_hf_parquet
 from lalamo.model_import.model_specs.output_parser_regexes import (
     GEMMA4_OUTPUT_PARSER_REGEX,
     GRANITE_THINKING_OUTPUT_PARSER_REGEX,
@@ -16,6 +22,7 @@ from lalamo.models.chat_codec import (
     ReasoningConfig,
     ReasoningEffort,
     UserMessage,
+    parse_hf_message,
 )
 
 
@@ -25,7 +32,7 @@ def _chat_codec(
     output_parser_regex: str | None = None,
     reasoning_config: ReasoningConfig | None = None,
 ) -> ChatCodec:
-    return ChatCodecConfig(
+    config = ChatCodecConfig(
         prompt_template=prompt_template,
         output_parser_regex=output_parser_regex,
         system_role_name="system",
@@ -34,16 +41,30 @@ def _chat_codec(
         eos_token=None,
         bos_token=None,
         reasoning_config=reasoning_config,
-    ).init(Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]")))
+    )
+    return ChatCodecConfig.from_json(config.to_json()).init(
+        Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]"))
+    )
 
 
-def test_reasoning_config_requires_a_mapping_for_its_default() -> None:
-    with pytest.raises(ValueError, match="default reasoning effort"):
-        ReasoningConfig(
-            default_reasoning_effort=ReasoningEffort.MEDIUM,
-            field_name="reasoning_effort",
-            reasoning_effort_to_field_value=frozendict({ReasoningEffort.LOW: "low"}),
-        )
+@pytest.mark.parametrize(
+    "missing_field", [None, "default_reasoning_effort", "field_name", "reasoning_effort_to_field_value"]
+)
+def test_loading_rejects_incomplete_or_unmapped_reasoning_effort(missing_field: str | None) -> None:
+    config = _chat_codec().config.to_json()
+    assert isinstance(config, dict)
+    reasoning: dict = {
+        "default_reasoning_effort": "medium",
+        "field_name": "reasoning_effort",
+        "reasoning_effort_to_field_value": {"medium": "medium"},
+    }
+    if missing_field is None:
+        reasoning["default_reasoning_effort"] = "high"
+    else:
+        reasoning.pop(missing_field)
+    config["reasoning_config"] = reasoning
+    with pytest.raises(ClassValidationError):
+        ChatCodecConfig.from_json(config)
 
 
 def test_reasoning_effort_is_rendered_through_the_configured_field() -> None:
@@ -90,6 +111,73 @@ def test_boolean_template_field_uses_medium_as_enabled() -> None:
         )
         == "off"
     )
+
+
+def test_mixture_parquet_row_renders_as_huggingface_request(tmp_path: Path) -> None:
+    calls = [{"type": "function", "id": "call_1", "function": {"name": "add", "arguments": {"a": 1}}}]
+    tools = [{"type": "function", "function": {"name": "add", "parameters": {"type": "object"}}}]
+    messages = [
+        {"role": "user", "content": "Add."},
+        {"role": "assistant", "content": "", "reasoning_content": "Think.", "tool_calls": calls},
+        {"role": "tool", "content": "1", "tool_call_id": "call_1"},
+    ]
+    stored_calls = [{**calls[0], "function": {"name": "add", "arguments": json.dumps({"a": 1})}}]
+    stored_messages = [
+        {"role": "user", "content": "Add.", "reasoning": None, "tool_calls": None, "tool_call_id": None},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "Think.",
+            "tool_calls": json.dumps(stored_calls),
+            "tool_call_id": None,
+        },
+        {"role": "tool", "content": "1", "reasoning": None, "tool_calls": None, "tool_call_id": "call_1"},
+    ]
+    path = tmp_path / "mixture.parquet"
+    row = {"messages": stored_messages, "tools": json.dumps(tools), "metadata": {"source_row": 0}}
+    pl.DataFrame([row]).write_parquet(path)
+
+    (loaded,) = load_hf_parquet(path).collect().to_dicts()
+    conversation = HFConversation.from_dict(loaded)
+    codec = _chat_codec(prompt_template='{{ {"messages": messages, "tools": tools} | tojson }}')
+    assert json.loads(codec.render_request(conversation.messages, tools=conversation.tools)) == {
+        "messages": messages,
+        "tools": tools,
+    }
+    assert json.loads(codec.render_request(conversation.messages))["tools"] is None
+
+
+@pytest.mark.parametrize("tool_calls", [None, []])
+def test_rendered_request_preserves_empty_text_and_omits_absent_fields(tool_calls: list | None) -> None:
+    messages: list[dict] = [
+        {"role": "system", "content": ""},
+        {"role": "user", "content": ""},
+        {"role": "assistant", "content": "", "reasoning_content": ""},
+        {"role": "tool", "content": "", "name": "", "tool_call_id": ""},
+        {"role": "tool", "content": ""},
+    ]
+    source = [*messages]
+    source[2] = {**source[2], "tool_calls": tool_calls}
+    codec = _chat_codec(prompt_template="{{ messages | tojson }}")
+    assert json.loads(codec.render_request([parse_hf_message(message) for message in source])) == messages
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"role": "user", "content": 123},
+        {"role": "assistant", "content": {"text": "wrong shape"}},
+        {"role": "system", "content": [{"type": "image_url", "image_url": {"url": "example"}}]},
+        {"role": "assistant", "name": "invalid"},
+        {"role": "assistant", "reasoning": "one", "thinking": "two"},
+        {"role": "tool", "reasoning": "invalid"},
+        {"role": "user", "tool_calls": []},
+        {"role": "assistant", "tool_calls": [{"type": "function", "function": {"name": "x", "arguments": "[]"}}]},
+    ],
+)
+def test_message_rejects_invalid_wire_fields(payload: dict) -> None:
+    with pytest.raises((TypeError, ClassValidationError)):
+        parse_hf_message(payload)
 
 
 @pytest.mark.parametrize(
