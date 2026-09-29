@@ -16,6 +16,7 @@ from .microfloat import (
 )
 from .mlx import MLXMatrix, MLXMatrixForInference, MLXMatrixForTraining, MLXSpec
 from .quantized_spec import QuantizedSpec
+from .trellis import TrellisMatrix, TrellisSpec
 
 __all__ = [
     "HybridMatrix",
@@ -40,4 +41,6 @@ __all__ = [
     "MicrofloatScaleMode",
     "MicrofloatSpec",
     "QuantizedSpec",
+    "TrellisMatrix",
+    "TrellisSpec",
 ]
