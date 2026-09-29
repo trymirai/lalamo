@@ -1,12 +1,14 @@
 from dataclasses import dataclass
 
 import equinox as eqx
+import jax
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, field
 
+from .mlp import ROUTING_RESIDUAL
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 from .token_mixer import State, TransformerLayerState
@@ -240,7 +242,15 @@ class Transformer(LalamoModule[TransformerConfig]):
                 else generation_mask
             )
 
-            layer_result = layer(
+            # Under remat the layer is recomputed in the backward pass instead of keeping its activations;
+            # the routing scan's outputs are the one thing worth keeping (a few bytes per token for a
+            # sequential pass over the sequence), so the policy saves exactly those.
+            layer_call = (
+                eqx.filter_checkpoint(layer, policy=jax.checkpoint_policies.save_only_these_names(ROUTING_RESIDUAL))
+                if forward_pass_config.remat_layers
+                else layer
+            )
+            layer_result = layer_call(
                 inner_features,
                 positional_embeddings,
                 state=effective_state,

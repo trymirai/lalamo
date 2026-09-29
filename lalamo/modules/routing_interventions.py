@@ -78,6 +78,12 @@ class CacheConditionalRouting(RoutingIntervention):
         if self.logit_range is not None and self.logit_range <= 0.0:
             raise ValueError(f"logit_range must be positive, got {self.logit_range}")
 
+    @property
+    def weighs_by_softmax_over_selection(self) -> bool:
+        # Paper: z' re-ranks only; the weights are the softmax of the original logits over the selected set,
+        # which `route` enforces by refusing any routing function but SoftmaxRouting.
+        return True
+
     def capacity(self, num_experts: int) -> int:
         if self.cache_capacity is None:
             return max(num_experts // 2, 1)
@@ -128,7 +134,7 @@ class CacheConditionalRouting(RoutingIntervention):
             delta = jnp.full((batch_size,), self.logit_range, dtype=jnp.float32)
 
         cached = _like(self._cache_mask(state.last_used, num_experts), logits)
-        forced = _rank(logits) < self.forced_top
+        forced = self._forced_mask(logits)
         boosted = logits + self.bias * delta[:, None] * (cached | forced).astype(jnp.float32)
         _, selected = jax.lax.top_k(boosted, num_active)
         # Selection by the boosted logits, weights by the original ones (paper: z' is used only for re-ranking).
@@ -148,12 +154,30 @@ class CacheConditionalRouting(RoutingIntervention):
             active_expert_weights=jnp.where(
                 active[:, None], intervened.active_expert_weights, base.active_expert_weights
             ),
+            # The logits the selection was taken over, exactly as top_k saw them: boosted where the rule was
+            # active, the plain float32 logits elsewhere. A consumer that needs the selection margins (the
+            # traffic surrogate of routing-lab) reads them from here instead of re-deriving the boost.
+            effective_logits=jnp.where(active[:, None], boosted, logits),
         )
         return routing, self._updated_state(state, routing, token_range, num_active)
 
     def _cache_mask(self, last_used: Int[Array, "batch experts"], num_experts: int) -> Bool[Array, "batch experts"]:
-        # The `capacity` most recently used experts; unused ones (stamp -1) are never resident.
-        return (_rank(last_used) < self.capacity(num_experts)) & (last_used >= 0)
+        # The `capacity` most recently used experts; unused ones (stamp -1) are never resident. A threshold
+        # at the capacity-th largest stamp is exact: stamps of used experts are unique (clock * k + rank),
+        # and when fewer than `capacity` experts have been used the threshold is -1, which the second
+        # condition removes -- the same set a full ranking selects, at the price of one top_k instead of
+        # two sorts per step.
+        threshold = jax.lax.top_k(last_used, self.capacity(num_experts))[0][:, -1]
+        return (last_used >= threshold[:, None]) & (last_used >= 0)
+
+    def _forced_mask(self, logits: Float[Array, "batch experts"]) -> Bool[Array, "batch experts"]:
+        # The J highest-ranked experts by their own logits. Taken as top_k INDICES rather than a value
+        # threshold so that an exact tie at the boundary is resolved as a stable descending sort would:
+        # the lower index wins in both.
+        num_experts = logits.shape[-1]
+        if self.forced_top == 0:
+            return jnp.zeros(logits.shape, dtype=jnp.bool_)
+        return _one_hot(jax.lax.top_k(logits, self.forced_top)[1], num_experts).any(axis=1)
 
     @staticmethod
     def _updated_state(

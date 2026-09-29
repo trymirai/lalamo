@@ -44,6 +44,10 @@ __all__ = [
 class TransformerForwardPassConfig:
     mixer_forward_pass_config: MixerForwardPassConfig = dataclass_field(default_factory=MixerForwardPassConfig)
     mlp_forward_pass_config: MLPForwardPassConfig = dataclass_field(default_factory=MLPForwardPassConfig)
+    # Rematerialise every layer in the backward pass (jax.checkpoint around each layer call). Inference never
+    # needs it; a training step through all layers of a large model does, because lalamo's preamble turns
+    # XLA's own remat pass off and the saved activations of the MoE dispatch would otherwise dominate memory.
+    remat_layers: bool = False
 
     @classmethod
     def for_tracer_tests(cls) -> Self:

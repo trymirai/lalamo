@@ -12,6 +12,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
+from jax.ad_checkpoint import checkpoint_name
 from jax.lax import DotAlgorithmPreset
 from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key
@@ -35,6 +36,7 @@ from .token_mixer import StateLayerBase
 from .utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
+    "ROUTING_RESIDUAL",
     "DenseMLP",
     "DenseMLPConfig",
     "IdentityRoutingIntervention",
@@ -102,6 +104,14 @@ class MLPForwardPassConfig:
     mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN
     moe_chunk_size_ratio: float = 0.2
     matmul_config: MatmulConfig = dataclass_field(default_factory=MatmulConfig)
+    # Rematerialise each chunk of the chunked MoE dispatch in the backward pass. The scan over chunks would
+    # otherwise keep every chunk's gathered inputs, hidden activations and dequantised expert weights alive
+    # until the backward pass reaches them -- on a 256-expert layer that is tens of gigabytes per layer.
+    remat_expert_chunks: bool = False
+    # Iterations of the routing scan unrolled into one loop body. The scan runs one small step per position
+    # and is bound by kernel launches, not arithmetic; unrolling lets XLA fuse neighbouring steps. Purely a
+    # speed knob: the operations and their order are unchanged, so the results are bit-identical.
+    routing_scan_unroll: int = 1
 
     @classmethod
     def for_tracer_tests(cls) -> Self:
@@ -348,13 +358,26 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         )
 
 
+# Checkpoint name of the routing scan's outputs. A layer rematerialised under a policy that saves this name
+# keeps the scan's (tiny) results across the backward pass instead of running the whole scan a second time.
+ROUTING_RESIDUAL = "moe_routing_scan"
+
+
 class RoutingMap(eqx.Module):
     active_expert_indices: Int[Array, "*batch_and_tokens active_experts"]
     active_expert_weights: Float[Array, "*batch_and_tokens active_experts"]
+    # The logits the selection was taken over when a rule modified them (None: the router logits as they are).
+    effective_logits: Float[Array, "*batch_and_tokens experts"] | None = None
 
 
 class MoERoutingTrace(eqx.Module):
     router_logits: Float[Array, "batch suffix_tokens experts"]
+    # What the top-k was taken over: the router logits plus whatever bias the routing intervention applied,
+    # so that top_k(effective_logits) is the dispatched set. Equal to `router_logits` without an intervention.
+    effective_logits: Float[Array, "batch suffix_tokens experts"]
+    # The activations the router read, in the activation dtype (before any float32 widening): a consumer
+    # can apply another router to them, e.g. a frozen reference router for a trust region.
+    router_inputs: Float[Array, "batch suffix_tokens channels"]
     active_expert_indices: Int[Array, "batch suffix_tokens active_experts"]
     shared_expert_gate: Float[Array, "batch suffix_tokens shared_experts"] | None
 
@@ -408,6 +431,17 @@ class RoutingIntervention(LalamoConfig, RegistryABC):
     """
 
     phases: tuple[RoutingPhase, ...]
+
+    @property
+    def weighs_by_softmax_over_selection(self) -> bool:
+        """Whether the mixing weights are the softmax of the router logits over the selected experts.
+
+        A rule that answers True lets the MoE run its routing scan on detached logits and recompute the
+        weights outside it with the gradient attached (see `MixtureOfExperts._route_tokens`); the forward
+        values are the same either way. A rule with any other weighting keeps the default and the scan runs
+        on the live logits.
+        """
+        return False
 
     def init_state(self, num_experts: int, dtype: DTypeLike) -> StateLayerBase | None:  # noqa: ARG002
         return None
@@ -617,6 +651,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         generation_mask: Bool[Array, "batch suffix_tokens"] | None,
         mode: ForwardPassMode,
         routing_state: StateLayerBase | None,
+        unroll: int = 1,
     ) -> tuple[RoutingMap, StateLayerBase | None]:
         """Routing of every (batch, token) slot in flattened order, plus the routing state after the last token.
 
@@ -657,20 +692,35 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 )
             return updated, routing
 
+        # For a rule whose weights are the softmax of the logits over the selected set, the scan only ever
+        # SELECTS: which experts, in which order they are evicted, the running logit range. None of that is
+        # differentiable in a useful way, so the scan runs on detached logits and the weights are recomputed
+        # below on the live ones. The forward values are unchanged; what changes is that reverse mode never
+        # has to transpose a sequence-long scan whose float carry (the range statistic) would otherwise drag
+        # it in. A rule with any other weighting keeps the scan on the live logits, weights and all.
+        detach_scan = intervention.weighs_by_softmax_over_selection
         final_state, routing_by_time = jax.lax.scan(
             route_step,
             routing_state,
             (
-                logits_by_time,
+                jax.lax.stop_gradient(logits_by_time) if detach_scan else logits_by_time,
                 rearrange(active, "batch suffix_tokens -> suffix_tokens batch"),
                 rearrange(padding_mask, "batch suffix_tokens -> suffix_tokens batch"),
             ),
+            unroll=unroll,
         )
+        # Named for the remat policy of the transformer (see ROUTING_RESIDUAL): what the scan produced is a
+        # few bytes per token, what it costs is a sequential pass over the sequence.
+        routing_by_time = jax.tree.map(lambda leaf: checkpoint_name(leaf, ROUTING_RESIDUAL), routing_by_time)
         routing = jax.tree.map(
             lambda leaf: rearrange(leaf, "suffix_tokens batch active -> (batch suffix_tokens) active"),
             routing_by_time,
         )
-        return routing, final_state
+        if not detach_scan:
+            return routing, final_state
+        selected_logits = jnp.take_along_axis(router_logits, routing.active_expert_indices, axis=-1)
+        live_weights = with_sharding(jax.nn.softmax(selected_logits), sharding_of(routing.active_expert_weights))
+        return replace(routing, active_expert_weights=live_weights), final_state
 
     def _shared_expert_weight(
         self,
@@ -759,6 +809,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             generation_mask,
             forward_pass_config.mode,
             routing_state,
+            unroll=forward_pass_config.routing_scan_unroll,
         )
         flat_routing = self._restore_weight_dtype(flat_routing, inputs.dtype)
         routing_map = jax.tree.map(
@@ -777,6 +828,8 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         )
         routing_trace = MoERoutingTrace(
             router_logits=router_logits,
+            effective_logits=(router_logits if routing_map.effective_logits is None else routing_map.effective_logits),
+            router_inputs=inputs,
             active_expert_indices=routing_map.active_expert_indices,
             shared_expert_gate=shared_gate,
         )
@@ -1013,8 +1066,9 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             dtype=flattened_inputs.dtype,
             out_sharding=batch_sharding,
         )
+        chunk_body = jax.checkpoint(loop_iteration) if forward_pass_config.remat_expert_chunks else loop_iteration
         routed_result, _ = jax.lax.scan(
-            loop_iteration,
+            chunk_body,
             routed_accumulator,
             (
                 jnp.arange(num_chunks, dtype=jnp.int32),
@@ -1078,6 +1132,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             generation_mask,
             forward_pass_config.mode,
             routing_state,
+            unroll=forward_pass_config.routing_scan_unroll,
         )
         routing_map = self._restore_weight_dtype(routing_map, flattened_inputs.dtype)
 
@@ -1132,8 +1187,13 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             return rearrange(flat, pattern, batch=batch_size)
 
         # The trace is a view of the routing that was dispatched, not a second router pass.
+        flat_effective_logits = router_logits if routing_map.effective_logits is None else routing_map.effective_logits
         routing_trace = MoERoutingTrace(
             router_logits=by_token(router_logits, "(batch suffix_tokens) experts -> batch suffix_tokens experts"),
+            effective_logits=by_token(
+                flat_effective_logits, "(batch suffix_tokens) experts -> batch suffix_tokens experts"
+            ),
+            router_inputs=by_token(flattened_inputs, "(batch suffix_tokens) channels -> batch suffix_tokens channels"),
             active_expert_indices=by_token(
                 routing_map.active_expert_indices,
                 "(batch suffix_tokens) active -> batch suffix_tokens active",

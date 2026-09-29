@@ -25,6 +25,7 @@ from .transformer import (
     TransformerConfig,
     TransformerForwardPassConfig,
     TransformerLayerResult,
+    TransformerResult,
 )
 from .utils import call_vmapped_twice
 
@@ -32,6 +33,7 @@ __all__ = [
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",
+    "DecoderFeatures",
     "DecoderForwardPassConfig",
     "DecoderResult",
     "PLEModelConfig",
@@ -95,6 +97,20 @@ class DecoderResult(Exportable, eqx.Module):
     updated_state: State | None = None
     activation_trace: DecoderActivationTrace | None = None
     routing_traces: tuple[MoERoutingTrace | None, ...] | None = None
+
+
+class DecoderFeatures(eqx.Module):
+    """Everything a decoder forward computes before the readout.
+
+    `__call__` is `features` followed by the readout. A caller that cannot afford the full-vocabulary logits
+    of every position -- a distillation loss over two models, for one -- takes the features and applies
+    `embedding.readout` to whichever positions it needs, in whatever chunks fit.
+    """
+
+    transformer_result: TransformerResult
+    # The key the readout would have consumed; kept so that `__call__` stays bit-identical to the old single
+    # function whether or not the readout is stochastic.
+    readout_keychain: Keychain
 
 
 @dataclass(frozen=True)
@@ -220,7 +236,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         return self.embedding.vocab_size
 
     @eqx.filter_jit
-    def __call__(
+    def features(
         self,
         token_ids: Int[Array, "batch suffix_tokens"],
         token_positions: Int[Array, "batch suffix_tokens"],
@@ -235,7 +251,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         generation_mask: Bool[Array, "batch suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
-    ) -> DecoderResult:
+    ) -> DecoderFeatures:
         if token_ids.ndim != 2:
             raise ValueError(
                 f"token_ids must be a 2D array of size (batch_size, sequence_length), got {token_ids.shape}",
@@ -296,12 +312,46 @@ class Decoder(LalamoModule[DecoderConfig]):
             generation_mask=generation_mask,
             keychain=transformer_keychain,
         )
+        return DecoderFeatures(transformer_result=transformer_result, readout_keychain=readout_keychain)
+
+    @eqx.filter_jit
+    def __call__(
+        self,
+        token_ids: Int[Array, "batch suffix_tokens"],
+        token_positions: Int[Array, "batch suffix_tokens"],
+        state: State | None = None,
+        return_updated_state: bool = False,
+        return_activation_trace: bool = False,
+        return_routing_traces: bool = False,
+        lengths_without_padding: Int[Array, " batch"] | None = None,
+        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
+        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
+        return_suffix_tokens: int | None = None,
+        generation_mask: Bool[Array, "batch suffix_tokens"] | None = None,
+        *,
+        keychain: Keychain,
+    ) -> DecoderResult:
+        features = self.features(
+            token_ids,
+            token_positions,
+            state=state,
+            return_updated_state=return_updated_state,
+            return_activation_trace=return_activation_trace,
+            return_routing_traces=return_routing_traces,
+            lengths_without_padding=lengths_without_padding,
+            forward_pass_config=forward_pass_config,
+            attention_parent_indices=attention_parent_indices,
+            return_suffix_tokens=return_suffix_tokens,
+            generation_mask=generation_mask,
+            keychain=keychain,
+        )
+        transformer_result = features.transformer_result
 
         logits = call_vmapped_twice(
             self.embedding.readout,
             transformer_result.outputs,
             forward_pass_config=forward_pass_config.embedding_forward_pass_config,
-            keychain=readout_keychain,
+            keychain=features.readout_keychain,
             added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
 
