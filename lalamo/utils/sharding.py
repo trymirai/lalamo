@@ -133,18 +133,21 @@ def reshard_as(array: Array, reference: Array) -> Array:
 
 
 def lookup_sharded_indices(
-    array: Shaped[Array, "rows cols"],
+    array: Shaped[Array, "rows ..."],
     row_index: int | Int[Array, "*batch"],
     out_sharding: NamedSharding | None = None,
-) -> Shaped[Array, "*batch cols"]:
+) -> Shaped[Array, "..."]:
+    trailing_spec = (None,) * (array.ndim - 1)
     if out_sharding is None:
         if isinstance(row_index, int):
             array_sharding = sharding_of(array)
-            out_sharding = NamedSharding(array_sharding.mesh, PartitionSpec(None))
+            out_sharding = NamedSharding(array_sharding.mesh, PartitionSpec(*trailing_spec))
         else:
             row_index_sharding = sharding_of(row_index)
-            out_sharding = NamedSharding(row_index_sharding.mesh, PartitionSpec(*row_index_sharding.spec, None))
-    result = array.at[row_index, :].get(out_sharding=out_sharding)
+            out_sharding = NamedSharding(
+                row_index_sharding.mesh, PartitionSpec(*row_index_sharding.spec, *trailing_spec)
+            )
+    result = array.at[row_index, ...].get(out_sharding=out_sharding)
     if isinstance(out_sharding.mesh, Mesh):
         return jax.device_put(result, out_sharding)
     return result
