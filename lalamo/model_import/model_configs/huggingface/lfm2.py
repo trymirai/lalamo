@@ -48,7 +48,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
     conv_bias: bool
     conv_dim: int
     conv_use_xavier_init: bool
-    eos_token_id: int
+    eos_token_id: int | list[int]
     hidden_size: int
     initializer_range: float
     max_position_embeddings: int

@@ -18,9 +18,9 @@ MUSE_GLIMMER_MODELS = [
     LanguageModelSpec(
         vendor="Meta",
         family="Muse-Glimmer",
-        name="Muse-Glimmer-30B",
+        name=name,
         size="30B",
-        origin=HuggingFaceOrigin(repo="meta-models/Muse-Glimmer-30B"),
+        origin=HuggingFaceOrigin(repo=repo),
         config_type=HFMuseGlimmerConfig,
         configs=ConfigMap(
             chat_template=FileSpec("chat_template.jinja"),
@@ -30,8 +30,6 @@ MUSE_GLIMMER_MODELS = [
                 top_p=0.95,
             ),
         ),
-        output_parser_regex=MUSE_GLIMMER_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag="<|eom|><|start|>assistant to=user<|message|>",
         reasoning_config=ReasoningConfig(
             default_reasoning_effort=ReasoningEffort.HIGH,
             field_name="reasoning_strength",
@@ -44,5 +42,12 @@ MUSE_GLIMMER_MODELS = [
                 }
             ),
         ),
-    ),
+        output_parser_regex=MUSE_GLIMMER_OUTPUT_PARSER_REGEX,
+        end_of_thinking_tag="<|eom|><|start|>assistant to=user<|message|>",
+    )
+    for name, repo in (
+        ("Muse-Glimmer-30B", "meta-models/Muse-Glimmer-30B"),
+        ("Muse-Glimmer-30B-MLX-4bit", "mlx-community/Muse-Glimmer-30B-4bit"),
+        ("Muse-Glimmer-30B-MLX-8bit", "mlx-community/Muse-Glimmer-30B-8bit"),
+    )
 ]

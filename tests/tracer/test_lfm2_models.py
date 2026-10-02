@@ -4,10 +4,12 @@ from lalamo.model_import.model_specs.lfm2 import LFM2_MODELS
 from tests.tracer.tracer import DType, ModelTestSpec, _test_model
 from tests.tracer.tracer_lfm2 import LFM2DecoderTracer
 
+# MLX quantization configs intentionally omit Transformers' `quant_method`
+# and cannot be loaded by this PyTorch reference tracer.
 MODEL_LIST = [
     ModelTestSpec(model.origin.description, DType.FLOAT32)
     for model in LFM2_MODELS
-    if model.origin.description.startswith("LiquidAI/")
+    if model.origin.description.startswith("LiquidAI/") and "-MLX-" not in model.origin.description
 ]
 
 

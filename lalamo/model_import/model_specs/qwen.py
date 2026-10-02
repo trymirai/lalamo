@@ -1,3 +1,5 @@
+from typing import Literal
+
 from frozendict import frozendict
 
 from lalamo.model_import.model_configs import (
@@ -48,6 +50,29 @@ def _qwen3_mlx_model_spec(
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
+        configs=ConfigMap(
+            tokenizer=FileSpec("tokenizer.json", base_repo),
+            tokenizer_config=FileSpec("tokenizer_config.json", base_repo),
+            generation_config=FileSpec("generation_config.json", base_repo),
+        ),
+    )
+
+
+def _qwen_27b_mlx_model_spec(
+    *,
+    family: Literal["Qwen3.6", "Qwen3.8"],
+    quantization_bits: Literal[4, 8],
+) -> LanguageModelSpec:
+    base_repo = f"Qwen/{family}-27B"
+    return LanguageModelSpec(
+        vendor="Alibaba",
+        family=family,
+        name=f"{family}-27B-MLX-{quantization_bits}bit",
+        size="27B",
+        origin=HuggingFaceOrigin(repo=f"mlx-community/{family}-27B-{quantization_bits}bit"),
+        config_type=HFQwen35Config,
+        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", base_repo),
             tokenizer_config=FileSpec("tokenizer_config.json", base_repo),
@@ -558,6 +583,8 @@ QWEN36 = [
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
+    _qwen_27b_mlx_model_spec(family="Qwen3.6", quantization_bits=4),
+    _qwen_27b_mlx_model_spec(family="Qwen3.6", quantization_bits=8),
     LanguageModelSpec(
         vendor="Alibaba",
         family="Qwen3.6",
@@ -587,6 +614,8 @@ QWEN38 = [
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=QWEN38_REASONING_CONFIG,
     ),
+    _qwen_27b_mlx_model_spec(family="Qwen3.8", quantization_bits=4),
+    _qwen_27b_mlx_model_spec(family="Qwen3.8", quantization_bits=8),
 ]
 
 
