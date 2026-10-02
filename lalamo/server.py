@@ -231,7 +231,7 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
         generation_config=reference.generation_config,
         batch_scheduler_config=BatchSchedulerConfig(
             max_output_length=reference.max_completion_tokens,
-            batch_size=None,
+            batch_size=app.state.batch_size,
         ),
         reasoning_effort=reference.reasoning_effort,
         keychain=keychain,
@@ -300,8 +300,16 @@ async def get_batch(batch_id: str) -> Batch:
     raise HTTPException(404, "batch not found")
 
 
-def start_server(host: str, port: int, vram_bytes: int, cache_dir: Path, sharding_config: ShardingConfig) -> None:
+def start_server(
+    host: str,
+    port: int,
+    vram_bytes: int | None,
+    cache_dir: Path,
+    sharding_config: ShardingConfig,
+    batch_size: int | None = None,
+) -> None:
     app.state.vram_bytes = vram_bytes
+    app.state.batch_size = batch_size
     app.state.cache_dir = cache_dir
     app.state.sharding_config = sharding_config
     uvicorn.run(app, host=host, port=port)
