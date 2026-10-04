@@ -26,6 +26,7 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
+from . import quant_params
 from .quantized_spec import QuantizedSpec
 from .utils.gaussian_order_statistics import standard_normal_range_squared
 from .utils.grouping import (
@@ -258,11 +259,25 @@ class MLXMatrix(EmbeddingMatrix[MLXSpec]):
     def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]: ...
 
     def export(self) -> ExportResults:
+        columns, groups = self.scales.shape[-2:]
+        params_shape = (columns, groups)
         return ExportResults(
             arrays={
                 "weights": self._packed_quantized_weights,
-                "scales": self.scales,
-                "biases": self.biases,
+                "scales": quant_params.for_export(
+                    self.scales,
+                    shape=params_shape,
+                    layout=self.spec.layout,
+                    bits=self.scales.dtype.itemsize * 8,
+                    sharding_config=self.sharding_config,
+                ),
+                "biases": quant_params.for_export(
+                    self.biases,
+                    shape=params_shape,
+                    layout=self.spec.layout,
+                    bits=self.biases.dtype.itemsize * 8,
+                    sharding_config=self.sharding_config,
+                ),
             },
             metadata={"spec": self.spec.to_json()},
         )
@@ -274,6 +289,46 @@ class MLXMatrix(EmbeddingMatrix[MLXSpec]):
         *,
         prefix: ParameterPath | None = None,
     ) -> "MLXMatrix": ...
+
+    def _load_exported(
+        self,
+        exported_data: ExportResults,
+        implementation: CompressionImplementation,
+        prefix: ParameterPath | None,
+    ) -> "MLXMatrix":
+        if prefix is None:
+            prefix = ParameterPath()
+        loaded_spec = WeightMatrixSpec.from_json(exported_data.metadata[prefix / "spec"])
+        if loaded_spec != self.spec:
+            raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
+
+        packed_weights = load_as(self._packed_quantized_weights, exported_data.arrays[prefix / "weights"])
+        columns, groups = self.scales.shape[-2:]
+        params_shape = (columns, groups)
+        scales = quant_params.from_export(
+            exported_data.arrays[prefix / "scales"],
+            like=self.scales,
+            shape=params_shape,
+            layout=self.spec.layout,
+            bits=self.scales.dtype.itemsize * 8,
+            sharding_config=self.sharding_config,
+        )
+        biases = quant_params.from_export(
+            exported_data.arrays[prefix / "biases"],
+            like=self.biases,
+            shape=params_shape,
+            layout=self.spec.layout,
+            bits=self.biases.dtype.itemsize * 8,
+            sharding_config=self.sharding_config,
+        )
+        return self.spec.from_packed_parameters(
+            packed_weights=packed_weights,
+            scales=scales,
+            biases=biases,
+            implementation=implementation,
+            sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
+        )
 
     @abstractmethod
     def switch_implementation(self, implementation: CompressionImplementation) -> "MLXMatrix": ...
@@ -388,32 +443,10 @@ class MLXMatrixForTraining(MLXMatrix):
         *,
         prefix: ParameterPath | None = None,
     ) -> MLXMatrix:
-        if prefix is None:
-            prefix = ParameterPath()
-        saved_spec = exported_data.metadata[prefix / "spec"]
-        loaded_spec = WeightMatrixSpec.from_json(saved_spec)
-        if loaded_spec != self.spec:
-            raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
-
-        packed_weights = load_as(
-            self._packed_quantized_weights,
-            exported_data.arrays[prefix / "weights"],
-        )
-        scales = load_as(
-            self.scales,
-            exported_data.arrays[prefix / "scales"],
-        )
-        biases = load_as(
-            self.biases,
-            exported_data.arrays[prefix / "biases"],
-        )
-        return self.spec.from_packed_parameters(
-            packed_weights=packed_weights,
-            scales=scales,
-            biases=biases,
-            implementation=CompressionImplementation.TRAINING,
-            sharding_config=self.sharding_config,
-            is_sharded=self.is_sharded,
+        return self._load_exported(
+            exported_data,
+            CompressionImplementation.TRAINING,
+            prefix,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> MLXMatrix:
@@ -463,32 +496,10 @@ class MLXMatrixForInference(MLXMatrix):
         *,
         prefix: ParameterPath | None = None,
     ) -> MLXMatrix:
-        if prefix is None:
-            prefix = ParameterPath()
-        saved_spec = exported_data.metadata[prefix / "spec"]
-        loaded_spec = WeightMatrixSpec.from_json(saved_spec)
-        if loaded_spec != self.spec:
-            raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
-
-        packed_weights = load_as(
-            self.packed_weights,
-            exported_data.arrays[prefix / "weights"],
-        )
-        scales = load_as(
-            self.scales,
-            exported_data.arrays[prefix / "scales"],
-        )
-        biases = load_as(
-            self.biases,
-            exported_data.arrays[prefix / "biases"],
-        )
-        return MLXMatrixForInference(
-            spec=self.spec,
-            sharding_config=self.sharding_config,
-            is_sharded=self.is_sharded,
-            packed_weights=packed_weights,
-            scales=scales,
-            biases=biases,
+        return self._load_exported(
+            exported_data,
+            CompressionImplementation.INFERENCE,
+            prefix,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> MLXMatrix:

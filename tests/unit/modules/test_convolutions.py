@@ -3,13 +3,19 @@ from math import prod
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
+import pytest
 from einops import einsum
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import LogicalAxis
-from lalamo.modules.token_mixers.convolutions import ConvPrecision, SeparableCausalConv, SeparableCausalConvConfig
+from lalamo.modules.token_mixers.convolutions import (
+    ConvPrecision,
+    SeparableCausalConv,
+    SeparableCausalConvConfig,
+)
 from lalamo.modules.utils import call_vmapped
 from tests.common import assert_close
 from tests.helpers import make_sharding, make_test_sharding_config
@@ -36,7 +42,13 @@ def _conv(has_biases: bool = True) -> SeparableCausalConv:
     )
 
 
-def _reference(module: SeparableCausalConv, inputs: Array, state: Array | None = None) -> Array:
+def _reference(
+    module: SeparableCausalConv,
+    inputs: Array,
+    state: Array | None = None,
+    *,
+    coefficient_deltas: Array | None = None,
+) -> Array:
     inputs = jnp.asarray(jax.device_get(inputs))
     weights = jnp.asarray(jax.device_get(module.weights)).astype(inputs.dtype)
     if state is None:
@@ -47,6 +59,10 @@ def _reference(module: SeparableCausalConv, inputs: Array, state: Array | None =
     history = jnp.concatenate((state, inputs), axis=0)
     windows = jnp.stack([history[token : token + module.kernel_size] for token in range(inputs.shape[0])])
     result = jnp.einsum("tkc,ck->tc", windows, weights)
+    if coefficient_deltas is not None:
+        group_size = module.input_dim // coefficient_deltas.shape[-1]
+        channel_coefficients = jax.device_get(coefficient_deltas)[..., np.arange(module.input_dim) // group_size]
+        result = result + jnp.einsum("tkc,tkc->tc", windows, channel_coefficients)
     if module.biases is not None:
         result = result + jnp.asarray(jax.device_get(module.biases)).astype(result.dtype)
     return result
@@ -69,13 +85,24 @@ def _sharded_sequences(values: Array) -> Array:
     return jax.device_put(values, make_sharding((LogicalAxis.BATCH, None, None)))
 
 
-def test_separable_causal_conv_matches_reference_and_keeps_unsharded_features(fake_mesh: Mesh) -> None:
+@pytest.mark.parametrize("group_size", [None, 1, 2])
+def test_separable_causal_conv_matches_reference_and_keeps_unsharded_features(
+    fake_mesh: Mesh,
+    group_size: int | None,
+) -> None:
     module = _conv()
     inputs = _sharded_sequence(jnp.arange(5 * CHANNELS, dtype=jnp.float32).reshape(5, CHANNELS) / 10)
+    coefficient_deltas = None
+    if group_size is not None:
+        coefficient_shape = (inputs.shape[0], KERNEL_SIZE, CHANNELS // group_size)
+        coefficient_deltas = jax.device_put(
+            jnp.arange(prod(coefficient_shape), dtype=jnp.float32).reshape(coefficient_shape) / 100,
+            make_sharding((None, None, None)),
+        )
 
-    result = module(inputs)
+    result = module(inputs, coefficient_deltas=coefficient_deltas)
 
-    _assert_close(result=result.outputs, reference=_reference(module, inputs))
+    _assert_close(result=result.outputs, reference=_reference(module, inputs, coefficient_deltas=coefficient_deltas))
     _assert_named_sharding(result.outputs.sharding, fake_mesh)
     assert result.outputs.sharding == make_sharding((None, None))
     assert result.state is None

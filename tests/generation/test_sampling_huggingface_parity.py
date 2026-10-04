@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import pytest
 import torch
 from transformers import GenerationConfig as TransformersGenerationConfig
-from transformers.generation.utils import GenerationMixin
+from transformers import GPT2Config, GPT2LMHeadModel
 
 from lalamo.model_import.huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config
 from lalamo.utils.torch_interop import torch_to_jax
@@ -30,7 +30,11 @@ def test_process_logits_matches_huggingface_generation_config(hf_generation_conf
     transformers_config = TransformersGenerationConfig.from_dict(
         {**asdict(hf_generation_config), "do_sample": True},
     )
-    hf_processors = cast("Any", GenerationMixin())._get_logits_processor(  # noqa: SLF001
+    hf_model = GPT2LMHeadModel(
+        GPT2Config(vocab_size=256, n_embd=8, n_layer=1, n_head=1, n_positions=8, bos_token_id=None, eos_token_id=None),
+    )
+    # Transformers' generation protocol declares device as an attribute rather than the model's property.
+    hf_processors = cast("Any", hf_model)._get_logits_processor(  # noqa: SLF001
         transformers_config,
         input_ids_seq_length=1,
     )
@@ -53,9 +57,10 @@ def test_process_logits_matches_huggingface_generation_config(hf_generation_conf
         hf_input_ids = cast("torch.LongTensor", torch.zeros((1, 1), dtype=torch.long))
         hf_result = torch_to_jax(hf_processors(hf_input_ids, hf_scores)[0])
 
+        assert jnp.array_equal(jnp.isneginf(lalamo_result), jnp.isneginf(hf_result))
         assert_close(
-            result=lalamo_result,
-            reference=hf_result,
+            result=jax.nn.softmax(lalamo_result),
+            reference=jax.nn.softmax(hf_result),
             atol=1e-6,
             rtol=1e-6,
             fraction_of_allowed_violations=0.01,

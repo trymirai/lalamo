@@ -5,7 +5,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jax.lax import dynamic_update_slice_in_dim
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.modules.token_mixer import StateLayerBase
@@ -183,23 +182,6 @@ class PagedKVCacheLayer(PagedKVCachePool):
         )
         return PagedKVCacheLayer(written_keys, written_values, self.block_tables, self.lengths + 1)
 
-    def last_pages(
-        self,
-        page_count: int,
-    ) -> tuple[
-        Float[Array, "batch tokens groups head_channels"],
-        Float[Array, "batch tokens groups head_channels"],
-        Int[Array, " batch"],
-    ]:
-        """Gathers the last `page_count` pages of every sequence and the position of the first gathered token."""
-        first_page = jnp.maximum(0, (self.lengths - 1) // self.page_size - page_count + 1)
-        physical_pages = jnp.take_along_axis(self.block_tables, first_page[:, None] + jnp.arange(page_count), axis=1)
-        keys, values = (
-            rearrange(cache[:, physical_pages], "groups batch pages page dims -> batch (pages page) groups dims")
-            for cache in (self.keys, self.values)
-        )
-        return keys, values, first_page * self.page_size
-
 
 class DynamicKVCacheLayer(KVCacheLayer):
     padding_mask: Bool[Array, " tokens"] | None = None
@@ -363,21 +345,13 @@ class StaticKVCacheLayer(KVCacheLayer):
         if added_length is None:
             added_length = num_added_tokens
 
-        added_keys = added_keys.astype(self.keys.dtype)
-        added_values = added_values.astype(self.values.dtype)
-        updated_keys = dynamic_update_slice_in_dim(
-            self.keys,
-            added_keys,
-            self.current_length,
-            0,
-            allow_negative_indices=False,
+        positions = self.current_length + jnp.arange(num_added_tokens, dtype=jnp.int32)
+        # Padded chunks can extend past capacity; dynamic_update_slice would shift the write over valid prefix tokens.
+        updated_keys = self.keys.at[positions].set(
+            added_keys.astype(self.keys.dtype), mode="drop", wrap_negative_indices=False
         )
-        updated_values = dynamic_update_slice_in_dim(
-            self.values,
-            added_values,
-            self.current_length,
-            0,
-            allow_negative_indices=False,
+        updated_values = self.values.at[positions].set(
+            added_values.astype(self.values.dtype), mode="drop", wrap_negative_indices=False
         )
         updated_sequence_length = self.current_length + added_length
         return StaticKVCacheLayer(
@@ -397,6 +371,7 @@ class StaticKVCacheLayer(KVCacheLayer):
         dtype: DTypeLike,
         sharding_config: ShardingConfig,
     ) -> Self:
+        capacity += int(has_sinks)
         cache_sharding = sharding_config.make_sharding((None, None, None))
         length_sharding = sharding_config.make_sharding(())
         return cls(

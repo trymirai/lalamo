@@ -5,12 +5,16 @@ from functools import cache
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.sharding import AxisType, NamedSharding
 
 from lalamo.initializer import RandomInitializer
+from lalamo.models import LanguageModel
+from lalamo.module import ForwardPassMode, Keychain
 from lalamo.modules import (
     Decoder,
     DecoderConfig,
+    DecoderForwardPassConfig,
     DenseMLPConfig,
     Identity,
     LinearConfig,
@@ -25,6 +29,27 @@ from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 
 UNITS = ["", "K", "M", "G", "T", "P", "E"]
+
+
+def dense_log_softmax_rows(model: LanguageModel, prompt: tuple[int, ...], token_ids: list[int]) -> list[np.ndarray]:
+    """Teacher-forced dense reference before each token and after the last."""
+    keychain = Keychain.init(0, sharding_config=model.sharding_config)
+    prefilled = model.prefill_tokens(jnp.asarray([prompt]), len(prompt) + len(token_ids), keychain=keychain)
+    state, logits = prefilled.state, prefilled.last_token_logits
+    rows = []
+    for position, token_id in enumerate(token_ids, start=len(prompt)):
+        rows.append(np.asarray(jax.nn.log_softmax(logits[0].astype(jnp.float32))))
+        decoded = model.decoder(
+            jnp.asarray([[token_id]]),
+            jnp.asarray([[position]]),
+            state=state,
+            return_updated_state=True,
+            forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+            keychain=keychain,
+        )
+        assert decoded.updated_state is not None
+        state, logits = decoded.updated_state, decoded.logits[:, 0]
+    return [*rows, np.asarray(jax.nn.log_softmax(logits[0].astype(jnp.float32)))]
 
 
 def si(x: int, base: int = 1024, units: Sequence[str] = UNITS) -> str:
@@ -64,7 +89,7 @@ def make_sharding(logical_axes: tuple[LogicalAxis | None, ...]) -> NamedSharding
     return sharding_config.resolve_sharding(logical_axes)
 
 
-def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]) -> Decoder:
+def build_tiny_attention_decoder_config(kv_source_layer_indices: tuple[int | None, ...]) -> DecoderConfig:
     model_dim = 8
     hidden_dim = 16
     vocab_size = 32
@@ -128,7 +153,7 @@ def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]
         model_dim=model_dim,
         hidden_dim=hidden_dim,
     )
-    decoder_config = DecoderConfig(
+    return DecoderConfig(
         embedding_config=TiedEmbeddingConfig(
             input_scale=None,
             logit_soft_cap=None,
@@ -136,7 +161,10 @@ def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]
         transformer_config=transformer_config,
         vocab_size=vocab_size,
     )
-    return decoder_config.init(
+
+
+def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]) -> Decoder:
+    return build_tiny_attention_decoder_config(kv_source_layer_indices).init(
         RandomInitializer(
             default_dtype=jnp.float32,
             sharding_config=ShardingConfig.replicated(jax.devices("cpu")[:8]),
@@ -148,6 +176,7 @@ def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]
 __all__ = [
     "UNITS",
     "build_tiny_attention_decoder",
+    "build_tiny_attention_decoder_config",
     "make_sharding",
     "make_test_sharding_config",
     "si",

@@ -18,15 +18,15 @@ from lalamo.models.chat_codec import (
     AssistantMessage,
     ChatCodec,
     ChatCodecConfig,
-    ContentBlock,
-    Image,
     Message,
     SystemMessage,
+    ToolCall,
+    ToolMessage,
     ToolSchema,
     UserMessage,
 )
 
-__version__ = "0.16.0"
+__version__ = "0.17.0"
 
 __all__ = [
     "AssistantMessage",
@@ -36,9 +36,7 @@ __all__ = [
     "ClassifierModel",
     "ClassifierModelSpec",
     "ConfigMap",
-    "ContentBlock",
     "FileSpec",
-    "Image",
     "JSONFieldSpec",
     "LanguageModel",
     "LanguageModelSpec",
@@ -46,6 +44,8 @@ __all__ = [
     "ModelSpec",
     "SystemMessage",
     "TTSModelSpec",
+    "ToolCall",
+    "ToolMessage",
     "ToolSchema",
     "UserMessage",
 ]

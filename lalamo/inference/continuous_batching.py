@@ -5,7 +5,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from queue import SimpleQueue
-from typing import ClassVar, NamedTuple
+from threading import Event
+from typing import TYPE_CHECKING, ClassVar, NamedTuple
 
 import equinox as eqx
 import jax
@@ -21,6 +22,10 @@ from lalamo.modules.token_mixers.attention import Attention
 from lalamo.modules.token_mixers.kv_cache import PagedKVCacheLayer, PagedKVCachePool, StaticKVCacheLayer
 from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy
+from lalamo.utils.memory import get_free_bytes
+
+if TYPE_CHECKING:
+    import xgrammar
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +42,17 @@ class ContinuousBatchingConfig:
     prefill_chunk_size: int = 512
     page_size: ClassVar[int] = 32
 
+    def __post_init__(self) -> None:
+        for name in ("total_pages", "slot_count", "max_context_length", "prefill_batch_size", "prefill_chunk_size"):
+            value = getattr(self, name)
+            if value is not None and value < 1:
+                raise ValueError(f"{name} must be positive.")
+
 
 class FinishReason(StrEnum):
     STOP = "stop"
     LENGTH = "length"
+    TOOL_CALLS = "tool_calls"
 
 
 class TokenLogprobs(NamedTuple):
@@ -59,7 +71,11 @@ class SequenceFinished(NamedTuple):
     completion_tokens: int
 
 
-type TokenEvent = GeneratedToken | SequenceFinished
+class GrammarConstraintError(ValueError):
+    """The output constraint permits no next token in the model vocabulary."""
+
+
+type TokenEvent = GeneratedToken | SequenceFinished | GrammarConstraintError
 type _DecodeCarry = tuple[State, Array, SamplingPolicy, Array, Array]
 
 
@@ -87,33 +103,9 @@ def _pad_to_power_of_two[T](batch: list[T]) -> list[T]:
     return batch + [batch[0]] * (_next_power_of_two(len(batch)) - len(batch))
 
 
-def _pages_that_fit(page_bytes: int, context_length: int, prefill_chunk_size: int, model: LanguageModel) -> int:
-    """Pages that fit in the device memory left after the weights, keeping room for prefill activations."""
-    device, *_ = model.sharding_config.mesh.devices.flat
-    memory_stats = device.memory_stats()
-    if memory_stats is None:
-        raise ValueError("The device does not report memory statistics; pass total_pages explicitly.")
-    free_bytes = memory_stats["bytes_limit"] - memory_stats["bytes_in_use"]
-    # Prefill of one chunk materialises attention scores over the whole context; the logits over the vocabulary
-    # and the dense staging cache for prompt continuations are the other large transient buffers.
-    num_heads = max(
-        (
-            layer.mixer.config.num_heads
-            for layer in model.decoder.transformer.layers
-            if isinstance(layer.mixer, Attention)
-        ),
-        default=1,
-    )
-    prefill_bytes = (
-        prefill_chunk_size * context_length * num_heads * 4
-        + prefill_chunk_size * model.decoder.vocab_size * 4
-        + context_length * page_bytes // ContinuousBatchingConfig.page_size
-    )
-    usable_bytes = int(free_bytes * 0.9) - prefill_bytes
-    pages = usable_bytes // page_bytes - 1
-    if pages < context_length // ContinuousBatchingConfig.page_size:
-        raise ValueError("Not enough device memory for one sequence at the requested context length.")
-    return pages
+def _prefill_capacity(prefix_length: int, head_width: int, tail_width: int) -> int:
+    page_size = ContinuousBatchingConfig.page_size
+    return math.ceil(_next_power_of_two(prefix_length + head_width + tail_width) / page_size) * page_size
 
 
 def _token_rows(rows: list[tuple[int, ...]], width: int) -> Int[Array, "batch width"]:
@@ -210,7 +202,12 @@ def _merge_prefill(
         if isinstance(pool, PagedKVCachePool):
             assert isinstance(prefill, StaticKVCacheLayer)
             tokens = page_indices.shape[1] * pool.page_size
-            layers.append(pool.write_pages(page_indices, prefill.keys[:, :tokens], prefill.values[:, :tokens]))
+            start = int(prefill.has_sinks)
+            layers.append(
+                pool.write_pages(
+                    page_indices, prefill.keys[:, start : start + tokens], prefill.values[:, start : start + tokens]
+                )
+            )
         else:
             layers.append(jax.tree.map(lambda old, new: old.at[slots].set(new), pool, prefill))
     return State(layers), logits.at[slots].set(prefilled_logits)
@@ -233,6 +230,8 @@ class BatchingSequence:
     sampling_policy: SamplingPolicy
     sampling_key: Key[Array, ""]
     return_logprobs: bool
+    grammar_matcher: "xgrammar.GrammarMatcher | None" = None
+    cancelled: Event = field(default_factory=Event)
     output_token_ids: list[int] = field(default_factory=list)
     pages: list[int] = field(default_factory=list)
     slot: int | None = None
@@ -256,35 +255,114 @@ class ContinuousBatchingEngine:
         self.model = model
         self.config = config
         transformer = model.decoder.transformer
+        attention_mixers = [layer.mixer for layer in transformer.layers if isinstance(layer.mixer, Attention)]
+        if attention_mixers and (
+            any(device.platform != "gpu" for device in model.sharding_config.mesh.devices.flat)
+            or any(not mixer.config.is_causal for mixer in attention_mixers)
+        ):
+            raise ValueError("Paged batching requires causal GPU attention.")
         state_dtype = DecoderForwardPassConfig.for_inference().embedding_forward_pass_config.activation_dtype
-        attention_configs = [
-            transformer.layers[owner_index].mixer.config
-            for owner_index in transformer.kv_source_layer_indices
-            if isinstance(transformer.layers[owner_index].mixer, Attention)
-        ]
-        page_bytes = sum(
-            2 * mixer_config.num_groups * config.page_size * mixer_config.head_dim * jnp.dtype(state_dtype).itemsize
-            for mixer_config in attention_configs
+        state_shape = jax.eval_shape(lambda: model.decoder.init_static_state(1, 1, state_dtype))
+        page_bytes = None
+        if attention_mixers:
+            page_bytes = config.page_size * sum(
+                leaf.size // leaf.shape[1] * leaf.dtype.itemsize
+                for layer in state_shape
+                if isinstance(layer, StaticKVCacheLayer)
+                for leaf in (layer.keys, layer.values)
+            )
+        recurrent_bytes = sum(
+            leaf.size * leaf.dtype.itemsize
+            for layer in state_shape
+            if not isinstance(layer, StaticKVCacheLayer)
+            for leaf in jax.tree.leaves(layer)
         )
-        model_context = min(rope.config.max_sequence_length for rope in transformer.ropes)
-        context_length = min(model_context, config.max_context_length or model_context)
+        if transformer.ropes:
+            model_context = min(rope.config.max_sequence_length for rope in transformer.ropes)
+            context_length = model_context
+            if config.max_context_length is not None:
+                context_length = min(context_length, config.max_context_length)
+        else:
+            if config.max_context_length is None:
+                raise ValueError("A model without a positional context limit requires max_context_length.")
+            context_length = config.max_context_length
         total_pages = config.total_pages
-        if total_pages is None:
-            total_pages = _pages_that_fit(page_bytes, context_length, config.prefill_chunk_size, model)
+        if page_bytes is None and total_pages is not None:
+            raise ValueError("total_pages configures KV storage; this model has only recurrent state.")
+        if total_pages is not None:
+            context_length = min(config.page_size * total_pages, context_length)
+        pages_per_slot = math.ceil(context_length / config.page_size)
+        slot_count = config.slot_count
+        if total_pages is not None:
+            slots_that_fit = total_pages // pages_per_slot
+            if slot_count is None:
+                slot_count = slots_that_fit
+            else:
+                slot_count = min(slot_count, slots_that_fit)
+        if (page_bytes is not None and total_pages is None) or config.slot_count is None:
+            free_bytes = [get_free_bytes(device) for device in model.sharding_config.mesh.devices.flat]
+            if any(value is None for value in free_bytes):
+                raise ValueError("The device does not report free memory; configure pages and slots explicitly.")
+            usable_bytes = int(min(value for value in free_bytes if value is not None) * 0.9)
+            # State is replicated: active state, head snapshots, up to two cached snapshots per slot, and padded
+            # decode rows. Logits and token-count penalties also need persistent and working vocabulary rows.
+            slot_bytes = 8 * (recurrent_bytes + model.decoder.vocab_size * 4)
+            head_width = _next_power_of_two(max(1, context_length - 9))
+            tail_width = _next_power_of_two(max(1, min(8, context_length - 1)))
+            prefill_capacity = _prefill_capacity(max(0, context_length - 9), head_width, tail_width)
+            chunk_size = max(min(config.prefill_chunk_size, head_width), tail_width)
+            num_heads = max((mixer.config.num_heads for mixer in attention_mixers), default=0)
+            staging_bytes = 0
+            if page_bytes is not None:
+                # Blank staging, prefix reads and the updated dense cache can overlap before merging into the pool.
+                staging_bytes = 3 * prefill_capacity * page_bytes // config.page_size
+            prefill_bytes = (
+                staging_bytes
+                + 2 * recurrent_bytes
+                + chunk_size * (2 * prefill_capacity * num_heads * 4 + model.decoder.vocab_size * 4)
+            )
+
+            def bytes_without_pool(slots: int) -> int:
+                padded_batch = _next_power_of_two(min(slots, config.prefill_batch_size))
+                return slots * slot_bytes + padded_batch * prefill_bytes
+
+            minimum_pool_bytes = 0
+            if page_bytes is not None:
+                minimum_pool_bytes = page_bytes
+                if total_pages is not None:
+                    minimum_pool_bytes *= total_pages + 1
+            upper = usable_bytes // slot_bytes
+            if slot_count is not None:
+                upper = min(upper, slot_count)
+            lower = 0
+            while lower < upper:
+                candidate = (lower + upper + 1) // 2
+                pool_bytes = minimum_pool_bytes
+                if page_bytes is not None and total_pages is None:
+                    pool_bytes += candidate * pages_per_slot * page_bytes
+                if bytes_without_pool(candidate) + pool_bytes <= usable_bytes:
+                    lower = candidate
+                else:
+                    upper = candidate - 1
+            if lower == 0:
+                raise ValueError("Not enough device memory for one sequence at the requested context length.")
+            slot_count = lower
+            if page_bytes is not None and total_pages is None:
+                total_pages = (usable_bytes - bytes_without_pool(slot_count)) // page_bytes - 1
+        assert slot_count is not None
         self.total_pages = total_pages
-        self.context_limit = min(config.page_size * total_pages, context_length)
-        slots_that_fit = max(1, total_pages * config.page_size // self.context_limit)
-        self.slot_count = (
-            slots_that_fit if config.slot_count is None else max(1, min(config.slot_count, slots_that_fit))
-        )
-        logger.info(
-            "KV pool: %d pages of %d tokens (%.1f GiB), context %d, slots %d",
-            total_pages,
-            config.page_size,
-            total_pages * page_bytes / 2**30,
-            self.context_limit,
-            self.slot_count,
-        )
+        self.context_limit = context_length
+        self.slot_count = slot_count
+        if total_pages is not None:
+            assert page_bytes is not None
+            logger.info(
+                "KV pool: %d pages of %d tokens (%.1f GiB), context %d, slots %d",
+                total_pages,
+                config.page_size,
+                total_pages * page_bytes / 2**30,
+                self.context_limit,
+                self.slot_count,
+            )
 
         static_state = model.decoder.init_static_state(self.slot_count, 1, state_dtype)
         layers = []
@@ -293,22 +371,29 @@ class ContinuousBatchingEngine:
             if not isinstance(mixer, Attention):
                 layers.append(static_layer)
                 continue
-            if (
-                model.sharding_config.mesh.devices.flat[0].platform != "gpu"
-                or mixer.has_sinks
-                or (mixer.config.sliding_window_size is not None and mixer.config.logit_soft_cap is not None)
-            ):
-                raise ValueError("Paged batching requires GPU attention without sinks or soft-capped windows.")
+            assert total_pages is not None
             # The extra page at index total_pages absorbs writes from padded batch rows and unallocated table entries.
             shape = (mixer.config.num_groups, total_pages + 1, config.page_size, mixer.config.head_dim)
-            layers.append(PagedKVCachePool(jnp.zeros(shape, dtype=state_dtype), jnp.zeros(shape, dtype=state_dtype)))
+            sharding = model.sharding_config.make_sharding((None,) * len(shape))
+            layers.append(
+                PagedKVCachePool(
+                    jnp.zeros(shape, dtype=state_dtype, device=sharding),
+                    jnp.zeros(shape, dtype=state_dtype, device=sharding),
+                )
+            )
         self._state = State(layers)
-        self._last_logits = jnp.zeros((self.slot_count, model.decoder.vocab_size), dtype=jnp.float32)
+        self._last_logits = jnp.zeros(
+            (self.slot_count, model.decoder.vocab_size),
+            dtype=jnp.float32,
+            device=model.sharding_config.make_sharding((None, None)),
+        )
         self._incoming: SimpleQueue[BatchingSequence] = SimpleQueue()
         self._pending: deque[BatchingSequence] = deque()
         self._active: deque[BatchingSequence] = deque()
         self._free_slots: deque[int] = deque(range(self.slot_count))
-        self._free_pages: deque[int] = deque(range(total_pages))
+        self._free_pages: deque[int] = deque()
+        if total_pages is not None:
+            self._free_pages.extend(range(total_pages))
         self._prefix_cache: deque[CachedPrefix] = deque()
 
     def submit(
@@ -319,31 +404,50 @@ class ContinuousBatchingEngine:
         seed: int,
         *,
         return_logprobs: bool = False,
+        grammar_matcher: "xgrammar.GrammarMatcher | None" = None,
         on_events: Callable[[Sequence[TokenEvent]], object],
-    ) -> None:
+    ) -> Event:
+        if not prompt_token_ids or max_output_length < 1:
+            raise ValueError("A sequence requires a nonempty prompt and a positive output budget.")
         if len(prompt_token_ids) + max_output_length > self.context_limit:
             raise ValueError("The prompt and requested output exceed the configured context capacity.")
-        sampling_policy = generation_config.default_policy()
+        sampling_policy = generation_config.default_policy(self.model.decoder.vocab_size)
+        if grammar_matcher is not None:
+            if set(grammar_matcher.stop_token_ids) != set(generation_config.stop_token_ids):
+                raise ValueError("The grammar and generation must use the same stop tokens.")
+            sampling_policy = replace(
+                sampling_policy,
+                allowed_token_bitmask=self._next_token_bitmask(grammar_matcher),
+            )
         if sampling_policy.has_count_penalties:
             prompt = jnp.asarray(prompt_token_ids, dtype=jnp.int32)
             sampling_policy = sampling_policy.with_prompt_token_counts(
                 prompt, jnp.asarray(len(prompt)), self.model.decoder.vocab_size
             )
-        self._incoming.put(
-            BatchingSequence(
-                prompt_token_ids=prompt_token_ids,
-                max_output_length=max_output_length,
-                stop_token_ids=generation_config.stop_token_ids,
-                on_events=on_events,
-                sampling_policy=sampling_policy,
-                sampling_key=jax.random.key(seed),
-                return_logprobs=return_logprobs,
-            )
+        # JAX otherwise narrows Python seeds when x64 is disabled, discarding the upper 32 bits.
+        with jax.enable_x64(new_val=True):
+            sampling_key = jax.random.key(jnp.asarray(seed, dtype=jnp.int64))
+        sequence = BatchingSequence(
+            prompt_token_ids=prompt_token_ids,
+            max_output_length=max_output_length,
+            stop_token_ids=generation_config.stop_token_ids,
+            on_events=on_events,
+            sampling_policy=sampling_policy,
+            sampling_key=sampling_key,
+            return_logprobs=return_logprobs,
+            grammar_matcher=grammar_matcher,
         )
+        self._incoming.put(sequence)
+        return sequence.cancelled
 
     def step(self) -> bool:
         while not self._incoming.empty():
             self._pending.append(self._incoming.get())
+        self._pending = deque(sequence for sequence in self._pending if not sequence.cancelled.is_set())
+        for sequence in tuple(self._active):
+            if sequence.cancelled.is_set():
+                self._active.remove(sequence)
+                self._release(sequence, cache_prompt=True)
         if self._prefill():
             return True
         if not self._active:
@@ -355,6 +459,8 @@ class ContinuousBatchingEngine:
         return len(self._free_pages) + sum(len(prefix.pages) for prefix in self._prefix_cache)
 
     def _reserve_pages(self, sequence: BatchingSequence, new_tokens: int) -> bool:
+        if self.total_pages is None:
+            return True
         page_count = math.ceil((sequence.length + new_tokens) / self.config.page_size) - len(sequence.pages)
         while page_count > len(self._free_pages) and self._prefix_cache:
             self._free_pages.extend(self._prefix_cache.popleft().pages)
@@ -393,6 +499,8 @@ class ContinuousBatchingEngine:
         return best
 
     def _block_tables(self, batch: list[BatchingSequence], pages_per_sequence: int) -> Int[Array, "batch pages"]:
+        if self.total_pages is None:
+            return jnp.empty((len(batch), 0), dtype=jnp.int32)
         padding = [self.total_pages] * pages_per_sequence
         return jnp.asarray([(sequence.pages + padding)[:pages_per_sequence] for sequence in batch], dtype=jnp.int32)
 
@@ -432,10 +540,8 @@ class ContinuousBatchingEngine:
         tail_width = _next_power_of_two(
             max(len(context) - head for context, head in zip(contexts, head_lengths, strict=False))
         )
-        pages_per_sequence = math.ceil(
-            _next_power_of_two(max(prefix_lengths) + head_width + tail_width) / self.config.page_size
-        )
-        token_capacity = pages_per_sequence * self.config.page_size
+        token_capacity = _prefill_capacity(max(prefix_lengths), head_width, tail_width)
+        pages_per_sequence = token_capacity // self.config.page_size
         keychain = Keychain.init(0, sharding_config=self.model.sharding_config)
         logger.info(
             "prefill batch=%d reused_prefix_tokens=%s new_tokens=%s",
@@ -515,12 +621,15 @@ class ContinuousBatchingEngine:
                 assert isinstance(layer, StaticKVCacheLayer)
                 keys, values = pool.read_pages(page_indices)
                 prefix_tokens = prefix_pages * self.config.page_size
+                start = int(layer.has_sinks)
                 layers.append(
                     replace(
                         layer,
-                        keys=layer.keys.at[:, :prefix_tokens].set(keys.astype(layer.keys.dtype)),
-                        values=layer.values.at[:, :prefix_tokens].set(values.astype(layer.values.dtype)),
-                        current_length=jnp.asarray(prefix_lengths, dtype=jnp.int32),
+                        keys=layer.keys.at[:, start : start + prefix_tokens].set(keys.astype(layer.keys.dtype)),
+                        values=layer.values.at[:, start : start + prefix_tokens].set(
+                            values.astype(layer.values.dtype)
+                        ),
+                        current_length=jnp.asarray(prefix_lengths, dtype=jnp.int32) + start,
                     )
                 )
             else:
@@ -542,11 +651,15 @@ class ContinuousBatchingEngine:
             if sequence.return_logprobs == first.return_logprobs
             and jax.tree.structure(sequence.sampling_policy) == jax.tree.structure(first.sampling_policy)
         ]
-        growable_tokens = max(
-            (len(sequence.pages) + self._available_pages()) * self.config.page_size - sequence.length
-            for sequence in batch
-        )
-        block_size = min(64, growable_tokens, *(sequence.remaining_output_length for sequence in batch))
+        block_size = min(64, *(sequence.remaining_output_length for sequence in batch))
+        if first.grammar_matcher is not None:
+            block_size = 1
+        if self.total_pages is not None:
+            growable_tokens = max(
+                (len(sequence.pages) + self._available_pages()) * self.config.page_size - sequence.length
+                for sequence in batch
+            )
+            block_size = min(block_size, growable_tokens)
         if block_size < 1:
             return None
         block_size = 1 << (block_size.bit_length() - 1)
@@ -567,7 +680,10 @@ class ContinuousBatchingEngine:
         padded = _pad_to_power_of_two(batch)
         slots = jnp.asarray([sequence.slot for sequence in padded], dtype=jnp.int32)
         lengths = jnp.asarray([sequence.length for sequence in padded], dtype=jnp.int32)
-        block_tables = self._block_tables(padded, _next_power_of_two(max(len(sequence.pages) for sequence in padded)))
+        pages_per_sequence = 0
+        if self.total_pages is not None:
+            pages_per_sequence = _next_power_of_two(max(len(sequence.pages) for sequence in padded))
+        block_tables = self._block_tables(padded, pages_per_sequence)
         token_positions = lengths[None, :, None] + jnp.arange(block_size, dtype=jnp.int32)[:, None, None]
         rows = State(
             layer if isinstance(layer, PagedKVCachePool) else jax.tree.map(lambda array: array[slots], layer)
@@ -602,6 +718,8 @@ class ContinuousBatchingEngine:
             sequence.sampling_policy = jax.tree.map(lambda leaf, row=row: leaf[row], decoded.sampling_policy)
             events: list[TokenEvent] = []
             for step, token_id in enumerate(map(int, token_ids[:, row])):
+                if sequence.grammar_matcher is not None and not sequence.grammar_matcher.accept_token(token_id):
+                    raise RuntimeError("A sampled token violated its grammar mask.")
                 sequence.output_token_ids.append(token_id)
                 if token_id in sequence.stop_token_ids:
                     events.append(SequenceFinished(FinishReason.STOP, len(sequence.output_token_ids)))
@@ -620,5 +738,25 @@ class ContinuousBatchingEngine:
             if isinstance(events[-1], SequenceFinished):
                 self._release(sequence, cache_prompt=True)
             else:
-                self._active.append(sequence)
+                try:
+                    if sequence.grammar_matcher is not None:
+                        sequence.sampling_policy = replace(
+                            sequence.sampling_policy,
+                            allowed_token_bitmask=self._next_token_bitmask(sequence.grammar_matcher),
+                        )
+                except GrammarConstraintError as error:
+                    events.append(error)
+                    self._release(sequence, cache_prompt=True)
+                else:
+                    self._active.append(sequence)
             sequence.on_events(events)
+
+    def _next_token_bitmask(self, matcher: "xgrammar.GrammarMatcher") -> Int[Array, " vocabulary_words"]:
+        bitmask = np.empty((1, math.ceil(self.model.decoder.vocab_size / 32)), dtype=np.int32)
+        matcher.fill_next_token_bitmask(bitmask)
+        remaining_bits = self.model.decoder.vocab_size % 32
+        if remaining_bits:
+            bitmask[0, -1] &= (1 << remaining_bits) - 1
+        if not np.any(bitmask):
+            raise GrammarConstraintError("The output constraint has no valid next token in the model vocabulary.")
+        return jnp.asarray(bitmask[0])

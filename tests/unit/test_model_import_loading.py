@@ -17,21 +17,23 @@ from lalamo.compressed.microfloat import MicrofloatMatrixForInference
 from lalamo.compressed.mlx import MLXMatrixForInference, MLXMatrixForTraining
 from lalamo.initializer import EmptyInitializer, Initializer
 from lalamo.model import Model, ModelConfig
+from lalamo.model_import.loaders.dflash_loader import load_dflash_sublayer_transform
 from lalamo.model_import.loaders.huggingface import (
     load_huggingface_classifier,
     load_input_embedding_matrix,
     load_linear,
     load_moe,
+    load_untied_embedding,
 )
 from lalamo.model_import.loaders.utils import decode_mxfp4
 from lalamo.model_import.model_configs.foreign_config import ForeignConfig
-from lalamo.model_import.model_configs.huggingface import ModernBERTConfig
+from lalamo.model_import.model_configs.huggingface import HFDFlashConfig, ModernBERTConfig
 from lalamo.models.chat_codec import ChatCodec, ChatCodecConfig
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
 from lalamo.modules.activations import SiLU
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.decoder import PerLayerEmbedding, PLEModelConfig
-from lalamo.modules.embedding import TiedEmbedding
+from lalamo.modules.embedding import TiedEmbedding, UntiedEmbeddingConfig
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.mlp import (
     DenseMLP,
@@ -53,6 +55,7 @@ from lalamo.weight_matrix import (
     MatmulConfig,
     WeightMatrix,
 )
+from tests.common import assert_close
 from tests.helpers import make_sharding, make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
@@ -65,6 +68,48 @@ CLASSIFIER_HIDDEN_SIZE = 4
 CLASSIFIER_INTERMEDIATE_SIZE = 8
 CLASSIFIER_NUM_HEADS = 2
 CLASSIFIER_NUM_LABELS = 2
+
+
+def _dflash_hf_config(*, dflash2: bool) -> dict[str, object]:
+    dflash_config: dict[str, object] = {
+        "block_size": 3,
+        "mask_token_id": 15,
+        "target_layer_ids": [0],
+    }
+    if dflash2:
+        dflash_config.update(
+            {
+                "conv_kernel_size": 2,
+                "conv_group_size": 2,
+                "selector_rank": 2,
+                "selector_top_k": 2,
+            },
+        )
+    config: dict[str, object] = {
+        "architectures": ["DFlash2DraftModel" if dflash2 else "DFlashDraftModel"],
+        "model_type": "qwen3",
+        "hidden_act": "silu",
+        "hidden_size": 4,
+        "intermediate_size": 8,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 1,
+        "rms_norm_eps": 1e-6,
+        "rope_theta": 10_000.0,
+        "max_position_embeddings": 32,
+        "tie_word_embeddings": False,
+        "attention_bias": False,
+        "num_target_layers": 1,
+        "vocab_size": 16,
+        "head_dim": 2,
+        "layer_types": ["sliding_attention"],
+        "sliding_window": 8,
+        "use_sliding_window": True,
+        "dflash_config": dflash_config,
+    }
+    if dflash2:
+        config["is_causal"] = False
+    return config
 
 
 def _pack_int32(values: Array, bits: int) -> Array:
@@ -277,6 +322,7 @@ def test_mlx_quantized_per_layer_embedding_forwards_training_config() -> None:
     )
     assert isinstance(token_embedding, MLXMatrixForTraining)
     assert token_embedding.spec.bits == 8
+    assert token_embedding.spec.layout == Layout.INPUT_OUTPUT
 
     config = PLEModelConfig(
         ple_dim=OUTPUT_DIM,
@@ -314,6 +360,28 @@ def test_mlx_quantized_per_layer_embedding_forwards_training_config() -> None:
             forward_pass_config=forward_pass_config,
             keychain=Keychain.init(0, sharding_config=initializer.sharding_config),
         )
+
+
+def test_untied_quantized_readout_uses_layout_metadata() -> None:
+    initializer = EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config())
+    module = UntiedEmbeddingConfig(input_scale=None, logit_soft_cap=None).init(
+        initializer,
+        model_dim=INPUT_DIM,
+        vocab_size=OUTPUT_DIM,
+    )
+    input_path = ParameterPath("input")
+    output_path = ParameterPath("output")
+    weights = {
+        **_mlx_weights(input_path),
+        **_mlx_weights(output_path),
+    }
+
+    loaded = load_untied_embedding(module, weights, input_path, output_path)
+
+    assert isinstance(loaded.input_embedding, MLXMatrixForInference)
+    assert isinstance(loaded.output_embedding, MLXMatrixForInference)
+    assert loaded.input_embedding.spec.layout == Layout.INPUT_OUTPUT
+    assert loaded.output_embedding.spec.layout == Layout.OUTPUT_INPUT
 
 
 def test_load_linear_symmetric_awq_without_qzeros_uses_symmetric_spec() -> None:
@@ -602,3 +670,29 @@ def test_model_export_load_with_strong_initializer_forces_saved_float_dtypes(tmp
     assert restored.module.matrix.dtype == jnp.bfloat16
     assert restored.module.fp8_values.dtype == jnp.bfloat16
     assert restored.module.fp16_values.dtype == jnp.bfloat16
+
+
+@pytest.mark.parametrize("dtype", [None, jnp.float32, jnp.bfloat16])
+def test_load_dflash2_sublayer_transform(dtype: DTypeLike | None) -> None:
+    config = HFDFlashConfig.from_dict(_dflash_hf_config(dflash2=True)).to_dflash_draft_config()
+    model = config.init(EmptyInitializer(dtype, make_test_sharding_config()))
+    layer = model.layers[0]
+    source_dtype = dtype or jnp.bfloat16
+    base_kernel = jnp.arange(16, dtype=source_dtype).reshape(2, 2, 4)
+    kernel_projection = jnp.arange(32, dtype=source_dtype).reshape(8, 4)
+    weights = {
+        "attention_conv.base_kernel": base_kernel,
+        "attention_conv.kernel_projection.weight": kernel_projection,
+    }
+
+    module = load_dflash_sublayer_transform(
+        layer.mixer_conv,
+        weights,
+        ParameterPath("attention_conv"),
+    )
+
+    assert module is not None
+    exported = module.export()
+    assert_close(result=exported.arrays["pre_conv.weights"], reference=base_kernel[0, ::-1].T)
+    assert_close(result=exported.arrays["post_conv.weights"], reference=base_kernel[1, ::-1].T)
+    assert_close(result=module.kernel_projection.weights.decompress(), reference=kernel_projection)

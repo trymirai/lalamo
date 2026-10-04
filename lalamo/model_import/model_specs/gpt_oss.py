@@ -21,12 +21,11 @@ GPT_OSS_MODELS = [
         end_of_thinking_tag="<|end|><|start|>assistant<|channel|>final<|message|>",
         reasoning_config=ReasoningConfig(
             default_reasoning_effort=ReasoningEffort.MEDIUM,
-            field_name="reasoning_effort",
-            reasoning_effort_to_field_value=frozendict(
+            reasoning_effort_to_template_fields=frozendict(
                 {
-                    ReasoningEffort.LOW: "low",
-                    ReasoningEffort.MEDIUM: "medium",
-                    ReasoningEffort.HIGH: "high",
+                    ReasoningEffort.LOW: frozendict(reasoning_effort="low"),
+                    ReasoningEffort.MEDIUM: frozendict(reasoning_effort="medium"),
+                    ReasoningEffort.HIGH: frozendict(reasoning_effort="high"),
                 }
             ),
         ),

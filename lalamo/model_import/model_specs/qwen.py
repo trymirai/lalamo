@@ -12,7 +12,7 @@ from lalamo.model_import.model_specs.reasoning_configs import (
     BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
 )
 from lalamo.model_import.origins import HuggingFaceOrigin
-from lalamo.models.chat_codec import ReasoningConfig, ReasoningEffort
+from lalamo.models.chat_codec import ReasoningConfig, ReasoningEffort, ToolCallFormat
 from lalamo.models.language_model import GenerationConfig
 
 __all__ = ["QWEN_MODELS"]
@@ -21,12 +21,12 @@ QWEN_END_OF_THINKING_TAG = "\n</think>"
 
 QWEN38_REASONING_CONFIG = ReasoningConfig(
     default_reasoning_effort=ReasoningEffort.XHIGH,
-    field_name="reasoning_effort",
-    reasoning_effort_to_field_value=frozendict(
+    reasoning_effort_to_template_fields=frozendict(
         {
-            ReasoningEffort.XHIGH: "xhigh",
-            ReasoningEffort.MEDIUM: "medium",
-            ReasoningEffort.LOW: "low",
+            ReasoningEffort.XHIGH: frozendict(reasoning_effort="xhigh"),
+            ReasoningEffort.MEDIUM: frozendict(reasoning_effort="medium"),
+            ReasoningEffort.LOW: frozendict(reasoning_effort="low"),
+            ReasoningEffort.NO_REASONING: frozendict(enable_thinking=False),
         }
     ),
 )
@@ -265,6 +265,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-0.8B"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
@@ -285,6 +286,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-0.8B-MLX-4bit"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
@@ -307,6 +309,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-0.8B-MLX-8bit"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
@@ -329,6 +332,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-2B"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
@@ -348,6 +352,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-2B-MLX-4bit"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
@@ -370,6 +375,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-2B-MLX-8bit"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
@@ -391,6 +397,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-4B"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
@@ -410,6 +417,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-4B-MLX-4bit"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
@@ -431,6 +439,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-4B-MLX-8bit"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
@@ -452,6 +461,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-9B"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
@@ -466,6 +476,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-9B-MLX-4bit"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
@@ -482,6 +493,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-9B-MLX-8bit"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
@@ -498,6 +510,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-27B"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
@@ -509,6 +522,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-27B-4bit"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
@@ -525,6 +539,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-27B-8bit"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
@@ -541,6 +556,7 @@ QWEN35 = [
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-35B-A3B"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
@@ -555,6 +571,7 @@ QWEN36 = [
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.6-27B"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
@@ -566,6 +583,7 @@ QWEN36 = [
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.6-35B-A3B"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
@@ -584,6 +602,7 @@ QWEN38 = [
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.8-27B"),
         config_type=HFQwen35Config,
         output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+        tool_call_format=ToolCallFormat.QWEN_XML,
         end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
         reasoning_config=QWEN38_REASONING_CONFIG,
     ),

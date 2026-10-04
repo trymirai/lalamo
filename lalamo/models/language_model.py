@@ -81,6 +81,7 @@ class GenerationConfig:
     repetition_penalty: float | None = None
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
+    logit_bias: tuple[tuple[int, float], ...] | None = None
     suffix_repetition_length: int | None = None
 
     def override_with(self, other: Self) -> Self:
@@ -102,7 +103,7 @@ class GenerationConfig:
 
         return replace(self, **overrides)
 
-    def default_policy(self) -> SamplingPolicy:
+    def default_policy(self, vocabulary_size: int | None = None) -> SamplingPolicy:
         return SamplingPolicy.init(
             temperature=self.temperature,
             top_k=self.top_k,
@@ -113,6 +114,8 @@ class GenerationConfig:
             presence_penalty=self.presence_penalty,
             frequency_penalty=self.frequency_penalty,
             suffix_repetition_length=self.suffix_repetition_length,
+            logit_bias=self.logit_bias,
+            vocabulary_size=vocabulary_size,
         )
 
 
@@ -137,12 +140,14 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
     decoder: Decoder
 
     def default_sampling_policy(self) -> SamplingPolicy:
-        return self.config.generation_config.default_policy()
+        return self.config.generation_config.default_policy(self.decoder.vocab_size)
 
-    def trim_at_eos(self, token_ids: list[int]) -> list[int]:
-        if not self.config.generation_config.stop_token_ids:
+    def trim_at_eos(self, token_ids: list[int], generation_config: GenerationConfig | None = None) -> list[int]:
+        if generation_config is None:
+            generation_config = self.config.generation_config
+        if not generation_config.stop_token_ids:
             return token_ids
-        stop_token_ids = set(self.config.generation_config.stop_token_ids)
+        stop_token_ids = set(generation_config.stop_token_ids)
         response_length = next(
             (idx + 1 for idx, token_id in enumerate(token_ids) if token_id in stop_token_ids),
             len(token_ids),
@@ -301,9 +306,9 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         batch_size, prompt_length = prompt_token_ids.shape
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
         batch_vector_sharding = self.sharding_config.make_sharding((batch_axis,))
-        sampling_policy = self.default_sampling_policy()
-        if generation_config is not None:
-            sampling_policy = generation_config.default_policy()
+        if generation_config is None:
+            generation_config = self.config.generation_config
+        sampling_policy = generation_config.default_policy(self.decoder.vocab_size)
         use_count_penalties = sampling_policy.has_count_penalties
         sampling_policy = sampling_policy.broadcast(batch_size)
 
@@ -336,7 +341,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             )
         if eos_token_ids is None:
             eos_token_ids = jax.device_put(
-                jnp.asarray(self.config.generation_config.stop_token_ids, dtype=jnp.int32),
+                jnp.asarray(generation_config.stop_token_ids, dtype=jnp.int32),
                 self.sharding_config.make_sharding((None,)),
             )
 
@@ -474,7 +479,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             decode_forward_pass_config=decode_forward_pass_config,
             keychain=keychain,
         ).token_ids[0]
-        return self.token_codec.decode_response(self.trim_at_eos(response_ids.tolist()))
+        return self.token_codec.decode_response(self.trim_at_eos(response_ids.tolist(), generation_config))
 
     def stream_tokens(
         self,
@@ -494,10 +499,12 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         if decode_forward_pass_config is None:
             decode_forward_pass_config = DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN)
 
+        if generation_config is None:
+            generation_config = self.config.generation_config
         if eos_token_ids is not None:
             stop_token_ids = eos_token_ids
         else:
-            stop_token_ids = jnp.asarray(self.config.generation_config.stop_token_ids, dtype=jnp.int32)
+            stop_token_ids = jnp.asarray(generation_config.stop_token_ids, dtype=jnp.int32)
 
         (input_length,) = prompt_token_ids.shape
         padded_input_length = next(
@@ -519,9 +526,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             self.sharding_config.make_sharding((batch_axis,)),
         )
 
-        sampling_policy = self.default_sampling_policy()
-        if generation_config is not None:
-            sampling_policy = generation_config.default_policy()
+        sampling_policy = generation_config.default_policy(self.decoder.vocab_size)
         if sampling_policy.has_count_penalties:
             sampling_policy = sampling_policy.with_prompt_token_counts(
                 padded_token_ids,

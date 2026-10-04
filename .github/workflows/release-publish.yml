@@ -59,3 +59,27 @@ jobs:
 
       - name: Publish to PyPI (uv publish)
         run: uv publish
+
+  notify-release:
+    name: Announce release on Discord
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Send release notification
+        env:
+          DISCORD_WEBHOOK_URL: ${{ vars.DISCORD_RELEASE_CHANNEL_WEBHOOK_URL }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+        run: |
+          set -euo pipefail
+          : "${DISCORD_WEBHOOK_URL:?DISCORD_RELEASE_CHANNEL_WEBHOOK_URL variable is required}"
+          echo "::add-mask::$DISCORD_WEBHOOK_URL"
+
+          jq -n --arg tag "$RELEASE_TAG" --arg url "$RELEASE_URL" \
+            '{allowed_mentions: {parse: []}, content: "📦 **[lalamo · \($tag)](<\($url)>)**"}' |
+          curl --fail-with-body --silent --show-error \
+            --connect-timeout 10 --max-time 30 \
+            --header "Content-Type: application/json" \
+            --data-binary @- \
+            --url-query "wait=true" \
+            "$DISCORD_WEBHOOK_URL" > /dev/null

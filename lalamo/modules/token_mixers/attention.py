@@ -12,7 +12,6 @@ from lalamo.kernels.attention import (
     paged_decode_attention,
     pallas_decode_attention,
     stable_reduction_attention,
-    windowed_decode_attention,
     xla_attention,
 )
 from lalamo.module import Keychain, LogicalAxis
@@ -332,7 +331,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             )
         if self.sinks is not None:
             sink_bias = jnp.zeros((self.config.num_heads, *mask.shape), dtype=queries.dtype)
-            sink_bias = sink_bias.at[:, :, 0].set(self.sinks[:, None])
+            sink_bias = sink_bias.at[:, :, 0].set(self.sinks[:, None].astype(sink_bias.dtype))
         else:
             sink_bias = None
 
@@ -393,29 +392,17 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         queries = queries[:, 0].astype(state.keys.dtype)
         scale = self.config.scale if self.config.scale is not None else self.config.head_dim**-0.5
 
-        if self.config.sliding_window_size is None:
-            attention_output = paged_decode_attention(
-                queries,
-                state.keys,
-                state.values,
-                state.block_tables,
-                state.lengths,
-                scale=scale,
-                logit_soft_cap=self.config.logit_soft_cap,
-            )
-        else:
-            # A window of W tokens spans at most ceil((W - 1) / page_size) + 1 pages; round up to a power of two.
-            window_pages = (self.config.sliding_window_size + 2 * state.page_size - 2) // state.page_size
-            page_count = min(state.block_tables.shape[1], 1 << (window_pages - 1).bit_length())
-            window_keys, window_values, window_start = state.last_pages(page_count)
-            attention_output = windowed_decode_attention(
-                queries,
-                window_keys,
-                window_values,
-                jnp.maximum(0, state.lengths - self.config.sliding_window_size) - window_start,
-                state.lengths - window_start,
-                scale=scale,
-            )
+        attention_output = paged_decode_attention(
+            queries,
+            state.keys,
+            state.values,
+            state.block_tables,
+            state.lengths,
+            scale=scale,
+            logit_soft_cap=self.config.logit_soft_cap,
+            sinks=self.sinks,
+            sliding_window_size=self.config.sliding_window_size,
+        )
 
         attention_output = rearrange(attention_output, "batch heads channels -> batch 1 (heads channels)")
         if gate is not None:

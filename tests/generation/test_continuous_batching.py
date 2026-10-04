@@ -1,17 +1,33 @@
 import random
 
+import jax
+import jax.numpy as jnp
+import numpy as np
 import pytest
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
 
 from lalamo.inference.batch_scheduler import (
     BatchSchedulerConfig,
     ContinuousBatchScheduler,
     FixedSizeBatchScheduler,
 )
+from lalamo.inference.continuous_batching import (
+    ContinuousBatchingConfig,
+    ContinuousBatchingEngine,
+    FinishReason,
+    GeneratedToken,
+    SequenceFinished,
+    TokenEvent,
+)
+from lalamo.initializer import RandomInitializer
 from lalamo.models import LanguageModel
-from lalamo.models.chat_codec import UserMessage
-from lalamo.models.language_model import GenerationConfig
-from lalamo.module import ShardingConfig
+from lalamo.models.chat_codec import ChatCodecConfig, UserMessage
+from lalamo.models.language_model import GenerationConfig, LanguageModelConfig
+from lalamo.module import Keychain, ShardingConfig
+from lalamo.modules import DecoderForwardPassConfig
 from tests.conftest import ConvertModel
+from tests.helpers import build_tiny_attention_decoder_config
 
 _FUZZ_MODEL_REPOS = (
     "Qwen/Qwen3-0.6B",
@@ -106,3 +122,100 @@ def test_continuous_vs_fixed_fuzz(
         fixed_ids = fuzz_language_model.trim_at_eos(fixed_results[seq_id].token_ids.tolist())
         continuous_ids = fuzz_language_model.trim_at_eos(continuous_results[seq_id].token_ids.tolist())
         assert fixed_ids == continuous_ids, f"seq {seq_id}: fixed={fixed_ids[:20]} continuous={continuous_ids[:20]}"
+
+
+@pytest.fixture(scope="module")
+def paged_language_model(_convert_model_session: ConvertModel) -> LanguageModel:
+    return LanguageModel.load(
+        _convert_model_session("Qwen/Qwen3.5-0.8B", cached=True), sharding_config=ShardingConfig.replicated()
+    )
+
+
+@pytest.mark.gpu
+@pytest.mark.slow
+@pytest.mark.parametrize("cancel_active", [False, True], ids=["before_admission", "after_prefill"])
+def test_engine_cancellation_allows_new_request(paged_language_model: LanguageModel, cancel_active: bool) -> None:
+    engine = ContinuousBatchingEngine(
+        paged_language_model, ContinuousBatchingConfig(total_pages=8, slot_count=1, max_context_length=256)
+    )
+    generation_config = GenerationConfig(temperature=0.0)
+    canceled_events: list[TokenEvent] = []
+    canceled = engine.submit(
+        tuple(paged_language_model.token_codec.encode_request([UserMessage("Say hi.")])),
+        64,
+        generation_config,
+        0,
+        on_events=canceled_events.extend,
+    )
+    if cancel_active:
+        assert engine.step()
+    canceled.set()
+
+    prompt = tuple(paged_language_model.token_codec.encode_request([UserMessage("Name a fruit.")]))
+    events: list[TokenEvent] = []
+    engine.submit(prompt, 4, generation_config, 0, on_events=events.extend)
+    for _ in range(8):
+        if not engine.step():
+            break
+    assert not engine.step()
+    assert canceled_events == []
+    assert events[-1] == SequenceFinished(FinishReason.LENGTH, 4)
+    expected = paged_language_model.stream_tokens(
+        jnp.asarray(prompt),
+        generation_config,
+        4,
+        keychain=Keychain.init(0, sharding_config=paged_language_model.sharding_config),
+    )
+    assert [event.token_id for event in events if isinstance(event, GeneratedToken)] == list(map(int, expected))
+
+
+@pytest.mark.fast
+def test_prefill_continuation_preserves_prefix_when_padding_exceeds_capacity() -> None:
+    codec_config = ChatCodecConfig(
+        prompt_template="",
+        output_parser_regex=None,
+        system_role_name="system",
+        user_role_name="user",
+        assistant_role_name="assistant",
+        eos_token=None,
+        bos_token=None,
+    )
+    config = LanguageModelConfig(
+        token_codec_config=codec_config,
+        decoder_config=build_tiny_attention_decoder_config((None,)),
+        generation_config=GenerationConfig(),
+    )
+    sharding_config = ShardingConfig.replicated(jax.devices("cpu")[:1])
+    model = config.init(
+        Tokenizer(WordLevel({"[UNK]": 0}, unk_token="[UNK]")),
+        RandomInitializer(default_dtype=jnp.float32, sharding_config=sharding_config, key=jax.random.key(4)),
+    )
+    keychain = Keychain.init(0, sharding_config=sharding_config)
+    forward_pass_config = DecoderForwardPassConfig.for_tracer_tests()
+    tokens = jax.random.randint(jax.random.key(5), (2, 56), 0, model.decoder.vocab_size)
+    prefix = model.prefill_tokens(
+        tokens[:, :24], 64, jnp.array([24, 0]), forward_pass_config, chunk_size=24, keychain=keychain
+    )
+    head = model.prefill_tokens(
+        jnp.stack([jnp.pad(tokens[0, 24:48], (0, 8)), tokens[1, :32]]),
+        64,
+        jnp.array([24, 32]),
+        forward_pass_config,
+        chunk_size=24,
+        initial_state=prefix.state,
+        prefix_lengths=jnp.array([24, 0]),
+        keychain=keychain,
+    )
+    continued = model.prefill_tokens(
+        jnp.stack([tokens[0, 48:56], tokens[1, 32:40]]),
+        64,
+        forward_pass_config=forward_pass_config,
+        chunk_size=8,
+        initial_state=head.state,
+        prefix_lengths=jnp.array([48, 32]),
+        keychain=keychain,
+    )
+    unchunked = model.prefill_tokens(
+        tokens, 64, jnp.array([56, 40]), forward_pass_config, chunk_size=56, keychain=keychain
+    )
+    np.testing.assert_allclose(continued.last_token_logits, unchunked.last_token_logits, rtol=1e-4, atol=1e-5)

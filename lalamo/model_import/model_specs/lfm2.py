@@ -4,6 +4,7 @@ from lalamo.model_import.model_configs import HFLFM2Config
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.model_specs.output_parser_regexes import OPTIONAL_THINKING_OUTPUT_PARSER_REGEX
 from lalamo.model_import.origins import HuggingFaceOrigin
+from lalamo.models.chat_codec import ToolCallFormat
 from lalamo.models.language_model import GenerationConfig
 
 __all__ = ["LFM2_MODELS"]
@@ -59,9 +60,31 @@ _LFM25_MODELS = [
             chat_template=FileSpec("chat_template.jinja"),
         ),
         output_parser_regex=output_parser_regex,
+        tool_call_format=ToolCallFormat.LIQUID,
         end_of_thinking_tag="\n</think>",
     )
     for repo_owner, name, size, _quantization_bits, output_parser_regex in _LFM25_MODEL_SPECS
 ]
 
-LFM2_MODELS = _LFM20_MODELS + _LFM25_MODELS
+LFM2_MODELS = (
+    _LFM20_MODELS
+    + _LFM25_MODELS
+    + [
+        LanguageModelSpec(
+            vendor="LiquidAI",
+            family="LFM2.5",
+            name=f"LFM2.5-{size}",
+            size=size,
+            origin=HuggingFaceOrigin(repo=f"LiquidAI/LFM2.5-{size}"),
+            config_type=HFLFM2Config,
+            configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
+            output_parser_regex=output_parser_regex,
+            tool_call_format=ToolCallFormat.LIQUID,
+            end_of_thinking_tag=end_of_thinking_tag,
+        )
+        for size, output_parser_regex, end_of_thinking_tag in (
+            ("230M", None, None),
+            ("2.6B", OPTIONAL_THINKING_OUTPUT_PARSER_REGEX, "\n</think>"),
+        )
+    ]
+)

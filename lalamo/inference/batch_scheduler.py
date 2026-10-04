@@ -16,7 +16,8 @@ from einops import rearrange
 from jax.errors import JaxRuntimeError
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key, Shaped
 
-from lalamo.models.chat_codec import AssistantMessage, Message, ReasoningEffort
+from lalamo.data.huggingface_message import HFConversation
+from lalamo.models.chat_codec import AssistantMessage, ReasoningEffort
 from lalamo.models.language_model import DecodingState, GenerationConfig, LanguageModel, PrefillResults
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
 from lalamo.modules import DecoderForwardPassConfig, State
@@ -728,8 +729,12 @@ class BlockContinuousDecoder(eqx.Module):
             ),
         )
 
-    def decode_block(self, state: BlockContinuousState) -> tuple[BlockContinuousState, Bool[Array, " num_lines"]]:
-        eos_token_ids = jnp.asarray(self.language_model.config.generation_config.stop_token_ids, dtype=jnp.int32)
+    def decode_block(
+        self, state: BlockContinuousState, generation_config: GenerationConfig | None = None
+    ) -> tuple[BlockContinuousState, Bool[Array, " num_lines"]]:
+        if generation_config is None:
+            generation_config = self.language_model.config.generation_config
+        eos_token_ids = jnp.asarray(generation_config.stop_token_ids, dtype=jnp.int32)
         initial_decode_state = DecodingState(
             last_token_logits=state.last_token_logits,
             last_token_indices=state.last_token_indices,
@@ -779,7 +784,7 @@ class BatchScheduler(ABC):
 
     def reply_many(
         self,
-        messages: Iterable[Iterable[Message]],
+        conversations: Iterable[HFConversation],
         generation_config: GenerationConfig | None = None,
         batch_scheduler_config: BatchSchedulerConfig = BatchSchedulerConfig(),
         *,
@@ -788,10 +793,10 @@ class BatchScheduler(ABC):
         vram_bytes: int | None = None,
         batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
     ) -> Iterator[tuple[int, AssistantMessage]]:
-        messages = list(messages)
+        conversations = list(conversations)
         keychain = (
-            keychain or Keychain.init(0, shape=(len(messages),), sharding_config=self.model.sharding_config)
-        ).broadcast((len(messages),))
+            keychain or Keychain.init(0, shape=(len(conversations),), sharding_config=self.model.sharding_config)
+        ).broadcast((len(conversations),))
 
         if vram_bytes is not None and batch_scheduler_config.batch_size is not None:
             raise RuntimeError("Specify only one of batch_scheduler_config.batch_size and vram_bytes.")
@@ -800,7 +805,10 @@ class BatchScheduler(ABC):
             raise RuntimeError("Specify either batch_scheduler_config.batch_size or vram_bytes.")
 
         tokenized = [
-            self.model.token_codec.encode_request(message, reasoning_effort=reasoning_effort) for message in messages
+            self.model.token_codec.encode_request(
+                conversation.messages, tools=conversation.tools, reasoning_effort=reasoning_effort
+            )
+            for conversation in conversations
         ]
 
         if batch_scheduler_config.batch_size is not None:
@@ -887,8 +895,8 @@ class BatchScheduler(ABC):
                 keychain=bucket_keychain,
             ):
                 idx = sequence_ids[local_idx]
-                trimmed_ids = self.model.trim_at_eos(result.token_ids.tolist())
-                yield idx, self.model.token_codec.decode_response(trimmed_ids)
+                trimmed_ids = self.model.trim_at_eos(result.token_ids.tolist(), generation_config)
+                yield idx, self.model.token_codec.decode_response(trimmed_ids, tools=conversations[idx].tools)
 
 
 @dataclass(frozen=True)
@@ -1018,7 +1026,9 @@ class ContinuousBatchScheduler(BatchScheduler):
         ).broadcast((len(tokenized),))
 
         sampling_policy = (
-            generation_config.default_policy() if generation_config else self.model.default_sampling_policy()
+            generation_config.default_policy(self.model.decoder.vocab_size)
+            if generation_config
+            else self.model.default_sampling_policy()
         )
 
         batch_size = batch_scheduler_config.batch_size
@@ -1078,10 +1088,10 @@ class ContinuousBatchScheduler(BatchScheduler):
         del partially_prefilled_batch
 
         prefills, state = prefills.fill(decoder, state, jitted_fill_lines)
-        jitted_decode = jitted_decode.lower(state).compile()  # type: ignore[missing-attribute]
+        jitted_decode = jitted_decode.lower(state, generation_config).compile()  # type: ignore[missing-attribute]
 
         while True:
-            state, completed_mask = jitted_decode(state)
+            state, completed_mask = jitted_decode(state, generation_config)
             yield from state.extract_completed_sequences(completed_mask)
 
             if state.is_empty() and prefills.exhausted:
