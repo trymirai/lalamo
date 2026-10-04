@@ -4,7 +4,7 @@ import itertools
 import json
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from functools import cached_property, partial
@@ -20,7 +20,6 @@ from cattrs.strategies import configure_tagged_union
 from frozendict import frozendict
 from jinja2 import Environment, Template
 from tokenizers import Tokenizer
-from tokenizers.decoders import DecodeStream
 
 from lalamo.token_codec import TokenCodec, TokenCodecConfig
 from lalamo.utils.json import JSON
@@ -29,7 +28,6 @@ __all__ = [
     "AssistantMessage",
     "ChatCodec",
     "ChatCodecConfig",
-    "ChatDecodeStream",
     "Message",
     "ReasoningConfig",
     "ReasoningEffort",
@@ -186,19 +184,8 @@ def _liquid_tool_calls(body: str, functions: list[dict[str, Any]]) -> tuple[Tool
     return tuple(parsed)
 
 
-def _without_trailing_markers(text: str, markers: Iterable[str]) -> str:
-    """Drops trailing text that is, or may still grow into, one of the markers."""
-    markers = tuple(markers)
-    while held := max(
-        (length for marker in markers for length in range(1, len(marker) + 1) if text.endswith(marker[:length])),
-        default=0,
-    ):
-        text = text[:-held]
-    return text
-
-
 def _regex_literal_runs(pattern: SubPattern) -> Iterable[str]:
-    # Python's regex parser is private; it is used only to find the literal delimiters of output parser regexes.
+    # Python's regex parser is private; it is used only to find literal delimiters in output parser regexes.
     literals = ""
     for operation, argument in pattern:
         if operation is LITERAL:
@@ -463,16 +450,23 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
     ) -> list[int]:
         return self.encode_text(self.render_request(request, tools=tools, reasoning_effort=reasoning_effort))
 
-    def parse_response(self, response: str, *, tools: Iterable[ToolSchema] = ()) -> AssistantMessage:
-        return self._parse_output("", response, tuple(tools), final=True)
+    @cached_property
+    def output_markers(self) -> tuple[str, ...]:
+        if self.config.output_parser_regex is None:
+            return ()
+        return tuple(
+            literal for literal in _regex_literal_runs(parse(self.config.output_parser_regex)) if "<" in literal
+        )
 
-    def decode_stream(
-        self, prompt: str, *, tools: Iterable[ToolSchema] = (), stop_strings: Iterable[str] = ()
-    ) -> "ChatDecodeStream":
-        # A template can open an output channel itself, e.g. with "<think>\n"; parsing must see that prompt tail.
-        prefix = ""
+    def parse_response(self, response: str, *, prompt: str = "", tools: Iterable[ToolSchema] = ()) -> AssistantMessage:
+        tools = tuple(tools)
+        tool_call_format = self.config.tool_call_format
+        if tool_call_format is ToolCallFormat.MUSE_ATEM:
+            return self._parse_muse_turns(response, tools)
         regex = self.output_parser_regex
+        chain_of_thought = None
         if regex is not None:
+            # The rendered prompt may already open the assistant's reasoning channel.
             tails = (prompt[prompt.rfind(marker) :] for marker in self.output_markers if marker in prompt)
             prefix = max(
                 (
@@ -484,66 +478,22 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
                 key=len,
                 default="",
             )
-        return ChatDecodeStream(self, prefix, tuple(tools), tuple(stop_strings))
-
-    @cached_property
-    def output_markers(self) -> tuple[str, ...]:
-        if self.config.output_parser_regex is None:
-            return ()
-        return tuple(
-            literal for literal in _regex_literal_runs(parse(self.config.output_parser_regex)) if "<" in literal
-        )
-
-    def _parse_output(
-        self, prefix: str, generated: str, tools: tuple[ToolSchema, ...], *, final: bool
-    ) -> AssistantMessage:
-        """Parses `generated`, which continues `prefix`; unless `final`, omits text that later tokens may reassign."""
-        tool_call_format = self.config.tool_call_format
-        if tool_call_format is ToolCallFormat.MUSE_ATEM:
-            return self._parse_muse_turns(generated, tools, final=final)
-        chain_of_thought, response = self._split_channels(prefix, generated, final=final)
+            text = prefix + response
+            match = regex.fullmatch(text)
+            if match is not None:
+                channels = {}
+                for name in ("chain_of_thought", "response"):
+                    if name not in regex.groupindex:
+                        continue
+                    start, end = match.span(name)
+                    if start >= 0 and end > len(prefix):
+                        channels[name] = text[max(start, len(prefix)) : end]
+                chain_of_thought = channels.get("chain_of_thought")
+                response = channels.get("response") or ""
         if not tools or tool_call_format is None:
             return AssistantMessage(chain_of_thought, response)
-        opening_tag, _ = tool_call_format.tags
-        if not final:
-            return AssistantMessage(
-                chain_of_thought, _without_trailing_markers(response.split(opening_tag)[0], (opening_tag,))
-            )
         response, tool_calls = self._split_tool_blocks(response, tools)
         return AssistantMessage(chain_of_thought, response, tool_calls)
-
-    def _split_channels(self, prefix: str, generated: str, *, final: bool) -> tuple[str | None, str]:
-        regex = self.output_parser_regex
-        if regex is None:
-            return None, generated
-        if not final:
-            generated = _without_trailing_markers(generated, self.output_markers)
-        text = prefix + generated
-        match = regex.fullmatch(text)
-        if match is None:
-            return None, generated if final else ""
-
-        def channel(name: str) -> str | None:
-            if name not in regex.groupindex:
-                return None
-            start, end = match.span(name)
-            if start < 0 or (start < len(prefix) and end <= len(prefix)):
-                return None
-            return text[max(start, len(prefix)) : end]
-
-        chain_of_thought, response = channel("chain_of_thought"), channel("response") or ""
-        # While a marker could still move the response start, its text may yet turn out to be reasoning.
-        if (
-            not final
-            and response
-            and any(
-                (continued := regex.fullmatch(text + marker)) is not None
-                and continued.start("response") > match.start("response")
-                for marker in self.output_markers
-            )
-        ):
-            response = ""
-        return chain_of_thought, response
 
     def _split_tool_blocks(self, text: str, tools: tuple[ToolSchema, ...]) -> tuple[str, tuple[ToolCall, ...]]:
         """Removes the well-formed tool-call blocks from `text`; malformed ones remain text."""
@@ -564,10 +514,8 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
             content += segment
         return content, tool_calls
 
-    def _parse_muse_turns(self, generated: str, tools: tuple[ToolSchema, ...], *, final: bool) -> AssistantMessage:
+    def _parse_muse_turns(self, generated: str, tools: tuple[ToolSchema, ...]) -> AssistantMessage:
         """Muse addresses each assistant turn to `self`, `user`, or a tool, which receives native calls."""
-        if not final:
-            generated = _without_trailing_markers(generated, _MUSE_TURN_ENDS)
         reasoning = response = ""
         tool_calls: tuple[ToolCall, ...] = ()
         position = 0
@@ -578,15 +526,13 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
                 reasoning += body
             elif recipient == "user" or not tools:
                 response += body
-            elif not final:
-                break
             else:
                 remainder, calls = self._split_tool_blocks(body, tools)
                 if calls and not remainder.strip():
                     tool_calls += calls
                 else:
                     response += body
-        if final and generated[position:].strip():
+        if generated[position:].strip():
             response += generated[position:]
         return AssistantMessage(reasoning or None, response, tool_calls)
 
@@ -632,57 +578,3 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
             for name, field in text_fields.items():
                 if field.type is str and name not in named_groups:
                     raise ValueError(f"Missing required output field: {name}")
-
-
-@dataclass
-class ChatDecodeStream:
-    """Decodes generated tokens, releasing reasoning and response text once later tokens cannot change it."""
-
-    codec: ChatCodec
-    prefix: str
-    tools: tuple[ToolSchema, ...]
-    stop_strings: tuple[str, ...]
-    text: str = ""
-    reasoning: str = ""
-    response: str = ""
-    decoder: DecodeStream = field(default_factory=DecodeStream)
-    undecoded_token_ids: list[int] = field(default_factory=list)
-
-    @property
-    def stopped(self) -> bool:
-        return any(stop in self.text for stop in self.stop_strings)
-
-    def step(self, token_id: int) -> tuple[str, str]:
-        """Returns the newly released reasoning and response text."""
-        self.undecoded_token_ids.append(token_id)
-        piece = self.decoder.step(self.codec.tokenizer, token_id)
-        if piece is not None:
-            self.text += piece
-            self.undecoded_token_ids.clear()
-        return self._release(self._parse(final=False))
-
-    def finish(self) -> tuple[str, str, AssistantMessage]:
-        """Returns the remaining reasoning and response text and the complete message."""
-        # DecodeStream cannot flush; a trailing incomplete UTF-8 sequence decodes with replacement characters.
-        self.text += self.codec.decode_tokens(self.undecoded_token_ids)
-        self.undecoded_token_ids.clear()
-        message = self._parse(final=True)
-        reasoning, response = self._release(message)
-        return reasoning, response, message
-
-    def _parse(self, *, final: bool) -> AssistantMessage:
-        text = self.text
-        stop_positions = [position for stop in self.stop_strings if (position := text.find(stop)) >= 0]
-        if stop_positions:
-            text = text[: min(stop_positions)]
-        elif not final:
-            text = _without_trailing_markers(text, self.stop_strings)
-        return self.codec._parse_output(self.prefix, text, self.tools, final=final)  # noqa: SLF001
-
-    def _release(self, message: AssistantMessage) -> tuple[str, str]:
-        reasoning = message.chain_of_thought or ""
-        if not reasoning.startswith(self.reasoning) or not message.response.startswith(self.response):
-            raise RuntimeError("The parsed output changed after it was streamed.")
-        released = reasoning[len(self.reasoning) :], message.response[len(self.response) :]
-        self.reasoning, self.response = reasoning, message.response
-        return released

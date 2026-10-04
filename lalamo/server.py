@@ -4,21 +4,20 @@ import secrets
 import threading
 import time
 import traceback
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from enum import StrEnum
-from typing import Annotated, Any, Literal, NamedTuple
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, Json, ValidationError
-from starlette.types import Receive, Scope, Send
+from tokenizers.decoders import DecodeStream
 
 from lalamo.inference.continuous_batching import (
     ContinuousBatchingConfig,
     ContinuousBatchingEngine,
     FinishReason,
-    GeneratedToken,
     SequenceFinished,
     TokenEvent,
 )
@@ -60,13 +59,6 @@ class ToolCallParam(BaseModel):
     type: Literal["function"] = "function"
     function: FunctionCallParam
 
-    def to_tool_call(self) -> ToolCall:
-        return {
-            "id": self.id,
-            "type": "function",
-            "function": FunctionCall(name=self.function.name, arguments=self.function.arguments),
-        }
-
 
 class FunctionToolParam(BaseModel):
     name: OpenAIName
@@ -102,14 +94,17 @@ class ChatMessageParam(BaseModel):
             case ChatRole.USER:
                 return UserMessage(content)
             case ChatRole.ASSISTANT:
-                tool_calls = tuple(call.to_tool_call() for call in self.tool_calls or ())
+                tool_calls: tuple[ToolCall, ...] = tuple(
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": FunctionCall(name=call.function.name, arguments=call.function.arguments),
+                    }
+                    for call in self.tool_calls or ()
+                )
                 return AssistantMessage(self.reasoning_content, content, tool_calls)
             case ChatRole.TOOL:
                 return ToolMessage(content, self.name, self.tool_call_id)
-
-
-class StreamOptions(BaseModel):
-    include_usage: bool | None = None
 
 
 class ChatTemplateKwargs(BaseModel):
@@ -133,8 +128,7 @@ class ChatCompletionRequest(BaseModel):
     frequency_penalty: Penalty | None = None
     seed: int | None = None
     stop: Annotated[str, Field(min_length=1)] | list[Annotated[str, Field(min_length=1)]] | None = None
-    stream: bool | None = None
-    stream_options: StreamOptions | None = None
+    stream: Literal[False] | None = None
     tools: list[ToolParam] | None = None
     tool_choice: Literal["auto", "none"] | None = None
     parallel_tool_calls: bool | None = None
@@ -160,42 +154,9 @@ class ChatCompletionRequest(BaseModel):
         return None
 
 
-class Delta(NamedTuple):
-    reasoning: str
-    content: str
-    logprobs: tuple[dict[str, Any], ...] = ()
-    tool_calls: tuple[dict[str, Any], ...] = ()
-    finish_reason: FinishReason | None = None
-    completion_tokens: int = 0
-
-
 def _error(message: str, status: int, param: str | None = None, code: str | None = None) -> JSONResponse:
     error_type = "server_error" if status >= 500 else "invalid_request_error"
     return JSONResponse({"error": {"message": message, "type": error_type, "param": param, "code": code}}, status)
-
-
-def _sse(payload: dict[str, Any]) -> str:
-    return f"data: {json.dumps(payload, separators=(',', ':'), ensure_ascii=False)}\n\n"
-
-
-def _choice(**fields: object) -> dict[str, object]:
-    return {"index": 0, "finish_reason": None, "logprobs": None} | fields
-
-
-class _EventStream(StreamingResponse):
-    """Starlette leaves the body iterator suspended when a client disconnects, so cancel the generation explicitly."""
-
-    def __init__(self, chunks: AsyncGenerator[str], cancelled: threading.Event) -> None:
-        super().__init__(chunks, media_type="text/event-stream")
-        self.chunks = chunks
-        self.cancelled = cancelled
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        try:
-            await super().__call__(scope, receive, send)
-        finally:
-            self.cancelled.set()
-            await self.chunks.aclose()
 
 
 def create_app(model: LanguageModel, model_name: str, config: ContinuousBatchingConfig) -> FastAPI:
@@ -300,7 +261,6 @@ def create_app(model: LanguageModel, model_name: str, config: ContinuousBatching
             )
         )
         stop_strings = [body.stop] if isinstance(body.stop, str) else body.stop or []
-        decoder = codec.decode_stream(prompt, tools=tools or (), stop_strings=stop_strings)
         loop = asyncio.get_running_loop()
         events: asyncio.Queue[Sequence[TokenEvent]] = asyncio.Queue()
         cancelled = engine.submit(
@@ -316,129 +276,100 @@ def create_app(model: LanguageModel, model_name: str, config: ContinuousBatching
             token_bytes = codec.decode_token_bytes(token_id)
             return {"token": token_bytes.decode(errors="replace"), "bytes": list(token_bytes), "logprob": value}
 
-        def token_logprobs(event: GeneratedToken) -> tuple[dict[str, Any], ...]:
-            if event.logprobs is None:
-                return ()
-            count = body.top_logprobs or 0
-            top_logprobs = [
-                logprob(token_id, value)
-                for token_id, value in zip(
-                    event.logprobs.top_token_ids[:count], event.logprobs.top_logprobs[:count], strict=True
-                )
-            ]
-            return (logprob(event.token_id, event.logprobs.logprob) | {"top_logprobs": top_logprobs},)
-
-        async def deltas() -> AsyncGenerator[Delta]:
-            completion_tokens = 0
-            try:
-                while not await request.is_disconnected():
-                    if engine_errors:
-                        raise RuntimeError("Continuous inference engine failed.") from engine_errors[0]
-                    try:
-                        batch = await asyncio.wait_for(events.get(), 1.0)
-                    except TimeoutError:
-                        continue
-                    finish_reason = None
-                    for event in batch:
-                        if isinstance(event, SequenceFinished):
-                            finish_reason, completion_tokens = event
-                            break
-                        completion_tokens += 1
-                        yield Delta(*decoder.step(event.token_id), token_logprobs(event))
-                        if decoder.stopped:
+        generated_token_ids: list[int] = []
+        content_logprobs: list[dict[str, Any]] = []
+        stop_decoder = DecodeStream() if stop_strings else None
+        decoded_text = ""
+        completion_tokens = 0
+        finish_reason = None
+        try:
+            while not await request.is_disconnected():
+                if engine_errors:
+                    raise RuntimeError("Continuous inference engine failed.") from engine_errors[0]
+                try:
+                    batch = await asyncio.wait_for(events.get(), 1.0)
+                except TimeoutError:
+                    continue
+                for event in batch:
+                    if isinstance(event, SequenceFinished):
+                        finish_reason, completion_tokens = event
+                        break
+                    generated_token_ids.append(event.token_id)
+                    completion_tokens += 1
+                    if event.logprobs is not None:
+                        count = body.top_logprobs or 0
+                        top_logprobs = [
+                            logprob(token_id, value)
+                            for token_id, value in zip(
+                                event.logprobs.top_token_ids[:count], event.logprobs.top_logprobs[:count], strict=True
+                            )
+                        ]
+                        content_logprobs.append(
+                            logprob(event.token_id, event.logprobs.logprob) | {"top_logprobs": top_logprobs}
+                        )
+                    if stop_decoder is not None:
+                        decoded_text += stop_decoder.step(codec.tokenizer, event.token_id) or ""
+                        if any(stop in decoded_text for stop in stop_strings):
                             finish_reason = FinishReason.STOP
                             break
-                    if finish_reason is None:
-                        continue
-                    reasoning, content, message = decoder.finish()
-                    # A stop string can complete only once finishing flushes a partial UTF-8 character.
-                    if decoder.stopped:
-                        finish_reason = FinishReason.STOP
-                    tool_calls = message.tool_calls
-                    if body.parallel_tool_calls is False:
-                        tool_calls = tool_calls[:1]
-                    if tool_calls and finish_reason is FinishReason.STOP and not decoder.stopped:
-                        finish_reason = FinishReason.TOOL_CALLS
-                    openai_tool_calls = tuple(
-                        {
-                            "id": f"call_{secrets.token_hex(12)}",
-                            "type": "function",
-                            "function": {
-                                "name": call["function"]["name"],
-                                "arguments": json.dumps(call["function"]["arguments"], ensure_ascii=False),
-                            },
-                        }
-                        for call in tool_calls
-                    )
-                    yield Delta(reasoning, content, (), openai_tool_calls, finish_reason, completion_tokens)
-                    return
-            finally:
-                cancelled.set()
+                if finish_reason is not None:
+                    break
+        finally:
+            cancelled.set()
 
-        def usage(completion_tokens: int) -> dict[str, int]:
-            return {
-                "prompt_tokens": len(prompt_token_ids),
-                "completion_tokens": completion_tokens,
-                "total_tokens": len(prompt_token_ids) + completion_tokens,
-            }
-
-        response_identity: dict[str, object] = {
-            "id": f"chatcmpl-{secrets.token_hex(16)}",
-            "created": int(time.time()),
-            "model": model_name,
-        }
-        if body.stream:
-            include_usage = bool(body.stream_options and body.stream_options.include_usage)
-            chunk_identity = response_identity | {"object": "chat.completion.chunk"}
-            if include_usage:
-                chunk_identity["usage"] = None
-
-            async def stream(chunks: AsyncGenerator[Delta]) -> AsyncGenerator[str]:
-                try:
-                    yield _sse(chunk_identity | {"choices": [_choice(delta={"role": "assistant", "content": ""})]})
-                    async for delta in chunks:
-                        if delta.reasoning or delta.content or delta.logprobs or delta.tool_calls:
-                            message: dict[str, Any] = {}
-                            if delta.content or not delta.reasoning:
-                                message["content"] = delta.content
-                            if delta.reasoning:
-                                message["reasoning_content"] = delta.reasoning
-                            if delta.tool_calls:
-                                message["tool_calls"] = [
-                                    call | {"index": index} for index, call in enumerate(delta.tool_calls)
-                                ]
-                            logprobs = {"content": list(delta.logprobs)} if body.logprobs else None
-                            yield _sse(chunk_identity | {"choices": [_choice(delta=message, logprobs=logprobs)]})
-                        if delta.finish_reason is not None:
-                            yield _sse(
-                                chunk_identity | {"choices": [_choice(delta={}, finish_reason=delta.finish_reason)]}
-                            )
-                            if include_usage:
-                                yield _sse(chunk_identity | {"choices": [], "usage": usage(delta.completion_tokens)})
-                    yield "data: [DONE]\n\n"
-                except Exception as error:  # noqa: BLE001
-                    traceback.print_exception(error)
-                    yield f"data: {bytes(_error('Internal server error.', 500).body).decode()}\n\n"
-                    yield "data: [DONE]\n\n"
-                finally:
-                    await chunks.aclose()
-
-            return _EventStream(stream(deltas()), cancelled)
-
-        received = [delta async for delta in deltas()]
-        if not received or (final := received[-1]).finish_reason is None:
+        if finish_reason is None:
             return Response(status_code=499)
-        content = "".join(delta.content for delta in received)
-        message: dict[str, Any] = {"role": "assistant", "content": content or (None if final.tool_calls else "")}
-        if reasoning := "".join(delta.reasoning for delta in received):
-            message["reasoning_content"] = reasoning
-        if final.tool_calls:
-            message["tool_calls"] = list(final.tool_calls)
-        logprobs = {"content": [entry for delta in received for entry in delta.logprobs]} if body.logprobs else None
-        choice = _choice(message=message, finish_reason=final.finish_reason, logprobs=logprobs)
+
+        text = codec.decode_tokens(generated_token_ids)
+        stop_positions = [position for stop in stop_strings if (position := text.find(stop)) >= 0]
+        if stop_positions:
+            text = text[: min(stop_positions)]
+            finish_reason = FinishReason.STOP
+        decoded_message = codec.parse_response(text, prompt=prompt, tools=tools or ())
+        tool_calls = decoded_message.tool_calls
+        if body.parallel_tool_calls is False:
+            tool_calls = tool_calls[:1]
+        if tool_calls and finish_reason is FinishReason.STOP and not stop_positions:
+            finish_reason = FinishReason.TOOL_CALLS
+        openai_tool_calls = [
+            {
+                "id": f"call_{secrets.token_hex(12)}",
+                "type": "function",
+                "function": {
+                    "name": call["function"]["name"],
+                    "arguments": json.dumps(call["function"]["arguments"], ensure_ascii=False),
+                },
+            }
+            for call in tool_calls
+        ]
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": decoded_message.response or (None if openai_tool_calls else ""),
+        }
+        if decoded_message.chain_of_thought:
+            message["reasoning_content"] = decoded_message.chain_of_thought
+        if openai_tool_calls:
+            message["tool_calls"] = openai_tool_calls
         return JSONResponse(
-            response_identity
-            | {"object": "chat.completion", "choices": [choice], "usage": usage(final.completion_tokens)}
+            {
+                "id": f"chatcmpl-{secrets.token_hex(16)}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": model_name,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": message,
+                        "finish_reason": finish_reason,
+                        "logprobs": {"content": content_logprobs} if body.logprobs else None,
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": len(prompt_token_ids),
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": len(prompt_token_ids) + completion_tokens,
+                },
+            }
         )
 
     return api

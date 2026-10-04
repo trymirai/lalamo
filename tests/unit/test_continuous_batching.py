@@ -7,8 +7,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from openai import AsyncOpenAI, AsyncStream, BadRequestError, NotFoundError
-from openai.types.chat import ChatCompletion, ChatCompletionChunk
+from openai import AsyncOpenAI, BadRequestError, NotFoundError
+from openai.types.chat import ChatCompletion
 from tokenizers import Tokenizer
 from tokenizers.decoders import Fuse
 from tokenizers.models import WordLevel
@@ -221,13 +221,7 @@ def test_openai_client_completions(recurrent_model: LanguageModel) -> None:
             async def complete(**overrides: Any) -> ChatCompletion:  # noqa: ANN401
                 return cast("ChatCompletion", await client.chat.completions.create(**(request | overrides)))
 
-            async def stream(**overrides: Any) -> list[ChatCompletionChunk]:  # noqa: ANN401
-                chunks = await client.chat.completions.create(**(request | overrides), stream=True)
-                return [chunk async for chunk in cast("AsyncStream[ChatCompletionChunk]", chunks)]
-
-            completion, chunks = await asyncio.gather(
-                complete(logprobs=True, top_logprobs=2), stream(stream_options={"include_usage": True})
-            )
+            completion = await complete(logprobs=True, top_logprobs=2, stream=False)
             (choice,) = completion.choices
             assert choice.message.content == text
             assert choice.finish_reason == "length"
@@ -236,13 +230,15 @@ def test_openai_client_completions(recurrent_model: LanguageModel) -> None:
             assert [entry.token for entry in choice.logprobs.content] == token_texts
             assert all(len(entry.top_logprobs) == 2 for entry in choice.logprobs.content)
 
-            assert "".join(chunk.choices[0].delta.content or "" for chunk in chunks if chunk.choices) == text
-            assert chunks[-2].choices[0].finish_reason == "length"
-            assert chunks[-1].usage is not None and chunks[-1].usage.completion_tokens == 4
-
             stopped = await complete(stop=token_texts[-1])
             assert stopped.choices[0].message.content == text[: text.find(token_texts[-1])]
             assert stopped.choices[0].finish_reason == "stop"
+
+            boundary_stop = token_texts[0][-1] + token_texts[1][0]
+            stopped_across_tokens = await complete(stop=boundary_stop)
+            assert stopped_across_tokens.choices[0].message.content == token_texts[0][:-1]
+            assert stopped_across_tokens.usage is not None
+            assert stopped_across_tokens.usage.completion_tokens == 2
 
             with pytest.raises(NotFoundError):
                 await complete(model="other")
@@ -250,6 +246,10 @@ def test_openai_client_completions(recurrent_model: LanguageModel) -> None:
                 await complete(response_format={"type": "json_object"})
             with pytest.raises(BadRequestError):
                 await complete(tools=[{"type": "function", "function": {"name": "f"}}])
+            with pytest.raises(BadRequestError):
+                await complete(stream=True)
+            with pytest.raises(BadRequestError):
+                await complete(extra_body={"stream_options": {"include_usage": True}})
             assert (await http.get("http://test/health")).json() == {"status": "ok"}
 
     asyncio.run(run())

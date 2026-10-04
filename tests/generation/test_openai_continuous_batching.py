@@ -8,10 +8,9 @@ import httpx2
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from openai import AsyncOpenAI, AsyncStream, BadRequestError
+from openai import AsyncOpenAI, BadRequestError
 from openai.types.chat import (
     ChatCompletion,
-    ChatCompletionChunk,
     ChatCompletionMessageFunctionToolCall,
     ChatCompletionToolParam,
     ChatCompletionUserMessageParam,
@@ -26,7 +25,7 @@ from lalamo.inference.continuous_batching import (
     TokenEvent,
 )
 from lalamo.models import GenerationConfig, LanguageModel
-from lalamo.models.chat_codec import AssistantMessage, ReasoningEffort, UserMessage
+from lalamo.models.chat_codec import UserMessage
 from lalamo.module import Keychain, ShardingConfig
 from lalamo.server import create_app
 from tests.conftest import ConvertModel
@@ -35,27 +34,13 @@ from tests.helpers import dense_log_softmax_rows
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
-def test_standard_openai_client_chat_completions_streaming_tools_and_concurrency(
+def test_standard_openai_client_chat_completions_tools_and_concurrency(
     _convert_model_session: ConvertModel,
 ) -> None:
     model = LanguageModel.load(
         _convert_model_session("Qwen/Qwen3.5-0.8B", cached=True), sharding_config=ShardingConfig.replicated()
     )
     assert isinstance(model, LanguageModel)
-    codec = model.token_codec
-
-    unicode_decoder = codec.decode_stream(
-        codec.render_request([UserMessage("")], reasoning_effort=ReasoningEffort.NO_REASONING)
-    )
-    assert "".join(unicode_decoder.step(token_id)[1] for token_id in codec.encode_text("👩‍💻")) == "👩‍💻"
-    protocol_decoder = codec.decode_stream(
-        codec.render_request([UserMessage("")], reasoning_effort=ReasoningEffort.MEDIUM)
-    )
-    pieces = [protocol_decoder.step(token_id) for token_id in codec.encode_text("private\n</think>\n\npublic")]
-    assert "".join(reasoning for reasoning, _ in pieces) == "private\n"
-    assert "".join(response for _, response in pieces) == "public"
-    assert protocol_decoder.finish()[2] == AssistantMessage(chain_of_thought="private\n", response="public")
-
     request: dict[str, Any] = {
         "model": "org/test-model",
         "messages": [ChatCompletionUserMessageParam(role="user", content=[{"type": "text", "text": "Say hi."}])],
@@ -114,21 +99,6 @@ def test_standard_openai_client_chat_completions_streaming_tools_and_concurrency
             thinking_message = thinking.choices[0].message
             assert thinking_message.content == "" and thinking_message.model_extra
             assert len(thinking_message.model_extra["reasoning_content"]) > 0
-            thinking_stream = await client.chat.completions.create(
-                **request
-                | {"reasoning_effort": None, "extra_body": {"chat_template_kwargs": {"enable_thinking": True}}},
-                stream=True,
-            )
-            thinking_chunks = [
-                cast("ChatCompletionChunk", chunk) async for chunk in cast("AsyncStream", thinking_stream)
-            ]
-            streamed_reasoning = "".join(
-                chunk.choices[0].delta.model_extra.get("reasoning_content") or ""
-                for chunk in thinking_chunks
-                if chunk.choices and chunk.choices[0].delta.model_extra
-            )
-            assert streamed_reasoning == thinking_message.model_extra["reasoning_content"]
-
             question = ChatCompletionUserMessageParam(
                 role="user", content="What's the weather in Paris for the next 3 days?"
             )

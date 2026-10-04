@@ -1,5 +1,4 @@
 import json
-from collections.abc import Iterable
 from pathlib import Path
 
 import polars as pl
@@ -7,7 +6,7 @@ import pytest
 from cattrs.errors import ClassValidationError
 from frozendict import frozendict
 from tokenizers import Tokenizer
-from tokenizers.decoders import ByteFallback, ByteLevel, Decoder, Fuse
+from tokenizers.decoders import ByteFallback, ByteLevel, Decoder
 from tokenizers.models import BPE, WordLevel
 
 from lalamo.data.huggingface_message import HFConversation, load_hf_parquet
@@ -229,73 +228,58 @@ def _registered_codec(repo: str) -> ChatCodec:
     return _chat_codec(output_parser_regex=spec.output_parser_regex, tool_call_format=spec.tool_call_format)
 
 
-def _stream_every_split(
-    codec: ChatCodec, raw: str, expected: AssistantMessage, *, prompt: str = "", tools: Iterable[ToolSchema] = ()
-) -> None:
-    """Streams `raw` split into tokens in many ways; released text may only grow into the expected message."""
-    partitions = [(raw,), tuple(raw)] + [(raw[:offset], raw[offset:]) for offset in range(1, len(raw))]
-    for parts in partitions:
-        vocabulary = {piece: index for index, piece in enumerate(dict.fromkeys(parts))}
-        tokenizer = Tokenizer(BPE(vocab=vocabulary, merges=[]))
-        tokenizer.decoder = Fuse()
-        stream = codec.config.init(tokenizer).decode_stream(prompt, tools=tools)
-        reasoning = response = ""
-        for piece in parts:
-            reasoning_piece, response_piece = stream.step(vocabulary[piece])
-            reasoning += reasoning_piece
-            response += response_piece
-            assert (expected.chain_of_thought or "").startswith(reasoning)
-            assert expected.response.startswith(response)
-        reasoning_piece, response_piece, message = stream.finish()
-        assert (reasoning + reasoning_piece, response + response_piece) == (
-            expected.chain_of_thought or "",
-            expected.response,
-        )
-        assert message == expected
-
-
 @pytest.mark.parametrize(
-    ("repo", "full_output", "stop_suffix", "prompt", "reasoning"),
+    ("repo", "full_output", "reasoning"),
     [
         (
             "meta-models/Muse-Glimmer-30B",
             "to=self<|message|>reasoning<|eom|><|start|>assistant to=user<|message|>answer<|eot|>",
-            "<|eot|>",
-            "",
             "reasoning",
         ),
-        ("meta-models/Muse-Glimmer-30B", "to=user<|message|>answer<|eot|>", "<|eot|>", "", None),
-        ("Qwen/Qwen3.8-27B", "reasoning\n</think>\n\nanswer", "", "<think>\n", "reasoning\n"),
-        ("Qwen/Qwen3.8-27B", "reasoning</think>answer", "", "<think>\n", "reasoning"),
-        ("Qwen/Qwen3.5-9B", "answer", "", "<think>\n\n</think>\n\n", None),
-        ("LiquidAI/LFM2.5-1.2B-Thinking", "<think>reasoning</think>answer", "", "", "reasoning"),
+        ("meta-models/Muse-Glimmer-30B", "to=user<|message|>answer<|eot|>", None),
+        ("Qwen/Qwen3.8-27B", "reasoning\n</think>\n\nanswer", "reasoning\n"),
+        ("Qwen/Qwen3.8-27B", "reasoning</think>answer", "reasoning"),
+        ("Qwen/Qwen3.5-9B", "answer", None),
+        ("LiquidAI/LFM2.5-1.2B-Thinking", "<think>reasoning</think>answer", "reasoning"),
         (
             "ibm-granite/granite-3.3-2b-instruct",
             "<think>reasoning</think><response>answer</response>",
-            "",
-            "",
             "reasoning",
         ),
-        ("google/gemma-4-E2B-it", "<|channel>thought\nreasoning<channel|>answer<turn|>", "<turn|>", "", "reasoning"),
-        ("google/gemma-4-E2B-it", "answer<turn|>", "<turn|>", "", None),
+        ("google/gemma-4-E2B-it", "<|channel>thought\nreasoning<channel|>answer<turn|>", "reasoning"),
+        ("google/gemma-4-E2B-it", "answer<turn|>", None),
         (
             "openai/gpt-oss-20b",
             "<|channel|>analysis<|message|>reasoning<|end|><|start|>assistant<|channel|>final<|message|>"
             "answer<|return|>",
-            "<|return|>",
-            "",
             "reasoning",
         ),
-        ("openai/gpt-oss-20b", "<|channel|>final<|message|>answer<|return|>", "<|return|>", "", None),
+        ("openai/gpt-oss-20b", "<|channel|>final<|message|>answer<|return|>", None),
     ],
 )
-def test_registered_chat_formats_stream_only_parsed_text(
-    repo: str, full_output: str, stop_suffix: str, prompt: str, reasoning: str | None
-) -> None:
+def test_registered_chat_formats_parse_text(repo: str, full_output: str, reasoning: str | None) -> None:
     codec = _registered_codec(repo)
     expected = AssistantMessage(chain_of_thought=reasoning, response="answer")
     assert codec.parse_response(full_output) == expected
-    _stream_every_split(codec, full_output.removesuffix(stop_suffix), expected, prompt=prompt)
+
+
+@pytest.mark.parametrize(
+    ("repo", "prompt", "generated", "reasoning"),
+    [
+        ("Qwen/Qwen3.8-27B", "<think>\n", "reasoning\n</think>\n\nanswer", "reasoning\n"),
+        (
+            "openai/gpt-oss-20b",
+            "<|start|>assistant<|channel|>analysis<|message|>",
+            "reasoning<|end|><|start|>assistant<|channel|>final<|message|>answer<|return|>",
+            "reasoning",
+        ),
+    ],
+)
+def test_prompt_opened_reasoning_channel(repo: str, prompt: str, generated: str, reasoning: str) -> None:
+    codec = _registered_codec(repo)
+    assert codec.parse_response(generated, prompt=prompt) == AssistantMessage(
+        chain_of_thought=reasoning, response="answer"
+    )
 
 
 _TOOLS: tuple[ToolSchema, ...] = (
@@ -359,7 +343,7 @@ _MUSE_CALL = (
         "meta-models/Muse-Glimmer-30B",
     ],
 )
-def test_native_tool_calls_parse_and_stream_every_split(repo: str) -> None:
+def test_native_tool_calls_parse(repo: str) -> None:
     codec = _registered_codec(repo)
     match codec.config.tool_call_format:
         case ToolCallFormat.QWEN_XML | ToolCallFormat.LIQUID as tool_format:
@@ -379,7 +363,6 @@ def test_native_tool_calls_parse_and_stream_every_split(repo: str) -> None:
     expected = AssistantMessage(chain_of_thought=reasoning, response="beforeafter", tool_calls=(_CALL, _CALL))
     assert codec.parse_response(raw, tools=_TOOLS) == expected
     assert codec.parse_response(raw).tool_calls == ()
-    _stream_every_split(codec, raw, expected, tools=_TOOLS)
 
 
 @pytest.mark.parametrize(
@@ -415,17 +398,6 @@ def test_liquid_calls_accept_hyphenated_openai_names() -> None:
     assert message.tool_calls == (
         {"type": "function", "function": {"name": "get-weather", "arguments": {"city": "Paris"}}},
     )
-
-
-def test_stream_stops_before_a_stop_string() -> None:
-    raw = "abcSTOPdef"
-    vocabulary = {character: index for index, character in enumerate(dict.fromkeys(raw))}
-    tokenizer = Tokenizer(BPE(vocab=vocabulary, merges=[]))
-    tokenizer.decoder = Fuse()
-    stream = _chat_codec().config.init(tokenizer).decode_stream("", stop_strings=("STOP",))
-    released = "".join(stream.step(vocabulary[character])[1] for character in raw[: raw.index("P") + 1])
-    assert stream.stopped
-    assert released + stream.finish()[1] == "abc"
 
 
 def test_liquid_hyphenated_names_are_only_replaced_in_call_positions() -> None:
