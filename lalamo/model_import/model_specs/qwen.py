@@ -21,12 +21,12 @@ QWEN_END_OF_THINKING_TAG = "\n</think>"
 
 QWEN38_REASONING_CONFIG = ReasoningConfig(
     default_reasoning_effort=ReasoningEffort.XHIGH,
-    reasoning_effort_to_template_fields=frozendict(
+    field_name="reasoning_effort",
+    reasoning_effort_to_field_value=frozendict(
         {
-            ReasoningEffort.XHIGH: frozendict(reasoning_effort="xhigh"),
-            ReasoningEffort.MEDIUM: frozendict(reasoning_effort="medium"),
-            ReasoningEffort.LOW: frozendict(reasoning_effort="low"),
-            ReasoningEffort.NO_REASONING: frozendict(enable_thinking=False),
+            ReasoningEffort.XHIGH: "xhigh",
+            ReasoningEffort.MEDIUM: "medium",
+            ReasoningEffort.LOW: "low",
         }
     ),
 )

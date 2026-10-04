@@ -175,9 +175,7 @@ def _import_chat_codec(
     system_prompt_text = _read_text_spec(origin, model_spec.configs.system_prompt, progress_callback)
     end_of_thinking_tag = model_spec.end_of_thinking_tag if isinstance(model_spec, LanguageModelSpec) else None
     reasoning_config = model_spec.reasoning_config if isinstance(model_spec, LanguageModelSpec) else None
-    tool_call_format = None
-    if isinstance(model_spec, LanguageModelSpec):
-        tool_call_format = model_spec.tool_call_format
+    tool_call_format = model_spec.tool_call_format if isinstance(model_spec, LanguageModelSpec) else None
 
     return (
         tokenizer,

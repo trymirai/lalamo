@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -93,13 +92,6 @@ def _attention_kernel(
 
 
 AttentionResult = TokenMixerResult[KVCacheLayer]
-
-
-class ProjectedHeads(NamedTuple):
-    queries: Float[Array, "tokens heads head_channels"]
-    keys: Float[Array, "tokens groups head_channels"] | None
-    values: Float[Array, "tokens groups head_channels"] | None
-    gate: Float[Array, "tokens heads*head_channels"] | None
 
 
 @dataclass(frozen=True)
@@ -244,7 +236,12 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         forward_pass_config: MixerForwardPassConfig,
         *,
         keychain: Keychain,
-    ) -> ProjectedHeads:
+    ) -> tuple[
+        Float[Array, "tokens heads head_channels"],
+        Float[Array, "tokens groups head_channels"] | None,
+        Float[Array, "tokens groups head_channels"] | None,
+        Float[Array, "tokens heads*head_channels"] | None,
+    ]:
         projections = call_vmapped(
             self.qkvg_projection,
             inputs,
@@ -254,7 +251,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         queries = self._prepare_heads(projections[0], self.config.num_heads, self.query_norm, positional_embeddings)
         gate = projections[-1] if self.config.has_gate else None
         if self.config.is_kv_sharing:
-            return ProjectedHeads(queries, None, None, gate)
+            return queries, None, None, gate
         _, keys, values, *_ = projections
         keys = self._prepare_heads(keys, self.config.num_groups, self.key_norm, positional_embeddings)
         values = rearrange(
@@ -265,7 +262,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         )
         if self.config.normalize_values:
             values = _rms_normalize(values, eps=1e-6)
-        return ProjectedHeads(queries, keys, values, gate)
+        return queries, keys, values, gate
 
     def project_key_value_heads(
         self,

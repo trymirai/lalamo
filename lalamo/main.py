@@ -1,3 +1,4 @@
+import logging
 import re
 import shutil
 import sys
@@ -38,6 +39,7 @@ from lalamo.commands import (
 from lalamo.commands import convert as _convert
 from lalamo.commands import convert_speculator as _convert_speculator
 from lalamo.commands import pull as _pull
+from lalamo.inference import ContinuousBatchingConfig
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
@@ -631,20 +633,18 @@ def server(
     ] = None,
 ) -> None:
     try:
-        from lalamo.inference.continuous_batching import ContinuousBatchingConfig  # noqa: PLC0415
-        from lalamo.server import start_server  # noqa: PLC0415
+        import uvicorn  # noqa: PLC0415
+
+        from lalamo.server import create_app  # noqa: PLC0415
     except ImportError as error:
         err_console.print("Server extras not installed. Install with: uv add 'lalamo[server]'")
         raise Exit(1) from error
 
-    start_server(
-        model_path=model_path,
-        model_name=served_model_name or model_path.name,
-        host=host,
-        port=port,
-        batching_config=ContinuousBatchingConfig(slot_count=slot_count, max_context_length=max_context_length),
-        sharding_config=ShardingConfig.tensor_parallel() if tensor_parallel else ShardingConfig.replicated(),
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s", force=True)
+    sharding_config = ShardingConfig.tensor_parallel() if tensor_parallel else ShardingConfig.replicated()
+    model = LanguageModel.load(model_path, sharding_config)
+    batching_config = ContinuousBatchingConfig(slot_count=slot_count, max_context_length=max_context_length)
+    uvicorn.run(create_app(model, served_model_name or model_path.name, batching_config), host=host, port=port)
 
 
 @app.callback()

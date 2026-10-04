@@ -10,9 +10,8 @@ __all__ = ["MUSE_GLIMMER_MODELS"]
 
 MUSE_GLIMMER_OUTPUT_PARSER_REGEX = (
     r"(?s)\s*(?:to=self<\|message\|>(?P<chain_of_thought>.*?)"
-    r"(?:<\|eom\|><\|start\|>assistant |\Z))?"
-    r"(?:to=user<\|message\|>(?P<response>.*?))?"
-    r"(?:<\|eot\|>|<\|end_of_text\|>)?\Z"
+    r"<\|eom\|><\|start\|>assistant )?to=user<\|message\|>"
+    r"(?P<response>.*?)(?:<\|eot\|>|<\|end_of_text\|>)\Z"
 )
 
 MUSE_GLIMMER_MODELS = [
@@ -36,12 +35,13 @@ MUSE_GLIMMER_MODELS = [
         end_of_thinking_tag="<|eom|><|start|>assistant to=user<|message|>",
         reasoning_config=ReasoningConfig(
             default_reasoning_effort=ReasoningEffort.HIGH,
-            reasoning_effort_to_template_fields=frozendict(
+            field_name="reasoning_strength",
+            reasoning_effort_to_field_value=frozendict(
                 {
-                    ReasoningEffort.LOW: frozendict(reasoning_strength="low"),
-                    ReasoningEffort.MEDIUM: frozendict(reasoning_strength="medium"),
-                    ReasoningEffort.HIGH: frozendict(reasoning_strength="high"),
-                    ReasoningEffort.XHIGH: frozendict(reasoning_strength="xhigh"),
+                    ReasoningEffort.LOW: "low",
+                    ReasoningEffort.MEDIUM: "medium",
+                    ReasoningEffort.HIGH: "high",
+                    ReasoningEffort.XHIGH: "xhigh",
                 }
             ),
         ),

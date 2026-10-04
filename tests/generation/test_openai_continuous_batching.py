@@ -1,4 +1,5 @@
 import asyncio
+import json
 import random
 from dataclasses import dataclass
 from typing import Any, cast
@@ -8,7 +9,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from openai import AsyncOpenAI, AsyncStream, BadRequestError
-from openai.types.chat import ChatCompletion, ChatCompletionChunk, ChatCompletionUserMessageParam
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionChunk,
+    ChatCompletionMessageFunctionToolCall,
+    ChatCompletionToolParam,
+    ChatCompletionUserMessageParam,
+)
 
 from lalamo.inference.continuous_batching import (
     ContinuousBatchingConfig,
@@ -28,23 +35,26 @@ from tests.helpers import dense_log_softmax_rows
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 
-def test_standard_openai_client_chat_completions_streaming_errors_and_concurrency(
+def test_standard_openai_client_chat_completions_streaming_tools_and_concurrency(
     _convert_model_session: ConvertModel,
 ) -> None:
     model = LanguageModel.load(
         _convert_model_session("Qwen/Qwen3.5-0.8B", cached=True), sharding_config=ShardingConfig.replicated()
     )
     assert isinstance(model, LanguageModel)
+    codec = model.token_codec
 
-    unicode_token_ids = model.token_codec.encode_text("👩‍💻")
-    unicode_decoder = model.token_codec.decode_stream(ReasoningEffort.NO_REASONING)
-    assert "".join(unicode_decoder.step(token_id)[1] for token_id in unicode_token_ids) == "👩‍💻"
-    protocol_token_ids = model.token_codec.encode_text("private\n</think>\n\npublic")
-    protocol_decoder = model.token_codec.decode_stream(ReasoningEffort.MEDIUM)
-    pieces = [protocol_decoder.step(token_id) for token_id in protocol_token_ids]
+    unicode_decoder = codec.decode_stream(
+        codec.render_request([UserMessage("")], reasoning_effort=ReasoningEffort.NO_REASONING)
+    )
+    assert "".join(unicode_decoder.step(token_id)[1] for token_id in codec.encode_text("👩‍💻")) == "👩‍💻"
+    protocol_decoder = codec.decode_stream(
+        codec.render_request([UserMessage("")], reasoning_effort=ReasoningEffort.MEDIUM)
+    )
+    pieces = [protocol_decoder.step(token_id) for token_id in codec.encode_text("private\n</think>\n\npublic")]
     assert "".join(reasoning for reasoning, _ in pieces) == "private\n"
     assert "".join(response for _, response in pieces) == "public"
-    assert protocol_decoder.finish() == AssistantMessage(chain_of_thought="private\n", response="public")
+    assert protocol_decoder.finish()[2] == AssistantMessage(chain_of_thought="private\n", response="public")
 
     request: dict[str, Any] = {
         "model": "org/test-model",
@@ -58,6 +68,18 @@ def test_standard_openai_client_chat_completions_streaming_errors_and_concurrenc
         "reasoning_effort": "none",
         "extra_body": {"top_k": 20, "min_p": 0.05, "repetition_penalty": 1.1},
     }
+    weather_tool: ChatCompletionToolParam = {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get the current weather for a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}, "days": {"type": "integer"}, "metric": {"type": "boolean"}},
+                "required": ["city"],
+            },
+        },
+    }
 
     async def run() -> None:
         api = create_app(
@@ -68,15 +90,11 @@ def test_standard_openai_client_chat_completions_streaming_errors_and_concurrenc
             httpx2.AsyncClient(transport=httpx2.ASGITransport(app=api)) as http,
         ):
             client = AsyncOpenAI(api_key="test", base_url="http://test/v1", http_client=http)
-            assert (await client.models.retrieve("org/test-model")).id == "org/test-model"
-            assert (await http.get("http://test/v1/health")).json() == {"status": "ok"}
 
             async def complete(**overrides: Any) -> ChatCompletion:  # noqa: ANN401
                 return cast("ChatCompletion", await client.chat.completions.create(**(request | overrides)))
 
-            chat, concurrent = await asyncio.gather(
-                complete(logprobs=True, top_logprobs=20, metadata={"test": "api"}), complete()
-            )
+            chat, concurrent = await asyncio.gather(complete(logprobs=True, top_logprobs=20), complete())
             assert concurrent.choices[0].finish_reason == "length"
             assert concurrent.choices[0].message.content == chat.choices[0].message.content
             chat_logprobs = chat.choices[0].logprobs
@@ -85,40 +103,21 @@ def test_standard_openai_client_chat_completions_streaming_errors_and_concurrenc
             unique = {item.token: item.logprob for item in token.top_logprobs} | {token.token: token.logprob}
             assert 0 <= 1 - np.exp(tuple(unique.values())).sum() <= 1
             stop = chat.choices[0].message.content
-            assert stop and len(chat_logprobs.content) > 1
-
-            stream = await client.chat.completions.create(
-                **request,
-                logprobs=True,
-                top_logprobs=20,
-                stream=True,
-                stream_options={"include_usage": True, "include_obfuscation": False},
-            )
-            chunks = [cast("ChatCompletionChunk", chunk) async for chunk in cast("AsyncStream", stream)]
-            streamed = "".join(chunk.choices[0].delta.content or "" for chunk in chunks if chunk.choices)
-            streamed_logprobs = [
-                entry
-                for chunk in chunks
-                if chunk.choices and chunk.choices[0].logprobs
-                for entry in chunk.choices[0].logprobs.content or []
-            ]
-            assert streamed == stop and len(streamed_logprobs) == len(chat_logprobs.content)
-            assert chunks[-2].choices[0].finish_reason == "length"
-            assert all(chunk.usage is None for chunk in chunks[:-1]) and chunks[-1].usage is not None
+            assert stop and len(chat_logprobs.content) == 3
 
             stopped = await complete(stop=stop)
             assert stopped.choices[0].message.content == "" and stopped.choices[0].finish_reason == "stop"
 
             thinking = await complete(
-                reasoning_effort=None,
-                extra_body={"chat_template_kwargs": {"enable_thinking": True}, "repeat_penalty": 1.1},
+                reasoning_effort=None, extra_body={"chat_template_kwargs": {"enable_thinking": True}}
             )
             thinking_message = thinking.choices[0].message
             assert thinking_message.content == "" and thinking_message.model_extra
             assert len(thinking_message.model_extra["reasoning_content"]) > 0
-            thinking_extra_body = request["extra_body"] | {"chat_template_kwargs": {"enable_thinking": True}}
             thinking_stream = await client.chat.completions.create(
-                **request | {"reasoning_effort": None, "extra_body": thinking_extra_body}, stream=True
+                **request
+                | {"reasoning_effort": None, "extra_body": {"chat_template_kwargs": {"enable_thinking": True}}},
+                stream=True,
             )
             thinking_chunks = [
                 cast("ChatCompletionChunk", chunk) async for chunk in cast("AsyncStream", thinking_stream)
@@ -129,58 +128,80 @@ def test_standard_openai_client_chat_completions_streaming_errors_and_concurrenc
                 if chunk.choices and chunk.choices[0].delta.model_extra
             )
             assert streamed_reasoning == thinking_message.model_extra["reasoning_content"]
-            assert stopped.choices[0].message.content == "" and stopped.choices[0].finish_reason == "stop"
 
-            async def biased(letter: str) -> ChatCompletion:
-                (token_id,) = model.token_codec.encode_text(letter)
-                return await complete(
-                    n=2,
-                    seed=-(2**63),
-                    top_p=0.0,
-                    logit_bias={str(token_id): 100},
-                    logprobs=True,
-                    extra_body={"top_k": 0, "min_p": 0.0, "repetition_penalty": 1.0},
-                )
-
-            for letter, result in zip(("X", "Y"), await asyncio.gather(biased("X"), biased("Y")), strict=True):
-                assert [choice.index for choice in result.choices] == [0, 1]
-                assert all(choice.message.content == letter * 3 for choice in result.choices)
-                assert result.usage is not None and result.usage.completion_tokens == 6
-                assert all(choice.logprobs and len(choice.logprobs.content or []) == 3 for choice in result.choices)
-
-            (token_id,) = model.token_codec.encode_text("X")
-            biased_stream = await client.chat.completions.create(
-                **request
-                | {
-                    "n": 2,
-                    "seed": 2**63 - 1,
-                    "top_p": 0.0,
-                    "logit_bias": {str(token_id): 100},
-                    "extra_body": {"top_k": 0, "min_p": 0.0, "repetition_penalty": 1.0},
-                },
-                stream=True,
-                logprobs=True,
-                stream_options={"include_usage": True, "include_obfuscation": True},
+            question = ChatCompletionUserMessageParam(
+                role="user", content="What's the weather in Paris for the next 3 days?"
             )
-            biased_chunks = [cast("ChatCompletionChunk", chunk) async for chunk in cast("AsyncStream", biased_stream)]
-            for index in range(2):
-                assert (
-                    "".join(
-                        choice.delta.content or ""
-                        for chunk in biased_chunks
-                        for choice in chunk.choices
-                        if choice.index == index
-                    )
-                    == "XXX"
-                )
-            assert biased_chunks[-1].usage is not None and biased_chunks[-1].usage.completion_tokens == 6
-            assert all(isinstance(chunk.model_dump().get("obfuscation"), str) for chunk in biased_chunks)
-            with pytest.raises(BadRequestError):
+            tool_request: dict[str, Any] = {
+                "model": "org/test-model",
+                "tools": [weather_tool],
+                "temperature": 0,
+                "max_completion_tokens": 256,
+                "reasoning_effort": "none",
+            }
+            called = cast("ChatCompletion", await client.chat.completions.create(messages=[question], **tool_request))
+            message = called.choices[0].message
+            assert called.choices[0].finish_reason == "tool_calls" and message.tool_calls
+            (call,) = message.tool_calls
+            assert isinstance(call, ChatCompletionMessageFunctionToolCall)
+            assert call.function.name == "get_weather"
+            assert json.loads(call.function.arguments) == {"city": "Paris", "days": 3}
+            answered = cast(
+                "ChatCompletion",
                 await client.chat.completions.create(
-                    model="org/test-model", messages=[{"role": "user", "content": "x"}], top_logprobs=1
-                )
+                    messages=[
+                        question,
+                        cast("Any", message.model_dump(exclude_none=True)),
+                        {"role": "tool", "tool_call_id": call.id, "content": '{"forecast": "sunny"}'},
+                    ],
+                    **tool_request,
+                ),
+            )
+            assert answered.choices[0].message.content
+
+            with pytest.raises(BadRequestError):
+                await complete(response_format={"type": "json_object"})
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("cancel_active", [False, True], ids=["before_admission", "after_prefill"])
+def test_engine_cancellation_allows_new_request(_convert_model_session: ConvertModel, cancel_active: bool) -> None:
+    paged_language_model = LanguageModel.load(
+        _convert_model_session("Qwen/Qwen3.5-0.8B", cached=True), sharding_config=ShardingConfig.replicated()
+    )
+    engine = ContinuousBatchingEngine(
+        paged_language_model, ContinuousBatchingConfig(total_pages=8, slot_count=1, max_context_length=256)
+    )
+    generation_config = GenerationConfig(temperature=0.0)
+    canceled_events: list[TokenEvent] = []
+    canceled = engine.submit(
+        tuple(paged_language_model.token_codec.encode_request([UserMessage("Say hi.")])),
+        64,
+        generation_config,
+        0,
+        on_events=canceled_events.extend,
+    )
+    if cancel_active:
+        assert engine.step()
+    canceled.set()
+
+    prompt = tuple(paged_language_model.token_codec.encode_request([UserMessage("Name a fruit.")]))
+    events: list[TokenEvent] = []
+    engine.submit(prompt, 4, generation_config, 0, on_events=events.extend)
+    for _ in range(8):
+        if not engine.step():
+            break
+    assert not engine.step()
+    assert canceled_events == []
+    assert events[-1] == SequenceFinished(FinishReason.LENGTH, 4)
+    expected = paged_language_model.stream_tokens(
+        jnp.asarray(prompt),
+        generation_config,
+        4,
+        keychain=Keychain.init(0, sharding_config=paged_language_model.sharding_config),
+    )
+    assert [event.token_id for event in events if isinstance(event, GeneratedToken)] == list(map(int, expected))
 
 
 @dataclass(frozen=True)
@@ -246,7 +267,9 @@ def test_fuzz_engine_matches_dense_greedy_decoding(
         step += 1
         if not busy and step > max(request.arrival_step for request in requests):
             break
-    assert engine._available_pages() == config.total_pages and len(engine._free_slots) == engine.slot_count  # noqa: SLF001
+    cached_pages = sum(len(prefix.pages) for prefix in engine._prefix_cache)  # noqa: SLF001
+    assert len(engine._free_pages) + cached_pages == config.total_pages  # noqa: SLF001
+    assert len(engine._free_slots) == engine.slot_count  # noqa: SLF001
 
     # A prompt extending a finished prompt must consume that prompt's cached prefix and still match dense decoding.
     base = max((prefix.token_ids for prefix in engine._prefix_cache), key=len)  # noqa: SLF001

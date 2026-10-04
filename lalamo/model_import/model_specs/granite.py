@@ -27,10 +27,11 @@ GRANITE_MODELS = [
             GRANITE_THINKING_OUTPUT_PARSER_REGEX,
             ReasoningConfig(
                 default_reasoning_effort=ReasoningEffort.NO_REASONING,
-                reasoning_effort_to_template_fields=frozendict(
+                field_name="thinking",
+                reasoning_effort_to_field_value=frozendict(
                     {
-                        ReasoningEffort.MEDIUM: frozendict(thinking=True),
-                        ReasoningEffort.NO_REASONING: frozendict(thinking=False),
+                        ReasoningEffort.MEDIUM: True,
+                        ReasoningEffort.NO_REASONING: False,
                     }
                 ),
             ),

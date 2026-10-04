@@ -11,6 +11,7 @@ from jax.experimental.pallas import mosaic_gpu as plgpu
 from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.kernels.mosaic import supports_mosaic_gpu
+from lalamo.utils.sharding import sharding_of
 
 from .pallas_flash import triton_attention
 from .xla import xla_attention
@@ -688,7 +689,7 @@ def _pallas_decode_attention_vmap(
         head_dim = queries.shape[3]
         supports_pallas = (
             not scale_batched
-            and supports_mosaic_gpu(jax.typeof(keys).sharding.mesh, 10)
+            and supports_mosaic_gpu(sharding_of(keys).mesh, 10)
             and queries.shape[1] == 1
             and query_heads % key_value_heads == 0
             and query_heads // key_value_heads <= 16

@@ -35,6 +35,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
     architectures: list[Literal["Lfm2ForCausalLM"]]
     block_auto_adjust_ff_dim: bool
     block_dim: int
+    block_ff_dim: int
     block_ffn_dim_multiplier: float
     block_mlp_init_scale: float
     block_multiple_of: int
@@ -66,7 +67,6 @@ class HFLFM2Config(HuggingFaceLMConfig):
     dtype: Literal["bfloat16", "float16", "float32"] | None = None
     torch_dtype: Literal["bfloat16", "float16", "float32"] | None = None
     intermediate_size: int | None = None
-    block_ff_dim: int | None = None
     conv_dim_out: int | None = None
     layer_types: list[Literal["conv", "full_attention"]] | None = None
     full_attn_idxs: list[int] | None = None
@@ -190,9 +190,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
 
         if not self.block_auto_adjust_ff_dim:
             hidden_dim = self.block_ff_dim if self.intermediate_size is None else self.intermediate_size
-            assert hidden_dim is not None
         else:
-            assert self.block_ff_dim is not None
             hidden_dim_adjusted = self.block_ff_dim * self.block_ffn_dim_multiplier * (2 / 3)
             hidden_dim = int(
                 (hidden_dim_adjusted + self.block_multiple_of - 1) // self.block_multiple_of * self.block_multiple_of,
