@@ -45,22 +45,31 @@ VOCABULARY = 32
 
 
 def assert_loaded_every_saved_tensor(model: LanguageModel, saved: Mapping[str, Array]) -> None:
-    for leaf in jax.tree.leaves(model, is_leaf=lambda node: isinstance(node, QtipGaussianMatrix)):
-        if isinstance(leaf, QtipGaussianMatrix):
-            _, columns = leaf.shape
-            np.testing.assert_array_equal(leaf.table, saved[f"qtip_shared.codebook_v{leaf.spec.vector_width}"])
-            np.testing.assert_array_equal(leaf.signs, saved[f"qtip_shared.signs_{columns}"])
-            np.testing.assert_array_equal(leaf.small_q, saved[f"qtip_shared.q_{columns}"])
+    trellises = {
+        str(ParameterPath() / path): leaf
+        for path, leaf in jax.tree_util.tree_leaves_with_path(
+            model, is_leaf=lambda x: isinstance(x, QtipGaussianMatrix)
+        )
+        if isinstance(leaf, QtipGaussianMatrix)
+    }
+    for leaf in trellises.values():
+        _, columns = leaf.shape
+        np.testing.assert_array_equal(leaf.table, saved[f"qtip_shared.codebook_v{leaf.spec.vector_width}"])
+        np.testing.assert_array_equal(leaf.signs, saved[f"qtip_shared.signs_{columns}"])
+        np.testing.assert_array_equal(leaf.small_q, saved[f"qtip_shared.q_{columns}"])
     loaded = model.export().arrays
-    for saved_name, value in saved.items():
+    for saved_name, saved_value in saved.items():
         if saved_name.startswith(("qtip_shared.", "decoder.transformer.ropes.")):
             continue
         # Lattice sign vectors and the unfused layout's qkv and gate leaves have their own names on disk.
         name = re.sub(r"\.(input|output)_hadamard_factors$", ".signs", saved_name)
         name = name.replace(".qkv_projection.weights.", ".qkvg_projection.weights.parts.0.")
         name = name.replace(".gate_projection.weights.", ".qkvg_projection.weights.parts.1.")
-        assert loaded[name].dtype == value.dtype, name
-        np.testing.assert_array_equal(loaded[name], value, err_msg=name)
+        # Trellis codes are saved in the quantizer's bit order and exported MSB first.
+        trellis = trellises.get(name.removesuffix(".codes"))
+        expected = saved_value if trellis is None else trellis.spec.msb_first_codes(saved_value, trellis.shape[1])
+        assert loaded[name].dtype == expected.dtype, name
+        np.testing.assert_array_equal(loaded[name], expected, err_msg=name)
 
 
 def tiny_untied_model() -> LanguageModel:

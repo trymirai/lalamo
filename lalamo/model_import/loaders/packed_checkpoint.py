@@ -124,7 +124,7 @@ def load_packed_checkpoint(
                         spec=spec,
                         sharding_config=sharding_config,
                         is_sharded=is_sharded,
-                        codes=parameter(path / "codes"),
+                        codes=spec.msb_first_codes(parameter(path / "codes"), columns),
                         scales=parameter(path / "scales"),
                         gains=parameter(path / "gains"),
                         table=parameter(table_name),
