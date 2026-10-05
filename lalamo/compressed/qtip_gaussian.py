@@ -24,7 +24,6 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
-from .utils.packing import unpack_uint8_to_uint
 from .utils.post_gains import GainAxis, apply_post_gains, merge_row_gains, row_gains
 from .utils.row_dot import row_batched_dot
 
@@ -92,19 +91,6 @@ class QtipGaussianSpec(WeightMatrixSpec):
         windows = sum(tapes[..., bit_offsets // 8 + index] << (16 - 8 * index) for index in range(3))
         shifts = jnp.asarray(8 - bit_offsets % 8, dtype=jnp.uint32)
         return ((windows >> shifts) & jnp.uint32((1 << STATE_BITS) - 1)).reshape(*rows, blocks * steps)
-
-    def msb_first_codes(self, codes: UInt8[Array, "*rows bytes"], columns: int) -> UInt8[Array, "*rows bytes"]:
-        """Rewrite codes from the quantizer's layout (little-endian 16-bit seed, then transitions packed LSB first)
-        into the MSB-first one that `states` and uzu read. Only the bit order changes."""
-        blocks, steps, block_bytes = self.tape_shape(columns)
-        *rows, _ = codes.shape
-        tapes = codes.reshape(*rows, blocks, block_bytes)
-        transitions = unpack_uint8_to_uint(
-            tapes[..., STATE_BITS // 8 :], self.transition_bits, unpacked_last_axis_dim=steps - 1
-        )
-        bits = (transitions[..., None] >> jnp.arange(self.transition_bits - 1, -1, -1, dtype=jnp.uint8)) & 1
-        packed = jnp.packbits(bits.reshape(*transitions.shape[:-1], -1), axis=-1)
-        return jnp.concatenate((tapes[..., 1::-1], packed), axis=-1).reshape(codes.shape)
 
     def compress(
         self,
