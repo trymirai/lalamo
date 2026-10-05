@@ -14,6 +14,7 @@ class DistortionKey(NamedTuple):
     scale_mode: str = ""
     scale_normalization: float | None = None
     residual_scale: float | None = None
+    window_bits: int | None = None
 
 
 def _parse_optional_int(value: str) -> int | None:
@@ -37,6 +38,7 @@ def _key_from_csv_row(row: dict[str, str]) -> DistortionKey:
         scale_mode=row["scale_mode"],
         scale_normalization=_parse_optional_float(row["scale_normalization"]),
         residual_scale=_parse_optional_float(row["residual_scale"]),
+        window_bits=_parse_optional_int(row["window_bits"]),
     )
 
 
@@ -57,6 +59,7 @@ def distortion_estimate(
     scale_mode: str = "",
     scale_normalization: float | None = None,
     residual_scale: float | None = None,
+    window_bits: int | None = None,
 ) -> float:
     key = DistortionKey(
         format_name=format_name,
@@ -66,6 +69,7 @@ def distortion_estimate(
         scale_mode=scale_mode,
         scale_normalization=scale_normalization,
         residual_scale=residual_scale,
+        window_bits=window_bits,
     )
     distortions = _csv_distortions()
     if key not in distortions:
