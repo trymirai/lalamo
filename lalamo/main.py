@@ -632,6 +632,9 @@ def server(
         int | None, Option(help="Cap on concurrently decoding sequences. Defaults to what fits in memory.")
     ] = None,
 ) -> None:
+    if jax.default_backend() == "cpu":
+        raise RuntimeError("The server does not support CPU execution.")
+
     try:
         import uvicorn  # noqa: PLC0415
 
