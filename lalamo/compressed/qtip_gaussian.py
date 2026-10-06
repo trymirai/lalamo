@@ -2,18 +2,16 @@ from dataclasses import dataclass, replace
 from math import ceil
 from typing import Literal, Self
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.lax import DotAlgorithmPreset
-from jax.sharding import PartitionSpec
 from jaxtyping import Array, DTypeLike, Float, Key, UInt8
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import is_dummy_array
-from lalamo.utils.sharding import ShardingConfig, sharding_of
+from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
@@ -24,11 +22,13 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
-from .utils.post_gains import GainAxis, apply_post_gains, merge_row_gains, row_gains
+from .trellis import states_to_levels
 from .utils.row_dot import row_batched_dot
 
-# Every step's 16-bit state indexes a 2**16-entry codebook; each tape block opens with its first state in two bytes.
+# Every step's 16-bit state hashes to its levels; each tape block opens with its first state in two bytes.
 STATE_BITS = 16
+# The codebook is [scale, offset of each column class], the class of a column being its index modulo four.
+COLUMN_CLASSES = 4
 
 
 def full_rotation(values: Array, small_q: Array) -> Array:
@@ -55,12 +55,8 @@ class QtipGaussianSpec(WeightMatrixSpec):
     vector_width: Literal[2, 4]
     transition_bits: Literal[4, 6, 8]
     restart_columns: Literal[0, 64]
-    scale_dtype: Literal["float16", "float32"] = "float16"
-    pre_gain_count: int = 0
-    post_gain_axes: tuple[GainAxis, ...] = ()
 
     def __post_init__(self) -> None:
-        assert self.pre_gain_count >= 0
         if (self.vector_width, self.transition_bits, self.restart_columns) not in (
             (2, 4, 0),
             (2, 6, 0),
@@ -112,47 +108,32 @@ class QtipGaussianSpec(WeightMatrixSpec):
             spec=self,
             sharding_config=sharding_config,
             is_sharded=is_sharded,
+            dtype_=weights.dtype,
             codes=initializer.zeros((rows, self.code_bytes(columns)), (row_axis, None), jnp.uint8),
-            scales=initializer.zeros((rows,), (row_axis,), jnp.dtype(self.scale_dtype)),
-            gains=initializer.zeros((rows,), (row_axis,)),
-            table=initializer.zeros((1 << STATE_BITS, self.vector_width), dtype=jnp.float32),
+            scales=initializer.zeros((rows,), (row_axis,), jnp.float32),
+            codebook=initializer.zeros((1 + COLUMN_CLASSES,), dtype=jnp.float32),
             signs=initializer.zeros((columns,), dtype=jnp.float32),
             small_q=initializer.zeros((order, order), dtype=jnp.float32),
-            pre_gains=tuple(initializer.zeros((rows,), (row_axis,), jnp.float32) for _ in range(self.pre_gain_count)),
-            post_gains=tuple(
-                initializer.zeros((rows,), (row_axis,), jnp.float32)
-                if axis == GainAxis.ROW
-                else initializer.zeros((columns,), dtype=jnp.float32)
-                for axis in self.post_gain_axes
-            ),
         )
 
 
 class QtipGaussianMatrix(WeightMatrix[QtipGaussianSpec]):
+    dtype_: DTypeLike = field(static=True)
     codes: UInt8[Array, "rows bytes"]
     scales: Float[Array, " rows"]
-    gains: Float[Array, " rows"]
-    table: Float[Array, "states width"] = field(trainable=False)
+    codebook: Float[Array, " codebook"] = field(trainable=False)
     signs: Float[Array, " columns"] = field(trainable=False)
     small_q: Float[Array, "order order"] = field(trainable=False)
-    pre_gains: tuple[Array, ...] = ()
-    post_gains: tuple[Array, ...] = ()
 
     def __check_init__(self) -> None:
         rows, columns = self.shape
         assert self.codes.shape == (rows, self.spec.code_bytes(columns))
         assert self.codes.dtype == jnp.uint8
-        assert self.scales.shape == self.gains.shape == (rows,)
-        assert self.scales.dtype == jnp.dtype(self.spec.scale_dtype)
-        assert self.table.shape == (1 << STATE_BITS, self.spec.vector_width)
-        assert self.table.dtype == self.signs.dtype == self.small_q.dtype == jnp.float32
+        assert self.scales.shape == (rows,)
+        assert self.codebook.shape == (1 + COLUMN_CLASSES,)
+        assert self.scales.dtype == self.codebook.dtype == self.signs.dtype == self.small_q.dtype == jnp.float32
         order = columns // (columns & -columns)
         assert self.small_q.shape == (order, order)
-        assert len(self.pre_gains) == self.spec.pre_gain_count
-        assert all(gain.shape == (rows,) and gain.dtype == jnp.float32 for gain in self.pre_gains)
-        for axis, gain in zip(self.spec.post_gain_axes, self.post_gains, strict=True):
-            assert gain.shape == (rows if axis == GainAxis.ROW else columns,)
-            assert gain.dtype == jnp.float32
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -160,42 +141,28 @@ class QtipGaussianMatrix(WeightMatrix[QtipGaussianSpec]):
 
     @property
     def dtype(self) -> DTypeLike:
-        return self.gains.dtype
+        return self.dtype_
 
     def astype(self, dtype: DTypeLike) -> Self:
-        return replace(self, gains=self.gains.astype(dtype))
+        return replace(self, dtype_=jnp.dtype(dtype))
 
-    def row_arrays(self) -> tuple[Array, Array, Array, tuple[Array, ...], tuple[Array, ...]]:
-        return (
-            self.codes,
-            self.scales,
-            self.gains,
-            self.pre_gains,
-            row_gains(self.spec.post_gain_axes, self.post_gains),
-        )
+    def row_arrays(self) -> tuple[Array, Array]:
+        return self.codes, self.scales
 
-    def rotated_rows(self, codes: Array, scales: Array, gains: Array, pre_gains: tuple[Array, ...]) -> Array:
-        states = self.spec.states(codes, self.shape[1])
-        row_axes = tuple(sharding_of(codes).spec)[: codes.ndim - 1]
-        values = self.table.at[states].get(out_sharding=PartitionSpec(*row_axes, None, None))
-        values = values.reshape(*codes.shape[:-1], self.shape[1])
-        # The checkpoint's two FP32 multiplies must not be folded into one scale.
-        scaled = jax.lax.optimization_barrier(values * scales.astype(jnp.float32)[..., None])
-        scaled = jax.lax.optimization_barrier(scaled * gains.astype(jnp.float32)[..., None])
-        for gain in pre_gains:
-            scaled = jax.lax.optimization_barrier(scaled * gain[..., None])
-        return scaled
+    def rotated_rows(self, codes: Array, scales: Array) -> Array:
+        columns = self.shape[1]
+        levels = states_to_levels(self.spec.states(codes, columns))[..., : self.spec.vector_width]
+        levels = levels.reshape(*codes.shape[:-1], columns).astype(jnp.float32)
+        scale = self.codebook[0]
+        offsets = self.codebook[1 + jnp.arange(columns) % COLUMN_CLASSES]
+        return (scale * levels + offsets) * scales[..., None]
 
     def rotated_weights(self) -> Array:
-        return self.rotated_rows(self.codes, self.scales, self.gains, self.pre_gains)
+        return self.rotated_rows(self.codes, self.scales)
 
-    def decode_rows(
-        self, rows: tuple[Array, Array, Array, tuple[Array, ...], tuple[Array, ...]], dtype: DTypeLike
-    ) -> Array:
-        codes, scales, gains, pre_gains, selected_row_gains = rows
-        weights = full_rotation(self.rotated_rows(codes, scales, gains, pre_gains), self.small_q) * self.signs
-        post_gains = merge_row_gains(self.spec.post_gain_axes, self.post_gains, selected_row_gains)
-        return apply_post_gains(weights, self.spec.post_gain_axes, post_gains, dtype)
+    def decode_rows(self, rows: tuple[Array, Array], dtype: DTypeLike) -> Array:
+        codes, scales = rows
+        return (full_rotation(self.rotated_rows(codes, scales), self.small_q) * self.signs).astype(dtype)
 
     def decompress(self) -> Array:
         return self.decode_rows(self.row_arrays(), self.dtype)

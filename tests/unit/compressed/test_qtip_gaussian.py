@@ -1,4 +1,3 @@
-from dataclasses import replace
 from pathlib import Path
 
 import equinox as eqx
@@ -7,8 +6,7 @@ import numpy as np
 import pytest
 
 from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec, full_rotation
-from lalamo.compressed.utils.post_gains import GainAxis
-from lalamo.module import Keychain
+from lalamo.model_import.loaders.packed_checkpoint import codebook_from_table
 from tests.helpers import make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
@@ -25,27 +23,52 @@ SAVED_TAPES = (
 )
 
 
-def saved_tape(name: str, spec: QtipGaussianSpec) -> tuple[QtipGaussianMatrix, np.ndarray]:
+def production_table() -> np.ndarray:
+    with np.load(DATA / "qtip_gaussian_muse.npz") as data:
+        return data["v4_k2_connected_table"]
+
+
+def saved_tape(name: str, spec: QtipGaussianSpec) -> QtipGaussianMatrix:
+    """The saved tape with its two row scale stages folded into one, decoded through the production v4 table."""
     is_muse = name.endswith("_connected")
     with np.load(DATA / ("qtip_gaussian_muse.npz" if is_muse else "qtip_gaussian_hyb036.npz")) as data:
-        matrix = QtipGaussianMatrix(
+        scales = data[f"{name}_scales"].astype(np.float32)
+        gains = data[f"{name}_gains_bits"].view(jnp.bfloat16).astype(np.float32)
+        return QtipGaussianMatrix(
             spec=spec,
             sharding_config=make_test_sharding_config(),
             is_sharded=True,
+            dtype_=jnp.bfloat16,
             codes=jnp.asarray(data[f"{name}_codes"]),
-            scales=jnp.asarray(data[f"{name}_scales"]),
-            gains=jnp.asarray(data[f"{name}_gains_bits"].view(jnp.bfloat16)),
-            table=jnp.asarray(data[f"{name}_table"] if is_muse else data[f"table_v{spec.vector_width}"]),
+            scales=jnp.asarray(scales * gains),
+            codebook=codebook_from_table(jnp.asarray(production_table()[:, : spec.vector_width])),
             signs=jnp.asarray(data[f"{name}_signs"]),
             small_q=jnp.asarray(data[f"{name}_small_q"]),
         )
-        return matrix, data[f"{name}_rotated"]
 
 
-def test_saved_tapes_and_two_stage_scales_decode_exactly() -> None:
+def test_saved_tapes_decode_to_production_table_entries() -> None:
+    # The hyb036 and v2_k4_connected fixture tables are not hash-affine, so every tape decodes through the v4 table.
+    table = production_table()
     for name, spec in SAVED_TAPES:
-        matrix, expected = saved_tape(name, spec)
-        np.testing.assert_array_equal(eqx.filter_jit(lambda m: m.rotated_weights())(matrix), expected)
+        matrix = saved_tape(name, spec)
+        states = np.asarray(spec.states(matrix.codes, matrix.shape[1]))
+        expected = table[states, : spec.vector_width].reshape(matrix.shape) * np.asarray(matrix.scales)[:, None]
+        decoded = eqx.filter_jit(lambda m: m.rotated_weights())(matrix)
+        np.testing.assert_allclose(decoded, expected, rtol=1e-6, atol=1e-6 * np.abs(expected).max(), err_msg=name)
+
+
+def test_connected_v4_tape_matches_its_producer() -> None:
+    matrix = saved_tape("v4_k2_connected", QtipGaussianSpec(4, 8, 0))
+    with np.load(DATA / "qtip_gaussian_muse.npz") as data:
+        producer_rotated = data["v4_k2_connected_rotated"]
+    decoded = eqx.filter_jit(lambda m: m.rotated_weights())(matrix)
+    np.testing.assert_allclose(decoded, producer_rotated, rtol=1e-6, atol=1e-6 * np.abs(producer_rotated).max())
+
+
+def test_tables_that_are_not_computed_levels_are_rejected() -> None:
+    with np.load(DATA / "qtip_gaussian_hyb036.npz") as data, pytest.raises(ValueError, match="scale \\* level"):
+        codebook_from_table(jnp.asarray(data["table_v4"]))
 
 
 def test_full_rotation_matches_explicit_kronecker_product() -> None:
@@ -56,36 +79,6 @@ def test_full_rotation_matches_explicit_kronecker_product() -> None:
         h = np.block([[h, h], [h, -h]])
     rotation = np.kron(h / np.sqrt(np.float32(8)), q)
     np.testing.assert_allclose(full_rotation(jnp.asarray(values), jnp.asarray(q)), values @ rotation, atol=3e-6)
-
-
-def test_gain_stages_fold_before_the_rotation_and_round_after_it() -> None:
-    original, rotated = saved_tape("v4_k2_connected", QtipGaussianSpec(4, 8, 0))
-    with np.load(DATA / "post_gain_stages.npz") as data:
-        row_gain = data["muse_up_gain"]
-    pre_gain = np.array([0.995, 1.003, 1.004, 1.011], dtype=np.float32)
-    column_gain = np.linspace(0.9, 1.1, original.shape[1], dtype=np.float32)
-    matrix = replace(
-        original,
-        spec=QtipGaussianSpec(4, 8, 0, pre_gain_count=1, post_gain_axes=(GainAxis.ROW, GainAxis.COLUMN)),
-        pre_gains=(jnp.asarray(pre_gain),),
-        post_gains=(jnp.asarray(row_gain), jnp.asarray(column_gain)),
-    )
-
-    # Pre-gains multiply the saved rotated rows; each post-gain fold rounds to bfloat16 before the next one.
-    expected_rotated = rotated * pre_gain[:, None]
-    unrotated = np.asarray(full_rotation(jnp.asarray(expected_rotated), original.small_q)) * np.asarray(original.signs)
-    expected = unrotated.astype(jnp.bfloat16)
-    for gain in (row_gain[:, None], column_gain):
-        expected = (expected.astype(np.float32) * gain).astype(jnp.bfloat16)
-    np.testing.assert_array_equal(eqx.filter_jit(lambda m: m.rotated_weights())(matrix), expected_rotated)
-    np.testing.assert_array_equal(matrix.decompress(), expected)
-    vector = jnp.linspace(-1, 1, matrix.shape[1], dtype=jnp.float32)
-    np.testing.assert_allclose(
-        matrix.dot(vector, keychain=Keychain.init(0, sharding_config=matrix.sharding_config)),
-        expected.astype(np.float32) @ np.asarray(vector),
-        atol=2e-5,
-        rtol=2e-5,
-    )
 
 
 def test_msb_first_states_match_the_layout_uzu_reads() -> None:
