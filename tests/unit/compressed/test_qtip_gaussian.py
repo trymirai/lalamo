@@ -86,3 +86,19 @@ def test_gain_stages_fold_before_the_rotation_and_round_after_it() -> None:
         atol=2e-5,
         rtol=2e-5,
     )
+
+
+def test_msb_first_states_match_the_layout_uzu_reads() -> None:
+    v4 = QtipGaussianSpec(4, 8, 64)
+    v4_codes = jnp.asarray(
+        np.frombuffer(bytes.fromhex("11 10 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f 20"), np.uint8)
+    )
+    np.testing.assert_array_equal(v4.states(v4_codes[None], 64)[0, :3], [0x1110, 0x1012, 0x1213])
+
+    v2_codes = jnp.asarray(
+        np.frombuffer(
+            bytes.fromhex("da ca e3 44 bb 31 12 45 fd 6f 84 df 9a d7 c5 b3 d0 76 ac 0e 8f 53 a7 35 6c 88"),
+            np.uint8,
+        )
+    )
+    np.testing.assert_array_equal(QtipGaussianSpec(2, 6, 0).states(v2_codes[None], 64)[0, :2], [0xDACA, 0xB2B8])

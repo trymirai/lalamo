@@ -4,6 +4,7 @@ from typing import Literal, Self
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.lax import DotAlgorithmPreset
 from jax.sharding import PartitionSpec
 from jaxtyping import Array, DTypeLike, Float, Key, UInt8
@@ -23,7 +24,6 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
-from .utils.packing import unpack_uint8_to_uint
 from .utils.post_gains import GainAxis, apply_post_gains, merge_row_gains, row_gains
 from .utils.row_dot import row_batched_dot
 
@@ -82,21 +82,15 @@ class QtipGaussianSpec(WeightMatrixSpec):
         return blocks * block_bytes
 
     def states(self, codes: UInt8[Array, "*rows bytes"], columns: int) -> Array:
+        """Each block is an MSB-first bit stream; state g is its 16-bit window at bit g * transition_bits."""
         blocks, steps, block_bytes = self.tape_shape(columns)
         *rows, _ = codes.shape
         tapes = codes.reshape(*rows, blocks, block_bytes)
-        initial = tapes[..., 0].astype(jnp.uint32) | (tapes[..., 1].astype(jnp.uint32) << 8)
-        symbols = unpack_uint8_to_uint(
-            tapes[..., STATE_BITS // 8 :], self.transition_bits, dtype=jnp.uint32, unpacked_last_axis_dim=steps - 1
-        )
-        # At most four preceding symbols contribute to a 16-bit state. This is
-        # a parallel bit-window decode, independent of the row's sequence length.
-        source = jnp.concatenate((initial[..., None], symbols), axis=-1)
-        states = source
-        for distance in range(1, min(steps, ceil(STATE_BITS / self.transition_bits))):
-            previous = jnp.pad(source[..., :-distance], [(0, 0)] * (source.ndim - 1) + [(distance, 0)])
-            states = states | (previous << (distance * self.transition_bits))
-        return (states & jnp.uint32((1 << STATE_BITS) - 1)).reshape(*rows, blocks * steps)
+        tapes = jnp.pad(tapes, [(0, 0)] * (tapes.ndim - 1) + [(0, 2)]).astype(jnp.uint32)
+        bit_offsets = np.arange(steps) * self.transition_bits
+        windows = sum(tapes[..., bit_offsets // 8 + index] << (16 - 8 * index) for index in range(3))
+        shifts = jnp.asarray(8 - bit_offsets % 8, dtype=jnp.uint32)
+        return ((windows >> shifts) & jnp.uint32((1 << STATE_BITS) - 1)).reshape(*rows, blocks * steps)
 
     def compress(
         self,
