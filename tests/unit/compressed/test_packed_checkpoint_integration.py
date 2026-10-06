@@ -22,4 +22,14 @@ def test_packed_checkpoint_loads_every_saved_tensor() -> None:
     with jax.set_mesh(config.mesh), (directory / "model.safetensors").open("rb") as stream:
         model = LanguageModel.load(directory, config)
         _, saved = safe_read(stream)
-        assert_loaded_every_saved_tensor(model, saved)
+        trellis_paths = [name.removesuffix(".gains") for name in saved if name.endswith(".gains")]
+        folds = {
+            f"{path}.scales": (
+                f"{path}.scales",
+                f"{path}.gains",
+                *sorted(name for name in saved if name.startswith(f"{path}.pre_gains.")),
+                *sorted(name for name in saved if name.startswith(f"{path}.post_gains.")),
+            )
+            for path in trellis_paths
+        }
+        assert_loaded_every_saved_tensor(model, saved, folds)

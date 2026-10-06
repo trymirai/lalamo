@@ -1,7 +1,8 @@
 import json
+import math
 import re
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import jax
@@ -22,7 +23,7 @@ from lalamo.compressed.lattice import (
 )
 from lalamo.compressed.qtip_gaussian import STATE_BITS, QtipGaussianMatrix, QtipGaussianSpec
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
-from lalamo.compressed.utils.post_gains import GainAxis
+from lalamo.compressed.trellis import states_to_levels
 from lalamo.initializer import RandomInitializer
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.models.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
@@ -42,13 +43,22 @@ pytestmark = pytest.mark.usefixtures("fake_mesh")
 # One direction block plus a dense tail, and a whole number of lattice ladder bytes.
 MODEL_DIM = BLOCK_COLUMNS + COLUMNS_PER_LADDER_BYTE
 VOCABULARY = 32
+# Package codebooks are float32 tables of CODEBOOK_SCALE * level + the offset of each column class.
+CODEBOOK_SCALE = 0.05
+CODEBOOK_OFFSETS = (0.31, -0.17, 0.08, 0.44)
 
 
-def assert_loaded_every_saved_tensor(model: LanguageModel, saved: Mapping[str, Array]) -> None:
+def assert_loaded_every_saved_tensor(
+    model: LanguageModel, saved: Mapping[str, Array], folds: Mapping[str, tuple[str, ...]]
+) -> None:
+    """`folds` maps each trellis leaf's saved scales name to the saved tensors its one loaded scale multiplies."""
+    consumed = {name for stages in folds.values() for name in stages}
     for leaf in jax.tree.leaves(model, is_leaf=lambda node: isinstance(node, QtipGaussianMatrix)):
         if isinstance(leaf, QtipGaussianMatrix):
             _, columns = leaf.shape
-            np.testing.assert_array_equal(leaf.table, saved[f"qtip_shared.codebook_v{leaf.spec.vector_width}"])
+            width = leaf.spec.vector_width
+            expected_codebook = (CODEBOOK_SCALE, *CODEBOOK_OFFSETS[:width] * (4 // width))
+            np.testing.assert_allclose(leaf.codebook, expected_codebook, rtol=0, atol=1e-5)
             np.testing.assert_array_equal(leaf.signs, saved[f"qtip_shared.signs_{columns}"])
             np.testing.assert_array_equal(leaf.small_q, saved[f"qtip_shared.q_{columns}"])
     loaded = model.export().arrays
@@ -59,8 +69,12 @@ def assert_loaded_every_saved_tensor(model: LanguageModel, saved: Mapping[str, A
         name = re.sub(r"\.(input|output)_hadamard_factors$", ".signs", saved_name)
         name = name.replace(".qkv_projection.weights.", ".qkvg_projection.weights.parts.0.")
         name = name.replace(".gate_projection.weights.", ".qkvg_projection.weights.parts.1.")
-        assert loaded[name].dtype == value.dtype, name
-        np.testing.assert_array_equal(loaded[name], value, err_msg=name)
+        if saved_name in folds:
+            expected = math.prod(saved[stage].astype(jnp.float32) for stage in folds[saved_name])
+            np.testing.assert_array_equal(loaded[name], expected, err_msg=name)
+        elif saved_name not in consumed:
+            assert loaded[name].dtype == value.dtype, name
+            np.testing.assert_array_equal(loaded[name], value, err_msg=name)
 
 
 def tiny_untied_model() -> LanguageModel:
@@ -104,6 +118,7 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
         layer + "mixer.out_projection.weights",
         layer + "mlp.up_projection.weights",
     )
+    folds: dict[str, tuple[str, ...]] = {}
     exported = model.export()
     arrays = {name: value for name, value in exported.arrays.items() if name.rsplit(".", 1)[0] not in packed}
     metadata = {name: value for name, value in exported.metadata.items() if name.removesuffix(".spec") not in packed}
@@ -114,14 +129,19 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     def packed_bytes(shape: tuple[int, ...]) -> Array:
         return jnp.asarray(generator.integers(0, 256, shape, dtype=np.uint8))
 
-    def trellis(path: str, rows: int, columns: int, spec: QtipGaussianSpec) -> dict[str, JSON]:
+    def trellis(path: str, rows: int, columns: int, spec: QtipGaussianSpec, scale_dtype: str) -> dict[str, JSON]:
         arrays[path + ".codes"] = packed_bytes((rows, spec.code_bytes(columns)))
-        arrays[path + ".scales"] = uniform((rows,), spec.scale_dtype)
+        arrays[path + ".scales"] = uniform((rows,), jnp.dtype(scale_dtype))
         arrays[path + ".gains"] = uniform((rows,), jnp.bfloat16)
         arrays[path + ".post_gains.0"] = uniform((rows,), jnp.float32)
-        fields = ("vector_width", "transition_bits", "restart_columns", "scale_dtype")
-        saved = {field: getattr(spec, field) for field in fields}
-        return {"type": "QtipGaussianSpec", "layout": "output_input", **saved, "post_gain_axes": ["row"]}
+        folds[path + ".scales"] = tuple(path + suffix for suffix in (".scales", ".gains", ".post_gains.0"))
+        return {
+            "type": "QtipGaussianSpec",
+            "layout": "output_input",
+            **asdict(spec),
+            "scale_dtype": scale_dtype,
+            "post_gain_axes": ["row"],
+        }
 
     def lattice(path: str, rows: int, spec: LatticeSpec) -> dict[str, JSON]:
         arrays[path + ".codes"] = packed_bytes((rows, spec.code_bytes(MODEL_DIM)))
@@ -142,20 +162,20 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     arrays[readout + ".tail"] = uniform((VOCABULARY, MODEL_DIM - BLOCK_COLUMNS), jnp.bfloat16)
     metadata[readout + ".spec"] = {"type": "SDirectionSpec", "layout": "output_input"}
     stack_specs = (
-        (24, QtipGaussianSpec(4, 8, 64, "float32", post_gain_axes=(GainAxis.ROW,))),
+        (24, QtipGaussianSpec(4, 8, 64)),
         (8, LatticeSpec(LatticeKind.I3, Layout.OUTPUT_INPUT)),
     )
     qkvg = layer + "mixer.qkvg_projection.weights"
     metadata[qkvg + ".spec"] = {
         "type": "RowStackSpec",
         "parts": [
-            [24, trellis(qkvg + ".parts.0", 24, MODEL_DIM, stack_specs[0][1])],
+            [24, trellis(qkvg + ".parts.0", 24, MODEL_DIM, stack_specs[0][1], "float32")],
             [8, lattice(qkvg + ".parts.1", 8, stack_specs[1][1])],
         ],
         "layout": "output_input",
     }
     out = layer + "mixer.out_projection.weights"
-    metadata[out + ".spec"] = trellis(out, MODEL_DIM, 8, QtipGaussianSpec(2, 4, 0, "float16"))
+    metadata[out + ".spec"] = trellis(out, MODEL_DIM, 8, QtipGaussianSpec(2, 4, 0), "float16")
     up = layer + "mlp.up_projection.weights"
     metadata[up + ".spec"] = lattice(up, 32, LatticeSpec(LatticeKind.I4, Layout.OUTPUT_INPUT))
     input_embedding = "decoder.embedding.input_embedding"
@@ -167,10 +187,10 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
         arrays[f"qtip_shared.q_{columns}"] = jnp.linalg.qr(
             jnp.asarray(generator.normal(size=(order, order)), jnp.float32)
         )[0]
+    levels = states_to_levels(jnp.arange(1 << STATE_BITS, dtype=jnp.uint32))
     for width in (2, 4):
-        arrays[f"qtip_shared.codebook_v{width}"] = jnp.asarray(
-            generator.normal(size=(1 << STATE_BITS, width)), jnp.float32
-        )
+        offsets = jnp.asarray(CODEBOOK_OFFSETS[:width])
+        arrays[f"qtip_shared.codebook_v{width}"] = CODEBOOK_SCALE * levels[:, :width].astype(jnp.float32) + offsets
     (tmp_path / "config.json").write_text(json.dumps(model.config.to_json()))
     model.token_codec.tokenizer.save(str(tmp_path / "tokenizer.json"))
     with (tmp_path / "model.safetensors").open("wb") as stream:
@@ -192,7 +212,7 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
         layer + "mlp.down_projection.weights": FullPrecisionMatrix,
     }
     assert matrices[qkvg].spec == RowStackSpec(stack_specs)
-    assert_loaded_every_saved_tensor(restored, arrays)
+    assert_loaded_every_saved_tensor(restored, arrays, folds)
     batch_sharding = restored.sharding_config.resolve_sharding((LogicalAxis.BATCH, None))
     tokens = jax.device_put(jnp.array([[1, 2, 3], [3, 2, 1]], dtype=jnp.int32), batch_sharding)
     result = restored.decoder(

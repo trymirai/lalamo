@@ -1,19 +1,23 @@
 import json
+import math
 from collections.abc import Iterable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import cattrs
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, DTypeLike
+from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.compressed.direction import DirectionMatrix, DirectionSpec
 from lalamo.compressed.lattice import LatticeKind, LatticeMatrix, LatticeSpec, odd_integer_table
-from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec
+from lalamo.compressed.qtip_gaussian import COLUMN_CLASSES, STATE_BITS, QtipGaussianMatrix, QtipGaussianSpec
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
+from lalamo.compressed.trellis import states_to_levels
+from lalamo.compressed.utils.post_gains import GainAxis
 from lalamo.initializer import EmptyInitializer
 from lalamo.model import BaseModelConfig
 from lalamo.models.language_model import LanguageModel, LanguageModelConfig
@@ -24,6 +28,32 @@ from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, Layout, ShapeDtypeMatrix, WeightMatrix
+
+
+@dataclass(frozen=True)
+class PackedQtipGaussianSpec:
+    """A trellis leaf as packages save it: its row scale split into scales, gains and further per-row gains."""
+
+    vector_width: Literal[2, 4]
+    transition_bits: Literal[4, 6, 8]
+    restart_columns: Literal[0, 64]
+    scale_dtype: Literal["float16", "float32"] = "float16"
+    pre_gain_count: int = 0
+    post_gain_axes: tuple[GainAxis, ...] = ()
+
+
+def codebook_from_table(table: Float[Array, "states width"]) -> Float[Array, " codebook"]:
+    """The [scale, offsets by column class] codebook whose scale * level + offset reproduces the table, else raises."""
+    width = table.shape[1]
+    values = np.asarray(table, dtype=np.float64)
+    levels = np.asarray(states_to_levels(jnp.arange(1 << STATE_BITS, dtype=jnp.uint32)), dtype=np.float64)[:, :width]
+    farthest = np.argmax(np.abs(levels[:, 0] - levels[0, 0]))
+    scale = (values[farthest, 0] - values[0, 0]) / (levels[farthest, 0] - levels[0, 0])
+    offsets = values[0] - scale * levels[0]
+    error = np.abs(scale * levels + offsets - values).max()
+    if not error <= 1e-5:
+        raise ValueError(f"The trellis table is not scale * level + offset (error {error})")
+    return jnp.asarray([scale, *offsets[np.arange(COLUMN_CLASSES) % width]], dtype=jnp.float32)
 
 
 def native_config(value: JSON) -> JSON:
@@ -48,7 +78,7 @@ def native_config(value: JSON) -> JSON:
 
 
 def is_packed_checkpoint(config: JSON, metadata: dict[str, JSON], tensor_names: Iterable[str]) -> bool:
-    # Lalamo's own saves also tag trellis leaves "QtipGaussianSpec", but keep their tables under each matrix.
+    # Lalamo's own saves also tag trellis leaves "QtipGaussianSpec", but keep a five-float codebook under each matrix.
     specs: list[dict[str, Any]] = [spec for spec in metadata.values() if isinstance(spec, dict)]
     parts = [part for spec in specs if spec.get("type") == "RowStackSpec" for _, part in spec["parts"]]
     return (
@@ -119,19 +149,33 @@ def load_packed_checkpoint(
                     table_name = saved.pop("table", f"qtip_shared.codebook_v{saved['vector_width']}")
                     layout = saved.pop("layout")
                     assert layout == Layout.OUTPUT_INPUT, f"Trellis leaves are stored output-input, got {layout}"
-                    spec = converter.structure(saved, QtipGaussianSpec)
+                    packed = converter.structure(saved, PackedQtipGaussianSpec)
+                    if GainAxis.COLUMN in packed.post_gain_axes:
+                        raise ValueError(f"Column post-gains do not fold into the row scales at {path}")
+                    gains = parameter(path / "gains")
+                    # Every saved gain multiplies a whole row, so one float32 scale per row replaces them all.
+                    scales = math.prod(
+                        (
+                            gain.astype(jnp.float32)
+                            for gain in (
+                                gains,
+                                *parameter_tuple(path / "pre_gains", packed.pre_gain_count),
+                                *parameter_tuple(path / "post_gains", len(packed.post_gain_axes)),
+                            )
+                        ),
+                        start=parameter(path / "scales").astype(jnp.float32),
+                    )
                     matrix = QtipGaussianMatrix(
-                        spec=spec,
+                        spec=QtipGaussianSpec(packed.vector_width, packed.transition_bits, packed.restart_columns),
                         sharding_config=sharding_config,
                         is_sharded=is_sharded,
+                        # The saved gains carried the matrix dtype.
+                        dtype_=gains.dtype,
                         codes=parameter(path / "codes"),
-                        scales=parameter(path / "scales"),
-                        gains=parameter(path / "gains"),
-                        table=parameter(table_name),
+                        scales=scales,
+                        codebook=codebook_from_table(parameter(table_name)),
                         signs=parameter(f"qtip_shared.signs_{columns}"),
                         small_q=parameter(f"qtip_shared.q_{columns}"),
-                        pre_gains=parameter_tuple(path / "pre_gains", spec.pre_gain_count),
-                        post_gains=parameter_tuple(path / "post_gains", len(spec.post_gain_axes)),
                     )
                 case "RowStackSpec":
                     # Each part's saved spec is inline in the stack's; the parts have no spec entries of their own.
