@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.experimental import pallas as pl
-from jaxtyping import DTypeLike
+from jaxtyping import Array, DTypeLike
 
 from lalamo.kernels.attention import pallas_decode_attention, xla_attention
 from lalamo.kernels.attention.pallas_flash import triton_attention
@@ -118,6 +118,28 @@ def test_native_attention_batches_and_prefill_match_reference(
     np.testing.assert_allclose(
         actual.astype(jnp.float32), expected.astype(jnp.float32), atol=tolerance, rtol=tolerance
     )
+
+
+@pytest.mark.parametrize(
+    "in_axes",
+    [(0, None, None, None, None, 0, 0), (None, 0, 0, None, 0, 0, 0), (0, 0, 0, None, None, 0, 0)],
+)
+def test_attention_mixed_batched_and_shared_inputs_match_reference(in_axes: tuple[int | None, ...]) -> None:
+    queries = jax.random.normal(jax.random.key(1), (2, 3, 4, 16)) * 0.2
+    keys = jax.random.normal(jax.random.key(2), (2, 7, 2, 16)) * 0.2
+    values = jax.random.normal(jax.random.key(3), keys.shape)
+    masks = jnp.broadcast_to(jnp.arange(7) < 5, (2, 3, 7))
+    scales = jnp.asarray([0.1, 0.3])
+    caps = jnp.asarray([0.5, 1.5])
+    inputs: list[Array | None] = []
+    for argument, axis in zip((queries, keys, values, None, masks, scales, caps), in_axes, strict=True):
+        if argument is not None and axis is None:
+            inputs.append(argument[0])
+        else:
+            inputs.append(argument)
+    actual = jax.jit(jax.vmap(pallas_decode_attention, in_axes=in_axes))(*inputs)
+    expected = jax.jit(jax.vmap(xla_attention, in_axes=in_axes))(*inputs)
+    np.testing.assert_allclose(actual, expected, atol=0.0002, rtol=0.0002)
 
 
 @pytest.mark.fast

@@ -1,12 +1,29 @@
+import re
+
 from frozendict import frozendict
 
 from lalamo.model_import.model_configs import HFGPTOssConfig
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
-from lalamo.model_import.model_specs.output_parser_regexes import GPT_OSS_OUTPUT_PARSER_REGEX
+from lalamo.model_import.model_specs.output_parsers import parse_regex_response
 from lalamo.model_import.origins import HuggingFaceOrigin
-from lalamo.models.chat_codec import ReasoningConfig, ReasoningEffort
+from lalamo.models.chat_codec import AssistantMessage, ReasoningConfig, ReasoningEffort, ResponseParser
 
 __all__ = ["GPT_OSS_MODELS"]
+
+
+class GptOssResponseParser(ResponseParser):
+    pattern = re.compile(
+        r"(?s)(?:<\|channel\|>analysis<\|message\|>(?P<chain_of_thought>.*?))?"
+        r"(?:(?:<\|end\|><\|start\|>assistant)?<\|channel\|>final<\|message\|>(?P<response>.*?))?"
+        r"(?:<\|return\|>|<\|end\|>)?\Z"
+    )
+
+    @classmethod
+    def parse_reasoning(cls, response: str, prompt: str) -> AssistantMessage:
+        return parse_regex_response(
+            cls.pattern, response, prompt, ("<|channel|>analysis<|message|>", "<|channel|>final<|message|>")
+        )
+
 
 GPT_OSS_MODELS = [
     LanguageModelSpec(
@@ -17,8 +34,7 @@ GPT_OSS_MODELS = [
         origin=HuggingFaceOrigin(repo="openai/gpt-oss-20b"),
         config_type=HFGPTOssConfig,
         configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
-        output_parser_regex=GPT_OSS_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag="<|end|><|start|>assistant<|channel|>final<|message|>",
+        response_parser=GptOssResponseParser,
         reasoning_config=ReasoningConfig(
             default_reasoning_effort=ReasoningEffort.MEDIUM,
             field_name="reasoning_effort",

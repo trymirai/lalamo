@@ -11,11 +11,11 @@ from tokenizers.models import BPE, WordLevel
 
 from lalamo.data.huggingface_message import HFConversation, load_hf_parquet
 from lalamo.model_import.model_spec import LanguageModelSpec
-from lalamo.model_import.model_specs.output_parser_regexes import (
-    GEMMA4_OUTPUT_PARSER_REGEX,
-    GRANITE_THINKING_OUTPUT_PARSER_REGEX,
-    OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-)
+from lalamo.model_import.model_specs.gemma import Gemma4ResponseParser
+from lalamo.model_import.model_specs.granite import GraniteResponseParser
+from lalamo.model_import.model_specs.lfm2 import LiquidResponseParser, LiquidThinkingResponseParser
+from lalamo.model_import.model_specs.output_parsers import ThinkingResponseParser
+from lalamo.model_import.model_specs.qwen import QwenResponseParser
 from lalamo.model_import.model_specs.reasoning_configs import BOOLEAN_REASONING_DEFAULT_ON_CONFIG
 from lalamo.model_registry import ModelRegistry
 from lalamo.models.chat_codec import (
@@ -24,8 +24,8 @@ from lalamo.models.chat_codec import (
     ChatCodecConfig,
     ReasoningConfig,
     ReasoningEffort,
+    ResponseParser,
     ToolCall,
-    ToolCallFormat,
     ToolSchema,
     UserMessage,
     parse_hf_message,
@@ -35,20 +35,18 @@ from lalamo.models.chat_codec import (
 def _chat_codec(
     *,
     prompt_template: str = "",
-    output_parser_regex: str | None = None,
+    response_parser: type[ResponseParser] | None = None,
     reasoning_config: ReasoningConfig | None = None,
-    tool_call_format: ToolCallFormat | None = None,
 ) -> ChatCodec:
     config = ChatCodecConfig(
         prompt_template=prompt_template,
-        output_parser_regex=output_parser_regex,
+        response_parser=response_parser,
         system_role_name="system",
         user_role_name="user",
         assistant_role_name="assistant",
         eos_token=None,
         bos_token=None,
         reasoning_config=reasoning_config,
-        tool_call_format=tool_call_format,
     )
     return ChatCodecConfig.from_json(config.to_json()).init(
         Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]"))
@@ -189,16 +187,18 @@ def test_message_rejects_invalid_wire_fields(payload: dict) -> None:
 
 
 @pytest.mark.parametrize(
-    ("output_parser_regex", "full_output"),
+    ("response_parser", "full_output"),
     [
-        (OPTIONAL_THINKING_OUTPUT_PARSER_REGEX, "<think>reasoning</think>answer"),
-        (GRANITE_THINKING_OUTPUT_PARSER_REGEX, "<think>reasoning</think><response>answer</response>"),
-        (GEMMA4_OUTPUT_PARSER_REGEX, "<|channel>thought\nreasoning<channel|>answer<turn|>"),
+        (ThinkingResponseParser, "<think>reasoning</think>answer"),
+        (GraniteResponseParser, "<think>reasoning</think><response>answer</response>"),
+        (Gemma4ResponseParser, "<|channel>thought\nreasoning<channel|>answer<turn|>"),
     ],
     ids=["optional-thinking", "granite", "gemma4"],
 )
-def test_generation_is_parsed_at_every_truncation_stage(output_parser_regex: str, full_output: str) -> None:
-    codec = _chat_codec(output_parser_regex=output_parser_regex)
+def test_generation_is_parsed_at_every_truncation_stage(
+    response_parser: type[ResponseParser], full_output: str
+) -> None:
+    codec = _chat_codec(response_parser=response_parser)
     mid_thinking = full_output[: full_output.index("reasoning") + len("reas")]
     mid_response = full_output[: full_output.index("answer") + len("answ")]
 
@@ -208,15 +208,8 @@ def test_generation_is_parsed_at_every_truncation_stage(output_parser_regex: str
     assert codec.parse_response(full_output) == AssistantMessage(chain_of_thought="reasoning", response="answer")
 
 
-def test_optional_thinking_parses_response_without_an_opening_tag() -> None:
-    codec = _chat_codec(output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX)
-
-    expected = AssistantMessage(chain_of_thought="reasoning", response="answer")
-    assert codec.parse_response("reasoning</think>answer") == expected
-
-
 def test_granite_parses_a_response_missing_its_wrapper() -> None:
-    codec = _chat_codec(output_parser_regex=GRANITE_THINKING_OUTPUT_PARSER_REGEX)
+    codec = _chat_codec(response_parser=GraniteResponseParser)
 
     expected = AssistantMessage(chain_of_thought="reasoning", response="answer")
     assert codec.parse_response("<think>reasoning</think>answer") == expected
@@ -225,7 +218,7 @@ def test_granite_parses_a_response_missing_its_wrapper() -> None:
 def _registered_codec(repo: str) -> ChatCodec:
     spec = ModelRegistry.build(allow_third_party_plugins=False).repo_to_model[repo]
     assert isinstance(spec, LanguageModelSpec)
-    return _chat_codec(output_parser_regex=spec.output_parser_regex, tool_call_format=spec.tool_call_format)
+    return _chat_codec(response_parser=spec.response_parser)
 
 
 @pytest.mark.parametrize(
@@ -267,6 +260,13 @@ def test_registered_chat_formats_parse_text(repo: str, full_output: str, reasoni
     ("repo", "prompt", "generated", "reasoning"),
     [
         ("Qwen/Qwen3.8-27B", "<think>\n", "reasoning\n</think>\n\nanswer", "reasoning\n"),
+        (
+            "ibm-granite/granite-3.3-2b-instruct",
+            "<think>",
+            "reasoning</think><response>answer</response>",
+            "reasoning",
+        ),
+        ("google/gemma-4-E2B-it", "<|channel>thought\n", "reasoning<channel|>answer<turn|>", "reasoning"),
         (
             "openai/gpt-oss-20b",
             "<|start|>assistant<|channel|>analysis<|message|>",
@@ -335,64 +335,93 @@ _MUSE_CALL = (
 
 
 @pytest.mark.parametrize(
-    "repo",
+    ("repo", "raw", "reasoning"),
     [
-        "Qwen/Qwen3.5-0.8B",
-        "LiquidAI/LFM2.5-1.2B-Instruct",
-        "LiquidAI/LFM2.5-1.2B-Thinking",
-        "meta-models/Muse-Glimmer-30B",
+        ("Qwen/Qwen3.5-0.8B", "<think>reasoning</think>before" + _QWEN_CALL * 2 + "after", "reasoning"),
+        ("LiquidAI/LFM2.5-1.2B-Instruct", "before" + _LIQUID_CALL * 2 + "after", None),
+        ("LiquidAI/LFM2.5-1.2B-Thinking", "<think>reasoning</think>before" + _LIQUID_CALL * 2 + "after", "reasoning"),
+        (
+            "meta-models/Muse-Glimmer-30B",
+            "to=self<|message|>reasoning<|eom|><|start|>assistant to=user<|message|>before"
+            "<|eom|><|start|>assistant "
+            + _MUSE_CALL
+            + "<|eom|><|start|>assistant "
+            + _MUSE_CALL
+            + "<|eom|><|start|>assistant to=user<|message|>after",
+            "reasoning",
+        ),
     ],
 )
-def test_native_tool_calls_parse(repo: str) -> None:
+def test_native_tool_calls_parse(repo: str, raw: str, reasoning: str | None) -> None:
     codec = _registered_codec(repo)
-    match codec.config.tool_call_format:
-        case ToolCallFormat.QWEN_XML | ToolCallFormat.LIQUID as tool_format:
-            call = _QWEN_CALL if tool_format is ToolCallFormat.QWEN_XML else _LIQUID_CALL
-            raw = "before" + call + call + "after"
-            reasoning = None
-            if codec.config.output_parser_regex is not None:
-                raw = "<think>reasoning</think>" + raw
-                reasoning = "reasoning"
-        case _:
-            turn = "<|eom|><|start|>assistant "
-            raw = (
-                f"to=self<|message|>reasoning{turn}to=user<|message|>before{turn}{_MUSE_CALL}{turn}{_MUSE_CALL}"
-                f"{turn}to=user<|message|>after"
-            )
-            reasoning = "reasoning"
     expected = AssistantMessage(chain_of_thought=reasoning, response="beforeafter", tool_calls=(_CALL, _CALL))
     assert codec.parse_response(raw, tools=_TOOLS) == expected
     assert codec.parse_response(raw).tool_calls == ()
 
 
 @pytest.mark.parametrize(
-    ("tool_format", "raw"),
+    ("response_parser", "raw"),
     [
-        (ToolCallFormat.QWEN_XML, "<tool_call><function=lookup>"),
-        (ToolCallFormat.QWEN_XML, "<tool_call>lookup</tool_call>"),
-        (ToolCallFormat.LIQUID, "<|tool_call_start|>[lookup("),
-        (ToolCallFormat.LIQUID, "<|tool_call_start|>[lookup(text=evil())]<|tool_call_end|>"),
-        (ToolCallFormat.LIQUID, "<|tool_call_start|>[lookup(**data)]<|tool_call_end|>"),
-        (ToolCallFormat.LIQUID, "<|tool_call_start|>[lookup(text='x', text='y')]<|tool_call_end|>"),
+        (QwenResponseParser, "<tool_call><function=lookup>"),
+        (QwenResponseParser, "<tool_call>lookup</tool_call>"),
+        (QwenResponseParser, "<tool_call><function=lookup><parameter=count>2</parameter>junk</function></tool_call>"),
+        (
+            QwenResponseParser,
+            "<tool_call><function=lookup><parameter=count>1</parameter>"
+            "<parameter=count>2</parameter></function></tool_call>",
+        ),
+        (LiquidResponseParser, "<|tool_call_start|>[lookup("),
+        (LiquidResponseParser, "<|tool_call_start|>[lookup(text=evil())]<|tool_call_end|>"),
+        (LiquidResponseParser, "<|tool_call_start|>[lookup(**data)]<|tool_call_end|>"),
+        (LiquidResponseParser, "<|tool_call_start|>[lookup(text='x', text='y')]<|tool_call_end|>"),
     ],
 )
-def test_malformed_tool_calls_remain_text(tool_format: ToolCallFormat, raw: str) -> None:
-    codec = _chat_codec(tool_call_format=tool_format)
+def test_malformed_tool_calls_remain_text(response_parser: type[ResponseParser], raw: str) -> None:
+    codec = _chat_codec(response_parser=response_parser)
     assert codec.parse_response(raw, tools=_TOOLS) == AssistantMessage(response=raw)
 
 
 @pytest.mark.parametrize(
-    ("tool_format", "call"), [(ToolCallFormat.QWEN_XML, _QWEN_CALL), (ToolCallFormat.LIQUID, _LIQUID_CALL)]
+    ("response_parser", "call"), [(QwenResponseParser, _QWEN_CALL), (LiquidThinkingResponseParser, _LIQUID_CALL)]
 )
-def test_tool_examples_inside_reasoning_are_never_called(tool_format: ToolCallFormat, call: str) -> None:
-    codec = _chat_codec(output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX, tool_call_format=tool_format)
+def test_tool_examples_inside_reasoning_are_never_called(response_parser: type[ResponseParser], call: str) -> None:
+    codec = _chat_codec(response_parser=response_parser)
     assert codec.parse_response("<think>" + call + "</think>answer", tools=_TOOLS) == AssistantMessage(
         chain_of_thought=call, response="answer"
     )
 
 
+def test_prompt_closed_reasoning_preserves_text_and_tool_calls() -> None:
+    codec = _registered_codec("Qwen/Qwen3.5-0.8B")
+    prompt = "<think>\n\n</think>\n\n"
+    assert codec.parse_response("Use </think> here.", prompt=prompt) == AssistantMessage(response="Use </think> here.")
+    assert codec.parse_response(_QWEN_CALL + "Use </think> here.", prompt=prompt, tools=_TOOLS) == AssistantMessage(
+        response="Use </think> here.", tool_calls=(_CALL,)
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[]",
+        "[lookup.text(count=1)]",
+        "[lookup(count={1, 2})]",
+        "[lookup(text=b'x')]",
+        "[lookup(count=1j)]",
+        "[lookup(data=(1, 2))]",
+        "[lookup(data={1: 'x'})]",
+        "[lookup(data={[]: 'x'})]",
+        "[lookup(count=1e999)]",
+    ],
+)
+def test_liquid_non_json_calls_remain_text(body: str) -> None:
+    codec = _registered_codec("LiquidAI/LFM2.5-1.2B-Instruct")
+    raw = "<|tool_call_start|>" + body + "<|tool_call_end|>"
+    assert codec.parse_response(raw, tools=_TOOLS) == AssistantMessage(response=raw)
+
+
 def test_liquid_calls_accept_hyphenated_openai_names() -> None:
-    codec = _chat_codec(tool_call_format=ToolCallFormat.LIQUID)
+    codec = _chat_codec(response_parser=LiquidResponseParser)
     tools: tuple[ToolSchema, ...] = ({"type": "function", "function": {"name": "get-weather"}},)
     message = codec.parse_response("<|tool_call_start|>[get-weather(city='Paris')]<|tool_call_end|>", tools=tools)
     assert message.tool_calls == (
@@ -401,7 +430,7 @@ def test_liquid_calls_accept_hyphenated_openai_names() -> None:
 
 
 def test_liquid_hyphenated_names_are_only_replaced_in_call_positions() -> None:
-    codec = _chat_codec(tool_call_format=ToolCallFormat.LIQUID)
+    codec = _chat_codec(response_parser=LiquidResponseParser)
     tools: tuple[ToolSchema, ...] = ({"type": "function", "function": {"name": "get-weather"}},)
     raw = """<|tool_call_start|>[get-weather(text="x, get-weather(")]<|tool_call_end|>"""
     (call,) = codec.parse_response(raw, tools=tools).tool_calls

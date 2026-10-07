@@ -173,24 +173,20 @@ def _import_chat_codec(
             eos_token = token_ids_to_text(tokenizer, eos_token_id)
 
     system_prompt_text = _read_text_spec(origin, model_spec.configs.system_prompt, progress_callback)
-    end_of_thinking_tag = model_spec.end_of_thinking_tag if isinstance(model_spec, LanguageModelSpec) else None
     reasoning_config = model_spec.reasoning_config if isinstance(model_spec, LanguageModelSpec) else None
-    tool_call_format = model_spec.tool_call_format if isinstance(model_spec, LanguageModelSpec) else None
 
     return (
         tokenizer,
         ChatCodecConfig(
             prompt_template=prompt_template,
-            output_parser_regex=model_spec.output_parser_regex,
+            response_parser=model_spec.response_parser if isinstance(model_spec, LanguageModelSpec) else None,
             system_role_name=model_spec.system_role_name,
             user_role_name=model_spec.user_role_name,
             assistant_role_name=model_spec.assistant_role_name,
             bos_token=bos_token,
             eos_token=eos_token,
-            end_of_thinking_tag=end_of_thinking_tag,
             default_system_prompt=system_prompt_text,
             reasoning_config=reasoning_config,
-            tool_call_format=tool_call_format,
         ),
     )
 
