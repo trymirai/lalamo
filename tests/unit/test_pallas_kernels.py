@@ -1,14 +1,17 @@
+import warnings
 from typing import cast
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from lalamo.kernels.attention import pallas_decode_attention
 from lalamo.kernels.deltanet import deltanet_recurrent_scan
+from lalamo.kernels.deltanet.xla import xla_recurrent_scan
 from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.kernels.mosaic import supports_mosaic_gpu
-from lalamo.utils.sharding import ShardingConfig
+from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 from tests.common import assert_close, gpu_only
 
 pytestmark = [gpu_only, pytest.mark.slow]
@@ -103,52 +106,109 @@ def test_decode_attention_matches_reference(
     assert_close(result=result, reference=reference, atol=2e-2, rtol=3e-2)
 
 
-def test_deltanet_single_token_update_matches_recurrence_for_active_and_inactive_rows() -> None:
+@pytest.mark.parametrize(
+    ("batch_size", "num_tokens", "num_heads"),
+    [(1, 1, 16), (1, 8, 16), (3, 24, 32), (8, 31, 48), (128, 8, 16), (512, 1, 48)],
+)
+@pytest.mark.parametrize(
+    "partitioned_axis",
+    [None, LogicalAxis.BATCH, LogicalAxis.MATRIX],
+    ids=["replicated", "data-parallel", "head-parallel"],
+)
+def test_deltanet_recurrence_matches_cpu_reference(
+    batch_size: int,
+    num_tokens: int,
+    num_heads: int,
+    partitioned_axis: LogicalAxis | None,
+) -> None:
     sharding_config = ShardingConfig.replicated()
+    if partitioned_axis is not None:
+        devices = jax.devices()
+        partitioned_size = batch_size
+        if partitioned_axis is LogicalAxis.MATRIX:
+            partitioned_size = num_heads
+        device_count = max(count for count in range(1, len(devices) + 1) if partitioned_size % count == 0)
+        if partitioned_axis is LogicalAxis.BATCH:
+            sharding_config = ShardingConfig.data_parallel(devices[:device_count])
+        else:
+            sharding_config = ShardingConfig.tensor_parallel(devices[:device_count])
     if not supports_mosaic_gpu(sharding_config.mesh, minimum_compute_capability=9):
         pytest.skip("requires Hopper Pallas support")
-    replicated_tensor_sharding = sharding_config.make_sharding((None, None, None, None))
-    replicated_sequence_sharding = sharding_config.make_sharding((None, None, None))
-    queries = jax.device_put(
-        jax.random.normal(jax.random.key(11), (8, 1, 2, 128), dtype=jnp.float32) * 0.1,
-        replicated_tensor_sharding,
+    batch_axis = sharding_config.resolve_axis(LogicalAxis.BATCH)
+    head_axis = sharding_config.resolve_axis(LogicalAxis.MATRIX)
+    shapes = (
+        (batch_size, num_tokens, num_heads, 128),
+        (batch_size, num_tokens, num_heads, 128),
+        (batch_size, num_tokens, num_heads, 128),
+        (batch_size, num_tokens, num_heads),
+        (batch_size, num_tokens, num_heads),
+        (batch_size, num_heads, 128, 128),
     )
-    keys = jax.device_put(
-        jax.random.normal(jax.random.key(12), (8, 1, 2, 128), dtype=jnp.float32) * 0.1,
-        replicated_tensor_sharding,
+    shardings = (
+        ((batch_axis, None, head_axis, None),) * 3
+        + ((batch_axis, None, head_axis),) * 2
+        + ((batch_axis, head_axis, None, None),)
     )
-    values = jax.device_put(
-        jax.random.normal(jax.random.key(13), (8, 1, 2, 128), dtype=jnp.float32) * 0.1,
-        replicated_tensor_sharding,
+    arguments = tuple(
+        jax.device_put(
+            jax.random.normal(jax.random.key(index), shape, dtype=jnp.float32) * 0.1,
+            sharding_config.make_sharding(sharding),
+        )
+        for index, (shape, sharding) in enumerate(zip(shapes, shardings, strict=True))
     )
-    decay_factor = jax.device_put(
-        -jax.nn.softplus(jax.random.normal(jax.random.key(14), (8, 1, 2), dtype=jnp.float32)),
-        replicated_sequence_sharding,
+    queries, keys, values, decay, beta, initial_state = arguments
+    decay = -jax.nn.softplus(decay)
+    beta = jax.nn.sigmoid(beta)
+    lengths = jnp.arange(batch_size, dtype=jnp.int32) % (num_tokens + 2) - 1
+    lengths = lengths.at[-1].set(num_tokens)
+    arguments = (
+        queries,
+        keys,
+        values,
+        decay,
+        beta,
+        initial_state,
+        jax.device_put(lengths, sharding_config.make_sharding((batch_axis,))),
     )
-    beta = jax.device_put(
-        jax.nn.sigmoid(jax.random.normal(jax.random.key(15), (8, 1, 2), dtype=jnp.float32)),
-        replicated_sequence_sharding,
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="Pallas DeltaNet recurrence .*falling back to XLA recurrence")
+        result = jax.jit(jax.vmap(deltanet_recurrent_scan))(*arguments)
+    cpu = jax.devices("cpu")[0]
+    # Host materialization removes the GPU mesh from JAX's CPU oracle abstract types.
+    reference = jax.jit(jax.vmap(xla_recurrent_scan))(
+        *(jax.device_put(np.asarray(argument), cpu) for argument in arguments),
     )
-    initial_state = jax.device_put(
-        jax.random.normal(jax.random.key(16), (8, 2, 128, 128), dtype=jnp.float32) * 0.05,
-        replicated_tensor_sharding,
-    )
-    lengths = jnp.arange(8, dtype=jnp.int32) % 2
-    lengths = jax.device_put(lengths, sharding_config.make_sharding((None,)))
+    for actual, expected in zip(result, reference, strict=True):
+        np.testing.assert_allclose(actual, expected, atol=2e-6, rtol=2e-5)
+    inactive = np.asarray(lengths) <= 0
+    np.testing.assert_array_equal(np.asarray(result[1])[inactive], np.asarray(initial_state)[inactive])
 
-    update = jax.jit(jax.vmap(deltanet_recurrent_scan))
-    outputs, final_state = update(queries, keys, values, decay_factor, beta, initial_state, lengths)
 
-    decay = jnp.exp(decay_factor[:, 0, :, None, None])
-    decayed_state = initial_state * decay
-    value_delta = values[:, 0] - jnp.sum(decayed_state * keys[:, 0, :, None, :], axis=-1)
-    value_delta = value_delta * beta[:, 0, :, None]
-    updated_state = decayed_state + value_delta[..., None] * keys[:, 0, :, None, :]
-    reference_state = jnp.where(lengths[:, None, None, None] > 0, updated_state, initial_state)
-    reference_outputs = jnp.einsum("bhk,bhvk->bhv", queries[:, 0], updated_state)[:, None]
-
-    assert_close(result=outputs, reference=reference_outputs, atol=5e-2, rtol=1e-1)
-    assert_close(result=final_state, reference=reference_state, atol=1e-3, rtol=3e-2)
+@pytest.mark.parametrize("num_tokens", [1, 8, 24, 31])
+def test_deltanet_unbatched_and_shared_state_match_cpu_reference(num_tokens: int) -> None:
+    sharding = ShardingConfig.replicated()
+    if not supports_mosaic_gpu(sharding.mesh, minimum_compute_capability=9):
+        pytest.skip("requires Hopper Pallas support")
+    shapes = ((num_tokens, 16, 128),) * 3 + ((num_tokens, 16),) * 2 + ((16, 128, 128),)
+    arguments = tuple(
+        jax.random.normal(jax.random.key(index), shape, dtype=jnp.float32) * 0.1 for index, shape in enumerate(shapes)
+    )
+    queries, keys, values, decay, beta, state = arguments
+    arguments = (queries, keys, values, -jax.nn.softplus(decay), jax.nn.sigmoid(beta), state, jnp.asarray(num_tokens))
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="Pallas DeltaNet recurrence .*falling back to XLA recurrence")
+        result = jax.jit(deltanet_recurrent_scan)(*arguments)
+        shared = jax.jit(jax.vmap(deltanet_recurrent_scan, in_axes=(0, 0, 0, None, None, None, None)))(
+            jnp.stack([queries] * 3),
+            jnp.stack([keys] * 3),
+            jnp.stack([values] * 3),
+            *arguments[3:],
+        )
+    cpu = jax.devices("cpu")[0]
+    reference = jax.jit(xla_recurrent_scan)(*(jax.device_put(argument, cpu) for argument in arguments))
+    for actual, batched, expected in zip(result, shared, reference, strict=True):
+        np.testing.assert_allclose(actual, expected, atol=2e-6, rtol=2e-5)
+        np.testing.assert_allclose(batched, np.stack([np.asarray(expected)] * 3), atol=2e-6, rtol=2e-5)
 
 
 def test_pallas_hadamard_matches_cpu_under_jit_and_vmap() -> None:

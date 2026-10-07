@@ -1,315 +1,375 @@
 import asyncio
-import gc
 import json
-import os
-import random
+import secrets
+import threading
 import time
 import traceback
-import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
-from functools import cached_property
-from pathlib import Path
-from typing import Annotated, ClassVar, Literal, Self
+from enum import StrEnum
+from typing import Annotated, Any, Literal
 
-import cattrs
-import jax
-import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-from jax import numpy as jnp
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, ConfigDict, Field, Json, ValidationError
+from tokenizers.decoders import DecodeStream
 
-from lalamo.data.huggingface_message import HFConversation
-from lalamo.inference.batch_scheduler import _PROBE_CACHE, BatchSchedulerConfig, ContinuousBatchScheduler
-from lalamo.model_import.common import import_model
-from lalamo.model_import.model_spec import LanguageModelSpec
-from lalamo.model_registry import ModelRegistry
+from lalamo.inference.continuous_batching import (
+    ContinuousBatchingConfig,
+    ContinuousBatchingEngine,
+    FinishReason,
+    SequenceFinished,
+    TokenEvent,
+)
 from lalamo.models import GenerationConfig, LanguageModel
-from lalamo.models.chat_codec import ReasoningEffort
-from lalamo.module import Keychain
-from lalamo.utils.sharding import ShardingConfig
+from lalamo.models.chat_codec import (
+    AssistantMessage,
+    FunctionCall,
+    Message,
+    ReasoningConfig,
+    ReasoningEffort,
+    SystemMessage,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+)
+from lalamo.utils.json import JSON
 
-BatchStatus = Literal["in_progress", "completed", "failed"]
+__all__ = ["create_app"]
 
-
-@dataclass(frozen=True)
-class RequestBody:
-    sequence_id: str
-    messages: list[dict]
-    model: str
-    tools: list[dict] | None = None
-    max_completion_tokens: int = 8192
-
-    generation_config: GenerationConfig | None = None
-    dtype: Literal["bfloat16", "float32"] | None = None
-    seed: int | None = None
-    reasoning_effort: ReasoningEffort | None = None
-
-    @cached_property
-    def conversation(self) -> HFConversation:
-        return HFConversation.from_dict({"messages": self.messages, "tools": self.tools or None})
-
-    def shares_batch_params(self, other: Self, default_reasoning_effort: ReasoningEffort | None) -> bool:
-        self_reasoning_effort = self.reasoning_effort or default_reasoning_effort
-        other_reasoning_effort = other.reasoning_effort or default_reasoning_effort
-
-        return (
-            self.model == other.model
-            and self.max_completion_tokens == other.max_completion_tokens
-            and self.generation_config == other.generation_config
-            and self.dtype == other.dtype
-            and (self.seed is None) == (other.seed is None)
-            and self_reasoning_effort is other_reasoning_effort
-        )
+type OpenAIName = Annotated[str, Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")]
+type Penalty = Annotated[float, Field(ge=-2, le=2)]
 
 
-@dataclass(frozen=True)
-class ResponseBody:
-    sequence_id: str
-    chain_of_thought: str | None
-    response: str
+class ChatRole(StrEnum):
+    SYSTEM = "system"
+    DEVELOPER = "developer"
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL = "tool"
 
 
-@dataclass(frozen=True)
-class Batch:
-    _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
+class FunctionCallParam(BaseModel):
+    name: OpenAIName
+    arguments: Json[dict[str, JSON]]
 
+
+class ToolCallParam(BaseModel):
     id: str
-    total: int
-    completed: int = 0
-    results: tuple[ResponseBody, ...] = ()
-    status: BatchStatus = "in_progress"
-    error: str | None = None
+    type: Literal["function"] = "function"
+    function: FunctionCallParam
 
-    @classmethod
-    def init(cls, total: int) -> Self:
-        while True:
-            batch_id = f"batch_{uuid.uuid4().hex[:6]}"
-            if cls.from_id(batch_id) is None:
-                return cls(id=batch_id, total=total)
 
-    @classmethod
-    def from_id(cls, batch_id: str) -> Self | None:
-        path = app.state.cache_dir / f"{Path(batch_id).name}.json"
-        if not path.exists():
+class FunctionToolParam(BaseModel):
+    name: OpenAIName
+    description: str | None = None
+    parameters: dict[str, JSON] | None = None
+    # Accepted for compatibility; generation is not constrained to the schema.
+    strict: bool | None = None
+
+
+class ToolParam(BaseModel):
+    type: Literal["function"]
+    function: FunctionToolParam
+
+
+class TextPart(BaseModel):
+    type: Literal["text"]
+    text: str
+
+
+class ChatMessageParam(BaseModel):
+    role: ChatRole
+    content: str | list[TextPart] | None = None
+    name: str | None = None
+    reasoning_content: str | None = None
+    tool_calls: list[ToolCallParam] | None = None
+    tool_call_id: str | None = None
+
+    def to_message(self) -> Message:
+        content = self.content if isinstance(self.content, str) else "".join(part.text for part in self.content or ())
+        match self.role:
+            case ChatRole.SYSTEM | ChatRole.DEVELOPER:
+                return SystemMessage(content)
+            case ChatRole.USER:
+                return UserMessage(content)
+            case ChatRole.ASSISTANT:
+                tool_calls: tuple[ToolCall, ...] = tuple(
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": FunctionCall(name=call.function.name, arguments=call.function.arguments),
+                    }
+                    for call in self.tool_calls or ()
+                )
+                return AssistantMessage(self.reasoning_content, content, tool_calls)
+            case ChatRole.TOOL:
+                return ToolMessage(content, self.name, self.tool_call_id)
+
+
+class ChatTemplateKwargs(BaseModel):
+    enable_thinking: bool | None = None
+
+
+class ChatCompletionRequest(BaseModel):
+    # Unsupported OpenAI features are rejected instead of silently ignored.
+    model_config = ConfigDict(extra="forbid")
+
+    model: str
+    messages: Annotated[list[ChatMessageParam], Field(min_length=1)]
+    max_tokens: Annotated[int, Field(gt=0)] | None = None
+    max_completion_tokens: Annotated[int, Field(gt=0)] | None = None
+    temperature: Annotated[float, Field(ge=0, le=2)] | None = None
+    top_p: Annotated[float, Field(gt=0, le=1)] | None = None
+    top_k: Annotated[int, Field(ge=0)] | None = None
+    min_p: Annotated[float, Field(ge=0, le=1)] | None = None
+    repetition_penalty: Annotated[float, Field(gt=0)] | None = None
+    presence_penalty: Penalty | None = None
+    frequency_penalty: Penalty | None = None
+    seed: int | None = None
+    stop: Annotated[str, Field(min_length=1)] | list[Annotated[str, Field(min_length=1)]] | None = None
+    stream: Literal[False] | None = None
+    tools: list[ToolParam] | None = None
+    tool_choice: Literal["auto", "none"] | None = None
+    parallel_tool_calls: bool | None = None
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] | None = None
+    chat_template_kwargs: ChatTemplateKwargs | None = None
+    logprobs: bool | None = None
+    top_logprobs: Annotated[int, Field(ge=0, le=20)] | None = None
+    n: Literal[1] | None = None
+    user: str | None = None
+
+    def effective_reasoning_effort(self, config: ReasoningConfig | None) -> ReasoningEffort | None:
+        if self.reasoning_effort == "none":
+            return ReasoningEffort.NO_REASONING
+        if self.reasoning_effort is not None:
+            return ReasoningEffort(self.reasoning_effort)
+        enable_thinking = None if self.chat_template_kwargs is None else self.chat_template_kwargs.enable_thinking
+        if enable_thinking is None or config is None:
             return None
-        return cls._converter.structure(json.loads(path.read_text()), cls)
+        if not enable_thinking:
+            return ReasoningEffort.NO_REASONING
+        if config.default_reasoning_effort is ReasoningEffort.NO_REASONING:
+            return ReasoningEffort.MEDIUM
+        return None
 
-    def save(self) -> None:
-        path = app.state.cache_dir / f"{self.id}.json"
-        tmp_path = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+
+def _error(message: str, status: int, param: str | None = None, code: str | None = None) -> JSONResponse:
+    error_type = "server_error" if status >= 500 else "invalid_request_error"
+    return JSONResponse({"error": {"message": message, "type": error_type, "param": param, "code": code}}, status)
+
+
+def create_app(model: LanguageModel, model_name: str, config: ContinuousBatchingConfig) -> FastAPI:
+    engine = ContinuousBatchingEngine(model, config)
+    codec = model.token_codec
+    stop_event = threading.Event()
+    engine_errors: list[BaseException] = []
+
+    def run_engine() -> None:
         try:
-            tmp_path.write_text(json.dumps(self._converter.unstructure(self)))
-            tmp_path.replace(path)
+            while not stop_event.is_set():
+                if not engine.step():
+                    stop_event.wait(0.001)
+        except Exception as error:  # noqa: BLE001
+            engine_errors.append(error)
+            traceback.print_exception(error)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        stop_event.clear()
+        worker = threading.Thread(target=run_engine, name="lalamo-continuous", daemon=True)
+        worker.start()
+        try:
+            yield
         finally:
-            tmp_path.unlink(missing_ok=True)
+            stop_event.set()
+            await asyncio.to_thread(worker.join)
 
+    api = FastAPI(lifespan=lifespan)
 
-gpu_lock = asyncio.Lock()
-creation_lock = asyncio.Lock()
+    @api.exception_handler(Exception)
+    async def unhandled_exception(_request: Request, error: Exception) -> JSONResponse:
+        traceback.print_exception(error)
+        return _error("Internal server error.", 500)
 
+    model_object = {"id": model_name, "object": "model", "created": 0, "owned_by": "lalamo"}
 
-# Resident model across /batches requests: pay the safetensors reload + jit warmup once, not per request.
-_resident_model: tuple[tuple[str, str | None], LanguageModel] | None = None
+    @api.get("/health")
+    @api.get("/v1/health")
+    async def health() -> Response:
+        if engine_errors:
+            return _error("Continuous inference engine failed.", 503)
+        return JSONResponse({"status": "ok"})
 
+    @api.get("/v1/models")
+    async def list_models() -> dict[str, object]:
+        return {"object": "list", "data": [model_object]}
 
-def _load_resident_model(model_path: str, dtype: str | None) -> LanguageModel:
-    global _resident_model  # noqa: PLW0603
+    @api.get("/v1/models/{requested_model:path}")
+    async def retrieve_model(requested_model: str) -> Response:
+        if requested_model == model_name:
+            return JSONResponse(model_object)
+        return _error(f"Model {requested_model!r} does not exist.", 404, "model", "model_not_found")
 
-    cache_key = (model_path, dtype)
-    if _resident_model is not None:
-        cached_key, cached_model = _resident_model
-        if cached_key == cache_key:
-            return cached_model
+    @api.post("/v1/chat/completions")
+    async def complete(request: Request) -> Response:
+        if engine_errors:
+            raise RuntimeError("Continuous inference engine failed.") from engine_errors[0]
+        try:
+            body = ChatCompletionRequest.model_validate_json(await request.body())
+        except ValidationError as error:
+            first_error, *_ = error.errors()
+            return _error(first_error["msg"], 400, ".".join(map(str, first_error["loc"])) or None)
+        if body.model != model_name:
+            return _error(f"Model {body.model!r} does not exist.", 404, "model", "model_not_found")
 
-        # Free the old model's device buffers before importing the new one (avoid two full models in VRAM).
-        _resident_model = None
-        del cached_model
-        _PROBE_CACHE.clear()  # its entries are id(model)-keyed and must not outlive this model
-        gc.collect()
-
-    model = import_model(
-        model_path,
-        sharding_config=app.state.sharding_config,
-        dtype=jnp.dtype(dtype) if dtype is not None else None,
-    ).model
-    if not isinstance(model, LanguageModel):
-        raise TypeError(f"Expected a language model, got {type(model).__name__}")
-
-    _resident_model = (cache_key, model)
-    return model
-
-
-def active_batch_ids() -> set[str]:
-    if not hasattr(app.state, "active_batch_ids"):
-        app.state.active_batch_ids = set()
-    return app.state.active_batch_ids
-
-
-async def sweep_cache() -> None:
-    while True:
-        cutoff = time.time() - 96 * 3600
-        for path in app.state.cache_dir.glob("*.json"):
-            if path.stat().st_mtime < cutoff:
-                path.unlink(missing_ok=True)
-        await asyncio.sleep(3600)
-
-
-@asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    workers = int(os.environ.get("WEB_CONCURRENCY", "1"))
-    if workers > 1:
-        raise RuntimeError("This app must run with a single worker.")
-    app.state.cache_dir.mkdir(parents=True, exist_ok=True)
-    app.state.tasks = set()
-    app.state.active_batch_ids = set()
-    sweeper = asyncio.create_task(sweep_cache())
-    yield
-    sweeper.cancel()
-
-
-app = FastAPI(lifespan=lifespan)
-
-
-@app.exception_handler(Exception)
-async def unhandled_exception(_request: Request, exc: Exception) -> JSONResponse:
-    traceback.print_exception(exc)
-    return JSONResponse(status_code=500, content={"error": "internal server error"})
-
-
-def validate_requests(
-    requests: list[RequestBody],
-) -> list[RequestBody]:
-    if not requests:
-        raise HTTPException(400, "Empty request batch.")
-
-    reference, *rest = requests
-    model_spec = ModelRegistry.build().repo_to_model.get(reference.model)
-    default_reasoning_effort = None
-    if isinstance(model_spec, LanguageModelSpec) and model_spec.reasoning_config is not None:
-        default_reasoning_effort = model_spec.reasoning_config.default_reasoning_effort
-    for request in rest:
-        if not reference.shares_batch_params(request, default_reasoning_effort):
-            raise HTTPException(
+        tools = None
+        if body.tools and body.tool_choice != "none":
+            if codec.config.response_parser is None or codec.config.response_parser.tool_call_tags is None:
+                return _error("This model does not support tool calling.", 400, "tools")
+            tools = [tool.model_dump(exclude_none=True) for tool in body.tools]
+        try:
+            prompt = codec.render_request(
+                [message.to_message() for message in body.messages],
+                tools=tools,
+                reasoning_effort=body.effective_reasoning_effort(codec.config.reasoning_config),
+            )
+        except (TypeError, ValueError) as error:
+            return _error(str(error), 400, "messages")
+        prompt_token_ids = codec.encode_text(prompt)
+        # Like llama.cpp, the requested output budget is clamped to the room left after the prompt.
+        remaining_context = engine.context_limit - len(prompt_token_ids)
+        max_tokens = min(body.max_completion_tokens or body.max_tokens or remaining_context, remaining_context)
+        if max_tokens < 1:
+            return _error(
+                f"This model's maximum context length is {engine.context_limit} tokens. "
+                f"Your messages resulted in {len(prompt_token_ids)} tokens.",
                 400,
-                "All requests in a batch must specify identical model, sampling params and "
-                f"token limits, got incompatible {reference} and {request}.",
+                "messages",
+                "context_length_exceeded",
             )
 
-    try:
-        for request in requests:
-            _ = request.conversation
-    except Exception as error:
-        raise HTTPException(422, traceback.format_exc()) from error
-
-    sequence_ids = [request.sequence_id for request in requests]
-    if len(set(sequence_ids)) != len(sequence_ids):
-        raise HTTPException(400, "All requests in a batch must specify distinct ids, but found duplicates.")
-
-    return requests
-
-
-def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
-    reference, *_ = requests
-
-    model = _load_resident_model(reference.model, reference.dtype)
-
-    if reference.seed is not None:
-        batch_key = jax.random.key(0)
-        keys = jnp.stack([jax.random.fold_in(batch_key, jnp.uint32(request.seed)) for request in requests])
-    else:
-        batch_key, split_key = jax.random.split(jax.random.key(random.getrandbits(32)))
-        keys = jax.random.split(split_key, len(requests))
-    keychain = Keychain(vmapped_keys=keys, batch_key=batch_key, sharding_config=model.sharding_config)
-
-    sequence_ids = [request.sequence_id for request in requests]
-    batch_scheduler = ContinuousBatchScheduler(model=model)
-
-    for reply_idx, reply in batch_scheduler.reply_many(
-        [request.conversation for request in requests],
-        generation_config=reference.generation_config,
-        batch_scheduler_config=BatchSchedulerConfig(
-            max_output_length=reference.max_completion_tokens,
-            batch_size=app.state.batch_size,
-        ),
-        reasoning_effort=reference.reasoning_effort,
-        keychain=keychain,
-        vram_bytes=app.state.vram_bytes,
-    ):
-        yield ResponseBody(
-            sequence_id=sequence_ids[reply_idx],
-            chain_of_thought=reply.chain_of_thought,
-            response=reply.response,
+        generation_config = model.config.generation_config.override_with(
+            GenerationConfig(
+                temperature=body.temperature,
+                top_k=body.top_k,
+                top_p=body.top_p,
+                min_p=body.min_p,
+                repetition_penalty=body.repetition_penalty,
+                presence_penalty=body.presence_penalty,
+                frequency_penalty=body.frequency_penalty,
+            )
+        )
+        stop_strings = [body.stop] if isinstance(body.stop, str) else body.stop or []
+        loop = asyncio.get_running_loop()
+        events: asyncio.Queue[Sequence[TokenEvent]] = asyncio.Queue()
+        cancelled = engine.submit(
+            tuple(prompt_token_ids),
+            max_tokens,
+            generation_config,
+            secrets.randbits(32) if body.seed is None else body.seed,
+            return_logprobs=bool(body.logprobs),
+            on_events=lambda batch: loop.call_soon_threadsafe(events.put_nowait, batch),
         )
 
+        def logprob(token_id: int, value: float) -> dict[str, Any]:
+            token_bytes = codec.decode_token_bytes(token_id)
+            return {"token": token_bytes.decode(errors="replace"), "bytes": list(token_bytes), "logprob": value}
 
-async def execute_batch(batch: Batch, requests: list[RequestBody]) -> None:
-    collected: list[ResponseBody] = []
+        generated_token_ids: list[int] = []
+        content_logprobs: list[dict[str, Any]] = []
+        stop_decoder = DecodeStream() if stop_strings else None
+        decoded_text = ""
+        completion_tokens = 0
+        finish_reason = None
+        try:
+            while not await request.is_disconnected():
+                if engine_errors:
+                    raise RuntimeError("Continuous inference engine failed.") from engine_errors[0]
+                try:
+                    batch = await asyncio.wait_for(events.get(), 1.0)
+                except TimeoutError:
+                    continue
+                for event in batch:
+                    if isinstance(event, SequenceFinished):
+                        finish_reason, completion_tokens = event
+                        break
+                    generated_token_ids.append(event.token_id)
+                    completion_tokens += 1
+                    if event.logprobs is not None:
+                        count = body.top_logprobs or 0
+                        top_logprobs = [
+                            logprob(token_id, value)
+                            for token_id, value in zip(
+                                event.logprobs.top_token_ids[:count], event.logprobs.top_logprobs[:count], strict=True
+                            )
+                        ]
+                        content_logprobs.append(
+                            logprob(event.token_id, event.logprobs.logprob) | {"top_logprobs": top_logprobs}
+                        )
+                    if stop_decoder is not None:
+                        decoded_text += stop_decoder.step(codec.tokenizer, event.token_id) or ""
+                        if any(stop in decoded_text for stop in stop_strings):
+                            finish_reason = FinishReason.STOP
+                            break
+                if finish_reason is not None:
+                    break
+        finally:
+            cancelled.set()
 
-    def run_generate_replies_with_stats() -> None:
-        for response in generate_replies(requests):
-            collected.append(response)
-            replace(batch, completed=len(collected)).save()
+        if finish_reason is None:
+            return Response(status_code=499)
 
-    try:
-        async with gpu_lock:
-            await asyncio.to_thread(run_generate_replies_with_stats)
-        batch = replace(batch, results=tuple(collected), completed=len(collected), status="completed")
-    except Exception as exc:  # noqa: BLE001
-        batch = replace(batch, results=tuple(collected), completed=len(collected), status="failed", error=str(exc))
-        traceback.print_exception(exc)
-    finally:
-        if batch.status == "in_progress":
-            batch = replace(
-                batch, results=tuple(collected), completed=len(collected), status="failed", error="interrupted"
-            )
-        batch.save()
+        text = codec.decode_tokens(generated_token_ids)
+        stop_positions = [position for stop in stop_strings if (position := text.find(stop)) >= 0]
+        if stop_positions:
+            text = text[: min(stop_positions)]
+            finish_reason = FinishReason.STOP
+        decoded_message = codec.parse_response(text, prompt=prompt, tools=tools or ())
+        tool_calls = decoded_message.tool_calls
+        if body.parallel_tool_calls is False:
+            tool_calls = tool_calls[:1]
+        if tool_calls and finish_reason is FinishReason.STOP and not stop_positions:
+            finish_reason = FinishReason.TOOL_CALLS
+        openai_tool_calls = [
+            {
+                "id": f"call_{secrets.token_hex(12)}",
+                "type": "function",
+                "function": {
+                    "name": call["function"]["name"],
+                    "arguments": json.dumps(call["function"]["arguments"], ensure_ascii=False),
+                },
+            }
+            for call in tool_calls
+        ]
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": decoded_message.response or (None if openai_tool_calls else ""),
+        }
+        if decoded_message.chain_of_thought:
+            message["reasoning_content"] = decoded_message.chain_of_thought
+        if openai_tool_calls:
+            message["tool_calls"] = openai_tool_calls
+        return JSONResponse(
+            {
+                "id": f"chatcmpl-{secrets.token_hex(16)}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": model_name,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": message,
+                        "finish_reason": finish_reason,
+                        "logprobs": {"content": content_logprobs} if body.logprobs else None,
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": len(prompt_token_ids),
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": len(prompt_token_ids) + completion_tokens,
+                },
+            }
+        )
 
-
-def finish_batch_task(task: asyncio.Task, batch_id: str) -> None:
-    active_batch_ids().discard(batch_id)
-    app.state.tasks.discard(task)
-
-
-@app.post("/batches", status_code=202)
-async def create_batch(
-    requests: Annotated[list[RequestBody], Depends(validate_requests)],
-) -> Batch:
-    async with creation_lock:
-        active_batches = active_batch_ids()
-        if active_batches:
-            batch_id = sorted(active_batches)[0]
-            raise HTTPException(409, f"{batch_id} is in progress; starting new batches is not allowed.")
-
-        batch = Batch.init(total=len(requests))
-        batch.save()
-        active_batches.add(batch.id)
-        task = asyncio.create_task(execute_batch(batch, requests))
-        app.state.tasks.add(task)
-        task.add_done_callback(lambda completed_task: finish_batch_task(completed_task, batch.id))
-    return batch
-
-
-@app.get("/batches/{batch_id}")
-async def get_batch(batch_id: str) -> Batch:
-    if (batch := Batch.from_id(batch_id)) is not None:
-        if batch.status == "in_progress":
-            return replace(batch, results=())
-        return batch
-    raise HTTPException(404, "batch not found")
-
-
-def start_server(
-    host: str,
-    port: int,
-    vram_bytes: int | None,
-    cache_dir: Path,
-    sharding_config: ShardingConfig,
-    batch_size: int | None = None,
-) -> None:
-    app.state.vram_bytes = vram_bytes
-    app.state.batch_size = batch_size
-    app.state.cache_dir = cache_dir
-    app.state.sharding_config = sharding_config
-    uvicorn.run(app, host=host, port=port)
+    return api

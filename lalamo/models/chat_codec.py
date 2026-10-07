@@ -3,14 +3,13 @@ import itertools
 import json
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from functools import cached_property, partial
-from re import Pattern
-from typing import Literal, NotRequired, TypedDict, cast, get_origin
+from importlib import import_module
+from typing import ClassVar, Literal, NoReturn, NotRequired, Self, TypedDict, cast, get_origin
 
-import cattrs
 from cattrs.cols import homogenous_tuple_structure_factory, mapping_structure_factory
 from cattrs.dispatch import StructureHook
 from cattrs.gen import make_dict_structure_fn, make_dict_unstructure_fn, override
@@ -22,14 +21,17 @@ from tokenizers import Tokenizer
 
 from lalamo.token_codec import TokenCodec, TokenCodecConfig
 from lalamo.utils.json import JSON
+from lalamo.utils.registry_abc import RegistryABC
 
 __all__ = [
     "AssistantMessage",
     "ChatCodec",
     "ChatCodecConfig",
+    "FunctionCall",
     "Message",
     "ReasoningConfig",
     "ReasoningEffort",
+    "ResponseParser",
     "SystemMessage",
     "ToolCall",
     "ToolMessage",
@@ -53,6 +55,58 @@ class ToolCall(TypedDict):
     function: FunctionCall
     id: NotRequired[str]
     index: NotRequired[int]
+
+
+@dataclass(frozen=True)
+class AssistantMessage:
+    chain_of_thought: str | None = None
+    response: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+
+
+class ResponseParser(RegistryABC):
+    tool_call_tags: ClassVar[tuple[str, str] | None] = None
+
+    @classmethod
+    def __descendants__(cls) -> tuple[type[Self], ...]:
+        # Parser definitions live with model specs and must be loaded before resolving saved class names.
+        import_module("lalamo.model_import.model_specs")
+        return super().__descendants__()
+
+    @classmethod
+    def parse_reasoning(cls, response: str, prompt: str) -> AssistantMessage:  # noqa: ARG003
+        return AssistantMessage(response=response)
+
+    @classmethod
+    def parse_tool_calls(cls, body: str, tools: tuple[ToolSchema, ...]) -> tuple[ToolCall, ...]:
+        raise NotImplementedError("This parser does not support tool calling.")
+
+    @classmethod
+    def parse(cls, response: str, *, prompt: str = "", tools: tuple[ToolSchema, ...] = ()) -> AssistantMessage:
+        message = cls.parse_reasoning(response, prompt)
+        if not tools or cls.tool_call_tags is None:
+            return message
+        opening, closing = cls.tool_call_tags
+        calls: list[ToolCall] = []
+
+        def extract(match: re.Match[str]) -> str:
+            try:
+                calls.extend(cls.parse_tool_calls(match[1], tools))
+            except (SyntaxError, ValueError):
+                return match[0]
+            return ""
+
+        response = re.sub(
+            re.escape(opening) + "(.*?)" + re.escape(closing), extract, message.response, flags=re.DOTALL
+        )
+        return replace(message, response=response, tool_calls=tuple(calls))
+
+
+# Byte-level BPE vocabularies spell printable bytes as themselves and the other bytes as characters from U+0100.
+_PRINTABLE_BYTES = [*range(33, 127), *range(161, 173), *range(174, 256)]
+_BYTE_LEVEL_CHARACTERS = {chr(byte): byte for byte in _PRINTABLE_BYTES} | {
+    chr(256 + index): byte for index, byte in enumerate(sorted(set(range(256)) - set(_PRINTABLE_BYTES)))
+}
 
 
 class ReasoningEffort(StrEnum):
@@ -89,6 +143,10 @@ def _strftime_now(format_string: str) -> str:
     return datetime.now().strftime(format_string)  # noqa: DTZ005
 
 
+def _raise_template_error(message: str) -> NoReturn:
+    raise ValueError(message)
+
+
 class HuggingFaceMessage(TypedDict):
     role: str
     content: str
@@ -122,13 +180,6 @@ class ToolMessage:
     content: str
     name: str | None = None
     tool_call_id: str | None = None
-
-
-@dataclass(frozen=True)
-class AssistantMessage:
-    chain_of_thought: str | None = None
-    response: str = ""
-    tool_calls: tuple[ToolCall, ...] = ()
 
 
 type Message = UserMessage | SystemMessage | AssistantMessage | ToolMessage
@@ -200,13 +251,12 @@ message_converter.register_structure_hook(Message, lambda obj, _: parse_hf_messa
 @dataclass(frozen=True)
 class ChatCodecConfig(TokenCodecConfig):
     prompt_template: str
-    output_parser_regex: str | None
+    response_parser: type[ResponseParser] | None
     system_role_name: str
     user_role_name: str
     assistant_role_name: str
     eos_token: str | None
     bos_token: str | None
-    end_of_thinking_tag: str | None = None
     default_system_prompt: str | None = None
     reasoning_config: ReasoningConfig | None = None
 
@@ -233,12 +283,6 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         # Hugging Face templates emit JSON, without Jinja's HTML escaping or key sorting.
         environment.filters["tojson"] = partial(json.dumps, ensure_ascii=False)
         return environment.from_string(self.config.prompt_template)
-
-    @cached_property
-    def output_parser_regex(self) -> Pattern | None:
-        if self.config.output_parser_regex is None:
-            return None
-        return re.compile(self.config.output_parser_regex)
 
     def message_to_dict(self, message: Message) -> HuggingFaceMessage:
         result: HuggingFaceMessage = message_converter.unstructure(message, Message)
@@ -275,6 +319,7 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         template_context: dict[str, object] = {
             **self.request_to_dict(messages, tools),
             "strftime_now": _strftime_now,
+            "raise_exception": _raise_template_error,
         }
 
         reasoning_config = self.config.reasoning_config
@@ -294,15 +339,10 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
     ) -> list[int]:
         return self.encode_text(self.render_request(request, tools=tools, reasoning_effort=reasoning_effort))
 
-    def parse_response(self, response: str) -> AssistantMessage:
-        if self.output_parser_regex is None:
+    def parse_response(self, response: str, *, prompt: str = "", tools: Iterable[ToolSchema] = ()) -> AssistantMessage:
+        if self.config.response_parser is None:
             return AssistantMessage(response=response)
-        match = self.output_parser_regex.match(response)
-        if match is None:
-            return AssistantMessage(response=response)
-        return cattrs.structure(
-            {name: value for name, value in match.groupdict().items() if value is not None}, AssistantMessage
-        )
+        return self.config.response_parser.parse(response, prompt=prompt, tools=tuple(tools))
 
     def encode_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False).ids
@@ -319,20 +359,15 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
             else:
                 yield self.tokenizer.decode(list(group), skip_special_tokens=False).encode("utf-8")
 
+    def decode_token_bytes(self, token_id: int) -> bytes:
+        """The bytes of one token, including partial UTF-8 sequences that decoding to text would replace."""
+        if token_id in self._byte_token_ids:
+            return bytes((self._byte_token_ids[token_id],))
+        text = self.tokenizer.decode([token_id], skip_special_tokens=False)
+        token = self.tokenizer.id_to_token(token_id)
+        if "\ufffd" in text and token is not None and all(char in _BYTE_LEVEL_CHARACTERS for char in token):
+            return bytes(_BYTE_LEVEL_CHARACTERS[char] for char in token)
+        return text.encode()
+
     def decode_response(self, response: list[int]) -> AssistantMessage:
         return self.parse_response(self.decode_tokens(response))
-
-    def __post_init__(self) -> None:
-        if self.output_parser_regex is not None:
-            text_fields = {
-                name: field
-                for name, field in AssistantMessage.__dataclass_fields__.items()
-                if field.type in (str, str | None)
-            }
-            named_groups = self.output_parser_regex.groupindex
-            invalid_groups = set(named_groups) - text_fields.keys()
-            if invalid_groups:
-                raise ValueError(f"Unsupported output fields: {list(invalid_groups)}")
-            for name, field in text_fields.items():
-                if field.type is str and name not in named_groups:
-                    raise ValueError(f"Missing required output field: {name}")

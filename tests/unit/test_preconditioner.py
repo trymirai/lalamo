@@ -57,7 +57,7 @@ class _PreconditionerModel(Model[ChatCodecConfig, _PreconditionerModelConfig, Ch
 def _chat_codec_config() -> ChatCodecConfig:
     return ChatCodecConfig(
         prompt_template="",
-        output_parser_regex=None,
+        response_parser=None,
         system_role_name="system",
         user_role_name="user",
         assistant_role_name="assistant",

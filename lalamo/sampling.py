@@ -28,6 +28,7 @@ class SamplingPolicy(eqx.Module):
     frequency_penalty: Float[Array, "*batch"] | None = None
     token_counts: Int[Array, "*batch vocabulary"] | None = None
     token_history: Int[Array, "*batch suffix"] | None = None
+    is_greedy: bool = eqx.field(static=True, default=False)
 
     @classmethod
     def init(
@@ -69,6 +70,7 @@ class SamplingPolicy(eqx.Module):
                 if suffix_repetition_length is None or suffix_repetition_length <= 0
                 else jnp.full(suffix_repetition_length, _SENTINEL, dtype=jnp.int32)
             ),
+            is_greedy=temperature == 0.0,
         )
 
     @classmethod
@@ -186,10 +188,7 @@ class SamplingPolicy(eqx.Module):
 
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         self._raise_if_batched()
-        logits = self._apply_banned_tokens(logits)
-        logits = self._apply_repetition_penalty(logits)
-        logits = self._apply_presence_penalty(logits)
-        logits = self._apply_frequency_penalty(logits)
+        logits = self._apply_penalties(logits)
         logits = self._apply_temperature(logits)
         logits = self._apply_top_k(logits)
         logits = self._apply_top_p(logits)
@@ -197,7 +196,16 @@ class SamplingPolicy(eqx.Module):
 
     def __call__(self, logits: Float[Array, " vocabulary"], *, keychain: Keychain) -> Int[Array, ""]:
         self._raise_if_batched()
+        if self.is_greedy:
+            # Truncation never removes the most likely token, so greedy sampling skips sorting the vocabulary.
+            return jnp.argmax(self._apply_penalties(logits)).astype(jnp.int32)
         return jax.random.categorical(keychain.vmapped_keys, self.process_logits(logits))
+
+    def _apply_penalties(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+        logits = self._apply_banned_tokens(logits)
+        logits = self._apply_repetition_penalty(logits)
+        logits = self._apply_presence_penalty(logits)
+        return self._apply_frequency_penalty(logits)
 
     def _raise_if_batched(self) -> None:
         scalar_fields: tuple[SamplingLeaf | None, ...] = (

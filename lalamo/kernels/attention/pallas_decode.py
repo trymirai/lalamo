@@ -1,7 +1,6 @@
 import math
-import warnings
 from collections.abc import Callable
-from functools import cache
+from functools import cache, partial
 from typing import Any, Literal, cast
 
 import jax
@@ -13,6 +12,7 @@ from jaxtyping import Array, Bool, Float, Int
 from lalamo.kernels.mosaic import supports_mosaic_gpu
 from lalamo.utils.sharding import sharding_of
 
+from .pallas_flash import triton_attention
 from .xla import xla_attention
 
 type _Ref = Any
@@ -565,10 +565,9 @@ def _pallas_decode_attention(
     scale: Float[Array, ""],
     num_splits: _NumSplits,
 ) -> Float[Array, "1 query_heads head_dim"]:
-    sequence_length = keys.shape[0]
-    num_key_value_heads = keys.shape[1]
-    head_dim = keys.shape[2]
-    query_heads_per_key_value_head = queries.shape[1] // num_key_value_heads
+    sequence_length, num_key_value_heads, head_dim = keys.shape
+    _, query_heads, _ = queries.shape
+    query_heads_per_key_value_head = query_heads // num_key_value_heads
     padded_query_heads = 8 if query_heads_per_key_value_head <= 8 else 16
     sequence_padding = (-sequence_length) % _BLOCK_SIZE
     keys = jnp.pad(keys, ((0, sequence_padding), (0, 0), (0, 0)))
@@ -603,20 +602,64 @@ def _pallas_decode_attention(
     return reduced[:, :query_heads_per_key_value_head].reshape(queries.shape)
 
 
-pallas_decode_attention = jax.custom_batching.custom_vmap(xla_attention)
+def is_fast_attention_supported(
+    queries: Float[Array, "batch dst_tokens heads head_dim"] | Float[Array, "dst_tokens heads head_dim"],
+    keys: Float[Array, "batch src_tokens key_value_heads head_dim"]
+    | Float[Array, "src_tokens key_value_heads head_dim"],
+    values: Float[Array, "batch src_tokens key_value_heads head_dim"]
+    | Float[Array, "src_tokens key_value_heads head_dim"],
+) -> bool:
+    device = jax.typeof(keys).sharding.mesh.abstract_device
+    platform = jax.default_backend()
+    if device is not None:
+        platform = device.platform
+    if platform != "gpu":
+        return False
+    *_, query_heads, query_head_dim = queries.shape
+    *_, key_value_heads, key_head_dim = keys.shape
+    *_, value_head_dim = values.shape
+    return (
+        queries.dtype == keys.dtype == values.dtype
+        and queries.dtype in (jnp.float16, jnp.bfloat16, jnp.float32)
+        and query_heads % key_value_heads == 0
+        and query_head_dim == key_head_dim == value_head_dim
+    )
+
+
+def _unbatched_attention(
+    queries: Float[Array, "dst_tokens heads head_dim"],
+    keys: Float[Array, "src_tokens key_value_heads head_dim"],
+    values: Float[Array, "src_tokens key_value_heads head_dim"],
+    bias: Float[Array, "heads dst_tokens src_tokens"] | None,
+    mask: Bool[Array, "dst_tokens src_tokens"],
+    scale: float | Float[Array, ""] | None,
+    logit_soft_cap: float | Float[Array, ""] | None,
+) -> Float[Array, "dst_tokens heads head_dim"]:
+    if is_fast_attention_supported(queries, keys, values):
+        attention = partial(triton_attention, batch_size=1)
+        sharding = jax.typeof(queries).sharding
+        if sharding.mesh.explicit_axes:
+            attention = jax.shard_map(attention, mesh=sharding.mesh, out_specs=sharding.spec, check_vma=False)
+        return attention(queries, keys, values, bias, mask, scale, logit_soft_cap)
+    return xla_attention(queries, keys, values, bias, mask, scale, logit_soft_cap)
+
+
+pallas_decode_attention = jax.custom_batching.custom_vmap(_unbatched_attention)
 
 
 @pallas_decode_attention.def_vmap
 def _pallas_decode_attention_vmap(
     axis_size: int,
     in_batched: list[bool | None],
-    queries: Float[Array, "batch dst_tokens heads head_dim"],
-    keys: Float[Array, "batch src_tokens key_value_heads head_dim"],
-    values: Float[Array, "batch src_tokens key_value_heads head_dim"],
+    queries: Float[Array, "batch dst_tokens heads head_dim"] | Float[Array, "dst_tokens heads head_dim"],
+    keys: Float[Array, "batch src_tokens key_value_heads head_dim"]
+    | Float[Array, "src_tokens key_value_heads head_dim"],
+    values: Float[Array, "batch src_tokens key_value_heads head_dim"]
+    | Float[Array, "src_tokens key_value_heads head_dim"],
     bias: Float[Array, "batch heads dst_tokens src_tokens"] | Float[Array, "heads dst_tokens src_tokens"] | None,
     masks: Bool[Array, "batch dst_tokens src_tokens"] | Bool[Array, "dst_tokens src_tokens"],
-    scale: float | Float[Array, ""] | None,
-    logit_soft_cap: float | Float[Array, ""] | None,
+    scale: float | Float[Array, ""] | Float[Array, " batch"] | None,
+    logit_soft_cap: float | Float[Array, ""] | Float[Array, " batch"] | None,
 ) -> tuple[Float[Array, "batch dst_tokens heads head_dim"], bool]:
     (
         queries_batched,
@@ -627,51 +670,49 @@ def _pallas_decode_attention_vmap(
         scale_batched,
         _logit_soft_cap_batched,
     ) = in_batched
-    fallback = jax.vmap(
-        xla_attention,
-        in_axes=tuple(0 if batched else None for batched in in_batched),
+    in_axes = tuple(0 if batched else None for batched in in_batched)
+    if not is_fast_attention_supported(queries, keys, values):
+        xla_attention_vmapped = jax.vmap(xla_attention, in_axes=in_axes)
+        return xla_attention_vmapped(queries, keys, values, bias, masks, scale, logit_soft_cap), True
+    flash_attention = jax.vmap(
+        partial(triton_attention, batch_size=axis_size),
+        in_axes=in_axes,
     )
+    sharding = jax.typeof(queries).sharding
+    if sharding.mesh.explicit_axes:
+        flash_attention = jax.shard_map(flash_attention, mesh=sharding.mesh, out_specs=sharding.spec, check_vma=False)
     arrays_are_batched = all((queries_batched, keys_batched, values_batched, masks_batched))
-    supports_pallas = arrays_are_batched and bias is None and logit_soft_cap is None
-    if supports_pallas:
-        query_heads = queries.shape[2]
-        key_value_heads = keys.shape[2]
-        head_dim = queries.shape[3]
-        supports_pallas = (
-            not scale_batched
-            and supports_mosaic_gpu(sharding_of(keys).mesh, 10)
-            and queries.shape[1] == 1
-            and query_heads % key_value_heads == 0
-            and query_heads // key_value_heads <= 16
-            and head_dim in (128, 256, 512)
-            and queries.dtype == keys.dtype == values.dtype == jnp.bfloat16
-        )
-    if not supports_pallas:
-        warnings.warn(
-            "Pallas decode attention does not support this attention configuration; falling back to XLA attention.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return fallback(queries, keys, values, bias, masks, scale, logit_soft_cap), True
+    if not arrays_are_batched or bias is not None or logit_soft_cap is not None:
+        return flash_attention(queries, keys, values, bias, masks, scale, logit_soft_cap), True
 
-    programs = axis_size * keys.shape[2]
+    _, query_count, query_heads, head_dim = queries.shape
+    _, source_tokens, key_value_heads, _ = keys.shape
+    supports_pallas = (
+        not scale_batched
+        and supports_mosaic_gpu(sharding_of(keys).mesh, 10)
+        and query_count == 1
+        and query_heads % key_value_heads == 0
+        and query_heads // key_value_heads <= 16
+        and head_dim in (128, 256, 512)
+        and queries.dtype == keys.dtype == values.dtype == jnp.bfloat16
+    )
+    if not supports_pallas:
+        return flash_attention(queries, keys, values, bias, masks, scale, logit_soft_cap), True
+
+    programs = axis_size * key_value_heads
+    # B200-oriented parallelism heuristic: target at least 144 programs.
     required_splits = (144 + programs - 1) // programs
-    num_blocks = math.ceil(keys.shape[1] / _BLOCK_SIZE)
+    num_blocks = math.ceil(source_tokens / _BLOCK_SIZE)
     num_splits = next(
         (candidate for candidate in _NUM_SPLITS if required_splits <= candidate <= num_blocks),
         None,
     )
     if num_splits is None:
-        warnings.warn(
-            "Pallas decode attention cannot provide enough parallel work for this batch and cache size; "
-            "falling back to XLA attention.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return fallback(queries, keys, values, bias, masks, scale, logit_soft_cap), True
+        return flash_attention(queries, keys, values, bias, masks, scale, logit_soft_cap), True
 
-    attention_scale = queries.shape[-1] ** -0.5 if scale is None else scale
-    attention_scale = jnp.asarray(attention_scale, dtype=jnp.float32)
+    if scale is None:
+        scale = head_dim**-0.5
+    attention_scale: Float[Array, ""] = jnp.asarray(scale, dtype=jnp.float32)
 
     unbatched_masks = masks[:, 0]
     has_values = jnp.any(unbatched_masks, axis=-1)
@@ -682,16 +723,26 @@ def _pallas_decode_attention_vmap(
     ).astype(jnp.int32)
     ends = jnp.where(
         has_values,
-        masks.shape[-1] - jnp.argmax(unbatched_masks[:, ::-1], axis=-1),
+        source_tokens - jnp.argmax(unbatched_masks[:, ::-1], axis=-1),
         0,
     ).astype(jnp.int32)
     padded_masks = jnp.pad(
         unbatched_masks,
-        ((0, 0), (0, (-masks.shape[-1]) % _BLOCK_SIZE)),
+        ((0, 0), (0, (-source_tokens) % _BLOCK_SIZE)),
         constant_values=False,
     ).astype(jnp.int32)
-    return (
-        jax.vmap(
+
+    # Mosaic refs require local indexing; preserve the caller's partition without collecting other shards.
+    def attend(
+        queries: Float[Array, "batch 1 query_heads head_dim"],
+        keys: Float[Array, "batch source_tokens key_value_heads head_dim"],
+        values: Float[Array, "batch source_tokens key_value_heads head_dim"],
+        masks: Int[Array, "batch padded_capacity"],
+        starts: Int[Array, " batch"],
+        ends: Int[Array, " batch"],
+        scale: Float[Array, ""],
+    ) -> Float[Array, "batch 1 query_heads head_dim"]:
+        return jax.vmap(
             lambda query, key, value, mask, start, end: _pallas_decode_attention(
                 query,
                 key,
@@ -699,9 +750,11 @@ def _pallas_decode_attention_vmap(
                 mask,
                 start,
                 end,
-                attention_scale,
-                num_splits,
+                scale,
+                cast("_NumSplits", num_splits),
             )
-        )(queries, keys, values, padded_masks, starts, ends),
-        True,
-    )
+        )(queries, keys, values, masks, starts, ends)
+
+    if sharding.mesh.explicit_axes:
+        attend = jax.shard_map(attend, mesh=sharding.mesh, out_specs=sharding.spec, check_vma=False)
+    return attend(queries, keys, values, padded_masks, starts, ends, attention_scale), True

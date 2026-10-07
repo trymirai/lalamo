@@ -5,12 +5,16 @@ from functools import cache
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.sharding import AxisType, NamedSharding
 
 from lalamo.initializer import RandomInitializer
+from lalamo.models import LanguageModel
+from lalamo.module import ForwardPassMode, Keychain
 from lalamo.modules import (
     Decoder,
     DecoderConfig,
+    DecoderForwardPassConfig,
     DenseMLPConfig,
     Identity,
     LinearConfig,
@@ -25,6 +29,27 @@ from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 
 UNITS = ["", "K", "M", "G", "T", "P", "E"]
+
+
+def dense_log_softmax_rows(model: LanguageModel, prompt: tuple[int, ...], token_ids: list[int]) -> list[np.ndarray]:
+    """Teacher-forced dense reference before each token and after the last."""
+    keychain = Keychain.init(0, sharding_config=model.sharding_config)
+    prefilled = model.prefill_tokens(jnp.asarray([prompt]), len(prompt) + len(token_ids), keychain=keychain)
+    state, logits = prefilled.state, prefilled.last_token_logits
+    rows = []
+    for position, token_id in enumerate(token_ids, start=len(prompt)):
+        rows.append(np.asarray(jax.nn.log_softmax(logits[0].astype(jnp.float32))))
+        decoded = model.decoder(
+            jnp.asarray([[token_id]]),
+            jnp.asarray([[position]]),
+            state=state,
+            return_updated_state=True,
+            forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+            keychain=keychain,
+        )
+        assert decoded.updated_state is not None
+        state, logits = decoded.updated_state, decoded.logits[:, 0]
+    return [*rows, np.asarray(jax.nn.log_softmax(logits[0].astype(jnp.float32)))]
 
 
 def si(x: int, base: int = 1024, units: Sequence[str] = UNITS) -> str:
