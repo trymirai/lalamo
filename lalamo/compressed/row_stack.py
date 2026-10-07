@@ -2,12 +2,15 @@ from dataclasses import dataclass, replace
 from typing import Self
 
 import jax.numpy as jnp
+import numpy as np
 from jaxtyping import Array, DTypeLike, Float, Key
 
+from lalamo.exportable import ExportResults
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import is_dummy_array
+from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -72,6 +75,40 @@ class RowStackMatrix(WeightMatrix[RowStackSpec]):
 
     def astype(self, dtype: DTypeLike) -> Self:
         return replace(self, parts=tuple(part.astype(dtype) for part in self.parts))
+
+    def export(self) -> ExportResults:
+        exported = super().export()
+        parts = tuple(part for part in self.parts if isinstance(part, QtipGaussianMatrix))
+        if not parts or len(parts) != len(self.parts):
+            return exported
+
+        signs, small_q = parts[0].signs, parts[0].small_q
+        if any(
+            not np.array_equal(part.signs, signs) or not np.array_equal(part.small_q, small_q) for part in parts[1:]
+        ):
+            raise ValueError("QTIP row stack parts must share signs and small_q")
+
+        arrays = dict(exported.arrays)
+        for index in range(len(parts)):
+            del arrays[f"parts.{index}.signs"], arrays[f"parts.{index}.small_q"]
+        arrays["signs"], arrays["small_q"] = signs, small_q
+        return ExportResults(arrays, exported.metadata)
+
+    def load_exported(self, exported_data: ExportResults, *, prefix: ParameterPath | None = None) -> Self:
+        prefix = prefix or ParameterPath()
+        if self.parts and all(isinstance(part, QtipGaussianMatrix) for part in self.parts):
+            arrays = dict(exported_data.arrays)
+            signs_path, small_q_path = prefix / "signs", prefix / "small_q"
+            if signs_path in arrays and small_q_path in arrays:
+                signs, small_q = arrays.pop(signs_path), arrays.pop(small_q_path)
+                for index in range(len(self.parts)):
+                    part_path = prefix / "parts" / index
+                    arrays[part_path / "signs"], arrays[part_path / "small_q"] = signs, small_q
+                exported_data = ExportResults(arrays, exported_data.metadata)
+
+        loaded = super().load_exported(exported_data, prefix=prefix)
+        assert isinstance(loaded, RowStackMatrix)
+        return loaded
 
     def decompress(self) -> Array:
         return jnp.concatenate(tuple(part.decompress() for part in self.parts), axis=0)
