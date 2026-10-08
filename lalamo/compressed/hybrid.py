@@ -25,6 +25,7 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
+from .lattice import LatticeMatrix
 from .qtip_gaussian import full_rotation
 
 __all__ = [
@@ -380,7 +381,8 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
         return cls(spec, sharding_config, is_sharded, quantized, None, rotation)
 
     def to_full_precision(self) -> FullPrecisionMatrix:
-        return FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(
+        layout = self.quantized.spec.layout if isinstance(self.quantized, LatticeMatrix) else Layout.OUTPUT_INPUT
+        return FullPrecisionSpec(layout=layout).compress(
             self.decompress(),
             sharding_config=self.sharding_config,
             is_sharded=self.is_sharded,
@@ -409,7 +411,11 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
         )
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
-        result = self.quantized.decompress()
+        # Trellis and lattice leaves decode in float32 and round once, after the rotation, as uzu does.
+        is_rounded_once = isinstance(self.incoherence_signs, KroneckerRotation) or isinstance(
+            self.quantized, LatticeMatrix
+        )
+        result = (self.quantized.astype(jnp.float32) if is_rounded_once else self.quantized).decompress()
         block_size = self.spec.incoherence_block_size
         if isinstance(self.incoherence_signs, KroneckerRotation):
             result = self.incoherence_signs.unprocess_weights(result)
@@ -426,7 +432,7 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
                     self.sharding_config,
                 )
             result = result + adapter
-        return result
+        return result.astype(self.dtype)
 
     def switch_implementation(self, implementation: CompressionImplementation) -> "HybridMatrix":
         quantized = self.quantized.switch_implementation(implementation)
@@ -461,14 +467,14 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
             raise TypeError("Hybrid embedding lookup does not support adapters.")
         result = self.quantized.lookup_embedding(
             row_index,
-            dtype=dtype,
+            dtype=jnp.float32 if isinstance(self.quantized, LatticeMatrix) else dtype,
             keychain=keychain,
             forward_pass_config=forward_pass_config,
         )
         if isinstance(self.incoherence_signs, IncoherenceSigns):
             assert self.spec.incoherence_block_size is not None
             result = self.incoherence_signs.output_transform(result, self.spec.incoherence_block_size)
-        return result
+        return result.astype(self.dtype if dtype is None else dtype)
 
     def dot(
         self,

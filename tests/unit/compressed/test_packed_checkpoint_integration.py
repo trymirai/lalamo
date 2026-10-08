@@ -40,12 +40,12 @@ def test_packed_checkpoint_loads_every_saved_tensor() -> None:
             for path, spec in specs.items()
             for index, (_, part) in enumerate(spec.get("parts", ()))
         ]
-        folded = [leaf for leaf in leaves if (leaf[3]["type"], leaf[3]["layout"]) == ("I4S4Spec", "output_input")]
+        folded = [leaf for leaf in leaves if (leaf[3]["type"], leaf[3].get("layout")) == ("I4S4Spec", "output_input")]
         prefixes = tuple(f"{path}." for path, *_ in folded)
         unfolded = {name: saved[name] for name in saved if not name.startswith(prefixes)}
         assert_loaded_every_saved_tensor(model, unfolded, folds)
         for path, loaded_path, part_row, spec in folded:
-            reference = saved_i4s4(saved, path, spec.get("post_gain_axes", ())).astype("float32")
+            reference = saved_i4s4(saved, path, config, spec.get("post_gain_axes", ())).astype("float32")
             fused_path = loaded_path.replace(".qkv_proj", ".qkvg_proj").replace(".gate_proj", ".qkvg_proj")
             first_row = part_row - len(reference) * (".gate_projection." in path)
             loaded = weight_matrices(model)[fused_path].astype("float32").decompress()[first_row:][: len(reference)]

@@ -35,7 +35,7 @@ from lalamo.compressed.qtip_gaussian import STATE_BITS, QtipGaussianMatrix, Qtip
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
 from lalamo.compressed.trellis import states_to_levels
 from lalamo.initializer import RandomInitializer
-from lalamo.model_import.loaders.packed_checkpoint import load_packed_checkpoint
+from lalamo.model_import.loaders.packed_checkpoint import codebook_from_table, load_packed_checkpoint
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.models.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
 from lalamo.module import Keychain
@@ -45,7 +45,7 @@ from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.safetensors import safe_write
 from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
-from lalamo.utils.sharding import LogicalAxis
+from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 from lalamo.weight_matrix import FullPrecisionMatrix, Layout, WeightMatrix
 from tests.helpers import build_tiny_attention_decoder_config, make_test_sharding_config
 
@@ -62,9 +62,13 @@ QKVG = "decoder.transformer.layers.0.mixer.qkvg_projection.weights"
 
 def contains_rows(loaded: Array, saved: Array) -> bool:
     # Merged trellis leaves concatenate rows, so a saved tensor is a window of the loaded one.
-    array, expected = np.atleast_1d(np.asarray(loaded)), np.atleast_1d(np.asarray(saved))
+    # Plain tensors may load widened to their declared dtype (bf16 norm scales as float32), never rounded.
+    array, saved_array = np.atleast_1d(np.asarray(loaded)), np.atleast_1d(np.asarray(saved))
+    expected = saved_array.astype(array.dtype)
+    if not np.array_equal(expected.astype(saved_array.dtype), saved_array):
+        return False
     windows = (array[start : start + len(expected)] for start in range(len(array) - len(expected) + 1))
-    return array.dtype == expected.dtype and any(np.array_equal(window, expected) for window in windows)
+    return any(np.array_equal(window, expected) for window in windows)
 
 
 def assert_loaded_every_saved_tensor(
@@ -75,8 +79,12 @@ def assert_loaded_every_saved_tensor(
     for leaf in jax.tree.leaves(model, is_leaf=lambda node: isinstance(node, QtipGaussianMatrix | KroneckerRotation)):
         if isinstance(leaf, QtipGaussianMatrix):
             width = leaf.spec.vector_width
-            expected_codebook = (CODEBOOK_SCALE, *CODEBOOK_OFFSETS[:width] * (4 // width))
-            np.testing.assert_allclose(leaf.codebook, expected_codebook, rtol=0, atol=1e-5)
+            (table,) = [
+                saved[name]
+                for name in (f"qtip_shared.codebook_v{width}", f"qtip_shared.p8zm_v{width}")
+                if name in saved
+            ]
+            np.testing.assert_array_equal(leaf.codebook, codebook_from_table(table))
         if isinstance(leaf, KroneckerRotation):
             columns = leaf.signs.shape[0]
             np.testing.assert_array_equal(leaf.signs, saved[f"qtip_shared.signs_{columns}"])
@@ -124,11 +132,13 @@ def i4s4(arrays: dict[str, Array], path: str, rows: int, seed: int = 0) -> dict[
     return {"type": "I4S4Spec", "layout": "output_input", "post_gain_axes": ["row", "column"]}
 
 
-def saved_i4s4(arrays: Mapping[str, Array], path: str, axes: tuple[str, ...] = ("row",)) -> Array:
+def saved_i4s4(
+    arrays: Mapping[str, Array], path: str, sharding_config: ShardingConfig, axes: tuple[str, ...] = ("row",)
+) -> Array:
     """The I4S4 leaf saved at `path`, decoded by the lattice format and scaled by its row gains."""
     fields = {name: arrays[f"{path}.{name}"] for name in ("codes", "row_scales", "ladder_indices", "ladder")}
     spec = LatticeSpec(LatticeKind.I4, Layout.OUTPUT_INPUT)
-    leaf = LatticeMatrix(spec, make_test_sharding_config(), is_sharded=True, table=odd_integer_table(4), **fields)
+    leaf = LatticeMatrix(spec, sharding_config, is_sharded=True, table=odd_integer_table(4), **fields)
     rotation = IncoherenceSigns(arrays[path + ".input_hadamard_factors"], None)
     decoded = HybridMatrix.of(leaf.astype(jnp.float32), rotation, leaf.sharding_config).decompress()
     row_gains = (arrays[f"{path}.post_gains.{index}"] for index, axis in enumerate(axes) if axis == "row")
@@ -303,7 +313,7 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
         RowStackSpec(merged_specs), None, None, IncoherenceProcessingMode.INPUT, IncoherenceKind.KRONECKER
     )
     folded = matrices[up].astype(jnp.float32).decompress()
-    np.testing.assert_array_equal(folded, saved_i4s4(arrays, up))
+    np.testing.assert_array_equal(folded, saved_i4s4(arrays, up, make_test_sharding_config()))
     assert_loaded_every_saved_tensor(restored, {name: arrays[name] for name in arrays if up not in name}, folds)
     assert_export_reloads(restored, tmp_path / "exported")
     batch_sharding = restored.sharding_config.resolve_sharding((LogicalAxis.BATCH, None))
@@ -337,7 +347,8 @@ def test_qkv_and_i4s4_gate_merge_only_when_both_fold_under_shared_signs(tmp_path
     matrix = weight_matrices(model)[QKVG]
     if qkv_seed == 0:
         assert isinstance(matrix, HybridMatrix)
-        expected = jnp.concatenate((saved_i4s4(arrays, qkv), saved_i4s4(arrays, gate)))
+        config = make_test_sharding_config()
+        expected = jnp.concatenate((saved_i4s4(arrays, qkv, config), saved_i4s4(arrays, gate, config)))
         np.testing.assert_array_equal(matrix.astype(jnp.float32).decompress(), expected)
     else:
         assert isinstance(matrix, RowStackMatrix)

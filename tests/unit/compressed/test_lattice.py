@@ -57,3 +57,13 @@ def test_d4_lookup_returns_the_torch_decoded_rows() -> None:
     for index in (2, jnp.array([3, 0, 1], dtype=jnp.int32)):
         actual = matrix.lookup_embedding(index, keychain=keychain)
         np.testing.assert_allclose(actual, expected[np.asarray(index)], atol=2e-7, rtol=1e-6)
+
+
+def test_bf16_d4_rows_round_once_and_survive_to_full_precision() -> None:
+    matrix, _ = saved_rows(LatticeKind.D4)
+    keychain = Keychain.init(0, sharding_config=matrix.sharding_config)
+    index = jnp.array([3, 0, 1], dtype=jnp.int32)
+    rows = matrix.astype(jnp.bfloat16).lookup_embedding(index, keychain=keychain)
+    np.testing.assert_array_equal(rows, matrix.lookup_embedding(index, keychain=keychain).astype(jnp.bfloat16))
+    dense = matrix.astype(jnp.bfloat16).to_full_precision()
+    np.testing.assert_array_equal(dense.lookup_embedding(index, keychain=keychain), rows)

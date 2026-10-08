@@ -107,3 +107,10 @@ def test_msb_first_states_match_the_layout_uzu_reads() -> None:
         )
     )
     np.testing.assert_array_equal(QtipGaussianSpec(2, 6, 0).states(v2_codes[None], 64)[0, :2], [0xDACA, 0xB2B8])
+
+
+def test_bf16_trellis_weights_round_once_after_the_rotation() -> None:
+    leaf, rotation = saved_tape("v2_k3", QtipGaussianSpec(2, 6, 0))
+    matrix = HybridMatrix.of(leaf, rotation, leaf.sharding_config)
+    expected = matrix.astype(jnp.float32).decompress().astype(jnp.bfloat16)
+    np.testing.assert_array_equal(matrix.astype(jnp.bfloat16).decompress(), expected)
