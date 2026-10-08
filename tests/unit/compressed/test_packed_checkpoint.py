@@ -14,16 +14,19 @@ from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 
 from lalamo.compressed.direction import BLOCK_BYTES, BLOCK_COLUMNS, LEVEL_BITS, DirectionMatrix
+from lalamo.compressed.hybrid import HybridMatrix
 from lalamo.compressed.lattice import (
     COLUMNS_PER_LADDER_BYTE,
     LADDER_INDEX_BITS,
     LatticeKind,
     LatticeMatrix,
     LatticeSpec,
+    odd_integer_table,
 )
 from lalamo.compressed.qtip_gaussian import STATE_BITS, QtipGaussianMatrix, QtipGaussianSpec
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
 from lalamo.compressed.trellis import states_to_levels
+from lalamo.compressed.utils.post_gains import GainAxis
 from lalamo.initializer import RandomInitializer
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.models.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
@@ -46,6 +49,7 @@ VOCABULARY = 32
 # Package codebooks are float32 tables of CODEBOOK_SCALE * level + the offset of each column class.
 CODEBOOK_SCALE = 0.05
 CODEBOOK_OFFSETS = (0.31, -0.17, 0.08, 0.44)
+QKVG = "decoder.transformer.layers.0.mixer.qkvg_projection.weights"
 
 
 def assert_loaded_every_saved_tensor(
@@ -75,6 +79,45 @@ def assert_loaded_every_saved_tensor(
         elif saved_name not in consumed:
             assert loaded[name].dtype == value.dtype, name
             np.testing.assert_array_equal(loaded[name], value, err_msg=name)
+
+
+def weight_matrices(model: LanguageModel) -> dict[str, WeightMatrix]:
+    leaves = jax.tree_util.tree_leaves_with_path(model, is_leaf=lambda x: isinstance(x, WeightMatrix))
+    return {str(ParameterPath() / path): leaf for path, leaf in leaves if isinstance(leaf, WeightMatrix)}
+
+
+def i4s4(arrays: dict[str, Array], path: str, rows: int, seed: int = 0) -> dict[str, JSON]:
+    """Saves an I4S4 leaf whose scales and row gains are powers of two, so its affine fold rounds nothing."""
+    generator = np.random.default_rng(seed)
+    arrays[path + ".input_hadamard_factors"] = jnp.asarray(generator.choice([-1, 1], MODEL_DIM), jnp.int32)
+    arrays[path + ".codes"] = jnp.asarray(generator.integers(0, 256, (rows, MODEL_DIM // 2), np.uint8))
+    arrays[path + ".ladder_indices"] = jnp.asarray(generator.integers(0, 256, (rows, MODEL_DIM // 128), np.uint8))
+    arrays[path + ".row_scales"] = jnp.asarray(np.exp2(generator.integers(-3, 3, rows)), jnp.bfloat16)
+    arrays[path + ".ladder"] = jnp.asarray(np.exp2(generator.integers(-3, 3, 1 << LADDER_INDEX_BITS)), jnp.float16)
+    arrays[path + ".post_gains.0"] = jnp.asarray(np.exp2(generator.integers(-3, 3, rows)), jnp.float32)
+    return {"type": "I4S4Spec", "layout": "output_input", "post_gain_axes": ["row"]}
+
+
+def saved_i4s4(arrays: Mapping[str, Array], path: str, axes: tuple[str, ...] = ("row",)) -> Array:
+    """The I4S4 leaf saved at `path` decoded by the lattice format, which rounds to bfloat16 after each post-gain."""
+    spec = LatticeSpec(LatticeKind.I4, Layout.OUTPUT_INPUT, tuple(map(GainAxis, axes)))
+    fields = {name: arrays[f"{path}.{name}"] for name in ("codes", "row_scales", "ladder_indices", "ladder")}
+    fields |= {"table": odd_integer_table(4), "signs": arrays[path + ".input_hadamard_factors"]}
+    gains = tuple(arrays[f"{path}.post_gains.{index}"] for index in range(len(axes)))
+    matrix = LatticeMatrix(spec, make_test_sharding_config(), is_sharded=False, post_gains=gains, **fields)
+    return matrix.decompress()
+
+
+def load_leaf(directory: Path, replaced: str, arrays: dict[str, Array], metadata: dict[str, JSON]) -> WeightMatrix:
+    model = tiny_untied_model()
+    exported = model.export()
+    (directory / "config.json").write_text(json.dumps(model.config.to_json()))
+    model.token_codec.tokenizer.save(str(directory / "tokenizer.json"))
+    kept = {name: value for name, value in exported.arrays.items() if not name.startswith(replaced)}
+    specs = {name: value for name, value in exported.metadata.items() if not name.startswith(replaced)} | metadata
+    with (directory / "model.safetensors").open("wb") as stream:
+        safe_write(stream, kept | arrays, metadata={name: json.dumps(value) for name, value in specs.items()})
+    return weight_matrices(LanguageModel.load(directory, make_test_sharding_config()))[replaced]
 
 
 def tiny_untied_model() -> LanguageModel:
@@ -177,7 +220,7 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     out = layer + "mixer.out_projection.weights"
     metadata[out + ".spec"] = trellis(out, MODEL_DIM, 8, QtipGaussianSpec(2, 4, 0), "float16")
     up = layer + "mlp.up_projection.weights"
-    metadata[up + ".spec"] = lattice(up, 32, LatticeSpec(LatticeKind.I4, Layout.OUTPUT_INPUT))
+    metadata[up + ".spec"] = i4s4(arrays, up, 32)
     input_embedding = "decoder.embedding.input_embedding"
     metadata[input_embedding + ".spec"] = lattice(
         input_embedding, VOCABULARY, LatticeSpec(LatticeKind.D4, Layout.INPUT_OUTPUT)
@@ -198,21 +241,19 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
 
     restored = LanguageModel.load(tmp_path, make_test_sharding_config())
 
-    matrices = {
-        str(ParameterPath() / path): leaf
-        for path, leaf in jax.tree_util.tree_leaves_with_path(restored, is_leaf=lambda x: isinstance(x, WeightMatrix))
-        if isinstance(leaf, WeightMatrix)
-    }
+    matrices = weight_matrices(restored)
     assert {name: type(matrix) for name, matrix in matrices.items()} == {
         input_embedding: LatticeMatrix,
         readout: DirectionMatrix,
         qkvg: RowStackMatrix,
         out: QtipGaussianMatrix,
-        up: LatticeMatrix,
+        up: HybridMatrix,
         layer + "mlp.down_projection.weights": FullPrecisionMatrix,
     }
     assert matrices[qkvg].spec == RowStackSpec(stack_specs)
-    assert_loaded_every_saved_tensor(restored, arrays, folds)
+    folded = matrices[up].astype(jnp.float32).decompress().astype(jnp.bfloat16)
+    np.testing.assert_array_equal(folded, saved_i4s4(arrays, up))
+    assert_loaded_every_saved_tensor(restored, {name: arrays[name] for name in arrays if up not in name}, folds)
     batch_sharding = restored.sharding_config.resolve_sharding((LogicalAxis.BATCH, None))
     tokens = jax.device_put(jnp.array([[1, 2, 3], [3, 2, 1]], dtype=jnp.int32), batch_sharding)
     result = restored.decoder(
@@ -223,3 +264,28 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
         forward_pass_config=DecoderForwardPassConfig.for_inference(),
     )
     assert bool(jnp.all(jnp.isfinite(result.logits)))
+
+
+@pytest.mark.parametrize("qkv_seed", [0, 1, None])
+def test_qkv_and_i4s4_gate_merge_only_when_both_fold_under_shared_signs(tmp_path: Path, qkv_seed: int | None) -> None:
+    """The gate's seed is 0: a qkv of seed 0 shares its signs, seed 1 does not, and None is a trellis qkv."""
+    qkv, gate = QKVG.replace("qkvg", "qkv"), QKVG.replace("qkvg", "gate")
+    arrays: dict[str, Array] = {}
+    metadata: dict[str, JSON] = {gate + ".spec": i4s4(arrays, gate, 8)}
+    if qkv_seed is None:
+        spec = QtipGaussianSpec(4, 8, 64)
+        arrays[qkv + ".codes"] = jnp.zeros((24, spec.code_bytes(MODEL_DIM)), jnp.uint8)
+        arrays |= {qkv + ".scales": jnp.ones(24, jnp.float16), qkv + ".gains": jnp.ones(24, jnp.bfloat16)}
+        arrays |= {f"qtip_shared.signs_{MODEL_DIM}": jnp.ones(MODEL_DIM), f"qtip_shared.q_{MODEL_DIM}": jnp.eye(9)}
+        arrays["qtip_shared.codebook_v4"] = jnp.zeros((1 << STATE_BITS, 4))
+        metadata[qkv + ".spec"] = {"type": "QtipGaussianSpec", "layout": "output_input", **asdict(spec)}
+    else:
+        metadata[qkv + ".spec"] = i4s4(arrays, qkv, 24, qkv_seed)
+    matrix = load_leaf(tmp_path, QKVG, arrays, metadata)
+    if qkv_seed == 0:
+        assert isinstance(matrix, HybridMatrix)
+        expected = jnp.concatenate((saved_i4s4(arrays, qkv), saved_i4s4(arrays, gate)))
+        np.testing.assert_array_equal(matrix.astype(jnp.float32).decompress().astype(jnp.bfloat16), expected)
+    else:
+        assert isinstance(matrix, RowStackMatrix)
+        assert [*map(type, matrix.parts)] == [HybridMatrix if qkv_seed else QtipGaussianMatrix, HybridMatrix]

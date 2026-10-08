@@ -19,16 +19,23 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
-from .lattice import LatticeMatrix, LatticeSpec
-from .qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec
+from .hybrid import HybridSpec
+from .qtip_gaussian import QtipGaussianSpec
 
 
 @dataclass(frozen=True)
 class RowStackSpec(WeightMatrixSpec):
-    parts: tuple[tuple[int, QtipGaussianSpec | LatticeSpec], ...]
+    parts: tuple[tuple[int, WeightMatrixSpec], ...]
 
     def __post_init__(self) -> None:
-        assert all(isinstance(spec, QtipGaussianSpec) or spec.layout == Layout.OUTPUT_INPUT for _, spec in self.parts)
+        def part_layout(spec: WeightMatrixSpec) -> Layout | None:
+            if isinstance(spec, QtipGaussianSpec):
+                return Layout.OUTPUT_INPUT
+            if isinstance(spec, HybridSpec):
+                return part_layout(spec.quantization_spec)
+            return getattr(spec, "layout", None)
+
+        assert all(part_layout(spec) == Layout.OUTPUT_INPUT for _, spec in self.parts)
 
     def compress(
         self,
@@ -56,7 +63,7 @@ class RowStackSpec(WeightMatrixSpec):
 
 
 class RowStackMatrix(WeightMatrix[RowStackSpec]):
-    parts: tuple[QtipGaussianMatrix | LatticeMatrix, ...]
+    parts: tuple[WeightMatrix, ...]
 
     def __check_init__(self) -> None:
         assert tuple((part.shape[0], part.spec) for part in self.parts) == self.spec.parts

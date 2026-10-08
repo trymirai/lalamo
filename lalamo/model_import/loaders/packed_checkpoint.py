@@ -10,14 +10,26 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, DTypeLike, Float
+from jaxtyping import Array, DTypeLike, Float, Float32
 
 from lalamo.compressed.direction import DirectionMatrix, DirectionSpec
-from lalamo.compressed.lattice import LatticeKind, LatticeMatrix, LatticeSpec, odd_integer_table
+from lalamo.compressed.hybrid import HybridMatrix, HybridSpec, IncoherenceProcessingMode, IncoherenceSigns
+from lalamo.compressed.int import IntSpec
+from lalamo.compressed.lattice import (
+    COLUMNS_PER_LADDER_INDEX,
+    HADAMARD_BLOCK_SIZE,
+    LADDER_INDEX_BITS,
+    LatticeKind,
+    LatticeMatrix,
+    LatticeSpec,
+    odd_integer_table,
+)
+from lalamo.compressed.mlx import MLXSpec
 from lalamo.compressed.qtip_gaussian import COLUMN_CLASSES, STATE_BITS, QtipGaussianMatrix, QtipGaussianSpec
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
 from lalamo.compressed.trellis import states_to_levels
-from lalamo.compressed.utils.post_gains import GainAxis
+from lalamo.compressed.utils.packing import unpack_uint8_to_uint
+from lalamo.compressed.utils.post_gains import GainAxis, row_gains
 from lalamo.initializer import EmptyInitializer
 from lalamo.model import BaseModelConfig
 from lalamo.models.language_model import LanguageModel, LanguageModelConfig
@@ -28,6 +40,9 @@ from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, Layout, ShapeDtypeMatrix, WeightMatrix
+
+FOLDED_I4S4_QUANTIZATION = MLXSpec(bits=4, group_size=COLUMNS_PER_LADDER_INDEX, layout=Layout.OUTPUT_INPUT)
+FOLDED_I4S4_SPEC = HybridSpec(FOLDED_I4S4_QUANTIZATION, None, HADAMARD_BLOCK_SIZE, IncoherenceProcessingMode.INPUT)
 
 
 @dataclass(frozen=True)
@@ -54,6 +69,21 @@ def codebook_from_table(table: Float[Array, "states width"]) -> Float[Array, " c
     if not error <= 1e-5:
         raise ValueError(f"The trellis table is not scale * level + offset (error {error})")
     return jnp.asarray([scale, *offsets[np.arange(COLUMN_CLASSES) % width]], dtype=jnp.float32)
+
+
+def folded_row_scale(path: str, scales: Array, axes: tuple[GainAxis, ...], *gains: Array) -> Float32[Array, " rows"]:
+    """`scales` times every row gain in float32: the one row scale that replaces them. Column gains must be 1."""
+    if not all(bool(jnp.all(gain == 1)) for axis, gain in zip(axes, gains, strict=True) if axis == GainAxis.COLUMN):
+        raise ValueError(f"Column post-gains other than 1 do not fold into the row scales at {path}")
+    return math.prod((gain.astype(jnp.float32) for gain in row_gains(axes, gains)), start=scales.astype(jnp.float32))
+
+
+def can_merge_folded(top: WeightMatrix, bottom: WeightMatrix) -> bool:
+    """Whether both are folded I4S4 matrices of one dtype under the same input signs, so their planes stack."""
+    if not (top.spec == bottom.spec == FOLDED_I4S4_SPEC and top.dtype == bottom.dtype):
+        return False
+    assert isinstance(top, HybridMatrix) and isinstance(bottom, HybridMatrix)
+    return jax.tree.all(jax.tree.map(jnp.array_equal, top.incoherence_signs, bottom.incoherence_signs))
 
 
 def native_config(value: JSON) -> JSON:
@@ -128,7 +158,7 @@ def load_packed_checkpoint(
             specifications.add(path / "spec")
             return json.loads(metadata[path / "spec"])
 
-        def row_stack(parts: tuple[QtipGaussianMatrix | LatticeMatrix, ...], is_sharded: bool) -> RowStackMatrix:
+        def row_stack(parts: tuple[WeightMatrix, ...], is_sharded: bool) -> RowStackMatrix:
             spec = RowStackSpec(tuple((part.shape[0], part.spec) for part in parts))
             return RowStackMatrix(spec=spec, sharding_config=sharding_config, is_sharded=is_sharded, parts=parts)
 
@@ -150,20 +180,15 @@ def load_packed_checkpoint(
                     layout = saved.pop("layout")
                     assert layout == Layout.OUTPUT_INPUT, f"Trellis leaves are stored output-input, got {layout}"
                     packed = converter.structure(saved, PackedQtipGaussianSpec)
-                    if GainAxis.COLUMN in packed.post_gain_axes:
-                        raise ValueError(f"Column post-gains do not fold into the row scales at {path}")
                     gains = parameter(path / "gains")
                     # Every saved gain multiplies a whole row, so one float32 scale per row replaces them all.
-                    scales = math.prod(
-                        (
-                            gain.astype(jnp.float32)
-                            for gain in (
-                                gains,
-                                *parameter_tuple(path / "pre_gains", packed.pre_gain_count),
-                                *parameter_tuple(path / "post_gains", len(packed.post_gain_axes)),
-                            )
-                        ),
-                        start=parameter(path / "scales").astype(jnp.float32),
+                    scales = folded_row_scale(
+                        path,
+                        parameter(path / "scales"),
+                        (GainAxis.ROW,) * (1 + packed.pre_gain_count) + packed.post_gain_axes,
+                        gains,
+                        *parameter_tuple(path / "pre_gains", packed.pre_gain_count),
+                        *parameter_tuple(path / "post_gains", len(packed.post_gain_axes)),
                     )
                     matrix = QtipGaussianMatrix(
                         spec=QtipGaussianSpec(packed.vector_width, packed.transition_bits, packed.restart_columns),
@@ -182,12 +207,44 @@ def load_packed_checkpoint(
                     parts = []
                     for index, (rows, part_spec) in enumerate(saved.pop("parts")):
                         part = weight(path / "parts" / index, part_spec, template)
-                        assert isinstance(part, QtipGaussianMatrix | LatticeMatrix)
                         assert part.shape[0] == rows
                         parts.append(part)
                     layout = saved.pop("layout")
                     assert layout == Layout.OUTPUT_INPUT and not saved, f"Unexpected row stack {saved} at {path}"
                     matrix = row_stack(tuple(parts), is_sharded)
+                case "HybridSpec":
+                    spec = HybridSpec.from_json({"type": "HybridSpec", **saved})
+                    assert isinstance(spec.quantization_spec, IntSpec)
+                    # Saved as HybridMatrix.export writes it: int scales group-major, signs on the input axis only.
+                    quantized = spec.quantization_spec.from_packed_parameters(
+                        packed_weights=parameter(path / "quantized" / "weights"),
+                        scales=parameter(path / "quantized" / "scales")[:, : template.shape[0]].T,
+                        packed_zero_points=None,
+                        sharding_config=sharding_config,
+                        is_sharded=is_sharded,
+                    )
+                    signs = IncoherenceSigns(parameter(path / "incoherence_signs" / "input_signs"), None)
+                    matrix = HybridMatrix(spec, sharding_config, is_sharded, quantized, None, signs)
+                case "I4S4Spec" if saved["layout"] == Layout.OUTPUT_INPUT:
+                    # Level 2c - 15 times the group scale s = row scale * ladder value is (2s) * c - 15s: affine, once
+                    # the nibbles are swapped to low-first. Gains fold into s in float32, exact for powers of two.
+                    axes = converter.structure({**saved, "kind": LatticeKind.I4}, LatticeSpec).post_gain_axes
+                    row_scales = parameter(path / "row_scales")
+                    groups = unpack_uint8_to_uint(parameter(path / "ladder_indices"), LADDER_INDEX_BITS)
+                    gains = parameter_tuple(path / "post_gains", len(axes))
+                    row_scale = folded_row_scale(path, row_scales, axes, *gains)
+                    codes = parameter(path / "codes")
+                    scales = row_scale[:, None] * jnp.take(parameter(path / "ladder"), groups).astype(jnp.float32)
+                    quantized = FOLDED_I4S4_QUANTIZATION.from_packed_parameters(
+                        # The I4 packer puts the even column in the high nibble; MLX reads the low one first.
+                        packed_weights=(codes << 4) | (codes >> 4),
+                        scales=(2 * scales).astype(dtype or row_scales.dtype),
+                        biases=(-15 * scales).astype(dtype or row_scales.dtype),
+                        sharding_config=sharding_config,
+                        is_sharded=is_sharded,
+                    )
+                    signs = IncoherenceSigns(parameter(path / "input_hadamard_factors"), None)
+                    matrix = HybridMatrix(FOLDED_I4S4_SPEC, sharding_config, is_sharded, quantized, None, signs)
                 case "D4S4Spec" | "I3S4Spec" | "I4S4Spec" as kind_name:
                     assert "kind" not in saved
                     kind = LatticeKind(kind_name[:2].lower())
@@ -247,14 +304,17 @@ def load_packed_checkpoint(
                             leaf,
                             replace(qkv, weights=jnp.concatenate((qkv.weights, gate.weights))),
                         )
-                    assert isinstance(qkv, QtipGaussianMatrix | LatticeMatrix)
-                    assert isinstance(gate, QtipGaussianMatrix | LatticeMatrix)
+                    if can_merge_folded(qkv, gate):
+                        assert isinstance(qkv, HybridMatrix) and isinstance(gate, HybridMatrix)
+                        merged = jax.tree.map(lambda *planes: jnp.concatenate(planes), qkv.quantized, gate.quantized)
+                        return load_as(leaf, replace(qkv, quantized=merged))
                     return load_as(leaf, row_stack((qkv, gate), leaf.is_sharded))
                 return load_as(leaf, weight(path, saved_spec(path), leaf))
             if isinstance(leaf, ShapeDtypeStruct | Array):
                 value = parameter(path)
                 assert value.shape == leaf.shape, f"Saved shape differs from model at {path}"
-                if dtype is not None:
+                # A declared dtype (norm scales: float32) is not weak; an unset one follows the saved array.
+                if dtype is not None or not getattr(leaf, "weak_type", True):
                     value = value.astype(leaf.dtype)
                 return jax.device_put(value, leaf.sharding)
             return leaf
