@@ -7,35 +7,21 @@ from jaxtyping import Array, DTypeLike, Float, Key
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.dummy_array import is_dummy_array
+from lalamo.utils.dummy_array import is_dummy_or_tracer
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
     FullPrecisionSpec,
-    Layout,
     MatmulConfig,
     WeightMatrix,
     WeightMatrixSpec,
 )
 
-from .hybrid import HybridSpec
-from .qtip_gaussian import QtipGaussianSpec
-
 
 @dataclass(frozen=True)
 class RowStackSpec(WeightMatrixSpec):
     parts: tuple[tuple[int, WeightMatrixSpec], ...]
-
-    def __post_init__(self) -> None:
-        def part_layout(spec: WeightMatrixSpec) -> Layout | None:
-            if isinstance(spec, QtipGaussianSpec):
-                return Layout.OUTPUT_INPUT
-            if isinstance(spec, HybridSpec):
-                return part_layout(spec.quantization_spec)
-            return getattr(spec, "layout", None)
-
-        assert all(part_layout(spec) == Layout.OUTPUT_INPUT for _, spec in self.parts)
 
     def compress(
         self,
@@ -47,7 +33,7 @@ class RowStackSpec(WeightMatrixSpec):
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "RowStackMatrix":
-        if not is_dummy_array(weights):
+        if not is_dummy_or_tracer(weights):
             raise ValueError("Row stacks must be constructed from existing matrices")
         assert sum(rows for rows, _ in self.parts) == weights.shape[0]
         initializer = EmptyInitializer(weights.dtype, sharding_config)

@@ -8,6 +8,7 @@ import jax.numpy as jnp
 from jax.core import Tracer
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
+from lalamo.initializer import EmptyInitializer
 from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
@@ -24,10 +25,14 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
+from .qtip_gaussian import full_rotation
+
 __all__ = [
     "HybridMatrix",
     "HybridSpec",
+    "IncoherenceKind",
     "IncoherenceProcessingMode",
+    "KroneckerRotation",
 ]
 
 
@@ -226,12 +231,34 @@ class IncoherenceSigns(eqx.Module):
         return transformed * signs.astype(transformed.dtype)
 
 
+class IncoherenceKind(StrEnum):
+    HADAMARD = "hadamard"
+    KRONECKER = "kronecker"
+
+
+class KroneckerRotation(eqx.Module):
+    signs: Float[Array, " in_channels"] = field(trainable=False)
+    small_q: Float[Array, "order order"] = field(trainable=False)
+
+    def unprocess_weights(
+        self,
+        weights: Float[Array, "*components out_channels in_channels"],
+    ) -> Float[Array, "*components out_channels in_channels"]:
+        return (full_rotation(weights.astype(jnp.float32), self.small_q) * self.signs).astype(weights.dtype)
+
+    def input_transform(
+        self, vector: Float[Array, "*batch source_channels"]
+    ) -> Float[Array, "*batch source_channels"]:
+        return full_rotation(vector.astype(jnp.float32) * self.signs, self.small_q.T).astype(vector.dtype)
+
+
 @dataclass(frozen=True)
 class HybridSpec(WeightMatrixSpec):
     quantization_spec: WeightMatrixSpec
     adapter_spec: WeightMatrixSpec | None
     incoherence_block_size: Literal[32, 64, 128] | None = 32
     incoherence_processing_mode: IncoherenceProcessingMode = IncoherenceProcessingMode.INPUT_OUTPUT
+    incoherence_kind: IncoherenceKind = IncoherenceKind.HADAMARD
 
     @supports_dummy_arrays()
     def compress(
@@ -245,6 +272,14 @@ class HybridSpec(WeightMatrixSpec):
         is_sharded: bool = True,
     ) -> "HybridMatrix":
         *_, output_dim, input_dim = weights.shape
+        if self.incoherence_kind == IncoherenceKind.KRONECKER:
+            zeros = EmptyInitializer(jnp.float32, sharding_config).zeros  # the rotation is only ever loaded
+            order = input_dim // (input_dim & -input_dim)
+            quantized = self.quantization_spec.compress(
+                weights, implementation=implementation, sharding_config=sharding_config, is_sharded=is_sharded
+            )
+            rotation = KroneckerRotation(zeros((input_dim,)), zeros((order, order)))
+            return HybridMatrix(self, sharding_config, is_sharded, quantized, None, rotation)
         if key is None and isinstance(weights, Tracer):
             key = jax.random.key(0)
 
@@ -323,7 +358,26 @@ class HybridSpec(WeightMatrixSpec):
 class HybridMatrix(EmbeddingMatrix[HybridSpec]):
     quantized: WeightMatrix[WeightMatrixSpec]
     adapter: WeightMatrix[WeightMatrixSpec] | None
-    incoherence_signs: IncoherenceSigns | None
+    incoherence_signs: IncoherenceSigns | KroneckerRotation | None
+
+    @classmethod
+    def of(
+        cls,
+        quantized: WeightMatrix[WeightMatrixSpec],
+        rotation: IncoherenceSigns | KroneckerRotation,
+        sharding_config: ShardingConfig,
+        is_sharded: bool = True,
+    ) -> "HybridMatrix":
+        if isinstance(rotation, KroneckerRotation):
+            spec = HybridSpec(quantized.spec, None, None, IncoherenceProcessingMode.INPUT, IncoherenceKind.KRONECKER)
+        else:
+            mode = (
+                IncoherenceProcessingMode.INPUT
+                if rotation.input_signs is not None
+                else IncoherenceProcessingMode.OUTPUT
+            )
+            spec = HybridSpec(quantized.spec, None, incoherence_processing_mode=mode)
+        return cls(spec, sharding_config, is_sharded, quantized, None, rotation)
 
     def to_full_precision(self) -> FullPrecisionMatrix:
         return FullPrecisionSpec(layout=Layout.OUTPUT_INPUT).compress(
@@ -357,12 +411,14 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
         result = self.quantized.decompress()
         block_size = self.spec.incoherence_block_size
-        if self.incoherence_signs is not None:
+        if isinstance(self.incoherence_signs, KroneckerRotation):
+            result = self.incoherence_signs.unprocess_weights(result)
+        elif self.incoherence_signs is not None:
             assert block_size is not None
             result = self.incoherence_signs.unprocess_weights(result, block_size, self.sharding_config)
         if self.adapter is not None:
             adapter = self.adapter.decompress()
-            if self.incoherence_signs is not None:
+            if isinstance(self.incoherence_signs, IncoherenceSigns):
                 assert block_size is not None
                 adapter = self.incoherence_signs.unprocess_weight_output_axis(
                     adapter,
@@ -395,7 +451,9 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
         forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, "*batch out_channels"]:
         self._raise_if_batched()
-        if self.incoherence_signs is not None and self.incoherence_signs.input_signs is not None:
+        if isinstance(self.incoherence_signs, KroneckerRotation) or (
+            self.incoherence_signs is not None and self.incoherence_signs.input_signs is not None
+        ):
             raise ValueError("Hybrid embedding lookup is only supported when input RHT is disabled.")
         if not isinstance(self.quantized, EmbeddingMatrix):
             raise TypeError("Hybrid embedding lookup requires an embedding-compatible quantization matrix.")
@@ -407,7 +465,7 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
             keychain=keychain,
             forward_pass_config=forward_pass_config,
         )
-        if self.incoherence_signs is not None:
+        if isinstance(self.incoherence_signs, IncoherenceSigns):
             assert self.spec.incoherence_block_size is not None
             result = self.incoherence_signs.output_transform(result, self.spec.incoherence_block_size)
         return result
@@ -425,7 +483,9 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
 
         quantized_keychain, adapter_keychain = keychain.split(2)
         transformed_vector = vector
-        if self.incoherence_signs is not None:
+        if isinstance(self.incoherence_signs, KroneckerRotation):
+            transformed_vector = self.incoherence_signs.input_transform(vector)
+        elif self.incoherence_signs is not None:
             assert self.spec.incoherence_block_size is not None
             transformed_vector = self.incoherence_signs.input_transform(
                 vector,
@@ -445,7 +505,7 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
                 forward_pass_config=forward_pass_config,
             )
 
-        if self.incoherence_signs is not None:
+        if isinstance(self.incoherence_signs, IncoherenceSigns):
             assert self.spec.incoherence_block_size is not None
             result = self.incoherence_signs.output_transform(
                 result,

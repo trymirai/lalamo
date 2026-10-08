@@ -1,12 +1,11 @@
-from dataclasses import replace
 from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from lalamo.compressed.hybrid import HybridMatrix, IncoherenceSigns
 from lalamo.compressed.lattice import LatticeKind, LatticeMatrix, LatticeSpec, odd_integer_table
-from lalamo.compressed.utils.post_gains import GainAxis
 from lalamo.module import Keychain
 from lalamo.weight_matrix import Layout
 from tests.helpers import make_test_sharding_config
@@ -16,7 +15,7 @@ pytestmark = pytest.mark.usefixtures("fake_mesh")
 DATA = Path(__file__).parent / "data"
 
 
-def saved_rows(kind: LatticeKind) -> tuple[LatticeMatrix, np.ndarray]:
+def saved_rows(kind: LatticeKind) -> tuple[HybridMatrix, np.ndarray]:
     """Four rows fitted and packed by the independent Torch producer, and the weights it decoded them to."""
     layout = Layout.INPUT_OUTPUT if kind == LatticeKind.D4 else Layout.OUTPUT_INPUT
     prefix = "" if kind == LatticeKind.I4 else f"{kind}_"
@@ -26,7 +25,7 @@ def saved_rows(kind: LatticeKind) -> tuple[LatticeMatrix, np.ndarray]:
             table = jnp.asarray(data["table"])
         else:
             table = odd_integer_table(spec.code_bits)
-        matrix = LatticeMatrix(
+        leaf = LatticeMatrix(
             spec=spec,
             sharding_config=make_test_sharding_config(),
             is_sharded=True,
@@ -35,15 +34,19 @@ def saved_rows(kind: LatticeKind) -> tuple[LatticeMatrix, np.ndarray]:
             ladder_indices=jnp.asarray(data[f"{prefix}ladder_indices"]),
             ladder=jnp.asarray(data["ladder"]),
             table=table,
-            signs=jnp.asarray(data["signs"]),
         ).astype(jnp.float32)
-        return matrix, data[f"{prefix}expected"]
+        signs = jnp.asarray(data["signs"])
+        rotation = IncoherenceSigns(
+            input_signs=None if kind == LatticeKind.D4 else signs,
+            output_signs=signs if kind == LatticeKind.D4 else None,
+        )
+        return HybridMatrix.of(leaf, rotation, leaf.sharding_config), data[f"{prefix}expected"]
 
 
 def test_lattice_matches_torch_fitted_rows() -> None:
     for kind in LatticeKind:
         matrix, expected = saved_rows(kind)
-        if matrix.spec.layout == Layout.INPUT_OUTPUT:
+        if kind == LatticeKind.D4:
             expected = expected.T
         np.testing.assert_allclose(matrix.decompress(), expected, atol=2e-7, rtol=1e-6)
 
@@ -54,22 +57,3 @@ def test_d4_lookup_returns_the_torch_decoded_rows() -> None:
     for index in (2, jnp.array([3, 0, 1], dtype=jnp.int32)):
         actual = matrix.lookup_embedding(index, keychain=keychain)
         np.testing.assert_allclose(actual, expected[np.asarray(index)], atol=2e-7, rtol=1e-6)
-
-
-def test_i4_gain_stages_match_torch_bf16_weights() -> None:
-    matrix, _ = saved_rows(LatticeKind.I4)
-    with np.load(DATA / "post_gain_stages.npz") as data:
-        matrix = replace(
-            matrix,
-            spec=replace(matrix.spec, post_gain_axes=(GainAxis.ROW, GainAxis.ROW, GainAxis.ROW, GainAxis.COLUMN)),
-            post_gains=tuple(jnp.asarray(data[name]) for name in ("i4_t0", "i4_t5", "i4_row_gain", "i4_column_gain")),
-        )
-        expected = data["i4_expected_bits"].view(jnp.bfloat16)
-    # The producer's dense H32 matmul leaves tiny residuals at exact cancellation zeros.
-    actual = np.asarray(matrix.decompress())
-    nonzero = actual != 0
-    np.testing.assert_array_equal(actual[nonzero], expected[nonzero])
-    np.testing.assert_allclose(actual[~nonzero], expected[~nonzero], atol=1e-8, rtol=0)
-    inputs = jnp.linspace(-1, 1, matrix.shape[1], dtype=jnp.float32)
-    keychain = Keychain.init(0, sharding_config=matrix.sharding_config)
-    np.testing.assert_allclose(matrix.dot(inputs, keychain=keychain), expected.astype(jnp.float32) @ inputs, atol=2e-5)

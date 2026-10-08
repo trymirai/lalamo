@@ -14,7 +14,15 @@ from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 
 from lalamo.compressed.direction import BLOCK_BYTES, BLOCK_COLUMNS, LEVEL_BITS, DirectionMatrix
-from lalamo.compressed.hybrid import HybridMatrix
+from lalamo.compressed.hybrid import (
+    HybridMatrix,
+    HybridSpec,
+    IncoherenceKind,
+    IncoherenceProcessingMode,
+    IncoherenceSigns,
+    KroneckerRotation,
+)
+from lalamo.compressed.int import IntSpec
 from lalamo.compressed.lattice import (
     COLUMNS_PER_LADDER_BYTE,
     LADDER_INDEX_BITS,
@@ -26,8 +34,8 @@ from lalamo.compressed.lattice import (
 from lalamo.compressed.qtip_gaussian import STATE_BITS, QtipGaussianMatrix, QtipGaussianSpec
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
 from lalamo.compressed.trellis import states_to_levels
-from lalamo.compressed.utils.post_gains import GainAxis
 from lalamo.initializer import RandomInitializer
+from lalamo.model_import.loaders.packed_checkpoint import load_packed_checkpoint
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.models.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
 from lalamo.module import Keychain
@@ -52,33 +60,50 @@ CODEBOOK_OFFSETS = (0.31, -0.17, 0.08, 0.44)
 QKVG = "decoder.transformer.layers.0.mixer.qkvg_projection.weights"
 
 
+def contains_rows(loaded: Array, saved: Array) -> bool:
+    # Merged trellis leaves concatenate rows, so a saved tensor is a window of the loaded one.
+    array, expected = np.atleast_1d(np.asarray(loaded)), np.atleast_1d(np.asarray(saved))
+    windows = (array[start : start + len(expected)] for start in range(len(array) - len(expected) + 1))
+    return array.dtype == expected.dtype and any(np.array_equal(window, expected) for window in windows)
+
+
 def assert_loaded_every_saved_tensor(
     model: LanguageModel, saved: Mapping[str, Array], folds: Mapping[str, tuple[str, ...]]
 ) -> None:
     """`folds` maps each trellis leaf's saved scales name to the saved tensors its one loaded scale multiplies."""
     consumed = {name for stages in folds.values() for name in stages}
-    for leaf in jax.tree.leaves(model, is_leaf=lambda node: isinstance(node, QtipGaussianMatrix)):
+    for leaf in jax.tree.leaves(model, is_leaf=lambda node: isinstance(node, QtipGaussianMatrix | KroneckerRotation)):
         if isinstance(leaf, QtipGaussianMatrix):
-            _, columns = leaf.shape
             width = leaf.spec.vector_width
             expected_codebook = (CODEBOOK_SCALE, *CODEBOOK_OFFSETS[:width] * (4 // width))
             np.testing.assert_allclose(leaf.codebook, expected_codebook, rtol=0, atol=1e-5)
+        if isinstance(leaf, KroneckerRotation):
+            columns = leaf.signs.shape[0]
             np.testing.assert_array_equal(leaf.signs, saved[f"qtip_shared.signs_{columns}"])
             np.testing.assert_array_equal(leaf.small_q, saved[f"qtip_shared.q_{columns}"])
     loaded = model.export().arrays
     for saved_name, value in saved.items():
-        if saved_name.startswith(("qtip_shared.", "decoder.transformer.ropes.")):
+        if (
+            saved_name.startswith(("qtip_shared.", "decoder.transformer.ropes."))
+            or saved_name in consumed - folds.keys()
+        ):
             continue
         # Lattice sign vectors and the unfused layout's qkv and gate leaves have their own names on disk.
-        name = re.sub(r"\.(input|output)_hadamard_factors$", ".signs", saved_name)
-        name = name.replace(".qkv_projection.weights.", ".qkvg_projection.weights.parts.0.")
-        name = name.replace(".gate_projection.weights.", ".qkvg_projection.weights.parts.1.")
-        if saved_name in folds:
-            expected = math.prod(saved[stage].astype(jnp.float32) for stage in folds[saved_name])
-            np.testing.assert_array_equal(loaded[name], expected, err_msg=name)
-        elif saved_name not in consumed:
-            assert loaded[name].dtype == value.dtype, name
-            np.testing.assert_array_equal(loaded[name], value, err_msg=name)
+        name = re.sub(r"\.(input|output)_hadamard_factors$", r".\1_signs", saved_name)
+        name = name.replace(".qkv_projection.weights.", ".qkvg_projection.weights.")
+        name = name.replace(".gate_projection.weights.", ".qkvg_projection.weights.")
+        matrix_path, _, leaf_name = name.rpartition(".")
+        matrix_path = re.sub(r"\.parts\.\d+$", "", matrix_path)
+        expected = jnp.asarray(
+            math.prod(saved[stage].astype(jnp.float32) for stage in folds[saved_name])
+            if saved_name in folds
+            else value
+        )
+        assert any(
+            contains_rows(array, expected)
+            for loaded_name, array in loaded.items()
+            if loaded_name.startswith(matrix_path + ".") and loaded_name.rpartition(".")[2] == leaf_name
+        ), saved_name
 
 
 def weight_matrices(model: LanguageModel) -> dict[str, WeightMatrix]:
@@ -95,29 +120,38 @@ def i4s4(arrays: dict[str, Array], path: str, rows: int, seed: int = 0) -> dict[
     arrays[path + ".row_scales"] = jnp.asarray(np.exp2(generator.integers(-3, 3, rows)), jnp.bfloat16)
     arrays[path + ".ladder"] = jnp.asarray(np.exp2(generator.integers(-3, 3, 1 << LADDER_INDEX_BITS)), jnp.float16)
     arrays[path + ".post_gains.0"] = jnp.asarray(np.exp2(generator.integers(-3, 3, rows)), jnp.float32)
-    return {"type": "I4S4Spec", "layout": "output_input", "post_gain_axes": ["row"]}
+    arrays[path + ".post_gains.1"] = jnp.ones(MODEL_DIM, jnp.float32)
+    return {"type": "I4S4Spec", "layout": "output_input", "post_gain_axes": ["row", "column"]}
 
 
 def saved_i4s4(arrays: Mapping[str, Array], path: str, axes: tuple[str, ...] = ("row",)) -> Array:
-    """The I4S4 leaf saved at `path` decoded by the lattice format, which rounds to bfloat16 after each post-gain."""
-    spec = LatticeSpec(LatticeKind.I4, Layout.OUTPUT_INPUT, tuple(map(GainAxis, axes)))
+    """The I4S4 leaf saved at `path`, decoded by the lattice format and scaled by its row gains."""
     fields = {name: arrays[f"{path}.{name}"] for name in ("codes", "row_scales", "ladder_indices", "ladder")}
-    fields |= {"table": odd_integer_table(4), "signs": arrays[path + ".input_hadamard_factors"]}
-    gains = tuple(arrays[f"{path}.post_gains.{index}"] for index in range(len(axes)))
-    matrix = LatticeMatrix(spec, make_test_sharding_config(), is_sharded=False, post_gains=gains, **fields)
-    return matrix.decompress()
+    spec = LatticeSpec(LatticeKind.I4, Layout.OUTPUT_INPUT)
+    leaf = LatticeMatrix(spec, make_test_sharding_config(), is_sharded=True, table=odd_integer_table(4), **fields)
+    rotation = IncoherenceSigns(arrays[path + ".input_hadamard_factors"], None)
+    decoded = HybridMatrix.of(leaf.astype(jnp.float32), rotation, leaf.sharding_config).decompress()
+    row_gains = (arrays[f"{path}.post_gains.{index}"] for index, axis in enumerate(axes) if axis == "row")
+    return decoded * math.prod(row_gains, start=jnp.ones(len(decoded)))[:, None]
 
 
-def load_leaf(directory: Path, replaced: str, arrays: dict[str, Array], metadata: dict[str, JSON]) -> WeightMatrix:
-    model = tiny_untied_model()
-    exported = model.export()
+def save_model(
+    directory: Path, model: LanguageModel, arrays: Mapping[str, Array], metadata: Mapping[str, JSON]
+) -> None:
     (directory / "config.json").write_text(json.dumps(model.config.to_json()))
     model.token_codec.tokenizer.save(str(directory / "tokenizer.json"))
-    kept = {name: value for name, value in exported.arrays.items() if not name.startswith(replaced)}
-    specs = {name: value for name, value in exported.metadata.items() if not name.startswith(replaced)} | metadata
     with (directory / "model.safetensors").open("wb") as stream:
-        safe_write(stream, kept | arrays, metadata={name: json.dumps(value) for name, value in specs.items()})
-    return weight_matrices(LanguageModel.load(directory, make_test_sharding_config()))[replaced]
+        safe_write(stream, arrays, metadata={name: json.dumps(value) for name, value in metadata.items()})
+
+
+def load_with(directory: Path, replaced: str, arrays: dict[str, Array], metadata: dict[str, JSON]) -> LanguageModel:
+    """Loads the tiny model with every tensor under `replaced` swapped for the given ones."""
+    model = tiny_untied_model()
+    exported = model.export()
+    kept = {name: value for name, value in exported.arrays.items() if not name.startswith(replaced)}
+    specs = {name: value for name, value in exported.metadata.items() if not name.startswith(replaced)}
+    save_model(directory, model, kept | arrays, specs | metadata)
+    return load_packed_checkpoint(directory, make_test_sharding_config())
 
 
 def tiny_untied_model() -> LanguageModel:
@@ -148,6 +182,18 @@ def tiny_untied_model() -> LanguageModel:
     )
     tokenizer = Tokenizer(WordLevel(vocab={f"token{i}": i for i in range(VOCABULARY)}, unk_token="token0"))
     return config.init(tokenizer, RandomInitializer(jnp.bfloat16, make_test_sharding_config(), key=jax.random.key(9)))
+
+
+def assert_export_reloads(model: LanguageModel, directory: Path) -> None:
+    """The exported layout loads back into the same matrices."""
+    directory.mkdir()
+    exported = model.export()
+    save_model(directory, model, exported.arrays, exported.metadata)
+    reloaded = LanguageModel.load(directory, make_test_sharding_config(), jnp.bfloat16)
+    assert jax.tree.structure(reloaded) == jax.tree.structure(model)
+    for reloaded_array, array in zip(jax.tree.leaves(reloaded), jax.tree.leaves(model), strict=True):
+        if isinstance(array, Array):
+            np.testing.assert_array_equal(reloaded_array, array)
 
 
 def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> None:
@@ -204,16 +250,18 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     arrays[readout + ".mean_norm"] = jnp.float32(3.0)
     arrays[readout + ".tail"] = uniform((VOCABULARY, MODEL_DIM - BLOCK_COLUMNS), jnp.bfloat16)
     metadata[readout + ".spec"] = {"type": "SDirectionSpec", "layout": "output_input"}
+    # Two trellis parts of one format and codebook merge into one leaf; the other format stays its own leaf.
     stack_specs = (
-        (24, QtipGaussianSpec(4, 8, 64)),
-        (8, LatticeSpec(LatticeKind.I3, Layout.OUTPUT_INPUT)),
+        (8, QtipGaussianSpec(4, 8, 64)),
+        (8, QtipGaussianSpec(4, 8, 64)),
+        (16, QtipGaussianSpec(2, 6, 0)),
     )
     qkvg = layer + "mixer.qkvg_projection.weights"
     metadata[qkvg + ".spec"] = {
         "type": "RowStackSpec",
         "parts": [
-            [24, trellis(qkvg + ".parts.0", 24, MODEL_DIM, stack_specs[0][1], "float32")],
-            [8, lattice(qkvg + ".parts.1", 8, stack_specs[1][1])],
+            [rows, trellis(f"{qkvg}.parts.{index}", rows, MODEL_DIM, spec, "float32")]
+            for index, (rows, spec) in enumerate(stack_specs)
         ],
         "layout": "output_input",
     }
@@ -243,17 +291,21 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
 
     matrices = weight_matrices(restored)
     assert {name: type(matrix) for name, matrix in matrices.items()} == {
-        input_embedding: LatticeMatrix,
+        input_embedding: HybridMatrix,
         readout: DirectionMatrix,
-        qkvg: RowStackMatrix,
-        out: QtipGaussianMatrix,
+        qkvg: HybridMatrix,
+        out: HybridMatrix,
         up: HybridMatrix,
         layer + "mlp.down_projection.weights": FullPrecisionMatrix,
     }
-    assert matrices[qkvg].spec == RowStackSpec(stack_specs)
-    folded = matrices[up].astype(jnp.float32).decompress().astype(jnp.bfloat16)
+    merged_specs = ((16, stack_specs[0][1]), stack_specs[2])
+    assert matrices[qkvg].spec == HybridSpec(
+        RowStackSpec(merged_specs), None, None, IncoherenceProcessingMode.INPUT, IncoherenceKind.KRONECKER
+    )
+    folded = matrices[up].astype(jnp.float32).decompress()
     np.testing.assert_array_equal(folded, saved_i4s4(arrays, up))
     assert_loaded_every_saved_tensor(restored, {name: arrays[name] for name in arrays if up not in name}, folds)
+    assert_export_reloads(restored, tmp_path / "exported")
     batch_sharding = restored.sharding_config.resolve_sharding((LogicalAxis.BATCH, None))
     tokens = jax.device_put(jnp.array([[1, 2, 3], [3, 2, 1]], dtype=jnp.int32), batch_sharding)
     result = restored.decoder(
@@ -281,11 +333,33 @@ def test_qkv_and_i4s4_gate_merge_only_when_both_fold_under_shared_signs(tmp_path
         metadata[qkv + ".spec"] = {"type": "QtipGaussianSpec", "layout": "output_input", **asdict(spec)}
     else:
         metadata[qkv + ".spec"] = i4s4(arrays, qkv, 24, qkv_seed)
-    matrix = load_leaf(tmp_path, QKVG, arrays, metadata)
+    model = load_with(tmp_path, QKVG, arrays, metadata)
+    matrix = weight_matrices(model)[QKVG]
     if qkv_seed == 0:
         assert isinstance(matrix, HybridMatrix)
         expected = jnp.concatenate((saved_i4s4(arrays, qkv), saved_i4s4(arrays, gate)))
-        np.testing.assert_array_equal(matrix.astype(jnp.float32).decompress().astype(jnp.bfloat16), expected)
+        np.testing.assert_array_equal(matrix.astype(jnp.float32).decompress(), expected)
     else:
         assert isinstance(matrix, RowStackMatrix)
-        assert [*map(type, matrix.parts)] == [HybridMatrix if qkv_seed else QtipGaussianMatrix, HybridMatrix]
+        assert [*map(type, matrix.parts)] == [HybridMatrix, HybridMatrix]
+        assert [part.spec.incoherence_kind for part in matrix.parts if isinstance(part, HybridMatrix)] == [
+            IncoherenceKind.HADAMARD if qkv_seed else IncoherenceKind.KRONECKER,
+            IncoherenceKind.HADAMARD,
+        ]
+    assert_export_reloads(model, tmp_path / "exported")
+
+
+def test_hybrid_readout_loads_as_exported(tmp_path: Path) -> None:
+    readout = "decoder.embedding.output_embedding"
+    spec = HybridSpec(
+        IntSpec(bits=4, group_size=64, is_symmetric=True, layout=Layout.OUTPUT_INPUT),
+        None,
+        32,
+        IncoherenceProcessingMode.INPUT,
+    )
+    weights = jax.random.normal(jax.random.key(0), (VOCABULARY, MODEL_DIM), jnp.bfloat16)
+    hybrid = spec.compress(weights, key=jax.random.key(1), sharding_config=make_test_sharding_config())
+    exported = hybrid.export()
+    arrays = {f"{readout}.{name}": value for name, value in exported.arrays.items()}
+    model = load_with(tmp_path, readout, arrays, {readout + ".spec": exported.metadata["spec"]})
+    np.testing.assert_array_equal(weight_matrices(model)[readout].decompress(), hybrid.decompress())

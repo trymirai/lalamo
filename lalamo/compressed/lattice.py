@@ -8,10 +8,9 @@ from jax.sharding import PartitionSpec
 from jaxtyping import Array, DTypeLike, Float, Int, Int8, Key, UInt8
 
 from lalamo.initializer import EmptyInitializer
-from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.dummy_array import is_dummy_array
+from lalamo.utils.dummy_array import is_dummy_or_tracer
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import ShardingConfig, lookup_sharded_indices, sharding_of
 from lalamo.weight_matrix import (
@@ -25,14 +24,11 @@ from lalamo.weight_matrix import (
 )
 
 from .utils.packing import unpack_uint8_to_uint
-from .utils.post_gains import GainAxis, apply_post_gains, merge_row_gains, row_gains
-from .utils.row_dot import row_batched_dot
 
 # Each 64-column group scales its row by one of 16 ladder values; two 4-bit ladder indices share a byte.
 LADDER_INDEX_BITS = 4
 COLUMNS_PER_LADDER_INDEX = 64
 COLUMNS_PER_LADDER_BYTE = 128
-HADAMARD_BLOCK_SIZE = 32
 
 
 def odd_integer_table(bits: int) -> Int8[Array, "states 1"]:
@@ -50,7 +46,6 @@ class LatticeKind(StrEnum):
 class LatticeSpec(WeightMatrixSpec):
     kind: LatticeKind
     layout: Layout
-    post_gain_axes: tuple[GainAxis, ...] = ()
 
     @property
     def vector_width(self) -> int:
@@ -87,7 +82,7 @@ class LatticeSpec(WeightMatrixSpec):
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "LatticeMatrix":
-        if not is_dummy_array(weights):
+        if not is_dummy_or_tracer(weights):
             raise ValueError("Lattice matrices must be loaded from saved parameters; fitting is not supported")
         rows, columns = self.layout.weight_shape((), *weights.shape)
         states = 1 << self.code_bits
@@ -103,13 +98,6 @@ class LatticeSpec(WeightMatrixSpec):
             ladder_indices=initializer.zeros((rows, columns // COLUMNS_PER_LADDER_BYTE), (row_axis, None), jnp.uint8),
             ladder=initializer.zeros((1 << LADDER_INDEX_BITS,), dtype=jnp.float16),
             table=initializer.zeros((states, self.vector_width), dtype=jnp.int8),
-            signs=initializer.zeros((columns,), dtype=jnp.int32),
-            post_gains=tuple(
-                initializer.zeros((rows,), (row_axis,), jnp.float32)
-                if axis == GainAxis.ROW
-                else initializer.zeros((columns,), dtype=jnp.float32)
-                for axis in self.post_gain_axes
-            ),
         )
 
 
@@ -119,8 +107,6 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
     ladder_indices: UInt8[Array, "rows groups"]
     ladder: Float[Array, " ladder"] = field(trainable=False)
     table: Int8[Array, "states width"] = field(trainable=False)
-    signs: Int[Array, " columns"] = field(trainable=False)
-    post_gains: tuple[Array, ...] = ()
 
     def __check_init__(self) -> None:
         rows, columns = self.shape
@@ -131,14 +117,10 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
         assert self.ladder.shape == (1 << LADDER_INDEX_BITS,) and self.ladder.dtype == jnp.float16
         states = 1 << self.spec.code_bits
         assert self.table.shape == (states, self.spec.vector_width) and self.table.dtype == jnp.int8
-        assert self.signs.dtype == jnp.int32
-        for axis, gain in zip(self.spec.post_gain_axes, self.post_gains, strict=True):
-            assert gain.shape == (rows if axis == GainAxis.ROW else columns,)
-            assert gain.dtype == jnp.float32
 
     @property
     def shape(self) -> tuple[int, int]:
-        return self.codes.shape[0], self.signs.shape[0]
+        return self.codes.shape[0], self.ladder_indices.shape[1] * COLUMNS_PER_LADDER_BYTE
 
     @property
     def dtype(self) -> DTypeLike:
@@ -147,12 +129,12 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
     def astype(self, dtype: DTypeLike) -> Self:
         return replace(self, row_scales=self.row_scales.astype(dtype))
 
-    def row_arrays(self) -> tuple[Array, Array, Array, tuple[Array, ...]]:
-        return self.codes, self.row_scales, self.ladder_indices, row_gains(self.spec.post_gain_axes, self.post_gains)
+    def row_arrays(self) -> tuple[Array, Array, Array]:
+        return self.codes, self.row_scales, self.ladder_indices
 
-    def decode_rows(self, rows: tuple[Array, Array, Array, tuple[Array, ...]], dtype: DTypeLike) -> Array:
-        codes, row_scales, ladder_indices, selected_row_gains = rows
-        columns = self.signs.shape[0]
+    def decode_rows(self, rows: tuple[Array, Array, Array], dtype: DTypeLike) -> Array:
+        codes, row_scales, ladder_indices = rows
+        columns = self.shape[1]
         if self.spec.kind == LatticeKind.I4:
             # The original INT4 packer writes the even column in the high nibble.
             indices = jnp.stack((codes >> 4, codes & 15), axis=-1).reshape(*codes.shape[:-1], columns)
@@ -168,10 +150,7 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
         )
         ladder = self.ladder.at[groups].get(out_sharding=PartitionSpec(*row_axes, None))
         scales = row_scales.astype(jnp.float32)[..., None] * ladder.astype(jnp.float32)
-        rotated = values * jnp.repeat(scales, COLUMNS_PER_LADDER_INDEX, axis=-1)
-        weights = hadamard_transform(rotated, HADAMARD_BLOCK_SIZE) * self.signs.astype(jnp.float32)
-        post_gains = merge_row_gains(self.spec.post_gain_axes, self.post_gains, selected_row_gains)
-        return apply_post_gains(weights, self.spec.post_gain_axes, post_gains, dtype)
+        return (values * jnp.repeat(scales, COLUMNS_PER_LADDER_INDEX, axis=-1)).astype(dtype)
 
     def decompress(self) -> Array:
         return self.spec.layout.to_output_input(self.decode_rows(self.row_arrays(), self.dtype))
@@ -202,12 +181,7 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
     ) -> Array:
-        if transposed or self.spec.layout != Layout.OUTPUT_INPUT:
-            weights = self.decompress().astype(vector.dtype)
-            layout = Layout.INPUT_OUTPUT if transposed else Layout.OUTPUT_INPUT
-            with use_dot_algorithm_preset(forward_pass_config.precision):
-                return layout.matmul(weights, vector)
-
-        return row_batched_dot(
-            lambda rows: self.decode_rows(rows, self.dtype), self.row_arrays(), vector, forward_pass_config.precision
-        )
+        weights = self.decompress().astype(vector.dtype)
+        layout = Layout.INPUT_OUTPUT if transposed else Layout.OUTPUT_INPUT
+        with use_dot_algorithm_preset(forward_pass_config.precision):
+            return layout.matmul(weights, vector)

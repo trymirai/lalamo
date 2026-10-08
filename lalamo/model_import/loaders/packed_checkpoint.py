@@ -13,23 +13,22 @@ from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike, Float, Float32
 
 from lalamo.compressed.direction import DirectionMatrix, DirectionSpec
-from lalamo.compressed.hybrid import HybridMatrix, HybridSpec, IncoherenceProcessingMode, IncoherenceSigns
+from lalamo.compressed.hybrid import HybridMatrix, HybridSpec, IncoherenceSigns, KroneckerRotation
 from lalamo.compressed.int import IntSpec
 from lalamo.compressed.lattice import (
     COLUMNS_PER_LADDER_INDEX,
-    HADAMARD_BLOCK_SIZE,
     LADDER_INDEX_BITS,
     LatticeKind,
     LatticeMatrix,
     LatticeSpec,
     odd_integer_table,
 )
-from lalamo.compressed.mlx import MLXSpec
+from lalamo.compressed.mlx import MLXMatrix, MLXSpec
 from lalamo.compressed.qtip_gaussian import COLUMN_CLASSES, STATE_BITS, QtipGaussianMatrix, QtipGaussianSpec
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
 from lalamo.compressed.trellis import states_to_levels
 from lalamo.compressed.utils.packing import unpack_uint8_to_uint
-from lalamo.compressed.utils.post_gains import GainAxis, row_gains
+from lalamo.compressed.utils.post_gains import GainAxis
 from lalamo.initializer import EmptyInitializer
 from lalamo.model import BaseModelConfig
 from lalamo.models.language_model import LanguageModel, LanguageModelConfig
@@ -42,7 +41,6 @@ from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, Layout, ShapeDtypeMatrix, WeightMatrix
 
 FOLDED_I4S4_QUANTIZATION = MLXSpec(bits=4, group_size=COLUMNS_PER_LADDER_INDEX, layout=Layout.OUTPUT_INPUT)
-FOLDED_I4S4_SPEC = HybridSpec(FOLDED_I4S4_QUANTIZATION, None, HADAMARD_BLOCK_SIZE, IncoherenceProcessingMode.INPUT)
 
 
 @dataclass(frozen=True)
@@ -75,15 +73,27 @@ def folded_row_scale(path: str, scales: Array, axes: tuple[GainAxis, ...], *gain
     """`scales` times every row gain in float32: the one row scale that replaces them. Column gains must be 1."""
     if not all(bool(jnp.all(gain == 1)) for axis, gain in zip(axes, gains, strict=True) if axis == GainAxis.COLUMN):
         raise ValueError(f"Column post-gains other than 1 do not fold into the row scales at {path}")
-    return math.prod((gain.astype(jnp.float32) for gain in row_gains(axes, gains)), start=scales.astype(jnp.float32))
+    return math.prod(
+        (gain.astype(jnp.float32) for axis, gain in zip(axes, gains, strict=True) if axis == GainAxis.ROW),
+        start=scales.astype(jnp.float32),
+    )
 
 
-def can_merge_folded(top: WeightMatrix, bottom: WeightMatrix) -> bool:
-    """Whether both are folded I4S4 matrices of one dtype under the same input signs, so their planes stack."""
-    if not (top.spec == bottom.spec == FOLDED_I4S4_SPEC and top.dtype == bottom.dtype):
-        return False
-    assert isinstance(top, HybridMatrix) and isinstance(bottom, HybridMatrix)
-    return jax.tree.all(jax.tree.map(jnp.array_equal, top.incoherence_signs, bottom.incoherence_signs))
+def merged(top: WeightMatrix, bottom: WeightMatrix) -> WeightMatrix | None:
+    """One leaf holding the rows of both when they share a format, else None."""
+    if (top.spec, top.dtype) != (bottom.spec, bottom.dtype):
+        return None
+    if isinstance(top, MLXMatrix):
+        return jax.tree.map(lambda *planes: jnp.concatenate(planes), top, bottom)
+    if (
+        isinstance(top, QtipGaussianMatrix)
+        and isinstance(bottom, QtipGaussianMatrix)
+        and jnp.array_equal(top.codebook, bottom.codebook)
+    ):
+        return replace(
+            top, codes=jnp.concatenate((top.codes, bottom.codes)), scales=jnp.concatenate((top.scales, bottom.scales))
+        )
+    return None
 
 
 def native_config(value: JSON) -> JSON:
@@ -162,6 +172,35 @@ def load_packed_checkpoint(
             spec = RowStackSpec(tuple((part.shape[0], part.spec) for part in parts))
             return RowStackMatrix(spec=spec, sharding_config=sharding_config, is_sharded=is_sharded, parts=parts)
 
+        def stacked(hybrids: tuple[HybridMatrix, ...], is_sharded: bool) -> WeightMatrix:
+            """Neighbours under one saved rotation become one hybrid; same-format leaves merge."""
+            groups: list[tuple[IncoherenceSigns | KroneckerRotation, list[WeightMatrix]]] = []
+            for part in hybrids:
+                rotation = part.incoherence_signs
+                assert rotation is not None
+                if not groups or not (
+                    jax.tree.structure(groups[-1][0]) == jax.tree.structure(rotation)
+                    and all(map(jnp.array_equal, jax.tree.leaves(groups[-1][0]), jax.tree.leaves(rotation)))
+                ):
+                    groups.append((rotation, []))
+                quantized = part.quantized
+                for leaf in quantized.parts if isinstance(quantized, RowStackMatrix) else (quantized,):
+                    leaves = groups[-1][1]
+                    if leaves and (joined := merged(leaves[-1], leaf)) is not None:
+                        leaves[-1] = joined
+                    else:
+                        leaves.append(leaf)
+            fused = tuple(
+                HybridMatrix.of(
+                    leaves[0] if len(leaves) == 1 else row_stack(tuple(leaves), is_sharded),
+                    rotation,
+                    sharding_config,
+                    is_sharded,
+                )
+                for rotation, leaves in groups
+            )
+            return fused[0] if len(fused) == 1 else row_stack(fused, is_sharded)
+
         def weight(path: ParameterPath, saved: dict[str, Any], template: ShapeDtypeMatrix) -> WeightMatrix:
             columns = template.shape[1]
             is_sharded = template.is_sharded
@@ -190,28 +229,32 @@ def load_packed_checkpoint(
                         *parameter_tuple(path / "pre_gains", packed.pre_gain_count),
                         *parameter_tuple(path / "post_gains", len(packed.post_gain_axes)),
                     )
-                    matrix = QtipGaussianMatrix(
+                    leaf = QtipGaussianMatrix(
                         spec=QtipGaussianSpec(packed.vector_width, packed.transition_bits, packed.restart_columns),
                         sharding_config=sharding_config,
                         is_sharded=is_sharded,
                         # The saved gains carried the matrix dtype.
                         dtype_=gains.dtype,
+                        columns=columns,
                         codes=parameter(path / "codes"),
                         scales=scales,
                         codebook=codebook_from_table(parameter(table_name)),
-                        signs=parameter(f"qtip_shared.signs_{columns}"),
-                        small_q=parameter(f"qtip_shared.q_{columns}"),
                     )
+                    rotation = KroneckerRotation(
+                        signs=parameter(f"qtip_shared.signs_{columns}"), small_q=parameter(f"qtip_shared.q_{columns}")
+                    )
+                    matrix = HybridMatrix.of(leaf, rotation, sharding_config, is_sharded)
                 case "RowStackSpec":
                     # Each part's saved spec is inline in the stack's; the parts have no spec entries of their own.
-                    parts = []
+                    parts: list[HybridMatrix] = []
                     for index, (rows, part_spec) in enumerate(saved.pop("parts")):
                         part = weight(path / "parts" / index, part_spec, template)
+                        assert isinstance(part, HybridMatrix)
                         assert part.shape[0] == rows
                         parts.append(part)
                     layout = saved.pop("layout")
                     assert layout == Layout.OUTPUT_INPUT and not saved, f"Unexpected row stack {saved} at {path}"
-                    matrix = row_stack(tuple(parts), is_sharded)
+                    matrix = stacked(tuple(parts), is_sharded)
                 case "HybridSpec":
                     spec = HybridSpec.from_json({"type": "HybridSpec", **saved})
                     assert isinstance(spec.quantization_spec, IntSpec)
@@ -224,11 +267,12 @@ def load_packed_checkpoint(
                         is_sharded=is_sharded,
                     )
                     signs = IncoherenceSigns(parameter(path / "incoherence_signs" / "input_signs"), None)
-                    matrix = HybridMatrix(spec, sharding_config, is_sharded, quantized, None, signs)
+                    matrix = HybridMatrix.of(quantized, signs, sharding_config, is_sharded)
+                    assert matrix.spec == spec
                 case "I4S4Spec" if saved["layout"] == Layout.OUTPUT_INPUT:
                     # Level 2c - 15 times the group scale s = row scale * ladder value is (2s) * c - 15s: affine, once
                     # the nibbles are swapped to low-first. Gains fold into s in float32, exact for powers of two.
-                    axes = converter.structure({**saved, "kind": LatticeKind.I4}, LatticeSpec).post_gain_axes
+                    axes = tuple(map(GainAxis, saved.pop("post_gain_axes", ())))
                     row_scales = parameter(path / "row_scales")
                     groups = unpack_uint8_to_uint(parameter(path / "ladder_indices"), LADDER_INDEX_BITS)
                     gains = parameter_tuple(path / "post_gains", len(axes))
@@ -244,9 +288,11 @@ def load_packed_checkpoint(
                         is_sharded=is_sharded,
                     )
                     signs = IncoherenceSigns(parameter(path / "input_hadamard_factors"), None)
-                    matrix = HybridMatrix(FOLDED_I4S4_SPEC, sharding_config, is_sharded, quantized, None, signs)
+                    matrix = HybridMatrix.of(quantized, signs, sharding_config, is_sharded)
                 case "D4S4Spec" | "I3S4Spec" | "I4S4Spec" as kind_name:
                     assert "kind" not in saved
+                    if saved.pop("post_gain_axes", ()):
+                        raise ValueError(f"Lattice post-gains do not commute with the Hadamard rotation at {path}")
                     kind = LatticeKind(kind_name[:2].lower())
                     lattice = converter.structure({**saved, "kind": kind}, LatticeSpec)
                     if kind == LatticeKind.D4:
@@ -258,7 +304,7 @@ def load_packed_checkpoint(
                         if lattice.layout == Layout.INPUT_OUTPUT
                         else "input_hadamard_factors"
                     )
-                    matrix = LatticeMatrix(
+                    leaf = LatticeMatrix(
                         spec=lattice,
                         sharding_config=sharding_config,
                         is_sharded=is_sharded,
@@ -267,9 +313,13 @@ def load_packed_checkpoint(
                         ladder_indices=parameter(path / "ladder_indices"),
                         ladder=parameter(path / "ladder"),
                         table=table,
-                        signs=parameter(path / sign_name),
-                        post_gains=parameter_tuple(path / "post_gains", len(lattice.post_gain_axes)),
                     )
+                    signs = parameter(path / sign_name)
+                    is_output = lattice.layout == Layout.INPUT_OUTPUT
+                    rotation = IncoherenceSigns(
+                        input_signs=None if is_output else signs, output_signs=signs if is_output else None
+                    )
+                    matrix = HybridMatrix.of(leaf, rotation, sharding_config, is_sharded)
                 case "SDirectionSpec":
                     matrix = DirectionMatrix(
                         spec=converter.structure(saved, DirectionSpec),
@@ -304,11 +354,8 @@ def load_packed_checkpoint(
                             leaf,
                             replace(qkv, weights=jnp.concatenate((qkv.weights, gate.weights))),
                         )
-                    if can_merge_folded(qkv, gate):
-                        assert isinstance(qkv, HybridMatrix) and isinstance(gate, HybridMatrix)
-                        merged = jax.tree.map(lambda *planes: jnp.concatenate(planes), qkv.quantized, gate.quantized)
-                        return load_as(leaf, replace(qkv, quantized=merged))
-                    return load_as(leaf, row_stack((qkv, gate), leaf.is_sharded))
+                    assert isinstance(qkv, HybridMatrix) and isinstance(gate, HybridMatrix)
+                    return load_as(leaf, stacked((qkv, gate), leaf.is_sharded))
                 return load_as(leaf, weight(path, saved_spec(path), leaf))
             if isinstance(leaf, ShapeDtypeStruct | Array):
                 value = parameter(path)

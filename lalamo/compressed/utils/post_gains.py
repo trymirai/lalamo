@@ -1,32 +1,6 @@
 from enum import StrEnum
 
-import jax
-import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike
-
 
 class GainAxis(StrEnum):
     ROW = "row"
     COLUMN = "column"
-
-
-def row_gains(axes: tuple[GainAxis, ...], gains: tuple[Array, ...]) -> tuple[Array, ...]:
-    return tuple(gain for axis, gain in zip(axes, gains, strict=True) if axis == GainAxis.ROW)
-
-
-def merge_row_gains(
-    axes: tuple[GainAxis, ...], gains: tuple[Array, ...], selected_row_gains: tuple[Array, ...]
-) -> tuple[Array, ...]:
-    remaining = iter(selected_row_gains)
-    return tuple(next(remaining) if axis == GainAxis.ROW else gain for axis, gain in zip(axes, gains, strict=True))
-
-
-def apply_post_gains(weights: Array, axes: tuple[GainAxis, ...], gains: tuple[Array, ...], dtype: DTypeLike) -> Array:
-    if not axes:
-        return weights.astype(dtype)
-    result = weights.astype(jnp.bfloat16)
-    for axis, gain in zip(axes, gains, strict=True):
-        factor = gain[..., None] if axis == GainAxis.ROW else gain
-        # Each QAT fold rounds the weights before the next multiplication.
-        result = jax.lax.optimization_barrier((result.astype(jnp.float32) * factor).astype(jnp.bfloat16))
-    return result.astype(dtype)

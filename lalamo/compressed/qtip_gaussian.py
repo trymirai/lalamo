@@ -10,7 +10,7 @@ from jaxtyping import Array, DTypeLike, Float, Key, UInt8
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.dummy_array import is_dummy_array
+from lalamo.utils.dummy_array import is_dummy_or_tracer
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -98,10 +98,9 @@ class QtipGaussianSpec(WeightMatrixSpec):
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "QtipGaussianMatrix":
-        if not is_dummy_array(weights):
+        if not is_dummy_or_tracer(weights):
             raise ValueError("QTIP Gaussian matrices must be loaded from saved parameters; fitting is not supported")
         rows, columns = weights.shape
-        order = columns // (columns & -columns)
         row_axis, _ = Layout.OUTPUT_INPUT.weight_partition(0, is_sharded=is_sharded)
         initializer = EmptyInitializer(weights.dtype, sharding_config)
         return QtipGaussianMatrix(
@@ -109,21 +108,19 @@ class QtipGaussianSpec(WeightMatrixSpec):
             sharding_config=sharding_config,
             is_sharded=is_sharded,
             dtype_=weights.dtype,
+            columns=columns,
             codes=initializer.zeros((rows, self.code_bytes(columns)), (row_axis, None), jnp.uint8),
             scales=initializer.zeros((rows,), (row_axis,), jnp.float32),
             codebook=initializer.zeros((1 + COLUMN_CLASSES,), dtype=jnp.float32),
-            signs=initializer.zeros((columns,), dtype=jnp.float32),
-            small_q=initializer.zeros((order, order), dtype=jnp.float32),
         )
 
 
 class QtipGaussianMatrix(WeightMatrix[QtipGaussianSpec]):
     dtype_: DTypeLike = field(static=True)
+    columns: int = field(static=True)
     codes: UInt8[Array, "rows bytes"]
     scales: Float[Array, " rows"]
     codebook: Float[Array, " codebook"] = field(trainable=False)
-    signs: Float[Array, " columns"] = field(trainable=False)
-    small_q: Float[Array, "order order"] = field(trainable=False)
 
     def __check_init__(self) -> None:
         rows, columns = self.shape
@@ -131,13 +128,11 @@ class QtipGaussianMatrix(WeightMatrix[QtipGaussianSpec]):
         assert self.codes.dtype == jnp.uint8
         assert self.scales.shape == (rows,)
         assert self.codebook.shape == (1 + COLUMN_CLASSES,)
-        assert self.scales.dtype == self.codebook.dtype == self.signs.dtype == self.small_q.dtype == jnp.float32
-        order = columns // (columns & -columns)
-        assert self.small_q.shape == (order, order)
+        assert self.scales.dtype == self.codebook.dtype == jnp.float32
 
     @property
     def shape(self) -> tuple[int, int]:
-        return self.codes.shape[0], self.signs.shape[0]
+        return self.codes.shape[0], self.columns
 
     @property
     def dtype(self) -> DTypeLike:
@@ -149,20 +144,14 @@ class QtipGaussianMatrix(WeightMatrix[QtipGaussianSpec]):
     def row_arrays(self) -> tuple[Array, Array]:
         return self.codes, self.scales
 
-    def rotated_rows(self, codes: Array, scales: Array) -> Array:
-        columns = self.shape[1]
+    def decode_rows(self, rows: tuple[Array, Array], dtype: DTypeLike) -> Array:
+        codes, scales = rows
+        columns = self.columns
         levels = states_to_levels(self.spec.states(codes, columns))[..., : self.spec.vector_width]
         levels = levels.reshape(*codes.shape[:-1], columns).astype(jnp.float32)
         scale = self.codebook[0]
         offsets = self.codebook[1 + jnp.arange(columns) % COLUMN_CLASSES]
-        return (scale * levels + offsets) * scales[..., None]
-
-    def rotated_weights(self) -> Array:
-        return self.rotated_rows(self.codes, self.scales)
-
-    def decode_rows(self, rows: tuple[Array, Array], dtype: DTypeLike) -> Array:
-        codes, scales = rows
-        return (full_rotation(self.rotated_rows(codes, scales), self.small_q) * self.signs).astype(dtype)
+        return ((scale * levels + offsets) * scales[..., None]).astype(dtype)
 
     def decompress(self) -> Array:
         return self.decode_rows(self.row_arrays(), self.dtype)
