@@ -6,8 +6,7 @@ import numpy as np
 import pytest
 
 from lalamo.compressed.hybrid import HybridMatrix, KroneckerRotation
-from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec, full_rotation
-from lalamo.model_import.loaders.packed_checkpoint import codebook_from_table
+from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec, codebook_from_table, full_rotation
 from lalamo.module import Keychain
 from tests.helpers import make_test_sharding_config
 
@@ -93,20 +92,40 @@ def test_full_rotation_matches_explicit_kronecker_product() -> None:
     np.testing.assert_allclose(full_rotation(jnp.asarray(values), jnp.asarray(q)), values @ rotation, atol=3e-6)
 
 
-def test_msb_first_states_match_the_layout_uzu_reads() -> None:
-    v4 = QtipGaussianSpec(4, 8, 64)
-    v4_codes = jnp.asarray(
-        np.frombuffer(bytes.fromhex("11 10 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f 20"), np.uint8)
-    )
-    np.testing.assert_array_equal(v4.states(v4_codes[None], 64)[0, :3], [0x1110, 0x1012, 0x1213])
-
-    v2_codes = jnp.asarray(
-        np.frombuffer(
-            bytes.fromhex("da ca e3 44 bb 31 12 45 fd 6f 84 df 9a d7 c5 b3 d0 76 ac 0e 8f 53 a7 35 6c 88"),
-            np.uint8,
-        )
-    )
-    np.testing.assert_array_equal(QtipGaussianSpec(2, 6, 0).states(v2_codes[None], 64)[0, :2], [0xDACA, 0xB2B8])
+@pytest.mark.parametrize(
+    ("spec", "block_bytes"),
+    [
+        (QtipGaussianSpec(2, 4, 0), 34),
+        (QtipGaussianSpec(2, 6, 0), 50),
+        (QtipGaussianSpec(2, 8, 0), 65),
+        (QtipGaussianSpec(4, 8, 0), 33),
+        (QtipGaussianSpec(4, 6, 64), 14),
+        (QtipGaussianSpec(4, 7, 64), 16),
+        (QtipGaussianSpec(4, 8, 64), 17),
+        (QtipGaussianSpec(4, 6, 128), 26),
+        (QtipGaussianSpec(4, 7, 128), 30),
+        (QtipGaussianSpec(4, 8, 128), 33),
+    ],
+)
+def test_tape_blocks_are_byte_padded_msb_first_states(spec: QtipGaussianSpec, block_bytes: int) -> None:
+    # Each block packs its 16-bit start state, then each step's new low bits, MSB first, padded to a byte.
+    columns = 2 * spec.restart_columns or 128
+    bits, block_columns = spec.transition_bits, spec.restart_columns or columns
+    generator = np.random.default_rng(bits)
+    states, tape = [], ""
+    for _ in range(columns // block_columns):
+        state = int(generator.integers(1 << 16))
+        states.append(state)
+        block = f"{state:016b}"
+        for symbol in generator.integers(1 << bits, size=block_columns // spec.vector_width - 1):
+            state = ((state << bits) | int(symbol)) & 0xFFFF
+            states.append(state)
+            block += f"{symbol:0{bits}b}"
+        assert 0 <= 8 * block_bytes - len(block) < 8
+        tape += block.ljust(8 * block_bytes, "0")
+    codes = jnp.asarray(np.frombuffer(int(tape, 2).to_bytes(len(tape) // 8), np.uint8))[None]
+    assert spec.code_bytes(columns) == len(tape) // 8
+    np.testing.assert_array_equal(spec.states(codes, columns)[0], states)
 
 
 def test_bf16_trellis_weights_round_once_after_the_rotation() -> None:

@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from lalamo.compressed.hybrid import HybridMatrix, IncoherenceSigns
-from lalamo.compressed.lattice import LatticeKind, LatticeMatrix, LatticeSpec, odd_integer_table
+from lalamo.compressed.lattice import LatticeKind, LatticeMatrix, LatticeSpec
 from lalamo.module import Keychain
 from lalamo.weight_matrix import Layout
 from tests.helpers import make_test_sharding_config
@@ -23,7 +23,7 @@ def saved_rows(kind: LatticeKind) -> tuple[HybridMatrix, np.ndarray]:
         if kind == LatticeKind.D4:
             table = jnp.asarray(data["table"])
         else:
-            table = odd_integer_table(spec.code_bits)
+            table = jnp.arange(-7, 8, 2, dtype=jnp.int8)[:, None]
         leaf = LatticeMatrix(
             spec=spec,
             sharding_config=make_test_sharding_config(),

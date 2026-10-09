@@ -6,13 +6,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.lax import DotAlgorithmPreset
+from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, DTypeLike, Float, Int8, Key, UInt8, UInt32
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import is_dummy_or_tracer
-from lalamo.utils.sharding import ShardingConfig
+from lalamo.utils.sharding import ShardingConfig, sharding_of, with_sharding
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
@@ -22,8 +23,6 @@ from lalamo.weight_matrix import (
     WeightMatrix,
     WeightMatrixSpec,
 )
-
-from .utils.row_dot import row_batched_dot
 
 # Every step's 16-bit state hashes to its levels; each tape block opens with its first state in two bytes.
 STATE_BITS = 16
@@ -44,8 +43,22 @@ def states_to_levels(states: UInt32[Array, "..."]) -> Int8[Array, "... 4"]:
     return jax.lax.bitcast_convert_type(packed, jnp.int8)
 
 
+def codebook_from_table(table: Float[Array, "states width"]) -> Float[Array, " codebook"]:
+    # Packages save every state's values; they must be scale * level + the offset of the column class.
+    width = table.shape[1]
+    values = np.asarray(table, dtype=np.float64)
+    levels = np.asarray(states_to_levels(jnp.arange(1 << STATE_BITS, dtype=jnp.uint32)), dtype=np.float64)[:, :width]
+    farthest = np.argmax(np.abs(levels[:, 0] - levels[0, 0]))
+    scale = (values[farthest, 0] - values[0, 0]) / (levels[farthest, 0] - levels[0, 0])
+    offsets = values[0] - scale * levels[0]
+    error = np.abs(scale * levels + offsets - values).max()
+    if not error <= 1e-5:
+        raise ValueError(f"The trellis table is not scale * level + offset (error {error})")
+    return jnp.asarray([scale, *offsets[np.arange(COLUMN_CLASSES) % width]], dtype=jnp.float32)
+
+
 def full_rotation(values: Array, small_q: Array) -> Array:
-    """Multiply by the saved kron(H, Q), without materializing the full matrix."""
+    # Multiplies by the saved kron(H, Q) without materializing it.
     order = small_q.shape[0]
     width = values.shape[-1] // order
     assert small_q.shape == (order, order)
@@ -66,18 +79,14 @@ def full_rotation(values: Array, small_q: Array) -> Array:
 @dataclass(frozen=True)
 class QtipGaussianSpec(WeightMatrixSpec):
     vector_width: Literal[2, 4]
-    transition_bits: Literal[4, 6, 8]
-    restart_columns: Literal[0, 64]
+    transition_bits: Literal[4, 6, 7, 8]
+    restart_columns: Literal[0, 64, 128]
 
     def __post_init__(self) -> None:
-        if (self.vector_width, self.transition_bits, self.restart_columns) not in (
-            (2, 4, 0),
-            (2, 6, 0),
-            (2, 8, 0),
-            (4, 8, 0),
-            (4, 8, 64),
-        ):
-            raise ValueError("Unsupported QTIP Gaussian trellis layout")
+        layout = (self.vector_width, self.transition_bits, self.restart_columns)
+        restarted = {(4, bits, columns) for bits in (6, 7, 8) for columns in (64, 128)}
+        if layout not in {(2, 4, 0), (2, 6, 0), (2, 8, 0), (4, 8, 0), *restarted}:
+            raise ValueError(f"Unsupported QTIP Gaussian layout {layout}")
 
     def tape_shape(self, columns: int) -> tuple[int, int, int]:
         block_columns = self.restart_columns or columns
@@ -91,7 +100,7 @@ class QtipGaussianSpec(WeightMatrixSpec):
         return blocks * block_bytes
 
     def states(self, codes: UInt8[Array, "*rows bytes"], columns: int) -> Array:
-        """Each block is an MSB-first bit stream; state g is its 16-bit window at bit g * transition_bits."""
+        # Each block is an MSB-first bit stream; state g is its 16-bit window at bit g * transition_bits.
         blocks, steps, block_bytes = self.tape_shape(columns)
         *rows, _ = codes.shape
         tapes = codes.reshape(*rows, blocks, block_bytes)
@@ -154,20 +163,14 @@ class QtipGaussianMatrix(WeightMatrix[QtipGaussianSpec]):
     def astype(self, dtype: DTypeLike) -> Self:
         return replace(self, dtype_=jnp.dtype(dtype))
 
-    def row_arrays(self) -> tuple[Array, Array]:
-        return self.codes, self.scales
-
-    def decode_rows(self, rows: tuple[Array, Array], dtype: DTypeLike) -> Array:
-        codes, scales = rows
-        columns = self.columns
-        levels = states_to_levels(self.spec.states(codes, columns))[..., : self.spec.vector_width]
-        levels = levels.reshape(*codes.shape[:-1], columns).astype(jnp.float32)
-        scale = self.codebook[0]
-        offsets = self.codebook[1 + jnp.arange(columns) % COLUMN_CLASSES]
-        return ((scale * levels + offsets) * scales[..., None]).astype(dtype)
+    def decode_rows(self, codes: UInt8[Array, "*rows bytes"], scales: Float[Array, "*rows"]) -> Array:
+        levels = states_to_levels(self.spec.states(codes, self.columns))[..., : self.spec.vector_width]
+        levels = levels.reshape(*codes.shape[:-1], self.columns).astype(jnp.float32)
+        offsets = self.codebook[1 + jnp.arange(self.columns) % COLUMN_CLASSES]
+        return ((self.codebook[0] * levels + offsets) * scales[..., None]).astype(self.dtype)
 
     def decompress(self) -> Array:
-        return self.decode_rows(self.row_arrays(), self.dtype)
+        return self.decode_rows(self.codes, self.scales)
 
     def to_full_precision(self) -> FullPrecisionMatrix:
         return FullPrecisionSpec().compress(
@@ -183,6 +186,19 @@ class QtipGaussianMatrix(WeightMatrix[QtipGaussianSpec]):
         transposed: bool = False,
     ) -> Array:
         assert not transposed, "QTIP Gaussian matrices are projections, never tied embeddings"
-        return row_batched_dot(
-            lambda rows: self.decode_rows(rows, self.dtype), self.row_arrays(), vector, forward_pass_config.precision
-        )
+        mesh = sharding_of(vector).mesh
+        # FSDP shares the batch and matrix axis. Gather packed rows, so token batching owns that axis;
+        # only 128 rows are ever decoded at once.
+        codes = with_sharding(self.codes, NamedSharding(mesh, PartitionSpec(None, None)))
+        scales = with_sharding(self.scales, NamedSharding(mesh, PartitionSpec(None)))
+
+        def row_dot(row: tuple[Array, Array]) -> Array:
+            return jax.lax.dot_general(
+                self.decode_rows(*row).astype(vector.dtype),
+                vector,
+                dimension_numbers=(((0,), (0,)), ((), ())),
+                precision=forward_pass_config.precision,
+                out_sharding=NamedSharding(mesh, PartitionSpec()),
+            )
+
+        return jax.lax.map(row_dot, (codes, scales), batch_size=128)

@@ -28,10 +28,16 @@ from lalamo.compressed.lattice import (
     LatticeKind,
     LatticeSpec,
 )
-from lalamo.compressed.qtip_gaussian import STATE_BITS, QtipGaussianMatrix, QtipGaussianSpec, states_to_levels
+from lalamo.compressed.qtip_gaussian import (
+    STATE_BITS,
+    QtipGaussianMatrix,
+    QtipGaussianSpec,
+    codebook_from_table,
+    states_to_levels,
+)
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
 from lalamo.initializer import RandomInitializer
-from lalamo.model_import.loaders.packed_checkpoint import codebook_from_table, load_packed_checkpoint
+from lalamo.model_import.loaders.packed_checkpoint import load_packed_checkpoint
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.models.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
 from lalamo.module import Keychain

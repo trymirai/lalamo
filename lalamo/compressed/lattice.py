@@ -31,11 +31,6 @@ COLUMNS_PER_LADDER_INDEX = 64
 COLUMNS_PER_LADDER_BYTE = 128
 
 
-def odd_integer_table(bits: int) -> Int8[Array, "states 1"]:
-    states = 1 << bits
-    return jnp.arange(1 - states, states, 2, dtype=jnp.int8)[:, None]
-
-
 class LatticeKind(StrEnum):
     D4 = "d4"
     I3 = "i3"

@@ -11,7 +11,6 @@ import cattrs
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike, Float, Float32
 
@@ -23,16 +22,9 @@ from lalamo.compressed.lattice import (
     LatticeKind,
     LatticeMatrix,
     LatticeSpec,
-    odd_integer_table,
 )
 from lalamo.compressed.mlx import MLXMatrix, MLXSpec
-from lalamo.compressed.qtip_gaussian import (
-    COLUMN_CLASSES,
-    STATE_BITS,
-    QtipGaussianMatrix,
-    QtipGaussianSpec,
-    states_to_levels,
-)
+from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec, codebook_from_table
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
 from lalamo.compressed.utils.packing import unpack_uint8_to_uint
 from lalamo.exportable import ExportResults
@@ -52,22 +44,7 @@ class GainAxis(StrEnum):
     COLUMN = "column"
 
 
-def codebook_from_table(table: Float[Array, "states width"]) -> Float[Array, " codebook"]:
-    """The [scale, offsets by column class] codebook whose scale * level + offset reproduces the table, else raises."""
-    width = table.shape[1]
-    values = np.asarray(table, dtype=np.float64)
-    levels = np.asarray(states_to_levels(jnp.arange(1 << STATE_BITS, dtype=jnp.uint32)), dtype=np.float64)[:, :width]
-    farthest = np.argmax(np.abs(levels[:, 0] - levels[0, 0]))
-    scale = (values[farthest, 0] - values[0, 0]) / (levels[farthest, 0] - levels[0, 0])
-    offsets = values[0] - scale * levels[0]
-    error = np.abs(scale * levels + offsets - values).max()
-    if not error <= 1e-5:
-        raise ValueError(f"The trellis table is not scale * level + offset (error {error})")
-    return jnp.asarray([scale, *offsets[np.arange(COLUMN_CLASSES) % width]], dtype=jnp.float32)
-
-
 def merged(top: WeightMatrix, bottom: WeightMatrix) -> WeightMatrix | None:
-    """One leaf holding the rows of both when they share a format, else None."""
     if (top.spec, top.dtype) != (bottom.spec, bottom.dtype):
         return None
     if isinstance(top, MLXMatrix):
@@ -84,23 +61,19 @@ def merged(top: WeightMatrix, bottom: WeightMatrix) -> WeightMatrix | None:
 
 
 def native_config(value: JSON) -> JSON:
+    # Older packages carry a null pard_token and save attention as separate qkv and gate projections.
     if isinstance(value, list):
         return [native_config(item) for item in value]
     if not isinstance(value, dict):
         return value
-    if "pard_token" in value:
-        value = dict(value)
-        pard_token = value.pop("pard_token")
-        assert pard_token is None, "PARD checkpoints are not supported"
+    value = dict(value)
+    pard_token = value.pop("pard_token", None)
+    assert pard_token is None, "PARD checkpoints are not supported"
     if value.get("type") == "AttentionConfig" and "qkv_projection_config" in value:
-        assert not {"qkvg_projection_config", "has_qkvg_biases", "has_gate"} & value.keys()
-        value = dict(value)
-        value["qkvg_projection_config"] = value.pop("qkv_projection_config")
-        gate_projection_config = value.pop("gate_projection_config")
-        assert gate_projection_config == value["qkvg_projection_config"]
-        value["has_qkvg_biases"] = value.pop("has_qkv_biases")
-        assert not value["has_qkvg_biases"]
-        value["has_gate"] = True
+        names = ("qkv_projection_config", "gate_projection_config", "has_qkv_biases")
+        qkv, gate, has_biases = (value.pop(name) for name in names)
+        assert gate == qkv and not has_biases, "Legacy qkv and gate projections share one bias-free config"
+        value |= {"qkvg_projection_config": qkv, "has_qkvg_biases": False, "has_gate": True}
     return {name: native_config(item) for name, item in value.items()}
 
 
@@ -114,7 +87,6 @@ def is_packed_checkpoint(metadata: dict[str, JSON], tensor_names: Iterable[str])
 def load_packed_checkpoint(
     directory: Path | str, sharding_config: ShardingConfig, dtype: DTypeLike | None = None
 ) -> LanguageModel:
-    """Import packed checkpoints without refitting their saved dense or packed weights."""
     directory = Path(directory)
     config = BaseModelConfig.from_json(native_config(json.loads((directory / "config.json").read_text())))
     assert isinstance(config, LanguageModelConfig)
@@ -255,6 +227,11 @@ def load_packed_checkpoint(
                     if saved.pop("post_gain_axes", ()):
                         raise ValueError(f"Lattice post-gains do not commute with the Hadamard rotation at {path}")
                     lattice = converter.structure({**saved, "kind": kind_name[:2].lower()}, LatticeSpec)
+                    # D4 tables are saved; I3 levels are the odd integers from -7 to 7.
+                    if lattice.kind == LatticeKind.D4:
+                        table = parameter(path / "table")
+                    else:
+                        table = jnp.arange(-7, 8, 2, dtype=jnp.int8)[:, None]
                     leaf = LatticeMatrix(
                         spec=lattice,
                         sharding_config=sharding_config,
@@ -263,7 +240,7 @@ def load_packed_checkpoint(
                         row_scales=parameter(path / "row_scales"),
                         ladder_indices=parameter(path / "ladder_indices"),
                         ladder=parameter(path / "ladder"),
-                        table=parameter(path / "table") if lattice.kind == LatticeKind.D4 else odd_integer_table(3),
+                        table=table,
                     )
                     if lattice.layout == Layout.INPUT_OUTPUT:
                         rotation = IncoherenceSigns(None, parameter(path / "output_hadamard_factors"))
