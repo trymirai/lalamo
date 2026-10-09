@@ -14,15 +14,8 @@ import jax.numpy as jnp
 from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike, Float, Float32
 
-from lalamo.compressed.hybrid import HybridMatrix, HybridSpec, IncoherenceSigns, KroneckerRotation
-from lalamo.compressed.int import IntSpec
-from lalamo.compressed.lattice import (
-    COLUMNS_PER_LADDER_INDEX,
-    LADDER_INDEX_BITS,
-    LatticeKind,
-    LatticeMatrix,
-    LatticeSpec,
-)
+from lalamo.compressed.hybrid import HybridMatrix, IncoherenceSigns, KroneckerRotation
+from lalamo.compressed.lattice import COLUMNS_PER_LADDER_INDEX, LADDER_INDEX_BITS, LatticeMatrix, LatticeSpec
 from lalamo.compressed.mlx import MLXMatrix, MLXSpec
 from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec, codebook_from_table
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
@@ -192,19 +185,10 @@ def load_packed_checkpoint(
                     assert tuple(part.shape[0] for part in parts) == rows
                     matrix = stacked(parts, is_sharded)
                 case "HybridSpec":
-                    spec = HybridSpec.from_json({"type": "HybridSpec", **saved})
-                    assert isinstance(spec.quantization_spec, IntSpec)
-                    # Saved as HybridMatrix.export writes it: int scales group-major, signs on the input axis only.
-                    quantized = spec.quantization_spec.from_packed_parameters(
-                        packed_weights=parameter(path / "quantized" / "weights"),
-                        scales=parameter(path / "quantized" / "scales")[:, : template.shape[0]].T,
-                        packed_zero_points=None,
-                        sharding_config=sharding_config,
-                        is_sharded=is_sharded,
-                    )
-                    signs = IncoherenceSigns(parameter(path / "incoherence_signs" / "input_signs"), None)
-                    matrix = HybridMatrix.of(quantized, signs, sharding_config, is_sharded)
-                    assert matrix.spec == spec
+                    # Saved as HybridMatrix.export writes it, minus the spec entry of the inner matrix.
+                    inner_spec = {path / "quantized" / "spec": saved["quantization_spec"]}
+                    matrix = template.load_exported(ExportResults(arrays, specs | inner_spec), prefix=path)
+                    consumed.update(name for name in arrays if name.startswith(path + "."))
                 case "I4S4Spec":
                     assert saved.pop("layout") == Layout.OUTPUT_INPUT, f"I4S4 leaves are stored output-input at {path}"
                     # Level 2c - 15 times the group scale s = row scale * ladder value is (2s) * c - 15s: affine, once
@@ -228,7 +212,7 @@ def load_packed_checkpoint(
                         raise ValueError(f"Lattice post-gains do not commute with the Hadamard rotation at {path}")
                     lattice = converter.structure({**saved, "kind": kind_name[:2].lower()}, LatticeSpec)
                     # D4 tables are saved; I3 levels are the odd integers from -7 to 7.
-                    if lattice.kind == LatticeKind.D4:
+                    if kind_name == "D4S4Spec":
                         table = parameter(path / "table")
                     else:
                         table = jnp.arange(-7, 8, 2, dtype=jnp.int8)[:, None]
@@ -253,22 +237,17 @@ def load_packed_checkpoint(
 
         def restore(jax_path: tuple[object, ...], leaf: object) -> object:
             path = ParameterPath() / jax_path
-            if isinstance(leaf, ShapeDtypeMatrix):
-                # Older packages save the attention projection as a qkv leaf and a gate leaf.
-                parent = path.removesuffix("qkvg_projection.weights")
-                if parent != path and parent + "qkv_projection.weights.spec" in specs:
-                    qkv, gate = (ParameterPath(f"{parent}{name}_projection.weights") for name in ("qkv", "gate"))
-                    parts = [weight(part, saved_spec(part), leaf) for part in (qkv, gate)]
-                    return load_as(leaf, stacked(parts, leaf.is_sharded))
-                return load_as(leaf, weight(path, saved_spec(path), leaf))
             if isinstance(leaf, ShapeDtypeStruct | Array):
-                value = parameter(path)
-                assert value.shape == leaf.shape, f"Saved shape differs from model at {path}"
-                # A declared dtype (norm scales: float32) is not weak; an unset one follows the saved array.
-                if dtype is not None or not getattr(leaf, "weak_type", True):
-                    value = value.astype(leaf.dtype)
-                return jax.device_put(value, leaf.sharding)
-            return leaf
+                return load_as(leaf, parameter(path))
+            if not isinstance(leaf, ShapeDtypeMatrix):
+                return leaf
+            # Older packages save the attention projection as a qkv leaf and a gate leaf.
+            parent = path.removesuffix("qkvg_projection.weights")
+            if parent != path and parent + "qkv_projection.weights.spec" in specs:
+                qkv, gate = (ParameterPath(f"{parent}{name}_projection.weights") for name in ("qkv", "gate"))
+                parts = [weight(part, saved_spec(part), leaf) for part in (qkv, gate)]
+                return load_as(leaf, stacked(parts, leaf.is_sharded))
+            return load_as(leaf, weight(path, saved_spec(path), leaf))
 
         model = jax.tree_util.tree_map_with_path(
             restore, template, is_leaf=lambda node: isinstance(node, WeightMatrix)
