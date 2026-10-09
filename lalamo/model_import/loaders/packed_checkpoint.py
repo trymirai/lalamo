@@ -7,12 +7,11 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-import cattrs
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, DTypeLike, Float, Float32
+from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.compressed.hybrid import HybridMatrix, IncoherenceSigns, KroneckerRotation
 from lalamo.compressed.lattice import COLUMNS_PER_LADDER_INDEX, LADDER_INDEX_BITS, LatticeMatrix, LatticeSpec
@@ -84,7 +83,6 @@ def load_packed_checkpoint(
     directory = Path(directory)
     config = BaseModelConfig.from_json(native_config(json.loads((directory / "config.json").read_text())))
     assert isinstance(config, LanguageModelConfig)
-    converter = cattrs.Converter(forbid_extra_keys=True)
 
     with (directory / "model.safetensors").open("rb") as stream:
         metadata, arrays = safe_read(stream)
@@ -110,9 +108,7 @@ def load_packed_checkpoint(
         def codebook(table_name: str) -> Float[Array, " codebook"]:
             return codebook_from_table(parameter(table_name))
 
-        def folded_row_scale(
-            path: ParameterPath, saved: dict[str, Any], scale: Array, *gains: Array
-        ) -> Float32[Array, " rows"]:
+        def folded_row_scale(path: ParameterPath, saved: dict[str, Any], scale: Array, *gains: Array) -> Array:
             # Row post-gains multiply into the row scale in float32; column post-gains only fold when they are 1.
             axes = tuple(map(GainAxis, saved.pop("post_gain_axes", ())))
             post_gains = tuple(zip(axes, parameter_tuple(path / "post_gains", len(axes)), strict=True))
@@ -164,7 +160,7 @@ def load_packed_checkpoint(
                     # Every saved gain multiplies a whole row, so one float32 scale per row replaces them all.
                     row_scale = folded_row_scale(path, saved, scales, gains, *pre_gains)
                     leaf = QtipGaussianMatrix(
-                        spec=converter.structure(saved, QtipGaussianSpec),
+                        spec=QtipGaussianSpec.from_json({"type": "QtipGaussianSpec", **saved}),
                         sharding_config=sharding_config,
                         is_sharded=is_sharded,
                         # The saved gains carry the matrix dtype.
@@ -189,7 +185,7 @@ def load_packed_checkpoint(
                     # Saved as HybridMatrix.export writes it, minus the spec entry of the inner matrix.
                     inner_spec = {path / "quantized" / "spec": saved["quantization_spec"]}
                     matrix = template.load_exported(ExportResults(arrays, specs | inner_spec), prefix=path)
-                    consumed.update(name for name in arrays if name.startswith(path + "."))
+                    consumed.update(path / name for name in matrix.export().arrays)
                 case "I4S4Spec":
                     # Level 2c - 15 times the group scale s = row scale * ladder value is (2s) * c - 15s: affine, once
                     # the nibbles are swapped to low-first. Gains fold into s in float32, exact for powers of two.
@@ -211,7 +207,7 @@ def load_packed_checkpoint(
                 case "D4S4Spec" | "I3S4Spec" as kind_name:
                     if saved.pop("post_gain_axes", ()):
                         raise ValueError(f"Lattice post-gains do not commute with the Hadamard rotation at {path}")
-                    lattice = converter.structure({**saved, "kind": kind_name[:2].lower()}, LatticeSpec)
+                    lattice = LatticeSpec.from_json({"type": "LatticeSpec", **saved, "kind": kind_name[:2].lower()})
                     # D4 tables are saved; I3 levels are the odd integers from -7 to 7.
                     if kind_name == "D4S4Spec":
                         table = parameter(path / "table")
@@ -244,7 +240,7 @@ def load_packed_checkpoint(
                 return leaf
             # Older packages save the attention projection as a qkv leaf and a gate leaf.
             parent = path.removesuffix("qkvg_projection.weights")
-            if parent != path and parent + "qkv_projection.weights.spec" in specs:
+            if parent + "qkv_projection.weights.spec" in specs:
                 qkv, gate = (ParameterPath(f"{parent}{name}_projection.weights") for name in ("qkv", "gate"))
                 parts = [weight(part, saved_spec(part), leaf) for part in (qkv, gate)]
                 return load_as(leaf, stacked(parts, leaf.is_sharded))

@@ -6,6 +6,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -181,13 +182,17 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     def packed_bytes(shape: tuple[int, ...]) -> Array:
         return jnp.asarray(generator.integers(0, 256, shape, dtype=np.uint8))
 
-    def trellis(path: str, rows: int, columns: int, spec: QtipGaussianSpec, scale_dtype: str) -> JSON:
+    def trellis(path: str, rows: int, columns: int, spec: QtipGaussianSpec, is_staged: bool) -> JSON:
+        # Staged leaves save float32 scales and every optional gain; the others rely on the spec defaults.
         arrays[path + ".codes"] = packed_bytes((rows, spec.code_bytes(columns)))
-        stages = {"scales": scale_dtype, "gains": "bfloat16", "pre_gains.0": "float32", "post_gains.0": "float32"}
+        stages = {"scales": "float16", "gains": "bfloat16"}
+        saved: dict[str, Any] = {"type": "QtipGaussianSpec", "layout": "output_input", **asdict(spec)}
+        if is_staged:
+            stages = {"scales": "float32", "gains": "bfloat16", "pre_gains.0": "float32", "post_gains.0": "float32"}
+            saved |= {"scale_dtype": "float32", "pre_gain_count": 1, "post_gain_axes": ["row"]}
         arrays.update({f"{path}.{name}": uniform((rows,), jnp.dtype(dtype)) for name, dtype in stages.items()})
         folds[path + ".scales"] = tuple(f"{path}.{name}" for name in stages)
-        saved = {"layout": "output_input", **asdict(spec), "scale_dtype": scale_dtype, "pre_gain_count": 1}
-        return {"type": "QtipGaussianSpec", **saved, "post_gain_axes": ["row"]}
+        return saved
 
     def lattice(path: str, rows: int, spec: LatticeSpec) -> JSON:
         arrays[path + ".codes"] = packed_bytes((rows, spec.code_bytes(MODEL_DIM)))
@@ -213,11 +218,12 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
 
     v4, v2 = QtipGaussianSpec(4, 8, 64), QtipGaussianSpec(2, 6, 0)
     parts: list[JSON] = [
-        [8, trellis(f"{qkvg}.parts.{index}", 8, MODEL_DIM, spec, "float32")] for index, spec in enumerate((v4, v4, v2))
+        [8, trellis(f"{qkvg}.parts.{index}", 8, MODEL_DIM, spec, is_staged=True)]
+        for index, spec in enumerate((v4, v4, v2))
     ]
     parts += [[4, i4s4(f"{qkvg}.parts.{index}", 4, random_signs())] for index in (3, 4)]
     metadata[qkvg + ".spec"] = {"type": "RowStackSpec", "parts": parts, "layout": "output_input"}
-    metadata[out + ".spec"] = trellis(out, MODEL_DIM, 8, QtipGaussianSpec(2, 4, 0), "float16")
+    metadata[out + ".spec"] = trellis(out, MODEL_DIM, 8, QtipGaussianSpec(2, 4, 0), is_staged=False)
     # The second layer saves its attention projection as a legacy qkv leaf and a gate leaf.
     legacy = (second + "mixer.qkv_projection.weights", second + "mixer.gate_projection.weights")
     shared_signs = random_signs()
@@ -271,14 +277,11 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     i4s4_prefixes = (f"{qkvg}.parts.3.", f"{qkvg}.parts.4.", *(path + "." for path in legacy))
     unfolded = {name: value for name, value in arrays.items() if not name.startswith(i4s4_prefixes)}
     assert_loaded_every_saved_tensor(restored, unfolded, folds)
+    np.testing.assert_array_equal(matrices[readout].decompress(), readout_hybrid.decompress())
 
-    exported = restored.export()
-    save_model(tmp_path / "exported", restored.config.to_json(), restored, exported.arrays, exported.metadata)
+    restored.save(tmp_path / "exported")
     reloaded = LanguageModel.load(tmp_path / "exported", sharding_config, jnp.bfloat16)
-    assert jax.tree.structure(reloaded) == jax.tree.structure(restored)
-    for reloaded_array, array in zip(jax.tree.leaves(reloaded), jax.tree.leaves(restored), strict=True):
-        if isinstance(array, Array):
-            np.testing.assert_array_equal(reloaded_array, array)
+    assert eqx.tree_equal(eqx.filter(reloaded, eqx.is_array), eqx.filter(restored, eqx.is_array))
 
     batch_sharding = restored.sharding_config.resolve_sharding((LogicalAxis.BATCH, None))
     tokens = jax.device_put(jnp.array([[1, 2, 3], [3, 2, 1]], dtype=jnp.int32), batch_sharding)
