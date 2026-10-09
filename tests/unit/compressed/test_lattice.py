@@ -18,9 +18,8 @@ DATA = Path(__file__).parent / "data"
 def saved_rows(kind: LatticeKind) -> tuple[HybridMatrix, np.ndarray]:
     """Four rows fitted and packed by the independent Torch producer, and the weights it decoded them to."""
     layout = Layout.INPUT_OUTPUT if kind == LatticeKind.D4 else Layout.OUTPUT_INPUT
-    prefix = "" if kind == LatticeKind.I4 else f"{kind}_"
     spec = LatticeSpec(kind, layout)
-    with np.load(DATA / ("lattice_i4.npz" if kind == LatticeKind.I4 else "lattice_hyb036.npz")) as data:
+    with np.load(DATA / "lattice_hyb036.npz") as data:
         if kind == LatticeKind.D4:
             table = jnp.asarray(data["table"])
         else:
@@ -29,9 +28,9 @@ def saved_rows(kind: LatticeKind) -> tuple[HybridMatrix, np.ndarray]:
             spec=spec,
             sharding_config=make_test_sharding_config(),
             is_sharded=True,
-            codes=jnp.asarray(data[f"{prefix}codes"]),
-            row_scales=jnp.asarray(data[f"{prefix}row_scale_bits"].view(jnp.bfloat16)),
-            ladder_indices=jnp.asarray(data[f"{prefix}ladder_indices"]),
+            codes=jnp.asarray(data[f"{kind}_codes"]),
+            row_scales=jnp.asarray(data[f"{kind}_row_scale_bits"].view(jnp.bfloat16)),
+            ladder_indices=jnp.asarray(data[f"{kind}_ladder_indices"]),
             ladder=jnp.asarray(data["ladder"]),
             table=table,
         ).astype(jnp.float32)
@@ -40,7 +39,7 @@ def saved_rows(kind: LatticeKind) -> tuple[HybridMatrix, np.ndarray]:
             input_signs=None if kind == LatticeKind.D4 else signs,
             output_signs=signs if kind == LatticeKind.D4 else None,
         )
-        return HybridMatrix.of(leaf, rotation, leaf.sharding_config), data[f"{prefix}expected"]
+        return HybridMatrix.of(leaf, rotation, leaf.sharding_config), data[f"{kind}_expected"]
 
 
 def test_lattice_matches_torch_fitted_rows() -> None:

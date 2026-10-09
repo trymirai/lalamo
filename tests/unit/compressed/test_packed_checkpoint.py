@@ -1,7 +1,7 @@
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -26,9 +26,7 @@ from lalamo.compressed.lattice import (
     COLUMNS_PER_LADDER_BYTE,
     LADDER_INDEX_BITS,
     LatticeKind,
-    LatticeMatrix,
     LatticeSpec,
-    odd_integer_table,
 )
 from lalamo.compressed.qtip_gaussian import STATE_BITS, QtipGaussianMatrix, QtipGaussianSpec, states_to_levels
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
@@ -130,17 +128,25 @@ def i4s4(arrays: dict[str, Array], path: str, rows: int, seed: int = 0) -> dict[
     return {"type": "I4S4Spec", "layout": "output_input", "post_gain_axes": ["row", "column"]}
 
 
-def saved_i4s4(
-    arrays: Mapping[str, Array], path: str, sharding_config: ShardingConfig, axes: tuple[str, ...] = ("row",)
-) -> Array:
-    """The I4S4 leaf saved at `path`, decoded by the lattice format and scaled by its row gains."""
-    fields = {name: arrays[f"{path}.{name}"] for name in ("codes", "row_scales", "ladder_indices", "ladder")}
-    spec = LatticeSpec(LatticeKind.I4, Layout.OUTPUT_INPUT)
-    leaf = LatticeMatrix(spec, sharding_config, is_sharded=True, table=odd_integer_table(4), **fields)
-    rotation = IncoherenceSigns(arrays[path + ".input_hadamard_factors"], None)
-    decoded = HybridMatrix.of(leaf.astype(jnp.float32), rotation, leaf.sharding_config).decompress()
-    row_gains = (arrays[f"{path}.post_gains.{index}"] for index, axis in enumerate(axes) if axis == "row")
-    return decoded * math.prod(row_gains, start=jnp.ones(len(decoded)))[:, None]
+def saved_i4s4(arrays: Mapping[str, Array], path: str, axes: Sequence[str], sharding_config: ShardingConfig) -> Array:
+    # The producer's decode: even column in the high nibble, level 2c - 15, a ladder value per 64 columns.
+    codes, ladder_indices = np.asarray(arrays[path + ".codes"]), np.asarray(arrays[path + ".ladder_indices"])
+    levels = 2 * np.stack((codes >> 4, codes & 15), axis=-1).reshape(len(codes), -1).astype(np.float32) - 15
+    groups = np.stack((ladder_indices & 15, ladder_indices >> 4), axis=-1).reshape(len(codes), -1)
+    ladder = np.repeat(np.asarray(arrays[path + ".ladder"], np.float32)[groups], 64, axis=1)
+    row_gains = [arrays[f"{path}.post_gains.{index}"] for index, axis in enumerate(axes) if axis == "row"]
+    row_scales = math.prod(row_gains, start=np.asarray(arrays[path + ".row_scales"], np.float32))
+    signs = IncoherenceSigns(jnp.asarray(arrays[path + ".input_hadamard_factors"]), None)
+    return signs.unprocess_weights(jnp.asarray(levels * ladder * row_scales[:, None]), 32, sharding_config)
+
+
+def test_i4s4_reference_matches_torch_decoded_rows() -> None:
+    with np.load(Path(__file__).parent / "data" / "lattice_i4.npz") as data:
+        arrays = {f"i4.{name}": data[name] for name in ("codes", "ladder_indices", "ladder")}
+        arrays["i4.row_scales"] = data["row_scale_bits"].view(jnp.bfloat16)
+        arrays["i4.input_hadamard_factors"] = data["signs"]
+        reference = saved_i4s4(arrays, "i4", (), make_test_sharding_config())
+        np.testing.assert_allclose(reference, data["expected"], atol=2e-7, rtol=1e-6)
 
 
 def save_model(
@@ -306,7 +312,7 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
         RowStackSpec(merged_specs), None, None, IncoherenceProcessingMode.INPUT, IncoherenceKind.KRONECKER
     )
     folded = matrices[up].astype(jnp.float32).decompress()
-    np.testing.assert_array_equal(folded, saved_i4s4(arrays, up, make_test_sharding_config()))
+    np.testing.assert_array_equal(folded, saved_i4s4(arrays, up, ("row", "column"), make_test_sharding_config()))
     assert_loaded_every_saved_tensor(restored, {name: arrays[name] for name in arrays if up not in name}, folds)
     assert_export_reloads(restored, tmp_path / "exported")
     batch_sharding = restored.sharding_config.resolve_sharding((LogicalAxis.BATCH, None))
@@ -341,7 +347,7 @@ def test_qkv_and_i4s4_gate_merge_only_when_both_fold_under_shared_signs(tmp_path
     if qkv_seed == 0:
         assert isinstance(matrix, HybridMatrix)
         config = make_test_sharding_config()
-        expected = jnp.concatenate((saved_i4s4(arrays, qkv, config), saved_i4s4(arrays, gate, config)))
+        expected = jnp.concatenate([saved_i4s4(arrays, name, ("row", "column"), config) for name in (qkv, gate)])
         np.testing.assert_array_equal(matrix.astype(jnp.float32).decompress(), expected)
     else:
         assert isinstance(matrix, RowStackMatrix)

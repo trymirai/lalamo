@@ -39,7 +39,6 @@ def odd_integer_table(bits: int) -> Int8[Array, "states 1"]:
 class LatticeKind(StrEnum):
     D4 = "d4"
     I3 = "i3"
-    I4 = "i4"
 
 
 @dataclass(frozen=True)
@@ -52,7 +51,7 @@ class LatticeSpec(WeightMatrixSpec):
         match self.kind:
             case LatticeKind.D4:
                 return 4
-            case LatticeKind.I3 | LatticeKind.I4:
+            case LatticeKind.I3:
                 return 1
         raise ValueError(f"Unknown lattice kind: {self.kind}")
 
@@ -63,8 +62,6 @@ class LatticeSpec(WeightMatrixSpec):
                 return 8
             case LatticeKind.I3:
                 return 3
-            case LatticeKind.I4:
-                return 4
         raise ValueError(f"Unknown lattice kind: {self.kind}")
 
     def code_bytes(self, columns: int) -> int:
@@ -135,13 +132,9 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
     def decode_rows(self, rows: tuple[Array, Array, Array], dtype: DTypeLike) -> Array:
         codes, row_scales, ladder_indices = rows
         columns = self.shape[1]
-        if self.spec.kind == LatticeKind.I4:
-            # The original INT4 packer writes the even column in the high nibble.
-            indices = jnp.stack((codes >> 4, codes & 15), axis=-1).reshape(*codes.shape[:-1], columns)
-        else:
-            indices = unpack_uint8_to_uint(
-                codes, self.spec.code_bits, unpacked_last_axis_dim=columns // self.spec.vector_width
-            )
+        indices = unpack_uint8_to_uint(
+            codes, self.spec.code_bits, unpacked_last_axis_dim=columns // self.spec.vector_width
+        )
         row_axes = tuple(sharding_of(codes).spec)[: codes.ndim - 1]
         values = self.table.at[indices].get(out_sharding=PartitionSpec(*row_axes, None, None))
         values = values.reshape(*codes.shape[:-1], columns).astype(jnp.float32)

@@ -45,7 +45,7 @@ def test_packed_checkpoint_loads_every_saved_tensor() -> None:
         unfolded = {name: saved[name] for name in saved if not name.startswith(prefixes)}
         assert_loaded_every_saved_tensor(model, unfolded, folds)
         for path, loaded_path, part_row, spec in folded:
-            reference = saved_i4s4(saved, path, config, spec.get("post_gain_axes", ())).astype("float32")
+            reference = saved_i4s4(saved, path, spec.get("post_gain_axes", ()), config)
             fused_path = loaded_path.replace(".qkv_proj", ".qkvg_proj").replace(".gate_proj", ".qkvg_proj")
             first_row = part_row - len(reference) * (".gate_projection." in path)
             loaded = weight_matrices(model)[fused_path].astype("float32").decompress()[first_row:][: len(reference)]

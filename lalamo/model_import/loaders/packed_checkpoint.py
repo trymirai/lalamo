@@ -2,6 +2,7 @@ import json
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
@@ -32,7 +33,6 @@ from lalamo.compressed.qtip_gaussian import (
 )
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
 from lalamo.compressed.utils.packing import unpack_uint8_to_uint
-from lalamo.compressed.utils.post_gains import GainAxis
 from lalamo.initializer import EmptyInitializer
 from lalamo.model import BaseModelConfig
 from lalamo.models.language_model import LanguageModel, LanguageModelConfig
@@ -45,6 +45,11 @@ from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, Layout, ShapeDtypeMatrix, WeightMatrix
 
 FOLDED_I4S4_QUANTIZATION = MLXSpec(bits=4, group_size=COLUMNS_PER_LADDER_INDEX, layout=Layout.OUTPUT_INPUT)
+
+
+class GainAxis(StrEnum):
+    ROW = "row"
+    COLUMN = "column"
 
 
 @dataclass(frozen=True)
@@ -273,7 +278,8 @@ def load_packed_checkpoint(
                     signs = IncoherenceSigns(parameter(path / "incoherence_signs" / "input_signs"), None)
                     matrix = HybridMatrix.of(quantized, signs, sharding_config, is_sharded)
                     assert matrix.spec == spec
-                case "I4S4Spec" if saved["layout"] == Layout.OUTPUT_INPUT:
+                case "I4S4Spec":
+                    assert saved.pop("layout") == Layout.OUTPUT_INPUT, f"I4S4 leaves are stored output-input at {path}"
                     # Level 2c - 15 times the group scale s = row scale * ladder value is (2s) * c - 15s: affine, once
                     # the nibbles are swapped to low-first. Gains fold into s in float32, exact for powers of two.
                     axes = tuple(map(GainAxis, saved.pop("post_gain_axes", ())))
@@ -293,7 +299,7 @@ def load_packed_checkpoint(
                     )
                     signs = IncoherenceSigns(parameter(path / "input_hadamard_factors"), None)
                     matrix = HybridMatrix.of(quantized, signs, sharding_config, is_sharded)
-                case "D4S4Spec" | "I3S4Spec" | "I4S4Spec" as kind_name:
+                case "D4S4Spec" | "I3S4Spec" as kind_name:
                     assert "kind" not in saved
                     if saved.pop("post_gain_axes", ()):
                         raise ValueError(f"Lattice post-gains do not commute with the Hadamard rotation at {path}")

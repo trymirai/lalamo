@@ -19,10 +19,8 @@ from .mlx import MLXMatrix, MLXMatrixForInference, MLXMatrixForTraining, MLXSpec
 from .qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec
 from .quantized_spec import QuantizedSpec
 from .row_stack import RowStackMatrix, RowStackSpec
-from .utils.post_gains import GainAxis
 
 __all__ = [
-    "GainAxis",
     "HybridMatrix",
     "HybridSpec",
     "IntMatrix",
