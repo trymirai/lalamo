@@ -51,10 +51,7 @@ class BaseModel[ConfigT: BaseModelConfig](LalamoModule[ConfigT]):
 
     @classmethod
     def load(cls, directory: Path | str, sharding_config: ShardingConfig, dtype: DTypeLike | None = None) -> Self:
-        from lalamo.model_import.loaders.packed_checkpoint import (  # noqa: PLC0415
-            is_packed_checkpoint,
-            load_packed_checkpoint,
-        )
+        from lalamo.model_import.loaders import packed_checkpoint  # noqa: PLC0415
 
         directory = Path(directory)
         with (directory / "config.json").open() as config_file:
@@ -65,8 +62,8 @@ class BaseModel[ConfigT: BaseModelConfig](LalamoModule[ConfigT]):
             decoded_metadata = {}
             if metadata is not None:
                 decoded_metadata = {key: json.loads(value) for key, value in metadata.items()}
-            if is_packed_checkpoint(config_json, decoded_metadata, arrays.keys()):
-                result = load_packed_checkpoint(directory, sharding_config, dtype)
+            if packed_checkpoint.is_packed_checkpoint(decoded_metadata, arrays.keys()):
+                result = packed_checkpoint.load_packed_checkpoint(directory, sharding_config, dtype)
                 assert isinstance(result, cls)
                 return result
             config = BaseModelConfig.from_json(config_json)
