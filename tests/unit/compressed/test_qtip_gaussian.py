@@ -14,72 +14,48 @@ pytestmark = pytest.mark.usefixtures("fake_mesh")
 
 DATA = Path(__file__).parent / "data"
 
-# Four rows per tape, fitted and packed by the independent Torch producers: Qwen3.8 tapes and Muse ("connected") tapes.
-SAVED_TAPES = (
-    ("v2_k2", QtipGaussianSpec(2, 4, 0)),
-    ("v2_k3", QtipGaussianSpec(2, 6, 0)),
-    ("v4_k2", QtipGaussianSpec(4, 8, 64)),
-    ("v4_k2_connected", QtipGaussianSpec(4, 8, 0)),
-    ("v2_k4_connected", QtipGaussianSpec(2, 8, 0)),
-)
 
+def test_saved_tapes_decode_like_their_producers() -> None:
+    # Four rows per tape, fitted and packed by the independent Torch producers for Qwen3.8 and Muse ("connected").
+    # Each producer decoded through its own table; only the connected v4 table is the computed production codebook.
+    config = make_test_sharding_config()
+    with np.load(DATA / "qtip_gaussian_hyb036.npz") as hyb036, np.load(DATA / "qtip_gaussian_muse.npz") as muse:
+        production = muse["v4_k2_connected_table"]
+        with pytest.raises(ValueError, match="scale \\* level"):
+            codebook_from_table(jnp.asarray(hyb036["table_v4"]))
+        for data, name, spec, table in (
+            (hyb036, "v2_k2", QtipGaussianSpec(2, 4, 0), hyb036["table_v2"]),
+            (hyb036, "v2_k3", QtipGaussianSpec(2, 6, 0), hyb036["table_v2"]),
+            (hyb036, "v4_k2", QtipGaussianSpec(4, 8, 64), hyb036["table_v4"]),
+            (muse, "v4_k2_connected", QtipGaussianSpec(4, 8, 0), production),
+            (muse, "v2_k4_connected", QtipGaussianSpec(2, 8, 0), muse["v2_k4_connected_table"]),
+        ):
+            gains = data[f"{name}_gains_bits"].view(jnp.bfloat16).astype(np.float32)
+            leaf = QtipGaussianMatrix(
+                spec=spec,
+                sharding_config=config,
+                is_sharded=True,
+                dtype_=jnp.float32,
+                columns=data[f"{name}_signs"].shape[0],
+                codes=jnp.asarray(data[f"{name}_codes"]),
+                scales=jnp.asarray(data[f"{name}_scales"].astype(np.float32) * gains),
+                codebook=codebook_from_table(jnp.asarray(production[:, : spec.vector_width])),
+            )
+            states, scales = np.asarray(spec.states(leaf.codes, leaf.shape[1])), np.asarray(leaf.scales)[:, None]
+            rotated = data[f"{name}_rotated"]
+            np.testing.assert_allclose(table[states].reshape(leaf.shape) * scales, rotated, rtol=1e-6, atol=1e-9)
+            expected = production[states, : spec.vector_width].reshape(leaf.shape) * scales
+            np.testing.assert_allclose(leaf.decompress(), expected, rtol=1e-6, atol=1e-9, err_msg=name)
 
-def production_table() -> np.ndarray:
-    with np.load(DATA / "qtip_gaussian_muse.npz") as data:
-        return data["v4_k2_connected_table"]
-
-
-def saved_tape(name: str, spec: QtipGaussianSpec) -> tuple[QtipGaussianMatrix, KroneckerRotation]:
-    """The saved tape with its two row scale stages folded into one, decoded through the production v4 table."""
-    is_muse = name.endswith("_connected")
-    with np.load(DATA / ("qtip_gaussian_muse.npz" if is_muse else "qtip_gaussian_hyb036.npz")) as data:
-        scales = data[f"{name}_scales"].astype(np.float32)
-        gains = data[f"{name}_gains_bits"].view(jnp.bfloat16).astype(np.float32)
-        signs = jnp.asarray(data[f"{name}_signs"])
-        leaf = QtipGaussianMatrix(
-            spec=spec,
-            sharding_config=make_test_sharding_config(),
-            is_sharded=True,
-            dtype_=jnp.bfloat16,
-            columns=signs.shape[0],
-            codes=jnp.asarray(data[f"{name}_codes"]),
-            scales=jnp.asarray(scales * gains),
-            codebook=codebook_from_table(jnp.asarray(production_table()[:, : spec.vector_width])),
-        )
-        return leaf, KroneckerRotation(signs=signs, small_q=jnp.asarray(data[f"{name}_small_q"]))
-
-
-def test_saved_tapes_decode_to_production_table_entries() -> None:
-    # The hyb036 and v2_k4_connected fixture tables are not hash-affine, so every tape decodes through the v4 table.
-    table = production_table()
-    for name, spec in SAVED_TAPES:
-        matrix, _ = saved_tape(name, spec)
-        states = np.asarray(spec.states(matrix.codes, matrix.shape[1]))
-        expected = table[states, : spec.vector_width].reshape(matrix.shape) * np.asarray(matrix.scales)[:, None]
-        decoded = matrix.astype(jnp.float32).decompress()
-        np.testing.assert_allclose(decoded, expected, rtol=1e-6, atol=1e-6 * np.abs(expected).max(), err_msg=name)
-
-
-def test_connected_v4_tape_matches_its_producer() -> None:
-    leaf, rotation = saved_tape("v4_k2_connected", QtipGaussianSpec(4, 8, 0))
-    with np.load(DATA / "qtip_gaussian_muse.npz") as data:
-        producer_rotated = data["v4_k2_connected_rotated"]
-    decoded = leaf.astype(jnp.float32).decompress()
-    np.testing.assert_allclose(decoded, producer_rotated, rtol=1e-6, atol=1e-6 * np.abs(producer_rotated).max())
-
-    # The hybrid applies kron(H, Q) and then the signs to the producer's rotated rows.
-    expected = np.asarray(full_rotation(jnp.asarray(producer_rotated), rotation.small_q) * rotation.signs)
-    tape = HybridMatrix.of(leaf.astype(jnp.float32), rotation, leaf.sharding_config)
-    np.testing.assert_allclose(tape.decompress(), expected, rtol=1e-5, atol=1e-5 * np.abs(expected).max())
-
-    vector = jax.device_put(jnp.linspace(-1, 1, expected.shape[1]), leaf.sharding_config.make_sharding((None,)))
-    actual = tape.dot(vector, keychain=Keychain.init(0, sharding_config=leaf.sharding_config))
-    np.testing.assert_allclose(actual, tape.decompress() @ vector, rtol=1e-5, atol=1e-5 * np.abs(expected).max())
-
-
-def test_tables_that_are_not_computed_levels_are_rejected() -> None:
-    with np.load(DATA / "qtip_gaussian_hyb036.npz") as data, pytest.raises(ValueError, match="scale \\* level"):
-        codebook_from_table(jnp.asarray(data["table_v4"]))
+            rotation = KroneckerRotation(jnp.asarray(data[f"{name}_signs"]), jnp.asarray(data[f"{name}_small_q"]))
+            hybrid = HybridMatrix.of(leaf, rotation, config)
+            dense = hybrid.decompress()
+            np.testing.assert_allclose(dense, full_rotation(leaf.decompress(), rotation.small_q) * rotation.signs)
+            vector = jax.device_put(jnp.linspace(-1, 1, leaf.shape[1]), config.make_sharding((None,)))
+            actual = hybrid.dot(vector, keychain=Keychain.init(0, sharding_config=config))
+            np.testing.assert_allclose(actual, dense @ vector, rtol=1e-5, atol=1e-5 * np.abs(dense).max())
+            # bf16 trellis weights round once, after the rotation.
+            np.testing.assert_array_equal(hybrid.astype(jnp.bfloat16).decompress(), dense.astype(jnp.bfloat16))
 
 
 def test_full_rotation_matches_explicit_kronecker_product() -> None:
@@ -126,10 +102,3 @@ def test_tape_blocks_are_byte_padded_msb_first_states(spec: QtipGaussianSpec, bl
     codes = jnp.asarray(np.frombuffer(int(tape, 2).to_bytes(len(tape) // 8), np.uint8))[None]
     assert spec.code_bytes(columns) == len(tape) // 8
     np.testing.assert_array_equal(spec.states(codes, columns)[0], states)
-
-
-def test_bf16_trellis_weights_round_once_after_the_rotation() -> None:
-    leaf, rotation = saved_tape("v2_k3", QtipGaussianSpec(2, 6, 0))
-    matrix = HybridMatrix.of(leaf, rotation, leaf.sharding_config)
-    expected = matrix.astype(jnp.float32).decompress().astype(jnp.bfloat16)
-    np.testing.assert_array_equal(matrix.astype(jnp.bfloat16).decompress(), expected)

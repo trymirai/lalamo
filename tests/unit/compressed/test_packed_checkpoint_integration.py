@@ -40,7 +40,7 @@ def test_packed_checkpoint_loads_every_saved_tensor() -> None:
             for path, spec in specs.items()
             for index, (_, part) in enumerate(spec.get("parts", ()))
         ]
-        folded = [leaf for leaf in leaves if (leaf[3]["type"], leaf[3].get("layout")) == ("I4S4Spec", "output_input")]
+        folded = [leaf for leaf in leaves if leaf[3]["type"] == "I4S4Spec"]
         prefixes = tuple(f"{path}." for path, *_ in folded)
         unfolded = {name: saved[name] for name in saved if not name.startswith(prefixes)}
         assert_loaded_every_saved_tensor(model, unfolded, folds)
