@@ -63,8 +63,9 @@ def native_config(value: JSON) -> JSON:
     pard_token = value.pop("pard_token", None)
     assert pard_token is None, "PARD checkpoints are not supported"
     if value.get("type") == "AttentionConfig" and "qkv_projection_config" in value:
-        names = ("qkv_projection_config", "gate_projection_config", "has_qkv_biases")
-        qkv, gate, has_biases = (value.pop(name) for name in names)
+        qkv = value.pop("qkv_projection_config")
+        gate = value.pop("gate_projection_config")
+        has_biases = value.pop("has_qkv_biases")
         assert gate == qkv and not has_biases, "Legacy qkv and gate projections share one bias-free config"
         value |= {"qkvg_projection_config": qkv, "has_qkvg_biases": False, "has_gate": True}
     return {name: native_config(item) for name, item in value.items()}

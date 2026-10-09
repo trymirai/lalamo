@@ -70,7 +70,8 @@ def assert_loaded_every_saved_tensor(
     # `folds` maps each trellis leaf's saved scales to the saved row gains its one loaded scale multiplies.
     for leaf in jax.tree.leaves(model, is_leaf=lambda node: isinstance(node, QtipGaussianMatrix | KroneckerRotation)):
         if isinstance(leaf, QtipGaussianMatrix):
-            tables = [table for name, table in saved.items() if name.endswith(f"_v{leaf.spec.vector_width}")]
+            width = leaf.spec.vector_width
+            tables = [table for name, table in saved.items() if re.fullmatch(rf"qtip_shared\.\w+_v{width}", name)]
             assert any(np.array_equal(leaf.codebook, codebook_from_table(table)) for table in tables)
         if isinstance(leaf, KroneckerRotation):
             np.testing.assert_array_equal(leaf.signs, saved[f"qtip_shared.signs_{len(leaf.signs)}"])
@@ -170,7 +171,9 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     metadata = {name: value for name, value in exported.metadata.items() if name.removesuffix(".spec") not in packed}
     folds: dict[str, tuple[str, ...]] = {}
     generator = np.random.default_rng(0)
-    i4s4_signs = jnp.asarray(generator.choice([-1, 1], MODEL_DIM), jnp.int32)
+
+    def random_signs() -> Array:
+        return jnp.asarray(generator.choice([-1, 1], MODEL_DIM), jnp.int32)
 
     def uniform(shape: tuple[int, ...], dtype: DTypeLike) -> Array:
         return jnp.asarray(generator.uniform(0.5, 1.5, shape).astype(np.float32)).astype(dtype)
@@ -180,13 +183,9 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
 
     def trellis(path: str, rows: int, columns: int, spec: QtipGaussianSpec, scale_dtype: str) -> JSON:
         arrays[path + ".codes"] = packed_bytes((rows, spec.code_bytes(columns)))
-        arrays[path + ".scales"] = uniform((rows,), jnp.dtype(scale_dtype))
-        arrays[path + ".gains"] = uniform((rows,), jnp.bfloat16)
-        arrays[path + ".pre_gains.0"] = uniform((rows,), jnp.float32)
-        arrays[path + ".post_gains.0"] = uniform((rows,), jnp.float32)
-        folds[path + ".scales"] = tuple(
-            f"{path}.{name}" for name in ("scales", "gains", "pre_gains.0", "post_gains.0")
-        )
+        stages = {"scales": scale_dtype, "gains": "bfloat16", "pre_gains.0": "float32", "post_gains.0": "float32"}
+        arrays.update({f"{path}.{name}": uniform((rows,), jnp.dtype(dtype)) for name, dtype in stages.items()})
+        folds[path + ".scales"] = tuple(f"{path}.{name}" for name in stages)
         saved = {"layout": "output_input", **asdict(spec), "scale_dtype": scale_dtype, "pre_gain_count": 1}
         return {"type": "QtipGaussianSpec", **saved, "post_gain_axes": ["row"]}
 
@@ -196,14 +195,14 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
         arrays[path + ".ladder_indices"] = packed_bytes((rows, MODEL_DIM // 128))
         arrays[path + ".ladder"] = uniform((16,), jnp.float16)
         signs = "output_hadamard_factors" if spec.layout == Layout.INPUT_OUTPUT else "input_hadamard_factors"
-        arrays[f"{path}.{signs}"] = jnp.asarray(generator.choice([-1, 1], MODEL_DIM).astype(np.int32))
+        arrays[f"{path}.{signs}"] = random_signs()
         if spec.kind == LatticeKind.D4:
             arrays[path + ".table"] = jnp.asarray(generator.integers(-8, 8, (256, 4), dtype=np.int8))
         return {"type": f"{spec.kind.upper()}S4Spec", "layout": spec.layout.value}
 
-    def i4s4(path: str, rows: int) -> JSON:
-        # Powers of two, so the affine fold rounds nothing; every I4S4 leaf shares one rotation.
-        arrays[path + ".input_hadamard_factors"] = i4s4_signs
+    def i4s4(path: str, rows: int, signs: Array) -> JSON:
+        # Powers of two, so the affine fold rounds nothing.
+        arrays[path + ".input_hadamard_factors"] = signs
         arrays[path + ".codes"] = packed_bytes((rows, MODEL_DIM // 2))
         arrays[path + ".ladder_indices"] = packed_bytes((rows, MODEL_DIM // 128))
         arrays[path + ".row_scales"] = jnp.asarray(np.exp2(generator.integers(-3, 3, rows)), jnp.bfloat16)
@@ -213,19 +212,16 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
         return {"type": "I4S4Spec", "layout": "output_input", "post_gain_axes": ["row", "column"]}
 
     v4, v2 = QtipGaussianSpec(4, 8, 64), QtipGaussianSpec(2, 6, 0)
-    parts = [
-        trellis(f"{qkvg}.parts.{index}", 8, MODEL_DIM, spec, "float32") for index, spec in enumerate((v4, v4, v2))
+    parts: list[JSON] = [
+        [8, trellis(f"{qkvg}.parts.{index}", 8, MODEL_DIM, spec, "float32")] for index, spec in enumerate((v4, v4, v2))
     ]
-    parts.append(i4s4(f"{qkvg}.parts.3", 8))
-    metadata[qkvg + ".spec"] = {
-        "type": "RowStackSpec",
-        "parts": [[8, part] for part in parts],
-        "layout": "output_input",
-    }
+    parts += [[4, i4s4(f"{qkvg}.parts.{index}", 4, random_signs())] for index in (3, 4)]
+    metadata[qkvg + ".spec"] = {"type": "RowStackSpec", "parts": parts, "layout": "output_input"}
     metadata[out + ".spec"] = trellis(out, MODEL_DIM, 8, QtipGaussianSpec(2, 4, 0), "float16")
     # The second layer saves its attention projection as a legacy qkv leaf and a gate leaf.
-    legacy = [second + f"mixer.{name}_projection.weights" for name in ("qkv", "gate")]
-    metadata.update({path + ".spec": i4s4(path, rows) for path, rows in zip(legacy, (24, 8), strict=True)})
+    legacy = (second + "mixer.qkv_projection.weights", second + "mixer.gate_projection.weights")
+    shared_signs = random_signs()
+    metadata |= {path + ".spec": i4s4(path, rows, shared_signs) for path, rows in zip(legacy, (24, 8), strict=True)}
     metadata[up + ".spec"] = lattice(up, 32, LatticeSpec(LatticeKind.I3, Layout.OUTPUT_INPUT))
     metadata[embedding + ".spec"] = lattice(embedding, VOCABULARY, LatticeSpec(LatticeKind.D4, Layout.INPUT_OUTPUT))
     int4 = HybridSpec(IntSpec(4, 64, is_symmetric=True), None, 32, IncoherenceProcessingMode.INPUT)
@@ -257,20 +253,22 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
 
     matrices = weight_matrices(restored)
     sharding_config = make_test_sharding_config()
-    # Same-format trellis neighbours merge under the shared Kronecker rotation; I4S4 gets its own hybrid.
+    # Same-format trellis neighbours merge under their shared Kronecker rotation; I4S4 parts of other signs do not.
     kronecker = HybridSpec(
         RowStackSpec(((16, v4), (8, v2))), None, None, IncoherenceProcessingMode.INPUT, IncoherenceKind.KRONECKER
     )
     folded_i4s4 = HybridSpec(MLXSpec(4, 64), None, incoherence_processing_mode=IncoherenceProcessingMode.INPUT)
     stack = matrices[qkvg]
-    assert isinstance(stack, RowStackMatrix) and stack.spec == RowStackSpec(((24, kronecker), (8, folded_i4s4)))
-    expected = saved_i4s4(arrays, f"{qkvg}.parts.3", ("row", "column"), sharding_config)
-    np.testing.assert_array_equal(stack.parts[1].astype(jnp.float32).decompress(), expected)
+    assert isinstance(stack, RowStackMatrix)
+    assert stack.spec == RowStackSpec(((24, kronecker), (4, folded_i4s4), (4, folded_i4s4)))
+    for index, part in zip((3, 4), stack.parts[1:], strict=True):
+        expected = saved_i4s4(arrays, f"{qkvg}.parts.{index}", ("row", "column"), sharding_config)
+        np.testing.assert_array_equal(part.astype(jnp.float32).decompress(), expected)
     # Legacy qkv and gate I4S4 leaves under one rotation merge into one affine int4 leaf.
     expected = jnp.concatenate([saved_i4s4(arrays, path, ("row", "column"), sharding_config) for path in legacy])
     assert matrices[fused].spec == folded_i4s4
     np.testing.assert_array_equal(matrices[fused].astype(jnp.float32).decompress(), expected)
-    i4s4_prefixes = (f"{qkvg}.parts.3.", *(path + "." for path in legacy))
+    i4s4_prefixes = (f"{qkvg}.parts.3.", f"{qkvg}.parts.4.", *(path + "." for path in legacy))
     unfolded = {name: value for name, value in arrays.items() if not name.startswith(i4s4_prefixes)}
     assert_loaded_every_saved_tensor(restored, unfolded, folds)
 
