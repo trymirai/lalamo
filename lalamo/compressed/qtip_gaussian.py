@@ -2,10 +2,11 @@ from dataclasses import dataclass, replace
 from math import ceil
 from typing import Literal, Self
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.lax import DotAlgorithmPreset
-from jaxtyping import Array, DTypeLike, Float, Key, UInt8
+from jaxtyping import Array, DTypeLike, Float, Int8, Key, UInt8, UInt32
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, field
@@ -22,13 +23,25 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
-from .trellis import states_to_levels
 from .utils.row_dot import row_batched_dot
 
 # Every step's 16-bit state hashes to its levels; each tape block opens with its first state in two bytes.
 STATE_BITS = 16
 # The codebook is [scale, offset of each column class], the class of a column being its index modulo four.
 COLUMN_CLASSES = 4
+
+
+def states_to_levels(states: UInt32[Array, "..."]) -> Int8[Array, "... 4"]:
+    # Low 32 bits of SplitMix64 at 0 (forced odd) and 1 with seed 1234, as uzu's trellis_format.rs derives them.
+    hashes = states * jnp.uint32(3486300223) + jnp.uint32(1481329315)
+    hashes = hashes ^ (hashes >> jnp.uint32(16))
+    hashes = hashes * jnp.uint32(0x85EBCA6B)
+    hashes = hashes ^ (hashes >> jnp.uint32(16))
+    pairs = (hashes & jnp.uint32(0x33333333)) + ((hashes >> jnp.uint32(2)) & jnp.uint32(0x33333333))
+    pairs = (pairs & jnp.uint32(0x0F0F0F0F)) + ((pairs >> jnp.uint32(4)) & jnp.uint32(0x0F0F0F0F))
+    dither = (jnp.uint32(3) * (hashes & jnp.uint32(0x0F0F0F0F))) & jnp.uint32(0x0F0F0F0F)
+    packed = ((pairs << jnp.uint32(3)) + dither + jnp.uint32(0x4A4A4A4A)) ^ jnp.uint32(0x80808080)
+    return jax.lax.bitcast_convert_type(packed, jnp.int8)
 
 
 def full_rotation(values: Array, small_q: Array) -> Array:

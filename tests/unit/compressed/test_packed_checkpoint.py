@@ -13,7 +13,6 @@ from jaxtyping import Array, DTypeLike
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 
-from lalamo.compressed.direction import BLOCK_BYTES, BLOCK_COLUMNS, LEVEL_BITS, DirectionMatrix
 from lalamo.compressed.hybrid import (
     HybridMatrix,
     HybridSpec,
@@ -31,9 +30,8 @@ from lalamo.compressed.lattice import (
     LatticeSpec,
     odd_integer_table,
 )
-from lalamo.compressed.qtip_gaussian import STATE_BITS, QtipGaussianMatrix, QtipGaussianSpec
+from lalamo.compressed.qtip_gaussian import STATE_BITS, QtipGaussianMatrix, QtipGaussianSpec, states_to_levels
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
-from lalamo.compressed.trellis import states_to_levels
 from lalamo.initializer import RandomInitializer
 from lalamo.model_import.loaders.packed_checkpoint import codebook_from_table, load_packed_checkpoint
 from lalamo.models.chat_codec import ChatCodecConfig
@@ -51,8 +49,8 @@ from tests.helpers import build_tiny_attention_decoder_config, make_test_shardin
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
-# One direction block plus a dense tail, and a whole number of lattice ladder bytes.
-MODEL_DIM = BLOCK_COLUMNS + COLUMNS_PER_LADDER_BYTE
+# A whole number of lattice ladder bytes.
+MODEL_DIM = 3 * COLUMNS_PER_LADDER_BYTE
 VOCABULARY = 32
 # Package codebooks are float32 tables of CODEBOOK_SCALE * level + the offset of each column class.
 CODEBOOK_SCALE = 0.05
@@ -254,12 +252,7 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
         return {"type": f"{spec.kind.upper()}S4Spec", "layout": spec.layout.value}
 
     readout = "decoder.embedding.output_embedding"
-    arrays[readout + ".codes"] = packed_bytes((VOCABULARY, BLOCK_BYTES))
-    arrays[readout + ".levels"] = jnp.linspace(-1.5, 1.5, 1 << LEVEL_BITS, dtype=jnp.float32)
-    arrays[readout + ".unit_scale"] = jnp.float32(0.7)
-    arrays[readout + ".mean_norm"] = jnp.float32(3.0)
-    arrays[readout + ".tail"] = uniform((VOCABULARY, MODEL_DIM - BLOCK_COLUMNS), jnp.bfloat16)
-    metadata[readout + ".spec"] = {"type": "SDirectionSpec", "layout": "output_input"}
+    metadata[readout + ".spec"] = lattice(readout, VOCABULARY, LatticeSpec(LatticeKind.I3, Layout.OUTPUT_INPUT))
     # Two trellis parts of one format and codebook merge into one leaf; the other format stays its own leaf.
     stack_specs = (
         (8, QtipGaussianSpec(4, 8, 64)),
@@ -283,7 +276,7 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     metadata[input_embedding + ".spec"] = lattice(
         input_embedding, VOCABULARY, LatticeSpec(LatticeKind.D4, Layout.INPUT_OUTPUT)
     )
-    for columns, order in ((MODEL_DIM, 9), (8, 1)):
+    for columns, order in ((MODEL_DIM, 3), (8, 1)):
         arrays[f"qtip_shared.signs_{columns}"] = jnp.asarray(generator.choice([-1.0, 1.0], columns).astype(np.float32))
         arrays[f"qtip_shared.q_{columns}"] = jnp.linalg.qr(
             jnp.asarray(generator.normal(size=(order, order)), jnp.float32)
@@ -302,7 +295,7 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     matrices = weight_matrices(restored)
     assert {name: type(matrix) for name, matrix in matrices.items()} == {
         input_embedding: HybridMatrix,
-        readout: DirectionMatrix,
+        readout: HybridMatrix,
         qkvg: HybridMatrix,
         out: HybridMatrix,
         up: HybridMatrix,
@@ -338,7 +331,7 @@ def test_qkv_and_i4s4_gate_merge_only_when_both_fold_under_shared_signs(tmp_path
         spec = QtipGaussianSpec(4, 8, 64)
         arrays[qkv + ".codes"] = jnp.zeros((24, spec.code_bytes(MODEL_DIM)), jnp.uint8)
         arrays |= {qkv + ".scales": jnp.ones(24, jnp.float16), qkv + ".gains": jnp.ones(24, jnp.bfloat16)}
-        arrays |= {f"qtip_shared.signs_{MODEL_DIM}": jnp.ones(MODEL_DIM), f"qtip_shared.q_{MODEL_DIM}": jnp.eye(9)}
+        arrays |= {f"qtip_shared.signs_{MODEL_DIM}": jnp.ones(MODEL_DIM), f"qtip_shared.q_{MODEL_DIM}": jnp.eye(3)}
         arrays["qtip_shared.codebook_v4"] = jnp.zeros((1 << STATE_BITS, 4))
         metadata[qkv + ".spec"] = {"type": "QtipGaussianSpec", "layout": "output_input", **asdict(spec)}
     else:

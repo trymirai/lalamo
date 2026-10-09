@@ -1,4 +1,3 @@
-from .direction import DirectionMatrix, DirectionSpec
 from .hybrid import HybridMatrix, HybridSpec
 from .int import IntMatrix, IntMatrixForInference, IntMatrixForTraining, IntSpec
 from .lattice import LatticeKind, LatticeMatrix, LatticeSpec
@@ -20,12 +19,9 @@ from .mlx import MLXMatrix, MLXMatrixForInference, MLXMatrixForTraining, MLXSpec
 from .qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec
 from .quantized_spec import QuantizedSpec
 from .row_stack import RowStackMatrix, RowStackSpec
-from .trellis import TrellisMatrix, TrellisSpec
 from .utils.post_gains import GainAxis
 
 __all__ = [
-    "DirectionMatrix",
-    "DirectionSpec",
     "GainAxis",
     "HybridMatrix",
     "HybridSpec",
@@ -56,6 +52,4 @@ __all__ = [
     "QuantizedSpec",
     "RowStackMatrix",
     "RowStackSpec",
-    "TrellisMatrix",
-    "TrellisSpec",
 ]

@@ -12,7 +12,6 @@ import numpy as np
 from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike, Float, Float32
 
-from lalamo.compressed.direction import DirectionMatrix, DirectionSpec
 from lalamo.compressed.hybrid import HybridMatrix, HybridSpec, IncoherenceSigns, KroneckerRotation
 from lalamo.compressed.int import IntSpec
 from lalamo.compressed.lattice import (
@@ -24,9 +23,14 @@ from lalamo.compressed.lattice import (
     odd_integer_table,
 )
 from lalamo.compressed.mlx import MLXMatrix, MLXSpec
-from lalamo.compressed.qtip_gaussian import COLUMN_CLASSES, STATE_BITS, QtipGaussianMatrix, QtipGaussianSpec
+from lalamo.compressed.qtip_gaussian import (
+    COLUMN_CLASSES,
+    STATE_BITS,
+    QtipGaussianMatrix,
+    QtipGaussianSpec,
+    states_to_levels,
+)
 from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
-from lalamo.compressed.trellis import states_to_levels
 from lalamo.compressed.utils.packing import unpack_uint8_to_uint
 from lalamo.compressed.utils.post_gains import GainAxis
 from lalamo.initializer import EmptyInitializer
@@ -124,7 +128,7 @@ def is_packed_checkpoint(config: JSON, metadata: dict[str, JSON], tensor_names: 
     return (
         native_config(config) != config
         or any(name.startswith("qtip_shared.") for name in tensor_names)
-        or any(spec.get("type") in ("D4S4Spec", "I3S4Spec", "I4S4Spec", "SDirectionSpec") for spec in (*specs, *parts))
+        or any(spec.get("type") in ("D4S4Spec", "I3S4Spec", "I4S4Spec") for spec in (*specs, *parts))
     )
 
 
@@ -320,17 +324,6 @@ def load_packed_checkpoint(
                         input_signs=None if is_output else signs, output_signs=signs if is_output else None
                     )
                     matrix = HybridMatrix.of(leaf, rotation, sharding_config, is_sharded)
-                case "SDirectionSpec":
-                    matrix = DirectionMatrix(
-                        spec=converter.structure(saved, DirectionSpec),
-                        sharding_config=sharding_config,
-                        is_sharded=is_sharded,
-                        codes=parameter(path / "codes"),
-                        levels=parameter(path / "levels"),
-                        unit_scale=parameter(path / "unit_scale"),
-                        mean_norm=parameter(path / "mean_norm"),
-                        tail=parameter(path / "tail"),
-                    )
                 case other:
                     raise ValueError(f"Unsupported packed checkpoint weight format {other!r} at {path}")
             return matrix if dtype is None else matrix.astype(dtype)
