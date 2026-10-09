@@ -137,16 +137,14 @@ def lookup_sharded_indices(
     row_index: int | Int[Array, "*batch"],
     out_sharding: NamedSharding | None = None,
 ) -> Shaped[Array, "..."]:
-    trailing_spec = (None,) * (array.ndim - 1)
+    trailing = (None,) * (array.ndim - 1)
     if out_sharding is None:
         if isinstance(row_index, int):
             array_sharding = sharding_of(array)
-            out_sharding = NamedSharding(array_sharding.mesh, PartitionSpec(*trailing_spec))
+            out_sharding = NamedSharding(array_sharding.mesh, PartitionSpec(*trailing))
         else:
             row_index_sharding = sharding_of(row_index)
-            out_sharding = NamedSharding(
-                row_index_sharding.mesh, PartitionSpec(*row_index_sharding.spec, *trailing_spec)
-            )
+            out_sharding = NamedSharding(row_index_sharding.mesh, PartitionSpec(*row_index_sharding.spec, *trailing))
     result = array.at[row_index, ...].get(out_sharding=out_sharding)
     if isinstance(out_sharding.mesh, Mesh):
         return jax.device_put(result, out_sharding)

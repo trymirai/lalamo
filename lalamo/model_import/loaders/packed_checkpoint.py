@@ -155,9 +155,10 @@ def load_packed_checkpoint(
                     consumed.add(path / "weights")
                 case "QtipGaussianSpec":
                     table_name = saved.pop("table", f"qtip_shared.codebook_v{saved['vector_width']}")
-                    assert saved.pop("layout") == Layout.OUTPUT_INPUT, f"QTIP leaves are stored output-input at {path}"
+                    layout, scale_dtype = saved.pop("layout"), saved.pop("scale_dtype", "float16")
                     scales, gains = parameter(path / "scales"), parameter(path / "gains")
-                    assert scales.dtype == saved.pop("scale_dtype", "float16"), f"Scale dtype differs at {path}"
+                    assert layout == Layout.OUTPUT_INPUT, f"QTIP leaves are stored output-input at {path}"
+                    assert scales.dtype == scale_dtype, f"Saved scales differ from their spec at {path}"
                     pre_gains = parameter_tuple(path / "pre_gains", saved.pop("pre_gain_count", 0))
                     # Every saved gain multiplies a whole row, so one float32 scale per row replaces them all.
                     row_scale = folded_row_scale(path, saved, scales, gains, *pre_gains)
@@ -177,10 +178,9 @@ def load_packed_checkpoint(
                     )
                     matrix = HybridMatrix.of(leaf, rotation, sharding_config, is_sharded)
                 case "RowStackSpec":
-                    assert saved.pop("layout") == Layout.OUTPUT_INPUT, f"Row stacks are stored output-input at {path}"
                     # Each part's saved spec is inline in the stack's; the parts have no spec entries of their own.
                     rows, part_specs = zip(*saved.pop("parts"), strict=True)
-                    assert not saved, f"Unexpected row stack {saved} at {path}"
+                    assert saved == {"layout": Layout.OUTPUT_INPUT}, f"Unexpected row stack {saved} at {path}"
                     parts = [weight(path / "parts" / index, spec, template) for index, spec in enumerate(part_specs)]
                     assert tuple(part.shape[0] for part in parts) == rows
                     matrix = stacked(parts, is_sharded)
@@ -190,13 +190,13 @@ def load_packed_checkpoint(
                     matrix = template.load_exported(ExportResults(arrays, specs | inner_spec), prefix=path)
                     consumed.update(name for name in arrays if name.startswith(path + "."))
                 case "I4S4Spec":
-                    assert saved.pop("layout") == Layout.OUTPUT_INPUT, f"I4S4 leaves are stored output-input at {path}"
                     # Level 2c - 15 times the group scale s = row scale * ladder value is (2s) * c - 15s: affine, once
                     # the nibbles are swapped to low-first. Gains fold into s in float32, exact for powers of two.
                     row_scales = parameter(path / "row_scales")
                     groups = unpack_uint8_to_uint(parameter(path / "ladder_indices"), LADDER_INDEX_BITS)
                     ladder = jnp.take(parameter(path / "ladder"), groups).astype(jnp.float32)
                     scales = folded_row_scale(path, saved, row_scales)[:, None] * ladder
+                    assert saved == {"layout": Layout.OUTPUT_INPUT}, f"Unexpected I4S4 leaf {saved} at {path}"
                     codes = parameter(path / "codes")
                     quantized = MLXSpec(4, COLUMNS_PER_LADDER_INDEX, Layout.OUTPUT_INPUT).from_packed_parameters(
                         packed_weights=(codes << 4) | (codes >> 4),

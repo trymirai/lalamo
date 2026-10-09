@@ -77,8 +77,6 @@ class LatticeSpec(WeightMatrixSpec):
         if not is_dummy_or_tracer(weights):
             raise ValueError("Lattice matrices must be loaded from saved parameters; fitting is not supported")
         rows, columns = self.layout.weight_shape((), *weights.shape)
-        states = 1 << self.code_bits
-        # Vocabulary rows are independently decodable; all transforms stay local.
         row_axis, _ = self.layout.weight_partition(0, is_sharded=is_sharded)
         initializer = EmptyInitializer(weights.dtype, sharding_config)
         return LatticeMatrix(
@@ -89,7 +87,7 @@ class LatticeSpec(WeightMatrixSpec):
             row_scales=initializer.zeros((rows,), (row_axis,)),
             ladder_indices=initializer.zeros((rows, columns // COLUMNS_PER_LADDER_BYTE), (row_axis, None), jnp.uint8),
             ladder=initializer.zeros((1 << LADDER_INDEX_BITS,), dtype=jnp.float16),
-            table=initializer.zeros((states, self.vector_width), dtype=jnp.int8),
+            table=initializer.zeros((1 << self.code_bits, self.vector_width), dtype=jnp.int8),
         )
 
 
@@ -107,8 +105,7 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
         assert self.row_scales.shape == (rows,)
         assert self.codes.dtype == self.ladder_indices.dtype == jnp.uint8
         assert self.ladder.shape == (1 << LADDER_INDEX_BITS,) and self.ladder.dtype == jnp.float16
-        states = 1 << self.spec.code_bits
-        assert self.table.shape == (states, self.spec.vector_width) and self.table.dtype == jnp.int8
+        assert self.table.shape == (1 << self.spec.code_bits, self.spec.vector_width) and self.table.dtype == jnp.int8
 
     @property
     def shape(self) -> tuple[int, int]:
