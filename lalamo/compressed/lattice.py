@@ -1,5 +1,4 @@
 from dataclasses import dataclass, replace
-from enum import StrEnum
 from typing import Self
 
 import jax
@@ -29,40 +28,19 @@ from .utils.packing import unpack_uint8_to_uint
 LADDER_INDEX_BITS = 4
 COLUMNS_PER_LADDER_INDEX = 64
 COLUMNS_PER_LADDER_BYTE = 128
-
-
-class LatticeKind(StrEnum):
-    D4 = "d4"
-    I3 = "i3"
+# Each code byte picks one row of four int8 values from the saved D4 table.
+VECTOR_WIDTH = 4
+CODE_BITS = 8
 
 
 @dataclass(frozen=True)
 class LatticeSpec(WeightMatrixSpec):
-    kind: LatticeKind
     layout: Layout
-
-    @property
-    def vector_width(self) -> int:
-        match self.kind:
-            case LatticeKind.D4:
-                return 4
-            case LatticeKind.I3:
-                return 1
-        raise ValueError(f"Unknown lattice kind: {self.kind}")
-
-    @property
-    def code_bits(self) -> int:
-        match self.kind:
-            case LatticeKind.D4:
-                return 8
-            case LatticeKind.I3:
-                return 3
-        raise ValueError(f"Unknown lattice kind: {self.kind}")
 
     def code_bytes(self, columns: int) -> int:
         if columns <= 0 or columns % COLUMNS_PER_LADDER_BYTE:
             raise ValueError(f"Lattice matrices require a positive multiple of {COLUMNS_PER_LADDER_BYTE} columns")
-        return columns * self.code_bits // self.vector_width // 8
+        return columns // VECTOR_WIDTH
 
     def compress(
         self,
@@ -87,7 +65,7 @@ class LatticeSpec(WeightMatrixSpec):
             row_scales=initializer.zeros((rows,), (row_axis,)),
             ladder_indices=initializer.zeros((rows, columns // COLUMNS_PER_LADDER_BYTE), (row_axis, None), jnp.uint8),
             ladder=initializer.zeros((1 << LADDER_INDEX_BITS,), dtype=jnp.float16),
-            table=initializer.zeros((1 << self.code_bits, self.vector_width), dtype=jnp.int8),
+            table=initializer.zeros((1 << CODE_BITS, VECTOR_WIDTH), dtype=jnp.int8),
         )
 
 
@@ -105,7 +83,7 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
         assert self.row_scales.shape == (rows,)
         assert self.codes.dtype == self.ladder_indices.dtype == jnp.uint8
         assert self.ladder.shape == (1 << LADDER_INDEX_BITS,) and self.ladder.dtype == jnp.float16
-        assert self.table.shape == (1 << self.spec.code_bits, self.spec.vector_width) and self.table.dtype == jnp.int8
+        assert self.table.shape == (1 << CODE_BITS, VECTOR_WIDTH) and self.table.dtype == jnp.int8
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -124,11 +102,8 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
     def decode_rows(self, rows: tuple[Array, Array, Array], dtype: DTypeLike) -> Array:
         codes, row_scales, ladder_indices = rows
         columns = self.shape[1]
-        indices = unpack_uint8_to_uint(
-            codes, self.spec.code_bits, unpacked_last_axis_dim=columns // self.spec.vector_width
-        )
         row_axes = tuple(sharding_of(codes).spec)[: codes.ndim - 1]
-        values = self.table.at[indices].get(out_sharding=PartitionSpec(*row_axes, None, None))
+        values = self.table.at[codes].get(out_sharding=PartitionSpec(*row_axes, None, None))
         values = values.reshape(*codes.shape[:-1], columns).astype(jnp.float32)
         groups = unpack_uint8_to_uint(
             ladder_indices, LADDER_INDEX_BITS, unpacked_last_axis_dim=columns // COLUMNS_PER_LADDER_INDEX

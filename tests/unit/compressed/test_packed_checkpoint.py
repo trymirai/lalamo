@@ -23,7 +23,6 @@ from lalamo.compressed.hybrid import (
     KroneckerRotation,
 )
 from lalamo.compressed.int import IntSpec
-from lalamo.compressed.lattice import LatticeKind, LatticeSpec
 from lalamo.compressed.mlx import MLXSpec
 from lalamo.compressed.qtip_gaussian import (
     STATE_BITS,
@@ -44,7 +43,7 @@ from lalamo.safetensors import safe_write
 from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
-from lalamo.weight_matrix import Layout, WeightMatrix
+from lalamo.weight_matrix import WeightMatrix
 from tests.helpers import build_tiny_attention_decoder_config, make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
@@ -194,17 +193,6 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
         folds[path + ".scales"] = tuple(f"{path}.{name}" for name in stages)
         return saved
 
-    def lattice(path: str, rows: int, spec: LatticeSpec) -> JSON:
-        arrays[path + ".codes"] = packed_bytes((rows, spec.code_bytes(MODEL_DIM)))
-        arrays[path + ".row_scales"] = uniform((rows,), jnp.bfloat16)
-        arrays[path + ".ladder_indices"] = packed_bytes((rows, MODEL_DIM // 128))
-        arrays[path + ".ladder"] = uniform((16,), jnp.float16)
-        signs = "output_hadamard_factors" if spec.layout == Layout.INPUT_OUTPUT else "input_hadamard_factors"
-        arrays[f"{path}.{signs}"] = random_signs()
-        if spec.kind == LatticeKind.D4:
-            arrays[path + ".table"] = jnp.asarray(generator.integers(-8, 8, (256, 4), dtype=np.int8))
-        return {"type": f"{spec.kind.upper()}S4Spec", "layout": spec.layout.value}
-
     def i4s4(path: str, rows: int, signs: Array) -> JSON:
         # Powers of two, so the affine fold rounds nothing.
         arrays[path + ".input_hadamard_factors"] = signs
@@ -228,8 +216,14 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     legacy = (second + "mixer.qkv_projection.weights", second + "mixer.gate_projection.weights")
     shared_signs = random_signs()
     metadata |= {path + ".spec": i4s4(path, rows, shared_signs) for path, rows in zip(legacy, (24, 8), strict=True)}
-    metadata[up + ".spec"] = lattice(up, 32, LatticeSpec(LatticeKind.I3, Layout.OUTPUT_INPUT))
-    metadata[embedding + ".spec"] = lattice(embedding, VOCABULARY, LatticeSpec(LatticeKind.D4, Layout.INPUT_OUTPUT))
+    metadata[up + ".spec"] = trellis(up, 32, MODEL_DIM, v4, is_staged=False)
+    arrays[embedding + ".codes"] = packed_bytes((VOCABULARY, MODEL_DIM // 4))
+    arrays[embedding + ".row_scales"] = uniform((VOCABULARY,), jnp.bfloat16)
+    arrays[embedding + ".ladder_indices"] = packed_bytes((VOCABULARY, MODEL_DIM // 128))
+    arrays[embedding + ".ladder"] = uniform((16,), jnp.float16)
+    arrays[embedding + ".output_hadamard_factors"] = random_signs()
+    arrays[embedding + ".table"] = jnp.asarray(generator.integers(-8, 8, (256, 4), dtype=np.int8))
+    metadata[embedding + ".spec"] = {"type": "D4S4Spec", "layout": "input_output"}
     int4 = HybridSpec(IntSpec(4, 64, is_symmetric=True), None, 32, IncoherenceProcessingMode.INPUT)
     readout_weights = jax.random.normal(jax.random.key(0), (VOCABULARY, MODEL_DIM), jnp.bfloat16)
     readout_hybrid = int4.compress(readout_weights, key=jax.random.key(1), sharding_config=make_test_sharding_config())

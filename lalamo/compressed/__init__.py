@@ -1,6 +1,6 @@
 from .hybrid import HybridMatrix, HybridSpec
 from .int import IntMatrix, IntMatrixForInference, IntMatrixForTraining, IntSpec
-from .lattice import LatticeKind, LatticeMatrix, LatticeSpec
+from .lattice import LatticeMatrix, LatticeSpec
 from .lloyd_max import (
     LloydMaxMatrix,
     LloydMaxMatrixForInference,
@@ -27,7 +27,6 @@ __all__ = [
     "IntMatrixForInference",
     "IntMatrixForTraining",
     "IntSpec",
-    "LatticeKind",
     "LatticeMatrix",
     "LatticeSpec",
     "LloydMaxMatrix",

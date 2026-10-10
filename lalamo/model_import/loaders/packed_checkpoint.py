@@ -73,7 +73,7 @@ def native_config(value: JSON) -> JSON:
 def is_packed_checkpoint(metadata: dict[str, JSON], tensor_names: Iterable[str]) -> bool:
     # Lalamo's own saves also tag trellis leaves "QtipGaussianSpec", but keep a five-float codebook under each matrix.
     return any(name.startswith("qtip_shared.") for name in tensor_names) or any(
-        isinstance(spec, dict) and spec["type"] in ("D4S4Spec", "I3S4Spec", "I4S4Spec") for spec in metadata.values()
+        isinstance(spec, dict) and spec["type"] in ("D4S4Spec", "I4S4Spec") for spec in metadata.values()
     )
 
 
@@ -204,15 +204,10 @@ def load_packed_checkpoint(
                     )
                     signs = IncoherenceSigns(parameter(path / "input_hadamard_factors"), None)
                     matrix = HybridMatrix.of(quantized, signs, sharding_config, is_sharded)
-                case "D4S4Spec" | "I3S4Spec" as kind_name:
+                case "D4S4Spec":
                     if saved.pop("post_gain_axes", ()):
                         raise ValueError(f"Lattice post-gains do not commute with the Hadamard rotation at {path}")
-                    lattice = LatticeSpec.from_json({"type": "LatticeSpec", **saved, "kind": kind_name[:2].lower()})
-                    # D4 tables are saved; I3 levels are the odd integers from -7 to 7.
-                    if kind_name == "D4S4Spec":
-                        table = parameter(path / "table")
-                    else:
-                        table = jnp.arange(-7, 8, 2, dtype=jnp.int8)[:, None]
+                    lattice = LatticeSpec.from_json({"type": "LatticeSpec", **saved})
                     leaf = LatticeMatrix(
                         spec=lattice,
                         sharding_config=sharding_config,
@@ -221,7 +216,7 @@ def load_packed_checkpoint(
                         row_scales=parameter(path / "row_scales"),
                         ladder_indices=parameter(path / "ladder_indices"),
                         ladder=parameter(path / "ladder"),
-                        table=table,
+                        table=parameter(path / "table"),
                     )
                     if lattice.layout == Layout.INPUT_OUTPUT:
                         rotation = IncoherenceSigns(None, parameter(path / "output_hadamard_factors"))
