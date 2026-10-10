@@ -24,7 +24,7 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
-# Every step's 16-bit state hashes to its levels; each tape block opens with its first state in two bytes.
+# Every step's 16-bit state hashes to its levels; each tape block opens with its first state in 16 bits.
 STATE_BITS = 16
 # The codebook is [scale, offset of each column class], the class of a column being its index modulo four.
 COLUMN_CLASSES = 4
@@ -93,22 +93,21 @@ class QtipGaussianSpec(WeightMatrixSpec):
         if columns <= 0 or columns % block_columns or block_columns % self.vector_width:
             raise ValueError(f"Invalid column count {columns} for {self}")
         steps = block_columns // self.vector_width
-        return columns // block_columns, steps, STATE_BITS // 8 + ceil((steps - 1) * self.transition_bits / 8)
+        return columns // block_columns, steps, STATE_BITS + (steps - 1) * self.transition_bits
 
     def code_bytes(self, columns: int) -> int:
-        blocks, _, block_bytes = self.tape_shape(columns)
-        return blocks * block_bytes
+        blocks, _, block_bits = self.tape_shape(columns)
+        return ceil(blocks * block_bits / 8)
 
     def states(self, codes: UInt8[Array, "*rows bytes"], columns: int) -> Array:
-        # Each block is an MSB-first bit stream; state g is its 16-bit window at bit g * transition_bits.
-        blocks, steps, block_bytes = self.tape_shape(columns)
-        *rows, _ = codes.shape
-        tapes = codes.reshape(*rows, blocks, block_bytes)
-        tapes = jnp.pad(tapes, [(0, 0)] * (tapes.ndim - 1) + [(0, 2)]).astype(jnp.uint32)
-        bit_offsets = np.arange(steps) * self.transition_bits
+        # A row is its blocks' MSB-first bit streams back to back; state g of block b is the 16-bit window
+        # at bit b * block_bits + g * transition_bits.
+        blocks, steps, block_bits = self.tape_shape(columns)
+        tapes = jnp.pad(codes, [(0, 0)] * (codes.ndim - 1) + [(0, 2)]).astype(jnp.uint32)
+        bit_offsets = (np.arange(blocks)[:, None] * block_bits + np.arange(steps) * self.transition_bits).reshape(-1)
         windows = sum(tapes[..., bit_offsets // 8 + index] << (16 - 8 * index) for index in range(3))
         shifts = jnp.asarray(8 - bit_offsets % 8, dtype=jnp.uint32)
-        return ((windows >> shifts) & jnp.uint32((1 << STATE_BITS) - 1)).reshape(*rows, blocks * steps)
+        return (windows >> shifts) & jnp.uint32((1 << STATE_BITS) - 1)
 
     def compress(
         self,
