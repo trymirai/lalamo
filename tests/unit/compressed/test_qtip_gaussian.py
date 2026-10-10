@@ -69,22 +69,22 @@ def test_full_rotation_matches_explicit_kronecker_product() -> None:
 
 
 @pytest.mark.parametrize(
-    ("spec", "block_bytes"),
+    ("spec", "row_bytes"),
     [
         (QtipGaussianSpec(2, 4, 0), 34),
         (QtipGaussianSpec(2, 6, 0), 50),
         (QtipGaussianSpec(2, 8, 0), 65),
         (QtipGaussianSpec(4, 8, 0), 33),
-        (QtipGaussianSpec(4, 6, 64), 14),
-        (QtipGaussianSpec(4, 7, 64), 16),
-        (QtipGaussianSpec(4, 8, 64), 17),
-        (QtipGaussianSpec(4, 6, 128), 26),
-        (QtipGaussianSpec(4, 7, 128), 30),
-        (QtipGaussianSpec(4, 8, 128), 33),
+        (QtipGaussianSpec(4, 6, 64), 27),
+        (QtipGaussianSpec(4, 7, 64), 31),
+        (QtipGaussianSpec(4, 8, 64), 34),
+        (QtipGaussianSpec(4, 6, 128), 51),
+        (QtipGaussianSpec(4, 7, 128), 59),
+        (QtipGaussianSpec(4, 8, 128), 66),
     ],
 )
-def test_tape_blocks_are_byte_padded_msb_first_states(spec: QtipGaussianSpec, block_bytes: int) -> None:
-    # Each block packs its 16-bit start state, then each step's new low bits, MSB first, padded to a byte.
+def test_tape_blocks_are_back_to_back_msb_first_states(spec: QtipGaussianSpec, row_bytes: int) -> None:
+    # Each block packs its 16-bit start state, then each step's new low bits, MSB first; only the row pads to a byte.
     columns = 2 * spec.restart_columns or 128
     bits, block_columns = spec.transition_bits, spec.restart_columns or columns
     generator = np.random.default_rng(bits)
@@ -92,13 +92,12 @@ def test_tape_blocks_are_byte_padded_msb_first_states(spec: QtipGaussianSpec, bl
     for _ in range(columns // block_columns):
         state = int(generator.integers(1 << 16))
         states.append(state)
-        block = f"{state:016b}"
+        tape += f"{state:016b}"
         for symbol in generator.integers(1 << bits, size=block_columns // spec.vector_width - 1):
             state = ((state << bits) | int(symbol)) & 0xFFFF
             states.append(state)
-            block += f"{symbol:0{bits}b}"
-        assert 0 <= 8 * block_bytes - len(block) < 8
-        tape += block.ljust(8 * block_bytes, "0")
-    codes = jnp.asarray(np.frombuffer(int(tape, 2).to_bytes(len(tape) // 8), np.uint8))[None]
-    assert spec.code_bytes(columns) == len(tape) // 8
+            tape += f"{symbol:0{bits}b}"
+    assert 0 <= 8 * row_bytes - len(tape) < 8
+    codes = jnp.asarray(np.frombuffer(int(tape.ljust(8 * row_bytes, "0"), 2).to_bytes(row_bytes), np.uint8))[None]
+    assert spec.code_bytes(columns) == row_bytes
     np.testing.assert_array_equal(spec.states(codes, columns)[0], states)
