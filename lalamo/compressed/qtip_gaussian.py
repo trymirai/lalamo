@@ -26,6 +26,9 @@ from lalamo.weight_matrix import (
 
 # Every step's 16-bit state hashes to its levels; each tape block opens with its first state in 16 bits.
 STATE_BITS = 16
+# Restart blocks sit back to back and the row pads to 16 bytes: uzu's GEMM loses up to 16% at small batches on rows
+# that start off a 16-byte boundary. A connected tape pads to a byte.
+ROW_ALIGNMENT = 16
 # The codebook is [scale, offset of each column class], the class of a column being its index modulo four.
 COLUMN_CLASSES = 4
 
@@ -97,7 +100,10 @@ class QtipGaussianSpec(WeightMatrixSpec):
 
     def code_bytes(self, columns: int) -> int:
         blocks, _, block_bits = self.tape_shape(columns)
-        return ceil(blocks * block_bits / 8)
+        stream_bytes = ceil(blocks * block_bits / 8)
+        if not self.restart_columns:
+            return stream_bytes
+        return ceil(stream_bytes / ROW_ALIGNMENT) * ROW_ALIGNMENT
 
     def states(self, codes: UInt8[Array, "*rows bytes"], columns: int) -> Array:
         # A row is its blocks' MSB-first bit streams back to back; state g of block b is the 16-bit window

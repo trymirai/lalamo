@@ -75,16 +75,17 @@ def test_full_rotation_matches_explicit_kronecker_product() -> None:
         (QtipGaussianSpec(2, 6, 0), 50),
         (QtipGaussianSpec(2, 8, 0), 65),
         (QtipGaussianSpec(4, 8, 0), 33),
-        (QtipGaussianSpec(4, 6, 64), 27),
-        (QtipGaussianSpec(4, 7, 64), 31),
-        (QtipGaussianSpec(4, 8, 64), 34),
-        (QtipGaussianSpec(4, 6, 128), 51),
-        (QtipGaussianSpec(4, 7, 128), 59),
-        (QtipGaussianSpec(4, 8, 128), 66),
+        (QtipGaussianSpec(4, 6, 64), 32),
+        (QtipGaussianSpec(4, 7, 64), 32),
+        (QtipGaussianSpec(4, 8, 64), 48),
+        (QtipGaussianSpec(4, 6, 128), 64),
+        (QtipGaussianSpec(4, 7, 128), 64),
+        (QtipGaussianSpec(4, 8, 128), 80),
     ],
 )
 def test_tape_blocks_are_back_to_back_msb_first_states(spec: QtipGaussianSpec, row_bytes: int) -> None:
-    # Each block packs its 16-bit start state, then each step's new low bits, MSB first; only the row pads to a byte.
+    # Each block packs its 16-bit start state, then each step's new low bits, MSB first; a restart row pads to
+    # 16 bytes, a connected tape to a byte.
     columns = 2 * spec.restart_columns or 128
     bits, block_columns = spec.transition_bits, spec.restart_columns or columns
     generator = np.random.default_rng(bits)
@@ -97,7 +98,7 @@ def test_tape_blocks_are_back_to_back_msb_first_states(spec: QtipGaussianSpec, r
             state = ((state << bits) | int(symbol)) & 0xFFFF
             states.append(state)
             tape += f"{symbol:0{bits}b}"
-    assert 0 <= 8 * row_bytes - len(tape) < 8
+    assert len(tape) <= 8 * row_bytes
     codes = jnp.asarray(np.frombuffer(int(tape.ljust(8 * row_bytes, "0"), 2).to_bytes(row_bytes), np.uint8))[None]
     assert spec.code_bytes(columns) == row_bytes
     np.testing.assert_array_equal(spec.states(codes, columns)[0], states)
