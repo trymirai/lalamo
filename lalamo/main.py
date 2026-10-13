@@ -636,6 +636,12 @@ def server(
         bool,
         Option(help="Shard model weight matrices across visible devices."),
     ] = False,
+    batch_size: Annotated[
+        int | None,
+        Option(
+            help="Fixed batch size. Required on devices without memory stats (e.g. CPU); disables auto-estimation.",
+        ),
+    ] = None,
 ) -> None:
     try:
         from lalamo.server import start_server  # noqa: PLC0415
@@ -643,10 +649,15 @@ def server(
         err_console.print("Server extras not installed. Install with: uv add 'lalamo[server]'")
         raise Exit(1) from error
 
-    if vram_gb is not None:
+    vram_bytes: int | None = None
+    if batch_size is not None:
+        if vram_gb is not None:
+            err_console.print("Specify only one of --batch-size and --vram-gb")
+            raise Exit(1)
+    elif vram_gb is not None:
         vram_bytes = int(vram_gb * 1000 * 1000 * 1000)
     elif (vram_bytes := get_available_bytes_on_default_device()) is None:
-        err_console.print("Cannot get the default device's memory stats, use --vram-gb")
+        err_console.print("Cannot get the default device's memory stats, use --batch-size (e.g. on CPU)")
         raise Exit(1)
 
     if cache_dir is None:
@@ -656,6 +667,7 @@ def server(
         host=host,
         port=port,
         vram_bytes=vram_bytes,
+        batch_size=batch_size,
         cache_dir=cache_dir,
         sharding_config=ShardingConfig.tensor_parallel() if tensor_parallel else ShardingConfig.replicated(),
     )

@@ -9,6 +9,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from functools import cached_property
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, Self
 
@@ -19,9 +20,11 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from jax import numpy as jnp
 
-from lalamo.data.huggingface_message import HFMessage
+from lalamo.data.huggingface_message import HFConversation
 from lalamo.inference.batch_scheduler import _PROBE_CACHE, BatchSchedulerConfig, ContinuousBatchScheduler
 from lalamo.model_import.common import import_model
+from lalamo.model_import.model_spec import LanguageModelSpec
+from lalamo.model_registry import ModelRegistry
 from lalamo.models import GenerationConfig, LanguageModel
 from lalamo.models.chat_codec import ReasoningEffort
 from lalamo.module import Keychain
@@ -33,23 +36,31 @@ BatchStatus = Literal["in_progress", "completed", "failed"]
 @dataclass(frozen=True)
 class RequestBody:
     sequence_id: str
-    messages: list[HFMessage]
+    messages: list[dict]
     model: str
+    tools: list[dict] | None = None
     max_completion_tokens: int = 8192
 
     generation_config: GenerationConfig | None = None
     dtype: Literal["bfloat16", "float32"] | None = None
     seed: int | None = None
-    reasoning_effort: ReasoningEffort = ReasoningEffort.XHIGH
+    reasoning_effort: ReasoningEffort | None = None
 
-    def shares_batch_params(self, other: Self) -> bool:
+    @cached_property
+    def conversation(self) -> HFConversation:
+        return HFConversation.from_dict({"messages": self.messages, "tools": self.tools or None})
+
+    def shares_batch_params(self, other: Self, default_reasoning_effort: ReasoningEffort | None) -> bool:
+        self_reasoning_effort = self.reasoning_effort or default_reasoning_effort
+        other_reasoning_effort = other.reasoning_effort or default_reasoning_effort
+
         return (
             self.model == other.model
             and self.max_completion_tokens == other.max_completion_tokens
             and self.generation_config == other.generation_config
             and self.dtype == other.dtype
             and (self.seed is None) == (other.seed is None)
-            and self.reasoning_effort is other.reasoning_effort
+            and self_reasoning_effort is other_reasoning_effort
         )
 
 
@@ -174,13 +185,23 @@ def validate_requests(
         raise HTTPException(400, "Empty request batch.")
 
     reference, *rest = requests
+    model_spec = ModelRegistry.build().repo_to_model.get(reference.model)
+    default_reasoning_effort = None
+    if isinstance(model_spec, LanguageModelSpec) and model_spec.reasoning_config is not None:
+        default_reasoning_effort = model_spec.reasoning_config.default_reasoning_effort
     for request in rest:
-        if not reference.shares_batch_params(request):
+        if not reference.shares_batch_params(request, default_reasoning_effort):
             raise HTTPException(
                 400,
                 "All requests in a batch must specify identical model, sampling params and "
                 f"token limits, got incompatible {reference} and {request}.",
             )
+
+    try:
+        for request in requests:
+            _ = request.conversation
+    except Exception as error:
+        raise HTTPException(422, traceback.format_exc()) from error
 
     sequence_ids = [request.sequence_id for request in requests]
     if len(set(sequence_ids)) != len(sequence_ids):
@@ -194,8 +215,6 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
 
     model = _load_resident_model(reference.model, reference.dtype)
 
-    dataset = [[hf_message.as_message() for hf_message in request.messages] for request in requests]
-
     if reference.seed is not None:
         batch_key = jax.random.key(0)
         keys = jnp.stack([jax.random.fold_in(batch_key, jnp.uint32(request.seed)) for request in requests])
@@ -208,11 +227,11 @@ def generate_replies(requests: list[RequestBody]) -> Iterator[ResponseBody]:
     batch_scheduler = ContinuousBatchScheduler(model=model)
 
     for reply_idx, reply in batch_scheduler.reply_many(
-        dataset,
+        [request.conversation for request in requests],
         generation_config=reference.generation_config,
         batch_scheduler_config=BatchSchedulerConfig(
             max_output_length=reference.max_completion_tokens,
-            batch_size=None,
+            batch_size=app.state.batch_size,
         ),
         reasoning_effort=reference.reasoning_effort,
         keychain=keychain,
@@ -281,8 +300,16 @@ async def get_batch(batch_id: str) -> Batch:
     raise HTTPException(404, "batch not found")
 
 
-def start_server(host: str, port: int, vram_bytes: int, cache_dir: Path, sharding_config: ShardingConfig) -> None:
+def start_server(
+    host: str,
+    port: int,
+    vram_bytes: int | None,
+    cache_dir: Path,
+    sharding_config: ShardingConfig,
+    batch_size: int | None = None,
+) -> None:
     app.state.vram_bytes = vram_bytes
+    app.state.batch_size = batch_size
     app.state.cache_dir = cache_dir
     app.state.sharding_config = sharding_config
     uvicorn.run(app, host=host, port=port)

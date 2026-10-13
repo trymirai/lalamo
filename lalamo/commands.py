@@ -90,32 +90,27 @@ def pull(
     callbacks.started()
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
+        temp_path = Path(temp_dir).resolve()
 
         for file_spec in model_spec.files:
             callbacks.downloading(file_spec)
 
-            # Security: validate filename to prevent path traversal attacks
-            safe_name = Path(file_spec.name).name
-            if not safe_name or safe_name != file_spec.name:
-                raise RuntimeError(
-                    f"Invalid filename from registry: {file_spec.name!r}. "
-                    f"Filenames must not contain path separators or traversal sequences.",
-                )
-
-            file_path = temp_path / safe_name
+            file_path = (temp_path / file_spec.name).resolve()
+            if not file_path.is_relative_to(temp_path):
+                raise RuntimeError(f"Invalid filename from registry: {file_spec.name!r}.")
+            file_path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 _download_file(file_spec.url, file_path)
             except requests.RequestException as e:
-                raise RuntimeError(f"Failed to download {safe_name}: {e}") from e
+                raise RuntimeError(f"Failed to download {file_spec.name}: {e}") from e
 
             callbacks.finished_downloading(file_spec)
 
         output_dir.mkdir(parents=True, exist_ok=True)
         for file_spec in model_spec.files:
-            safe_name = Path(file_spec.name).name
-            src = temp_path / safe_name
-            dst = output_dir / safe_name
+            src = (temp_path / file_spec.name).resolve()
+            dst = output_dir / src.relative_to(temp_path)
+            dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(src), str(dst))
 
     callbacks.finished()

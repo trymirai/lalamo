@@ -231,9 +231,13 @@ def test_microfloat_compress_rejects_group_size_that_does_not_divide_stored_last
         MicrofloatSpec(group_size=2).compress(weights, sharding_config=make_test_sharding_config())
 
 
-def test_microfloat_export_load_reshards_mixture_parameters_to_replicated_template(fake_mesh: Mesh) -> None:
+@pytest.mark.parametrize("scale_mode", list(MicrofloatScaleMode))
+def test_microfloat_export_load_reshards_mixture_parameters_to_replicated_template(
+    fake_mesh: Mesh,
+    scale_mode: MicrofloatScaleMode,
+) -> None:
     weights = _logical_weights(2)
-    spec = MicrofloatSpec(group_size=4, layout=Layout.INPUT_OUTPUT)
+    spec = MicrofloatSpec(group_size=4, scale_mode=scale_mode, layout=Layout.INPUT_OUTPUT)
     original = spec.compress(
         weights, implementation=CompressionImplementation.INFERENCE, sharding_config=make_test_sharding_config()
     )

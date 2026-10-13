@@ -13,7 +13,8 @@ from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
 from lalamo.modules.speculators.dflash import DFlashDraftConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig, TransformerLayerConvConfig
 
 __all__ = [
     "DFlashYarnRopeScalingConfig",
@@ -46,13 +47,15 @@ class DFlashRopeParameters:
 class HFDFlashInnerConfig:
     mask_token_id: int
     target_layer_ids: tuple[int, ...]
+    conv_kernel_size: int | None = None
+    conv_group_size: int | None = None
 
 
 @dataclass(frozen=True)
 class HFDFlashConfig:
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
 
-    architectures: tuple[Literal["DFlashDraftModel"], ...]
+    architectures: tuple[Literal["DFlashDraftModel", "DFlash2DraftModel"]]
     model_type: Literal["qwen3"]
     hidden_act: Literal["silu"]
     hidden_size: int
@@ -74,6 +77,7 @@ class HFDFlashConfig:
     sliding_window: int | None
     use_sliding_window: bool
     rope_scaling: DFlashYarnRopeScalingConfig | None = None
+    is_causal: bool | None = None
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
@@ -148,6 +152,7 @@ class HFDFlashConfig:
         )
 
     def to_dflash_draft_config(self) -> DFlashDraftConfig:
+        (architecture,) = self.architectures
         assert self.dflash_config.target_layer_ids
         assert all(0 <= layer_id < self.num_target_layers for layer_id in self.dflash_config.target_layer_ids)
 
@@ -167,9 +172,23 @@ class HFDFlashConfig:
             up_clipping=None,
         )
         rope_config = self._rope_config(self.max_position_embeddings)
+        if architecture == "DFlash2DraftModel":
+            conv_kernel_size = self.dflash_config.conv_kernel_size
+            conv_group_size = self.dflash_config.conv_group_size
+            if conv_kernel_size is None or conv_group_size is None:
+                raise ValueError("DFlash2DraftModel requires both conv_kernel_size and conv_group_size.")
+            conv_config = TransformerLayerConvConfig(
+                conv_config=SeparableCausalConvConfig(has_biases=False),
+                kernel_projection_config=linear_config,
+                conv_kernel_size=conv_kernel_size,
+                conv_group_size=conv_group_size,
+            )
+        else:
+            conv_config = None
         layer_configs = tuple(
             TransformerLayerConfig(
                 pre_mixer_norm_config=norm_config,
+                mixer_conv_config=conv_config,
                 mixer_config=AttentionConfig(
                     qkvg_projection_config=linear_config,
                     out_projection_config=linear_config,
@@ -178,7 +197,7 @@ class HFDFlashConfig:
                     num_heads=self.num_attention_heads,
                     num_groups=self.num_key_value_heads,
                     head_dim=self.head_dim,
-                    is_causal=sliding_window_size is not None,
+                    is_causal=(self.is_causal if self.is_causal is not None else sliding_window_size is not None),
                     scale=self._attention_scale(),
                     sliding_window_size=sliding_window_size,
                     logit_soft_cap=None,
@@ -188,6 +207,7 @@ class HFDFlashConfig:
                 ),
                 post_mixer_norm_config=None,
                 pre_mlp_norm_config=norm_config,
+                mlp_conv_config=conv_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
                 rope_config=rope_config,
