@@ -460,7 +460,15 @@ def load_mlp(
         )
 
     if isinstance(module, MixtureOfExperts):
-        return load_moe(module, weights_dict, path, implementation=implementation)
+        return load_moe(
+            module,
+            weights_dict,
+            path,
+            up_proj_key,
+            gate_proj_key,
+            down_proj_key,
+            implementation=implementation,
+        )
 
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
@@ -469,6 +477,9 @@ def load_moe(
     module: MixtureOfExperts,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
+    up_proj_key: str = "up_proj",
+    gate_proj_key: str = "gate_proj",
+    down_proj_key: str = "down_proj",
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> MixtureOfExperts:
@@ -624,9 +635,9 @@ def load_moe(
         down_bias_list: list[Array] | None = [] if has_down_biases else None
 
         for expert_path in expert_paths:
-            up_weight_list.append(weights_dict[expert_path / "up_proj.weight"])
-            gate_weight_list.append(weights_dict[expert_path / "gate_proj.weight"])
-            down_weight_list.append(weights_dict[expert_path / "down_proj.weight"])
+            up_weight_list.append(weights_dict[expert_path / f"{up_proj_key}.weight"])
+            gate_weight_list.append(weights_dict[expert_path / f"{gate_proj_key}.weight"])
+            down_weight_list.append(weights_dict[expert_path / f"{down_proj_key}.weight"])
             if up_bias_list is not None:
                 assert gate_bias_list is not None
                 up_bias_list.append(weights_dict[expert_path / "up_proj.bias"])
@@ -682,10 +693,14 @@ def load_moe(
             raise KeyError("Could not find shared expert gate weights in HF checkpoint.")
         gate = load_linear(module.gate, weights_dict, gate_path, implementation=implementation)
 
+    expert_bias = None
+    if module.expert_bias is not None:
+        expert_bias = weights_dict[path / "expert_bias"].astype(module.expert_bias.dtype)
+
     return load_as_at(
-        lambda m: (m.router, m.experts, m.gate),
+        lambda m: (m.router, m.experts, m.gate, m.expert_bias),
         module,
-        (router, experts, gate),
+        (router, experts, gate, expert_bias),
     )
 
 

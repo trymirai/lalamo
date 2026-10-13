@@ -32,6 +32,7 @@ from .linear import Linear, LinearConfig
 from .utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
+    "BiasCorrectedSigmoidRouting",
     "DenseMLP",
     "DenseMLPConfig",
     "MLPBase",
@@ -285,16 +286,39 @@ class RoutingMap(eqx.Module):
 
 @dataclass(frozen=True)
 class RoutingFunction(LalamoConfig, RegistryABC):
-    def __call__(self, logits: Float[Array, "batch_tokens experts"], num_active: int) -> RoutingMap:
-        return call_vmapped(partial(self.call_unbatched, num_active=num_active), logits)
+    def init_biases(
+        self,
+        initializer: Initializer,  # noqa: ARG002
+        num_experts: int,  # noqa: ARG002
+    ) -> Float[Array, " experts"] | None:
+        return None
+
+    def __call__(
+        self,
+        logits: Float[Array, "batch_tokens experts"],
+        num_active: int,
+        biases: Float[Array, " experts"] | None = None,
+    ) -> RoutingMap:
+        return call_vmapped(partial(self.call_unbatched, num_active=num_active, biases=biases), logits)
 
     @abstractmethod
-    def call_unbatched(self, logits: Float[Array, " experts"], num_active: int) -> RoutingMap: ...
+    def call_unbatched(
+        self,
+        logits: Float[Array, " experts"],
+        num_active: int,
+        biases: Float[Array, " experts"] | None = None,
+    ) -> RoutingMap: ...
 
 
 @dataclass(frozen=True)
 class SoftmaxRouting(RoutingFunction):
-    def call_unbatched(self, logits: Float[Array, " experts"], num_active: int) -> RoutingMap:
+    def call_unbatched(
+        self,
+        logits: Float[Array, " experts"],
+        num_active: int,
+        biases: Float[Array, " experts"] | None = None,
+    ) -> RoutingMap:
+        assert biases is None
         *_, num_experts = logits.shape
         active_logits, active_indices = jax.lax.top_k(logits, num_active)
         active_weights = jax.nn.softmax(active_logits)
@@ -302,6 +326,28 @@ class SoftmaxRouting(RoutingFunction):
         mask = jnp.any(active_mask, axis=0)
         active_weight_mask = jax.nn.one_hot(active_indices, num_experts, dtype=logits.dtype)
         expert_weights = jnp.sum(active_weight_mask * active_weights[:, None], axis=0)
+        return RoutingMap(expert_mask=mask, expert_weights=expert_weights)
+
+
+@dataclass(frozen=True)
+class BiasCorrectedSigmoidRouting(RoutingFunction):
+    def init_biases(self, initializer: Initializer, num_experts: int) -> Float[Array, " experts"]:
+        return initializer.zeros((num_experts,), dtype=jnp.float32)
+
+    def call_unbatched(
+        self,
+        logits: Float[Array, " experts"],
+        num_active: int,
+        biases: Float[Array, " experts"] | None = None,
+    ) -> RoutingMap:
+        assert biases is not None
+        scores = jax.nn.sigmoid(logits)
+        # LFM's expert bias affects selection only, not the mixture weights.
+        _, active_indices = jax.lax.top_k(scores.astype(biases.dtype) + biases, num_active)
+        active_weights = scores[active_indices]
+        active_weights = active_weights / (active_weights.sum() + 1e-6)
+        mask = jnp.any(jax.nn.one_hot(active_indices, logits.shape[0], dtype=bool), axis=0)
+        expert_weights = jnp.zeros_like(logits).at[active_indices].set(active_weights)
         return RoutingMap(expert_mask=mask, expert_weights=expert_weights)
 
 
@@ -354,6 +400,7 @@ class MixtureOfExpertsConfig(MLPConfig):
             router=router,
             experts=experts,
             gate=gate,
+            expert_bias=self.routing_function.init_biases(initializer, self.num_routed_experts),
         )
 
 
@@ -361,6 +408,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     router: Linear
     experts: DenseMLP
     gate: Linear | None
+    expert_bias: Float[Array, " experts"] | None = None
 
     @property
     def model_dim(self) -> int:
@@ -425,6 +473,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         routing = self.config.routing_function.call_unbatched(
             router_logits,
             num_active=self.config.num_active_routed_experts,
+            biases=self.expert_bias,
         )
 
         if self.config.num_shared_experts > 0:
@@ -533,7 +582,11 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )
         router_logits = with_sharding(router_logits, batch_sharding)
-        routing_map = self.config.routing_function(router_logits, self.config.num_active_routed_experts)
+        routing_map = self.config.routing_function(
+            router_logits,
+            self.config.num_active_routed_experts,
+            biases=self.expert_bias,
+        )
 
         token_mask: Bool[Array, "experts tokens"] = rearrange(
             routing_map.expert_mask & flattened_padding_mask[:, None],
