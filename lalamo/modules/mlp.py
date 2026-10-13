@@ -298,17 +298,19 @@ class RoutingFunction(LalamoConfig, RegistryABC):
     def __call__(
         self,
         logits: Float[Array, "batch_tokens experts"],
-        num_active: int,
         biases: Float[Array, " experts"] | None = None,
+        *,
+        num_active: int,
     ) -> RoutingMap:
-        return call_vmapped(partial(self.call_unbatched, num_active=num_active, biases=biases), logits)
+        return call_vmapped(partial(self.call_unbatched, biases=biases, num_active=num_active), logits)
 
     @abstractmethod
     def call_unbatched(
         self,
         logits: Float[Array, " experts"],
-        num_active: int,
         biases: Float[Array, " experts"] | None = None,
+        *,
+        num_active: int,
     ) -> RoutingMap: ...
 
 
@@ -317,8 +319,9 @@ class SoftmaxRouting(RoutingFunction):
     def call_unbatched(
         self,
         logits: Float[Array, " experts"],
-        num_active: int,
         biases: Float[Array, " experts"] | None = None,
+        *,
+        num_active: int,
     ) -> RoutingMap:
         assert biases is None
         *_, num_experts = logits.shape
@@ -349,8 +352,9 @@ class SigmoidRouting(RoutingFunction):
     def call_unbatched(
         self,
         logits: Float[Array, " experts"],
-        num_active: int,
         biases: Float[Array, " experts"] | None = None,
+        *,
+        num_active: int,
     ) -> RoutingMap:
         if (self.bias_mode is None) != (biases is None):
             raise ValueError("Biases must be present exactly when a routing bias mode is configured.")
@@ -491,8 +495,8 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         router_logits = jax.device_put(router_logits, self.sharding_config.make_sharding((None,)))
         routing = self.config.routing_function.call_unbatched(
             router_logits,
-            num_active=self.config.num_active_routed_experts,
             biases=self.expert_bias,
+            num_active=self.config.num_active_routed_experts,
         )
 
         if self.config.num_shared_experts > 0:
@@ -603,8 +607,8 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         router_logits = with_sharding(router_logits, batch_sharding)
         routing_map = self.config.routing_function(
             router_logits,
-            self.config.num_active_routed_experts,
             biases=self.expert_bias,
+            num_active=self.config.num_active_routed_experts,
         )
 
         token_mask: Bool[Array, "experts tokens"] = rearrange(
