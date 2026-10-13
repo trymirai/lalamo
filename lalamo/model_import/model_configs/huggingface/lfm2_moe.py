@@ -6,7 +6,7 @@ from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
-from lalamo.modules.mlp import BiasCorrectedSigmoidRouting, DenseMLPConfig, MixtureOfExpertsConfig
+from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, RoutingBias, SigmoidRouting
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
@@ -101,7 +101,8 @@ class HFLFM2MoeConfig(HuggingFaceLMConfig):
         moe_config = MixtureOfExpertsConfig(
             expert_config=dense_config,
             router_config=linear_config,
-            routing_function=BiasCorrectedSigmoidRouting(),
+            # LFM's expert bias affects selection only, not the mixture weights.
+            routing_function=SigmoidRouting(bias_mode=RoutingBias.GATING),
             num_routed_experts=self.num_experts,
             num_active_routed_experts=self.num_experts_per_tok,
             router_has_biases=False,

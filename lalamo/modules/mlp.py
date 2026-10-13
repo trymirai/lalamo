@@ -2,6 +2,7 @@ import math
 from abc import abstractmethod
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from enum import StrEnum
 from functools import partial
 from typing import Self
 
@@ -32,7 +33,6 @@ from .linear import Linear, LinearConfig
 from .utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
-    "BiasCorrectedSigmoidRouting",
     "DenseMLP",
     "DenseMLPConfig",
     "MLPBase",
@@ -40,7 +40,9 @@ __all__ = [
     "MLPForwardPassConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "RoutingBias",
     "RoutingFunction",
+    "SigmoidRouting",
     "SoftmaxRouting",
 ]
 
@@ -329,9 +331,19 @@ class SoftmaxRouting(RoutingFunction):
         return RoutingMap(expert_mask=mask, expert_weights=expert_weights)
 
 
+class RoutingBias(StrEnum):
+    GATING = "gating"
+    WEIGHTS = "weights"
+    BOTH = "both"
+
+
 @dataclass(frozen=True)
-class BiasCorrectedSigmoidRouting(RoutingFunction):
-    def init_biases(self, initializer: Initializer, num_experts: int) -> Float[Array, " experts"]:
+class SigmoidRouting(RoutingFunction):
+    bias_mode: RoutingBias | None = None
+
+    def init_biases(self, initializer: Initializer, num_experts: int) -> Float[Array, " experts"] | None:
+        if self.bias_mode is None:
+            return None
         return initializer.zeros((num_experts,), dtype=jnp.float32)
 
     def call_unbatched(
@@ -340,14 +352,21 @@ class BiasCorrectedSigmoidRouting(RoutingFunction):
         num_active: int,
         biases: Float[Array, " experts"] | None = None,
     ) -> RoutingMap:
-        assert biases is not None
+        if (self.bias_mode is None) != (biases is None):
+            raise ValueError("Biases must be present exactly when a routing bias mode is configured.")
         scores = jax.nn.sigmoid(logits)
-        # LFM's expert bias affects selection only, not the mixture weights.
-        _, active_indices = jax.lax.top_k(scores.astype(biases.dtype) + biases, num_active)
+        gating_scores = scores
+        if biases is not None:
+            biased_scores = scores.astype(biases.dtype) + biases
+            if self.bias_mode in (RoutingBias.GATING, RoutingBias.BOTH):
+                gating_scores = biased_scores
+            if self.bias_mode in (RoutingBias.WEIGHTS, RoutingBias.BOTH):
+                scores = biased_scores
+        _, active_indices = jax.lax.top_k(gating_scores, num_active)
         active_weights = scores[active_indices]
         active_weights = active_weights / (active_weights.sum() + 1e-6)
         mask = jnp.any(jax.nn.one_hot(active_indices, logits.shape[0], dtype=bool), axis=0)
-        expert_weights = jnp.zeros_like(logits).at[active_indices].set(active_weights)
+        expert_weights = jnp.zeros_like(logits).at[active_indices].set(active_weights.astype(logits.dtype))
         return RoutingMap(expert_mask=mask, expert_weights=expert_weights)
 
 

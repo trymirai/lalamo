@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jax.sharding import Mesh, NamedSharding, Sharding
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
 from lalamo.modules.activations import Identity, SiLU
@@ -15,6 +15,9 @@ from lalamo.modules.mlp import (
     MixtureOfExperts,
     MixtureOfExpertsConfig,
     MLPForwardPassConfig,
+    RoutingBias,
+    RoutingFunction,
+    SigmoidRouting,
     SoftmaxRouting,
 )
 from lalamo.weight_matrix import FullPrecisionSpec
@@ -253,6 +256,54 @@ def test_softmax_routing_call_unbatched_selects_top_k_and_normalizes_weights() -
     assert jnp.array_equal(result.expert_mask, jnp.array([False, True, True]))
     assert_close(result=result.expert_weights, reference=expected_weights)
     assert_close(result=jnp.sum(result.expert_weights), reference=jnp.array(1.0, dtype=jnp.float32))
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
+@pytest.mark.parametrize(
+    ("bias_mode", "expected_scores"),
+    [
+        (None, (0.0, 0.7310586, 0.8807971)),
+        (RoutingBias.GATING, (0.5, 0.0, 0.8807971)),
+        (RoutingBias.WEIGHTS, (0.0, 0.8310586, 0.8807971)),
+        (RoutingBias.BOTH, (1.0, 0.0, 0.8807971)),
+    ],
+)
+def test_sigmoid_routing_bias_controls_selection_and_weights(
+    bias_mode: RoutingBias | None,
+    expected_scores: tuple[float, float, float],
+    dtype: DTypeLike,
+) -> None:
+    routing = SigmoidRouting(bias_mode=bias_mode)
+    assert RoutingFunction.from_json(routing.to_json()) == routing
+    logits = jnp.array([0.0, 1.0, 2.0], dtype=dtype)
+    biases = None
+    if bias_mode is not None:
+        biases = jnp.array([0.5, 0.1, 0.0], dtype=jnp.float32)
+
+    result = routing.call_unbatched(logits, num_active=2, biases=biases)
+    expected_weights = jnp.array(expected_scores, dtype=jnp.float32)
+    expected_weights = (expected_weights / (expected_weights.sum() + 1e-6)).astype(dtype)
+    tolerance = 1e-6
+    if jnp.dtype(dtype) == jnp.dtype(jnp.bfloat16):
+        tolerance = 4e-3
+
+    assert jnp.array_equal(result.expert_mask, jnp.array(expected_scores) != 0)
+    assert_close(result=result.expert_weights, reference=expected_weights, atol=tolerance, rtol=tolerance)
+
+
+@pytest.mark.parametrize(
+    ("bias_mode", "biases"),
+    [(None, (0.0,)), (RoutingBias.GATING, None), (RoutingBias.WEIGHTS, None), (RoutingBias.BOTH, None)],
+)
+def test_sigmoid_routing_requires_biases_to_match_configured_mode(
+    bias_mode: RoutingBias | None,
+    biases: tuple[float] | None,
+) -> None:
+    bias_array = None
+    if biases is not None:
+        bias_array = jnp.array(biases)
+    with pytest.raises(ValueError, match="routing bias mode"):
+        SigmoidRouting(bias_mode=bias_mode).call_unbatched(jnp.zeros(1), num_active=1, biases=bias_array)
 
 
 @pytest.mark.parametrize("mode", MOE_MODES)
