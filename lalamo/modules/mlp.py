@@ -59,19 +59,6 @@ def _take_moe_chunk_inputs(
     )
 
 
-def _add_moe_expert_outputs(
-    accumulator: Float[Array, "tokens channels"],
-    token_indices: Int[Array, "experts tokens_per_chunk"],
-    expert_outputs: Float[Array, "experts tokens_per_chunk channels"],
-    out_sharding: NamedSharding,
-) -> Float[Array, "tokens channels"]:
-    return accumulator.at[token_indices].add(
-        expert_outputs,
-        mode="drop",
-        out_sharding=out_sharding,
-    )
-
-
 def _take_moe_expert_leaf(
     leaf: object,
     index: Int[Array, ""] | Int[Array, " experts"],
@@ -594,6 +581,11 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             "tokens experts -> experts tokens",
         )
         token_mask = with_sharding(token_mask, mixture_sharding)
+        token_positions = jnp.cumsum(token_mask, axis=1) - 1
+        active_token_positions = token_positions.at[
+            routing_map.active_expert_indices,
+            jnp.arange(num_tokens)[:, None],
+        ].get(out_sharding=batch_sharding)
         expert_weights: Float[Array, "experts tokens"] = rearrange(
             jnp.sum(active_selection * routing_map.active_expert_weights[..., None], axis=-2),
             "tokens experts -> experts tokens",
@@ -625,9 +617,9 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
 
         def loop_iteration(
             expert_accumulator: Float[Array, "tokens channels"],
-            chunk_inputs: tuple[Int[Array, "experts chunk_tokens"], Key[Array, ""], Key[Array, ""]],
+            chunk_inputs: tuple[Int[Array, ""], Int[Array, "experts chunk_tokens"], Key[Array, ""], Key[Array, ""]],
         ) -> tuple[Float[Array, "tokens channels"], None]:
-            token_indices_for_chunk, chunk_vmapped_key, chunk_batch_key = chunk_inputs
+            chunk_index, token_indices_for_chunk, chunk_vmapped_key, chunk_batch_key = chunk_inputs
             current_chunk_keychain = Keychain(
                 vmapped_keys=chunk_vmapped_key,
                 batch_key=chunk_batch_key,
@@ -692,15 +684,19 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 ),
                 added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.MIXTURE),
             )
-            return (
-                _add_moe_expert_outputs(
-                    expert_accumulator,
-                    token_indices_for_chunk,
-                    expert_outputs,
-                    batch_sharding,
-                ),
-                None,
+            positions_for_chunk = jnp.where(
+                flattened_padding_mask[:, None],
+                active_token_positions - chunk_index * chunk_size,
+                _SENTINEL,
             )
+            # Gather in active-expert order; conflicting scatter-adds are non-deterministic on GPU.
+            token_outputs = expert_outputs.at[routing_map.active_expert_indices, positions_for_chunk].get(
+                mode="fill",
+                fill_value=0.0,
+                wrap_negative_indices=False,
+                out_sharding=self.sharding_config.resolve_sharding((LogicalAxis.BATCH, None, None)),
+            )
+            return expert_accumulator + token_outputs.sum(axis=1), None
 
         routed_accumulator = jnp.zeros(
             flattened_inputs.shape,
@@ -710,7 +706,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         routed_expert_result, _ = jax.lax.scan(
             loop_iteration,
             routed_accumulator,
-            (chunked_token_indices, chunk_vmapped_keys, chunk_batch_keys),
+            (jnp.arange(num_chunks), chunked_token_indices, chunk_vmapped_keys, chunk_batch_keys),
         )
         return routed_expert_result
 
