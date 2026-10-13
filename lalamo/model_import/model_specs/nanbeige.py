@@ -1,7 +1,7 @@
 from lalamo.model_import.model_configs import HFLlamaConfig
 from lalamo.model_import.model_spec import LanguageModelSpec
-from lalamo.model_import.model_specs.output_parsers import ThinkingResponseParser
 from lalamo.model_import.origins import HuggingFaceOrigin
+from lalamo.models.chat_codec import THINKING_RESPONSE_FORMAT
 
 __all__ = ["NANBEIGE_MODELS"]
 
@@ -13,7 +13,7 @@ NANBEIGE41 = [
         size="3B",
         origin=HuggingFaceOrigin(repo="Nanbeige/Nanbeige4.1-3B"),
         config_type=HFLlamaConfig,
-        response_parser=ThinkingResponseParser,
+        response_format=THINKING_RESPONSE_FORMAT,
     ),
 ]
 

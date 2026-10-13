@@ -3,7 +3,7 @@ import re
 import shutil
 import sys
 from contextlib import ExitStack
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from functools import partial
 from importlib.util import find_spec
 from pathlib import Path, PurePosixPath
@@ -141,7 +141,6 @@ def chat(
         ),
     ] = None,
 ) -> None:
-    generation_config: GenerationConfig | None = None
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -150,8 +149,7 @@ def chat(
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
         model = LanguageModel.load(model_path, ShardingConfig.replicated())
-        if temperature is not None:
-            generation_config = replace(model.config.generation_config, temperature=temperature)
+        generation_config = model.config.generation_config.override_with(GenerationConfig(temperature=temperature))
         progress.remove_task(loading_task)
 
     with jax.set_mesh(model.sharding_config.mesh):
@@ -162,11 +160,12 @@ def chat(
             while True:
                 user_text = console.input("[cyan]user> [/cyan]")
                 messages.append(UserMessage(user_text))
+                prompt = model.token_codec.render_request(messages)
 
                 console.print("[red]assistant> [/red]", end="")
                 response_text_parts = []
-                for token in model.stream_reply_text(
-                    messages,
+                for token in model.stream_text(
+                    prompt,
                     generation_config=generation_config,
                     max_output_length=max_tokens,
                     keychain=Keychain.init(turn_index + 1, sharding_config=model.sharding_config),
@@ -174,12 +173,12 @@ def chat(
                     console.print(token, end="")
                     response_text_parts.append(token)
                 console.print()
-                messages.append(model.token_codec.parse_response("".join(response_text_parts)))
+                messages.append(model.token_codec.parse_response("".join(response_text_parts), prompt=prompt))
                 turn_index += 1
 
         else:
-            for token in model.stream_reply_text(
-                [UserMessage(message)],
+            for token in model.stream_text(
+                model.token_codec.render_request([UserMessage(message)]),
                 generation_config=generation_config,
                 max_output_length=max_tokens,
                 keychain=Keychain.init(1, sharding_config=model.sharding_config),

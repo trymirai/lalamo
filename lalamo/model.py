@@ -86,7 +86,6 @@ class ModelConfig[TokenCodecConfigT: TokenCodecConfig](BaseModelConfig):
 
 
 class Model[
-    TokenCodecConfigT: TokenCodecConfig,
     ConfigT: ModelConfig,
     TokenCodecT: TokenCodec,
 ](BaseModel[ConfigT]):

@@ -10,7 +10,7 @@ from lalamo.model_import.model_configs.foreign_config import (
     ForeignTTSConfig,
 )
 from lalamo.model_import.origins import FileSpec, Origin
-from lalamo.models.chat_codec import ReasoningConfig, ResponseParser
+from lalamo.models.chat_codec import ReasoningConfig, ResponseFormat
 from lalamo.models.language_model import GenerationConfig
 from lalamo.utils.json import JSON
 from lalamo.utils.registry_abc import RegistryABC, make_registry_abc_converter
@@ -70,7 +70,7 @@ class ModelSpec[ForeignConfigBaseT: ForeignConfig](RegistryABC):
 @dataclass(frozen=True)
 class LanguageModelSpec(ModelSpec[ForeignLMConfig]):
     config_type: type[ForeignLMConfig]
-    response_parser: type[ResponseParser] | None = None
+    response_format: ResponseFormat | None = None
     reasoning_config: ReasoningConfig | None = None
     system_role_name: str = "system"
     user_role_name: str = "user"

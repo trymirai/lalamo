@@ -225,7 +225,7 @@ def create_app(model: LanguageModel, model_name: str, config: ContinuousBatching
 
         tools = None
         if body.tools and body.tool_choice != "none":
-            if codec.config.response_parser is None or codec.config.response_parser.tool_call_tags is None:
+            if codec.config.response_format is None or codec.config.response_format.tool_calls is None:
                 return _error("This model does not support tool calling.", 400, "tools")
             tools = [tool.model_dump(exclude_none=True) for tool in body.tools]
         try:

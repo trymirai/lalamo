@@ -29,15 +29,8 @@ def _load_language_model(convert_model: ConvertModel, model_repo: str) -> Langua
 
 
 def _generate_texts(model: LanguageModel, prompts: list[str]) -> list[str]:
-    def trim_at_stop_token(token_ids: list[int]) -> list[int]:
-        stop_token_ids = set(model.config.generation_config.stop_token_ids)
-        response_length = next(
-            (idx + 1 for idx, token_id in enumerate(token_ids) if token_id in stop_token_ids),
-            len(token_ids),
-        )
-        return token_ids[:response_length]
-
-    encoded_prompts = [jnp.asarray(model.token_codec.encode_request([UserMessage(prompt)])) for prompt in prompts]
+    rendered_prompts = [model.token_codec.render_request([UserMessage(prompt)]) for prompt in prompts]
+    encoded_prompts = [jnp.asarray(model.token_codec.encode_text(prompt)) for prompt in rendered_prompts]
     max_prompt_length = max(prompt.size for prompt in encoded_prompts)
     prompt_lengths = jnp.asarray([prompt.size for prompt in encoded_prompts], dtype=jnp.int32)
     token_ids = jnp.asarray(
@@ -51,16 +44,19 @@ def _generate_texts(model: LanguageModel, prompts: list[str]) -> list[str]:
         token_ids,
         model.sharding_config.resolve_sharding((LogicalAxis.BATCH, None)),
     )
+    generation_config = model.config.generation_config.override_with(GenerationConfig(temperature=0.0))
     generated = model.generate_tokens(
         token_ids,
-        generation_config=GenerationConfig(temperature=0.0),
+        generation_config=generation_config,
         prompt_lengths_without_padding=prompt_lengths,
         max_output_length=64,
         keychain=Keychain.init(0, sharding_config=model.sharding_config),
     )
     return [
-        model.token_codec.decode_response(trim_at_stop_token(response_ids.tolist())).response
-        for response_ids in generated.token_ids
+        model.token_codec.parse_response(
+            model.token_codec.decode_tokens(generation_config.trim_stop_tokens(response_ids.tolist())), prompt=prompt
+        ).response
+        for response_ids, prompt in zip(generated.token_ids, rendered_prompts, strict=True)
     ]
 
 
@@ -118,9 +114,9 @@ def test_converted_model_streams_reply(
 ) -> None:
     model = _load_language_model(convert_model, model_repo)
     capital_output = "".join(
-        model.stream_reply_text(
-            [UserMessage(CAPITAL_PROMPT)],
-            generation_config=GenerationConfig(temperature=0.0),
+        model.stream_text(
+            model.token_codec.render_request([UserMessage(CAPITAL_PROMPT)]),
+            generation_config=model.config.generation_config.override_with(GenerationConfig(temperature=0.0)),
             max_output_length=64,
             keychain=Keychain.init(1, sharding_config=model.sharding_config),
         ),
@@ -128,9 +124,9 @@ def test_converted_model_streams_reply(
     assert "london" in capital_output.lower(), f"Expected 'london' in {capital_output!r}"
 
     apples_output = "".join(
-        model.stream_reply_text(
-            [UserMessage(APPLES_PROMPT)],
-            generation_config=GenerationConfig(temperature=0.0),
+        model.stream_text(
+            model.token_codec.render_request([UserMessage(APPLES_PROMPT)]),
+            generation_config=model.config.generation_config.override_with(GenerationConfig(temperature=0.0)),
             max_output_length=64,
             keychain=Keychain.init(2, sharding_config=model.sharding_config),
         ),

@@ -10,7 +10,7 @@ import pytest
 from openai import AsyncOpenAI, BadRequestError, NotFoundError
 from openai.types.chat import ChatCompletion
 from tokenizers import Tokenizer
-from tokenizers.decoders import Fuse
+from tokenizers.decoders import ByteLevel, Fuse
 from tokenizers.models import WordLevel
 
 from lalamo.inference.continuous_batching import (
@@ -23,7 +23,7 @@ from lalamo.inference.continuous_batching import (
 )
 from lalamo.initializer import RandomInitializer
 from lalamo.models import GenerationConfig, LanguageModel
-from lalamo.models.chat_codec import ChatCodecConfig
+from lalamo.models.chat_codec import THINKING_RESPONSE_FORMAT, AssistantMessage, ChatCodecConfig, UserMessage
 from lalamo.models.language_model import LanguageModelConfig
 from lalamo.module import Keychain, ShardingConfig
 from lalamo.modules import DecoderForwardPassConfig
@@ -86,6 +86,88 @@ def recurrent_model() -> LanguageModel:
 def _run(engine: ContinuousBatchingEngine) -> None:
     while engine.step():
         pass
+
+
+@pytest.mark.parametrize("request_stop_tokens", [False, True])
+def test_replies_use_prompt_context_and_omit_stop_tokens(
+    recurrent_model: LanguageModel, request_stop_tokens: bool
+) -> None:
+    codec_config = replace(
+        recurrent_model.token_codec.config, prompt_template="<think>", response_format=THINKING_RESPONSE_FORMAT
+    )
+    model = LanguageModel(
+        config=replace(recurrent_model.config, token_codec_config=codec_config),
+        sharding_config=recurrent_model.sharding_config,
+        token_codec=codec_config.init(recurrent_model.token_codec.tokenizer),
+        decoder=recurrent_model.decoder,
+    )
+    keychain = Keychain.init(0, sharding_config=model.sharding_config)
+    prompt = model.token_codec.render_request([UserMessage("hello")])
+    with jax.set_mesh(model.sharding_config.mesh):
+        reply = model.reply([UserMessage("hello")], GenerationConfig(temperature=0.0), 1, keychain=keychain)
+        text = "".join(model.stream_text(prompt, GenerationConfig(temperature=0.0), 1, keychain=keychain))
+        assert reply == AssistantMessage(chain_of_thought=text)
+        assert text
+        stop_tokens = tuple(model.token_codec.encode_text(text))
+        stop_config = GenerationConfig(temperature=0.0, stop_token_ids=stop_tokens)
+        if request_stop_tokens:
+            stopped_model = model
+            request_config = stop_config
+        else:
+            stopped_model = LanguageModel(
+                config=replace(model.config, generation_config=stop_config),
+                sharding_config=model.sharding_config,
+                token_codec=model.token_codec,
+                decoder=model.decoder,
+            )
+            request_config = None
+        assert (
+            stopped_model.reply([UserMessage("hello")], request_config, max_output_length=3, keychain=keychain)
+            == AssistantMessage()
+        )
+        assert "".join(stopped_model.stream_text(prompt, request_config, max_output_length=3, keychain=keychain)) == ""
+        assert [
+            int(token.item())
+            for token in stopped_model.stream_tokens(
+                jnp.asarray(model.token_codec.encode_text(prompt)), request_config, 3, keychain=keychain
+            )
+        ] == list(stop_tokens)
+
+
+@pytest.mark.parametrize(("max_output_length", "stop"), [(1, False), (2, False), (2, True)])
+def test_streamed_text_matches_reply_when_utf8_spans_tokens(
+    recurrent_model: LanguageModel, max_output_length: int, stop: bool
+) -> None:
+    keychain = Keychain.init(0, sharding_config=recurrent_model.sharding_config)
+    generation_config = GenerationConfig(temperature=1.0)
+    with jax.set_mesh(recurrent_model.sharding_config.mesh):
+        first, second = (
+            int(token.item())
+            for token in recurrent_model.stream_tokens(jnp.asarray([1]), generation_config, 2, keychain=keychain)
+        )
+        assert first != second
+        vocabulary = {
+            token: token_id
+            for token, token_id in recurrent_model.token_codec.tokenizer.get_vocab().items()
+            if token_id not in (first, second)
+        }
+        tokenizer = Tokenizer(WordLevel(vocabulary | {"Ã": first, "©": second}, unk_token="[UNK]"))
+        tokenizer.decoder = ByteLevel()
+        model = LanguageModel(
+            config=recurrent_model.config,
+            sharding_config=recurrent_model.sharding_config,
+            token_codec=recurrent_model.token_codec.config.init(tokenizer),
+            decoder=recurrent_model.decoder,
+        )
+        if stop:
+            generation_config = replace(generation_config, stop_token_ids=(second,))
+        reply = model.reply([UserMessage("hello")], generation_config, max_output_length, keychain=keychain)
+        text = "".join(model.stream_text("prompt", generation_config, max_output_length, keychain=keychain))
+        assert reply.response == text
+        if max_output_length == 2 and not stop:
+            assert text == "é"
+        else:
+            assert text == "\ufffd"
 
 
 def test_requests_match_dense_generation_after_slot_and_prefix_reuse(recurrent_model: LanguageModel) -> None:

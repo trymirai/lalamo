@@ -1,8 +1,8 @@
 from lalamo.model_import.model_configs import HFQwen3Config
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
-from lalamo.model_import.model_specs.output_parsers import ThinkingResponseParser
 from lalamo.model_import.model_specs.reasoning_configs import BOOLEAN_REASONING_DEFAULT_ON_CONFIG
 from lalamo.model_import.origins import HuggingFaceOrigin
+from lalamo.models.chat_codec import THINKING_RESPONSE_FORMAT
 
 __all__ = ["POLARIS_MODELS"]
 
@@ -17,7 +17,7 @@ POLARIS_MODELS = [
         configs=ConfigMap(
             chat_template=FileSpec("chat_template.jinja"),
         ),
-        response_parser=ThinkingResponseParser,
+        response_format=THINKING_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
 ]

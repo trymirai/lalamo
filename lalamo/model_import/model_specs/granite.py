@@ -1,25 +1,20 @@
-import re
-
 from frozendict import frozendict
 
 from lalamo.model_import.model_configs import HFGraniteConfig
 from lalamo.model_import.model_spec import LanguageModelSpec
-from lalamo.model_import.model_specs.output_parsers import parse_regex_response
 from lalamo.model_import.origins import HuggingFaceOrigin
-from lalamo.models.chat_codec import AssistantMessage, ReasoningConfig, ReasoningEffort, ResponseParser
+from lalamo.models.chat_codec import ReasoningConfig, ReasoningEffort, ResponseFormat
 
 __all__ = ["GRANITE_MODELS"]
 
 
-class GraniteResponseParser(ResponseParser):
-    pattern = re.compile(
-        r"(?s)<think>(?P<chain_of_thought>.*?)"
+GRANITE_RESPONSE_FORMAT = ResponseFormat(
+    reasoning_pattern=(
+        r"<think>(?P<chain_of_thought>.*?)"
         r"(?:</think>\s*(?:<response>\s*)?(?P<response>.*?)(?:</response>\s*)?)?\Z"
-    )
-
-    @classmethod
-    def parse_reasoning(cls, response: str, prompt: str) -> AssistantMessage:
-        return parse_regex_response(cls.pattern, response, prompt, ("<think>",))
+    ),
+    prefixes=("<think>",),
+)
 
 
 GRANITE_MODELS = [
@@ -30,13 +25,13 @@ GRANITE_MODELS = [
         size=model_size.upper(),
         origin=HuggingFaceOrigin(repo=f"ibm-granite/granite-{version}-{model_size}-instruct"),
         config_type=HFGraniteConfig,
-        response_parser=response_parser,
+        response_format=response_format,
         reasoning_config=reasoning_config,
     )
-    for version, response_parser, reasoning_config in (
+    for version, response_format, reasoning_config in (
         (
             "3.3",
-            GraniteResponseParser,
+            GRANITE_RESPONSE_FORMAT,
             ReasoningConfig(
                 default_reasoning_effort=ReasoningEffort.NO_REASONING,
                 field_name="thinking",

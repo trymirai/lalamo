@@ -146,7 +146,11 @@ def test_engine_cancellation_allows_new_request(_convert_model_session: ConvertM
     generation_config = GenerationConfig(temperature=0.0)
     canceled_events: list[TokenEvent] = []
     canceled = engine.submit(
-        tuple(paged_language_model.token_codec.encode_request([UserMessage("Say hi.")])),
+        tuple(
+            paged_language_model.token_codec.encode_text(
+                paged_language_model.token_codec.render_request([UserMessage("Say hi.")])
+            )
+        ),
         64,
         generation_config,
         0,
@@ -156,7 +160,11 @@ def test_engine_cancellation_allows_new_request(_convert_model_session: ConvertM
         assert engine.step()
     canceled.set()
 
-    prompt = tuple(paged_language_model.token_codec.encode_request([UserMessage("Name a fruit.")]))
+    prompt = tuple(
+        paged_language_model.token_codec.encode_text(
+            paged_language_model.token_codec.render_request([UserMessage("Name a fruit.")])
+        )
+    )
     events: list[TokenEvent] = []
     engine.submit(prompt, 4, generation_config, 0, on_events=events.extend)
     for _ in range(8):
@@ -200,7 +208,9 @@ def test_fuzz_engine_matches_dense_greedy_decoding(
         prefill_chunk_size=rng.choice([24, 32, 48, 64]),
     )
     engine = ContinuousBatchingEngine(model, config)
-    source = model.token_codec.encode_request([UserMessage("one two three four five six seven eight " * 64)])
+    source = model.token_codec.encode_text(
+        model.token_codec.render_request([UserMessage("one two three four five six seven eight " * 64)])
+    )
     keychain = Keychain.init(0, sharding_config=model.sharding_config)
 
     requests = []
@@ -215,7 +225,7 @@ def test_fuzz_engine_matches_dense_greedy_decoding(
                 prompt = tuple(source[: rng.randint(len(base) + 1, longest)])
         stop_token_ids: tuple[int, ...] = ()
         if rng.random() < 0.5:
-            greedy = GenerationConfig(stop_token_ids=(), temperature=0.0)
+            greedy = GenerationConfig(temperature=0.0)
             reference = list(model.stream_tokens(jnp.asarray(prompt), greedy, max_output_length, keychain=keychain))
             stop_token_ids = (int(rng.choice(reference)),)
         requests.append(FuzzRequest(prompt, max_output_length, stop_token_ids, rng.randint(0, 6), rng.random() < 0.7))
@@ -250,7 +260,7 @@ def test_fuzz_engine_matches_dense_greedy_decoding(
     engine.submit(
         follow_up.prompt,
         8,
-        GenerationConfig(stop_token_ids=(), temperature=0.0),
+        GenerationConfig(temperature=0.0),
         0,
         return_logprobs=True,
         on_events=events[-1].extend,

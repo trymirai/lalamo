@@ -179,7 +179,7 @@ def _import_chat_codec(
         tokenizer,
         ChatCodecConfig(
             prompt_template=prompt_template,
-            response_parser=model_spec.response_parser if isinstance(model_spec, LanguageModelSpec) else None,
+            response_format=model_spec.response_format if isinstance(model_spec, LanguageModelSpec) else None,
             system_role_name=model_spec.system_role_name,
             user_role_name=model_spec.user_role_name,
             assistant_role_name=model_spec.assistant_role_name,

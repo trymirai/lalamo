@@ -1,29 +1,24 @@
-import re
-
 from lalamo.model_import.model_configs import (
     HFGemma3Config,
     HFGemma3TextConfig,
     HFGemma4Config,
 )
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
-from lalamo.model_import.model_specs.output_parsers import parse_regex_response
 from lalamo.model_import.model_specs.reasoning_configs import BOOLEAN_REASONING_DEFAULT_OFF_CONFIG
 from lalamo.model_import.origins import HuggingFaceOrigin
-from lalamo.models.chat_codec import AssistantMessage, ResponseParser
+from lalamo.models.chat_codec import ResponseFormat
 
 __all__ = ["GEMMA_MODELS"]
 
 
-class Gemma4ResponseParser(ResponseParser):
-    pattern = re.compile(
-        r"(?s)(?:<\|channel>thought\n(?P<chain_of_thought>.*?)(?:<channel\|>|\Z))?"
+GEMMA4_RESPONSE_FORMAT = ResponseFormat(
+    reasoning_pattern=(
+        r"(?:<\|channel>thought\n(?P<chain_of_thought>.*?)(?:<channel\|>|\Z))?"
         r"(?P<response>(?:(?!<turn\|>)(?!<\|tool_response>).)+)?"
         r"(?:<turn\|>|<\|tool_response>)?\Z"
-    )
-
-    @classmethod
-    def parse_reasoning(cls, response: str, prompt: str) -> AssistantMessage:
-        return parse_regex_response(cls.pattern, response, prompt, ("<|channel>thought\n",))
+    ),
+    prefixes=("<|channel>thought\n",),
+)
 
 
 GEMMA4_BASE_CHAT_TEMPLATE = "{{ bos_token or '' }}{% for message in messages %}{{ message.content }}{% endfor %}"
@@ -142,7 +137,7 @@ GEMMA4 = [
         configs=ConfigMap(
             chat_template=FileSpec("chat_template.jinja"),
         ),
-        response_parser=Gemma4ResponseParser,
+        response_format=GEMMA4_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
     ),
     LanguageModelSpec(
@@ -164,7 +159,7 @@ GEMMA4 = [
         configs=ConfigMap(
             chat_template=FileSpec("chat_template.jinja"),
         ),
-        response_parser=Gemma4ResponseParser,
+        response_format=GEMMA4_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
     ),
 ]

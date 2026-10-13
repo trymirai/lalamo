@@ -1,62 +1,31 @@
-import re
-from typing import ClassVar
-
 from frozendict import frozendict
 
 from lalamo.model_import.model_configs import HFMuseGlimmerConfig
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
-from lalamo.model_import.model_specs.output_parsers import parse_xml_tool_calls
 from lalamo.model_import.origins import HuggingFaceOrigin
 from lalamo.models.chat_codec import (
-    AssistantMessage,
     ReasoningConfig,
     ReasoningEffort,
-    ResponseParser,
-    ToolCall,
-    ToolSchema,
+    ResponseFormat,
+    TaggedToolCalls,
 )
 from lalamo.models.language_model import GenerationConfig
 
 __all__ = ["MUSE_GLIMMER_MODELS"]
 
 
-class MuseResponseParser(ResponseParser):
-    tool_call_tags: ClassVar[tuple[str, str] | None] = ("<atem:function_calls>", "</atem:function_calls>")
-
-    turn = re.compile(
-        r"\s*to=([^\s<]+)<\|message\|>(.*?)(?:<\|eom\|><\|start\|>assistant|<\|eot\|>|<\|end_of_text\|>|\Z)",
-        re.DOTALL,
-    )
-
-    @classmethod
-    def parse(cls, response: str, *, prompt: str = "", tools: tuple[ToolSchema, ...] = ()) -> AssistantMessage:  # noqa: ARG003
-        reasoning = content = ""
-        calls: tuple[ToolCall, ...] = ()
-        position = 0
-        while turn := cls.turn.match(response, position):
-            recipient, body = turn.groups()
-            position = turn.end()
-            if recipient == "self":
-                reasoning += body
-                continue
-            if recipient != "user" and tools:
-                message = super().parse(body, tools=tools)
-                if message.tool_calls and not message.response.strip():
-                    calls += message.tool_calls
-                    continue
-            content += body
-        if response[position:].strip():
-            content += response[position:]
-        return AssistantMessage(reasoning or None, content, calls)
-
-    @classmethod
-    def parse_tool_calls(cls, body: str, tools: tuple[ToolSchema, ...]) -> tuple[ToolCall, ...]:
-        return parse_xml_tool_calls(
-            body,
-            r'<atem:invoke name="([^"]+)">(.*?)</atem:invoke>',
-            r'<atem:parameter name="([^"]+)">(.*?)</atem:parameter>',
-            tools,
-        )
+MUSE_RESPONSE_FORMAT = ResponseFormat(
+    turn_pattern=(
+        r"\s*to=(?:self<\|message\|>(?P<chain_of_thought>.*?)"
+        r"|user<\|message\|>(?P<response>.*?)|[^\s<]+<\|message\|>(?P<tool_calls>.*?))"
+        r"(?:<\|eom\|><\|start\|>assistant|<\|eot\|>|<\|end_of_text\|>|\Z)"
+    ),
+    tool_calls=TaggedToolCalls(
+        tags=("<atem:function_calls>", "</atem:function_calls>"),
+        function_pattern=r'<atem:invoke name="([^"]+)">(.*?)</atem:invoke>',
+        parameter_pattern=r'<atem:parameter name="([^"]+)">(.*?)</atem:parameter>',
+    ),
+)
 
 
 MUSE_GLIMMER_MODELS = [
@@ -75,7 +44,7 @@ MUSE_GLIMMER_MODELS = [
                 top_p=0.95,
             ),
         ),
-        response_parser=MuseResponseParser,
+        response_format=MUSE_RESPONSE_FORMAT,
         reasoning_config=ReasoningConfig(
             default_reasoning_effort=ReasoningEffort.HIGH,
             field_name="reasoning_strength",
