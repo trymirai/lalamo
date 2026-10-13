@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from jax.lax import DotAlgorithmPreset
-from jax.sharding import NamedSharding
+from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, Bool, Float, Int, Key
 
 from lalamo.initializer import Initializer
@@ -25,8 +25,8 @@ from lalamo.module import (
     ShardingConfig,
 )
 from lalamo.utils.registry_abc import RegistryABC
-from lalamo.utils.sharding import with_sharding
-from lalamo.weight_matrix import GradientEstimator, MatmulConfig
+from lalamo.utils.sharding import is_sharded, sharding_of, with_sharding
+from lalamo.weight_matrix import FullPrecisionMatrix, GradientEstimator, MatmulConfig
 
 from .activations import Activation
 from .linear import Linear, LinearConfig
@@ -62,25 +62,15 @@ def _take_moe_chunk_inputs(
     )
 
 
-def _add_moe_expert_outputs(
-    accumulator: Float[Array, "tokens channels"],
-    token_indices: Int[Array, "experts tokens_per_chunk"],
-    expert_outputs: Float[Array, "experts tokens_per_chunk channels"],
-    out_sharding: NamedSharding,
-) -> Float[Array, "tokens channels"]:
-    return accumulator.at[token_indices].add(
-        expert_outputs,
-        mode="drop",
-        out_sharding=out_sharding,
-    )
-
-
-def _take_moe_expert_leaf(leaf: object, index: Int[Array, ""], sharding_config: ShardingConfig) -> object:
+def _take_moe_expert_leaf(
+    leaf: object,
+    index: Int[Array, ""] | Int[Array, " experts"],
+    sharding_config: ShardingConfig,
+) -> object:
     if not isinstance(leaf, jax.Array):
         return leaf
 
-    out_sharding = sharding_config.make_sharding((None,) * (leaf.ndim - 1))
-    return leaf.at[jnp.expand_dims(index, 0)].get(out_sharding=out_sharding)[0]
+    return leaf.at[jnp.expand_dims(index, 0)].get(out_sharding=sharding_config.make_sharding(()))[0]
 
 
 @dataclass(frozen=True)
@@ -176,6 +166,8 @@ class DenseMLPConfig(MLPConfig):
         mixture_size: int,
         model_dim: int,
         hidden_dim: int,
+        *,
+        is_sharded: bool = True,
     ) -> "DenseMLP":
         return DenseMLP(
             config=self,
@@ -186,6 +178,7 @@ class DenseMLPConfig(MLPConfig):
                 model_dim,
                 (hidden_dim, hidden_dim),
                 has_biases=self.has_up_biases,
+                is_sharded=is_sharded,
             ),
             down_projection=self.linear_config.init_mixture(
                 initializer,
@@ -193,6 +186,7 @@ class DenseMLPConfig(MLPConfig):
                 hidden_dim,
                 (model_dim,),
                 has_biases=self.has_down_biases,
+                is_sharded=is_sharded,
             ),
         )
 
@@ -222,16 +216,24 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        call_unbatched = partial(
-            self.call_unbatched,
-            forward_pass_config=forward_pass_config,
-        )
         return call_vmapped_twice(
-            call_unbatched,
+            self.call_unbatched,
             inputs,
+            forward_pass_config=forward_pass_config,
             keychain=keychain,
             added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
+
+    def _hidden_activations(
+        self,
+        up_proj: Float[Array, "*tokens hidden_channels"],
+        gate: Float[Array, "*tokens hidden_channels"],
+    ) -> Float[Array, "*tokens hidden_channels"]:
+        if self.config.gate_clipping is not None:
+            gate = jnp.clip(gate, *self.config.gate_clipping)
+        if self.config.up_clipping is not None:
+            up_proj = jnp.clip(up_proj, *self.config.up_clipping)
+        return up_proj * self.config.activation(gate)
 
     @eqx.filter_jit
     def call_unbatched(
@@ -252,38 +254,41 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
             keychain=up_keychain,
             forward_pass_config=forward_pass_config.matmul_config,
         )
-        if self.config.gate_clipping is not None:
-            gate = jnp.clip(gate, *self.config.gate_clipping)
-        if self.config.up_clipping is not None:
-            up_proj = jnp.clip(up_proj, *self.config.up_clipping)
-        gate = self.config.activation(gate)
         (result,) = self.down_projection(
-            up_proj * gate,
+            self._hidden_activations(up_proj, gate),
             keychain=down_keychain,
             forward_pass_config=forward_pass_config.matmul_config,
         )
         return result
 
-    def slice_mixture(self, start: int, stop: int) -> Self:
+    def call_ragged_mixture(
+        self,
+        inputs: Float[Array, "tokens channels"],
+        expert_indices: Int[Array, " tokens"],
+        group_sizes: Int[Array, " experts"],
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
+    ) -> Float[Array, "tokens channels"]:
         if self.mixture_size is None:
-            raise ValueError("DenseMLP.slice_mixture() requires a mixture DenseMLP.")
+            raise ValueError("DenseMLP.call_ragged_mixture() requires a mixture DenseMLP.")
 
-        def slice_leaf(leaf: Array) -> Array:
-            if not eqx.is_array(leaf):
-                return leaf
-            if leaf.ndim == 0 or leaf.shape[0] != self.mixture_size:
-                raise ValueError(
-                    "Unexpected expert leaf shape while slicing experts:"
-                    f" expected leading dim {self.mixture_size}, got {leaf.shape}.",
-                )
-            return leaf[start:stop]
-
-        return jax.tree_util.tree_map(slice_leaf, self)
+        up_proj, gate = self.up_projection.call_ragged(
+            inputs,
+            expert_indices,
+            group_sizes,
+            forward_pass_config=forward_pass_config.matmul_config,
+        )
+        (result,) = self.down_projection.call_ragged(
+            self._hidden_activations(up_proj, gate),
+            expert_indices,
+            group_sizes,
+            forward_pass_config=forward_pass_config.matmul_config,
+        )
+        return result
 
 
 class RoutingMap(eqx.Module):
-    expert_mask: Bool[Array, "*batch_and_tokens experts"]
-    expert_weights: Float[Array, "*batch_and_tokens experts"]
+    active_expert_indices: Int[Array, "*batch_and_tokens active_experts"]
+    active_expert_weights: Float[Array, "*batch_and_tokens active_experts"]
 
 
 @dataclass(frozen=True)
@@ -324,14 +329,12 @@ class SoftmaxRouting(RoutingFunction):
         num_active: int,
     ) -> RoutingMap:
         assert biases is None
-        *_, num_experts = logits.shape
         active_logits, active_indices = jax.lax.top_k(logits, num_active)
         active_weights = jax.nn.softmax(active_logits)
-        active_mask = jax.nn.one_hot(active_indices, num_experts, dtype=bool)
-        mask = jnp.any(active_mask, axis=0)
-        active_weight_mask = jax.nn.one_hot(active_indices, num_experts, dtype=logits.dtype)
-        expert_weights = jnp.sum(active_weight_mask * active_weights[:, None], axis=0)
-        return RoutingMap(expert_mask=mask, expert_weights=expert_weights)
+        return RoutingMap(
+            active_expert_indices=active_indices,
+            active_expert_weights=active_weights,
+        )
 
 
 class RoutingBias(StrEnum):
@@ -369,9 +372,10 @@ class SigmoidRouting(RoutingFunction):
         _, active_indices = jax.lax.top_k(gating_scores, num_active)
         active_weights = scores[active_indices]
         active_weights = active_weights / (active_weights.sum() + 1e-6)
-        mask = jnp.any(jax.nn.one_hot(active_indices, logits.shape[0], dtype=bool), axis=0)
-        expert_weights = jnp.zeros_like(logits).at[active_indices].set(active_weights.astype(logits.dtype))
-        return RoutingMap(expert_mask=mask, expert_weights=expert_weights)
+        return RoutingMap(
+            active_expert_indices=active_indices,
+            active_expert_weights=active_weights.astype(logits.dtype),
+        )
 
 
 @dataclass(frozen=True)
@@ -400,12 +404,22 @@ class MixtureOfExpertsConfig(MLPConfig):
             has_biases=self.router_has_biases,
             is_sharded=False,
         )
-        experts = self.expert_config.init_mixture(
+        routed_experts = self.expert_config.init_mixture(
             initializer,
-            self.mixture_size,
+            self.num_routed_experts,
             model_dim,
             self.expert_hidden_dim,
         )
+        if self.num_shared_experts > 0:
+            shared_experts = self.expert_config.init_mixture(
+                initializer,
+                self.num_shared_experts,
+                model_dim,
+                self.expert_hidden_dim,
+                is_sharded=False,
+            )
+        else:
+            shared_experts = None
 
         if self.gate_config is not None:
             gate = self.gate_config.init(
@@ -413,6 +427,7 @@ class MixtureOfExpertsConfig(MLPConfig):
                 model_dim,
                 (1,),
                 has_biases=False,
+                is_sharded=False,
             )
         else:
             gate = None
@@ -421,7 +436,8 @@ class MixtureOfExpertsConfig(MLPConfig):
             config=self,
             sharding_config=initializer.sharding_config,
             router=router,
-            experts=experts,
+            routed_experts=routed_experts,
+            shared_experts=shared_experts,
             gate=gate,
             expert_bias=self.routing_function.init_biases(initializer, self.num_routed_experts),
         )
@@ -429,17 +445,18 @@ class MixtureOfExpertsConfig(MLPConfig):
 
 class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     router: Linear
-    experts: DenseMLP
+    routed_experts: DenseMLP
+    shared_experts: DenseMLP | None
     gate: Linear | None
     expert_bias: Float[Array, " experts"] | None = None
 
     @property
     def model_dim(self) -> int:
-        return self.experts.model_dim
+        return self.routed_experts.model_dim
 
     @property
     def hidden_dim(self) -> int:
-        return self.experts.hidden_dim
+        return self.routed_experts.hidden_dim
 
     @eqx.filter_jit
     def __call__(
@@ -472,12 +489,32 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     ) -> Float[Array, " one"]:
         if self.gate is not None:
             (gate_value,) = self.gate(
-                inputs,
+                inputs.astype(jnp.float32),
                 keychain=keychain,
                 forward_pass_config=forward_pass_config.matmul_config,
             )
             return jax.nn.sigmoid(gate_value)
-        return jnp.ones((1,), dtype=inputs.dtype)
+        return jnp.ones((1,), dtype=jnp.float32)
+
+    def _route(
+        self,
+        token_input: Float[Array, " channels"],
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> RoutingMap:
+        (router_logits,) = self.router(
+            token_input.astype(jnp.float32),
+            keychain=keychain,
+            forward_pass_config=forward_pass_config.matmul_config,
+        )
+        # reshard keeps the vmapped token axis sharded, unlike device_put.
+        router_logits = jax.sharding.reshard(router_logits, PartitionSpec(None))
+        return self.config.routing_function.call_unbatched(
+            router_logits,
+            biases=self.expert_bias,
+            num_active=self.config.num_active_routed_experts,
+        )
 
     def _call_decode_token(
         self,
@@ -486,67 +523,38 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         *,
         keychain: Keychain,
     ) -> Float[Array, " channels"]:
-        router_keychain, shared_keychain, expert_keychain = keychain.split(3)
-        (router_logits,) = self.router(
+        routing_keychain, expert_keychain, shared_weight_keychain, shared_expert_keychain = keychain.split(4)
+        routing = self._route(token_input, forward_pass_config, keychain=routing_keychain)
+        active_experts = jax.tree_util.tree_map(
+            lambda leaf: _take_moe_expert_leaf(leaf, routing.active_expert_indices, self.sharding_config),
+            self.routed_experts,
+        )
+        expert_outputs = call_vmapped(
+            DenseMLP.call_unbatched,
+            active_experts,
             token_input,
-            keychain=router_keychain,
-            forward_pass_config=forward_pass_config.matmul_config,
+            forward_pass_config=forward_pass_config,
+            keychain=expert_keychain,
+            in_axes=(0, None),
         )
-        router_logits = jax.device_put(router_logits, self.sharding_config.make_sharding((None,)))
-        routing = self.config.routing_function.call_unbatched(
-            router_logits,
-            biases=self.expert_bias,
-            num_active=self.config.num_active_routed_experts,
-        )
-
-        if self.config.num_shared_experts > 0:
-            shared_mask = jnp.ones(self.config.num_shared_experts, dtype=bool)
-            expert_mask = jnp.concatenate([routing.expert_mask, shared_mask])
+        weighted_outputs = expert_outputs.astype(jnp.float32) * routing.active_expert_weights[:, None]
+        result = weighted_outputs.sum(axis=0)
+        if self.shared_experts is not None:
             shared_weight = self._shared_expert_weight(
                 token_input,
                 forward_pass_config,
-                keychain=shared_keychain,
+                keychain=shared_weight_keychain,
             )
-            shared_weights = jnp.broadcast_to(shared_weight, (self.config.num_shared_experts,))
-            expert_weights = jnp.concatenate([routing.expert_weights, shared_weights])
-        else:
-            expert_mask = routing.expert_mask
-            expert_weights = routing.expert_weights
-
-        num_active = self.config.num_active_routed_experts + self.config.num_shared_experts
-        active_indices = jnp.flatnonzero(expert_mask, size=num_active)
-        active_weights = expert_weights[active_indices]
-        expert_vmapped_keys = expert_keychain.broadcast((num_active,)).vmapped_keys
-        expert_batch_keys = jax.random.split(expert_keychain.batch_key, num_active)
-
-        def apply_one(
-            idx: Int[Array, ""],
-            weight: Float[Array, ""],
-            expert_vmapped_key: Key[Array, ""],
-            expert_batch_key: Key[Array, ""],
-        ) -> Float[Array, " channels"]:
-            selected_expert_keychain = Keychain(
-                vmapped_keys=expert_vmapped_key,
-                batch_key=expert_batch_key,
-                sharding_config=expert_keychain.sharding_config,
+            shared_outputs = call_vmapped(
+                DenseMLP.call_unbatched,
+                self.shared_experts,
+                token_input,
+                forward_pass_config=forward_pass_config,
+                keychain=shared_expert_keychain,
+                in_axes=(0, None),
             )
-            selected_expert = jax.tree_util.tree_map(
-                lambda leaf: _take_moe_expert_leaf(leaf, idx, self.sharding_config),
-                self.experts,
-            )
-            return (
-                selected_expert.call_unbatched(
-                    token_input,
-                    forward_pass_config,
-                    keychain=selected_expert_keychain,
-                )
-                * weight
-            )
-
-        return call_vmapped(
-            lambda expert_inputs: apply_one(*expert_inputs),
-            (active_indices, active_weights, expert_vmapped_keys, expert_batch_keys),
-        ).sum(axis=0)
+            result = result + shared_weight * shared_outputs.astype(jnp.float32).sum(axis=0)
+        return result.astype(token_input.dtype)
 
     @eqx.filter_jit
     def call_decode_mode(
@@ -564,66 +572,100 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
 
-    @eqx.filter_jit
-    def call_prefill_mode(
+    def _call_ragged_routed_experts(
         self,
-        inputs: Float[Array, "batch suffix_tokens channels"],
-        lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
+        flattened_inputs: Float[Array, "tokens channels"],
+        flattened_padding_mask: Bool[Array, " tokens"],
+        routing_map: RoutingMap,
+        forward_pass_config: MLPForwardPassConfig,
+    ) -> Float[Array, "tokens channels"]:
+        num_experts = self.config.num_routed_experts
+        replicated_vector_sharding = self.sharding_config.make_sharding((None,))
+        replicated_matrix_sharding = self.sharding_config.make_sharding((None, None))
+        active_expert_indices = with_sharding(routing_map.active_expert_indices, replicated_matrix_sharding)
+        active_expert_weights = with_sharding(routing_map.active_expert_weights, replicated_matrix_sharding)
+        _, num_active = active_expert_indices.shape
+
+        # Padded tokens are assigned to a sentinel expert that sorts after all real ones.
+        expert_indices = with_sharding(
+            jnp.where(flattened_padding_mask[:, None], active_expert_indices, num_experts).ravel(),
+            replicated_vector_sharding,
+        )
+        assignment_order = jnp.argsort(expert_indices)
+        sorted_expert_indices = expert_indices[assignment_order]
+        valid_assignments = sorted_expert_indices < num_experts
+        group_sizes = with_sharding(
+            jnp.bincount(expert_indices, length=num_experts).astype(jnp.int32),
+            replicated_vector_sharding,
+        )
+        token_indices = assignment_order // num_active
+        safe_expert_indices = jnp.where(valid_assignments, sorted_expert_indices, 0)
+        expert_weights = active_expert_weights.ravel()[assignment_order]
+
+        replicated_inputs = with_sharding(flattened_inputs, replicated_matrix_sharding)
+        expert_inputs = replicated_inputs.at[token_indices].get(out_sharding=replicated_matrix_sharding)
+        expert_outputs = self.routed_experts.call_ragged_mixture(
+            expert_inputs,
+            safe_expert_indices,
+            group_sizes,
+            forward_pass_config,
+        )
+        # ragged_dot leaves the ungrouped padded tail unspecified.
+        weighted_outputs = jnp.where(
+            valid_assignments[:, None],
+            expert_outputs.astype(jnp.float32) * expert_weights[:, None],
+            0.0,
+        )
+        # Gather back into token order instead of scatter-adding, which is non-deterministic on GPU.
+        token_major_outputs = weighted_outputs.at[jnp.argsort(assignment_order)].get(
+            out_sharding=replicated_matrix_sharding,
+        )
+        result = rearrange(
+            token_major_outputs,
+            "(tokens active_experts) channels -> tokens active_experts channels",
+            active_experts=num_active,
+        ).sum(axis=1)
+        return with_sharding(
+            result,
+            self.sharding_config.resolve_sharding((LogicalAxis.BATCH, None)),
+        )
+
+    def _call_chunked_routed_experts(
+        self,
+        flattened_inputs: Float[Array, "tokens channels"],
+        flattened_padding_mask: Bool[Array, " tokens"],
+        routing_map: RoutingMap,
+        forward_pass_config: MLPForwardPassConfig,
         *,
         keychain: Keychain,
-    ) -> Float[Array, "batch suffix_tokens channels"]:
-        batch_size, sequence_length, _ = inputs.shape
-        num_tokens = batch_size * sequence_length
-        if lengths_without_padding is None:
-            lengths_without_padding = jnp.ones(batch_size, dtype=jnp.int32) * sequence_length
-        padding_mask = jnp.arange(sequence_length)[None, :] < lengths_without_padding[:, None]
-
-        flattened_inputs = rearrange(inputs, "batch suffix_tokens channels -> (batch suffix_tokens) channels")
-        flattened_padding_mask = rearrange(padding_mask, "batch suffix_tokens -> (batch suffix_tokens)")
+    ) -> Float[Array, "tokens channels"]:
+        num_tokens = flattened_inputs.shape[0]
         batch_sharding = self.sharding_config.resolve_sharding((LogicalAxis.BATCH, None))
         mixture_sharding = self.sharding_config.resolve_sharding((LogicalAxis.MIXTURE, None))
         mixture_vector_sharding = self.sharding_config.resolve_sharding((LogicalAxis.MIXTURE,))
 
-        def flatten_token_keychain(token_keychain: Keychain) -> Keychain:
-            token_keychain = token_keychain.broadcast(
-                (batch_size, sequence_length),
-                mode=KeychainBroadcastMode.PREFIX,
-            )
-            return Keychain(
-                vmapped_keys=rearrange(token_keychain.vmapped_keys, "batch suffix_tokens -> (batch suffix_tokens)"),
-                batch_key=token_keychain.batch_key,
-                sharding_config=token_keychain.sharding_config,
-            )
-
-        router_keychain, chunk_keychain, shared_weight_keychain, shared_expert_keychain = keychain.split(4)
-        (router_logits,) = call_vmapped(
-            self.router,
-            flattened_inputs,
-            forward_pass_config=forward_pass_config.matmul_config,
-            keychain=flatten_token_keychain(router_keychain),
-            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
+        active_selection = jax.nn.one_hot(
+            routing_map.active_expert_indices,
+            self.config.num_routed_experts,
+            dtype=routing_map.active_expert_weights.dtype,
         )
-        router_logits = with_sharding(router_logits, batch_sharding)
-        routing_map = self.config.routing_function(
-            router_logits,
-            biases=self.expert_bias,
-            num_active=self.config.num_active_routed_experts,
-        )
-
         token_mask: Bool[Array, "experts tokens"] = rearrange(
-            routing_map.expert_mask & flattened_padding_mask[:, None],
+            jnp.any(active_selection != 0, axis=-2) & flattened_padding_mask[:, None],
             "tokens experts -> experts tokens",
         )
         token_mask = with_sharding(token_mask, mixture_sharding)
+        token_positions = jnp.cumsum(token_mask, axis=1) - 1
+        active_token_positions = token_positions.at[
+            routing_map.active_expert_indices,
+            jnp.arange(num_tokens)[:, None],
+        ].get(out_sharding=batch_sharding)
         expert_weights: Float[Array, "experts tokens"] = rearrange(
-            routing_map.expert_weights,
+            jnp.sum(active_selection * routing_map.active_expert_weights[..., None], axis=-2),
             "tokens experts -> experts tokens",
         )
         expert_weights = jnp.where(token_mask, expert_weights, 0.0)
         expert_weights = with_sharding(expert_weights, mixture_sharding)
-        routed_experts = self.experts.slice_mixture(0, self.config.num_routed_experts)
-        routed_expert_indices = with_sharding(jnp.arange(self.config.num_routed_experts), mixture_vector_sharding)
+        expert_indices = with_sharding(jnp.arange(self.config.num_routed_experts), mixture_vector_sharding)
 
         chunk_size = math.ceil(num_tokens * forward_pass_config.moe_chunk_size_ratio)
         num_padded_tokens = math.ceil(num_tokens / chunk_size) * chunk_size
@@ -639,8 +681,8 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         )
 
         num_chunks = chunked_token_indices.shape[0]
-        chunk_vmapped_keys = chunk_keychain.broadcast((num_chunks,)).vmapped_keys
-        chunk_batch_keys = jax.random.split(chunk_keychain.batch_key, num_chunks)
+        chunk_vmapped_keys = keychain.broadcast((num_chunks,)).vmapped_keys
+        chunk_batch_keys = jax.random.split(keychain.batch_key, num_chunks)
         chunk_batch_keys = with_sharding(
             chunk_batch_keys,
             self.sharding_config.make_sharding((None,)),
@@ -648,141 +690,182 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
 
         def loop_iteration(
             expert_accumulator: Float[Array, "tokens channels"],
-            chunk_inputs: tuple[Int[Array, "experts chunk_tokens"], Key[Array, ""], Key[Array, ""]],
+            chunk_inputs: tuple[Int[Array, ""], Int[Array, "experts chunk_tokens"], Key[Array, ""], Key[Array, ""]],
         ) -> tuple[Float[Array, "tokens channels"], None]:
-            token_indices_for_chunk, chunk_vmapped_key, chunk_batch_key = chunk_inputs
+            chunk_index, token_indices_for_chunk, chunk_vmapped_key, chunk_batch_key = chunk_inputs
             current_chunk_keychain = Keychain(
                 vmapped_keys=chunk_vmapped_key,
                 batch_key=chunk_batch_key,
-                sharding_config=chunk_keychain.sharding_config,
+                sharding_config=keychain.sharding_config,
             )
 
-            def run_experts(
-                accumulator: Float[Array, "tokens channels"],
-            ) -> Float[Array, "tokens channels"]:
-                weights_for_chunk = jnp.take_along_axis(
-                    expert_weights,
-                    token_indices_for_chunk,
-                    axis=1,
-                    mode="fill",
-                    fill_value=0.0,
+            weights_for_chunk = jnp.take_along_axis(
+                expert_weights,
+                token_indices_for_chunk,
+                axis=1,
+                mode="fill",
+                fill_value=0.0,
+            )
+
+            expert_vmapped_keys = current_chunk_keychain.broadcast(
+                (self.config.num_routed_experts,),
+            ).vmapped_keys
+            expert_vmapped_keys = with_sharding(expert_vmapped_keys, mixture_vector_sharding)
+            expert_batch_keys = jax.random.split(
+                current_chunk_keychain.batch_key,
+                self.config.num_routed_experts,
+            )
+            expert_batch_keys = with_sharding(expert_batch_keys, mixture_vector_sharding)
+
+            def run_expert(
+                expert_index: Int[Array, ""],
+                indices: Int[Array, " tokens_per_chunk"],
+                weights: Float[Array, " tokens_per_chunk"],
+                expert_vmapped_key: Key[Array, ""],
+                expert_batch_key: Key[Array, ""],
+            ) -> Float[Array, "tokens_per_chunk channels"]:
+                expert_keychain = Keychain(
+                    vmapped_keys=expert_vmapped_key,
+                    batch_key=expert_batch_key,
+                    sharding_config=current_chunk_keychain.sharding_config,
                 )
-
-                expert_vmapped_keys = current_chunk_keychain.broadcast(
-                    (self.config.num_routed_experts,),
-                ).vmapped_keys
-                expert_vmapped_keys = with_sharding(expert_vmapped_keys, mixture_vector_sharding)
-                expert_batch_keys = jax.random.split(
-                    current_chunk_keychain.batch_key,
-                    self.config.num_routed_experts,
+                expert = jax.tree_util.tree_map(
+                    lambda leaf: _take_moe_expert_leaf(leaf, expert_index, self.sharding_config),
+                    self.routed_experts,
                 )
-                expert_batch_keys = with_sharding(expert_batch_keys, mixture_vector_sharding)
-
-                def run_expert(
-                    expert_index: Int[Array, ""],
-                    indices: Int[Array, " tokens_per_chunk"],
-                    weights: Float[Array, " tokens_per_chunk"],
-                    expert_vmapped_key: Key[Array, ""],
-                    expert_batch_key: Key[Array, ""],
-                ) -> Float[Array, "tokens_per_chunk channels"]:
-                    expert_keychain = Keychain(
-                        vmapped_keys=expert_vmapped_key,
-                        batch_key=expert_batch_key,
-                        sharding_config=current_chunk_keychain.sharding_config,
-                    )
-                    expert = jax.tree_util.tree_map(
-                        lambda leaf: _take_moe_expert_leaf(leaf, expert_index, self.sharding_config),
-                        routed_experts,
-                    )
-                    chunk_inputs = _take_moe_chunk_inputs(
-                        flattened_inputs,
-                        indices,
-                        self.sharding_config.make_sharding((None, None)),
-                    )
-                    call_unbatched = partial(
-                        expert.call_unbatched,
-                        forward_pass_config=forward_pass_config,
-                    )
-                    expert_outputs = call_vmapped(
-                        call_unbatched,
-                        chunk_inputs,
-                        keychain=expert_keychain,
-                    )
-                    return expert_outputs * weights[:, None]
-
+                chunk_inputs = _take_moe_chunk_inputs(
+                    flattened_inputs,
+                    indices,
+                    self.sharding_config.make_sharding((None, None)),
+                )
                 expert_outputs = call_vmapped(
-                    lambda expert_inputs: run_expert(*expert_inputs),
-                    (
-                        routed_expert_indices,
-                        token_indices_for_chunk,
-                        weights_for_chunk,
-                        expert_vmapped_keys,
-                        expert_batch_keys,
-                    ),
-                    added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.MIXTURE),
+                    expert.call_unbatched,
+                    chunk_inputs,
+                    forward_pass_config=forward_pass_config,
+                    keychain=expert_keychain,
                 )
-                return _add_moe_expert_outputs(accumulator, token_indices_for_chunk, expert_outputs, batch_sharding)
+                return expert_outputs.astype(jnp.float32) * weights[:, None]
 
-            return run_experts(expert_accumulator), None
+            expert_outputs = call_vmapped(
+                lambda expert_inputs: run_expert(*expert_inputs),
+                (
+                    expert_indices,
+                    token_indices_for_chunk,
+                    weights_for_chunk,
+                    expert_vmapped_keys,
+                    expert_batch_keys,
+                ),
+                added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.MIXTURE),
+            )
+            positions_for_chunk = jnp.where(
+                flattened_padding_mask[:, None],
+                active_token_positions - chunk_index * chunk_size,
+                _SENTINEL,
+            )
+            # Gather in active-expert order; conflicting scatter-adds are non-deterministic on GPU.
+            token_outputs = expert_outputs.at[routing_map.active_expert_indices, positions_for_chunk].get(
+                mode="fill",
+                fill_value=0.0,
+                wrap_negative_indices=False,
+                out_sharding=self.sharding_config.resolve_sharding((LogicalAxis.BATCH, None, None)),
+            )
+            return expert_accumulator + token_outputs.sum(axis=1), None
 
         routed_accumulator = jnp.zeros(
             flattened_inputs.shape,
-            dtype=flattened_inputs.dtype,
+            dtype=jnp.float32,
             out_sharding=batch_sharding,
         )
         routed_expert_result, _ = jax.lax.scan(
             loop_iteration,
             routed_accumulator,
-            (chunked_token_indices, chunk_vmapped_keys, chunk_batch_keys),
+            (jnp.arange(num_chunks), chunked_token_indices, chunk_vmapped_keys, chunk_batch_keys),
+        )
+        return routed_expert_result
+
+    @eqx.filter_jit
+    def call_prefill_mode(
+        self,
+        inputs: Float[Array, "batch suffix_tokens channels"],
+        lengths_without_padding: Int[Array, " batch"] | None = None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> Float[Array, "batch suffix_tokens channels"]:
+        batch_size, sequence_length, _ = inputs.shape
+        if lengths_without_padding is None:
+            lengths_without_padding = jnp.ones(batch_size, dtype=jnp.int32) * sequence_length
+        padding_mask = jnp.arange(sequence_length)[None, :] < lengths_without_padding[:, None]
+
+        flattened_inputs = rearrange(inputs, "batch suffix_tokens channels -> (batch suffix_tokens) channels")
+        flattened_padding_mask = rearrange(padding_mask, "batch suffix_tokens -> (batch suffix_tokens)")
+
+        def flatten_token_keychain(token_keychain: Keychain) -> Keychain:
+            token_keychain = token_keychain.broadcast(
+                (batch_size, sequence_length),
+                mode=KeychainBroadcastMode.PREFIX,
+            )
+            return Keychain(
+                vmapped_keys=rearrange(token_keychain.vmapped_keys, "batch suffix_tokens -> (batch suffix_tokens)"),
+                batch_key=token_keychain.batch_key,
+                sharding_config=token_keychain.sharding_config,
+            )
+
+        routing_keychain, expert_keychain, shared_weight_keychain, shared_expert_keychain = keychain.split(4)
+        routing_map = call_vmapped(
+            self._route,
+            flattened_inputs,
+            forward_pass_config=forward_pass_config,
+            keychain=flatten_token_keychain(routing_keychain),
+            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
         )
 
-        expert_result = routed_expert_result
-        if self.config.num_shared_experts > 0:
-            shared_experts = self.experts.slice_mixture(self.config.num_routed_experts, self.config.mixture_size)
-            shared_expert_indices = with_sharding(jnp.arange(self.config.num_shared_experts), mixture_vector_sharding)
-            shared_expert_weight = partial(
-                self._shared_expert_weight,
-                forward_pass_config=forward_pass_config,
-            )
-            shared_weights = call_vmapped(
-                shared_expert_weight,
+        up_weights = self.routed_experts.up_projection.weights
+        down_weights = self.routed_experts.down_projection.weights
+        use_ragged = (
+            isinstance(up_weights, FullPrecisionMatrix)
+            and isinstance(down_weights, FullPrecisionMatrix)
+            and not is_sharded(sharding_of(up_weights.weights))
+            and not is_sharded(sharding_of(down_weights.weights))
+        )
+        if use_ragged:
+            expert_result = self._call_ragged_routed_experts(
                 flattened_inputs,
+                flattened_padding_mask,
+                routing_map,
+                forward_pass_config,
+            )
+        else:
+            expert_result = self._call_chunked_routed_experts(
+                flattened_inputs,
+                flattened_padding_mask,
+                routing_map,
+                forward_pass_config,
+                keychain=expert_keychain,
+            )
+
+        if self.shared_experts is not None:
+            shared_weights = call_vmapped(
+                self._shared_expert_weight,
+                flattened_inputs,
+                forward_pass_config=forward_pass_config,
                 keychain=flatten_token_keychain(shared_weight_keychain),
                 added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
             )
             shared_weights = jnp.where(flattened_padding_mask[:, None], shared_weights, 0.0)
-
-            def run_shared_expert_token(
-                expert_index: Int[Array, ""],
-                token_input: Float[Array, " channels"],
-                *,
-                keychain: Keychain,
-            ) -> Float[Array, " channels"]:
-                expert = jax.tree_util.tree_map(
-                    lambda leaf: _take_moe_expert_leaf(leaf, expert_index, self.sharding_config),
-                    shared_experts,
-                )
-                return expert.call_unbatched(
-                    token_input,
-                    forward_pass_config=forward_pass_config,
-                    keychain=keychain,
-                )
-
             shared_outputs = call_vmapped_twice(
-                run_shared_expert_token,
-                shared_expert_indices,
+                DenseMLP.call_unbatched,
+                self.shared_experts,
                 flattened_inputs,
+                forward_pass_config=forward_pass_config,
                 keychain=shared_expert_keychain,
                 in_axes=((0, None), (None, 0)),
-                added_sharding_axes=(
-                    self.sharding_config.resolve_axis(LogicalAxis.MIXTURE),
-                    self.sharding_config.resolve_axis(LogicalAxis.BATCH),
-                ),
+                added_sharding_axes=(None, self.sharding_config.resolve_axis(LogicalAxis.BATCH)),
             )
-            expert_result = routed_expert_result + shared_weights * shared_outputs.sum(axis=0)
+            expert_result = expert_result + shared_weights * shared_outputs.astype(jnp.float32).sum(axis=0)
 
         return rearrange(
-            expert_result,
+            expert_result.astype(inputs.dtype),
             "(batch suffix_tokens) channels -> batch suffix_tokens channels",
             batch=batch_size,
         )

@@ -1,5 +1,5 @@
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import prod
 from pathlib import Path
 
@@ -22,6 +22,7 @@ from lalamo.model_import.loaders.huggingface import (
     load_huggingface_classifier,
     load_input_embedding_matrix,
     load_linear,
+    load_mlp,
     load_moe,
     load_untied_embedding,
 )
@@ -29,7 +30,7 @@ from lalamo.model_import.loaders.utils import decode_mxfp4
 from lalamo.model_import.model_configs.foreign_config import ForeignConfig
 from lalamo.model_import.model_configs.huggingface import HFDFlashConfig, ModernBERTConfig
 from lalamo.models.chat_codec import ChatCodec, ChatCodecConfig
-from lalamo.module import Keychain, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, LogicalAxis
 from lalamo.modules.activations import SiLU
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.decoder import PerLayerEmbedding, PLEModelConfig
@@ -40,6 +41,9 @@ from lalamo.modules.mlp import (
     DenseMLPConfig,
     MixtureOfExperts,
     MixtureOfExpertsConfig,
+    MLPForwardPassConfig,
+    RoutingBias,
+    SigmoidRouting,
     SoftmaxRouting,
 )
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
@@ -159,6 +163,31 @@ def _gpt_oss_moe_template() -> MixtureOfExperts:
     )
     initializer = EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config())
     return config.init(initializer, model_dim=64, hidden_dim=64)
+
+
+def _split_moe_template() -> MixtureOfExperts:
+    linear_config = LinearConfig()
+    expert_config = DenseMLPConfig(
+        linear_config=linear_config,
+        activation=SiLU(),
+        has_up_biases=False,
+        has_down_biases=False,
+        gate_clipping=None,
+        up_clipping=None,
+    )
+    config = MixtureOfExpertsConfig(
+        expert_config=expert_config,
+        router_config=linear_config,
+        routing_function=SoftmaxRouting(),
+        num_routed_experts=2,
+        num_active_routed_experts=1,
+        router_has_biases=False,
+        num_shared_experts=1,
+        expert_hidden_dim=3,
+        gate_config=linear_config,
+    )
+    initializer = EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config())
+    return config.init(initializer, model_dim=INPUT_DIM, hidden_dim=INPUT_DIM)
 
 
 def _mlx_weights(path: ParameterPath) -> Mapping[str, Array]:
@@ -454,8 +483,8 @@ def test_load_gpt_oss_moe_preserves_native_mxfp4_payload_and_canonical_rows() ->
 
     loaded = load_moe(module, weights, path)
 
-    up_weights = loaded.experts.up_projection.weights
-    down_weights = loaded.experts.down_projection.weights
+    up_weights = loaded.routed_experts.up_projection.weights
+    down_weights = loaded.routed_experts.down_projection.weights
     assert isinstance(up_weights, MicrofloatMatrixForInference)
     assert isinstance(down_weights, MicrofloatMatrixForInference)
     expected_up_blocks = jnp.concatenate((gate_up_blocks[:, 1::2], gate_up_blocks[:, 0::2]), axis=1)
@@ -486,13 +515,145 @@ def test_load_gpt_oss_moe_preserves_native_mxfp4_payload_and_canonical_rows() ->
     np.testing.assert_array_equal(up_weights.decompress(), expected_up_weights)
     np.testing.assert_array_equal(down_weights.decompress(), expected_down_weights)
 
-    assert loaded.experts.up_projection.biases is not None
-    assert loaded.experts.down_projection.biases is not None
+    assert loaded.routed_experts.up_projection.biases is not None
+    assert loaded.routed_experts.down_projection.biases is not None
     expected_up_bias = jnp.broadcast_to(gate_up_bias[1::2] + 1, (2, 32))
     expected_gate_bias = jnp.broadcast_to(gate_up_bias[0::2], (2, 32))
-    assert jnp.array_equal(loaded.experts.up_projection.biases[..., :32], expected_up_bias)
-    assert jnp.array_equal(loaded.experts.up_projection.biases[..., 32:], expected_gate_bias)
-    assert jnp.array_equal(loaded.experts.down_projection.biases, jnp.broadcast_to(down_bias, (2, 64)))
+    assert jnp.array_equal(loaded.routed_experts.up_projection.biases[..., :32], expected_up_bias)
+    assert jnp.array_equal(loaded.routed_experts.up_projection.biases[..., 32:], expected_gate_bias)
+    assert jnp.array_equal(loaded.routed_experts.down_projection.biases, jnp.broadcast_to(down_bias, (2, 64)))
+
+
+@pytest.mark.parametrize("mode", [ForwardPassMode.MULTI_TOKEN, ForwardPassMode.SINGLE_TOKEN])
+def test_load_moe_preserves_expert_sharding_and_outputs(mode: ForwardPassMode) -> None:
+    module = _split_moe_template()
+    path = ParameterPath("moe")
+
+    def tensor(shape: tuple[int, ...], offset: int) -> Array:
+        return jnp.arange(offset, offset + prod(shape), dtype=jnp.float32).reshape(shape)
+
+    routed_up = [tensor((3, INPUT_DIM), offset) for offset in (10, 110)]
+    routed_gate = [tensor((3, INPUT_DIM), offset) for offset in (210, 310)]
+    routed_down = [tensor((INPUT_DIM, 3), offset) for offset in (410, 510)]
+    shared_up = tensor((3, INPUT_DIM), 610)
+    shared_gate = tensor((3, INPUT_DIM), 710)
+    shared_down = tensor((INPUT_DIM, 3), 810)
+    gate = tensor((1, INPUT_DIM), 910)
+    weights: dict[str, Array] = {
+        path / "router.weight": tensor((2, INPUT_DIM), 0),
+        path / "experts.0.up_proj.weight": routed_up[0],
+        path / "experts.0.gate_proj.weight": routed_gate[0],
+        path / "experts.0.down_proj.weight": routed_down[0],
+        path / "experts.1.up_proj.weight": routed_up[1],
+        path / "experts.1.gate_proj.weight": routed_gate[1],
+        path / "experts.1.down_proj.weight": routed_down[1],
+        path / "shared_expert.up_proj.weight": shared_up,
+        path / "shared_expert.gate_proj.weight": shared_gate,
+        path / "shared_expert.down_proj.weight": shared_down,
+        path / "shared_expert_gate.weight": gate,
+    }
+
+    loaded = load_moe(module, weights, path)
+
+    assert loaded.shared_experts is not None
+    assert isinstance(loaded.routed_experts.up_projection.weights, FullPrecisionMatrix)
+    assert isinstance(loaded.shared_experts.up_projection.weights, FullPrecisionMatrix)
+    assert loaded.routed_experts.up_projection.weights.is_sharded
+    assert not loaded.shared_experts.up_projection.weights.is_sharded
+    np.testing.assert_array_equal(
+        loaded.routed_experts.up_projection.weights.decompress(),
+        jnp.concatenate((jnp.stack(routed_up), jnp.stack(routed_gate)), axis=1),
+    )
+    np.testing.assert_array_equal(
+        loaded.routed_experts.down_projection.weights.decompress(),
+        jnp.stack(routed_down),
+    )
+    np.testing.assert_array_equal(
+        loaded.shared_experts.up_projection.weights.decompress(),
+        jnp.concatenate((shared_up[None], shared_gate[None]), axis=1),
+    )
+    np.testing.assert_array_equal(
+        loaded.shared_experts.down_projection.weights.decompress(),
+        shared_down[None],
+    )
+    assert loaded.gate is not None
+    np.testing.assert_array_equal(loaded.gate.weights.decompress(), gate)
+
+    token_input = jnp.full((INPUT_DIM,), 0.001, dtype=jnp.float32)
+    inputs = jax.device_put(
+        jnp.broadcast_to(token_input, (2, 1, INPUT_DIM)),
+        make_sharding((LogicalAxis.BATCH, None, None)),
+    )
+    result = loaded(
+        inputs,
+        forward_pass_config=MLPForwardPassConfig(mode=mode),
+        keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
+    )
+    # Positive inputs select the second routed expert, whose router weights are larger.
+    routed_result = routed_down[1] @ ((routed_up[1] @ token_input) * jax.nn.silu(routed_gate[1] @ token_input))
+    shared_result = shared_down @ ((shared_up @ token_input) * jax.nn.silu(shared_gate @ token_input))
+    reference = routed_result + jax.nn.sigmoid(gate @ token_input) * shared_result
+    np.testing.assert_allclose(result, jnp.broadcast_to(reference, result.shape), rtol=1e-5)
+
+
+@pytest.mark.parametrize("mode", [ForwardPassMode.MULTI_TOKEN, ForwardPassMode.SINGLE_TOKEN])
+@pytest.mark.parametrize("expert_sharded", [False, True], ids=["ragged", "chunked"])
+def test_load_lfm_moe_expert_bias_changes_selection_and_preserves_repeatability(
+    mode: ForwardPassMode,
+    expert_sharded: bool,
+) -> None:
+    config = replace(
+        _split_moe_template().config,
+        routing_function=SigmoidRouting(bias_mode=RoutingBias.GATING),
+        num_shared_experts=0,
+        gate_config=None,
+    )
+    sharding_config = make_test_sharding_config()
+    if not expert_sharded:
+        sharding_config = replace(sharding_config, logical_to_physical={LogicalAxis.BATCH: LogicalAxis.BATCH.value})
+    template = config.init(EmptyInitializer(jnp.float32, sharding_config), model_dim=INPUT_DIM, hidden_dim=INPUT_DIM)
+    path = ParameterPath("moe")
+    weights: dict[str, Array] = {
+        path / "experts" / str(expert) / f"{key}.weight": jnp.full(shape, value + expert, dtype=jnp.float32)
+        for expert in range(2)
+        for key, shape, value in (
+            ("w3", (3, INPUT_DIM), 1.0),
+            ("w1", (3, INPUT_DIM), 2.0),
+            ("w2", (INPUT_DIM, 3), 3.0),
+        )
+    }
+    weights[path / "gate.weight"] = jnp.zeros((2, INPUT_DIM), dtype=jnp.float32)
+    weights[path / "expert_bias"] = jnp.array([0.0, 1.0], dtype=jnp.float32)
+    loaded = load_mlp(template, weights, path, "w3", "w1", "w2")
+    sequence_length = 3
+    if mode == ForwardPassMode.SINGLE_TOKEN:
+        sequence_length = 1
+    token_input = jnp.full((INPUT_DIM,), 0.1, dtype=jnp.float32)
+    inputs = jax.device_put(
+        jnp.broadcast_to(token_input, (2, sequence_length, INPUT_DIM)),
+        make_sharding((LogicalAxis.BATCH, None, None)),
+    )
+    lengths = jax.device_put(jnp.array([sequence_length, 1]), make_sharding((LogicalAxis.BATCH,)))
+    first, repeated = [
+        jax.device_get(
+            loaded(
+                inputs,
+                lengths_without_padding=lengths,
+                forward_pass_config=MLPForwardPassConfig(mode=mode, moe_chunk_size_ratio=0.5),
+                keychain=Keychain.init(0, sharding_config=sharding_config),
+            ),
+        )
+        for _ in range(2)
+    ]
+    selected = path / "experts.1"
+    hidden = (weights[selected / "w3.weight"] @ token_input) * jax.nn.silu(
+        weights[selected / "w1.weight"] @ token_input,
+    )
+    reference = (weights[selected / "w2.weight"] @ hidden) * (0.5 / (0.5 + 1e-6))
+    padding_mask = jnp.arange(sequence_length)[None, :] < lengths[:, None]
+    reference = jnp.where(padding_mask[..., None], reference, 0.0)
+    np.testing.assert_allclose(first, reference, rtol=1e-5)
+    np.testing.assert_array_equal(first, repeated)
 
 
 def test_load_huggingface_classifier_uses_hf_embedding_layout() -> None:
