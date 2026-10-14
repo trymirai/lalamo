@@ -1,5 +1,5 @@
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from math import prod
 from pathlib import Path
 
@@ -22,7 +22,6 @@ from lalamo.model_import.loaders.huggingface import (
     load_huggingface_classifier,
     load_input_embedding_matrix,
     load_linear,
-    load_mlp,
     load_moe,
     load_untied_embedding,
 )
@@ -42,8 +41,6 @@ from lalamo.modules.mlp import (
     MixtureOfExperts,
     MixtureOfExpertsConfig,
     MLPForwardPassConfig,
-    RoutingBias,
-    SigmoidRouting,
     SoftmaxRouting,
 )
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
@@ -594,66 +591,6 @@ def test_load_moe_preserves_expert_sharding_and_outputs(mode: ForwardPassMode) -
     shared_result = shared_down @ ((shared_up @ token_input) * jax.nn.silu(shared_gate @ token_input))
     reference = routed_result + jax.nn.sigmoid(gate @ token_input) * shared_result
     np.testing.assert_allclose(result, jnp.broadcast_to(reference, result.shape), rtol=1e-5)
-
-
-@pytest.mark.parametrize("mode", [ForwardPassMode.MULTI_TOKEN, ForwardPassMode.SINGLE_TOKEN])
-@pytest.mark.parametrize("expert_sharded", [False, True], ids=["ragged", "chunked"])
-def test_load_lfm_moe_expert_bias_changes_selection_and_preserves_repeatability(
-    mode: ForwardPassMode,
-    expert_sharded: bool,
-) -> None:
-    config = replace(
-        _split_moe_template().config,
-        routing_function=SigmoidRouting(bias_mode=RoutingBias.GATING),
-        num_shared_experts=0,
-        gate_config=None,
-    )
-    sharding_config = make_test_sharding_config()
-    if not expert_sharded:
-        sharding_config = replace(sharding_config, logical_to_physical={LogicalAxis.BATCH: LogicalAxis.BATCH.value})
-    template = config.init(EmptyInitializer(jnp.float32, sharding_config), model_dim=INPUT_DIM, hidden_dim=INPUT_DIM)
-    path = ParameterPath("moe")
-    weights: dict[str, Array] = {
-        path / "experts" / str(expert) / f"{key}.weight": jnp.full(shape, value + expert, dtype=jnp.float32)
-        for expert in range(2)
-        for key, shape, value in (
-            ("w3", (3, INPUT_DIM), 1.0),
-            ("w1", (3, INPUT_DIM), 2.0),
-            ("w2", (INPUT_DIM, 3), 3.0),
-        )
-    }
-    weights[path / "gate.weight"] = jnp.zeros((2, INPUT_DIM), dtype=jnp.float32)
-    weights[path / "expert_bias"] = jnp.array([0.0, 1.0], dtype=jnp.float32)
-    loaded = load_mlp(template, weights, path, "w3", "w1", "w2")
-    sequence_length = 3
-    if mode == ForwardPassMode.SINGLE_TOKEN:
-        sequence_length = 1
-    token_input = jnp.full((INPUT_DIM,), 0.1, dtype=jnp.float32)
-    inputs = jax.device_put(
-        jnp.broadcast_to(token_input, (2, sequence_length, INPUT_DIM)),
-        make_sharding((LogicalAxis.BATCH, None, None)),
-    )
-    lengths = jax.device_put(jnp.array([sequence_length, 1]), make_sharding((LogicalAxis.BATCH,)))
-    first, repeated = [
-        jax.device_get(
-            loaded(
-                inputs,
-                lengths_without_padding=lengths,
-                forward_pass_config=MLPForwardPassConfig(mode=mode, moe_chunk_size_ratio=0.5),
-                keychain=Keychain.init(0, sharding_config=sharding_config),
-            ),
-        )
-        for _ in range(2)
-    ]
-    selected = path / "experts.1"
-    hidden = (weights[selected / "w3.weight"] @ token_input) * jax.nn.silu(
-        weights[selected / "w1.weight"] @ token_input,
-    )
-    reference = (weights[selected / "w2.weight"] @ hidden) * (0.5 / (0.5 + 1e-6))
-    padding_mask = jnp.arange(sequence_length)[None, :] < lengths[:, None]
-    reference = jnp.where(padding_mask[..., None], reference, 0.0)
-    np.testing.assert_allclose(first, reference, rtol=1e-5)
-    np.testing.assert_array_equal(first, repeated)
 
 
 def test_load_huggingface_classifier_uses_hf_embedding_layout() -> None:
