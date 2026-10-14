@@ -310,20 +310,17 @@ class HybridSpec(WeightMatrixSpec):
         else:
             adapter = None
 
-        if incoherence_signs is not None:
-            # Expert modules slice and vmap every array along their component axes.
-            incoherence_signs = jax.tree.map(
-                lambda signs: jnp.broadcast_to(signs, (*weights.shape[:-2], signs.shape[-1])),
-                incoherence_signs,
-            )
-
         return HybridMatrix(
             spec=self,
             sharding_config=sharding_config,
             is_sharded=is_sharded,
             quantized=quantized,
             adapter=adapter,
-            incoherence_signs=incoherence_signs,
+            # Expert modules slice and vmap every array along their component axes.
+            incoherence_signs=jax.tree.map(
+                lambda signs: jnp.broadcast_to(signs, (*weights.shape[:-2], signs.shape[-1])),
+                incoherence_signs,
+            ),
         )
 
 
