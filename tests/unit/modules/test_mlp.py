@@ -1,4 +1,6 @@
+from dataclasses import replace
 from math import prod
+from typing import Literal
 
 import equinox as eqx
 import jax
@@ -8,6 +10,7 @@ from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
 from lalamo.compressed import IntSpec
+from lalamo.compressed.hybrid import HybridSpec
 from lalamo.initializer import RandomInitializer
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
 from lalamo.modules.activations import Identity, SiLU
@@ -541,6 +544,50 @@ def test_gated_shared_quantized_moe_decode_matches_reference() -> None:
         keychain=Keychain.init(10, sharding_config=make_test_sharding_config()),
     )
 
+    _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
+
+
+@pytest.mark.parametrize("mode", MOE_MODES)
+@pytest.mark.parametrize("bits,is_symmetric", [(4, False), (8, True)])
+@pytest.mark.usefixtures("fake_mesh")
+def test_rht_quantized_moe_export_matches_dense_reference(
+    mode: ForwardPassMode,
+    bits: Literal[4, 8],
+    is_symmetric: bool,
+) -> None:
+    config = replace(
+        _moe(num_active_routed_experts=2, num_shared_experts=1, use_shared_gate=True).config,
+        expert_hidden_dim=64,
+    )
+    module = config.init(
+        RandomInitializer(jnp.float32, make_test_sharding_config(), key=jax.random.key(30)),
+        model_dim=64,
+        hidden_dim=64,
+    )
+    spec = HybridSpec(IntSpec(bits=bits, group_size=64, is_symmetric=is_symmetric), adapter_spec=None)
+    assert module.shared_experts is not None
+    module = eqx.tree_at(
+        lambda current: (
+            current.routed_experts.up_projection.weights,
+            current.routed_experts.down_projection.weights,
+            current.shared_experts.up_projection.weights,
+            current.shared_experts.down_projection.weights,
+        ),
+        module,
+        replace_fn=lambda weights: spec.compress(
+            weights.decompress(),
+            key=jax.random.key(31),
+            sharding_config=weights.sharding_config,
+            is_sharded=weights.is_sharded,
+        ),
+    )
+    module = module.load_exported(module.export())
+    inputs = _sharded_tokens(jax.random.normal(jax.random.key(32), (2, _moe_sequence_length(mode), 64)))
+    result = module(
+        inputs,
+        forward_pass_config=MLPForwardPassConfig(mode=mode),
+        keychain=Keychain.init(33, sharding_config=make_test_sharding_config()),
+    )
     _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
 
 
