@@ -29,12 +29,18 @@ def saved_rows() -> tuple[HybridMatrix, np.ndarray]:
             table=jnp.asarray(data["table"]),
         ).astype(jnp.float32)
         rotation = IncoherenceSigns(None, jnp.asarray(data["signs"]))
-        return HybridMatrix.of(leaf, rotation, leaf.sharding_config), data["d4_expected"].T
+        return HybridMatrix.of(leaf, rotation), data["d4_expected"].T
 
 
-def test_lattice_matches_torch_fitted_rows() -> None:
+def test_lattice_matches_torch_rows_and_exports_native_spec() -> None:
     matrix, expected = saved_rows()
     np.testing.assert_allclose(matrix.decompress(), expected, atol=2e-7, rtol=1e-6)
+    # Uzu's LatticeSpec requires kind even though D4 is its only supported variant.
+    assert matrix.export().metadata["quantized.spec"] == {
+        "type": "LatticeSpec",
+        "layout": "input_output",
+        "kind": "d4",
+    }
 
 
 def test_d4_lookup_rounds_once_and_survives_to_full_precision() -> None:

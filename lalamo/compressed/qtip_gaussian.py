@@ -1,11 +1,9 @@
 from dataclasses import dataclass, replace
-from math import ceil
 from typing import Literal, Self
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.lax import DotAlgorithmPreset
 from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, DTypeLike, Float, Int8, Key, UInt8, UInt32
 
@@ -26,9 +24,6 @@ from lalamo.weight_matrix import (
 
 # Every step's 16-bit state hashes to its levels; each tape block opens with its first state in 16 bits.
 STATE_BITS = 16
-# Restart blocks sit back to back and the row pads to 16 bytes: uzu's GEMM loses up to 16% at small batches on rows
-# that start off a 16-byte boundary. A connected tape pads to a byte.
-ROW_ALIGNMENT = 16
 # The codebook is [scale, offset of each column class], the class of a column being its index modulo four.
 COLUMN_CLASSES = 4
 
@@ -55,28 +50,9 @@ def codebook_from_table(table: Float[Array, "states width"]) -> Float[Array, " c
     scale = (values[farthest, 0] - values[0, 0]) / (levels[farthest, 0] - levels[0, 0])
     offsets = values[0] - scale * levels[0]
     error = np.abs(scale * levels + offsets - values).max()
-    if not error <= 1e-5:
+    if not np.isfinite(error) or error > 1e-5:
         raise ValueError(f"The trellis table is not scale * level + offset (error {error})")
     return jnp.asarray([scale, *offsets[np.arange(COLUMN_CLASSES) % width]], dtype=jnp.float32)
-
-
-def full_rotation(values: Array, small_q: Array) -> Array:
-    # Multiplies by the saved kron(H, Q) without materializing it.
-    order = small_q.shape[0]
-    width = values.shape[-1] // order
-    assert small_q.shape == (order, order)
-    assert width > 0 and width & (width - 1) == 0
-    result = values.reshape(*values.shape[:-1], width, order)
-    stride = 1
-    while stride < width:
-        grouped = result.reshape(*values.shape[:-1], -1, 2, stride, order)
-        left, right = grouped[..., 0, :, :], grouped[..., 1, :, :]
-        result = jnp.concatenate((left + right, left - right), axis=-2).reshape(result.shape)
-        stride *= 2
-    result = result / jnp.sqrt(jnp.asarray(width, dtype=values.dtype))
-    if order == 1:
-        return (result * small_q[0, 0]).reshape(values.shape)
-    return jnp.matmul(result, small_q, precision=DotAlgorithmPreset.F32_F32_F32).reshape(values.shape)
 
 
 @dataclass(frozen=True)
@@ -86,34 +62,35 @@ class QtipGaussianSpec(WeightMatrixSpec):
     restart_columns: Literal[0, 64, 128]
 
     def __post_init__(self) -> None:
-        layout = (self.vector_width, self.transition_bits, self.restart_columns)
-        restarted = {(4, bits, columns) for bits in (6, 7, 8) for columns in (64, 128)}
-        if layout not in {(2, 4, 0), (2, 6, 0), (2, 8, 0), (4, 8, 0), *restarted}:
-            raise ValueError(f"Unsupported QTIP Gaussian layout {layout}")
-
-    def tape_shape(self, columns: int) -> tuple[int, int, int]:
-        block_columns = self.restart_columns or columns
-        if columns <= 0 or columns % block_columns or block_columns % self.vector_width:
-            raise ValueError(f"Invalid column count {columns} for {self}")
-        steps = block_columns // self.vector_width
-        return columns // block_columns, steps, STATE_BITS + (steps - 1) * self.transition_bits
+        match self.vector_width, self.transition_bits, self.restart_columns:
+            case (2, 4 | 6 | 8, 0) | (4, 8, 0) | (4, 6 | 7 | 8, 64 | 128):
+                return
+            case layout:
+                raise ValueError(f"Unsupported QTIP Gaussian layout {layout}")
 
     def code_bytes(self, columns: int) -> int:
-        blocks, _, block_bits = self.tape_shape(columns)
-        stream_bytes = ceil(blocks * block_bits / 8)
-        if not self.restart_columns:
-            return stream_bytes
-        return ceil(stream_bytes / ROW_ALIGNMENT) * ROW_ALIGNMENT
+        block_columns = self.restart_columns or columns
+        assert columns > 0 and columns % block_columns == 0
+        assert block_columns % self.vector_width == 0
+        steps = columns // self.vector_width
+        blocks = columns // block_columns
+        # Each block starts with a full state instead of a transition.
+        bits = steps * self.transition_bits + blocks * (STATE_BITS - self.transition_bits)
+        if self.restart_columns:
+            return (bits + 127) // 128 * 16
+        return (bits + 7) // 8
 
     def states(self, codes: UInt8[Array, "*rows bytes"], columns: int) -> Array:
-        # A row is its blocks' MSB-first bit streams back to back; state g of block b is the 16-bit window
-        # at bit b * block_bits + g * transition_bits.
-        blocks, steps, block_bits = self.tape_shape(columns)
-        tapes = jnp.pad(codes, [(0, 0)] * (codes.ndim - 1) + [(0, 2)]).astype(jnp.uint32)
-        bit_offsets = (np.arange(blocks)[:, None] * block_bits + np.arange(steps) * self.transition_bits).reshape(-1)
-        windows = sum(tapes[..., bit_offsets // 8 + index] << (16 - 8 * index) for index in range(3))
-        shifts = jnp.asarray(8 - bit_offsets % 8, dtype=jnp.uint32)
-        return (windows >> shifts) & jnp.uint32((1 << STATE_BITS) - 1)
+        step = np.arange(columns // self.vector_width)
+        offset = step * self.transition_bits
+        if self.restart_columns:
+            steps_per_block = self.restart_columns // self.vector_width
+            offset += (step // steps_per_block) * (STATE_BITS - self.transition_bits)
+        byte = offset // 8
+        data = jnp.pad(codes, [(0, 0)] * (codes.ndim - 1) + [(0, 2)]).astype(jnp.uint32)
+        word = (data[..., byte] << 16) | (data[..., byte + 1] << 8) | data[..., byte + 2]
+        shift = jnp.asarray(8 - offset % 8, dtype=jnp.uint32)
+        return (word >> shift) & 0xFFFF
 
     def compress(
         self,

@@ -52,6 +52,7 @@ class RowStackMatrix(WeightMatrix[RowStackSpec]):
     parts: tuple[WeightMatrix, ...]
 
     def __check_init__(self) -> None:
+        assert self.parts
         assert tuple((part.shape[0], part.spec) for part in self.parts) == self.spec.parts
         assert all(part.shape[1] == self.parts[0].shape[1] and part.dtype == self.dtype for part in self.parts)
 

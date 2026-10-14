@@ -1,7 +1,6 @@
 from dataclasses import dataclass, replace
-from typing import Self
+from typing import Literal, Self
 
-import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec
 from jaxtyping import Array, DTypeLike, Float, Int, Int8, Key, UInt8
@@ -36,6 +35,7 @@ CODE_BITS = 8
 @dataclass(frozen=True)
 class LatticeSpec(WeightMatrixSpec):
     layout: Layout
+    kind: Literal["d4"] = "d4"
 
     def code_bytes(self, columns: int) -> int:
         if columns <= 0 or columns % COLUMNS_PER_LADDER_BYTE:
@@ -96,11 +96,7 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
     def astype(self, dtype: DTypeLike) -> Self:
         return replace(self, row_scales=self.row_scales.astype(dtype))
 
-    def row_arrays(self) -> tuple[Array, Array, Array]:
-        return self.codes, self.row_scales, self.ladder_indices
-
-    def decode_rows(self, rows: tuple[Array, Array, Array], dtype: DTypeLike) -> Array:
-        codes, row_scales, ladder_indices = rows
+    def decode_rows(self, codes: Array, row_scales: Array, ladder_indices: Array) -> Array:
         columns = self.shape[1]
         row_axes = tuple(sharding_of(codes).spec)[: codes.ndim - 1]
         values = self.table.at[codes].get(out_sharding=PartitionSpec(*row_axes, None, None))
@@ -110,10 +106,12 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
         )
         ladder = self.ladder.at[groups].get(out_sharding=PartitionSpec(*row_axes, None))
         scales = row_scales.astype(jnp.float32)[..., None] * ladder.astype(jnp.float32)
-        return (values * jnp.repeat(scales, COLUMNS_PER_LADDER_INDEX, axis=-1)).astype(dtype)
+        grouped = values.reshape(*scales.shape, COLUMNS_PER_LADDER_INDEX)
+        return (grouped * scales[..., None]).reshape(values.shape)
 
     def decompress(self) -> Array:
-        return self.spec.layout.to_output_input(self.decode_rows(self.row_arrays(), self.dtype))
+        decoded = self.decode_rows(self.codes, self.row_scales, self.ladder_indices)
+        return self.spec.layout.to_output_input(decoded).astype(self.dtype)
 
     def to_full_precision(self) -> FullPrecisionMatrix:
         return FullPrecisionSpec(self.spec.layout).compress(
@@ -130,8 +128,12 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
     ) -> Array:
         if self.spec.layout != Layout.INPUT_OUTPUT:
             raise ValueError("Embedding lookup requires input-output layout")
-        rows = jax.tree.map(lambda array: lookup_sharded_indices(array, row_index), self.row_arrays())
-        return self.decode_rows(rows, self.dtype if dtype is None else dtype)
+        codes = lookup_sharded_indices(self.codes, row_index)
+        row_scales = lookup_sharded_indices(self.row_scales, row_index)
+        ladder_indices = lookup_sharded_indices(self.ladder_indices, row_index)
+        if dtype is None:
+            dtype = self.dtype
+        return self.decode_rows(codes, row_scales, ladder_indices).astype(dtype)
 
     def dot(
         self,
@@ -142,6 +144,8 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
         transposed: bool = False,
     ) -> Array:
         weights = self.decompress().astype(vector.dtype)
-        layout = Layout.INPUT_OUTPUT if transposed else Layout.OUTPUT_INPUT
+        layout = Layout.OUTPUT_INPUT
+        if transposed:
+            layout = Layout.INPUT_OUTPUT
         with use_dot_algorithm_preset(forward_pass_config.precision):
             return layout.matmul(weights, vector)

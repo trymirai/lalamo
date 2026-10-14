@@ -62,19 +62,16 @@ class BaseModel[ConfigT: BaseModelConfig](LalamoModule[ConfigT]):
             decoded_metadata = {}
             if metadata is not None:
                 decoded_metadata = {key: json.loads(value) for key, value in metadata.items()}
-            if packed_checkpoint.is_packed_checkpoint(decoded_metadata, arrays.keys()):
-                result = packed_checkpoint.load_packed_checkpoint(directory, sharding_config, dtype)
-                assert isinstance(result, cls)
-                return result
+            is_packed = packed_checkpoint.is_packed_checkpoint(decoded_metadata, arrays.keys())
+            if is_packed:
+                config_json = packed_checkpoint.native_config(config_json)
             config = BaseModelConfig.from_json(config_json)
             template = config.init_from_directory(directory, EmptyInitializer(dtype, sharding_config))
-            result = Exportable.load_exported(
-                template,
-                ExportResults(
-                    arrays=arrays,
-                    metadata=decoded_metadata,
-                ),
-            )
+            exported = ExportResults(arrays, decoded_metadata)
+            if is_packed:
+                result = packed_checkpoint.load_packed_checkpoint(template, exported, dtype)
+            else:
+                result = Exportable.load_exported(template, exported)
 
         assert isinstance(result, cls)
         return result

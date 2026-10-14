@@ -1,12 +1,13 @@
 from pathlib import Path
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from lalamo.compressed.hybrid import HybridMatrix, KroneckerRotation
-from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec, codebook_from_table, full_rotation
+from lalamo.compressed.hybrid import HybridMatrix, KroneckerRotation, kronecker_transform
+from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec, codebook_from_table
 from lalamo.module import Keychain
 from tests.helpers import make_test_sharding_config
 
@@ -48,9 +49,8 @@ def test_saved_tapes_decode_like_their_producers() -> None:
             np.testing.assert_allclose(leaf.decompress(), expected, rtol=1e-6, atol=1e-9, err_msg=name)
 
             rotation = KroneckerRotation(jnp.asarray(data[f"{name}_signs"]), jnp.asarray(data[f"{name}_small_q"]))
-            hybrid = HybridMatrix.of(leaf, rotation, config)
+            hybrid = HybridMatrix.of(leaf, rotation)
             dense = hybrid.decompress()
-            np.testing.assert_allclose(dense, full_rotation(leaf.decompress(), rotation.small_q) * rotation.signs)
             vector = jax.device_put(jnp.linspace(-1, 1, leaf.shape[1]), config.make_sharding((None,)))
             actual = hybrid.dot(vector, keychain=Keychain.init(0, sharding_config=config))
             np.testing.assert_allclose(actual, dense @ vector, rtol=1e-5, atol=1e-5 * np.abs(dense).max())
@@ -58,14 +58,14 @@ def test_saved_tapes_decode_like_their_producers() -> None:
             np.testing.assert_array_equal(hybrid.astype(jnp.bfloat16).decompress(), dense.astype(jnp.bfloat16))
 
 
-def test_full_rotation_matches_explicit_kronecker_product() -> None:
+def test_kronecker_transform_matches_explicit_kronecker_product() -> None:
     values = np.arange(96, dtype=np.float32).reshape(4, 24) / 17
     q = np.linalg.qr(np.random.default_rng(5).normal(size=(3, 3)))[0].astype(np.float32)
     h = np.ones((1, 1), dtype=np.float32)
     for _ in range(3):
         h = np.block([[h, h], [h, -h]])
     rotation = np.kron(h / np.sqrt(np.float32(8)), q)
-    np.testing.assert_allclose(full_rotation(jnp.asarray(values), jnp.asarray(q)), values @ rotation, atol=3e-6)
+    np.testing.assert_allclose(kronecker_transform(jnp.asarray(values), jnp.asarray(q)), values @ rotation, atol=3e-6)
 
 
 @pytest.mark.parametrize(
@@ -102,3 +102,11 @@ def test_tape_blocks_are_back_to_back_msb_first_states(spec: QtipGaussianSpec, r
     codes = jnp.asarray(np.frombuffer(int(tape.ljust(8 * row_bytes, "0"), 2).to_bytes(row_bytes), np.uint8))[None]
     assert spec.code_bytes(columns) == row_bytes
     np.testing.assert_array_equal(spec.states(codes, columns)[0], states)
+
+
+@pytest.mark.parametrize("layout", [(2, 7, 0), (2, 4, 64), (4, 6, 0), (4, 4, 128)])
+def test_unsupported_tape_layouts_fail(
+    layout: tuple[Literal[2, 4], Literal[4, 6, 7, 8], Literal[0, 64, 128]],
+) -> None:
+    with pytest.raises(ValueError, match="Unsupported QTIP Gaussian layout"):
+        QtipGaussianSpec(*layout)

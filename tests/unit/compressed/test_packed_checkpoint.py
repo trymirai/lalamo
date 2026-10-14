@@ -287,3 +287,18 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
         forward_pass_config=DecoderForwardPassConfig.for_inference(),
     )
     assert bool(jnp.all(jnp.isfinite(result.logits)))
+
+    # A column gain cannot be folded into one scalar per output row.
+    gain_path = legacy[0]
+    bad_gains = arrays | {f"{gain_path}.post_gains.1": jnp.zeros(MODEL_DIM, jnp.float32)}
+    save_model(tmp_path / "column-gain", config, model, bad_gains, metadata)
+    with pytest.raises(ValueError, match="Column post-gains"):
+        LanguageModel.load(tmp_path / "column-gain", sharding_config)
+
+    bad_spec = metadata[gain_path + ".spec"]
+    assert isinstance(bad_spec, dict)
+    bad_spec = dict(bad_spec)
+    bad_spec["post_gain_axes"] = ["row", "unknown"]
+    save_model(tmp_path / "unknown-gain", config, model, arrays, metadata | {gain_path + ".spec": bad_spec})
+    with pytest.raises(ValueError, match="Unknown post-gain axis"):
+        LanguageModel.load(tmp_path / "unknown-gain", sharding_config)
