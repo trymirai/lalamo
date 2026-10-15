@@ -115,7 +115,11 @@ def test_mlx_export_load_roundtrips_and_preserves_template_sharding(
     fake_mesh: Mesh,
 ) -> None:
     weights = _logical_weights()
-    spec = MLXSpec(bits=4, group_size=2, layout=Layout.INPUT_OUTPUT)
+    spec = MLXSpec(
+        bits=4,
+        group_size=2,
+        layout=Layout.INPUT_OUTPUT,
+    )
     saved_sharding = make_sharding((None, None))
     assert saved_sharding is not None
     original = spec.compress(

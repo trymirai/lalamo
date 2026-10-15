@@ -78,11 +78,8 @@ class HFMuseGlimmerTextConfig:
 
     def to_decoder_config(
         self,
-        context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
-
         embedding_config = UntiedEmbeddingConfig(
             input_scale=None,
             logit_soft_cap=self.final_logit_softcapping,
@@ -126,7 +123,7 @@ class HFMuseGlimmerTextConfig:
 
         rope_config = UnscaledRoPEConfig(
             base=self.rope_parameters.rope_theta,
-            max_sequence_length=max_sequence_length,
+            max_sequence_length=self.max_position_embeddings,
             head_dim=self.head_dim,
         )
 
@@ -221,10 +218,6 @@ class HFMuseGlimmerConfig(HuggingFaceLMConfig):
 
     def to_decoder_config(
         self,
-        context_length: int | None,
         metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
-        return self.text_config.to_decoder_config(
-            context_length=context_length,
-            metadata_dict=metadata_dict,
-        )
+        return self.text_config.to_decoder_config(metadata_dict=metadata_dict)

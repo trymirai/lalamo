@@ -62,22 +62,15 @@ class HFPhi3Config(HuggingFaceLMConfig):
 
     def to_decoder_config(
         self,
-        context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         original_context_length = self.original_max_position_embeddings
-        if context_length is not None and context_length > self.max_position_embeddings:
-            raise ValueError(
-                f"Requested context_length={context_length} exceeds the maximum context "
-                f"{self.max_position_embeddings} for this model."
-            )
-        max_sequence_length = original_context_length if context_length is None else context_length
         assert self.tie_word_embeddings, "Phi-4-mini only has tied embeddings"
         embedding_config = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None)
 
         rope_config = LongRoPEConfig(
             base=self.rope_theta,
-            max_sequence_length=max_sequence_length,
+            max_sequence_length=self.max_position_embeddings,
             head_dim=self.rotary_dim,
             short_factor=tuple(self.rope_scaling.short_factor),
             long_factor=tuple(self.rope_scaling.long_factor),

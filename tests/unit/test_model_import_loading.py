@@ -18,28 +18,30 @@ from lalamo.compressed.microfloat import MicrofloatMatrixForInference
 from lalamo.compressed.mlx import MLXMatrixForInference, MLXMatrixForTraining
 from lalamo.initializer import EmptyInitializer, Initializer
 from lalamo.model import Model, ModelConfig
-from lalamo.model_import.loaders.dflash_loader import load_hf_dflash_draft_model
+from lalamo.model_import.loaders.dflash_loader import load_dflash_sublayer_transform, load_hf_dflash_draft_model
 from lalamo.model_import.loaders.huggingface import (
     load_huggingface_classifier,
     load_input_embedding_matrix,
     load_linear,
     load_moe,
+    load_untied_embedding,
 )
 from lalamo.model_import.loaders.utils import decode_mxfp4
 from lalamo.model_import.model_configs.foreign_config import ForeignConfig
 from lalamo.model_import.model_configs.huggingface import HFDFlashConfig, ModernBERTConfig
 from lalamo.models.chat_codec import ChatCodec, ChatCodecConfig
-from lalamo.module import Keychain, LalamoConfig, LalamoModule
+from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, LogicalAxis
 from lalamo.modules.activations import SiLU
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.decoder import PerLayerEmbedding, PLEModelConfig
-from lalamo.modules.embedding import TiedEmbedding
+from lalamo.modules.embedding import TiedEmbedding, UntiedEmbeddingConfig
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.mlp import (
     DenseMLP,
     DenseMLPConfig,
     MixtureOfExperts,
     MixtureOfExpertsConfig,
+    MLPForwardPassConfig,
     SoftmaxRouting,
 )
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
@@ -57,6 +59,7 @@ from lalamo.weight_matrix import (
     MatmulConfig,
     WeightMatrix,
 )
+from tests.common import assert_close
 from tests.helpers import make_sharding, make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
@@ -72,6 +75,48 @@ CLASSIFIER_NUM_LABELS = 2
 DFLASH_MODEL_DIM = 8
 DFLASH_HIDDEN_DIM = 16
 DFLASH_HEAD_DIM = 4
+
+
+def _dflash_hf_config(*, dflash2: bool) -> dict[str, object]:
+    dflash_config: dict[str, object] = {
+        "block_size": 3,
+        "mask_token_id": 15,
+        "target_layer_ids": [0],
+    }
+    if dflash2:
+        dflash_config.update(
+            {
+                "conv_kernel_size": 2,
+                "conv_group_size": 2,
+                "selector_rank": 2,
+                "selector_top_k": 2,
+            },
+        )
+    config: dict[str, object] = {
+        "architectures": ["DFlash2DraftModel" if dflash2 else "DFlashDraftModel"],
+        "model_type": "qwen3",
+        "hidden_act": "silu",
+        "hidden_size": 4,
+        "intermediate_size": 8,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 1,
+        "rms_norm_eps": 1e-6,
+        "rope_theta": 10_000.0,
+        "max_position_embeddings": 32,
+        "tie_word_embeddings": False,
+        "attention_bias": False,
+        "num_target_layers": 1,
+        "vocab_size": 16,
+        "head_dim": 2,
+        "layer_types": ["sliding_attention"],
+        "sliding_window": 8,
+        "use_sliding_window": True,
+        "dflash_config": dflash_config,
+    }
+    if dflash2:
+        config["is_causal"] = False
+    return config
 
 
 def _pack_int32(values: Array, bits: int) -> Array:
@@ -121,6 +166,31 @@ def _gpt_oss_moe_template() -> MixtureOfExperts:
     )
     initializer = EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config())
     return config.init(initializer, model_dim=64, hidden_dim=64)
+
+
+def _split_moe_template() -> MixtureOfExperts:
+    linear_config = LinearConfig()
+    expert_config = DenseMLPConfig(
+        linear_config=linear_config,
+        activation=SiLU(),
+        has_up_biases=False,
+        has_down_biases=False,
+        gate_clipping=None,
+        up_clipping=None,
+    )
+    config = MixtureOfExpertsConfig(
+        expert_config=expert_config,
+        router_config=linear_config,
+        routing_function=SoftmaxRouting(),
+        num_routed_experts=2,
+        num_active_routed_experts=1,
+        router_has_biases=False,
+        num_shared_experts=1,
+        expert_hidden_dim=3,
+        gate_config=linear_config,
+    )
+    initializer = EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config())
+    return config.init(initializer, model_dim=INPUT_DIM, hidden_dim=INPUT_DIM)
 
 
 def _mlx_weights(path: ParameterPath) -> Mapping[str, Array]:
@@ -234,7 +304,7 @@ def test_load_muse_glimmer_checkpoint_reshapes_to_qwen_dflash(tmp_path: Path) ->
         assert reshaped_config.dflash_config.mask_token_id == 31
         assert reshaped_config.dflash_config.target_layer_ids == (1, 3)
         assert reshaped_config.sliding_window == 32
-        assert not reshaped_config.sliding_attention_is_causal
+        assert reshaped_config.is_causal is False
 
         assert model.context_norm.scales is not None
         assert model.output_norm.scales is not None
@@ -306,7 +376,7 @@ def _classifier_template() -> Classifier:
         id2label={0: "negative", 1: "positive"},
         label2id={"negative": 0, "positive": 1},
     )
-    return config.to_classifier_config(context_length=8).init(
+    return config.to_classifier_config().init(
         EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
     )
 
@@ -394,6 +464,7 @@ def test_mlx_quantized_per_layer_embedding_forwards_training_config() -> None:
     )
     assert isinstance(token_embedding, MLXMatrixForTraining)
     assert token_embedding.spec.bits == 8
+    assert token_embedding.spec.layout == Layout.INPUT_OUTPUT
 
     config = PLEModelConfig(
         ple_dim=OUTPUT_DIM,
@@ -431,6 +502,28 @@ def test_mlx_quantized_per_layer_embedding_forwards_training_config() -> None:
             forward_pass_config=forward_pass_config,
             keychain=Keychain.init(0, sharding_config=initializer.sharding_config),
         )
+
+
+def test_untied_quantized_readout_uses_layout_metadata() -> None:
+    initializer = EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config())
+    module = UntiedEmbeddingConfig(input_scale=None, logit_soft_cap=None).init(
+        initializer,
+        model_dim=INPUT_DIM,
+        vocab_size=OUTPUT_DIM,
+    )
+    input_path = ParameterPath("input")
+    output_path = ParameterPath("output")
+    weights = {
+        **_mlx_weights(input_path),
+        **_mlx_weights(output_path),
+    }
+
+    loaded = load_untied_embedding(module, weights, input_path, output_path)
+
+    assert isinstance(loaded.input_embedding, MLXMatrixForInference)
+    assert isinstance(loaded.output_embedding, MLXMatrixForInference)
+    assert loaded.input_embedding.spec.layout == Layout.INPUT_OUTPUT
+    assert loaded.output_embedding.spec.layout == Layout.OUTPUT_INPUT
 
 
 def test_load_linear_symmetric_awq_without_qzeros_uses_symmetric_spec() -> None:
@@ -503,8 +596,8 @@ def test_load_gpt_oss_moe_preserves_native_mxfp4_payload_and_canonical_rows() ->
 
     loaded = load_moe(module, weights, path)
 
-    up_weights = loaded.experts.up_projection.weights
-    down_weights = loaded.experts.down_projection.weights
+    up_weights = loaded.routed_experts.up_projection.weights
+    down_weights = loaded.routed_experts.down_projection.weights
     assert isinstance(up_weights, MicrofloatMatrixForInference)
     assert isinstance(down_weights, MicrofloatMatrixForInference)
     expected_up_blocks = jnp.concatenate((gate_up_blocks[:, 1::2], gate_up_blocks[:, 0::2]), axis=1)
@@ -535,13 +628,85 @@ def test_load_gpt_oss_moe_preserves_native_mxfp4_payload_and_canonical_rows() ->
     np.testing.assert_array_equal(up_weights.decompress(), expected_up_weights)
     np.testing.assert_array_equal(down_weights.decompress(), expected_down_weights)
 
-    assert loaded.experts.up_projection.biases is not None
-    assert loaded.experts.down_projection.biases is not None
+    assert loaded.routed_experts.up_projection.biases is not None
+    assert loaded.routed_experts.down_projection.biases is not None
     expected_up_bias = jnp.broadcast_to(gate_up_bias[1::2] + 1, (2, 32))
     expected_gate_bias = jnp.broadcast_to(gate_up_bias[0::2], (2, 32))
-    assert jnp.array_equal(loaded.experts.up_projection.biases[..., :32], expected_up_bias)
-    assert jnp.array_equal(loaded.experts.up_projection.biases[..., 32:], expected_gate_bias)
-    assert jnp.array_equal(loaded.experts.down_projection.biases, jnp.broadcast_to(down_bias, (2, 64)))
+    assert jnp.array_equal(loaded.routed_experts.up_projection.biases[..., :32], expected_up_bias)
+    assert jnp.array_equal(loaded.routed_experts.up_projection.biases[..., 32:], expected_gate_bias)
+    assert jnp.array_equal(loaded.routed_experts.down_projection.biases, jnp.broadcast_to(down_bias, (2, 64)))
+
+
+@pytest.mark.parametrize("mode", [ForwardPassMode.MULTI_TOKEN, ForwardPassMode.SINGLE_TOKEN])
+def test_load_moe_preserves_expert_sharding_and_outputs(mode: ForwardPassMode) -> None:
+    module = _split_moe_template()
+    path = ParameterPath("moe")
+
+    def tensor(shape: tuple[int, ...], offset: int) -> Array:
+        return jnp.arange(offset, offset + prod(shape), dtype=jnp.float32).reshape(shape)
+
+    routed_up = [tensor((3, INPUT_DIM), offset) for offset in (10, 110)]
+    routed_gate = [tensor((3, INPUT_DIM), offset) for offset in (210, 310)]
+    routed_down = [tensor((INPUT_DIM, 3), offset) for offset in (410, 510)]
+    shared_up = tensor((3, INPUT_DIM), 610)
+    shared_gate = tensor((3, INPUT_DIM), 710)
+    shared_down = tensor((INPUT_DIM, 3), 810)
+    gate = tensor((1, INPUT_DIM), 910)
+    weights: dict[str, Array] = {
+        path / "router.weight": tensor((2, INPUT_DIM), 0),
+        path / "experts.0.up_proj.weight": routed_up[0],
+        path / "experts.0.gate_proj.weight": routed_gate[0],
+        path / "experts.0.down_proj.weight": routed_down[0],
+        path / "experts.1.up_proj.weight": routed_up[1],
+        path / "experts.1.gate_proj.weight": routed_gate[1],
+        path / "experts.1.down_proj.weight": routed_down[1],
+        path / "shared_expert.up_proj.weight": shared_up,
+        path / "shared_expert.gate_proj.weight": shared_gate,
+        path / "shared_expert.down_proj.weight": shared_down,
+        path / "shared_expert_gate.weight": gate,
+    }
+
+    loaded = load_moe(module, weights, path)
+
+    assert loaded.shared_experts is not None
+    assert isinstance(loaded.routed_experts.up_projection.weights, FullPrecisionMatrix)
+    assert isinstance(loaded.shared_experts.up_projection.weights, FullPrecisionMatrix)
+    assert loaded.routed_experts.up_projection.weights.is_sharded
+    assert not loaded.shared_experts.up_projection.weights.is_sharded
+    np.testing.assert_array_equal(
+        loaded.routed_experts.up_projection.weights.decompress(),
+        jnp.concatenate((jnp.stack(routed_up), jnp.stack(routed_gate)), axis=1),
+    )
+    np.testing.assert_array_equal(
+        loaded.routed_experts.down_projection.weights.decompress(),
+        jnp.stack(routed_down),
+    )
+    np.testing.assert_array_equal(
+        loaded.shared_experts.up_projection.weights.decompress(),
+        jnp.concatenate((shared_up[None], shared_gate[None]), axis=1),
+    )
+    np.testing.assert_array_equal(
+        loaded.shared_experts.down_projection.weights.decompress(),
+        shared_down[None],
+    )
+    assert loaded.gate is not None
+    np.testing.assert_array_equal(loaded.gate.weights.decompress(), gate)
+
+    token_input = jnp.full((INPUT_DIM,), 0.001, dtype=jnp.float32)
+    inputs = jax.device_put(
+        jnp.broadcast_to(token_input, (2, 1, INPUT_DIM)),
+        make_sharding((LogicalAxis.BATCH, None, None)),
+    )
+    result = loaded(
+        inputs,
+        forward_pass_config=MLPForwardPassConfig(mode=mode),
+        keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
+    )
+    # Positive inputs select the second routed expert, whose router weights are larger.
+    routed_result = routed_down[1] @ ((routed_up[1] @ token_input) * jax.nn.silu(routed_gate[1] @ token_input))
+    shared_result = shared_down @ ((shared_up @ token_input) * jax.nn.silu(shared_gate @ token_input))
+    reference = routed_result + jax.nn.sigmoid(gate @ token_input) * shared_result
+    np.testing.assert_allclose(result, jnp.broadcast_to(reference, result.shape), rtol=1e-5)
 
 
 def test_load_huggingface_classifier_uses_hf_embedding_layout() -> None:
@@ -638,7 +803,6 @@ def test_foreign_config_load_initializes_model_with_requested_dtype_and_implemen
                 assistant_role_name="assistant",
                 eos_token=None,
                 bos_token=None,
-                end_of_thinking_tag=None,
             ),
             module_config=TinyConfig(),
         ),
@@ -665,7 +829,6 @@ def _tiny_model_config() -> TinyModelConfig:
             assistant_role_name="assistant",
             eos_token=None,
             bos_token=None,
-            end_of_thinking_tag=None,
         ),
         module_config=TinyConfig(),
     )
@@ -721,3 +884,29 @@ def test_model_export_load_with_strong_initializer_forces_saved_float_dtypes(tmp
     assert restored.module.matrix.dtype == jnp.bfloat16
     assert restored.module.fp8_values.dtype == jnp.bfloat16
     assert restored.module.fp16_values.dtype == jnp.bfloat16
+
+
+@pytest.mark.parametrize("dtype", [None, jnp.float32, jnp.bfloat16])
+def test_load_dflash2_sublayer_transform(dtype: DTypeLike | None) -> None:
+    config = HFDFlashConfig.from_dict(_dflash_hf_config(dflash2=True)).to_dflash_draft_config()
+    model = config.init(EmptyInitializer(dtype, make_test_sharding_config()))
+    layer = model.layers[0]
+    source_dtype = dtype or jnp.bfloat16
+    base_kernel = jnp.arange(16, dtype=source_dtype).reshape(2, 2, 4)
+    kernel_projection = jnp.arange(32, dtype=source_dtype).reshape(8, 4)
+    weights = {
+        "attention_conv.base_kernel": base_kernel,
+        "attention_conv.kernel_projection.weight": kernel_projection,
+    }
+
+    module = load_dflash_sublayer_transform(
+        layer.mixer_conv,
+        weights,
+        ParameterPath("attention_conv"),
+    )
+
+    assert module is not None
+    exported = module.export()
+    assert_close(result=exported.arrays["pre_conv.weights"], reference=base_kernel[0, ::-1].T)
+    assert_close(result=exported.arrays["post_conv.weights"], reference=base_kernel[1, ::-1].T)
+    assert_close(result=module.kernel_projection.weights.decompress(), reference=kernel_projection)

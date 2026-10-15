@@ -2,6 +2,7 @@ from typing import cast
 
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
 from lalamo.model_import.model_spec import LanguageModelSpec, ModelSpec
+from lalamo.model_import.model_specs.reasoning_configs import BOOLEAN_REASONING_DEFAULT_ON_CONFIG
 from lalamo.model_import.origins import HuggingFaceOrigin
 from lalamo.utils.json import JSON
 
@@ -14,6 +15,7 @@ def test_model_spec_roundtrips_through_registry_converter() -> None:
         size="1B",
         origin=HuggingFaceOrigin(repo="meta-llama/Llama-3.2-1B-Instruct"),
         config_type=HFLlamaConfig,
+        reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     )
 
     raw_json = spec.to_json()

@@ -81,9 +81,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
 
     def to_classifier_config(
         self,
-        context_length: int | None,
     ) -> ClassifierConfig:
-        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
         head_dim = self.hidden_size // self.num_attention_heads
         embedding_config = TiedEmbeddingConfig(
             input_scale=None,
@@ -98,12 +96,12 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
 
         global_rope_config = UnscaledRoPEConfig(
             base=self.global_rope_theta,
-            max_sequence_length=max_sequence_length,
+            max_sequence_length=self.max_position_embeddings,
             head_dim=head_dim,
         )
         local_rope_config = UnscaledRoPEConfig(
             base=self.local_rope_theta,
-            max_sequence_length=max_sequence_length,
+            max_sequence_length=self.max_position_embeddings,
             head_dim=head_dim,
         )
 

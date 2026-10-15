@@ -79,7 +79,6 @@ class HFGemma4TextConfig:
 
     def to_decoder_config(
         self,
-        context_length: int | None,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         assert self.tie_word_embeddings, "Gemma-4 import only supports tied word embeddings"
@@ -106,7 +105,6 @@ class HFGemma4TextConfig:
             gate_clipping=None,
         )
 
-        max_sequence_length = self.max_position_embeddings if context_length is None else context_length
         full_attention_params = self.rope_parameters.full_attention
         sliding_attention_params = self.rope_parameters.sliding_attention
         full_partial_rotary_factor = (
@@ -115,12 +113,12 @@ class HFGemma4TextConfig:
         full_rotary_dim = int(full_partial_rotary_factor * self.global_head_dim)
         global_rope_config = UnscaledRoPEConfig(
             base=full_attention_params.rope_theta,
-            max_sequence_length=max_sequence_length,
+            max_sequence_length=self.max_position_embeddings,
             head_dim=full_rotary_dim,
         )
         local_rope_config = UnscaledRoPEConfig(
             base=sliding_attention_params.rope_theta,
-            max_sequence_length=max_sequence_length,
+            max_sequence_length=self.max_position_embeddings,
             head_dim=self.head_dim,
         )
 
@@ -244,13 +242,9 @@ class HFGemma4Config(HuggingFaceLMConfig):
 
     def to_decoder_config(
         self,
-        context_length: int | None,
         metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
-        return self.text_config.to_decoder_config(
-            context_length=context_length,
-            metadata_dict=metadata_dict,
-        )
+        return self.text_config.to_decoder_config(metadata_dict=metadata_dict)
 
     def _load_weights(
         self,

@@ -10,6 +10,7 @@ from lalamo.model_import.model_configs.foreign_config import (
     ForeignTTSConfig,
 )
 from lalamo.model_import.origins import FileSpec, Origin
+from lalamo.models.chat_codec import ReasoningConfig
 from lalamo.models.language_model import GenerationConfig
 from lalamo.utils.json import JSON
 from lalamo.utils.registry_abc import RegistryABC, make_registry_abc_converter
@@ -71,6 +72,7 @@ class LanguageModelSpec(ModelSpec[ForeignLMConfig]):
     config_type: type[ForeignLMConfig]
     output_parser_regex: str | None = None
     end_of_thinking_tag: str | None = None
+    reasoning_config: ReasoningConfig | None = None
     system_role_name: str = "system"
     user_role_name: str = "user"
     assistant_role_name: str = "assistant"

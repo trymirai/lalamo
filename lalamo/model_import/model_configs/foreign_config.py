@@ -71,7 +71,6 @@ class ForeignLMConfig(ForeignConfig[LanguageModelConfig], RegistryABC):
     @abstractmethod
     def to_decoder_config(
         self,
-        context_length: int | None,
         metadata_dict: Mapping[str, str],
     ) -> DecoderConfig: ...
 
@@ -81,14 +80,13 @@ class ForeignLMConfig(ForeignConfig[LanguageModelConfig], RegistryABC):
 
     def to_lalamo_config(
         self,
-        context_length: int | None,
         metadata_dict: Mapping[str, str],
         token_codec_config: ChatCodecConfig,
         generation_config: GenerationConfig,
     ) -> LanguageModelConfig:
         return LanguageModelConfig(
             token_codec_config=token_codec_config,
-            decoder_config=self.to_decoder_config(context_length, metadata_dict),
+            decoder_config=self.to_decoder_config(metadata_dict),
             generation_config=generation_config,
         )
 
@@ -98,14 +96,10 @@ class ForeignClassifierConfig(ForeignConfig[ClassifierModelConfig], RegistryABC)
     @abstractmethod
     def to_classifier_config(
         self,
-        context_length: int | None,
     ) -> ClassifierConfig: ...
 
 
 @dataclass(frozen=True)
 class ForeignTTSConfig(ForeignConfig[TTSModelConfig], RegistryABC):
     @abstractmethod
-    def to_tts_config(
-        self,
-        context_length: int | None,
-    ) -> TTSConfig: ...
+    def to_tts_config(self) -> TTSConfig: ...

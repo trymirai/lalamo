@@ -12,7 +12,6 @@ from jaxtyping import Array, DTypeLike, Float, Int
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
-from lalamo.modules.normalization import NormalizationForwardPassConfig
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.weight_matrix import GradientEstimator, MatmulConfig
 
@@ -47,39 +46,33 @@ class State(tuple[StateLayerBase, ...]):
 
 
 class AttentionImplementation(Enum):
+    PALLAS = "pallas"
     STABLE_REDUCTION = "stable_reduction"
-    STANDARD = "standard"
-    CUDNN = "cudnn"
-    TOKAMAX = "tokamax"
+    XLA = "xla"
 
 
 @dataclass(frozen=True)
 class MixerForwardPassConfig:
-    attention_implementation: AttentionImplementation = AttentionImplementation.STANDARD
+    attention_implementation: AttentionImplementation = AttentionImplementation.PALLAS
     attention_accumulation_dtype: DTypeLike | None = jnp.float32
     rope_dtype: DTypeLike | None = jnp.float32
     attention_tile_size: int = 128
     ssm_chunk_size: int = 32
     ssm_min_tail_size_to_chunk: int = 16
     matmul_config: MatmulConfig = field(default_factory=MatmulConfig)
-    normalization_forward_pass_config: NormalizationForwardPassConfig = field(
-        default_factory=NormalizationForwardPassConfig,
-    )
 
     @classmethod
     def for_tracer_tests(cls) -> Self:
         return cls(
             attention_implementation=AttentionImplementation.STABLE_REDUCTION,
             matmul_config=MatmulConfig.for_tracer_tests(),
-            normalization_forward_pass_config=NormalizationForwardPassConfig.for_tracer_tests(),
         )
 
     @classmethod
     def for_inference(cls, precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT) -> Self:
         return cls(
-            attention_implementation=AttentionImplementation.STANDARD,
+            attention_implementation=AttentionImplementation.PALLAS,
             matmul_config=MatmulConfig.for_inference(precision),
-            normalization_forward_pass_config=NormalizationForwardPassConfig.for_inference(),
         )
 
     @classmethod
@@ -89,10 +82,9 @@ class MixerForwardPassConfig:
         precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
     ) -> Self:
         return cls(
-            attention_implementation=AttentionImplementation.STANDARD,
+            attention_implementation=AttentionImplementation.XLA,
             ssm_min_tail_size_to_chunk=0,
             matmul_config=MatmulConfig.for_training(gradient_estimator, precision),
-            normalization_forward_pass_config=NormalizationForwardPassConfig.for_training(),
         )
 
 

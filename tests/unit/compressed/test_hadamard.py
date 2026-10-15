@@ -5,9 +5,9 @@ import jax.numpy as jnp
 import pytest
 from jaxtyping import TypeCheckError
 
-from lalamo.compressed.utils.hadamard import hadamard_transform
+from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.utils.sharding import LogicalAxis
-from tests.common import assert_close, gpu_only, tolerance
+from tests.common import assert_close, tolerance
 from tests.helpers import make_sharding
 
 
@@ -114,42 +114,3 @@ def test_hadamard_transform_custom_vjp_matches_self_adjoint_reference() -> None:
     (result,) = vjp_fn(cotangent)
 
     _assert_close(result=result, reference=hadamard_transform(cotangent, block_size=32))
-
-
-@gpu_only
-@pytest.mark.parametrize("block_size", [32, 64, 128])
-@pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
-def test_hadamard_transform_cute_matches_dense_reference_on_gpu(
-    block_size: Literal[32, 64, 128],
-    dtype: jnp.dtype,
-) -> None:
-    inputs = _replicated(((jnp.arange(block_size, dtype=jnp.float32) % 23) / 11).astype(dtype))
-
-    result = jax.jit(lambda inputs: hadamard_transform(inputs, block_size=block_size))(inputs)
-
-    with tolerance(atol=2e-2, rtol=3e-2):
-        _assert_close(result=result, reference=_dense_hadamard_transform(inputs, block_size=block_size))
-
-
-@gpu_only
-def test_hadamard_transform_cute_custom_vjp_matches_self_adjoint_reference_on_gpu() -> None:
-    inputs = _replicated((jnp.arange(128, dtype=jnp.float32) - 7) / 13)
-    cotangent = _replicated(jnp.sin(jnp.arange(128, dtype=jnp.float32)))
-
-    _, vjp_fn = jax.vjp(lambda inputs: hadamard_transform(inputs, block_size=128), inputs)
-    (result,) = vjp_fn(cotangent)
-
-    _assert_close(result=result, reference=hadamard_transform(cotangent, block_size=128))
-
-
-@gpu_only
-def test_hadamard_transform_cute_vmap_matches_dense_reference_on_gpu() -> None:
-    inputs = _replicated(
-        ((jnp.reshape(jnp.arange(5 * 64 * 4, dtype=jnp.float32), (5, 64 * 4)) % 29) / 17).astype(jnp.bfloat16)
-    )
-
-    result = jax.jit(jax.vmap(lambda inputs: hadamard_transform(inputs, block_size=64)))(inputs)
-    reference = jax.vmap(lambda inputs: _dense_hadamard_transform(inputs, block_size=64))(inputs)
-
-    with tolerance(atol=3e-2, rtol=3e-2):
-        _assert_close(result=result, reference=reference)

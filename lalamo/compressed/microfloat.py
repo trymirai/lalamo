@@ -6,7 +6,7 @@ from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
 from jax.lax import stop_gradient
-from jax.sharding import NamedSharding
+from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
 
 from lalamo.exportable import ExportResults
@@ -74,19 +74,26 @@ class MicrofloatParameters(NamedTuple):
         group_size: int,
         scale_mode: MicrofloatScaleMode,
         *,
-        scale_sharding: NamedSharding | None = None,
+        scale_sharding: NamedSharding,
     ) -> Self:
+        global_scale_sharding = NamedSharding(
+            scale_sharding.mesh,
+            PartitionSpec(*scale_sharding.spec[:-2]),
+        )
         group_absmax = jnp.max(jnp.abs(group_by_last_axis(weights, group_size=group_size)), axis=-1)
         matrix_absmax = jnp.max(jnp.abs(weights), axis=(-2, -1))
         if scale_mode == MicrofloatScaleMode.MXFP4:
             packed_scales = pack_e8m0_scales(group_absmax / 4, out_sharding=scale_sharding)
             return cls(
                 scales=e8m0_scale_values(packed_scales, weights.dtype),
-                global_scale=jnp.ones_like(matrix_absmax),
+                global_scale=with_sharding(jnp.ones_like(matrix_absmax), global_scale_sharding),
             )
 
         scale_max = jnp.asarray(jnp.finfo(jnp.float8_e4m3fn).max, dtype=matrix_absmax.dtype) * 6
-        global_scale = jnp.where(matrix_absmax == 0, 1, matrix_absmax / scale_max)
+        global_scale = with_sharding(
+            jnp.where(matrix_absmax == 0, 1, matrix_absmax / scale_max),
+            global_scale_sharding,
+        )
         return cls(
             scales=pack_e4m3_scales(
                 group_absmax / (6 * global_scale[..., None, None]),
@@ -273,7 +280,6 @@ class MicrofloatSpec(QuantizedSpec):
         parameter_axes = (*global_scale_axes, row_axis)
         weight_sharding = sharding_config.resolve_sharding(weight_axes)
         parameter_sharding = sharding_config.resolve_sharding((*parameter_axes, None))
-        global_scale_sharding = sharding_config.resolve_sharding(global_scale_axes)
         grouped_values_sharding = sharding_config.resolve_sharding(
             (*parameter_axes, None, grouped_axis),
         )
@@ -281,14 +287,12 @@ class MicrofloatSpec(QuantizedSpec):
             weights,
             sharding=weight_sharding,
         )
-        parameters = MicrofloatParameters.from_weights(
+        master_scales, global_scale = MicrofloatParameters.from_weights(
             stored_weights,
             self.group_size,
             self.scale_mode,
             scale_sharding=parameter_sharding,
         )
-        master_scales = with_sharding(parameters.scales, parameter_sharding)
-        global_scale = with_sharding(parameters.global_scale, global_scale_sharding)
         if implementation == CompressionImplementation.TRAINING:
             return MicrofloatMatrixForTraining(
                 spec=self,

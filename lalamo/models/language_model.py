@@ -12,7 +12,7 @@ from tokenizers import Tokenizer
 
 from lalamo.initializer import Initializer
 from lalamo.model import Model, ModelConfig
-from lalamo.models.chat_codec import AssistantMessage, ChatCodec, ChatCodecConfig, Message
+from lalamo.models.chat_codec import AssistantMessage, ChatCodec, ChatCodecConfig, Message, ReasoningEffort
 from lalamo.module import LogicalAxis
 from lalamo.modules import (
     Decoder,
@@ -449,11 +449,15 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
         decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
+        reasoning_effort: ReasoningEffort | None = None,
         keychain: Keychain,
     ) -> AssistantMessage:
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
         token_ids = jax.device_put(
-            jnp.asarray(self.token_codec.encode_request(messages), dtype=jnp.int32)[None, :],
+            jnp.asarray(
+                self.token_codec.encode_request(messages, reasoning_effort=reasoning_effort),
+                dtype=jnp.int32,
+            )[None, :],
             self.sharding_config.make_sharding((batch_axis, None)),
         )
         response_ids = self.generate_tokens(
@@ -575,9 +579,13 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
         decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
+        reasoning_effort: ReasoningEffort | None = None,
         keychain: Keychain,
     ) -> Iterable[str]:
-        token_ids = jnp.asarray(self.token_codec.encode_request(messages), dtype=jnp.int32)
+        token_ids = jnp.asarray(
+            self.token_codec.encode_request(messages, reasoning_effort=reasoning_effort),
+            dtype=jnp.int32,
+        )
         response_token_ids: list[int] = []
         previous_text = ""
         for token_id in self.stream_tokens(

@@ -260,7 +260,6 @@ class Decoder(LalamoModule[DecoderConfig]):
             inner_features = call_vmapped_twice(
                 self.embedding_norm,
                 inner_features,
-                forward_pass_config=forward_pass_config.transformer_forward_pass_config.normalization_forward_pass_config,
             )
 
         if self.per_layer_embedding is not None:

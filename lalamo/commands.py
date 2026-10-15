@@ -90,32 +90,27 @@ def pull(
     callbacks.started()
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
+        temp_path = Path(temp_dir).resolve()
 
         for file_spec in model_spec.files:
             callbacks.downloading(file_spec)
 
-            # Security: validate filename to prevent path traversal attacks
-            safe_name = Path(file_spec.name).name
-            if not safe_name or safe_name != file_spec.name:
-                raise RuntimeError(
-                    f"Invalid filename from registry: {file_spec.name!r}. "
-                    f"Filenames must not contain path separators or traversal sequences.",
-                )
-
-            file_path = temp_path / safe_name
+            file_path = (temp_path / file_spec.name).resolve()
+            if not file_path.is_relative_to(temp_path):
+                raise RuntimeError(f"Invalid filename from registry: {file_spec.name!r}.")
+            file_path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 _download_file(file_spec.url, file_path)
             except requests.RequestException as e:
-                raise RuntimeError(f"Failed to download {safe_name}: {e}") from e
+                raise RuntimeError(f"Failed to download {file_spec.name}: {e}") from e
 
             callbacks.finished_downloading(file_spec)
 
         output_dir.mkdir(parents=True, exist_ok=True)
         for file_spec in model_spec.files:
-            safe_name = Path(file_spec.name).name
-            src = temp_path / safe_name
-            dst = output_dir / safe_name
+            src = (temp_path / file_spec.name).resolve()
+            dst = output_dir / src.relative_to(temp_path)
+            dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(src), str(dst))
 
     callbacks.finished()
@@ -132,7 +127,6 @@ class ConversionCallbacks:
     model_spec: ModelSpec
     output_dir: Path
     dtype: DType | None
-    context_length: int | None
 
     def started(self) -> None:
         pass
@@ -163,13 +157,11 @@ def convert(
     model_spec: ModelSpec,
     output_dir: Path,
     dtype: DType | None = None,
-    context_length: int | None = None,
     callbacks_type: Callable[
         [
             ModelSpec,
             Path,
             DType | None,
-            int | None,
         ],
         ConversionCallbacks,
     ] = ConversionCallbacks,
@@ -179,7 +171,6 @@ def convert(
         model_spec,
         output_dir,
         effective_dtype,
-        context_length,
     )
 
     if output_dir.exists():
@@ -202,7 +193,6 @@ def convert(
         model_spec,
         sharding_config=ShardingConfig.replicated(),
         dtype=jnp.dtype(effective_dtype.value),
-        context_length=context_length,
         progress_callback=progress_callback,
     )
     callbacks.saving_model()
@@ -216,7 +206,6 @@ def convert_speculator(
     output_dir: Path,
     weaver_repo_id: str | None = None,
     dtype: DType | None = None,
-    context_length: int | None = None,
 ) -> None:
     sharding_config = ShardingConfig.replicated()
     effective_dtype = jnp.dtype((dtype or DType.BFLOAT16).value)
@@ -226,7 +215,6 @@ def convert_speculator(
         dflash_path,
         sharding_config=sharding_config,
         dtype=effective_dtype,
-        context_length=context_length,
     )
 
     weaver = None
