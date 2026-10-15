@@ -264,6 +264,35 @@ def yaqa_round_blockwise(
     return jax.device_put(result.astype(input_dtype), input_sharding)
 
 
+def _update_rounded_blocks(
+    quantized_weights: Float[Array, "output_channels input_channels"],
+    rounded_blocks: Float[Array, "blocks output_block_size input_block_size"],
+    block_starts: Int[Array, "blocks 2"],
+    valid_blocks: Bool[Array, " blocks"],
+) -> Float[Array, "output_channels input_channels"]:
+    # Padding targets stay clamped for quantization, but their writes must be
+    # dropped instead of overwriting a previously quantized boundary block.
+    scatter_indices = block_starts.astype(jnp.int32)
+    scatter_indices = jnp.stack(
+        (
+            jnp.where(valid_blocks, scatter_indices[:, 0], quantized_weights.shape[0]),
+            scatter_indices[:, 1],
+        ),
+        axis=-1,
+    )
+    return jax.lax.scatter(
+        quantized_weights,
+        scatter_indices,
+        rounded_blocks,
+        dimension_numbers=jax.lax.ScatterDimensionNumbers(
+            update_window_dims=(1, 2),
+            inserted_window_dims=(),
+            scatter_dims_to_operand_dims=(0, 1),
+        ),
+        mode="drop",
+    )
+
+
 def _yaqa_round_blockwise_2d(
     weights: Float[Array, "output_channels input_channels"],
     preconditioner: Preconditioner,
@@ -367,19 +396,17 @@ def _yaqa_round_blockwise_2d(
             sharding_config=sharding_config,
         )
 
-        def update_block(
-            block_index: Int[Array, ""],
-            quantized_weights: Float[Array, "output_channels input_channels"],
-        ) -> Float[Array, "output_channels input_channels"]:
-            output_block = jnp.minimum(first_output_block + block_index, num_output_blocks - 1)
-            input_block = jnp.maximum(first_input_block - block_index, 0)
-            updated_weights = jax.lax.dynamic_update_slice(
-                quantized_weights,
-                rounded_blocks[block_index],
-                (output_block * spec.output_block_size, input_block * spec.input_block_size),
-            )
-            return jnp.where(block_index < blocks_on_anti_diagonal, updated_weights, quantized_weights)
-
-        return jax.lax.fori_loop(0, len(block_indices), update_block, quantized_weights)
+        output_blocks = jnp.minimum(first_output_block + block_indices, num_output_blocks - 1)
+        input_blocks = jnp.maximum(first_input_block - block_indices, 0)
+        block_starts = jnp.stack(
+            (output_blocks * spec.output_block_size, input_blocks * spec.input_block_size),
+            axis=-1,
+        )
+        return _update_rounded_blocks(
+            quantized_weights,
+            rounded_blocks,
+            block_starts,
+            block_indices < blocks_on_anti_diagonal,
+        )
 
     return jax.lax.fori_loop(0, num_anti_diagonals, quantize_anti_diagonal, quantized_weights)

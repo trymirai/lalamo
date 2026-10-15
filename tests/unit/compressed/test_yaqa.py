@@ -1,14 +1,23 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from math import erfc, exp, log2, pi, sqrt
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from jax.lax import DotAlgorithmPreset
 
+from lalamo.compressed.int import IntSpec
 from lalamo.compressed.quantized_spec import QuantizedSpec
-from lalamo.compressed.utils.yaqa import ConvergenceError, yaqa_round_blockwise, yaqa_round_fixpoint
+from lalamo.compressed.utils import yaqa as yaqa_module
+from lalamo.compressed.utils.yaqa import (
+    ConvergenceError,
+    _update_rounded_blocks,
+    yaqa_round_blockwise,
+    yaqa_round_fixpoint,
+)
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import ShardingConfig
@@ -365,3 +374,136 @@ def test_yaqa_round_blockwise_runs_under_vmap_with_batched_preconditioners() -> 
     )
 
     assert_close(result=result, reference=reference)
+
+
+def _loop_update_rounded_blocks(
+    quantized_weights: jax.Array,
+    rounded_blocks: jax.Array,
+    block_starts: jax.Array,
+    valid_blocks: jax.Array,
+) -> jax.Array:
+    """The pre-scatter inner loop, kept as an independent write-order oracle."""
+
+    def update_block(block_index: jax.Array, current: jax.Array) -> jax.Array:
+        updated = jax.lax.dynamic_update_slice(
+            current,
+            rounded_blocks[block_index],
+            (block_starts[block_index, 0], block_starts[block_index, 1]),
+        )
+        return jnp.where(valid_blocks[block_index], updated, current)
+
+    return jax.lax.fori_loop(0, rounded_blocks.shape[0], update_block, quantized_weights)
+
+
+def _assert_bitwise_equal(result: jax.Array, reference: jax.Array) -> None:
+    assert result.shape == reference.shape
+    assert result.dtype == reference.dtype
+    np.testing.assert_array_equal(
+        np.ascontiguousarray(result).view(np.uint8),
+        np.ascontiguousarray(reference).view(np.uint8),
+    )
+
+
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16, jnp.float32])
+@pytest.mark.parametrize("valid_count", [0, 1, 3])
+def test_yaqa_block_scatter_drops_padded_boundary_windows(dtype: jnp.dtype, valid_count: int) -> None:
+    weights = _shard_weights(jnp.arange(36, dtype=jnp.float32).reshape(6, 6).astype(dtype))
+    # All starts are the last in-bounds window, matching clamped padding at a
+    # partial anti-diagonal. Invalid writes have different values and NaNs.
+    starts = _shard_weights(jnp.asarray([[4, 4], [4, 4], [4, 4]], dtype=jnp.int32))
+    if valid_count == 3:
+        starts = _shard_weights(jnp.asarray([[0, 4], [2, 2], [4, 0]], dtype=jnp.int32))
+    valid = _shard_weights(jnp.arange(3) < valid_count)
+    with jax.debug_nans(new_val=False):
+        updates = _shard_weights(
+            jnp.asarray(
+                [[[100.0, 101.0], [102.0, 103.0]], [[200.0, 201.0], [202.0, 203.0]], [[300.0, 301.0], [302.0, 303.0]]],
+                dtype=dtype,
+            ),
+        )
+        updates = jnp.where(valid[:, None, None], updates, jnp.asarray(jnp.nan, dtype=dtype))
+        result = jax.jit(_update_rounded_blocks)(weights, updates, starts, valid)
+        reference = jax.jit(_loop_update_rounded_blocks)(weights, updates, starts, valid)
+
+    _assert_bitwise_equal(result, reference)
+    assert result.sharding.is_fully_replicated
+    assert bool(jnp.all(jnp.isfinite(result)))
+
+
+def _small_positive_definite_block(size: int, seed: int) -> jax.Array:
+    factors = jax.random.normal(jax.random.key(seed), (size, size), dtype=jnp.float32)
+    return factors @ factors.T / size + 0.5 * jnp.identity(size, dtype=jnp.float32)
+
+
+def _blockwise_with_loop_reference(
+    weights: jax.Array,
+    preconditioner: Preconditioner,
+    spec: QuantizedSpec,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[jax.Array, jax.Array]:
+    sharding = make_test_sharding_config()
+    result = jax.jit(
+        lambda w, p: yaqa_round_blockwise(w, p, spec, sharding_config=sharding),
+    )(weights, preconditioner)
+    oracle_calls = 0
+
+    def traced_reference(
+        operand: jax.Array,
+        updates: jax.Array,
+        starts: jax.Array,
+        valid: jax.Array,
+    ) -> jax.Array:
+        nonlocal oracle_calls
+        oracle_calls += 1
+        return _loop_update_rounded_blocks(operand, updates, starts, valid)
+
+    with monkeypatch.context() as context:
+        context.setattr(yaqa_module, "_update_rounded_blocks", traced_reference)
+        # A different jit closure forces tracing through the preserved updater,
+        # rather than reusing the optimized executable from the first call.
+        reference = jax.jit(
+            lambda w, p: yaqa_round_blockwise(w, p, spec, sharding_config=sharding),
+        )(weights, preconditioner)
+    assert oracle_calls > 0
+    return result, reference
+
+
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16, jnp.float32])
+@pytest.mark.parametrize(
+    ("shape", "spec", "feedback"),
+    [
+        ((8, 20), _RoundSpec(), "input"),
+        ((20, 8), _RoundSpec(), "output"),
+        ((6, 10), _BlockMeanSpec(), "two_sided"),
+        ((3, 128), IntSpec(bits=4, group_size=64), "two_sided"),
+    ],
+)
+def test_yaqa_block_scatter_matches_loop_for_rectangular_preconditioned_rounding(
+    dtype: jnp.dtype,
+    shape: tuple[int, int],
+    spec: QuantizedSpec,
+    feedback: Literal["input", "output", "two_sided"],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dim, input_dim = shape
+    weights = _shard_weights(jax.random.normal(jax.random.key(41), shape, dtype=jnp.float32).astype(dtype))
+    preconditioner = Preconditioner.init(
+        input_block=_small_positive_definite_block(input_dim, 43) if feedback != "output" else None,
+        output_block=_small_positive_definite_block(output_dim, 47) if feedback != "input" else None,
+    )
+    result, reference = _blockwise_with_loop_reference(weights, preconditioner, spec, monkeypatch)
+
+    _assert_bitwise_equal(result, reference)
+    assert result.sharding == weights.sharding
+
+
+def test_yaqa_block_scatter_matches_loop_under_batched_vmap(monkeypatch: pytest.MonkeyPatch) -> None:
+    weights = _shard_weights(jax.random.normal(jax.random.key(53), (2, 6, 10), dtype=jnp.float32).astype(jnp.bfloat16))
+    preconditioner = Preconditioner.init(
+        input_block=jnp.stack([_small_positive_definite_block(10, 59), _small_positive_definite_block(10, 61)]),
+        output_block=jnp.stack([_small_positive_definite_block(6, 67), _small_positive_definite_block(6, 71)]),
+    )
+    result, reference = _blockwise_with_loop_reference(weights, preconditioner, _BlockMeanSpec(), monkeypatch)
+
+    _assert_bitwise_equal(result, reference)
+    assert result.sharding == weights.sharding

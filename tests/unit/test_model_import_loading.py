@@ -19,6 +19,7 @@ from lalamo.initializer import EmptyInitializer, Initializer
 from lalamo.model import Model, ModelConfig
 from lalamo.model_import.loaders.dflash_loader import load_dflash_sublayer_transform
 from lalamo.model_import.loaders.huggingface import (
+    load_delta_net_attention,
     load_huggingface_classifier,
     load_input_embedding_matrix,
     load_linear,
@@ -45,6 +46,8 @@ from lalamo.modules.mlp import (
 )
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.token_mixers.attention import Attention
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
+from lalamo.modules.token_mixers.deltanet import DeltaNetConfig
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.weight_matrix import (
@@ -60,6 +63,60 @@ from tests.common import assert_close
 from tests.helpers import make_sharding, make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
+
+
+@pytest.mark.parametrize("materialized", [False, True], ids=["empty", "materialized"])
+def test_load_deltanet_preserves_float32_state_parameters(materialized: bool) -> None:
+    config = DeltaNetConfig(
+        in_proj_config=LinearConfig(),
+        conv_config=SeparableCausalConvConfig(has_biases=False),
+        out_proj_config=LinearConfig(),
+        norm_config=NormalizationConfig(
+            epsilon=1e-6,
+            scale_offset=None,
+            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
+        ),
+        num_heads=2,
+        num_groups=1,
+        head_dim=2,
+        value_head_dim=2,
+        kernel_size=3,
+    )
+    sharding_config = make_test_sharding_config()
+    module = config.init(EmptyInitializer(jnp.bfloat16, sharding_config), model_dim=8)
+    if materialized:
+        module = eqx.tree_at(
+            lambda m: (m.dt_bias, m.a_log),
+            module,
+            (
+                jnp.zeros(module.dt_bias.shape, dtype=module.dt_bias.dtype),
+                jnp.zeros(module.a_log.shape, dtype=module.a_log.dtype),
+            ),
+        )
+    assert isinstance(module.dt_bias, jax.Array) is materialized
+    assert isinstance(module.a_log, jax.Array) is materialized
+    assert module.dt_bias.dtype == module.a_log.dtype == jnp.float32
+    path = ParameterPath("linear_attn")
+    dt_bias = jnp.array([-0.00435679, 0.987653], dtype=jnp.float32)
+    a_log = jnp.array([0.12345679, 1.0009], dtype=jnp.float32)
+    loaded = load_delta_net_attention(
+        module,
+        {
+            path / "in_proj" / "weight": jnp.zeros((16, 8), dtype=jnp.bfloat16),
+            path / "out_proj" / "weight": jnp.zeros((8, 4), dtype=jnp.bfloat16),
+            path / "conv1d" / "weight": jnp.zeros((8, 1, 3), dtype=jnp.bfloat16),
+            path / "norm" / "weight": jnp.ones((2,), dtype=jnp.bfloat16),
+            path / "dt_bias": dt_bias,
+            path / "A_log": a_log,
+        },
+        path,
+        permute_conv=False,
+    )
+    assert loaded.dt_bias.dtype == loaded.a_log.dtype == jnp.float32
+    np.testing.assert_array_equal(loaded.dt_bias, dt_bias)
+    np.testing.assert_array_equal(loaded.a_log, a_log)
+
 
 INPUT_DIM = 8
 OUTPUT_DIM = 4
