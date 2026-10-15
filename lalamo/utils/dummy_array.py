@@ -7,6 +7,7 @@ import jax.tree_util as jtu
 from jax import Array as JaxArray
 from jax import ShapeDtypeStruct
 from jax import numpy as jnp
+from jax.core import Tracer
 from jax.sharding import Mesh, NamedSharding
 from jaxtyping import Array, DTypeLike
 
@@ -15,6 +16,7 @@ __all__ = [
     "contains_dummy_arrays",
     "dummy_array",
     "is_dummy_array",
+    "is_dummy_or_tracer",
     "preserve_first_input_sharding",
     "supports_dummy_arrays",
 ]
@@ -48,6 +50,11 @@ def preserve_first_input_sharding(input_shardings: tuple[NamedSharding, ...]) ->
 
 def is_dummy_array(value: object) -> TypeGuard[Array]:
     return isinstance(value, ShapeDtypeStruct)
+
+
+def is_dummy_or_tracer(value: object) -> TypeGuard[Array]:
+    # A dummy reaches `supports_dummy_arrays` functions as a tracer.
+    return is_dummy_array(value) or isinstance(value, Tracer)
 
 
 def contains_dummy_arrays(value: object) -> bool:

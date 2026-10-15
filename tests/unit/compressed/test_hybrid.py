@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import pytest
 from jaxtyping import Array, Float, Int, Key
 
-from lalamo.compressed.hybrid import HybridMatrix, HybridSpec, IncoherenceProcessingMode
+from lalamo.compressed.hybrid import HybridMatrix, HybridSpec, IncoherenceProcessingMode, IncoherenceSigns
 from lalamo.compressed.low_rank import LowRankSpec
 from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import Keychain
@@ -128,7 +128,7 @@ def test_hybrid_incoherence_decompress_restores_original_basis() -> None:
     matrix = spec.compress(weights, key=jax.random.key(0), sharding_config=make_test_sharding_config())
 
     assert isinstance(matrix, HybridMatrix)
-    assert matrix.incoherence_signs is not None
+    assert isinstance(matrix.incoherence_signs, IncoherenceSigns)
     input_signs = matrix.incoherence_signs.input_signs
     output_signs = matrix.incoherence_signs.output_signs
     assert input_signs is not None
@@ -148,7 +148,7 @@ def test_hybrid_input_incoherence_leaves_output_basis_unprocessed() -> None:
     ).compress(weights, key=jax.random.key(1), sharding_config=make_test_sharding_config())
     vector = _replicated_vector((jnp.arange(64, dtype=jnp.float32) - 3) / 7)
 
-    assert matrix.incoherence_signs is not None
+    assert isinstance(matrix.incoherence_signs, IncoherenceSigns)
     input_signs = matrix.incoherence_signs.input_signs
     assert input_signs is not None
     assert matrix.incoherence_signs.output_signs is None
@@ -173,7 +173,7 @@ def test_hybrid_output_incoherence_leaves_input_basis_unprocessed() -> None:
     ).compress(weights, key=jax.random.key(2), sharding_config=make_test_sharding_config())
     vector = _replicated_vector((jnp.arange(64, dtype=jnp.float32) - 3) / 7)
 
-    assert matrix.incoherence_signs is not None
+    assert isinstance(matrix.incoherence_signs, IncoherenceSigns)
     output_signs = matrix.incoherence_signs.output_signs
     assert matrix.incoherence_signs.input_signs is None
     assert output_signs is not None
@@ -253,7 +253,7 @@ def test_hybrid_adapter_compresses_residual_with_original_input_and_transformed_
         incoherence_block_size=32,
     ).compress(weights, key=jax.random.key(3), sharding_config=make_test_sharding_config())
 
-    assert matrix.incoherence_signs is not None
+    assert isinstance(matrix.incoherence_signs, IncoherenceSigns)
     assert matrix.adapter is not None
     transformed_weights = matrix.incoherence_signs.process_weights(
         weights,
@@ -319,7 +319,7 @@ def test_hybrid_incoherence_adapts_preconditioner_to_adapter_basis() -> None:
         _weights(), key=jax.random.key(6), preconditioner=preconditioner, sharding_config=make_test_sharding_config()
     )
 
-    assert matrix.incoherence_signs is not None
+    assert isinstance(matrix.incoherence_signs, IncoherenceSigns)
     assert len(quantization_calls) == 1
     assert len(adapter_calls) == 1
     quantization_preconditioner = quantization_calls[0]
@@ -369,7 +369,7 @@ def test_hybrid_input_incoherence_keeps_output_preconditioner_basis() -> None:
         _weights(), key=jax.random.key(7), preconditioner=preconditioner, sharding_config=make_test_sharding_config()
     )
 
-    assert matrix.incoherence_signs is not None
+    assert isinstance(matrix.incoherence_signs, IncoherenceSigns)
     input_signs = matrix.incoherence_signs.input_signs
     assert input_signs is not None
     assert matrix.incoherence_signs.output_signs is None
