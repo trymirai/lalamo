@@ -1,0 +1,10 @@
+extend = "../../pyproject.toml"
+
+[lint]
+ignore = ["INP001"]
+
+[lint.per-file-ignores]
+"convert_d3_mirai_format.py" = ["ANN401", "PLC0415"]
+"d3_mirai_m_common.py" = ["ANN401", "PLC0415"]
+"verify_d3_mirai_format.py" = ["ANN401", "PLC0415"]
+"test_*.py" = ["ANN001", "ANN201", "FBT003", "PLC0415"]

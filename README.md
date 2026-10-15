@@ -13,6 +13,13 @@
 
 # lalamo
 
+This fork includes the [D3-Flash INT4 conversion workflow](examples/d3_flash/README.md),
+DeltaNet loader dtype corrections, and YAQA block-update improvements. The D3 example
+preserves the decision readout in FP32 and exports asymmetric INT4 group32 weights
+with block32 randomized Hadamard transforms. Model weights and an inference engine
+are not included; see the example for supported inputs, verification, and limitations.
+The D3 workflow includes upstream Lalamo through commit `ad76c7d0cb474c9ff1562072bb1316037db2e6c2`.
+
 A set of tools for adapting Large Language Models to on-device inference using the [uzu](https://github.com/trymirai/uzu) inference engine.
 
 ## Quick Start
