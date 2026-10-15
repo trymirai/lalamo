@@ -52,6 +52,68 @@ class HFDFlashInnerConfig:
 
 
 @dataclass(frozen=True)
+class _HFMuseGlimmerAssistantConfig:
+    _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
+
+    architectures: tuple[Literal["MuseGlimmerAssistantModel"], ...]
+    attention_dropout: Literal[0]
+    block_size: int
+    bos_token_id: int
+    dtype: Literal["bfloat16"]
+    eos_token_id: int
+    head_dim: int
+    hidden_act: Literal["silu"]
+    hidden_size: int
+    intermediate_size: int
+    layer_types: tuple[Literal["sliding_attention"], ...]
+    mask_token_id: int
+    max_position_embeddings: int
+    model_type: Literal["muse_glimmer_assistant"]
+    num_attention_heads: int
+    num_hidden_layers: int
+    num_key_value_heads: int
+    pad_token_id: int
+    rms_norm_eps: float
+    rope_parameters: DFlashRopeParameters
+    sliding_window: int
+    target_layer_ids: tuple[int, ...]
+    transformers_version: str
+
+    @classmethod
+    def from_dict(cls, config: dict[str, object]) -> Self:
+        return cls._converter.structure(config, cls)
+
+    def to_qwen_dflash_config(self) -> "HFDFlashConfig":
+        return HFDFlashConfig(
+            architectures=("DFlashDraftModel",),
+            model_type="qwen3",
+            hidden_act=self.hidden_act,
+            hidden_size=self.hidden_size,
+            intermediate_size=self.intermediate_size,
+            num_hidden_layers=self.num_hidden_layers,
+            num_attention_heads=self.num_attention_heads,
+            num_key_value_heads=self.num_key_value_heads,
+            rms_norm_eps=self.rms_norm_eps,
+            rope_theta=self.rope_parameters.rope_theta,
+            max_position_embeddings=self.max_position_embeddings,
+            tie_word_embeddings=False,
+            attention_bias=False,
+            block_size=self.block_size,
+            num_target_layers=52,
+            vocab_size=202_048,
+            dflash_config=HFDFlashInnerConfig(
+                mask_token_id=self.mask_token_id,
+                target_layer_ids=self.target_layer_ids,
+            ),
+            head_dim=self.head_dim,
+            layer_types=self.layer_types,
+            sliding_window=2 * self.sliding_window,
+            use_sliding_window=True,
+            is_causal=False,
+        )
+
+
+@dataclass(frozen=True)
 class HFDFlashConfig:
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
 
@@ -87,6 +149,9 @@ class HFDFlashConfig:
 
     @classmethod
     def from_dict(cls, config: dict[str, object]) -> Self:
+        if config.get("model_type") == "muse_glimmer_assistant":
+            return _HFMuseGlimmerAssistantConfig.from_dict(config).to_qwen_dflash_config()
+
         config = dict(config)
         dflash_inner = config.get("dflash_config")
         if isinstance(dflash_inner, dict) and "block_size" in dflash_inner:
