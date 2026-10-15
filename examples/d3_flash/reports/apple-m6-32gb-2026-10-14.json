@@ -1,0 +1,160 @@
+{
+  "schema": "d3-historical-device-evidence/v1",
+  "historical_runtime_report_date": "2026-10-14",
+  "evidence_extracted_date": "2026-10-15",
+  "scope": "Historical conversion and selected native Metal application smoke checks; not a run of the current PR head.",
+  "hardware": {
+    "device_recorded_by_native_runtime": "Apple M6",
+    "physical_memory_bytes_verified_on_same_machine": 34359738368,
+    "memory_capacity_verification_date": "2026-10-15"
+  },
+  "source_model": "vllm-sr/d3-flash",
+  "source_revision": "521525effa79469d899a570726547dd7f00da3af",
+  "source_manifest_sha256": "41f1572c1753f15b7e2857ff8f56804a49b14e4a90910fcd172b47ffdd22a9b3",
+  "historical_converter": {
+    "backend": "metal",
+    "lalamo_base_revision": "831accb8252a6b6606c378048caeb44178f1a050",
+    "lalamo_source_tree_sha256": "b736a96e6b4f4b597772da5b4bffbb7281496258d24c5c1a193901a757aa130a",
+    "lalamo_dirty_diff_sha256": "a157998afd4b9e15fffddc850932de18fc9520aa5783edf20a09caa7c8a9e17e",
+    "converter_sha256": "8fbaa94bbab537ae5b18fa93df8e0506a4c3a828297212a12fa7126fe4305b1a",
+    "decision_adapter_sha256": "8acb9e65b474b298448f4878e2c9442dd7f389d5cb2cc0239f358a1a056692f4",
+    "versions": {
+      "lalamo": "0.17.0",
+      "jax": "0.11.0",
+      "jaxlib": "0.11.0",
+      "metaljax": "0.11.9",
+      "equinox": "0.13.8",
+      "numpy": "2.5.4",
+      "cattrs": "26.2.1"
+    },
+    "METALJAX_MATMUL_PRECISION": "highest",
+    "embedding_chunk": 4096,
+    "method": "rht32_round_to_nearest",
+    "quantization": {
+      "bits": 4,
+      "group_size": 32,
+      "asymmetric": true,
+      "scale_dtype": "BF16",
+      "zero_points": "packed4",
+      "rht_block": 32,
+      "linear_mode": "input_output",
+      "embedding_mode": "output",
+      "identity_factor_used": false,
+      "fisher_optimized": false,
+      "qad_applied": false
+    }
+  },
+  "output": {
+    "conversion_manifest_sha256": "91a048381a688d69111887baada2b0c4be54cb06d11a59985128c37e1980b694",
+    "model_safetensors_sha256_recorded_in_manifest": "03abceda58f76b7c7097f3925314e4ecfe59f0bb37d6c6ae299fd012500a8d8d",
+    "model_safetensors_bytes": 4605251728,
+    "bundle_logical_bytes_including_sidecars": 4632692204,
+    "bundle_size_observation_date": "2026-10-15",
+    "conversion_manifest_unchanged_from_native_smoke": true
+  },
+  "conversion_stage_measurements": {
+    "recorded_stage_count": 94,
+    "sum_elapsed_seconds": 50.241616126615554,
+    "maximum_recorded_process_rss_bytes": 1001521152,
+    "device_memory_stats": null,
+    "scope": "Sum of recorded layer/embedding/tail stages, excluding unrecorded setup, verification and archive publication. RSS is process memory, not total CPU/GPU unified-memory usage."
+  },
+  "historical_native_engine": {
+    "source_base_commit": "432da1b7bf42d5f5ffd30d7acf9ca201c9c70455",
+    "source_changes_sha256": "ff9d319c3db5b5526675e6334a24b2c370afff0603f3d459eade545fd9daff1e",
+    "binary_sha256": "42bd6ce9740721f605ebb3212ee2ff5fd7d7b02669c5a97f3bcb7673c4ebf640",
+    "build_features": [
+      "metal"
+    ],
+    "build_target": "aarch64-apple-darwin",
+    "profile": "release",
+    "included_in_this_pr": false
+  },
+  "native_application_smoke": {
+    "backend": "metal",
+    "device": "Apple M6",
+    "startup_seconds": 1.0081851659342647,
+    "engine_reported_load_seconds": 0.316704417,
+    "routing_requests": [
+      {
+        "case": 1,
+        "elapsed_seconds": 0.9384587089298293,
+        "matches_previously_verified_output": true
+      },
+      {
+        "case": 2,
+        "elapsed_seconds": 0.8964756249915808,
+        "matches_previously_verified_output": true
+      },
+      {
+        "case": 3,
+        "elapsed_seconds": 0.9153250829549506,
+        "matches_previously_verified_output": true
+      },
+      {
+        "case": 4,
+        "elapsed_seconds": 0.9788449170300737,
+        "matches_previously_verified_output": true
+      },
+      {
+        "case": 5,
+        "elapsed_seconds": 0.9490228750510141,
+        "matches_previously_verified_output": true
+      },
+      {
+        "case": 6,
+        "elapsed_seconds": 0.9506505000172183,
+        "matches_previously_verified_output": true
+      },
+      {
+        "case": 7,
+        "elapsed_seconds": 0.9556810420472175,
+        "matches_previously_verified_output": true
+      }
+    ],
+    "tone_requests": [
+      {
+        "case": 1,
+        "elapsed_seconds": 0.2310423330636695,
+        "matches_previously_verified_output": true
+      },
+      {
+        "case": 2,
+        "elapsed_seconds": 0.23321270907763392,
+        "matches_previously_verified_output": true
+      },
+      {
+        "case": 3,
+        "elapsed_seconds": 0.23545983410440385,
+        "matches_previously_verified_output": true
+      }
+    ],
+    "concurrent_requests_completed_seconds": 1.1292571669910103,
+    "cancelled_process_cleaned": true,
+    "borrowed_close_keeps_process": true,
+    "native_process_exited_after_close": true,
+    "scope": "Selected, previously checked development requests. Timings are application request durations and can include multiple model decisions; they are not per-forward latency, throughput, cold-start or a general benchmark."
+  },
+  "cleanup_followup_smoke": {
+    "backend": "metal",
+    "device": "Apple M6",
+    "routing_requests": 7,
+    "all_outputs_unchanged": true,
+    "native_process_exited_after_close": true
+  },
+  "source_artifact_sha256": {
+    "conversion_manifest": "91a048381a688d69111887baada2b0c4be54cb06d11a59985128c37e1980b694",
+    "native_runtime_smoke": "4930d0b773b692862ae108a4348c7b37e47e1cbd18da1c83dcd0ab9e1da2b286",
+    "cleanup_runtime_smoke": "91f12fcf0708ff641d1a17472b741e491e8bb0e1b4fbca6c193c79ce2d8fc592",
+    "engine_build_environment": "f7cb48d17d2ff99e3ee20258c8e8508839d7e2f7ad0c8ea13b93c9df22343d5a",
+    "verified_assets": "ec2f3010189955ab523e65eaa7b57a3438ffd47ab006c5ec86d4009930c439df"
+  },
+  "limitations": [
+    "The full-model experiment used a modified Lalamo checkout based on 831accb8, before rebasing onto ad76c7d0. Current PR-head full-model conversion/inference equivalence has not been demonstrated.",
+    "Matching previously verified development outputs is not a held-out accuracy or BF16-versus-INT4 probability-quality comparison.",
+    "The historical native D3 engine adapter was a separate local implementation and is not included in this Lalamo PR.",
+    "The conversion manifest still records inference_validated=false; the later native smoke records are separate evidence and the manifest was not rewritten.",
+    "The large newer-INT4 comparison reports were removed during disk cleanup. Retained older group64 affine-INT4 benchmarks use a different recipe and are not evidence for this INT4/group32/RHT32 export.",
+    "This file is an allowlisted extract with source hashes. Prompts, application labels, local absolute paths and unrelated application configuration are omitted."
+  ]
+}

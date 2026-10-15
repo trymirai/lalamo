@@ -1,0 +1,963 @@
+{
+  "schema": "d3-flash-public-threeway-measurements/1",
+  "evaluation_date": "2026-10-15",
+  "complete": true,
+  "device": "Apple M6",
+  "physical_memory_bytes": 34359738368,
+  "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "source_model": "vllm-sr/d3-flash",
+  "source_revision": "521525effa79469d899a570726547dd7f00da3af",
+  "source_manifest_sha256": "41f1572c1753f15b7e2857ff8f56804a49b14e4a90910fcd172b47ffdd22a9b3",
+  "engine": {
+    "name": "Uzu Metal with a separate local D3 adapter",
+    "base_commit": "432da1b7bf42d5f5ffd30d7acf9ca201c9c70455",
+    "binary_sha256": "42bd6ce9740721f605ebb3212ee2ff5fd7d7b02669c5a97f3bcb7673c4ebf640",
+    "local_changes_sha256": "ff9d319c3db5b5526675e6334a24b2c370afff0603f3d459eade545fd9daff1e",
+    "adapter_in_lalamo_pr": false,
+    "execution": "Metal GPU; serial models, batch 1; one unscored warmup per model-suite process"
+  },
+  "variant_policies": {
+    "bf16": "Original BF16 text weights; format-only native export, with exact-valued BF16-to-FP32 norm/state widening; FP32 decision readout.",
+    "mlx-int4": "New MLX 0.32.3 affine INT4/group64 projection quantization; original BF16 embedding; FP32 readout; checked native export preserves every packed code and its scale/bias; not an mlx-lm runtime benchmark.",
+    "mirai-int4": "Retained Lalamo asymmetric INT4/group32, BF16 scales, packed INT4 zeros and RHT32; embedding also INT4; FP32 readout; no Fisher calibration or QAD."
+  },
+  "mirai_artifact_provenance": {
+    "lalamo_base": "831accb8",
+    "rebuilt_from_current_pr_branch": false,
+    "weights_sha256": "03abceda58f76b7c7097f3925314e4ecfe59f0bb37d6c6ae299fd012500a8d8d",
+    "note": "Fresh evaluation of the retained final artifact, not a fresh full-model quantization at the current PR head (upstream base ad76c7d0)."
+  },
+  "evaluation": {
+    "unique_requests": 1356,
+    "model_requests": 4068,
+    "failed_requests": 0,
+    "official_scorer_commit": "9eb2dbe2a358004c8782c66e40a83ac07b953fec",
+    "same_request_contract": "Same source tokenizer, formatter, prompt/token hashes, question/option order, answer-code mapping, pooling, temperature and FP32 readout.",
+    "selection": {
+      "roles": {
+        "sample_rows": 1056,
+        "selected_rows_sha256": "375703d68ef421fc7c272391f2413adb44592728e0ed068da9abc3603afd373d",
+        "selected_run_ids_sha256": "21cd98e6621392733e4e56af522d761c6e443db31aad3c027c6132d25fa54b56",
+        "benchmark_rows": {
+          "4": 154,
+          "5": 302,
+          "40": 400,
+          "62": 200
+        },
+        "held_out_only": true,
+        "gold_in_prompt_payload": false,
+        "selection_uses_gold": {
+          "4": true,
+          "5": true,
+          "62": false,
+          "40": false
+        },
+        "gold_policy": "Gold labels stratify only BANKING77 (#4) and CLINC150+OOS (#5), at two rows per label. When2Call (#62) and iSarcasmEval-A-En (#40) use the official seed-based hash sampler without output-driven selection.",
+        "when2call_gold_option_counts": {
+          "B": 76,
+          "C": 65,
+          "D": 59
+        }
+      },
+      "regression": {
+        "sample_rows": 300,
+        "selected_rows_sha256": "db63dbd7aa3ef678d9b57b309468244f489c5c2a6c66d3bd6c17f7a58029c29c",
+        "selected_run_ids_sha256": "b9666d138db8e61a942af5ddd57141d29f01d2ca2fe740c20a0d9c8f81c6c733",
+        "benchmark_rows": {
+          "12": 100,
+          "28": 100,
+          "29": 100
+        },
+        "held_out_only": null,
+        "gold_in_prompt_payload": null,
+        "selection_uses_gold": false,
+        "gold_policy": null,
+        "when2call_gold_option_counts": null
+      }
+    },
+    "question_scope": "One choice question per request; no noul, score or multi-question quality claim; not the complete Decision Index or an official leaderboard result.",
+    "score_source": "Unrounded pinned official native scorer; iSarcasm uses detail.positive_f1_by_field.sarcastic, not its null aggregate or plain accuracy.",
+    "timing_boundary": "Synchronized request wall time: Python preparation, engine IPC/inference and postprocessing; excludes startup and warmup. Percentiles interpolate position (n-1)*p across all successful suite rows.",
+    "probability_metric_scope": "NLL and multiclass Brier sum are row-weighted within each suite, lower is better. Descriptive only; not Decision Index scores or cross-suite comparisons.",
+    "operating_assets_unchanged": true
+  },
+  "primary_metrics": [
+    {
+      "suite": "roles",
+      "catalog_id": 62,
+      "benchmark": "When2Call",
+      "requests": 200,
+      "metric": "accuracy",
+      "models": {
+        "bf16": {
+          "value": 0.865,
+          "official_panel_raw": 0.865,
+          "answered": 200,
+          "errors": 0
+        },
+        "mlx-int4": {
+          "value": 0.895,
+          "official_panel_raw": 0.895,
+          "answered": 200,
+          "errors": 0
+        },
+        "mirai-int4": {
+          "value": 0.885,
+          "official_panel_raw": 0.885,
+          "answered": 200,
+          "errors": 0
+        }
+      }
+    },
+    {
+      "suite": "roles",
+      "catalog_id": 4,
+      "benchmark": "BANKING77",
+      "requests": 154,
+      "metric": "macro-F1",
+      "models": {
+        "bf16": {
+          "value": 0.8883116883116883,
+          "official_panel_raw": 0.8883,
+          "answered": 154,
+          "errors": 0
+        },
+        "mlx-int4": {
+          "value": 0.8758194186765615,
+          "official_panel_raw": 0.8758,
+          "answered": 154,
+          "errors": 0
+        },
+        "mirai-int4": {
+          "value": 0.8822510822510823,
+          "official_panel_raw": 0.8823,
+          "answered": 154,
+          "errors": 0
+        }
+      }
+    },
+    {
+      "suite": "roles",
+      "catalog_id": 5,
+      "benchmark": "CLINC150+OOS",
+      "requests": 302,
+      "metric": "macro-F1",
+      "models": {
+        "bf16": {
+          "value": 0.9726269315673289,
+          "official_panel_raw": 0.9726,
+          "answered": 302,
+          "errors": 0
+        },
+        "mlx-int4": {
+          "value": 0.9686534216335541,
+          "official_panel_raw": 0.9687,
+          "answered": 302,
+          "errors": 0
+        },
+        "mirai-int4": {
+          "value": 0.9721854304635762,
+          "official_panel_raw": 0.9722,
+          "answered": 302,
+          "errors": 0
+        }
+      }
+    },
+    {
+      "suite": "roles",
+      "catalog_id": 40,
+      "benchmark": "iSarcasmEval-A-En",
+      "requests": 400,
+      "metric": "sarcastic positive F1",
+      "models": {
+        "bf16": {
+          "value": 0.5485714285714286,
+          "official_panel_raw": 0.5486,
+          "answered": 400,
+          "errors": 0
+        },
+        "mlx-int4": {
+          "value": 0.48,
+          "official_panel_raw": 0.48,
+          "answered": 400,
+          "errors": 0
+        },
+        "mirai-int4": {
+          "value": 0.5274725274725275,
+          "official_panel_raw": 0.5275,
+          "answered": 400,
+          "errors": 0
+        }
+      }
+    },
+    {
+      "suite": "regression",
+      "catalog_id": 12,
+      "benchmark": "ANLI",
+      "requests": 100,
+      "metric": "macro-F1",
+      "models": {
+        "bf16": {
+          "value": 0.6323288436765931,
+          "official_panel_raw": 0.6323,
+          "answered": 100,
+          "errors": 0
+        },
+        "mlx-int4": {
+          "value": 0.6277863927117658,
+          "official_panel_raw": 0.6278,
+          "answered": 100,
+          "errors": 0
+        },
+        "mirai-int4": {
+          "value": 0.6005398110661269,
+          "official_panel_raw": 0.6005,
+          "answered": 100,
+          "errors": 0
+        }
+      }
+    },
+    {
+      "suite": "regression",
+      "catalog_id": 28,
+      "benchmark": "WinoGrande",
+      "requests": 100,
+      "metric": "accuracy",
+      "models": {
+        "bf16": {
+          "value": 0.85,
+          "official_panel_raw": 0.85,
+          "answered": 100,
+          "errors": 0
+        },
+        "mlx-int4": {
+          "value": 0.85,
+          "official_panel_raw": 0.85,
+          "answered": 100,
+          "errors": 0
+        },
+        "mirai-int4": {
+          "value": 0.86,
+          "official_panel_raw": 0.86,
+          "answered": 100,
+          "errors": 0
+        }
+      }
+    },
+    {
+      "suite": "regression",
+      "catalog_id": 29,
+      "benchmark": "HellaSwag",
+      "requests": 100,
+      "metric": "accuracy",
+      "models": {
+        "bf16": {
+          "value": 0.96,
+          "official_panel_raw": 0.96,
+          "answered": 100,
+          "errors": 0
+        },
+        "mlx-int4": {
+          "value": 0.93,
+          "official_panel_raw": 0.93,
+          "answered": 100,
+          "errors": 0
+        },
+        "mirai-int4": {
+          "value": 0.94,
+          "official_panel_raw": 0.94,
+          "answered": 100,
+          "errors": 0
+        }
+      }
+    }
+  ],
+  "suite_summaries": {
+    "roles": {
+      "bf16": {
+        "requests": 1056,
+        "errors": 0,
+        "mean_gold_nll_nats": 0.31213002646372623,
+        "mean_multiclass_brier_sum": 0.17702095247761945,
+        "request_wall_p50_ms": 1576.7320834984275,
+        "request_wall_p95_ms": 2564.4443117471383,
+        "results_jsonl_sha256": "764f424b0f37168784d141e4d951365d63604193b4c3b34a7d665ec89c4b663b",
+        "scores_json_sha256": "4da955db31311df88d393aa7b7fe6634655c533948fa29fc651c21d84ad83542"
+      },
+      "mlx-int4": {
+        "requests": 1056,
+        "errors": 0,
+        "mean_gold_nll_nats": 0.34940288365402034,
+        "mean_multiclass_brier_sum": 0.20126353490527066,
+        "request_wall_p50_ms": 899.3387499995151,
+        "request_wall_p95_ms": 1503.1386665023092,
+        "results_jsonl_sha256": "b3572d30ff255ebe93a1276eb6af1f11fbd2e08760fadf1c9376e99f14947e9f",
+        "scores_json_sha256": "f576a1fd69f186ca6f589aa759458f2c9ca7261b3819916c5bd4966efc9bbb8c"
+      },
+      "mirai-int4": {
+        "requests": 1056,
+        "errors": 0,
+        "mean_gold_nll_nats": 0.3190098346329473,
+        "mean_multiclass_brier_sum": 0.18159354919583248,
+        "request_wall_p50_ms": 655.7541040001524,
+        "request_wall_p95_ms": 1139.8845512499065,
+        "results_jsonl_sha256": "ce1523bcc1988dfd14e510a05a854d134ee25764fed85e958568a9c6d24156dc",
+        "scores_json_sha256": "5db6066c7b11733961fe852c666a89939fa47c7d658a2aeef47f0ad4928db743"
+      }
+    },
+    "regression": {
+      "bf16": {
+        "requests": 300,
+        "errors": 0,
+        "mean_gold_nll_nats": 0.47080415515824675,
+        "mean_multiclass_brier_sum": 0.2656831368132646,
+        "request_wall_p50_ms": 592.8266664996045,
+        "request_wall_p95_ms": 756.640005600093,
+        "results_jsonl_sha256": "79385a1e84afea7cb457b41cb9370bc8f216321f6c4a7881f3054287b11ee093",
+        "scores_json_sha256": "30da45d5fc854fa29643309428221bf60ee6effcdda19a60ad9addca0f5f4c27"
+      },
+      "mlx-int4": {
+        "requests": 300,
+        "errors": 0,
+        "mean_gold_nll_nats": 0.49379484307000515,
+        "mean_multiclass_brier_sum": 0.2795701423346879,
+        "request_wall_p50_ms": 172.1119155008637,
+        "request_wall_p95_ms": 333.5589947482731,
+        "results_jsonl_sha256": "123bf6ef0ed60677171681be5bdfc429bda915b6fd5d2ad1645120022ace1183",
+        "scores_json_sha256": "18767e9d856ac38634c8136fab1cb130ab8788f29edc7d74f772712f0d4c4ed9"
+      },
+      "mirai-int4": {
+        "requests": 300,
+        "errors": 0,
+        "mean_gold_nll_nats": 0.49652168187135337,
+        "mean_multiclass_brier_sum": 0.2772787287483993,
+        "request_wall_p50_ms": 130.41775049987336,
+        "request_wall_p95_ms": 225.5560717507251,
+        "results_jsonl_sha256": "be350d0eff8aedce0bbd2e697a63ac1d8f390daca66a78fac9a6a137ed73f747",
+        "scores_json_sha256": "aaa21c15df23d0fddca8bac6e17b2bf6d50fa7c8ce0f641e1d090f4e2f77135b"
+      }
+    }
+  },
+  "pairwise": {
+    "roles": {
+      "bf16__vs__mlx-int4": {
+        "baseline": "bf16",
+        "candidate": "mlx-int4",
+        "benchmarks": {
+          "4": {
+            "rows": 154,
+            "baseline_correct": 139,
+            "candidate_correct": 137,
+            "baseline_gold_match_rate": 0.9025974025974026,
+            "candidate_gold_match_rate": 0.8896103896103896,
+            "both_correct": 137,
+            "gold_match_regressions": 2,
+            "gold_match_gains": 0,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 154,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 154,
+            "comparable_option_count": 11858,
+            "probability_mae": 0.0008109883504449308,
+            "mean_request_probability_mae": 0.0008109883504449308,
+            "max_probability_delta": 0.28361617829737723,
+            "mean_total_variation": 0.031223051492129835,
+            "max_total_variation": 0.29224929656747106,
+            "mean_kl_baseline_to_candidate_nats": 0.012397785845382873,
+            "mean_kl_candidate_to_baseline_nats": 0.013283571936666525,
+            "mean_jsd_bits": 0.004495899339807939,
+            "top_agreement_count": 151,
+            "top_agreement": 0.9805194805194806
+          },
+          "5": {
+            "rows": 302,
+            "baseline_correct": 294,
+            "candidate_correct": 293,
+            "baseline_gold_match_rate": 0.9735099337748344,
+            "candidate_gold_match_rate": 0.9701986754966887,
+            "both_correct": 292,
+            "gold_match_regressions": 2,
+            "gold_match_gains": 1,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 302,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 302,
+            "comparable_option_count": 45602,
+            "probability_mae": 0.00027975545090741624,
+            "mean_request_probability_mae": 0.00027975545090741624,
+            "max_probability_delta": 0.189939688403777,
+            "mean_total_variation": 0.021121536543509924,
+            "max_total_variation": 0.19811839466032558,
+            "mean_kl_baseline_to_candidate_nats": 0.008361027914932711,
+            "mean_kl_candidate_to_baseline_nats": 0.010738568017056438,
+            "mean_jsd_bits": 0.003290200214707883,
+            "top_agreement_count": 299,
+            "top_agreement": 0.9900662251655629
+          },
+          "40": {
+            "rows": 400,
+            "baseline_correct": 321,
+            "candidate_correct": 296,
+            "baseline_gold_match_rate": 0.8025,
+            "candidate_gold_match_rate": 0.74,
+            "both_correct": 293,
+            "gold_match_regressions": 28,
+            "gold_match_gains": 3,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 400,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 400,
+            "comparable_option_count": 800,
+            "probability_mae": 0.053846526611491134,
+            "mean_request_probability_mae": 0.053846526611491134,
+            "max_probability_delta": 0.42298210103934525,
+            "mean_total_variation": 0.053846526611491134,
+            "max_total_variation": 0.4229821010393452,
+            "mean_kl_baseline_to_candidate_nats": 0.016334608869757863,
+            "mean_kl_candidate_to_baseline_nats": 0.01676466705969475,
+            "mean_jsd_bits": 0.005886701394847907,
+            "top_agreement_count": 369,
+            "top_agreement": 0.9225
+          },
+          "62": {
+            "rows": 200,
+            "baseline_correct": 173,
+            "candidate_correct": 179,
+            "baseline_gold_match_rate": 0.865,
+            "candidate_gold_match_rate": 0.895,
+            "both_correct": 172,
+            "gold_match_regressions": 1,
+            "gold_match_gains": 7,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 200,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 200,
+            "comparable_option_count": 800,
+            "probability_mae": 0.028248367416240087,
+            "mean_request_probability_mae": 0.028248367416240087,
+            "max_probability_delta": 0.4301637830072019,
+            "mean_total_variation": 0.056496734832480175,
+            "max_total_variation": 0.4379208954353282,
+            "mean_kl_baseline_to_candidate_nats": 0.02693470053689095,
+            "mean_kl_candidate_to_baseline_nats": 0.029222147210137467,
+            "mean_jsd_bits": 0.009825062482479982,
+            "top_agreement_count": 192,
+            "top_agreement": 0.96
+          }
+        }
+      },
+      "bf16__vs__mirai-int4": {
+        "baseline": "bf16",
+        "candidate": "mirai-int4",
+        "benchmarks": {
+          "4": {
+            "rows": 154,
+            "baseline_correct": 139,
+            "candidate_correct": 138,
+            "baseline_gold_match_rate": 0.9025974025974026,
+            "candidate_gold_match_rate": 0.8961038961038961,
+            "both_correct": 138,
+            "gold_match_regressions": 1,
+            "gold_match_gains": 0,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 154,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 154,
+            "comparable_option_count": 11858,
+            "probability_mae": 0.000840959274401663,
+            "mean_request_probability_mae": 0.000840959274401663,
+            "max_probability_delta": 0.2123743667224437,
+            "mean_total_variation": 0.03237693206446403,
+            "max_total_variation": 0.2635016626665371,
+            "mean_kl_baseline_to_candidate_nats": 0.012341111006424614,
+            "mean_kl_candidate_to_baseline_nats": 0.013015199533000784,
+            "mean_jsd_bits": 0.004454967159564376,
+            "top_agreement_count": 152,
+            "top_agreement": 0.987012987012987
+          },
+          "5": {
+            "rows": 302,
+            "baseline_correct": 294,
+            "candidate_correct": 294,
+            "baseline_gold_match_rate": 0.9735099337748344,
+            "candidate_gold_match_rate": 0.9735099337748344,
+            "both_correct": 293,
+            "gold_match_regressions": 1,
+            "gold_match_gains": 1,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 302,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 302,
+            "comparable_option_count": 45602,
+            "probability_mae": 0.00020328836730075704,
+            "mean_request_probability_mae": 0.00020328836730075704,
+            "max_probability_delta": 0.45399806371743423,
+            "mean_total_variation": 0.015348271731207156,
+            "max_total_variation": 0.4726588412159969,
+            "mean_kl_baseline_to_candidate_nats": 0.008118644063074009,
+            "mean_kl_candidate_to_baseline_nats": 0.007997764342301579,
+            "mean_jsd_bits": 0.0026950914545629694,
+            "top_agreement_count": 300,
+            "top_agreement": 0.9933774834437086
+          },
+          "40": {
+            "rows": 400,
+            "baseline_correct": 321,
+            "candidate_correct": 314,
+            "baseline_gold_match_rate": 0.8025,
+            "candidate_gold_match_rate": 0.785,
+            "both_correct": 308,
+            "gold_match_regressions": 13,
+            "gold_match_gains": 6,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 400,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 400,
+            "comparable_option_count": 800,
+            "probability_mae": 0.047078496957577445,
+            "mean_request_probability_mae": 0.047078496957577445,
+            "max_probability_delta": 0.31681763940413465,
+            "mean_total_variation": 0.047078496957577445,
+            "max_total_variation": 0.31681763940413465,
+            "mean_kl_baseline_to_candidate_nats": 0.013177675264280486,
+            "mean_kl_candidate_to_baseline_nats": 0.012681106759044804,
+            "mean_jsd_bits": 0.00460410078067471,
+            "top_agreement_count": 381,
+            "top_agreement": 0.9525
+          },
+          "62": {
+            "rows": 200,
+            "baseline_correct": 173,
+            "candidate_correct": 177,
+            "baseline_gold_match_rate": 0.865,
+            "candidate_gold_match_rate": 0.885,
+            "both_correct": 173,
+            "gold_match_regressions": 0,
+            "gold_match_gains": 4,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 200,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 200,
+            "comparable_option_count": 800,
+            "probability_mae": 0.026319949934292854,
+            "mean_request_probability_mae": 0.026319949934292854,
+            "max_probability_delta": 0.34231511478697957,
+            "mean_total_variation": 0.05263989986858571,
+            "max_total_variation": 0.34231511478697957,
+            "mean_kl_baseline_to_candidate_nats": 0.020064235439707805,
+            "mean_kl_candidate_to_baseline_nats": 0.022106550896603017,
+            "mean_jsd_bits": 0.007455809585475,
+            "top_agreement_count": 196,
+            "top_agreement": 0.98
+          }
+        }
+      },
+      "mlx-int4__vs__mirai-int4": {
+        "baseline": "mlx-int4",
+        "candidate": "mirai-int4",
+        "benchmarks": {
+          "4": {
+            "rows": 154,
+            "baseline_correct": 137,
+            "candidate_correct": 138,
+            "baseline_gold_match_rate": 0.8896103896103896,
+            "candidate_gold_match_rate": 0.8961038961038961,
+            "both_correct": 136,
+            "gold_match_regressions": 1,
+            "gold_match_gains": 2,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 154,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 154,
+            "comparable_option_count": 11858,
+            "probability_mae": 0.0010202622705678041,
+            "mean_request_probability_mae": 0.0010202622705678041,
+            "max_probability_delta": 0.23162614654240696,
+            "mean_total_variation": 0.03928009741686046,
+            "max_total_variation": 0.23240671631705162,
+            "mean_kl_baseline_to_candidate_nats": 0.020197371920773276,
+            "mean_kl_candidate_to_baseline_nats": 0.02089531533142213,
+            "mean_jsd_bits": 0.0070629084542191784,
+            "top_agreement_count": 151,
+            "top_agreement": 0.9805194805194806
+          },
+          "5": {
+            "rows": 302,
+            "baseline_correct": 293,
+            "candidate_correct": 294,
+            "baseline_gold_match_rate": 0.9701986754966887,
+            "candidate_gold_match_rate": 0.9735099337748344,
+            "both_correct": 292,
+            "gold_match_regressions": 1,
+            "gold_match_gains": 2,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 302,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 302,
+            "comparable_option_count": 45602,
+            "probability_mae": 0.0003163760292228973,
+            "mean_request_probability_mae": 0.0003163760292228973,
+            "max_probability_delta": 0.38280660564268043,
+            "mean_total_variation": 0.02388639020632875,
+            "max_total_variation": 0.45061992317834065,
+            "mean_kl_baseline_to_candidate_nats": 0.014807818687834953,
+            "mean_kl_candidate_to_baseline_nats": 0.012432813547859287,
+            "mean_jsd_bits": 0.004611127138755689,
+            "top_agreement_count": 299,
+            "top_agreement": 0.9900662251655629
+          },
+          "40": {
+            "rows": 400,
+            "baseline_correct": 296,
+            "candidate_correct": 314,
+            "baseline_gold_match_rate": 0.74,
+            "candidate_gold_match_rate": 0.785,
+            "both_correct": 286,
+            "gold_match_regressions": 10,
+            "gold_match_gains": 28,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 400,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 400,
+            "comparable_option_count": 800,
+            "probability_mae": 0.0672274015060043,
+            "mean_request_probability_mae": 0.0672274015060043,
+            "max_probability_delta": 0.45827329743860834,
+            "mean_total_variation": 0.0672274015060043,
+            "max_total_variation": 0.45827329743860834,
+            "mean_kl_baseline_to_candidate_nats": 0.027886408661939463,
+            "mean_kl_candidate_to_baseline_nats": 0.025884554386727675,
+            "mean_jsd_bits": 0.009467541052546213,
+            "top_agreement_count": 362,
+            "top_agreement": 0.905
+          },
+          "62": {
+            "rows": 200,
+            "baseline_correct": 179,
+            "candidate_correct": 177,
+            "baseline_gold_match_rate": 0.895,
+            "candidate_gold_match_rate": 0.885,
+            "both_correct": 173,
+            "gold_match_regressions": 6,
+            "gold_match_gains": 4,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 200,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 200,
+            "comparable_option_count": 800,
+            "probability_mae": 0.03773882436590871,
+            "mean_request_probability_mae": 0.03773882436590871,
+            "max_probability_delta": 0.501345403021631,
+            "mean_total_variation": 0.07547764873181742,
+            "max_total_variation": 0.501345403021631,
+            "mean_kl_baseline_to_candidate_nats": 0.04536355550665676,
+            "mean_kl_candidate_to_baseline_nats": 0.044663001269596575,
+            "mean_jsd_bits": 0.015615293632123557,
+            "top_agreement_count": 190,
+            "top_agreement": 0.95
+          }
+        }
+      }
+    },
+    "regression": {
+      "bf16__vs__mlx-int4": {
+        "baseline": "bf16",
+        "candidate": "mlx-int4",
+        "benchmarks": {
+          "12": {
+            "rows": 100,
+            "baseline_correct": 64,
+            "candidate_correct": 63,
+            "baseline_gold_match_rate": 0.64,
+            "candidate_gold_match_rate": 0.63,
+            "both_correct": 58,
+            "gold_match_regressions": 6,
+            "gold_match_gains": 5,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 100,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 100,
+            "comparable_option_count": 300,
+            "probability_mae": 0.055749483506098325,
+            "mean_request_probability_mae": 0.055749483506098325,
+            "max_probability_delta": 0.4614345952031617,
+            "mean_total_variation": 0.08362422525914749,
+            "max_total_variation": 0.4614345952031617,
+            "mean_kl_baseline_to_candidate_nats": 0.04472006495833457,
+            "mean_kl_candidate_to_baseline_nats": 0.04773107147896366,
+            "mean_jsd_bits": 0.01598208473673876,
+            "top_agreement_count": 88,
+            "top_agreement": 0.88
+          },
+          "28": {
+            "rows": 100,
+            "baseline_correct": 85,
+            "candidate_correct": 85,
+            "baseline_gold_match_rate": 0.85,
+            "candidate_gold_match_rate": 0.85,
+            "both_correct": 85,
+            "gold_match_regressions": 0,
+            "gold_match_gains": 0,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 100,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 100,
+            "comparable_option_count": 200,
+            "probability_mae": 0.027655638937694606,
+            "mean_request_probability_mae": 0.027655638937694606,
+            "max_probability_delta": 0.27842952555647416,
+            "mean_total_variation": 0.027655638937694606,
+            "max_total_variation": 0.27842952555647416,
+            "mean_kl_baseline_to_candidate_nats": 0.011003925666418526,
+            "mean_kl_candidate_to_baseline_nats": 0.014313872591166366,
+            "mean_jsd_bits": 0.004328403786501632,
+            "top_agreement_count": 100,
+            "top_agreement": 1.0
+          },
+          "29": {
+            "rows": 100,
+            "baseline_correct": 96,
+            "candidate_correct": 93,
+            "baseline_gold_match_rate": 0.96,
+            "candidate_gold_match_rate": 0.93,
+            "both_correct": 93,
+            "gold_match_regressions": 3,
+            "gold_match_gains": 0,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 100,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 100,
+            "comparable_option_count": 400,
+            "probability_mae": 0.017344409777368484,
+            "mean_request_probability_mae": 0.017344409777368484,
+            "max_probability_delta": 0.8069112298795629,
+            "mean_total_variation": 0.03468881955473697,
+            "max_total_variation": 0.8069112298795629,
+            "mean_kl_baseline_to_candidate_nats": 0.04014768897058322,
+            "mean_kl_candidate_to_baseline_nats": 0.04616445476129024,
+            "mean_jsd_bits": 0.013205108327740701,
+            "top_agreement_count": 97,
+            "top_agreement": 0.97
+          }
+        }
+      },
+      "bf16__vs__mirai-int4": {
+        "baseline": "bf16",
+        "candidate": "mirai-int4",
+        "benchmarks": {
+          "12": {
+            "rows": 100,
+            "baseline_correct": 64,
+            "candidate_correct": 60,
+            "baseline_gold_match_rate": 0.64,
+            "candidate_gold_match_rate": 0.6,
+            "both_correct": 56,
+            "gold_match_regressions": 8,
+            "gold_match_gains": 4,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 100,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 100,
+            "comparable_option_count": 300,
+            "probability_mae": 0.04151963849734756,
+            "mean_request_probability_mae": 0.04151963849734756,
+            "max_probability_delta": 0.33625852357996694,
+            "mean_total_variation": 0.06227945774602133,
+            "max_total_variation": 0.33625852357996694,
+            "mean_kl_baseline_to_candidate_nats": 0.02505044520329436,
+            "mean_kl_candidate_to_baseline_nats": 0.02496980211994753,
+            "mean_jsd_bits": 0.008830499668577265,
+            "top_agreement_count": 88,
+            "top_agreement": 0.88
+          },
+          "28": {
+            "rows": 100,
+            "baseline_correct": 85,
+            "candidate_correct": 86,
+            "baseline_gold_match_rate": 0.85,
+            "candidate_gold_match_rate": 0.86,
+            "both_correct": 84,
+            "gold_match_regressions": 1,
+            "gold_match_gains": 2,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 100,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 100,
+            "comparable_option_count": 200,
+            "probability_mae": 0.02782600643965796,
+            "mean_request_probability_mae": 0.02782600643965796,
+            "max_probability_delta": 0.4212419569890389,
+            "mean_total_variation": 0.02782600643965796,
+            "max_total_variation": 0.4212419569890389,
+            "mean_kl_baseline_to_candidate_nats": 0.012261518950918017,
+            "mean_kl_candidate_to_baseline_nats": 0.014224092400451839,
+            "mean_jsd_bits": 0.004594815164690425,
+            "top_agreement_count": 97,
+            "top_agreement": 0.97
+          },
+          "29": {
+            "rows": 100,
+            "baseline_correct": 96,
+            "candidate_correct": 94,
+            "baseline_gold_match_rate": 0.96,
+            "candidate_gold_match_rate": 0.94,
+            "both_correct": 94,
+            "gold_match_regressions": 2,
+            "gold_match_gains": 0,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 100,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 100,
+            "comparable_option_count": 400,
+            "probability_mae": 0.010092256510562031,
+            "mean_request_probability_mae": 0.010092256510562031,
+            "max_probability_delta": 0.7046925113087827,
+            "mean_total_variation": 0.020184513021124062,
+            "max_total_variation": 0.7046925113087827,
+            "mean_kl_baseline_to_candidate_nats": 0.01745497987934486,
+            "mean_kl_candidate_to_baseline_nats": 0.021358070068886847,
+            "mean_jsd_bits": 0.006248860109291941,
+            "top_agreement_count": 98,
+            "top_agreement": 0.98
+          }
+        }
+      },
+      "mlx-int4__vs__mirai-int4": {
+        "baseline": "mlx-int4",
+        "candidate": "mirai-int4",
+        "benchmarks": {
+          "12": {
+            "rows": 100,
+            "baseline_correct": 63,
+            "candidate_correct": 60,
+            "baseline_gold_match_rate": 0.63,
+            "candidate_gold_match_rate": 0.6,
+            "both_correct": 54,
+            "gold_match_regressions": 9,
+            "gold_match_gains": 6,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 100,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 100,
+            "comparable_option_count": 300,
+            "probability_mae": 0.06408962842154364,
+            "mean_request_probability_mae": 0.06408962842154364,
+            "max_probability_delta": 0.5695829175345384,
+            "mean_total_variation": 0.09613444263231545,
+            "max_total_variation": 0.5695829175345384,
+            "mean_kl_baseline_to_candidate_nats": 0.06920416266547547,
+            "mean_kl_candidate_to_baseline_nats": 0.0607278989972721,
+            "mean_jsd_bits": 0.021883488241758772,
+            "top_agreement_count": 84,
+            "top_agreement": 0.84
+          },
+          "28": {
+            "rows": 100,
+            "baseline_correct": 85,
+            "candidate_correct": 86,
+            "baseline_gold_match_rate": 0.85,
+            "candidate_gold_match_rate": 0.86,
+            "both_correct": 84,
+            "gold_match_regressions": 1,
+            "gold_match_gains": 2,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 100,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 100,
+            "comparable_option_count": 200,
+            "probability_mae": 0.04007108629420459,
+            "mean_request_probability_mae": 0.04007108629420459,
+            "max_probability_delta": 0.34557958474749334,
+            "mean_total_variation": 0.04007108629420459,
+            "max_total_variation": 0.3455795847474933,
+            "mean_kl_baseline_to_candidate_nats": 0.02162912509970748,
+            "mean_kl_candidate_to_baseline_nats": 0.020130113125170494,
+            "mean_jsd_bits": 0.007260766547954601,
+            "top_agreement_count": 97,
+            "top_agreement": 0.97
+          },
+          "29": {
+            "rows": 100,
+            "baseline_correct": 93,
+            "candidate_correct": 94,
+            "baseline_gold_match_rate": 0.93,
+            "candidate_gold_match_rate": 0.94,
+            "both_correct": 92,
+            "gold_match_regressions": 1,
+            "gold_match_gains": 2,
+            "gold_match_counts_are_not_official_f1_deltas": true,
+            "both_successful_source_valid": 100,
+            "probability_excluded_rows": 0,
+            "comparable_requests": 100,
+            "comparable_option_count": 400,
+            "probability_mae": 0.016465328274026664,
+            "mean_request_probability_mae": 0.016465328274026664,
+            "max_probability_delta": 0.8055376468739287,
+            "mean_total_variation": 0.03293065654805333,
+            "max_total_variation": 0.8055376468739287,
+            "mean_kl_baseline_to_candidate_nats": 0.03903291030247103,
+            "mean_kl_candidate_to_baseline_nats": 0.03639413753580321,
+            "mean_jsd_bits": 0.011521016396940658,
+            "top_agreement_count": 97,
+            "top_agreement": 0.97
+          }
+        }
+      }
+    }
+  },
+  "storage": {
+    "unit": "Logical bytes, not allocated disk/RSS/GPU memory",
+    "scope": "All variants text-only; count active FP32 readout once. Whole bundles also include its duplicated preserved sidecar and other files, excluding Python bytecode.",
+    "models": {
+      "bf16": {
+        "active_text_plus_one_readout_bytes": 15879669760,
+        "native_bundle_excluding_python_bytecode_bytes": 15907244516,
+        "embedding_payload_bytes": 2034237440,
+        "projection_payload_bytes": 13837008896,
+        "native_conversion_manifest_sha256": "6992de2059e4f01f4e15a05372a54ea686267fc6852f4dcd7c8f21f083c7ebdc"
+      },
+      "mlx-int4": {
+        "active_text_plus_one_readout_bytes": 5934319616,
+        "native_bundle_excluding_python_bytecode_bytes": 5961712453,
+        "embedding_payload_bytes": 2034237440,
+        "projection_payload_bytes": 3891658752,
+        "native_conversion_manifest_sha256": "26e35616fad1cfd465f8e4f0e408cfcc9ddad158675e26c3b2c091a1d68a0e20"
+      },
+      "mirai-int4": {
+        "active_text_plus_one_readout_bytes": 4605075456,
+        "native_bundle_excluding_python_bytecode_bytes": 4632692204,
+        "embedding_payload_bytes": 588038144,
+        "projection_payload_bytes": 4008613888,
+        "native_conversion_manifest_sha256": "91a048381a688d69111887baada2b0c4be54cb06d11a59985128c37e1980b694"
+      }
+    }
+  },
+  "source_mps_to_native_engine_oracles": {
+    "bf16": {
+      "paired_questions": 8,
+      "same_top_count": 8,
+      "max_probability_difference": 0.008769438584512096,
+      "mean_total_variation": 0.0019289780009930924,
+      "contract_hashes_equal": true,
+      "scope": "8 selected role smoke requests; this checks engine behavior on these requests and does not prove identical predictions on the full suite."
+    },
+    "mlx-int4": {
+      "paired_questions": 8,
+      "same_top_count": 8,
+      "max_probability_difference": 0.004243119091053682,
+      "mean_total_variation": 0.0014222340007154547,
+      "contract_hashes_equal": true,
+      "scope": "8 selected role smoke requests; this checks engine behavior on these requests and does not prove identical predictions on the full suite."
+    }
+  },
+  "local_audit_artifact_sha256": {
+    "REPORT.md": "bb6ce51d35993dd50bc85c1bdfcaaed6cfe87f4db020f4ee99b2b09dff36db5c",
+    "FINAL_VERIFICATION.json": "6d58a46ba9f917cd371103949cc32753bcce93ff942898bb3493754efb7e8d77",
+    "FROZEN_ARTIFACTS.json": "d4dc04f971b0edb8e049ee2420b31ab77e1787bf76a5e45b2fc4602bbd549e45",
+    "REPRODUCTION_FILES.json": "198c328b8778aa1b51a7cbb95237d19ab64e7264d1e26e6b68f3a7868d34a749",
+    "STORAGE.json": "305f55fb830c40036af1307db1f199bd3a04825da79ec32700065877141b5430",
+    "roles/comparison.json": "3aa1688f8da1b11b640f443f3f3c4dccc26323112e53c39b981b6753718a695e",
+    "regression/comparison.json": "af1a1800f0e5f5f7d6167b83b4843c1ab44e6c352fc32dff5e6f67e0ace6c046"
+  },
+  "publication_scope": "Aggregate measurements and artifact hashes only. Model weights, benchmark payloads, raw responses, engine adapter and application details are not distributed here. The full raw run and reproduction archive are retained locally."
+}
