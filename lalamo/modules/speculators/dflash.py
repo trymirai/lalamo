@@ -156,7 +156,6 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
         )
         weights = qkvg_projections[0].weights.spec.compress(
             key_value_weights,
-            key=jax.random.key(0),
             sharding_config=self.state_kv_projection.weights.sharding_config,
             is_sharded=self.state_kv_projection.weights.is_sharded,
         )

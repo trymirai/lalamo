@@ -11,7 +11,12 @@ from jax.sharding import AbstractDevice, AbstractMesh, use_abstract_mesh
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.kernels.attention import pallas_decode_attention, stable_reduction_attention, xla_attention
+from lalamo.kernels.attention import (
+    pallas_decode_attention,
+    pallas_training_attention,
+    stable_reduction_attention,
+    xla_attention,
+)
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
@@ -50,12 +55,30 @@ def _attention_kernel(
     values: Float[Array, "src_tokens groups head_channels"],
     *,
     bias: Float[Array, "heads dst_tokens src_tokens"] | None,
-    mask: Bool[Array, "dst_tokens src_tokens"],
+    mask: Bool[Array, "dst_tokens src_tokens"] | None,
+    is_causal: bool,
+    sliding_window_size: int | None,
     scale: float | None,
     logit_soft_cap: float | None,
     forward_pass_config: MixerForwardPassConfig,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
     match forward_pass_config.attention_implementation:
+        case AttentionImplementation.CUDNN:
+            if logit_soft_cap is not None:
+                raise ValueError("cuDNN attention does not support logit soft-capping.")
+            return jax.nn.dot_product_attention(
+                queries,
+                keys,
+                values,
+                bias=bias,
+                mask=mask,
+                scale=scale,
+                is_causal=is_causal,
+                local_window_size=(sliding_window_size - 1, 0)
+                if sliding_window_size is not None
+                else None,
+                implementation="cudnn",
+            )
         case AttentionImplementation.PALLAS:
             return pallas_decode_attention(
                 queries,
@@ -66,6 +89,15 @@ def _attention_kernel(
                 scale,
                 logit_soft_cap,
             )
+        case AttentionImplementation.PALLAS_TRAINING:
+            if bias is not None or mask is not None or not is_causal:
+                raise ValueError("Pallas training attention requires unmasked causal attention without bias.")
+            if sliding_window_size is not None or logit_soft_cap is not None:
+                raise ValueError("Pallas training attention does not support sliding windows or logit soft-capping.")
+            return jax.sharding.auto_axes(
+                pallas_training_attention,
+                out_sharding=jax.typeof(queries).sharding,
+            )(queries, keys, values, scale)
         case AttentionImplementation.XLA:
             return xla_attention(
                 queries,
@@ -313,7 +345,14 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 updated_state = state.extend(keys, values, added_length=length_without_padding)
 
         queries = queries.astype(updated_state.keys.dtype)
-        if attention_parent_indices is not None:
+        if forward_pass_config.attention_implementation in {
+            AttentionImplementation.CUDNN,
+            AttentionImplementation.PALLAS_TRAINING,
+        }:
+            if state is not None or length_without_padding is not None or attention_parent_indices is not None:
+                raise ValueError("Fused training attention requires an unpadded sequence without a prefilled cache.")
+            mask = None
+        elif attention_parent_indices is not None:
             mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices)
         else:
             mask = updated_state.attention_mask(
@@ -334,6 +373,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             updated_state.values,
             bias=sink_bias,
             mask=mask,
+            is_causal=self.config.is_causal,
+            sliding_window_size=self.config.sliding_window_size,
             scale=self.config.scale,
             logit_soft_cap=self.config.logit_soft_cap,
             forward_pass_config=forward_pass_config,

@@ -6,7 +6,7 @@ from typing import Literal
 import jax.numpy as jnp
 from jax.lax import stop_gradient
 from jax.sharding import NamedSharding
-from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
+from jaxtyping import Array, DTypeLike, Float, Int, UInt8
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
@@ -343,6 +343,7 @@ def _master_weights_to_packed_weight_indices(
     bits: int,
     bias_bits: int | None,
     group_size: int,
+    keychain: Keychain | None = None,
     weight_sharding: NamedSharding,
     parameter_sharding: NamedSharding,
     grouped_values_sharding: NamedSharding,
@@ -372,6 +373,10 @@ def _master_weights_to_packed_weight_indices(
         bits=bits,
         bias_bits=bias_bits,
         group_size=group_size,
+        keychain=keychain,
+        gradient_estimator=(
+            GradientEstimator.DETERMINISTIC_ROUNDING if keychain is None else GradientEstimator.STOCHASTIC_ROUNDING
+        ),
         out_sharding=grouped_values_sharding,
     )
     *leading_dims, groups, group_width = grouped_weight_indices.shape
@@ -423,9 +428,10 @@ class LloydMaxSpec(QuantizedSpec):
         self,
         weights: Float[Array, "*components out_channels in_channels"],
         *,
-        key: Key[Array, ""] | None = None,  # noqa: ARG002
+        keychain: Keychain | None = None,
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        stochastic: bool = False,
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "LloydMaxMatrix":
@@ -474,6 +480,9 @@ class LloydMaxSpec(QuantizedSpec):
                 master_biases=master_biases,
             )
 
+        if stochastic and keychain is None:
+            raise ValueError("Stochastic compression requires a keychain.")
+
         packed_weight_indices = _master_weights_to_packed_weight_indices(
             stored_weights,
             master_scales,
@@ -481,6 +490,7 @@ class LloydMaxSpec(QuantizedSpec):
             bits=self.bits,
             bias_bits=self.bias_bits,
             group_size=self.group_size,
+            keychain=keychain if stochastic else None,
             weight_sharding=weight_sharding,
             parameter_sharding=parameter_sharding,
             grouped_values_sharding=grouped_values_sharding,

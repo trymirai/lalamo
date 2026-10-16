@@ -90,3 +90,25 @@ def chunk_delta_forward(
         end_state,
         end_prop,
     )
+
+
+def inter_chunk_scan(
+    initial_state: Float[Array, "heads value_channels key_channels"],
+    end_state: Float[Array, "num_chunks heads value_channels key_channels"],
+    end_prop: Float[Array, "num_chunks heads key_channels key_channels"],
+) -> tuple[
+    Float[Array, "heads value_channels key_channels"],
+    Float[Array, "num_chunks heads value_channels key_channels"],
+]:
+    """Final state and the state before every chunk of `state <- end + state @ prop`.
+
+    The steps are tiny, so the scan is unrolled to amortise the launch latency (an
+    associative scan moves far more data and is slower here).
+    """
+
+    def step(state: Array, chunk: tuple[Array, Array]) -> tuple[Array, Array]:
+        end, prop = chunk
+        return end + state @ prop, state
+
+    with use_dot_algorithm_preset(DotAlgorithmPreset.F32_F32_F32):
+        return jax.lax.scan(step, initial_state, (end_state, end_prop), unroll=8)

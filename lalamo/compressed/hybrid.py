@@ -5,7 +5,6 @@ from typing import Literal
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jax.core import Tracer
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.kernels.hadamard import hadamard_transform
@@ -233,28 +232,26 @@ class HybridSpec(WeightMatrixSpec):
     incoherence_block_size: Literal[32, 64, 128] | None = 32
     incoherence_processing_mode: IncoherenceProcessingMode = IncoherenceProcessingMode.INPUT_OUTPUT
 
+    @property
+    def layout(self) -> Layout:
+        return self.quantization_spec.layout
+
     @supports_dummy_arrays()
     def compress(
         self,
         weights: Float[Array, "*components out_channels in_channels"],
         *,
-        key: Key[Array, ""] | None = None,
+        keychain: Keychain | None = None,
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        stochastic: bool = False,
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "HybridMatrix":
         *_, output_dim, input_dim = weights.shape
-        if key is None and isinstance(weights, Tracer):
-            key = jax.random.key(0)
-
-        if key is not None:
-            quantization_key, adapter_key = jax.random.split(key, 2)
-            incoherence_key = jax.random.key(
-                42
-            )  # We use the same shared keys for matrices of the same size to enable RHT fusion.
-        else:
-            quantization_key, adapter_key, incoherence_key = None, None, None
+        incoherence_key = jax.random.key(
+            42
+        )  # We use the same shared keys for matrices of the same size to enable RHT fusion.
 
         incoherence_signs = None
         quantization_preconditioner = preconditioner
@@ -277,45 +274,20 @@ class HybridSpec(WeightMatrixSpec):
 
         quantized = self.quantization_spec.compress(
             weights,
-            key=quantization_key,
+            keychain=keychain,
             preconditioner=quantization_preconditioner,
             implementation=implementation,
+            stochastic=stochastic,
             sharding_config=sharding_config,
             is_sharded=is_sharded,
         )
-        if self.adapter_spec is not None:
-            residual = weights - quantized.decompress()
-            adapter_preconditioner = preconditioner
-            if incoherence_signs is not None:
-                assert self.incoherence_block_size is not None
-                residual = incoherence_signs.unprocess_weight_input_axis(
-                    residual,
-                    self.incoherence_block_size,
-                    sharding_config,
-                )
-                if preconditioner is not None:
-                    assert quantization_preconditioner is not None
-                    adapter_preconditioner = Preconditioner.init(
-                        input_block=preconditioner.input_block,
-                        output_block=quantization_preconditioner.output_block,
-                    )
-            adapter = self.adapter_spec.compress(
-                residual,
-                key=adapter_key,
-                preconditioner=adapter_preconditioner,
-                implementation=implementation,
-                sharding_config=sharding_config,
-                is_sharded=is_sharded,
-            )
-        else:
-            adapter = None
-
+        # Adapters are fitted separately; compress is the fastest construction path.
         return HybridMatrix(
             spec=self,
             sharding_config=sharding_config,
             is_sharded=is_sharded,
             quantized=quantized,
-            adapter=adapter,
+            adapter=None,
             incoherence_signs=incoherence_signs,
         )
 

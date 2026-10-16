@@ -296,8 +296,10 @@ class RoutingFunction(LalamoConfig, RegistryABC):
 class SoftmaxRouting(RoutingFunction):
     def call_unbatched(self, logits: Float[Array, " experts"], num_active: int) -> RoutingMap:
         *_, num_experts = logits.shape
-        active_logits, active_indices = jax.lax.top_k(logits, num_active)
-        active_weights = jax.nn.softmax(active_logits)
+        # The routing weights in float32, cast back afterwards (as the HF reference does): bf16 exp/normalisation
+        # error on every token's expert weights is avoidable for a few hundred logits.
+        active_logits, active_indices = jax.lax.top_k(logits.astype(jnp.float32), num_active)
+        active_weights = jax.nn.softmax(active_logits).astype(logits.dtype)
         active_mask = jax.nn.one_hot(active_indices, num_experts, dtype=bool)
         mask = jnp.any(active_mask, axis=0)
         active_weight_mask = jax.nn.one_hot(active_indices, num_experts, dtype=logits.dtype)

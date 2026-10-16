@@ -11,7 +11,7 @@ from cattrs import GenConverter
 from jax import ShapeDtypeStruct
 from jax.lax import DotAlgorithmPreset, dot_general
 from jax.sharding import NamedSharding
-from jaxtyping import Array, DTypeLike, Float, Int, Key
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable, ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
@@ -83,6 +83,10 @@ class MatmulConfig:
 class WeightMatrixSpec(RegistryABC):
     _converter: ClassVar[GenConverter] = make_registry_abc_converter()
 
+    @property
+    @abstractmethod
+    def layout(self) -> "Layout": ...
+
     @classmethod
     def from_json(cls, json_object: JSON) -> Self:
         return cls._converter.structure(json_object, cls)
@@ -96,9 +100,10 @@ class WeightMatrixSpec(RegistryABC):
         self,
         weights: Float[Array, "*components out_channels in_channels"],
         *,
-        key: Key[Array, ""] | None = None,
+        keychain: Keychain | None = None,
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        stochastic: bool = False,
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "WeightMatrix": ...
@@ -155,6 +160,18 @@ class WeightMatrix(RegistryABC, Exportable, eqx.Module, Generic[WeightMatrixSpec
     @property
     def ndim(self) -> int:
         return len(self.shape)
+
+    @property
+    def input_channels(self) -> int:
+        if self.spec.layout == Layout.INPUT_OUTPUT:
+            return self.shape[-2]
+        return self.shape[-1]
+
+    @property
+    def output_channels(self) -> int:
+        if self.spec.layout == Layout.INPUT_OUTPUT:
+            return self.shape[-1]
+        return self.shape[-2]
 
     @property
     def numel(self) -> int:
@@ -335,9 +352,10 @@ class FullPrecisionSpec(WeightMatrixSpec):
         self,
         weights: Float[Array, "*components out_channels in_channels"],
         *,
-        key: Key[Array, ""] | None = None,  # noqa: ARG002
+        keychain: Keychain | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,  # noqa: ARG002
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
+        stochastic: bool = False,  # noqa: ARG002
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "FullPrecisionMatrix":
@@ -440,9 +458,10 @@ class ShapeDtypeSpec(WeightMatrixSpec):
         self,
         weights: Float[Array, "*components out_channels in_channels"],
         *,
-        key: Key[Array, ""] | None = None,  # noqa: ARG002
+        keychain: Keychain | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,  # noqa: ARG002
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
+        stochastic: bool = False,  # noqa: ARG002
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "ShapeDtypeMatrix":

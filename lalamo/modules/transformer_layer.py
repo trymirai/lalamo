@@ -19,6 +19,7 @@ from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPEConfig
 from .token_mixer import (
+    AttentionImplementation,
     MixerForwardPassConfig,
     PositionalEmbeddingSelector,
     StateLayerBase,
@@ -69,9 +70,15 @@ class TransformerForwardPassConfig:
         cls,
         gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
         precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
+        *,
+        attention_implementation: AttentionImplementation = AttentionImplementation.XLA,
     ) -> Self:
         return cls(
-            mixer_forward_pass_config=MixerForwardPassConfig.for_training(gradient_estimator, precision),
+            mixer_forward_pass_config=MixerForwardPassConfig.for_training(
+                gradient_estimator,
+                precision,
+                attention_implementation=attention_implementation,
+            ),
             mlp_forward_pass_config=MLPForwardPassConfig.for_training(gradient_estimator, precision),
         )
 

@@ -22,7 +22,7 @@ from lalamo.modules.token_mixer import (
 from lalamo.modules.token_mixers.convolutions import ConvPrecision
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
-from .chunked_delta import chunk_delta_forward
+from .chunked_delta import chunk_delta_forward, inter_chunk_scan
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .ssm_state import SSMStateLayer
 
@@ -223,30 +223,10 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             beta=beta_c,
         )
 
-        def _inter_chunk_step(
-            actual_state: Float[Array, "heads value_channels key_channels"],
-            chunk_data: tuple[
-                Float[Array, "heads value_channels key_channels"],
-                Float[Array, "heads key_channels key_channels"],
-            ],
-        ) -> tuple[
-            Float[Array, "heads value_channels key_channels"],
-            Float[Array, "heads value_channels key_channels"],
-        ]:
-            local_end, prop_matrix = chunk_data
-            next_state = local_end + einops.einsum(
-                actual_state,
-                prop_matrix,
-                "heads value_channels key_channels_in,"
-                " heads key_channels_in key_channels_out"
-                " -> heads value_channels key_channels_out",
-            )
-            return next_state, actual_state
-
-        final_state, chunk_initials = jax.lax.scan(
-            _inter_chunk_step,
+        final_state, chunk_initials = inter_chunk_scan(
             initial_state,
-            (chunk_results.end_state, chunk_results.end_prop),
+            chunk_results.end_state,
+            chunk_results.end_prop,
         )
 
         corrections = einops.einsum(

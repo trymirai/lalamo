@@ -7,7 +7,7 @@ from typing import Literal, NamedTuple, Self
 import jax.numpy as jnp
 from jax.lax import stop_gradient
 from jax.sharding import NamedSharding
-from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
+from jaxtyping import Array, DTypeLike, Float, Int, UInt8
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
@@ -75,6 +75,7 @@ class MicrofloatParameters(NamedTuple):
         scale_mode: MicrofloatScaleMode,
         *,
         scale_sharding: NamedSharding | None = None,
+        global_scale_sharding: NamedSharding,
     ) -> Self:
         group_absmax = jnp.max(jnp.abs(group_by_last_axis(weights, group_size=group_size)), axis=-1)
         matrix_absmax = jnp.max(jnp.abs(weights), axis=(-2, -1))
@@ -82,7 +83,7 @@ class MicrofloatParameters(NamedTuple):
             packed_scales = pack_e8m0_scales(group_absmax / 4, out_sharding=scale_sharding)
             return cls(
                 scales=e8m0_scale_values(packed_scales, weights.dtype),
-                global_scale=jnp.ones_like(matrix_absmax),
+                global_scale=with_sharding(jnp.ones_like(matrix_absmax), global_scale_sharding),
             )
 
         scale_max = jnp.asarray(jnp.finfo(jnp.float8_e4m3fn).max, dtype=matrix_absmax.dtype) * 6
@@ -92,7 +93,7 @@ class MicrofloatParameters(NamedTuple):
                 group_absmax / (6 * global_scale[..., None, None]),
                 out_sharding=scale_sharding,
             ).astype(weights.dtype),
-            global_scale=global_scale,
+            global_scale=with_sharding(global_scale, global_scale_sharding),
         )
 
 
@@ -170,6 +171,7 @@ def _master_weights_to_packed_weights(
     global_scale: Float[Array, "*components"],
     group_size: int,
     scale_mode: MicrofloatScaleMode,
+    keychain: Keychain | None = None,
     scale_sharding: NamedSharding,
     grouped_values_sharding: NamedSharding,
     sharding_config: ShardingConfig,
@@ -183,11 +185,14 @@ def _master_weights_to_packed_weights(
     safe_scale_values = jnp.where(scale_values == 0, 1, scale_values)
     normalized_weights = group_by_last_axis(master_weights, group_size=group_size) / safe_scale_values[..., None]
     normalized_weights = with_sharding(normalized_weights, grouped_values_sharding)
+    gradient_estimator = (
+        GradientEstimator.DETERMINISTIC_ROUNDING if keychain is None else GradientEstimator.STOCHASTIC_ROUNDING
+    )
     quantized_values = round_to_minifloat(
         normalized_weights,
         dtype=jnp.float4_e2m1fn,
-        keychain=None,
-        gradient_estimator=GradientEstimator.DETERMINISTIC_ROUNDING,
+        keychain=keychain,
+        gradient_estimator=gradient_estimator,
     )
     grouped_indices = jnp.argmin(jnp.abs(quantized_values[..., None] - codebook), axis=-1).astype(jnp.uint8)
     *leading_dims, groups, group_width = grouped_indices.shape
@@ -254,9 +259,10 @@ class MicrofloatSpec(QuantizedSpec):
         self,
         weights: Float[Array, "*components out_channels in_channels"],
         *,
-        key: Key[Array, ""] | None = None,  # noqa: ARG002
+        keychain: Keychain | None = None,
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        stochastic: bool = False,
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "MicrofloatMatrix":
@@ -286,9 +292,10 @@ class MicrofloatSpec(QuantizedSpec):
             self.group_size,
             self.scale_mode,
             scale_sharding=parameter_sharding,
+            global_scale_sharding=global_scale_sharding,
         )
         master_scales = with_sharding(parameters.scales, parameter_sharding)
-        global_scale = with_sharding(parameters.global_scale, global_scale_sharding)
+        global_scale = parameters.global_scale
         if implementation == CompressionImplementation.TRAINING:
             return MicrofloatMatrixForTraining(
                 spec=self,
@@ -299,6 +306,9 @@ class MicrofloatSpec(QuantizedSpec):
                 global_scale=global_scale,
             )
 
+        if stochastic and keychain is None:
+            raise ValueError("Stochastic compression requires a keychain.")
+
         return self.from_packed_parameters(
             packed_weights=_master_weights_to_packed_weights(
                 stored_weights,
@@ -306,6 +316,7 @@ class MicrofloatSpec(QuantizedSpec):
                 global_scale=global_scale,
                 group_size=self.group_size,
                 scale_mode=self.scale_mode,
+                keychain=keychain if stochastic else None,
                 scale_sharding=parameter_sharding,
                 grouped_values_sharding=grouped_values_sharding,
                 sharding_config=sharding_config,

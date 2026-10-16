@@ -18,7 +18,7 @@ from .embedding import EmbeddingBase, EmbeddingConfig, EmbeddingForwardPassConfi
 from .linear import Linear, LinearConfig
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
-from .token_mixer import State
+from .token_mixer import AttentionImplementation, State
 from .transformer import (
     Transformer,
     TransformerConfig,
@@ -70,10 +70,16 @@ class DecoderForwardPassConfig:
         cls,
         gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
         precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
+        *,
+        attention_implementation: AttentionImplementation = AttentionImplementation.XLA,
     ) -> Self:
         return cls(
             embedding_forward_pass_config=EmbeddingForwardPassConfig.for_training(gradient_estimator, precision),
-            transformer_forward_pass_config=TransformerForwardPassConfig.for_training(gradient_estimator, precision),
+            transformer_forward_pass_config=TransformerForwardPassConfig.for_training(
+                gradient_estimator,
+                precision,
+                attention_implementation=attention_implementation,
+            ),
         )
 
 

@@ -6,7 +6,7 @@ from typing import Literal, NamedTuple, Self
 
 import jax.numpy as jnp
 from jax.lax import stop_gradient
-from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
+from jaxtyping import Array, DTypeLike, Float, Int, UInt8
 
 from lalamo.exportable import ExportResults
 from lalamo.module import Keychain, ParameterNorm, field
@@ -35,7 +35,11 @@ from .utils.grouping import (
     scale_from_min_max,
 )
 from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
-from .utils.rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
+from .utils.rounding import (
+    deterministic_round_to_unsigned_grid,
+    round_to_unsigned_grid,
+    stochastic_round_to_unsigned_grid,
+)
 from .utils.yaqa import yaqa_round_fixpoint
 
 __all__ = [
@@ -98,15 +102,18 @@ def _master_weights_to_packed_weights(
     group_size: int,
     bits: int,
     *,
+    round_fn: Callable[[Float[Array, "..."]], Float[Array, "..."]] | None = None,
     sharding_config: ShardingConfig,
 ) -> UInt8[Array, "*components rows packed_cols"]:
+    if round_fn is None:
+        round_fn = partial(deterministic_round_to_unsigned_grid, bits=bits)
     int_scale_weights = _master_weights_to_int_scale_weights(
         weights,
         scales,
         biases,
         group_size,
     )
-    rounded_weights = deterministic_round_to_unsigned_grid(int_scale_weights, bits=bits)
+    rounded_weights = round_fn(int_scale_weights)
     return pack_uint_to_uint8(rounded_weights.astype(jnp.uint8), bits, sharding_config=sharding_config)
 
 
@@ -155,9 +162,10 @@ class MLXSpec(QuantizedSpec):
         self,
         weights: Float[Array, "*components out_channels in_channels"],
         *,
-        key: Key[Array, ""] | None = None,  # noqa: ARG002
+        keychain: Keychain | None = None,
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        stochastic: bool = False,
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "MLXMatrix":
@@ -187,12 +195,22 @@ class MLXSpec(QuantizedSpec):
                 biases=affine_parameters.biases,
             )
         else:
+            round_fn = None
+            if stochastic:
+                if keychain is None:
+                    raise ValueError("Stochastic compression requires a keychain.")
+                round_fn = partial(
+                    stochastic_round_to_unsigned_grid,
+                    bits=self.bits,
+                    keychain=keychain,
+                )
             packed_int_weights = _master_weights_to_packed_weights(
                 stored_weights,
                 affine_parameters.scales,
                 affine_parameters.biases,
                 self.group_size,
                 self.bits,
+                round_fn=round_fn,
                 sharding_config=sharding_config,
             )
             result = self.from_packed_parameters(

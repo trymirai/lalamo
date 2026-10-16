@@ -46,7 +46,9 @@ class State(tuple[StateLayerBase, ...]):
 
 
 class AttentionImplementation(Enum):
+    CUDNN = "cudnn"
     PALLAS = "pallas"
+    PALLAS_TRAINING = "pallas_training"
     STABLE_REDUCTION = "stable_reduction"
     XLA = "xla"
 
@@ -80,9 +82,11 @@ class MixerForwardPassConfig:
         cls,
         gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
         precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
+        *,
+        attention_implementation: AttentionImplementation = AttentionImplementation.XLA,
     ) -> Self:
         return cls(
-            attention_implementation=AttentionImplementation.XLA,
+            attention_implementation=attention_implementation,
             ssm_min_tail_size_to_chunk=0,
             matmul_config=MatmulConfig.for_training(gradient_estimator, precision),
         )

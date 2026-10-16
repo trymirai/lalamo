@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 from jax.lax import dot_general
 from jax.scipy.linalg import solve_triangular
-from jaxtyping import Array, DTypeLike, Float, Key
+from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.module import Keychain, ParameterNorm, field
 from lalamo.preconditioner import Preconditioner
@@ -32,21 +32,25 @@ __all__ = [
 class LowRankSpec(WeightMatrixSpec):
     rank: int
 
+    @property
+    def layout(self) -> Layout:
+        return Layout.OUTPUT_INPUT
+
     @supports_dummy_arrays()
     def compress(
         self,
         weights: Float[Array, "*components out_channels in_channels"],
         *,
-        key: Key[Array, ""] | None = None,
+        keychain: Keychain | None = None,  # noqa: ARG002
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+        stochastic: bool = False,  # noqa: ARG002
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "LowRankMatrix":
         if weights.ndim > 2 and preconditioner is not None:
             compress_component = partial(
                 self.compress,
-                key=key,
                 implementation=implementation,
                 sharding_config=sharding_config,
                 is_sharded=is_sharded,
