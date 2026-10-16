@@ -160,7 +160,7 @@ def _error(message: str, status: int, param: str | None = None, code: str | None
 
 
 def create_app(model: LanguageModel, model_name: str, config: ContinuousBatchingConfig) -> FastAPI:
-    engine = ContinuousBatchingEngine(model, config)
+    engine = ContinuousBatchingEngine.init(model, config)
     codec = model.token_codec
     stop_event = threading.Event()
     engine_errors: list[BaseException] = []

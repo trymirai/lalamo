@@ -140,7 +140,7 @@ def test_engine_cancellation_allows_new_request(_convert_model_session: ConvertM
     paged_language_model = LanguageModel.load(
         _convert_model_session("Qwen/Qwen3.5-0.8B", cached=True), sharding_config=ShardingConfig.replicated()
     )
-    engine = ContinuousBatchingEngine(
+    engine = ContinuousBatchingEngine.init(
         paged_language_model, ContinuousBatchingConfig(total_pages=8, slot_count=1, max_context_length=256)
     )
     generation_config = GenerationConfig(temperature=0.0)
@@ -207,7 +207,7 @@ def test_fuzz_engine_matches_dense_greedy_decoding(
         prefill_batch_size=rng.randint(1, 3),
         prefill_chunk_size=rng.choice([24, 32, 48, 64]),
     )
-    engine = ContinuousBatchingEngine(model, config)
+    engine = ContinuousBatchingEngine.init(model, config)
     source = model.token_codec.encode_text(
         model.token_codec.render_request([UserMessage("one two three four five six seven eight " * 64)])
     )

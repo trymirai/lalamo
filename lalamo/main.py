@@ -75,7 +75,7 @@ class ModelParser(ParamType):
     name: str = "Huggingface Model Repo"
 
     def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> ModelSpec:
-        repo_to_model = ModelRegistry.build().repo_to_model
+        repo_to_model = ModelRegistry.init().repo_to_model
         result = repo_to_model.get(value)
         if result is None:
             error_message = f'Model "{value}" not found.'
@@ -425,7 +425,7 @@ def convert(
             click_type=ModelParser(),
             show_default=False,
             metavar="MODEL_REPO",
-            autocompletion=lambda: list(ModelRegistry.build().repo_to_model),
+            autocompletion=lambda: list(ModelRegistry.init().repo_to_model),
         ),
     ],
     dtype: Annotated[
@@ -572,7 +572,7 @@ def list_models(
         ),
     ] = False,
 ) -> None:
-    registry = ModelRegistry.build()
+    registry = ModelRegistry.init()
     sorted_specs = sorted(
         registry.repo_to_model.values(),
         key=lambda spec: (

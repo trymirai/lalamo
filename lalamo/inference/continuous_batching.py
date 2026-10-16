@@ -204,14 +204,28 @@ class BatchingSequence:
         return len(self.prompt_token_ids) + self.completion_tokens
 
 
+@dataclass(eq=False)
 class ContinuousBatchingEngine:
     """Schedules sequences over a paged KV pool and per-slot recurrent state; `step` runs on a single worker thread."""
 
-    def __init__(self, model: LanguageModel, config: ContinuousBatchingConfig) -> None:
+    model: LanguageModel
+    config: ContinuousBatchingConfig
+    context_limit: int
+    slot_count: int
+    total_pages: int
+    _state: State
+    _last_logits: Float[Array, "slots vocabulary"]
+    _free_slots: deque[int]
+    _free_pages: deque[int]
+    _incoming: SimpleQueue[BatchingSequence] = field(default_factory=SimpleQueue)
+    _pending: deque[BatchingSequence] = field(default_factory=deque)
+    _active: deque[BatchingSequence] = field(default_factory=deque)
+    _prefix_cache: deque[CachedPrefix] = field(default_factory=deque)
+
+    @classmethod
+    def init(cls, model: LanguageModel, config: ContinuousBatchingConfig) -> "ContinuousBatchingEngine":
         if model.sharding_config.resolve_axis(LogicalAxis.BATCH) is not None:
             raise ValueError("Continuous batching does not support batch-sharded models.")
-        self.model = model
-        self.config = config
         transformer = model.decoder.transformer
         attention_mixers = [layer.mixer for layer in transformer.layers if isinstance(layer.mixer, Attention)]
         devices = list(model.sharding_config.mesh.devices.flat)
@@ -286,9 +300,6 @@ class ContinuousBatchingEngine:
                 "KV pool: %d pages (%.1f GiB), context %d, slots %d", total_pages, gib, context_length, slot_count
             )
         assert total_pages is not None
-        self.context_limit = context_length
-        self.slot_count = slot_count
-        self.total_pages = total_pages
 
         static_state = model.decoder.init_static_state(slot_count, 1, state_dtype)
         layers = []
@@ -305,16 +316,19 @@ class ContinuousBatchingEngine:
                     jnp.zeros(shape, dtype=state_dtype, device=sharding),
                 )
             )
-        self._state = State(layers)
-        self._last_logits = jnp.zeros(
-            (slot_count, vocab_size), dtype=jnp.float32, device=model.sharding_config.make_sharding((None, None))
+        return cls(
+            model=model,
+            config=config,
+            context_limit=context_length,
+            slot_count=slot_count,
+            total_pages=total_pages,
+            _state=State(layers),
+            _last_logits=jnp.zeros(
+                (slot_count, vocab_size), dtype=jnp.float32, device=model.sharding_config.make_sharding((None, None))
+            ),
+            _free_slots=deque(range(slot_count)),
+            _free_pages=deque(range(total_pages)),
         )
-        self._incoming: SimpleQueue[BatchingSequence] = SimpleQueue()
-        self._pending: deque[BatchingSequence] = deque()
-        self._active: deque[BatchingSequence] = deque()
-        self._free_slots: deque[int] = deque(range(slot_count))
-        self._free_pages: deque[int] = deque(range(total_pages))
-        self._prefix_cache: deque[CachedPrefix] = deque()
 
     def submit(
         self,

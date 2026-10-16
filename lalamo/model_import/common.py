@@ -398,7 +398,7 @@ def import_model(
     to_full_precision: bool = False,
 ) -> ImportResults:
     if isinstance(model_spec, str):
-        registry_model_spec = ModelRegistry.build().repo_to_model.get(model_spec)
+        registry_model_spec = ModelRegistry.init().repo_to_model.get(model_spec)
         if registry_model_spec is not None:
             model_spec = registry_model_spec
         else:

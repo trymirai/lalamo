@@ -171,7 +171,7 @@ def test_streamed_text_matches_reply_when_utf8_spans_tokens(
 
 
 def test_requests_match_dense_generation_after_slot_and_prefix_reuse(recurrent_model: LanguageModel) -> None:
-    engine = ContinuousBatchingEngine(
+    engine = ContinuousBatchingEngine.init(
         recurrent_model,
         ContinuousBatchingConfig(slot_count=2, max_context_length=48, prefill_batch_size=2, prefill_chunk_size=3),
     )
@@ -206,7 +206,7 @@ def test_requests_match_dense_generation_after_slot_and_prefix_reuse(recurrent_m
 
 
 def test_signed_64_bit_seeds_replay_after_slot_reuse(recurrent_model: LanguageModel) -> None:
-    engine = ContinuousBatchingEngine(
+    engine = ContinuousBatchingEngine.init(
         recurrent_model,
         ContinuousBatchingConfig(slot_count=2, max_context_length=32, prefill_batch_size=2, prefill_chunk_size=4),
     )
@@ -225,7 +225,7 @@ def test_signed_64_bit_seeds_replay_after_slot_reuse(recurrent_model: LanguageMo
 
 def test_context_without_positional_limit_must_be_configured(recurrent_model: LanguageModel) -> None:
     with pytest.raises(ValueError, match="requires max_context_length"):
-        ContinuousBatchingEngine(recurrent_model, ContinuousBatchingConfig(slot_count=1))
+        ContinuousBatchingEngine.init(recurrent_model, ContinuousBatchingConfig(slot_count=1))
 
 
 def test_prefill_continuation_preserves_prefix_when_padding_exceeds_capacity() -> None:

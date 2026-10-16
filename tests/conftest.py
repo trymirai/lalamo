@@ -83,7 +83,7 @@ def fake_mesh() -> Generator[Mesh]:
         yield mesh
 
 
-ALL_MODEL_SPECS: tuple[ModelSpec, ...] = ModelRegistry.build(allow_third_party_plugins=False).models
+ALL_MODEL_SPECS: tuple[ModelSpec, ...] = ModelRegistry.init(allow_third_party_plugins=False).models
 
 
 def filter_specs(
@@ -177,7 +177,7 @@ def run_lalamo() -> RunLalamo:
 
 @pytest.fixture(scope="session")
 def model_registry() -> ModelRegistry:
-    return ModelRegistry.build(allow_third_party_plugins=False)
+    return ModelRegistry.init(allow_third_party_plugins=False)
 
 
 @pytest.fixture(scope="session")

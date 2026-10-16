@@ -218,7 +218,7 @@ def test_granite_parses_a_response_missing_its_wrapper() -> None:
 
 
 def _registered_codec(repo: str) -> ChatCodec:
-    spec = ModelRegistry.build(allow_third_party_plugins=False).repo_to_model[repo]
+    spec = ModelRegistry.init(allow_third_party_plugins=False).repo_to_model[repo]
     assert isinstance(spec, LanguageModelSpec)
     return _chat_codec(response_format=spec.response_format)
 
