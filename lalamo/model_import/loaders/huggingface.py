@@ -460,7 +460,15 @@ def load_mlp(
         )
 
     if isinstance(module, MixtureOfExperts):
-        return load_moe(module, weights_dict, path, implementation=implementation)
+        return load_moe(
+            module,
+            weights_dict,
+            path,
+            up_proj_key,
+            gate_proj_key,
+            down_proj_key,
+            implementation=implementation,
+        )
 
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
@@ -469,6 +477,9 @@ def load_moe(
     module: MixtureOfExperts,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
+    up_proj_key: str = "up_proj",
+    gate_proj_key: str = "gate_proj",
+    down_proj_key: str = "down_proj",
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> MixtureOfExperts:
@@ -514,18 +525,18 @@ def load_moe(
         def stack(name: str) -> Array:
             return jnp.stack([weights_dict[expert_path / name] for expert_path in expert_paths], axis=0)
 
-        gate_up_weights = jnp.concatenate([stack("up_proj.weight"), stack("gate_proj.weight")], axis=1)
+        gate_up_weights = jnp.concatenate([stack(f"{up_proj_key}.weight"), stack(f"{gate_proj_key}.weight")], axis=1)
         gate_up_biases = (
-            jnp.concatenate([stack("up_proj.bias"), stack("gate_proj.bias")], axis=1)
+            jnp.concatenate([stack(f"{up_proj_key}.bias"), stack(f"{gate_proj_key}.bias")], axis=1)
             if template.up_projection.has_biases
             else None
         )
-        down_biases = stack("down_proj.bias") if template.down_projection.has_biases else None
+        down_biases = stack(f"{down_proj_key}.bias") if template.down_projection.has_biases else None
         return load_dense_experts(
             template,
             gate_up_weights,
             gate_up_biases,
-            stack("down_proj.weight"),
+            stack(f"{down_proj_key}.weight"),
             down_biases,
         )
 
@@ -629,10 +640,14 @@ def load_moe(
             raise KeyError("Could not find shared expert gate weights in HF checkpoint.")
         gate = load_linear(module.gate, weights_dict, gate_path, implementation=implementation)
 
+    expert_bias = None
+    if module.expert_bias is not None:
+        expert_bias = weights_dict[path / "expert_bias"]
+
     return load_as_at(
-        lambda m: (m.router, m.routed_experts, m.shared_experts, m.gate),
+        lambda m: (m.router, m.routed_experts, m.shared_experts, m.gate, m.expert_bias),
         module,
-        (router, routed_experts, shared_experts, gate),
+        (router, routed_experts, shared_experts, gate, expert_bias),
     )
 
 

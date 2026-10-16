@@ -1,6 +1,6 @@
 from itertools import chain, product
 
-from lalamo.model_import.model_configs import HFLFM2Config
+from lalamo.model_import.model_configs import HFLFM2Config, HFLFM2MoeConfig
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.model_specs.output_parser_regexes import OPTIONAL_THINKING_OUTPUT_PARSER_REGEX
 from lalamo.model_import.origins import HuggingFaceOrigin
@@ -64,4 +64,23 @@ _LFM25_MODELS = [
     for repo_owner, name, size, _quantization_bits, output_parser_regex in _LFM25_MODEL_SPECS
 ]
 
-LFM2_MODELS = _LFM20_MODELS + _LFM25_MODELS
+LFM2_MODELS = (
+    _LFM20_MODELS
+    + _LFM25_MODELS
+    + [
+        LanguageModelSpec(
+            vendor="LiquidAI",
+            family="LFM2.5",
+            name="LFM2.5-24B-A2B",
+            size="24B",
+            origin=HuggingFaceOrigin(repo="LiquidAI/LFM2.5-24B-A2B"),
+            config_type=HFLFM2MoeConfig,
+            configs=ConfigMap(
+                generation_config=GenerationConfig(temperature=0.1, top_k=50, repetition_penalty=1.05),
+                chat_template=FileSpec("chat_template.jinja"),
+            ),
+            output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
+            end_of_thinking_tag="</think>",
+        ),
+    ]
+)
