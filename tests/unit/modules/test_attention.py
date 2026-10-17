@@ -3,7 +3,6 @@ from math import prod
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import pytest
 from einops import rearrange
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
@@ -291,13 +290,12 @@ def test_attention_vmapped_over_inputs_matches_reference_and_keeps_data_sharding
     module = _attention()
     inputs = _sharded_sequences(jnp.arange(2 * 5 * MODEL_DIM, dtype=jnp.float32).reshape(2, 5, MODEL_DIM) / 10)
 
-    with pytest.warns(RuntimeWarning, match="Pallas decode attention .*falling back to XLA attention"):
-        result = call_vmapped(
-            lambda values, *, keychain: module(values, positional_embeddings=None, keychain=keychain),
-            inputs,
-            keychain=Keychain.init(3, sharding_config=make_test_sharding_config()),
-            added_sharding_axis=make_test_sharding_config().resolve_axis(LogicalAxis.BATCH),
-        )
+    result = call_vmapped(
+        lambda values, *, keychain: module(values, positional_embeddings=None, keychain=keychain),
+        inputs,
+        keychain=Keychain.init(3, sharding_config=make_test_sharding_config()),
+        added_sharding_axis=make_test_sharding_config().resolve_axis(LogicalAxis.BATCH),
+    )
     reference = jnp.stack([_reference(module, values) for values in jnp.asarray(jax.device_get(inputs))])
 
     _assert_close(result=result.outputs, reference=reference)

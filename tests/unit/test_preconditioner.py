@@ -48,8 +48,7 @@ class _PreconditionerModelConfig(ModelConfig[ChatCodecConfig]):
         )
 
 
-class _PreconditionerModel(Model[ChatCodecConfig, _PreconditionerModelConfig, ChatCodec]):
-    token_codec: ChatCodec
+class _PreconditionerModel(Model[_PreconditionerModelConfig, ChatCodec]):
     first: WeightMatrix
     block: _Block
 
@@ -57,7 +56,7 @@ class _PreconditionerModel(Model[ChatCodecConfig, _PreconditionerModelConfig, Ch
 def _chat_codec_config() -> ChatCodecConfig:
     return ChatCodecConfig(
         prompt_template="",
-        output_parser_regex=None,
+        response_format=None,
         system_role_name="system",
         user_role_name="user",
         assistant_role_name="assistant",

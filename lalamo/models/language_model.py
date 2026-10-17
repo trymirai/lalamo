@@ -83,6 +83,13 @@ class GenerationConfig:
     frequency_penalty: float | None = None
     suffix_repetition_length: int | None = None
 
+    def trim_stop_tokens(self, token_ids: list[int]) -> list[int]:
+        response_length = next(
+            (index for index, token_id in enumerate(token_ids) if token_id in self.stop_token_ids),
+            len(token_ids),
+        )
+        return token_ids[:response_length]
+
     def override_with(self, other: Self) -> Self:
         default_config = GenerationConfig()
         merged_fields = {"stop_token_ids", "banned_tokens"}
@@ -132,22 +139,8 @@ class LanguageModelConfig(ModelConfig[ChatCodecConfig]):
         )
 
 
-class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
-    token_codec: ChatCodec
+class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
     decoder: Decoder
-
-    def default_sampling_policy(self) -> SamplingPolicy:
-        return self.config.generation_config.default_policy()
-
-    def trim_at_eos(self, token_ids: list[int]) -> list[int]:
-        if not self.config.generation_config.stop_token_ids:
-            return token_ids
-        stop_token_ids = set(self.config.generation_config.stop_token_ids)
-        response_length = next(
-            (idx + 1 for idx, token_id in enumerate(token_ids) if token_id in stop_token_ids),
-            len(token_ids),
-        )
-        return token_ids[:response_length]
 
     @eqx.filter_jit
     def _make_attention_chunks(
@@ -206,9 +199,12 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: DecoderForwardPassConfig | None = None,
         chunk_size: int = 512,
+        initial_state: State | None = None,
+        prefix_lengths: Int[Array, " batch"] | None = None,
         *,
         keychain: Keychain,
     ) -> PrefillResults:
+        """Prefills `token_ids`; with `initial_state`, they continue each row's `prefix_lengths` cached tokens."""
         batch_size, sequence_length = token_ids.shape
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
         batch_vector_sharding = self.sharding_config.make_sharding((batch_axis,))
@@ -221,13 +217,17 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             forward_pass_config = DecoderForwardPassConfig.for_inference()
 
         chunks = self._make_attention_chunks(token_ids, lengths_without_padding, chunk_size)
+        if prefix_lengths is not None:
+            chunks = eqx.tree_at(lambda chunk: chunk.indices, chunks, chunks.indices + prefix_lengths[None, :, None])
         num_chunks, _, chunk_size = chunks.tokens.shape
         state_dtype = forward_pass_config.embedding_forward_pass_config.activation_dtype
-        state = self.decoder.init_static_state(
-            batch_size,
-            max(state_capacity, num_chunks * chunk_size),
-            state_dtype,
-        )
+        state = initial_state
+        if state is None:
+            state = self.decoder.init_static_state(
+                batch_size,
+                max(state_capacity, num_chunks * chunk_size),
+                state_dtype,
+            )
         logits_like = jax.device_put(
             jnp.zeros((batch_size, self.decoder.vocab_size), dtype=jnp.float32),
             self.sharding_config.make_sharding((batch_axis, None)),
@@ -278,7 +278,6 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         generation_config: GenerationConfig | None = None,
         prompt_lengths_without_padding: Int[Array, " batch"] | None = None,
         max_output_length: int = 8192,
-        eos_token_ids: Int[Array, " eos_tokens"] | None = None,
         num_top_logits_to_return: int | None = None,
         prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
         decode_forward_pass_config: DecoderForwardPassConfig | None = None,
@@ -295,9 +294,9 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         batch_size, prompt_length = prompt_token_ids.shape
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
         batch_vector_sharding = self.sharding_config.make_sharding((batch_axis,))
-        sampling_policy = self.default_sampling_policy()
-        if generation_config is not None:
-            sampling_policy = generation_config.default_policy()
+        if generation_config is None:
+            generation_config = self.config.generation_config
+        sampling_policy = generation_config.default_policy()
         use_count_penalties = sampling_policy.has_count_penalties
         sampling_policy = sampling_policy.broadcast(batch_size)
 
@@ -328,11 +327,10 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 prompt_token_ids,
                 prompt_lengths_without_padding,
             )
-        if eos_token_ids is None:
-            eos_token_ids = jax.device_put(
-                jnp.asarray(self.config.generation_config.stop_token_ids, dtype=jnp.int32),
-                self.sharding_config.make_sharding((None,)),
-            )
+        stop_token_ids = jax.device_put(
+            jnp.asarray(generation_config.stop_token_ids, dtype=jnp.int32),
+            self.sharding_config.make_sharding((None,)),
+        )
 
         prefill_keychain, sampling_keychain, decoding_keychain = keychain.split(3)
         prefill_results = self.prefill_tokens(
@@ -383,7 +381,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
                 top_k_token_logits, top_k_token_ids = jax.lax.top_k(processed_logits, num_top_logits_to_return)
 
             next_token_indices = state.last_token_indices + 1
-            next_stop_flags = state.stop_flags | jnp.any(next_token_ids[:, None] == eos_token_ids[None, :], axis=-1)
+            next_stop_flags = state.stop_flags | jnp.any(next_token_ids[:, None] == stop_token_ids[None, :], axis=-1)
             decoder_result = self.decoder(
                 token_ids=next_token_ids[:, None],
                 token_positions=next_token_indices[:, None],
@@ -452,10 +450,13 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         reasoning_effort: ReasoningEffort | None = None,
         keychain: Keychain,
     ) -> AssistantMessage:
+        if generation_config is None:
+            generation_config = self.config.generation_config
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
+        prompt = self.token_codec.render_request(messages, reasoning_effort=reasoning_effort)
         token_ids = jax.device_put(
             jnp.asarray(
-                self.token_codec.encode_request(messages, reasoning_effort=reasoning_effort),
+                self.token_codec.encode_text(prompt),
                 dtype=jnp.int32,
             )[None, :],
             self.sharding_config.make_sharding((batch_axis, None)),
@@ -468,14 +469,15 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             decode_forward_pass_config=decode_forward_pass_config,
             keychain=keychain,
         ).token_ids[0]
-        return self.token_codec.decode_response(self.trim_at_eos(response_ids.tolist()))
+        return self.token_codec.parse_response(
+            self.token_codec.decode_tokens(generation_config.trim_stop_tokens(response_ids.tolist())), prompt=prompt
+        )
 
     def stream_tokens(
         self,
         prompt_token_ids: Int[Array, " prompt_tokens"],
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
-        eos_token_ids: Int[Array, " eos_tokens"] | None = None,
         prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
         decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
@@ -488,10 +490,8 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
         if decode_forward_pass_config is None:
             decode_forward_pass_config = DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN)
 
-        if eos_token_ids is not None:
-            stop_token_ids = eos_token_ids
-        else:
-            stop_token_ids = jnp.asarray(self.config.generation_config.stop_token_ids, dtype=jnp.int32)
+        if generation_config is None:
+            generation_config = self.config.generation_config
 
         (input_length,) = prompt_token_ids.shape
         padded_input_length = next(
@@ -513,9 +513,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             self.sharding_config.make_sharding((batch_axis,)),
         )
 
-        sampling_policy = self.default_sampling_policy()
-        if generation_config is not None:
-            sampling_policy = generation_config.default_policy()
+        sampling_policy = generation_config.default_policy()
         if sampling_policy.has_count_penalties:
             sampling_policy = sampling_policy.with_prompt_token_counts(
                 padded_token_ids,
@@ -548,7 +546,7 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             next_token_id = jax.random.categorical(sampling_key, processed_logits)
             yield next_token_id
 
-            if bool(jnp.any(next_token_id == stop_token_ids).item()):
+            if int(next_token_id.item()) in generation_config.stop_token_ids:
                 return
 
             sampling_policy = sampling_policy.with_next_token_count(next_token_id)
@@ -571,23 +569,22 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             last_token_index = next_token_index
             state = decoder_result.updated_state
 
-    def stream_reply_text(
+    def stream_text(
         self,
-        messages: Iterable[Message],
+        prompt: str,
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
         prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
         decode_forward_pass_config: DecoderForwardPassConfig | None = None,
         *,
-        reasoning_effort: ReasoningEffort | None = None,
         keychain: Keychain,
     ) -> Iterable[str]:
-        token_ids = jnp.asarray(
-            self.token_codec.encode_request(messages, reasoning_effort=reasoning_effort),
-            dtype=jnp.int32,
-        )
+        if generation_config is None:
+            generation_config = self.config.generation_config
+        token_ids = jnp.asarray(self.token_codec.encode_text(prompt), dtype=jnp.int32)
         response_token_ids: list[int] = []
-        previous_text = ""
+        current_text = ""
+        emitted_length = 0
         for token_id in self.stream_tokens(
             token_ids,
             generation_config=generation_config,
@@ -596,7 +593,14 @@ class LanguageModel(Model[ChatCodecConfig, LanguageModelConfig, ChatCodec]):
             decode_forward_pass_config=decode_forward_pass_config,
             keychain=keychain,
         ):
-            response_token_ids.append(int(token_id.item()))
-            current_text = self.token_codec.decode_tokens(response_token_ids, hide_invalid_utf_chars=True)
-            yield current_text[len(previous_text) :]
-            previous_text = current_text
+            token = int(token_id.item())
+            if token in generation_config.stop_token_ids:
+                break
+            response_token_ids.append(token)
+            current_text = self.token_codec.decode_tokens(response_token_ids)
+            if current_text.endswith("\ufffd"):
+                continue
+            yield current_text[emitted_length:]
+            emitted_length = len(current_text)
+        if emitted_length < len(current_text):
+            yield current_text[emitted_length:]

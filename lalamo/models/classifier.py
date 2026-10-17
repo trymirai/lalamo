@@ -33,8 +33,7 @@ class ClassifierModelConfig(ModelConfig[ChatCodecConfig]):
         )
 
 
-class ClassifierModel(Model[ChatCodecConfig, ClassifierModelConfig, ChatCodec]):
-    token_codec: ChatCodec
+class ClassifierModel(Model[ClassifierModelConfig, ChatCodec]):
     classifier: Classifier
 
     def label_output_logits(self, logits: Float[Array, "batch logits"]) -> dict[str, Float[Array, " batch"]]:
@@ -54,7 +53,8 @@ class ClassifierModel(Model[ChatCodecConfig, ClassifierModelConfig, ChatCodec]):
         *,
         keychain: Keychain,
     ) -> dict[str, float]:
-        token_ids = jnp.array(self.token_codec.encode_request(messages), dtype=jnp.int32)[None, :]
+        prompt = self.token_codec.render_request(messages)
+        token_ids = jnp.array(self.token_codec.encode_text(prompt), dtype=jnp.int32)[None, :]
         _, sequence_length = token_ids.shape
         token_positions = jnp.arange(sequence_length, dtype=jnp.int32)[None, :]
         classifier_output = self.classifier(

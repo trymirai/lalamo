@@ -1,8 +1,9 @@
+import logging
 import re
 import shutil
 import sys
 from contextlib import ExitStack
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from functools import partial
 from importlib.util import find_spec
 from pathlib import Path, PurePosixPath
@@ -38,6 +39,7 @@ from lalamo.commands import (
 from lalamo.commands import convert as _convert
 from lalamo.commands import convert_speculator as _convert_speculator
 from lalamo.commands import pull as _pull
+from lalamo.inference import ContinuousBatchingConfig
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
@@ -46,7 +48,6 @@ from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, TTSM
 from lalamo.models.chat_codec import Message, UserMessage
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
-from lalamo.utils.memory import get_available_bytes_on_default_device
 from lalamo.utils.sharding import ShardingConfig
 
 SCRIPT_NAME = Path(sys.argv[0]).name
@@ -74,7 +75,7 @@ class ModelParser(ParamType):
     name: str = "Huggingface Model Repo"
 
     def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> ModelSpec:
-        repo_to_model = ModelRegistry.build().repo_to_model
+        repo_to_model = ModelRegistry.init().repo_to_model
         result = repo_to_model.get(value)
         if result is None:
             error_message = f'Model "{value}" not found.'
@@ -140,7 +141,6 @@ def chat(
         ),
     ] = None,
 ) -> None:
-    generation_config: GenerationConfig | None = None
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -149,8 +149,7 @@ def chat(
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
         model = LanguageModel.load(model_path, ShardingConfig.replicated())
-        if temperature is not None:
-            generation_config = replace(model.config.generation_config, temperature=temperature)
+        generation_config = model.config.generation_config.override_with(GenerationConfig(temperature=temperature))
         progress.remove_task(loading_task)
 
     with jax.set_mesh(model.sharding_config.mesh):
@@ -161,11 +160,12 @@ def chat(
             while True:
                 user_text = console.input("[cyan]user> [/cyan]")
                 messages.append(UserMessage(user_text))
+                prompt = model.token_codec.render_request(messages)
 
                 console.print("[red]assistant> [/red]", end="")
                 response_text_parts = []
-                for token in model.stream_reply_text(
-                    messages,
+                for token in model.stream_text(
+                    prompt,
                     generation_config=generation_config,
                     max_output_length=max_tokens,
                     keychain=Keychain.init(turn_index + 1, sharding_config=model.sharding_config),
@@ -173,12 +173,12 @@ def chat(
                     console.print(token, end="")
                     response_text_parts.append(token)
                 console.print()
-                messages.append(model.token_codec.parse_response("".join(response_text_parts)))
+                messages.append(model.token_codec.parse_response("".join(response_text_parts), prompt=prompt))
                 turn_index += 1
 
         else:
-            for token in model.stream_reply_text(
-                [UserMessage(message)],
+            for token in model.stream_text(
+                model.token_codec.render_request([UserMessage(message)]),
                 generation_config=generation_config,
                 max_output_length=max_tokens,
                 keychain=Keychain.init(1, sharding_config=model.sharding_config),
@@ -425,7 +425,7 @@ def convert(
             click_type=ModelParser(),
             show_default=False,
             metavar="MODEL_REPO",
-            autocompletion=lambda: list(ModelRegistry.build().repo_to_model),
+            autocompletion=lambda: list(ModelRegistry.init().repo_to_model),
         ),
     ],
     dtype: Annotated[
@@ -572,7 +572,7 @@ def list_models(
         ),
     ] = False,
 ) -> None:
-    registry = ModelRegistry.build()
+    registry = ModelRegistry.init()
     sorted_specs = sorted(
         registry.repo_to_model.values(),
         key=lambda spec: (
@@ -608,8 +608,10 @@ def list_models(
     console.print(table)
 
 
-@app.command(help="Start a server for batched inference.")
+@app.command(help="Start an OpenAI-compatible continuous-batching server.")
 def server(
+    model_path: Annotated[Path, Argument(help="Converted Lalamo model directory.")],
+    served_model_name: Annotated[str | None, Option(help="Model id exposed by the API.")] = None,
     host: Annotated[
         str,
         Option(help="Host to bind to."),
@@ -618,59 +620,33 @@ def server(
         int,
         Option(help="Port to bind to."),
     ] = 8293,
-    vram_gb: Annotated[
-        float | None,
-        Option(
-            help="Maximum VRAM in GB. Batch sizes are estimated automatically.",
-            show_default="max on default device",
-        ),
-    ] = None,
-    cache_dir: Annotated[
-        Path | None,
-        Option(
-            help="Directory to persist completed batches to.",
-            show_default="~/.cache/lalamo/batches",
-        ),
-    ] = None,
     tensor_parallel: Annotated[
         bool,
         Option(help="Shard model weight matrices across visible devices."),
     ] = False,
-    batch_size: Annotated[
-        int | None,
-        Option(
-            help="Fixed batch size. Required on devices without memory stats (e.g. CPU); disables auto-estimation.",
-        ),
+    max_context_length: Annotated[
+        int | None, Option(help="Context length per sequence. Defaults to the model's maximum.")
+    ] = None,
+    slot_count: Annotated[
+        int | None, Option(help="Cap on concurrently decoding sequences. Defaults to what fits in memory.")
     ] = None,
 ) -> None:
+    if jax.default_backend() == "cpu":
+        raise RuntimeError("The server does not support CPU execution.")
+
     try:
-        from lalamo.server import start_server  # noqa: PLC0415
+        import uvicorn  # noqa: PLC0415
+
+        from lalamo.server import create_app  # noqa: PLC0415
     except ImportError as error:
         err_console.print("Server extras not installed. Install with: uv add 'lalamo[server]'")
         raise Exit(1) from error
 
-    vram_bytes: int | None = None
-    if batch_size is not None:
-        if vram_gb is not None:
-            err_console.print("Specify only one of --batch-size and --vram-gb")
-            raise Exit(1)
-    elif vram_gb is not None:
-        vram_bytes = int(vram_gb * 1000 * 1000 * 1000)
-    elif (vram_bytes := get_available_bytes_on_default_device()) is None:
-        err_console.print("Cannot get the default device's memory stats, use --batch-size (e.g. on CPU)")
-        raise Exit(1)
-
-    if cache_dir is None:
-        cache_dir = Path.home() / ".cache" / "lalamo" / "batches"
-
-    start_server(
-        host=host,
-        port=port,
-        vram_bytes=vram_bytes,
-        batch_size=batch_size,
-        cache_dir=cache_dir,
-        sharding_config=ShardingConfig.tensor_parallel() if tensor_parallel else ShardingConfig.replicated(),
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s", force=True)
+    sharding_config = ShardingConfig.tensor_parallel() if tensor_parallel else ShardingConfig.replicated()
+    model = LanguageModel.load(model_path, sharding_config)
+    batching_config = ContinuousBatchingConfig(slot_count=slot_count, max_context_length=max_context_length)
+    uvicorn.run(create_app(model, served_model_name or model_path.name, batching_config), host=host, port=port)
 
 
 @app.callback()
