@@ -258,6 +258,7 @@ class Transformer(LalamoModule[TransformerConfig]):
             pre_norm_outputs=pre_norm_outputs,
         )
 
+    @eqx.filter_jit
     def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> State:
         return State(
             self.layers[layer_index].init_static_state(batch_size, capacity, dtype)

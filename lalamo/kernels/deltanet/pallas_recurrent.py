@@ -2,6 +2,7 @@ import warnings
 from collections.abc import Callable
 from functools import cache
 from math import prod
+from typing import cast
 
 import jax
 import jax.numpy as jnp
@@ -55,12 +56,12 @@ def _make_batched_scan(
     num_heads: int,
     value_head_dim: int,
 ) -> DeltaScan:
-    values_per_program = 64
+    values_per_program = 32
     head_dim = 128
     state_layout = plgpu.Layout.TILED(
-        plgpu.Tiling(((64, 8), (16, 8), (8, 8), (2,), (1,))),
-        warp_dims=(-8,),
-        lane_dims=(-4, -3),
+        plgpu.Tiling(((16, 32), (4, 32), (4,))),
+        warp_dims=(-5,),
+        lane_dims=(-3, -2),
         vector_dim=-1,
     )
     value_layout = state_layout.reduce(1)
@@ -72,9 +73,8 @@ def _make_batched_scan(
         values_ref: jax.Ref,
         decay_ref: jax.Ref,
         beta_ref: jax.Ref,
-        initial_state_ref: jax.Ref,
+        state_ref: jax.Ref,
         num_steps_ref: jax.Ref,
-        final_state_ref: jax.Ref,
         outputs_ref: jax.Ref,
     ) -> None:
         batch_index = jax.lax.axis_index("batch")
@@ -82,7 +82,7 @@ def _make_batched_scan(
         value_start = jax.lax.axis_index("value") * values_per_program
         value_slice = pl.ds(value_start, values_per_program)
         state = plgpu.load(
-            initial_state_ref.at[batch_index, head_index, value_slice, :],
+            state_ref.at[batch_index, head_index, value_slice, :],
             layout=state_layout,
             optimized=False,
         ).astype(jnp.float32)
@@ -126,22 +126,40 @@ def _make_batched_scan(
             )
             return jnp.where(token_index < num_steps_ref[batch_index], updated_state, state)
 
-        final_state_ref[batch_index, head_index, value_slice, :] = jax.lax.fori_loop(0, num_tokens, step, state)
+        state_ref[batch_index, head_index, value_slice, :] = jax.lax.fori_loop(0, num_tokens, step, state)
 
-    return plgpu.kernel(
-        kernel,
-        out_type=(
-            jax.ShapeDtypeStruct((batch_size, num_heads, value_head_dim, head_dim), jnp.float32),
-            jax.ShapeDtypeStruct((batch_size, num_tokens, num_heads, value_head_dim), jnp.float32),
+    # mosaic_gpu.kernel wraps custom_vmap, which cannot forward writes to input Refs.
+    run = cast(
+        "Callable[..., Array]",
+        pl.kernel(
+            kernel,
+            out_type=jax.ShapeDtypeStruct((batch_size, num_tokens, num_heads, value_head_dim), jnp.float32),
+            mesh=plgpu.Mesh(
+                grid=(batch_size, num_heads, value_head_dim // values_per_program),
+                grid_names=("batch", "head", "value"),
+            ),
+            compiler_params=plgpu.CompilerParams(
+                lowering_semantics=plgpu.LoweringSemantics.Lane,
+                reduction_scratch_bytes=8_192,
+            ),
+            name=f"deltanet_b{batch_size}_t{num_tokens}",
         ),
-        grid=(batch_size, num_heads, value_head_dim // values_per_program),
-        grid_names=("batch", "head", "value"),
-        compiler_params=plgpu.CompilerParams(
-            lowering_semantics=plgpu.LoweringSemantics.Lane,
-            reduction_scratch_bytes=8_192,
-        ),
-        kernel_name=f"deltanet_b{batch_size}_t{num_tokens}",
     )
+
+    def scan(
+        queries: Array,
+        keys: Array,
+        values: Array,
+        decay: Array,
+        beta: Array,
+        initial_state: Array,
+        num_steps: Array,
+    ) -> tuple[Array, Array]:
+        state = jax.ref.new_ref(initial_state)
+        outputs = run(queries, keys, values, decay, beta, state, num_steps)
+        return jax.ref.freeze(state), outputs
+
+    return scan
 
 
 @deltanet_recurrent_scan.def_vmap

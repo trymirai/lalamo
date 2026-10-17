@@ -8,6 +8,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.kernels.deltanet import deltanet_recurrent_scan
+from lalamo.kernels.mosaic import supports_mosaic_gpu
 from lalamo.module import Keychain
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
@@ -169,6 +170,10 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         remainder = num_tokens % chunk_size
         has_short_tail = 0 < remainder < min_tail_size_to_chunk
         num_chunked_tokens = num_tokens - remainder if has_short_tail else num_tokens
+
+        # Short Mosaic scans keep the state in registers and avoid the chunked triangular solves.
+        if min_tail_size_to_chunk > 0 and num_tokens <= 512 and supports_mosaic_gpu(self.sharding_config.mesh, 9):
+            num_chunked_tokens = 0
 
         tail_queries = queries[num_chunked_tokens:]
         tail_keys = keys[num_chunked_tokens:]

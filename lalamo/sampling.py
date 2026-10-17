@@ -190,8 +190,18 @@ class SamplingPolicy(eqx.Module):
         self._raise_if_batched()
         logits = self._apply_penalties(logits)
         logits = self._apply_temperature(logits)
-        logits = self._apply_top_k(logits)
-        logits = self._apply_top_p(logits)
+        if self.top_k is not None or self.top_p is not None:
+            sorted_indices = jnp.argsort(logits, descending=True)
+            sorted_logits = logits[sorted_indices]
+            if self.top_k is not None:
+                ranks = jnp.arange(logits.shape[0])
+                keep = (self.top_k <= 0) | (ranks < jnp.clip(self.top_k, 1, logits.shape[0]))
+                sorted_logits = jnp.where(keep, sorted_logits, -jnp.inf)
+            if self.top_p is not None:
+                probabilities = jax.nn.softmax(sorted_logits)
+                previous_probabilities = jnp.cumsum(probabilities) - probabilities
+                sorted_logits = jnp.where(previous_probabilities >= self.top_p, -jnp.inf, sorted_logits)
+            logits = jnp.empty_like(logits).at[sorted_indices].set(sorted_logits)
         return self._apply_min_p(logits)
 
     def __call__(self, logits: Float[Array, " vocabulary"], *, keychain: Keychain) -> Int[Array, ""]:
@@ -272,32 +282,6 @@ class SamplingPolicy(eqx.Module):
             greedy_logits,
             logits / jnp.where(self.temperature == 0.0, 1.0, self.temperature),
         )
-
-    def _apply_top_k(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
-        if self.top_k is None:
-            return logits
-        (vocabulary_size,) = logits.shape
-        effective_top_k = jnp.clip(self.top_k, 1, vocabulary_size)
-        sorted_indices = jnp.argsort(logits, axis=-1, descending=True)
-        ranks = jnp.empty_like(sorted_indices).at[sorted_indices].set(jnp.arange(vocabulary_size, dtype=jnp.int32))
-        filtered_logits = jnp.where(ranks < effective_top_k, logits, -jnp.inf)
-        return jnp.where(self.top_k > 0, filtered_logits, logits)
-
-    def _apply_top_p(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
-        if self.top_p is None:
-            return logits
-        sorted_indices = jnp.argsort(logits, axis=-1, descending=True)
-        sorted_logits = jnp.take_along_axis(logits, sorted_indices, axis=-1)
-        sorted_probs = jax.nn.softmax(sorted_logits, axis=-1)
-        cumulative_probs = jnp.cumsum(sorted_probs, axis=-1)
-        cumulative_probs_before_token = cumulative_probs - sorted_probs
-
-        to_remove_sorted = cumulative_probs_before_token >= self.top_p
-
-        unsort_indices = jnp.argsort(sorted_indices, axis=-1)
-        to_remove_unsorted = jnp.take_along_axis(to_remove_sorted, unsort_indices, axis=-1)
-
-        return jnp.where(to_remove_unsorted, -jnp.inf, logits)
 
     def _apply_min_p(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         if self.min_p is None:

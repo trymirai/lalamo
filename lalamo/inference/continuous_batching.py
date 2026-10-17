@@ -39,12 +39,13 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ContinuousBatchingConfig:
     """A `total_pages` of None sizes the KV pool from the device memory left after the model is loaded; a
-    `slot_count` of None admits as many concurrent sequences as can each reach the full context length."""
+    `slot_count` of None admits as many concurrent sequences as can each reach the full context length.
+    An unspecified prefill cap fits available memory, or uses one row when memory statistics are unavailable."""
 
     total_pages: int | None = None
     slot_count: int | None = None
     max_context_length: int | None = None
-    prefill_batch_size: int = 1
+    prefill_batch_size: int | None = None
     prefill_chunk_size: int = 512
     page_size: ClassVar[int] = 32
     # Prompt tokens prefilled after the cached recurrent snapshot, which a next turn's template may render differently.
@@ -91,13 +92,16 @@ def _prefill_capacity(prefix_length: int, head_width: int, tail_width: int) -> i
     return math.ceil(_next_power_of_two(prefix_length + head_width + tail_width) / page_size) * page_size
 
 
-@eqx.filter_jit(donate="all-except-first")
+# Equinox forwards JAX keyword arguments but omits them from its overloads.
+# pyrefly: ignore[missing-argument, unexpected-keyword]
+@eqx.filter_jit(donate="all-except-first", compiler_options={"xla_gpu_enable_triton_gemm": False})
 def _decode(
     decoder: Decoder,
     state: State,
+    slots: Int[Array, " batch"],
     block_tables: Int[Array, "batch pages_per_sequence"],
     lengths: Int[Array, " batch"],
-    logits: Float[Array, "batch vocabulary"],
+    logits: Float[Array, "slots vocabulary"],
     token_positions: Int[Array, "steps batch 1"],
     sampling_policy: SamplingPolicy,
     sampling_keys: Key[Array, " batch"],
@@ -140,17 +144,27 @@ def _decode(
     views = State(
         PagedKVCacheLayer(layer.keys, layer.values, block_tables, lengths)
         if isinstance(layer, PagedKVCachePool)
-        else layer
+        else jax.tree.map(lambda array: array[slots], layer)
         for layer in state
     )
-    (views, logits, sampling_policy, sampling_keys), (token_ids, logprobs) = jax.lax.scan(
-        step, (views, logits, sampling_policy, sampling_keys), token_positions
+    (views, row_logits, sampling_policy, sampling_keys), (token_ids, logprobs) = jax.lax.scan(
+        step, (views, logits[slots], sampling_policy, sampling_keys), token_positions
     )
     pools = State(
-        PagedKVCachePool(layer.keys, layer.values) if isinstance(layer, PagedKVCacheLayer) else layer
-        for layer in views
+        PagedKVCachePool(layer.keys, layer.values)
+        if isinstance(layer, PagedKVCacheLayer)
+        else jax.tree.map(lambda full, row: full.at[slots].set(row), pool, layer)
+        for pool, layer in zip(state, views, strict=True)
     )
-    return pools, logits, token_ids, logprobs, sampling_keys, sampling_policy
+    return pools, logits.at[slots].set(row_logits), token_ids, logprobs, sampling_keys, sampling_policy
+
+
+@eqx.filter_jit
+def _recurrent_row(state: State, row: Int[Array, ""]) -> tuple[StateLayerBase | None, ...]:
+    return tuple(
+        None if isinstance(layer, StaticKVCacheLayer) else jax.tree.map(lambda array: array[row], layer)
+        for layer in state
+    )
 
 
 @eqx.filter_jit(donate="all")
@@ -265,10 +279,12 @@ class ContinuousBatchingEngine:
         slot_count = config.slot_count
         if total_pages:
             slot_count = min(slot_count or total_pages, total_pages // pages_per_slot)
-        if total_pages is None or slot_count is None:
-            stats = [device.memory_stats() or {} for device in devices]
-            if not all(device_stats.get("bytes_limit") for device_stats in stats):
-                raise ValueError("The device does not report its memory limit; configure total_pages and slot_count.")
+        prefill_batch_size = config.prefill_batch_size
+        stats = [device.memory_stats() or {} for device in devices]
+        if all(device_stats.get("bytes_limit") for device_stats in stats):
+            if prefill_batch_size is None:
+                prefill_batch_size = 32
+            prefill_batch_size = _next_power_of_two(min(prefill_batch_size, slot_count or prefill_batch_size))
             usable_bytes = int(0.9 * min(s["bytes_limit"] - s["bytes_in_use"] for s in stats))
             # Each slot keeps active state, a prefill snapshot, cached snapshots and padded decode rows, along with
             # persistent and working rows of logits and token-count penalties.
@@ -281,13 +297,26 @@ class ContinuousBatchingEngine:
             )
             chunk_size = max(min(config.prefill_chunk_size, head_width), tail_width)
             num_heads = max((mixer.config.num_heads for mixer in attention_mixers), default=0)
-            prefill_bytes = _next_power_of_two(config.prefill_batch_size) * (
+            prefill_row_bytes = (
                 3 * prefill_capacity * page_bytes // config.page_size
                 + 2 * recurrent_bytes
-                + chunk_size * (2 * prefill_capacity * num_heads * 4 + vocab_size * 4)
+                + chunk_size * 2 * prefill_capacity * num_heads * 4
+                # Prefill reads out one token per row; allow carry, chunk and selection temporaries.
+                + 4 * vocab_size * 4
             )
             # One extra page absorbs writes from padded batch rows and unallocated block-table entries.
-            available_bytes = usable_bytes - prefill_bytes - page_bytes
+            while True:
+                available_bytes = usable_bytes - prefill_batch_size * prefill_row_bytes - page_bytes
+                required_slots = slot_count or prefill_batch_size
+                required_pages = total_pages
+                if required_pages is None:
+                    required_pages = required_slots * pages_per_slot
+                if (
+                    prefill_batch_size == 1
+                    or available_bytes >= required_slots * slot_bytes + required_pages * page_bytes
+                ):
+                    break
+                prefill_batch_size //= 2
             if slot_count is None:
                 slot_count = available_bytes // (slot_bytes + pages_per_slot * page_bytes)
             if total_pages is None:
@@ -295,11 +324,23 @@ class ContinuousBatchingEngine:
                 slot_count = min(slot_count, total_pages // pages_per_slot)
             if slot_count < 1:
                 raise ValueError("Not enough device memory for one sequence at the requested context length.")
-            gib = total_pages * page_bytes / 2**30
-            logger.info(
-                "KV pool: %d pages (%.1f GiB), context %d, slots %d", total_pages, gib, context_length, slot_count
-            )
+        else:
+            if total_pages is None or slot_count is None:
+                raise ValueError("The device does not report its memory limit; configure total_pages and slot_count.")
+            if prefill_batch_size is None:
+                prefill_batch_size = 1
         assert total_pages is not None
+        if config.prefill_batch_size is not None:
+            prefill_batch_size = min(config.prefill_batch_size, prefill_batch_size)
+        config = replace(config, prefill_batch_size=min(slot_count, prefill_batch_size))
+        logger.info(
+            "KV pool: %d pages (%.1f GiB), context %d, slots %d, prefill cap %d",
+            total_pages,
+            total_pages * page_bytes / 2**30,
+            context_length,
+            slot_count,
+            config.prefill_batch_size,
+        )
 
         static_state = model.decoder.init_static_state(slot_count, 1, state_dtype)
         layers = []
@@ -428,6 +469,7 @@ class ContinuousBatchingEngine:
         return jnp.asarray([(pages + padding)[:pages_per_sequence] for pages in page_lists], dtype=jnp.int32)
 
     def _prefill(self) -> bool:
+        assert self.config.prefill_batch_size is not None
         batch: list[BatchingSequence] = []
         while self._pending and self._free_slots and len(batch) < self.config.prefill_batch_size:
             sequence = self._pending.popleft()
@@ -469,12 +511,7 @@ class ContinuousBatchingEngine:
             sequence.head_length = head_lengths[row]
             sequence.head_state_rows = None
             if head_lengths[row] > 0:
-                sequence.head_state_rows = tuple(
-                    None
-                    if isinstance(layer, StaticKVCacheLayer)
-                    else jax.tree.map(lambda leaf, row=row: leaf[row], layer)
-                    for layer in state
-                )
+                sequence.head_state_rows = _recurrent_row(state, jnp.asarray(row, dtype=jnp.int32))
         prefilled = self._prefill_rows(tails, tail_width, tail_width, token_capacity, state, head_lengths)
         self._state, self._last_logits = _merge_prefill(
             self._state,
@@ -519,6 +556,15 @@ class ContinuousBatchingEngine:
         page_indices = self._block_tables(
             [sequence.cached_prefix.pages if sequence.cached_prefix else [] for sequence in batch], prefix_pages
         )
+        cached_rows, cached_prefixes = zip(
+            *(
+                (row, sequence.cached_prefix)
+                for row, sequence in enumerate(batch)
+                if sequence.cached_prefix is not None
+            ),
+            strict=True,
+        )
+        row_indices = jnp.asarray(cached_rows, dtype=jnp.int32)
         layers = []
         for layer_index, (pool, layer) in enumerate(zip(self._state, blank, strict=True)):
             if isinstance(pool, PagedKVCachePool):
@@ -535,14 +581,13 @@ class ContinuousBatchingEngine:
                     )
                 )
                 continue
-            seeded = layer
-            for row, sequence in enumerate(batch):
-                if sequence.cached_prefix is not None:
-                    cached = sequence.cached_prefix.state_rows[layer_index]
-                    seeded = jax.tree.map(
-                        lambda leaf, cached_leaf, row=row: leaf.at[row].set(cached_leaf), seeded, cached
-                    )
-            layers.append(seeded)
+            layers.append(
+                jax.tree.map(
+                    lambda leaf, *cached: leaf.at[row_indices].set(jnp.stack(cached)),
+                    layer,
+                    *(prefix.state_rows[layer_index] for prefix in cached_prefixes),
+                )
+            )
         return State(layers)
 
     def _decode(self) -> None:
@@ -564,35 +609,26 @@ class ContinuousBatchingEngine:
         pages_per_sequence = 0
         if self.total_pages:
             pages_per_sequence = _next_power_of_two(max(len(sequence.pages) for sequence in padded))
-        rows = State(
-            layer if isinstance(layer, PagedKVCachePool) else jax.tree.map(lambda array: array[slots], layer)
-            for layer in self._state
-        )
-        state, logits, token_ids, logprobs, sampling_keys, sampling_policies = _decode(
+        self._state, self._last_logits, token_ids, logprobs, sampling_keys, sampling_policies = _decode(
             self.model.decoder,
-            rows,
+            self._state,
+            slots,
             self._block_tables([sequence.pages for sequence in padded], pages_per_sequence),
             lengths,
-            self._last_logits[slots],
+            self._last_logits,
             lengths[None, :, None] + jnp.arange(block_size, dtype=jnp.int32)[:, None, None],
             jax.tree.map(lambda *leaves: jnp.stack(leaves), *(sequence.sampling_policy for sequence in padded)),
             jnp.stack([sequence.sampling_key for sequence in padded]),
             first.return_logprobs,
         )
-        self._state = State(
-            new
-            if isinstance(new, PagedKVCachePool)
-            else jax.tree.map(lambda old, new: old.at[slots].set(new), old, new)
-            for old, new in zip(self._state, state, strict=True)
-        )
-        self._last_logits = self._last_logits.at[slots].set(logits)
-
         token_ids = np.asarray(token_ids)
         host_logprobs = None if logprobs is None else [np.asarray(array) for array in logprobs]
         for row, sequence in enumerate(batch):
             self._active.remove(sequence)
-            sequence.sampling_key = sampling_keys[row]
-            sequence.sampling_policy = jax.tree.map(lambda leaf, row=row: leaf[row], sampling_policies)
+            if not first.sampling_policy.is_greedy:
+                sequence.sampling_key = sampling_keys[row]
+            if first.sampling_policy.has_count_penalties:
+                sequence.sampling_policy = jax.tree.map(lambda leaf, row=row: leaf[row], sampling_policies)
             events: list[TokenEvent] = []
             for step, token_id in enumerate(map(int, token_ids[:, row])):
                 sequence.completion_tokens += 1

@@ -186,6 +186,12 @@ def test_requests_match_dense_generation_after_slot_and_prefix_reuse(recurrent_m
     assert engine.step()
     engine.submit(prompts[2], budgets[2], generation, 0, return_logprobs=True, on_events=events[2].extend)
     _run(engine)
+    for prompt, budget in (((*first[:15], 31), 7), ((*prompts[1][:10], 32), 4)):
+        prompts.append(prompt)
+        budgets.append(budget)
+        events.append([])
+        engine.submit(prompt, budget, generation, 0, return_logprobs=True, on_events=events[-1].extend)
+    _run(engine)
     for prompt, budget, received in zip(prompts, budgets, events, strict=True):
         assert received[-1] == SequenceFinished(FinishReason.LENGTH, budget)
         expected = recurrent_model.stream_tokens(
