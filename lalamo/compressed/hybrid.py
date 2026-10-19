@@ -461,9 +461,7 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
         forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, "*batch out_channels"]:
         self._raise_if_batched()
-        if isinstance(self.incoherence_signs, KroneckerRotation) or (
-            self.incoherence_signs is not None and self.incoherence_signs.input_signs is not None
-        ):
+        if isinstance(self.incoherence_signs, IncoherenceSigns) and self.incoherence_signs.input_signs is not None:
             raise ValueError("Hybrid embedding lookup is only supported when input RHT is disabled.")
         if not isinstance(self.quantized, EmbeddingMatrix):
             raise TypeError("Hybrid embedding lookup requires an embedding-compatible quantization matrix.")
@@ -474,13 +472,18 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
         decode_dtype = dtype
         if isinstance(self.quantized, LatticeMatrix):
             decode_dtype = jnp.float32
+        if isinstance(self.incoherence_signs, KroneckerRotation):
+            # uzu's lookup rounds a decoded row to the table dtype before unrotating it.
+            decode_dtype = self.quantized.dtype
         result = self.quantized.lookup_embedding(
             row_index,
             dtype=decode_dtype,
             keychain=keychain,
             forward_pass_config=forward_pass_config,
         )
-        if isinstance(self.incoherence_signs, IncoherenceSigns):
+        if isinstance(self.incoherence_signs, KroneckerRotation):
+            result = self.incoherence_signs.unprocess_weights(result)
+        elif isinstance(self.incoherence_signs, IncoherenceSigns):
             assert self.spec.incoherence_block_size is not None
             result = self.incoherence_signs.output_transform(result, self.spec.incoherence_block_size)
         return result.astype(dtype)

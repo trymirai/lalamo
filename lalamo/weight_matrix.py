@@ -522,8 +522,18 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
 
         saved_spec = exported_data.metadata[prefix / "spec"]
         loaded_spec = WeightMatrixSpec.from_json(saved_spec)
+        from lalamo.compressed.hybrid import HybridSpec  # noqa: PLC0415
+        from lalamo.compressed.qtip_gaussian import QtipGaussianSpec  # noqa: PLC0415
+
+        weights = self.decompress()
+        inner_spec = loaded_spec.quantization_spec if isinstance(loaded_spec, HybridSpec) else loaded_spec
+        if self.spec.layout == Layout.INPUT_OUTPUT and isinstance(inner_spec, QtipGaussianSpec):
+            # A trellis table keeps one tape row per vocabulary entry: it is saved in readout orientation.
+            weights = dummy_array(
+                weights.shape[::-1], weights.dtype, sharding_of(weights), weak_type=weights.weak_type
+            )
         dummy_layer = loaded_spec.compress(
-            self.decompress(),
+            weights,
             sharding_config=self.sharding_config,
             is_sharded=self.is_sharded,
         )
