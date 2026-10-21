@@ -1,0 +1,456 @@
+import asyncio
+from dataclasses import replace
+from typing import Any, cast
+
+import httpx2
+import jax
+import jax.numpy as jnp
+import numpy as np
+import pytest
+from openai import AsyncOpenAI, BadRequestError, NotFoundError
+from openai.types.chat import ChatCompletion
+from tokenizers import Tokenizer
+from tokenizers.decoders import ByteLevel, Fuse
+from tokenizers.models import WordLevel
+
+from lalamo.inference.continuous_batching import (
+    ContinuousBatchingConfig,
+    ContinuousBatchingEngine,
+    FinishReason,
+    GeneratedToken,
+    SequenceFinished,
+    TokenEvent,
+)
+from lalamo.initializer import RandomInitializer
+from lalamo.models import GenerationConfig, LanguageModel
+from lalamo.models.chat_codec import THINKING_RESPONSE_FORMAT, AssistantMessage, ChatCodecConfig, UserMessage
+from lalamo.models.language_model import LanguageModelConfig
+from lalamo.module import Keychain, ShardingConfig
+from lalamo.modules import DecoderForwardPassConfig
+from lalamo.modules.activations import SiLU
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
+from lalamo.modules.token_mixers.mamba import Mamba2Config
+from lalamo.server import create_app
+from tests.helpers import build_tiny_attention_decoder_config, dense_log_softmax_rows
+
+pytestmark = pytest.mark.fast
+
+
+@pytest.fixture(scope="module")
+def recurrent_model() -> LanguageModel:
+    """A CPU model with only recurrent state, whose tokens decode to distinct words `w<id>.`."""
+    decoder = build_tiny_attention_decoder_config((None,))
+    (layer,) = decoder.transformer_config.layer_configs
+    mixer = Mamba2Config(
+        in_projection_config=LinearConfig(),
+        out_projection_config=LinearConfig(),
+        conv_config=SeparableCausalConvConfig(has_biases=False),
+        activation=SiLU(),
+        kernel_size=3,
+        num_heads=2,
+        num_groups=1,
+        head_dim=2,
+        state_dim=3,
+        has_in_biases=False,
+        has_out_biases=False,
+    )
+    decoder = replace(
+        decoder,
+        transformer_config=replace(
+            decoder.transformer_config,
+            layer_configs=(replace(layer, mixer_config=mixer, rope_config=None),),
+        ),
+    )
+    tokenizer = Tokenizer(
+        WordLevel({"[UNK]": 0, "prompt": 1, **{f"w{index}.": index for index in range(2, 64)}}, unk_token="[UNK]")
+    )
+    tokenizer.decoder = Fuse()
+    config = LanguageModelConfig(
+        token_codec_config=ChatCodecConfig("prompt", None, "system", "user", "assistant", None, None),
+        decoder_config=decoder,
+        generation_config=GenerationConfig(),
+    )
+    model = config.init(
+        tokenizer,
+        RandomInitializer(
+            default_dtype=jnp.float32,
+            sharding_config=ShardingConfig.replicated(jax.devices("cpu")[:1]),
+            key=jax.random.key(7),
+        ),
+    )
+    assert model.decoder.vocab_size <= 64
+    return model
+
+
+def _run(engine: ContinuousBatchingEngine) -> None:
+    while engine.step():
+        pass
+
+
+@pytest.mark.parametrize("request_stop_tokens", [False, True])
+def test_replies_use_prompt_context_and_omit_stop_tokens(
+    recurrent_model: LanguageModel, request_stop_tokens: bool
+) -> None:
+    codec_config = replace(
+        recurrent_model.token_codec.config, prompt_template="<think>", response_format=THINKING_RESPONSE_FORMAT
+    )
+    model = LanguageModel(
+        config=replace(recurrent_model.config, token_codec_config=codec_config),
+        sharding_config=recurrent_model.sharding_config,
+        token_codec=codec_config.init(recurrent_model.token_codec.tokenizer),
+        decoder=recurrent_model.decoder,
+    )
+    keychain = Keychain.init(0, sharding_config=model.sharding_config)
+    prompt = model.token_codec.render_request([UserMessage("hello")])
+    with jax.set_mesh(model.sharding_config.mesh):
+        reply = model.reply([UserMessage("hello")], GenerationConfig(temperature=0.0), 1, keychain=keychain)
+        text = "".join(model.stream_text(prompt, GenerationConfig(temperature=0.0), 1, keychain=keychain))
+        assert reply == AssistantMessage(chain_of_thought=text)
+        assert text
+        stop_tokens = tuple(model.token_codec.encode_text(text))
+        stop_config = GenerationConfig(temperature=0.0, stop_token_ids=stop_tokens)
+        if request_stop_tokens:
+            stopped_model = model
+            request_config = stop_config
+        else:
+            stopped_model = LanguageModel(
+                config=replace(model.config, generation_config=stop_config),
+                sharding_config=model.sharding_config,
+                token_codec=model.token_codec,
+                decoder=model.decoder,
+            )
+            request_config = GenerationConfig(temperature=0.0)
+        assert (
+            stopped_model.reply([UserMessage("hello")], request_config, max_output_length=3, keychain=keychain)
+            == AssistantMessage()
+        )
+        assert "".join(stopped_model.stream_text(prompt, request_config, max_output_length=3, keychain=keychain)) == ""
+        assert [
+            int(token.item())
+            for token in stopped_model.stream_tokens(
+                jnp.asarray(model.token_codec.encode_text(prompt)), request_config, 3, keychain=keychain
+            )
+        ] == list(stop_tokens)
+        generated = stopped_model.generate_tokens(
+            jnp.asarray([model.token_codec.encode_text(prompt)]),
+            request_config,
+            max_output_length=3,
+            keychain=keychain,
+        )
+        np.testing.assert_array_equal(generated.token_ids, [[stop_tokens[0], 0, 0]])
+
+
+@pytest.mark.parametrize(("max_output_length", "stop"), [(1, False), (2, False), (2, True)])
+def test_streamed_text_matches_reply_when_utf8_spans_tokens(
+    recurrent_model: LanguageModel, max_output_length: int, stop: bool
+) -> None:
+    keychain = Keychain.init(0, sharding_config=recurrent_model.sharding_config)
+    generation_config = GenerationConfig(temperature=1.0)
+    with jax.set_mesh(recurrent_model.sharding_config.mesh):
+        first, second = (
+            int(token.item())
+            for token in recurrent_model.stream_tokens(jnp.asarray([1]), generation_config, 2, keychain=keychain)
+        )
+        assert first != second
+        vocabulary = {
+            token: token_id
+            for token, token_id in recurrent_model.token_codec.tokenizer.get_vocab().items()
+            if token_id not in (first, second)
+        }
+        tokenizer = Tokenizer(WordLevel(vocabulary | {"Ã": first, "©": second}, unk_token="[UNK]"))
+        tokenizer.decoder = ByteLevel()
+        model = LanguageModel(
+            config=recurrent_model.config,
+            sharding_config=recurrent_model.sharding_config,
+            token_codec=recurrent_model.token_codec.config.init(tokenizer),
+            decoder=recurrent_model.decoder,
+        )
+        if stop:
+            generation_config = replace(generation_config, stop_token_ids=(second,))
+        reply = model.reply([UserMessage("hello")], generation_config, max_output_length, keychain=keychain)
+        text = "".join(model.stream_text("prompt", generation_config, max_output_length, keychain=keychain))
+        assert reply.response == text
+        if max_output_length == 2 and not stop:
+            assert text == "é"
+        else:
+            assert text == "\ufffd"
+
+
+def test_requests_match_dense_generation_after_slot_and_prefix_reuse(recurrent_model: LanguageModel) -> None:
+    engine = ContinuousBatchingEngine.init(
+        recurrent_model,
+        ContinuousBatchingConfig(slot_count=2, max_context_length=48, prefill_batch_size=2, prefill_chunk_size=3),
+    )
+    first = tuple(range(1, 24))
+    # The third prompt extends a cached prefix of the first and arrives after both slots are taken.
+    prompts = [first, tuple(range(3, 21)), (*first[:15], 30)]
+    budgets = [5, 9, 6]
+    events: list[list[TokenEvent]] = [[], [], []]
+    generation = GenerationConfig(temperature=0.0)
+    for prompt, budget, received in zip(prompts[:2], budgets[:2], events[:2], strict=True):
+        engine.submit(prompt, budget, generation, 0, return_logprobs=True, on_events=received.extend)
+    assert engine.step()
+    engine.submit(prompts[2], budgets[2], generation, 0, return_logprobs=True, on_events=events[2].extend)
+    _run(engine)
+    for prompt, budget in (((*first[:15], 31), 7), ((*prompts[1][:10], 32), 4)):
+        prompts.append(prompt)
+        budgets.append(budget)
+        events.append([])
+        engine.submit(prompt, budget, generation, 0, return_logprobs=True, on_events=events[-1].extend)
+    _run(engine)
+    for prompt, budget, received in zip(prompts, budgets, events, strict=True):
+        assert received[-1] == SequenceFinished(FinishReason.LENGTH, budget)
+        expected = recurrent_model.stream_tokens(
+            jnp.asarray(prompt, dtype=jnp.int32),
+            generation,
+            budget,
+            keychain=Keychain.init(0, sharding_config=recurrent_model.sharding_config),
+        )
+        token_ids = [event.token_id for event in received if isinstance(event, GeneratedToken)]
+        assert token_ids == list(map(int, expected))
+        rows = dense_log_softmax_rows(recurrent_model, prompt, token_ids)
+        for event, row in zip(received[:-1], rows[:-1], strict=True):
+            assert isinstance(event, GeneratedToken) and event.logprobs is not None
+            np.testing.assert_allclose(event.logprobs.logprob, row[event.token_id], rtol=1e-4, atol=1e-3)
+            np.testing.assert_allclose(
+                event.logprobs.top_logprobs, row[jnp.asarray(event.logprobs.top_token_ids)], rtol=1e-4, atol=1e-3
+            )
+
+
+def test_requests_with_different_repetition_windows_match_independent_generation(
+    recurrent_model: LanguageModel,
+) -> None:
+    engine = ContinuousBatchingEngine.init(
+        recurrent_model,
+        ContinuousBatchingConfig(slot_count=3, max_context_length=32, prefill_batch_size=3),
+    )
+    policies = [
+        GenerationConfig(temperature=0.0, presence_penalty=0.5, suffix_repetition_length=window)
+        for window in (2, 5, 2)
+    ]
+    events: list[list[TokenEvent]] = [[], [], []]
+    for policy, received in zip(policies, events, strict=True):
+        engine.submit((1, 2, 3, 4), 5, policy, 0, on_events=received.extend)
+    _run(engine)
+    for policy, received in zip(policies, events, strict=True):
+        expected = recurrent_model.stream_tokens(
+            jnp.asarray([1, 2, 3, 4], dtype=jnp.int32),
+            policy,
+            5,
+            keychain=Keychain.init(0, sharding_config=recurrent_model.sharding_config),
+        )
+        assert [event.token_id for event in received if isinstance(event, GeneratedToken)] == list(map(int, expected))
+        assert received[-1] == SequenceFinished(FinishReason.LENGTH, 5)
+
+
+def test_signed_64_bit_seeds_replay_after_slot_reuse(recurrent_model: LanguageModel) -> None:
+    engine = ContinuousBatchingEngine.init(
+        recurrent_model,
+        ContinuousBatchingConfig(slot_count=2, max_context_length=32, prefill_batch_size=2, prefill_chunk_size=4),
+    )
+    seeds = (0, 2**32, -1, -(2**63), 2**63 - 1)
+    runs: list[list[list[TokenEvent]]] = []
+    for order in (seeds, seeds[::-1]):
+        events: dict[int, list[TokenEvent]] = {seed: [] for seed in order}
+        for seed in order:
+            engine.submit((1, 2, 3, 4), 8, GenerationConfig(temperature=1.0), seed, on_events=events[seed].extend)
+        _run(engine)
+        runs.append([events[seed] for seed in seeds])
+    original, replayed = runs
+    assert original == replayed
+    assert len({tuple(events) for events in original}) == len(seeds)
+
+
+def test_context_without_positional_limit_must_be_configured(recurrent_model: LanguageModel) -> None:
+    with pytest.raises(ValueError, match="requires max_context_length"):
+        ContinuousBatchingEngine.init(recurrent_model, ContinuousBatchingConfig(slot_count=1))
+
+
+def test_prefill_continuation_preserves_prefix_when_padding_exceeds_capacity() -> None:
+    codec_config = ChatCodecConfig("", None, "system", "user", "assistant", None, None)
+    config = LanguageModelConfig(
+        token_codec_config=codec_config,
+        decoder_config=build_tiny_attention_decoder_config((None,)),
+        generation_config=GenerationConfig(),
+    )
+    sharding_config = ShardingConfig.replicated(jax.devices("cpu")[:1])
+    model = config.init(
+        Tokenizer(WordLevel({"[UNK]": 0}, unk_token="[UNK]")),
+        RandomInitializer(default_dtype=jnp.float32, sharding_config=sharding_config, key=jax.random.key(4)),
+    )
+    keychain = Keychain.init(0, sharding_config=sharding_config)
+    forward_pass_config = DecoderForwardPassConfig.for_tracer_tests()
+    tokens = jax.random.randint(jax.random.key(5), (2, 56), 0, model.decoder.vocab_size)
+    prefix = model.prefill_tokens(
+        tokens[:, :24], 64, jnp.array([24, 0]), forward_pass_config, chunk_size=24, keychain=keychain
+    )
+    head = model.prefill_tokens(
+        jnp.stack([jnp.pad(tokens[0, 24:48], (0, 8)), tokens[1, :32]]),
+        64,
+        jnp.array([24, 32]),
+        forward_pass_config,
+        chunk_size=24,
+        initial_state=prefix.state,
+        prefix_lengths=jnp.array([24, 0]),
+        keychain=keychain,
+    )
+    continued = model.prefill_tokens(
+        jnp.stack([tokens[0, 48:56], tokens[1, 32:40]]),
+        64,
+        forward_pass_config=forward_pass_config,
+        chunk_size=8,
+        initial_state=head.state,
+        prefix_lengths=head.last_token_indices + 1,
+        keychain=keychain,
+    )
+    unchunked = model.prefill_tokens(
+        tokens, 64, jnp.array([56, 40]), forward_pass_config, chunk_size=56, keychain=keychain
+    )
+    np.testing.assert_allclose(continued.last_token_logits, unchunked.last_token_logits, rtol=1e-4, atol=1e-5)
+    np.testing.assert_array_equal(continued.last_token_indices, unchunked.last_token_indices)
+    continued_decode, unchunked_decode = (
+        model.decoder(
+            token_ids=tokens[:, :1],
+            token_positions=(prefilled.last_token_indices + 1)[:, None],
+            state=prefilled.state,
+            return_updated_state=True,
+            forward_pass_config=forward_pass_config,
+            keychain=keychain,
+        )
+        for prefilled in (continued, unchunked)
+    )
+    np.testing.assert_allclose(continued_decode.logits, unchunked_decode.logits, rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.parametrize("enable_eos_log_probs", [False, True])
+def test_openai_eos_logprobs(recurrent_model: LanguageModel, enable_eos_log_probs: bool) -> None:
+    (row,) = dense_log_softmax_rows(recurrent_model, (1,), [])
+    eos_token = int(row.argmax())
+    model = LanguageModel(
+        config=replace(recurrent_model.config, generation_config=GenerationConfig(stop_token_ids=(eos_token,))),
+        sharding_config=recurrent_model.sharding_config,
+        token_codec=recurrent_model.token_codec,
+        decoder=recurrent_model.decoder,
+    )
+
+    async def run() -> None:
+        api = create_app(
+            model,
+            "test",
+            ContinuousBatchingConfig(slot_count=1, max_context_length=16),
+            enable_eos_log_probs=enable_eos_log_probs,
+        )
+        async with (
+            api.router.lifespan_context(api),
+            httpx2.AsyncClient(transport=httpx2.ASGITransport(app=api)) as http,
+        ):
+            client = AsyncOpenAI(api_key="test", base_url="http://test/v1", http_client=http)
+            for logprobs in (False, True):
+                top_logprobs = None
+                if logprobs:
+                    top_logprobs = 3
+                completion = await client.chat.completions.create(
+                    model="test",
+                    messages=[{"role": "user", "content": "hello"}],
+                    max_completion_tokens=3,
+                    temperature=0,
+                    logprobs=logprobs,
+                    top_logprobs=top_logprobs,
+                )
+                (choice,) = completion.choices
+                assert choice.message.content == "" and choice.finish_reason == "stop"
+                assert completion.usage is not None and completion.usage.completion_tokens == 1
+                if not logprobs:
+                    assert choice.logprobs is None
+                    continue
+                assert choice.logprobs is not None and choice.logprobs.content is not None
+                if not enable_eos_log_probs:
+                    assert choice.logprobs.content == []
+                    continue
+                (entry,) = choice.logprobs.content
+                assert entry.token == model.token_codec.decode_tokens([eos_token])
+                np.testing.assert_allclose(entry.logprob, row[eos_token], rtol=1e-4, atol=1e-3)
+                top_ids = np.argsort(-row)[:3]
+                assert [item.token for item in entry.top_logprobs] == [
+                    model.token_codec.decode_tokens([int(token_id)]) for token_id in top_ids
+                ]
+                np.testing.assert_allclose(
+                    [item.logprob for item in entry.top_logprobs], row[top_ids], rtol=1e-4, atol=1e-3
+                )
+
+    asyncio.run(run())
+
+
+def test_openai_client_completions(recurrent_model: LanguageModel) -> None:
+    codec = recurrent_model.token_codec
+    greedy = recurrent_model.stream_tokens(
+        jnp.asarray([1], dtype=jnp.int32),
+        GenerationConfig(temperature=0.0),
+        4,
+        keychain=Keychain.init(0, sharding_config=recurrent_model.sharding_config),
+    )
+    token_texts = [codec.decode_tokens([token_id]) for token_id in map(int, greedy)]
+    text = "".join(token_texts)
+
+    async def run() -> None:
+        api = create_app(
+            recurrent_model,
+            "test",
+            ContinuousBatchingConfig(slot_count=2, max_context_length=32, prefill_batch_size=2),
+        )
+        async with (
+            api.router.lifespan_context(api),
+            httpx2.AsyncClient(transport=httpx2.ASGITransport(app=api)) as http,
+        ):
+            client = AsyncOpenAI(api_key="test", base_url="http://test/v1", http_client=http)
+            request: dict[str, Any] = {
+                "model": "test",
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_completion_tokens": 4,
+                "temperature": 0,
+            }
+
+            async def complete(**overrides: Any) -> ChatCompletion:  # noqa: ANN401
+                return cast("ChatCompletion", await client.chat.completions.create(**(request | overrides)))
+
+            completion = await complete(logprobs=True, top_logprobs=2, stream=False)
+            (choice,) = completion.choices
+            assert choice.message.content == text
+            assert choice.finish_reason == "length"
+            assert completion.usage is not None and completion.usage.total_tokens == 5
+            assert choice.logprobs is not None and choice.logprobs.content is not None
+            assert [entry.token for entry in choice.logprobs.content] == token_texts
+            assert all(len(entry.top_logprobs) == 2 for entry in choice.logprobs.content)
+
+            stopped = await complete(stop=token_texts[-1], logprobs=True)
+            assert stopped.choices[0].message.content == text[: text.find(token_texts[-1])]
+            assert stopped.choices[0].finish_reason == "stop"
+            stopped_logprobs = stopped.choices[0].logprobs
+            assert stopped_logprobs is not None and stopped_logprobs.content is not None
+            assert [entry.token for entry in stopped_logprobs.content] == token_texts[
+                : token_texts.index(token_texts[-1]) + 1
+            ]
+
+            boundary_stop = token_texts[0][-1] + token_texts[1][0]
+            stopped_across_tokens = await complete(stop=boundary_stop, logprobs=True)
+            assert stopped_across_tokens.choices[0].message.content == token_texts[0][:-1]
+            assert stopped_across_tokens.usage is not None
+            assert stopped_across_tokens.usage.completion_tokens == 2
+            boundary_logprobs = stopped_across_tokens.choices[0].logprobs
+            assert boundary_logprobs is not None and boundary_logprobs.content is not None
+            assert [entry.token for entry in boundary_logprobs.content] == token_texts[:2]
+
+            with pytest.raises(NotFoundError):
+                await complete(model="other")
+            with pytest.raises(BadRequestError):
+                await complete(response_format={"type": "json_object"})
+            with pytest.raises(BadRequestError):
+                await complete(tools=[{"type": "function", "function": {"name": "f"}}])
+            with pytest.raises(BadRequestError):
+                await complete(stream=True)
+            with pytest.raises(BadRequestError):
+                await complete(extra_body={"stream_options": {"include_usage": True}})
+            assert (await http.get("http://test/health")).json() == {"status": "ok"}
+
+    asyncio.run(run())

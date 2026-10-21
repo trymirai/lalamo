@@ -1,3 +1,4 @@
+import ast
 import codecs
 import itertools
 import json
@@ -7,10 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from functools import cached_property, partial
-from re import Pattern
-from typing import Literal, NotRequired, TypedDict, cast, get_origin
+from typing import Literal, NoReturn, NotRequired, TypedDict, cast, get_origin
 
-import cattrs
 from cattrs.cols import homogenous_tuple_structure_factory, mapping_structure_factory
 from cattrs.dispatch import StructureHook
 from cattrs.gen import make_dict_structure_fn, make_dict_unstructure_fn, override
@@ -24,13 +23,18 @@ from lalamo.token_codec import TokenCodec, TokenCodecConfig
 from lalamo.utils.json import JSON
 
 __all__ = [
+    "THINKING_RESPONSE_FORMAT",
     "AssistantMessage",
     "ChatCodec",
     "ChatCodecConfig",
+    "FunctionCall",
     "Message",
+    "PythonToolCalls",
     "ReasoningConfig",
     "ReasoningEffort",
+    "ResponseFormat",
     "SystemMessage",
+    "TaggedToolCalls",
     "ToolCall",
     "ToolMessage",
     "ToolSchema",
@@ -53,6 +57,196 @@ class ToolCall(TypedDict):
     function: FunctionCall
     id: NotRequired[str]
     index: NotRequired[int]
+
+
+@dataclass(frozen=True)
+class AssistantMessage:
+    chain_of_thought: str | None = None
+    response: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+
+
+@dataclass(frozen=True)
+class PythonToolCalls:
+    tags: tuple[str, str]
+
+
+@dataclass(frozen=True)
+class TaggedToolCalls:
+    tags: tuple[str, str]
+    function_pattern: str
+    parameter_pattern: str
+
+    def __post_init__(self) -> None:
+        for pattern in (self.function_pattern, self.parameter_pattern):
+            if re.compile(pattern, re.DOTALL).groups != 2:
+                raise ValueError("Tagged tool patterns must capture a name and a body.")
+
+
+@dataclass(frozen=True)
+class ResponseFormat:
+    reasoning_pattern: str | None = None
+    prefixes: tuple[str, ...] = ()
+    turn_pattern: str | None = None
+    tool_calls: PythonToolCalls | TaggedToolCalls | None = None
+
+    def __post_init__(self) -> None:
+        if self.turn_pattern is not None and (self.reasoning_pattern is not None or self.prefixes):
+            raise ValueError("Turn framing cannot be combined with a reasoning split or prompt prefixes.")
+        if self.prefixes and self.reasoning_pattern is None:
+            raise ValueError("Prompt prefixes require a reasoning pattern.")
+        for pattern in (self.reasoning_pattern, self.turn_pattern):
+            if pattern is None:
+                continue
+            groups = re.compile(pattern, re.DOTALL).groupindex.keys()
+            expected = {"chain_of_thought", "response"}
+            if pattern == self.turn_pattern:
+                expected.add("tool_calls")
+                if self.tool_calls is not None and "tool_calls" not in groups:
+                    raise ValueError("A turn format with tool support must capture tool_calls.")
+            if not groups or not groups <= expected:
+                raise ValueError(f"Response patterns must use named captures from {expected}.")
+            if self.prefixes and "chain_of_thought" not in groups:
+                raise ValueError("Prompt prefixes require a chain_of_thought capture.")
+
+
+THINKING_RESPONSE_FORMAT = ResponseFormat(
+    reasoning_pattern=(
+        r"(?:</think>|(?:(?:<think>|(?=.*</think>))(?P<chain_of_thought>.*?)(?:</think>\s*|\Z)))?"
+        r"(?P<response>.*)"
+    ),
+    prefixes=("<think>", "</think>"),
+)
+
+
+class _JsonLiterals(ast.NodeTransformer):
+    # Python-style calls can contain JSON literals in nested arguments.
+    def visit_Name(self, node: ast.Name) -> ast.Constant:
+        literals = {"true": True, "false": False, "null": None}
+        if node.id not in literals:
+            raise ValueError(f"Unexpected name {node.id!r} in a tool argument.")
+        return ast.Constant(literals[node.id])
+
+
+def _parse_python_tool_calls(body: str, tools: tuple[ToolSchema, ...]) -> tuple[ToolCall, ...]:
+    names = (cast("str", cast("dict[str, JSON]", tool["function"])["name"]) for tool in tools)
+    # Python identifiers cannot contain the hyphens OpenAI allows in tool names. Replace only call positions,
+    # outside string literals, with non-ASCII identifiers that cannot collide with ASCII OpenAI names.
+    aliases = {name: f"tool_\u03b1{index}" for index, name in enumerate(names) if not name.isidentifier()}
+    if aliases:
+        hyphenated = "|".join(re.escape(name) for name in aliases)
+        body = re.sub(
+            rf"""("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(?<![\w.-])({hyphenated})(?=\s*\()""",
+            lambda match: match[1] or aliases[match[2]],
+            body,
+        )
+    names_by_alias = {alias: name for name, alias in aliases.items()}
+    expression = ast.parse(body.strip(), mode="eval").body
+    expressions = [expression]
+    if isinstance(expression, ast.List):
+        expressions = expression.elts
+    if not expressions:
+        raise ValueError("Malformed tool call.")
+    calls = []
+    for call in expressions:
+        if (
+            not isinstance(call, ast.Call)
+            or not isinstance(call.func, ast.Name)
+            or call.args
+            or any(keyword.arg is None for keyword in call.keywords)
+            or len({keyword.arg for keyword in call.keywords}) != len(call.keywords)
+        ):
+            raise ValueError("Malformed tool call.")
+        for node in ast.walk(call):
+            if isinstance(node, (ast.Set, ast.Tuple)) or (
+                isinstance(node, ast.Dict)
+                and any(not isinstance(key, ast.Constant) or not isinstance(key.value, str) for key in node.keys)
+            ):
+                raise ValueError("Tool arguments must be JSON values.")
+        arguments = {
+            cast("str", keyword.arg): ast.literal_eval(_JsonLiterals().visit(keyword.value))
+            for keyword in call.keywords
+        }
+        try:
+            json.dumps(arguments, allow_nan=False)
+        except TypeError as error:
+            raise ValueError("Tool arguments must be JSON values.") from error
+        calls.append(
+            ToolCall(
+                type="function",
+                function=FunctionCall(name=names_by_alias.get(call.func.id, call.func.id), arguments=arguments),
+            )
+        )
+    return tuple(calls)
+
+
+def _parse_tagged_tool_calls(
+    body: str, tool_format: TaggedToolCalls, tools: tuple[ToolSchema, ...]
+) -> tuple[ToolCall, ...]:
+    function_pattern = tool_format.function_pattern
+    parameter_pattern = tool_format.parameter_pattern
+    if re.fullmatch(rf"(?:\s*{function_pattern})+\s*", body, re.DOTALL) is None:
+        raise ValueError("Malformed tool call.")
+    declared_types: dict[tuple[str, str], JSON] = {}
+    for tool in tools:
+        function = cast("dict[str, JSON]", tool["function"])
+        parameters = cast("dict[str, JSON]", function.get("parameters") or {})
+        properties = cast("dict[str, JSON]", parameters.get("properties") or {})
+        declared_types.update(
+            ((cast("str", function["name"]), name), schema.get("type"))
+            for name, schema in properties.items()
+            if isinstance(schema, dict)
+        )
+    calls: list[ToolCall] = []
+    for name, parameters_body in re.findall(function_pattern, body, re.DOTALL):
+        if re.fullmatch(rf"(?:\s*{parameter_pattern})*\s*", parameters_body, re.DOTALL) is None:
+            raise ValueError("Malformed tool parameters.")
+        arguments: dict[str, JSON] = {}
+        for parameter, value in re.findall(parameter_pattern, parameters_body, re.DOTALL):
+            if parameter in arguments:
+                raise ValueError("Duplicate tool parameter.")
+            declared = declared_types.get((name, parameter))
+            argument: JSON = value
+            # Tagged formats emit strings verbatim; decode only parameters declared without a string type.
+            if declared and declared != "string" and not (isinstance(declared, list) and "string" in declared):
+                try:
+                    argument = json.loads(value)
+                except json.JSONDecodeError:
+                    argument = {"True": True, "False": False, "None": None}.get(value.strip(), value)
+            arguments[parameter] = argument
+        calls.append(ToolCall(type="function", function=FunctionCall(name=name, arguments=arguments)))
+    return tuple(calls)
+
+
+def _extract_tool_calls(
+    response: str, tool_format: PythonToolCalls | TaggedToolCalls | None, tools: tuple[ToolSchema, ...]
+) -> tuple[str, tuple[ToolCall, ...]]:
+    if tool_format is None or not tools:
+        return response, ()
+    calls: list[ToolCall] = []
+
+    def extract(match: re.Match[str]) -> str:
+        try:
+            if isinstance(tool_format, TaggedToolCalls):
+                calls.extend(_parse_tagged_tool_calls(match[1], tool_format, tools))
+            else:
+                calls.extend(_parse_python_tool_calls(match[1], tools))
+        except (SyntaxError, ValueError):
+            return match[0]
+        return ""
+
+    opening, closing = tool_format.tags
+    return (
+        re.sub(re.escape(opening) + "(.*?)" + re.escape(closing), extract, response, flags=re.DOTALL),
+        tuple(calls),
+    )
+
+
+# Byte-level BPE vocabularies spell printable bytes as themselves and the other bytes as characters from U+0100.
+_PRINTABLE_BYTES = [*range(33, 127), *range(161, 173), *range(174, 256)]
+_BYTE_LEVEL_CHARACTERS = {chr(byte): byte for byte in _PRINTABLE_BYTES} | {
+    chr(256 + index): byte for index, byte in enumerate(sorted(set(range(256)) - set(_PRINTABLE_BYTES)))
+}
 
 
 class ReasoningEffort(StrEnum):
@@ -89,6 +283,10 @@ def _strftime_now(format_string: str) -> str:
     return datetime.now().strftime(format_string)  # noqa: DTZ005
 
 
+def _raise_template_error(message: str) -> NoReturn:
+    raise ValueError(message)
+
+
 class HuggingFaceMessage(TypedDict):
     role: str
     content: str
@@ -97,14 +295,6 @@ class HuggingFaceMessage(TypedDict):
     thinking: NotRequired[str]
     name: NotRequired[str]
     tool_call_id: NotRequired[str]
-
-
-class HuggingFaceRequest(TypedDict):
-    add_generation_prompt: bool
-    bos_token: str | None
-    eos_token: str | None
-    messages: list[HuggingFaceMessage]
-    tools: list[ToolSchema] | None
 
 
 @dataclass(frozen=True)
@@ -122,13 +312,6 @@ class ToolMessage:
     content: str
     name: str | None = None
     tool_call_id: str | None = None
-
-
-@dataclass(frozen=True)
-class AssistantMessage:
-    chain_of_thought: str | None = None
-    response: str = ""
-    tool_calls: tuple[ToolCall, ...] = ()
 
 
 type Message = UserMessage | SystemMessage | AssistantMessage | ToolMessage
@@ -200,13 +383,12 @@ message_converter.register_structure_hook(Message, lambda obj, _: parse_hf_messa
 @dataclass(frozen=True)
 class ChatCodecConfig(TokenCodecConfig):
     prompt_template: str
-    output_parser_regex: str | None
+    response_format: ResponseFormat | None
     system_role_name: str
     user_role_name: str
     assistant_role_name: str
     eos_token: str | None
     bos_token: str | None
-    end_of_thinking_tag: str | None = None
     default_system_prompt: str | None = None
     reasoning_config: ReasoningConfig | None = None
 
@@ -218,7 +400,7 @@ class ChatCodecConfig(TokenCodecConfig):
 
 
 @dataclass(frozen=True)
-class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]):
+class ChatCodec(TokenCodec[ChatCodecConfig]):
     @cached_property
     def _byte_token_ids(self) -> dict[int, int]:
         return {
@@ -234,37 +416,6 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         environment.filters["tojson"] = partial(json.dumps, ensure_ascii=False)
         return environment.from_string(self.config.prompt_template)
 
-    @cached_property
-    def output_parser_regex(self) -> Pattern | None:
-        if self.config.output_parser_regex is None:
-            return None
-        return re.compile(self.config.output_parser_regex)
-
-    def message_to_dict(self, message: Message) -> HuggingFaceMessage:
-        result: HuggingFaceMessage = message_converter.unstructure(message, Message)
-        result["role"] = getattr(self.config, f"{result['role']}_role_name", result["role"])
-        return result
-
-    def request_to_dict(
-        self,
-        messages: Iterable[Message],
-        tools: Iterable[ToolSchema] | None = None,
-    ) -> HuggingFaceRequest:
-        converted_messages = [self.message_to_dict(message) for message in messages]
-        if self.config.default_system_prompt is not None:  # noqa: SIM102
-            if not converted_messages or converted_messages[0]["role"] != self.config.system_role_name:
-                converted_messages = [
-                    HuggingFaceMessage(role=self.config.system_role_name, content=self.config.default_system_prompt),
-                    *converted_messages,
-                ]
-        return HuggingFaceRequest(
-            add_generation_prompt=True,
-            messages=converted_messages,
-            bos_token=self.config.bos_token,
-            eos_token=self.config.eos_token,
-            tools=None if tools is None else list(tools),
-        )
-
     def render_request(
         self,
         messages: Iterable[Message],
@@ -272,9 +423,25 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
         tools: Iterable[ToolSchema] | None = None,
         reasoning_effort: ReasoningEffort | None = None,
     ) -> str:
+        converted_messages: list[HuggingFaceMessage] = []
+        for message in messages:
+            converted: HuggingFaceMessage = message_converter.unstructure(message, Message)
+            converted["role"] = getattr(self.config, f"{converted['role']}_role_name", converted["role"])
+            converted_messages.append(converted)
+        if self.config.default_system_prompt is not None:  # noqa: SIM102
+            if not converted_messages or converted_messages[0]["role"] != self.config.system_role_name:
+                converted_messages = [
+                    HuggingFaceMessage(role=self.config.system_role_name, content=self.config.default_system_prompt),
+                    *converted_messages,
+                ]
         template_context: dict[str, object] = {
-            **self.request_to_dict(messages, tools),
+            "add_generation_prompt": True,
+            "messages": converted_messages,
+            "bos_token": self.config.bos_token,
+            "eos_token": self.config.eos_token,
+            "tools": None if tools is None else list(tools),
             "strftime_now": _strftime_now,
+            "raise_exception": _raise_template_error,
         }
 
         reasoning_config = self.config.reasoning_config
@@ -285,31 +452,51 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
 
         return self.prompt_template.render(template_context)
 
-    def encode_request(
-        self,
-        request: Iterable[Message],
-        *,
-        tools: Iterable[ToolSchema] | None = None,
-        reasoning_effort: ReasoningEffort | None = None,
-    ) -> list[int]:
-        return self.encode_text(self.render_request(request, tools=tools, reasoning_effort=reasoning_effort))
-
-    def parse_response(self, response: str) -> AssistantMessage:
-        if self.output_parser_regex is None:
+    def parse_response(self, response: str, *, prompt: str, tools: Iterable[ToolSchema] = ()) -> AssistantMessage:
+        response_format = self.config.response_format
+        if response_format is None:
             return AssistantMessage(response=response)
-        match = self.output_parser_regex.match(response)
-        if match is None:
-            return AssistantMessage(response=response)
-        return cattrs.structure(
-            {name: value for name, value in match.groupdict().items() if value is not None}, AssistantMessage
-        )
+        tools = tuple(tools)
+        if response_format.turn_pattern is not None:
+            reasoning = content = ""
+            calls: tuple[ToolCall, ...] = ()
+            position = 0
+            pattern = re.compile(response_format.turn_pattern, re.DOTALL)
+            while turn := pattern.match(response, position):
+                if turn.end() == position:
+                    raise ValueError("A turn pattern must consume text.")
+                fields = turn.groupdict()
+                position = turn.end()
+                reasoning += fields.get("chain_of_thought") or ""
+                content += fields.get("response") or ""
+                if (body := fields.get("tool_calls")) is not None:
+                    remaining, tool_calls = _extract_tool_calls(body, response_format.tool_calls, tools)
+                    if tool_calls and not remaining.strip():
+                        calls += tool_calls
+                    else:
+                        content += body
+            if response[position:].strip():
+                content += response[position:]
+            return AssistantMessage(reasoning or None, content, calls)
+        reasoning = None
+        if response_format.reasoning_pattern is not None:
+            prefix = next(
+                (marker for marker in response_format.prefixes if prompt.rstrip().endswith(marker.rstrip())), ""
+            )
+            if prefix and response.startswith(prefix):
+                prefix_match = re.fullmatch(response_format.reasoning_pattern, prefix, re.DOTALL)
+                if prefix_match is not None and prefix_match["chain_of_thought"] is not None:
+                    prefix = ""
+            match = re.fullmatch(response_format.reasoning_pattern, prefix + response, re.DOTALL)
+            if match is not None:
+                fields = match.groupdict()
+                reasoning = fields.get("chain_of_thought") or None
+                response = fields.get("response") or ""
+        response, calls = _extract_tool_calls(response, response_format.tool_calls, tools)
+        return AssistantMessage(reasoning, response, calls)
 
-    def encode_text(self, text: str) -> list[int]:
-        return self.tokenizer.encode(text, add_special_tokens=False).ids
-
-    def decode_tokens(self, tokens: list[int], *, hide_invalid_utf_chars: bool = False) -> str:
-        errors = "ignore" if hide_invalid_utf_chars else "replace"
-        return "".join(codecs.iterdecode(self._token_groups(tokens), "utf-8", errors=errors))
+    def decode_tokens(self, tokens: list[int]) -> str:
+        return "".join(codecs.iterdecode(self._token_groups(tokens), "utf-8", errors="replace"))
 
     def _token_groups(self, tokens: list[int]) -> Iterable[bytes]:
         byte_token_ids = self._byte_token_ids
@@ -319,20 +506,12 @@ class ChatCodec(TokenCodec[Iterable[Message], AssistantMessage, ChatCodecConfig]
             else:
                 yield self.tokenizer.decode(list(group), skip_special_tokens=False).encode("utf-8")
 
-    def decode_response(self, response: list[int]) -> AssistantMessage:
-        return self.parse_response(self.decode_tokens(response))
-
-    def __post_init__(self) -> None:
-        if self.output_parser_regex is not None:
-            text_fields = {
-                name: field
-                for name, field in AssistantMessage.__dataclass_fields__.items()
-                if field.type in (str, str | None)
-            }
-            named_groups = self.output_parser_regex.groupindex
-            invalid_groups = set(named_groups) - text_fields.keys()
-            if invalid_groups:
-                raise ValueError(f"Unsupported output fields: {list(invalid_groups)}")
-            for name, field in text_fields.items():
-                if field.type is str and name not in named_groups:
-                    raise ValueError(f"Missing required output field: {name}")
+    def decode_token_bytes(self, token_id: int) -> bytes:
+        """The bytes of one token, including partial UTF-8 sequences that decoding to text would replace."""
+        if token_id in self._byte_token_ids:
+            return bytes((self._byte_token_ids[token_id],))
+        text = self.tokenizer.decode([token_id], skip_special_tokens=False)
+        token = self.tokenizer.id_to_token(token_id)
+        if "\ufffd" in text and token is not None and all(char in _BYTE_LEVEL_CHARACTERS for char in token):
+            return bytes(_BYTE_LEVEL_CHARACTERS[char] for char in token)
+        return text.encode()

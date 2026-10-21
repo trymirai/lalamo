@@ -317,9 +317,9 @@ class Layout(StrEnum):
                 out_sharding=out_sharding,
             )
         return dot_general(
-            weights,
             vector,
-            dimension_numbers=(((1,), (0,)), ((), ())),
+            weights,
+            dimension_numbers=(((0,), (1,)), ((), ())),
             out_sharding=out_sharding,
         )
 

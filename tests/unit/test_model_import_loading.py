@@ -757,8 +757,7 @@ class TinyModelConfig(ModelConfig[ChatCodecConfig]):
         )
 
 
-class TinyModel(Model[ChatCodecConfig, TinyModelConfig, ChatCodec]):
-    token_codec: ChatCodec
+class TinyModel(Model[TinyModelConfig, ChatCodec]):
     module: TinyModule
 
 
@@ -797,7 +796,7 @@ def test_foreign_config_load_initializes_model_with_requested_dtype_and_implemen
         config=TinyModelConfig(
             token_codec_config=ChatCodecConfig(
                 prompt_template="",
-                output_parser_regex=None,
+                response_format=None,
                 system_role_name="system",
                 user_role_name="user",
                 assistant_role_name="assistant",
@@ -823,7 +822,7 @@ def _tiny_model_config() -> TinyModelConfig:
     return TinyModelConfig(
         token_codec_config=ChatCodecConfig(
             prompt_template="",
-            output_parser_regex=None,
+            response_format=None,
             system_role_name="system",
             user_role_name="user",
             assistant_role_name="assistant",
