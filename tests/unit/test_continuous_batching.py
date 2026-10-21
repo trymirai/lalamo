@@ -120,7 +120,7 @@ def test_replies_use_prompt_context_and_omit_stop_tokens(
                 token_codec=model.token_codec,
                 decoder=model.decoder,
             )
-            request_config = None
+            request_config = GenerationConfig(temperature=0.0)
         assert (
             stopped_model.reply([UserMessage("hello")], request_config, max_output_length=3, keychain=keychain)
             == AssistantMessage()
@@ -132,6 +132,13 @@ def test_replies_use_prompt_context_and_omit_stop_tokens(
                 jnp.asarray(model.token_codec.encode_text(prompt)), request_config, 3, keychain=keychain
             )
         ] == list(stop_tokens)
+        generated = stopped_model.generate_tokens(
+            jnp.asarray([model.token_codec.encode_text(prompt)]),
+            request_config,
+            max_output_length=3,
+            keychain=keychain,
+        )
+        np.testing.assert_array_equal(generated.token_ids, [[stop_tokens[0], 0, 0]])
 
 
 @pytest.mark.parametrize(("max_output_length", "stop"), [(1, False), (2, False), (2, True)])
@@ -211,6 +218,32 @@ def test_requests_match_dense_generation_after_slot_and_prefix_reuse(recurrent_m
             )
 
 
+def test_requests_with_different_repetition_windows_match_independent_generation(
+    recurrent_model: LanguageModel,
+) -> None:
+    engine = ContinuousBatchingEngine.init(
+        recurrent_model,
+        ContinuousBatchingConfig(slot_count=3, max_context_length=32, prefill_batch_size=3),
+    )
+    policies = [
+        GenerationConfig(temperature=0.0, presence_penalty=0.5, suffix_repetition_length=window)
+        for window in (2, 5, 2)
+    ]
+    events: list[list[TokenEvent]] = [[], [], []]
+    for policy, received in zip(policies, events, strict=True):
+        engine.submit((1, 2, 3, 4), 5, policy, 0, on_events=received.extend)
+    _run(engine)
+    for policy, received in zip(policies, events, strict=True):
+        expected = recurrent_model.stream_tokens(
+            jnp.asarray([1, 2, 3, 4], dtype=jnp.int32),
+            policy,
+            5,
+            keychain=Keychain.init(0, sharding_config=recurrent_model.sharding_config),
+        )
+        assert [event.token_id for event in received if isinstance(event, GeneratedToken)] == list(map(int, expected))
+        assert received[-1] == SequenceFinished(FinishReason.LENGTH, 5)
+
+
 def test_signed_64_bit_seeds_replay_after_slot_reuse(recurrent_model: LanguageModel) -> None:
     engine = ContinuousBatchingEngine.init(
         recurrent_model,
@@ -268,13 +301,85 @@ def test_prefill_continuation_preserves_prefix_when_padding_exceeds_capacity() -
         forward_pass_config=forward_pass_config,
         chunk_size=8,
         initial_state=head.state,
-        prefix_lengths=jnp.array([48, 32]),
+        prefix_lengths=head.last_token_indices + 1,
         keychain=keychain,
     )
     unchunked = model.prefill_tokens(
         tokens, 64, jnp.array([56, 40]), forward_pass_config, chunk_size=56, keychain=keychain
     )
     np.testing.assert_allclose(continued.last_token_logits, unchunked.last_token_logits, rtol=1e-4, atol=1e-5)
+    np.testing.assert_array_equal(continued.last_token_indices, unchunked.last_token_indices)
+    continued_decode, unchunked_decode = (
+        model.decoder(
+            token_ids=tokens[:, :1],
+            token_positions=(prefilled.last_token_indices + 1)[:, None],
+            state=prefilled.state,
+            return_updated_state=True,
+            forward_pass_config=forward_pass_config,
+            keychain=keychain,
+        )
+        for prefilled in (continued, unchunked)
+    )
+    np.testing.assert_allclose(continued_decode.logits, unchunked_decode.logits, rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.parametrize("enable_eos_log_probs", [False, True])
+def test_openai_eos_logprobs(recurrent_model: LanguageModel, enable_eos_log_probs: bool) -> None:
+    (row,) = dense_log_softmax_rows(recurrent_model, (1,), [])
+    eos_token = int(row.argmax())
+    model = LanguageModel(
+        config=replace(recurrent_model.config, generation_config=GenerationConfig(stop_token_ids=(eos_token,))),
+        sharding_config=recurrent_model.sharding_config,
+        token_codec=recurrent_model.token_codec,
+        decoder=recurrent_model.decoder,
+    )
+
+    async def run() -> None:
+        api = create_app(
+            model,
+            "test",
+            ContinuousBatchingConfig(slot_count=1, max_context_length=16),
+            enable_eos_log_probs=enable_eos_log_probs,
+        )
+        async with (
+            api.router.lifespan_context(api),
+            httpx2.AsyncClient(transport=httpx2.ASGITransport(app=api)) as http,
+        ):
+            client = AsyncOpenAI(api_key="test", base_url="http://test/v1", http_client=http)
+            for logprobs in (False, True):
+                top_logprobs = None
+                if logprobs:
+                    top_logprobs = 3
+                completion = await client.chat.completions.create(
+                    model="test",
+                    messages=[{"role": "user", "content": "hello"}],
+                    max_completion_tokens=3,
+                    temperature=0,
+                    logprobs=logprobs,
+                    top_logprobs=top_logprobs,
+                )
+                (choice,) = completion.choices
+                assert choice.message.content == "" and choice.finish_reason == "stop"
+                assert completion.usage is not None and completion.usage.completion_tokens == 1
+                if not logprobs:
+                    assert choice.logprobs is None
+                    continue
+                assert choice.logprobs is not None and choice.logprobs.content is not None
+                if not enable_eos_log_probs:
+                    assert choice.logprobs.content == []
+                    continue
+                (entry,) = choice.logprobs.content
+                assert entry.token == model.token_codec.decode_tokens([eos_token])
+                np.testing.assert_allclose(entry.logprob, row[eos_token], rtol=1e-4, atol=1e-3)
+                top_ids = np.argsort(-row)[:3]
+                assert [item.token for item in entry.top_logprobs] == [
+                    model.token_codec.decode_tokens([int(token_id)]) for token_id in top_ids
+                ]
+                np.testing.assert_allclose(
+                    [item.logprob for item in entry.top_logprobs], row[top_ids], rtol=1e-4, atol=1e-3
+                )
+
+    asyncio.run(run())
 
 
 def test_openai_client_completions(recurrent_model: LanguageModel) -> None:
@@ -318,15 +423,23 @@ def test_openai_client_completions(recurrent_model: LanguageModel) -> None:
             assert [entry.token for entry in choice.logprobs.content] == token_texts
             assert all(len(entry.top_logprobs) == 2 for entry in choice.logprobs.content)
 
-            stopped = await complete(stop=token_texts[-1])
+            stopped = await complete(stop=token_texts[-1], logprobs=True)
             assert stopped.choices[0].message.content == text[: text.find(token_texts[-1])]
             assert stopped.choices[0].finish_reason == "stop"
+            stopped_logprobs = stopped.choices[0].logprobs
+            assert stopped_logprobs is not None and stopped_logprobs.content is not None
+            assert [entry.token for entry in stopped_logprobs.content] == token_texts[
+                : token_texts.index(token_texts[-1]) + 1
+            ]
 
             boundary_stop = token_texts[0][-1] + token_texts[1][0]
-            stopped_across_tokens = await complete(stop=boundary_stop)
+            stopped_across_tokens = await complete(stop=boundary_stop, logprobs=True)
             assert stopped_across_tokens.choices[0].message.content == token_texts[0][:-1]
             assert stopped_across_tokens.usage is not None
             assert stopped_across_tokens.usage.completion_tokens == 2
+            boundary_logprobs = stopped_across_tokens.choices[0].logprobs
+            assert boundary_logprobs is not None and boundary_logprobs.content is not None
+            assert [entry.token for entry in boundary_logprobs.content] == token_texts[:2]
 
             with pytest.raises(NotFoundError):
                 await complete(model="other")

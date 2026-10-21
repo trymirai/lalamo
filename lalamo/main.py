@@ -630,6 +630,10 @@ def server(
     slot_count: Annotated[
         int | None, Option(help="Cap on concurrently decoding sequences. Defaults to what fits in memory.")
     ] = None,
+    enable_eos_log_probs: Annotated[
+        bool,
+        Option("--enable-eos-log-probs", help="Include the hidden EOS token in requested logprobs."),
+    ] = False,
 ) -> None:
     if jax.default_backend() == "cpu":
         raise RuntimeError("The server does not support CPU execution.")
@@ -646,7 +650,16 @@ def server(
     sharding_config = ShardingConfig.tensor_parallel() if tensor_parallel else ShardingConfig.replicated()
     model = LanguageModel.load(model_path, sharding_config)
     batching_config = ContinuousBatchingConfig(slot_count=slot_count, max_context_length=max_context_length)
-    uvicorn.run(create_app(model, served_model_name or model_path.name, batching_config), host=host, port=port)
+    uvicorn.run(
+        create_app(
+            model,
+            served_model_name or model_path.name,
+            batching_config,
+            enable_eos_log_probs=enable_eos_log_probs,
+        ),
+        host=host,
+        port=port,
+    )
 
 
 @app.callback()

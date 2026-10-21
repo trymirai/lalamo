@@ -72,6 +72,8 @@ class GeneratedToken(NamedTuple):
 class SequenceFinished(NamedTuple):
     reason: FinishReason
     completion_tokens: int
+    stop_token_id: int | None = None
+    logprobs: TokenLogprobs | None = None
 
 
 type TokenEvent = GeneratedToken | SequenceFinished
@@ -591,13 +593,15 @@ class ContinuousBatchingEngine:
         return State(layers)
 
     def _decode(self) -> None:
-        # Sequences decode together when their sampling policies share a structure.
         first, *_ = self._active
+        sampling_leaves, sampling_structure = jax.tree.flatten(first.sampling_policy)
+        sampling_shapes = [leaf.shape for leaf in sampling_leaves]
         batch = [
             sequence
             for sequence in self._active
             if sequence.return_logprobs == first.return_logprobs
-            and jax.tree.structure(sequence.sampling_policy) == jax.tree.structure(first.sampling_policy)
+            and jax.tree.structure(sequence.sampling_policy) == sampling_structure
+            and [leaf.shape for leaf in jax.tree.leaves(sequence.sampling_policy)] == sampling_shapes
         ]
         block_size = min(64, *(sequence.max_output_length - sequence.completion_tokens for sequence in batch))
         block_size = 1 << (block_size.bit_length() - 1)
@@ -632,15 +636,22 @@ class ContinuousBatchingEngine:
             events: list[TokenEvent] = []
             for step, token_id in enumerate(map(int, token_ids[:, row])):
                 sequence.completion_tokens += 1
-                if token_id in sequence.stop_token_ids:
-                    events.append(SequenceFinished(FinishReason.STOP, sequence.completion_tokens))
-                    break
                 selected_logprobs = None
                 if host_logprobs is not None:
                     logprob, top_token_ids, top_logprobs = (array[step, row] for array in host_logprobs)
                     selected_logprobs = TokenLogprobs(
                         float(logprob), tuple(map(int, top_token_ids)), tuple(map(float, top_logprobs))
                     )
+                if token_id in sequence.stop_token_ids:
+                    events.append(
+                        SequenceFinished(
+                            FinishReason.STOP,
+                            sequence.completion_tokens,
+                            stop_token_id=token_id,
+                            logprobs=selected_logprobs,
+                        )
+                    )
+                    break
                 events.append(GeneratedToken(token_id, selected_logprobs))
                 if sequence.completion_tokens == sequence.max_output_length:
                     events.append(SequenceFinished(FinishReason.LENGTH, sequence.completion_tokens))

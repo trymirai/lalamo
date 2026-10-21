@@ -20,6 +20,7 @@ from lalamo.inference.continuous_batching import (
     FinishReason,
     SequenceFinished,
     TokenEvent,
+    TokenLogprobs,
 )
 from lalamo.models import GenerationConfig, LanguageModel
 from lalamo.models.chat_codec import (
@@ -159,7 +160,13 @@ def _error(message: str, status: int, param: str | None = None, code: str | None
     return JSONResponse({"error": {"message": message, "type": error_type, "param": param, "code": code}}, status)
 
 
-def create_app(model: LanguageModel, model_name: str, config: ContinuousBatchingConfig) -> FastAPI:
+def create_app(
+    model: LanguageModel,
+    model_name: str,
+    config: ContinuousBatchingConfig,
+    *,
+    enable_eos_log_probs: bool = False,
+) -> FastAPI:
     engine = ContinuousBatchingEngine.init(model, config)
     codec = model.token_codec
     stop_event = threading.Event()
@@ -276,6 +283,17 @@ def create_app(model: LanguageModel, model_name: str, config: ContinuousBatching
             token_bytes = codec.decode_token_bytes(token_id)
             return {"token": token_bytes.decode(errors="replace"), "bytes": list(token_bytes), "logprob": value}
 
+        def content_logprob(token_id: int, logprobs: TokenLogprobs) -> dict[str, Any]:
+            count = body.top_logprobs or 0
+            return logprob(token_id, logprobs.logprob) | {
+                "top_logprobs": [
+                    logprob(top_id, value)
+                    for top_id, value in zip(
+                        logprobs.top_token_ids[:count], logprobs.top_logprobs[:count], strict=True
+                    )
+                ]
+            }
+
         generated_token_ids: list[int] = []
         content_logprobs: list[dict[str, Any]] = []
         stop_decoder = DecodeStream() if stop_strings else None
@@ -292,21 +310,14 @@ def create_app(model: LanguageModel, model_name: str, config: ContinuousBatching
                     continue
                 for event in batch:
                     if isinstance(event, SequenceFinished):
-                        finish_reason, completion_tokens = event
+                        finish_reason, completion_tokens = event.reason, event.completion_tokens
+                        if enable_eos_log_probs and event.stop_token_id is not None and event.logprobs is not None:
+                            content_logprobs.append(content_logprob(event.stop_token_id, event.logprobs))
                         break
                     generated_token_ids.append(event.token_id)
                     completion_tokens += 1
                     if event.logprobs is not None:
-                        count = body.top_logprobs or 0
-                        top_logprobs = [
-                            logprob(token_id, value)
-                            for token_id, value in zip(
-                                event.logprobs.top_token_ids[:count], event.logprobs.top_logprobs[:count], strict=True
-                            )
-                        ]
-                        content_logprobs.append(
-                            logprob(event.token_id, event.logprobs.logprob) | {"top_logprobs": top_logprobs}
-                        )
+                        content_logprobs.append(content_logprob(event.token_id, event.logprobs))
                     if stop_decoder is not None:
                         decoded_text += stop_decoder.step(codec.tokenizer, event.token_id) or ""
                         if any(stop in decoded_text for stop in stop_strings):

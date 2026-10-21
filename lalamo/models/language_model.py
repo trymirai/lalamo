@@ -217,8 +217,10 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
             forward_pass_config = DecoderForwardPassConfig.for_inference()
 
         chunks = self._make_attention_chunks(token_ids, lengths_without_padding, chunk_size)
+        last_token_indices = lengths_without_padding - 1
         if prefix_lengths is not None:
             chunks = eqx.tree_at(lambda chunk: chunk.indices, chunks, chunks.indices + prefix_lengths[None, :, None])
+            last_token_indices = last_token_indices + prefix_lengths
         num_chunks, _, chunk_size = chunks.tokens.shape
         state_dtype = forward_pass_config.embedding_forward_pass_config.activation_dtype
         state = initial_state
@@ -267,7 +269,7 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
 
         return PrefillResults(
             last_token_logits=last_token_logits,
-            last_token_indices=jnp.maximum(lengths_without_padding - 1, 0),
+            last_token_indices=jnp.maximum(last_token_indices, 0),
             state=state,
         )
 
@@ -294,8 +296,7 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
         batch_size, prompt_length = prompt_token_ids.shape
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
         batch_vector_sharding = self.sharding_config.make_sharding((batch_axis,))
-        if generation_config is None:
-            generation_config = self.config.generation_config
+        generation_config = self.config.generation_config.override_with(generation_config or GenerationConfig())
         sampling_policy = generation_config.default_policy()
         use_count_penalties = sampling_policy.has_count_penalties
         sampling_policy = sampling_policy.broadcast(batch_size)
@@ -450,8 +451,7 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
         reasoning_effort: ReasoningEffort | None = None,
         keychain: Keychain,
     ) -> AssistantMessage:
-        if generation_config is None:
-            generation_config = self.config.generation_config
+        generation_config = self.config.generation_config.override_with(generation_config or GenerationConfig())
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
         prompt = self.token_codec.render_request(messages, reasoning_effort=reasoning_effort)
         token_ids = jax.device_put(
@@ -490,8 +490,7 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
         if decode_forward_pass_config is None:
             decode_forward_pass_config = DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN)
 
-        if generation_config is None:
-            generation_config = self.config.generation_config
+        generation_config = self.config.generation_config.override_with(generation_config or GenerationConfig())
 
         (input_length,) = prompt_token_ids.shape
         padded_input_length = next(
@@ -579,8 +578,7 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
         *,
         keychain: Keychain,
     ) -> Iterable[str]:
-        if generation_config is None:
-            generation_config = self.config.generation_config
+        generation_config = self.config.generation_config.override_with(generation_config or GenerationConfig())
         token_ids = jnp.asarray(self.token_codec.encode_text(prompt), dtype=jnp.int32)
         response_token_ids: list[int] = []
         current_text = ""
