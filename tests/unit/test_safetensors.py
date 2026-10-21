@@ -17,7 +17,7 @@ def test_safe_write_roundtrips_float8_tensors(tmp_path: Path) -> None:
         safe_write(fd, tensors)
 
     with path.open("rb") as fd:
-        metadata, restored_tensors = safe_read(fd)
+        metadata, restored_tensors, _ = safe_read(fd)
         restored = {name: restored_tensors[name] for name in tensors}
 
     assert metadata is None

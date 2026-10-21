@@ -15,7 +15,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.exportable import Exportable, ExportResults
 from lalamo.kernels.ragged_dot import ragged_dot as ragged_dot_kernel
-from lalamo.module import Keychain, ParameterNorm, field
+from lalamo.module import Keychain, ParameterNorm, _require_config_fields, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array, supports_dummy_arrays
 from lalamo.utils.json import JSON
@@ -87,7 +87,9 @@ class WeightMatrixSpec(RegistryABC):
 
     @classmethod
     def from_json(cls, json_object: JSON) -> Self:
-        return cls._converter.structure(json_object, cls)
+        spec = cls._converter.structure(json_object, cls)
+        _require_config_fields(json_object, spec.to_json(), "spec")
+        return spec
 
     def to_json(self) -> JSON:
         return self._converter.unstructure(self)

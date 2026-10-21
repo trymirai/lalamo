@@ -58,13 +58,13 @@ class BaseModel[ConfigT: BaseModelConfig](LalamoModule[ConfigT]):
             config = BaseModelConfig.from_json(json.load(config_file))
 
         with (directory / "model.safetensors").open("rb") as weights_file:
-            metadata, arrays = safe_read(weights_file)
+            metadata, arrays, tensor_infos = safe_read(weights_file)
             decoded_metadata = {}
             if metadata is not None:
                 decoded_metadata = {key: json.loads(value) for key, value in metadata.items()}
             fp32_scales = sum(
-                arrays[name].dtype == jnp.float32
-                for name in arrays
+                tensor_infos[name].dtype == jnp.float32
+                for name in tensor_infos
                 if name.endswith(".scales") and name.removesuffix(".scales") + ".spec" in decoded_metadata
             )
             template = config.init_from_directory(directory, EmptyInitializer(dtype, sharding_config))
