@@ -9,11 +9,11 @@ from tokenizers.models import BPE
 from tokenizers.pre_tokenizers import Whitespace
 
 from lalamo.model_import.origins import FileSpec, LocalOrigin
-from lalamo.model_import.vocabulary_order import VocabularyOrderedOrigin, frequency_order, vocabulary_size
+from lalamo.model_import.vocabulary_order import VocabularyOrderedOrigin, frequency_order
 
 
 def test_frequency_ordered_origin_renames_every_token_id_and_vocabulary_row(tmp_path: Path) -> None:
-    pieces = ["a", "b", "c", "ab", "abc", "d"]
+    pieces = ["a", "b", "c", "ab", "abc", "id"]
     tokenizer = Tokenizer(BPE({piece: i for i, piece in enumerate(pieces)}, [("a", "b"), ("ab", "c")]))
     tokenizer.pre_tokenizer = Whitespace()
     tokenizer.add_special_tokens(["<eos>"])
@@ -26,14 +26,13 @@ def test_frequency_ordered_origin_renames_every_token_id_and_vocabulary_row(tmp_
     save_file({"embed_tokens.weight": embedding, "norm.weight": norm}, str(tmp_path / "w.safetensors"))
     (tmp_path / "counts.json").write_text(json.dumps([[eos, 9], [5, 7], [4, 7], [1, 3]]))
 
-    config = json.loads((tmp_path / "config.json").read_text())
-    order = frequency_order(tmp_path / "counts.json", vocabulary_size(config))
+    order = frequency_order(tmp_path / "counts.json", vocab)
     assert order.tolist() == [6, 4, 5, 1, 0, 2, 3, 7]
     new_ids = np.argsort(order)
     origin = VocabularyOrderedOrigin(LocalOrigin(str(tmp_path), ("w.safetensors",)), order)
 
     renamed = Tokenizer.from_file(str(origin.resolve_file(FileSpec("tokenizer.json"))))
-    text = "abc d ab<eos>"
+    text = "abc id ab<eos>"
     assert renamed.encode(text).ids == [int(new_ids[i]) for i in tokenizer.encode(text).ids]
     assert renamed.decode(renamed.encode(text).ids, skip_special_tokens=False) == tokenizer.decode(
         tokenizer.encode(text).ids,

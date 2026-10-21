@@ -25,7 +25,7 @@ from lalamo.model_import.common import (
 from lalamo.model_import.loaders.dflash_loader import load_hf_dflash_draft_model
 from lalamo.model_import.loaders.weaver_loader import load_weaver
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
-from lalamo.model_import.vocabulary_order import VocabularyOrderedOrigin, frequency_order, vocabulary_size
+from lalamo.model_import.vocabulary_order import VocabularyOrderedOrigin, frequency_order
 from lalamo.models import SpeculatorModel, SpeculatorModelConfig
 from lalamo.modules import DFlashSpeculator, DFlashSpeculatorConfig
 from lalamo.utils.sharding import ShardingConfig
@@ -172,8 +172,8 @@ def convert(
 ) -> None:
     effective_dtype = dtype or DType.BFLOAT16
     if vocabulary_counts is not None:
-        config_path = model_spec.origin.resolve_file(model_spec.configs.model_config)
-        order = frequency_order(vocabulary_counts, vocabulary_size(json.loads(config_path.read_text())))
+        config = json.loads(model_spec.origin.resolve_file(model_spec.configs.model_config).read_text())
+        order = frequency_order(vocabulary_counts, (config.get("text_config", {}) | config)["vocab_size"])
         model_spec = replace(model_spec, origin=VocabularyOrderedOrigin(model_spec.origin, order))
     callbacks = callbacks_type(
         model_spec,
@@ -227,7 +227,7 @@ def convert_speculator(
         dtype=effective_dtype,
     )
     if vocabulary_counts is not None:
-        # The draft has no vocabulary weights of its own; only the mask token id follows the target's renumbering.
+        # The draft has no vocabulary weights; only its mask token id follows the target's renumbering.
         new_ids = frequency_order(vocabulary_counts, draft_model.config.vocab_size).argsort()
         new_config = replace(draft_model.config, mask_token_id=int(new_ids[draft_model.config.mask_token_id]))
         draft_model = replace(draft_model, config=new_config)
