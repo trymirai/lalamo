@@ -1,7 +1,8 @@
+import json
 import shutil
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from lalamo.model_import.common import (
 from lalamo.model_import.loaders.dflash_loader import load_hf_dflash_draft_model
 from lalamo.model_import.loaders.weaver_loader import load_weaver
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
+from lalamo.model_import.vocabulary_order import VocabularyOrderedOrigin, frequency_order, vocabulary_size
 from lalamo.models import SpeculatorModel, SpeculatorModelConfig
 from lalamo.modules import DFlashSpeculator, DFlashSpeculatorConfig
 from lalamo.utils.sharding import ShardingConfig
@@ -165,8 +167,14 @@ def convert(
         ],
         ConversionCallbacks,
     ] = ConversionCallbacks,
+    *,
+    vocabulary_counts: Path | None = None,
 ) -> None:
     effective_dtype = dtype or DType.BFLOAT16
+    if vocabulary_counts is not None:
+        config_path = model_spec.origin.resolve_file(model_spec.configs.model_config)
+        order = frequency_order(vocabulary_counts, vocabulary_size(json.loads(config_path.read_text())))
+        model_spec = replace(model_spec, origin=VocabularyOrderedOrigin(model_spec.origin, order))
     callbacks = callbacks_type(
         model_spec,
         output_dir,
@@ -206,6 +214,8 @@ def convert_speculator(
     output_dir: Path,
     weaver_repo_id: str | None = None,
     dtype: DType | None = None,
+    *,
+    vocabulary_counts: Path | None = None,
 ) -> None:
     sharding_config = ShardingConfig.replicated()
     effective_dtype = jnp.dtype((dtype or DType.BFLOAT16).value)
@@ -216,6 +226,11 @@ def convert_speculator(
         sharding_config=sharding_config,
         dtype=effective_dtype,
     )
+    if vocabulary_counts is not None:
+        # The draft has no vocabulary weights of its own; only the mask token id follows the target's renumbering.
+        new_ids = frequency_order(vocabulary_counts, draft_model.config.vocab_size).argsort()
+        new_config = replace(draft_model.config, mask_token_id=int(new_ids[draft_model.config.mask_token_id]))
+        draft_model = replace(draft_model, config=new_config)
 
     weaver = None
     if weaver_repo_id is not None:
