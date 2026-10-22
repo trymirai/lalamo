@@ -423,6 +423,17 @@ class ChatCodec(TokenCodec[ChatCodecConfig]):
         tools: Iterable[ToolSchema] | None = None,
         reasoning_effort: ReasoningEffort | None = None,
     ) -> str:
+        return self.prompt_template.render(
+            self.template_context(messages, tools=tools, reasoning_effort=reasoning_effort),
+        )
+
+    def template_context(
+        self,
+        messages: Iterable[Message],
+        *,
+        tools: Iterable[ToolSchema] | None = None,
+        reasoning_effort: ReasoningEffort | None = None,
+    ) -> dict[str, object]:
         converted_messages: list[HuggingFaceMessage] = []
         for message in messages:
             converted: HuggingFaceMessage = message_converter.unstructure(message, Message)
@@ -449,8 +460,7 @@ class ChatCodec(TokenCodec[ChatCodecConfig]):
             raise ValueError("This model does not support configurable reasoning effort.")
         if reasoning_config is not None:
             template_context[reasoning_config.field_name] = reasoning_config.field_value(reasoning_effort)
-
-        return self.prompt_template.render(template_context)
+        return template_context
 
     def parse_response(self, response: str, *, prompt: str, tools: Iterable[ToolSchema] = ()) -> AssistantMessage:
         response_format = self.config.response_format

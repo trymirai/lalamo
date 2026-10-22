@@ -131,8 +131,9 @@ def _check_token_trace_inputs(model: TraceableModel, token_ids: Array, token_pos
 
 def record_tokenization_trace(token_codec: ChatCodec, messages: Iterable[Message]) -> TokenizationTrace:
     messages = tuple(messages)
-    request = token_codec.request_to_dict(messages, enable_thinking=True)
-    rendered_request = token_codec.render_request(messages)
+    context = token_codec.template_context(messages)
+    rendered_request = token_codec.prompt_template.render(context)
+    request = {name: value for name, value in context.items() if not callable(value)}
     encoding = token_codec.tokenizer.encode(rendered_request, add_special_tokens=False)
     token_ids = jnp.asarray(encoding.ids, dtype=jnp.int32)[None, :]
     batch, tokens = token_ids.shape

@@ -49,7 +49,7 @@ def _language_model() -> LanguageModel:
     layer_config = TransformerLayerConfig(
         pre_mixer_norm_config=norm_config,
         mixer_config=AttentionConfig(
-            qkv_projection_config=LinearConfig(),
+            qkvg_projection_config=LinearConfig(),
             out_projection_config=LinearConfig(),
             query_norm_config=None,
             key_norm_config=None,
@@ -61,7 +61,7 @@ def _language_model() -> LanguageModel:
             sliding_window_size=None,
             logit_soft_cap=None,
             has_sinks=False,
-            has_qkv_biases=False,
+            has_qkvg_biases=False,
             has_out_biases=False,
         ),
         post_mixer_norm_config=norm_config,
@@ -84,7 +84,7 @@ def _language_model() -> LanguageModel:
     config = LanguageModelConfig(
         token_codec_config=ChatCodecConfig(
             prompt_template="{{ messages[0]['content'] }}",
-            output_parser_regex=None,
+            response_format=None,
             system_role_name="system",
             user_role_name="user",
             assistant_role_name="assistant",
@@ -146,7 +146,7 @@ def _assert_tokenization_trace(metadata: dict[str, str] | None, arrays: Mapping[
         "messages": [{"role": "user", "content": "trace"}],
         "bos_token": None,
         "eos_token": None,
-        "enable_thinking": True,
+        "tools": None,
     }
     assert json.loads(metadata["tokens"]) == ["trace"]
     assert arrays["activation_trace.token_ids"].tolist() == [[7]]
@@ -313,7 +313,7 @@ def test_trace_command_replays_tokenization_trace(tmp_path: Path) -> None:
 def test_record_tokenization_trace_rejects_empty_encoding() -> None:
     token_codec = ChatCodecConfig(
         prompt_template="",
-        output_parser_regex=None,
+        response_format=None,
         system_role_name="system",
         user_role_name="user",
         assistant_role_name="assistant",

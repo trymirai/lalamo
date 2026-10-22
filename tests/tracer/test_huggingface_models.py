@@ -54,25 +54,20 @@ def test_hf_chat_tokenization_matches_lalamo() -> None:
     model_repo = "Qwen/Qwen3.5-0.8B"
     model_spec = cast(
         "LanguageModelSpec",
-        ModelRegistry.build(allow_third_party_plugins=False).repo_to_model[model_repo],
+        ModelRegistry.init(allow_third_party_plugins=False).repo_to_model[model_repo],
     )
     tokenizer, token_codec_config = _import_chat_codec(model_spec)
     trace_result = record_tokenization_trace(token_codec_config.init(tokenizer), [UserMessage("Tell me about London")])
     request = json.loads(trace_result.metadata["request"])
     hf_tokenizer = cast("PreTrainedTokenizerBase", AutoTokenizer.from_pretrained(model_repo))
 
-    hf_rendered = hf_tokenizer.apply_chat_template(
-        request["messages"],
-        add_generation_prompt=request["add_generation_prompt"],
-        tokenize=False,
-        enable_thinking=request["enable_thinking"],
-    )
+    template_fields = {name: value for name, value in request.items() if name != "messages"}
+    hf_rendered = hf_tokenizer.apply_chat_template(request["messages"], tokenize=False, **template_fields)
     hf_token_ids = hf_tokenizer.apply_chat_template(
         request["messages"],
-        add_generation_prompt=request["add_generation_prompt"],
         tokenize=True,
         return_dict=False,
-        enable_thinking=request["enable_thinking"],
+        **template_fields,
     )
 
     assert trace_result.metadata["rendered_request"] == hf_rendered
@@ -95,7 +90,6 @@ def test_hf_lm_trace_files_compare(tmp_path: Path) -> None:
     imported_model = import_model(
         test_spec.model_repo,
         sharding_config=sharding_config,
-        context_length=test_spec.num_tokens,
         dtype=test_spec.dtype.jax_dtype,
     )
     model = imported_model.model
