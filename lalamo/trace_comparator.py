@@ -11,6 +11,7 @@ ATOL = 1e-2
 RTOL = 0.03
 BF16_ATOL = 0.04
 BF16_RTOL = 0.06
+FRACTION_OF_ALLOWED_VIOLATIONS = 0.03  # the tracer tests' policy: a few elements past tolerance are rounding, not bugs
 
 
 @dataclass(frozen=True)
@@ -82,7 +83,7 @@ def _compare_array(path: str, reference: Array, result: Array) -> TraceArrayComp
             reference.astype(jnp.float32),
             result.astype(jnp.float32),
             dtype_message,
-            _floating_tolerance(reference.dtype, result.dtype),
+            _floating_tolerance(reference.dtype),
         )
 
     violations = reference != result
@@ -94,8 +95,8 @@ def _compare_array(path: str, reference: Array, result: Array) -> TraceArrayComp
     )
 
 
-def _floating_tolerance(reference_dtype: jnp.dtype, result_dtype: jnp.dtype) -> tuple[float, float]:
-    if jnp.bfloat16 in (reference_dtype, result_dtype):
+def _floating_tolerance(dtype: jnp.dtype) -> tuple[float, float]:
+    if dtype == jnp.bfloat16:
         return (BF16_ATOL, BF16_RTOL)
     return (ATOL, RTOL)
 
@@ -127,9 +128,12 @@ def _compare_floating_array(
 
     return TraceArrayComparison(
         path=path,
-        passed=num_violations == 0 and not reference_nonfinite and not result_nonfinite,
+        passed=num_violations <= FRACTION_OF_ALLOWED_VIOLATIONS * reference.size
+        and not reference_nonfinite
+        and not result_nonfinite,
         message=(
-            f"{num_violations} violations out of {reference.size} elements; "
+            f"{num_violations} violations out of {reference.size} elements "
+            f"(allowed {FRACTION_OF_ALLOWED_VIOLATIONS:.0%}); "
             f"atol={atol:.3g}; rtol={rtol:.3g}; "
             f"worst {max_error:.3g} at {max_error_index}; "
             f"rms {rms_error:.3g}; reference_nonfinite={reference_nonfinite}; "

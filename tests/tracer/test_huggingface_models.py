@@ -18,10 +18,10 @@ from lalamo.safetensors import safe_write
 from lalamo.trace_comparator import compare_trace_files
 from lalamo.tracer import (
     export_trace_result,
-    record_checked_token_trace,
+    record_token_trace,
     record_tokenization_trace,
-    trace_sharding_config,
 )
+from tests.common import tracer_sharding_config
 from tests.helpers import unsi
 from tests.tracer.tracer import DType, ModelTestSpec, _test_model, configure_precision_for_tests
 from tests.tracer.tracer_huggingface import HFDecoderTracer, ModernBertTracer
@@ -83,7 +83,7 @@ def test_hf_lm_trace_files_compare(tmp_path: Path) -> None:
     test_spec = ModelTestSpec("Qwen/Qwen3-0.6B", DType.FLOAT32, num_tokens=32, token_stride=1)
     assert test_spec.dtype is not None
     configure_precision_for_tests()
-    sharding_config = trace_sharding_config()
+    sharding_config = tracer_sharding_config()
     token_sharding = sharding_config.make_sharding((None, None))
     token_ids = jax.device_put(jnp.arange(test_spec.num_tokens, dtype=jnp.int32)[None, :], token_sharding)
     token_positions = jax.device_put(
@@ -100,7 +100,7 @@ def test_hf_lm_trace_files_compare(tmp_path: Path) -> None:
     )
     model = imported_model.model
     assert isinstance(model, LanguageModel)
-    lalamo_result = record_checked_token_trace(model, token_ids, token_positions)
+    lalamo_result = record_token_trace(model, token_ids, token_positions, checked=True)
 
     reference_path = tmp_path / "hf.safetensors"
     result_path = tmp_path / "lalamo.safetensors"

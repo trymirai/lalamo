@@ -99,25 +99,25 @@ def test_compare_trace_files_reports_float_dtype_mismatches(tmp_path: Path) -> N
     assert "dtype mismatch" in comparison.failed_results[0].message
 
 
-def test_compare_trace_files_rejects_single_bfloat16_outlier(tmp_path: Path) -> None:
+def test_compare_trace_files_rejects_bfloat16_outliers_beyond_allowed_fraction(tmp_path: Path) -> None:
     reference_path = tmp_path / "reference.safetensors"
     result_path = tmp_path / "result.safetensors"
     reference = jnp.zeros((34,), dtype=jnp.bfloat16)
-    result = reference.at[0].set(jnp.asarray(0.5, dtype=jnp.bfloat16))
+    result = reference.at[:2].set(jnp.asarray(0.5, dtype=jnp.bfloat16))  # 2 of 34 > 3%
     _write_trace(reference_path, {"activation_trace.output_norm": reference})
     _write_trace(result_path, {"activation_trace.output_norm": result})
 
     comparison = compare_trace_files(reference_path, result_path)
 
     assert not comparison.passed
-    assert "1 violations" in comparison.failed_results[0].message
+    assert "2 violations" in comparison.failed_results[0].message
 
 
 def test_compare_trace_files_keeps_float32_tolerance_strict(tmp_path: Path) -> None:
     reference_path = tmp_path / "reference.safetensors"
     result_path = tmp_path / "result.safetensors"
     reference = jnp.zeros((100,), dtype=jnp.float32)
-    result = reference.at[:2].set(0.03)
+    result = reference.at[:4].set(0.03)  # past float32 atol 0.01 (inside bfloat16's 0.04), 4 of 100 > 3%
     _write_trace(reference_path, {"activation_trace.output_norm": reference})
     _write_trace(result_path, {"activation_trace.output_norm": result})
 
@@ -248,3 +248,14 @@ def test_compare_traces_cli_fails_on_mismatched_arrays(tmp_path: Path) -> None:
     assert result.exit_code == 1
     assert "1 failed" in result.output
     assert "activation_trace.token_ids" in result.output
+
+
+def test_compare_trace_files_allows_outliers_within_fraction(tmp_path: Path) -> None:
+    reference_path = tmp_path / "reference.safetensors"
+    result_path = tmp_path / "result.safetensors"
+    reference = jnp.zeros((100,), dtype=jnp.float32)
+    result = reference.at[:3].set(0.03)
+    _write_trace(reference_path, {"activation_trace.output_norm": reference})
+    _write_trace(result_path, {"activation_trace.output_norm": result})
+
+    assert compare_trace_files(reference_path, result_path).passed

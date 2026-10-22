@@ -1,16 +1,17 @@
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
 
 import jax
 import jax.numpy as jnp
 import pytest
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
+from typer.testing import CliRunner
 
 from lalamo.commands import trace, trace_tokenization
 from lalamo.initializer import RandomInitializer
+from lalamo.main import app
 from lalamo.models import GenerationConfig, LanguageModel, LanguageModelConfig
 from lalamo.models.chat_codec import ChatCodecConfig, UserMessage
 from lalamo.modules import (
@@ -29,13 +30,10 @@ from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.safetensors import safe_read, safe_write
 from lalamo.tracer import (
     export_trace_result,
-    load_traceable_model,
-    load_traceable_token_codec,
-    record_message_trace,
+    record_message_trace_with_tokenization,
     record_tokenization_trace,
-    trace_sharding_config,
 )
-from lalamo.utils.json import JSON
+from tests.common import tracer_sharding_config
 from tests.conftest import RunLalamo
 
 
@@ -108,7 +106,7 @@ def _language_model() -> LanguageModel:
         ),
         generation_config=GenerationConfig(),
     )
-    sharding_config = trace_sharding_config()
+    sharding_config = tracer_sharding_config()
     tokenizer = Tokenizer(WordLevel(vocab={"[UNK]": 0, "trace": 7}, unk_token="[UNK]"))
     return config.init(
         tokenizer,
@@ -155,63 +153,6 @@ def _assert_tokenization_trace(metadata: dict[str, str] | None, arrays: Mapping[
     assert arrays["activation_trace.token_positions"].tolist() == [[0]]
 
 
-def _write_uzu_language_model(model: LanguageModel, model_dir: Path) -> None:
-    model_dir.mkdir(parents=True)
-    config = cast("dict[str, JSON]", model.config.to_json())
-    message_config = cast("dict[str, JSON]", config["token_codec_config"])
-    generation_config = cast("dict[str, JSON]", config["generation_config"])
-    uzu_config = {
-        "toolchain_version": "test",
-        "vendor": "test",
-        "family": "test",
-        "name": "test",
-        "size": "tiny",
-        "quantization": None,
-        "repo": "test",
-        "use_cases": [],
-        "model_type": "language_model",
-        "model_config": {
-            "model_config": config["decoder_config"],
-            "message_processor_config": {
-                "prompt_template": message_config["prompt_template"],
-                "output_parser_regex": message_config["output_parser_regex"],
-                "system_role_name": message_config["system_role_name"],
-                "user_role_name": message_config["user_role_name"],
-                "assistant_role_name": message_config["assistant_role_name"],
-                "eos_token": message_config["eos_token"],
-                "bos_token": message_config["bos_token"],
-                "default_system_prompt": message_config["default_system_prompt"],
-            },
-            "generation_config": {
-                "stop_token_ids": generation_config["stop_token_ids"],
-                "temperature": generation_config["temperature"],
-                "top_k": generation_config["top_k"],
-                "top_p": generation_config["top_p"],
-                "min_p": generation_config["min_p"],
-                "banned_tokens": generation_config["banned_tokens"],
-            },
-        },
-    }
-    with (model_dir / "config.json").open("w") as fd:
-        json.dump(uzu_config, fd, indent=4)
-    model.token_codec.tokenizer.save(str(model_dir / "tokenizer.json"))
-
-    arrays: dict[str, jax.Array] = {}
-    for path, array in model.export().arrays.items():
-        if path == "decoder.embedding.embedding.weights":
-            arrays["embedding.weights"] = array
-        elif path.startswith("decoder.transformer.ropes.0."):
-            arrays["transformer.global_rope." + path.removeprefix("decoder.transformer.ropes.0.")] = array
-        elif path.startswith("decoder."):
-            uzu_path = path.removeprefix("decoder.")
-            if uzu_path.endswith(".weights.weights"):
-                uzu_path = uzu_path.removesuffix(".weights")
-            arrays[uzu_path] = array
-
-    with (model_dir / "model.safetensors").open("wb") as fd:
-        safe_write(fd, arrays)
-
-
 def _write_token_trace(trace_path: Path) -> None:
     _write_token_trace_arrays(
         trace_path,
@@ -233,7 +174,7 @@ def _write_token_trace_arrays(trace_path: Path, token_ids: jax.Array, token_posi
 
 
 def test_record_message_trace_exports_uzu_trace_paths() -> None:
-    result = record_message_trace(_language_model(), [UserMessage("trace")])
+    result, _ = record_message_trace_with_tokenization(_language_model(), [UserMessage("trace")])
 
     arrays = export_trace_result(result)
 
@@ -249,42 +190,10 @@ def test_record_tokenization_trace_exports_request_boundary() -> None:
     _assert_tokenization_trace(trace_result.metadata, trace_result.arrays)
 
 
-def test_load_traceable_model_loads_uzu_language_model(tmp_path: Path) -> None:
-    model_dir = tmp_path / "model"
-    _write_uzu_language_model(_language_model(), model_dir)
-
-    result = record_message_trace(load_traceable_model(model_dir), [UserMessage("trace")])
-
-    _assert_uzu_trace_paths(export_trace_result(result))
-
-
-def test_load_traceable_token_codec_loads_uzu_language_model(tmp_path: Path) -> None:
-    model_dir = tmp_path / "model"
-    _write_uzu_language_model(_language_model(), model_dir)
-
-    trace_result = record_tokenization_trace(load_traceable_token_codec(model_dir), [UserMessage("trace")])
-
-    _assert_tokenization_trace(trace_result.metadata, trace_result.arrays)
-
-
 def test_trace_command_writes_safetensors(tmp_path: Path) -> None:
     model_dir = tmp_path / "model"
     trace_path = tmp_path / "traces.safetensors"
     _language_model().save(model_dir)
-
-    trace(model_dir, trace_path, [UserMessage("trace")])
-
-    with trace_path.open("rb") as fd:
-        metadata, arrays = safe_read(fd)
-        _assert_uzu_trace_paths(arrays)
-        assert metadata is not None
-        assert metadata["rendered_request"] == "trace"
-
-
-def test_trace_command_writes_safetensors_for_uzu_model(tmp_path: Path) -> None:
-    model_dir = tmp_path / "model"
-    trace_path = tmp_path / "traces.safetensors"
-    _write_uzu_language_model(_language_model(), model_dir)
 
     trace(model_dir, trace_path, [UserMessage("trace")])
 
@@ -472,3 +381,17 @@ def test_trace_tokenization_cli_writes_safetensors(tmp_path: Path, run_lalamo: R
     with trace_path.open("rb") as fd:
         metadata, arrays = safe_read(fd)
         _assert_tokenization_trace(metadata, arrays)
+
+
+def test_trace_cli_refuses_to_overwrite_the_replayed_trace(tmp_path: Path) -> None:
+    model_dir = tmp_path / "model"
+    trace_path = model_dir / "traces.safetensors"
+    _language_model().save(model_dir)
+    _write_token_trace(trace_path)
+
+    result = CliRunner().invoke(app, ["trace", str(model_dir), "--input-trace-path", str(trace_path), "--overwrite"])
+
+    assert result.exit_code == 1
+    with trace_path.open("rb") as fd:
+        metadata, _ = safe_read(fd)
+        assert metadata == {"source": "fixture"}

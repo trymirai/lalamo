@@ -550,6 +550,17 @@ def pull(
     )
 
 
+def _confirm_overwrite(output_path: Path, overwrite: bool) -> None:
+    if not output_path.exists():
+        return
+    if not overwrite and not Confirm().ask(
+        rf"⚠️ Output [cyan]{output_path}[/cyan] already exists."
+        r" Do you want to overwrite it?",
+    ):
+        raise Exit
+    output_path.unlink()
+
+
 @app.command(help="Trace a converted model.")
 def trace(
     model_path: Annotated[
@@ -598,14 +609,13 @@ def trace(
 
     if output_path is None:
         output_path = model_path / "traces.safetensors"
+    if input_trace_path is not None and output_path.resolve() == input_trace_path.resolve():
+        err_console.print(
+            "--output-path must differ from --input-trace-path: the replayed trace would be overwritten."
+        )
+        raise Exit(1)
 
-    if output_path.exists():
-        if not overwrite and not Confirm().ask(
-            rf"⚠️ Output [cyan]{output_path}[/cyan] already exists."
-            r" Do you want to overwrite it?",
-        ):
-            raise Exit
-        output_path.unlink()
+    _confirm_overwrite(output_path, overwrite)
 
     console.print(f"🔍 Tracing [cyan]{model_path}[/cyan]")
     _trace(model_path, output_path, messages, input_trace_path)
@@ -648,13 +658,7 @@ def trace_tokenization(
     if output_path is None:
         output_path = model_path / "tokenization-trace.safetensors"
 
-    if output_path.exists():
-        if not overwrite and not Confirm().ask(
-            rf"⚠️ Output [cyan]{output_path}[/cyan] already exists."
-            r" Do you want to overwrite it?",
-        ):
-            raise Exit
-        output_path.unlink()
+    _confirm_overwrite(output_path, overwrite)
 
     console.print(f"🔍 Tracing tokenization for [cyan]{model_path}[/cyan]")
     _trace_tokenization(model_path, output_path, [UserMessage(message)])
@@ -684,6 +688,8 @@ def compare_traces(
     console.print(
         f"Compared [cyan]{len(comparison.results)}[/cyan] shared arrays; [cyan]{len(failed_results)}[/cyan] failed."
     )
+    if not comparison.results:
+        err_console.print("The traces share no array paths, so nothing was compared.")
     if comparison.reference_only_paths:
         console.print(f"Missing result arrays: [cyan]{len(comparison.reference_only_paths)}[/cyan]")
         for path in comparison.reference_only_paths:

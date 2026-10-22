@@ -25,9 +25,9 @@ from lalamo.modules.decoder import (
     DecoderActivationTrace,
     DecoderResult,
 )
-from lalamo.tracer import record_checked_token_trace, trace_sharding_config
+from lalamo.tracer import record_token_trace
 from lalamo.utils.memory import get_available_bytes_on_default_device
-from tests.common import assert_close
+from tests.common import assert_close, tracer_sharding_config
 from tests.helpers import si, unsi
 
 MLX_AVAILABLE = importlib.util.find_spec("mlx")
@@ -444,7 +444,7 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
 
     configure_precision_for_tests()
 
-    sharding_config = trace_sharding_config()
+    sharding_config = tracer_sharding_config()
     batch_sequence_sharding = sharding_config.make_sharding((None, None))
     token_ids = jax.device_put(
         jnp.arange(0, test_spec.num_tokens, dtype=jnp.int32)[None, :],
@@ -479,7 +479,7 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
         model = imported_model.model
         if not isinstance(model, (LanguageModel, ClassifierModel)):
             raise TypeError(f"Unsupported model type for tracing: {type(model).__name__}")
-        inference_results = record_checked_token_trace(model, token_ids, token_positions)
+        inference_results = record_token_trace(model, token_ids, token_positions, checked=True)
 
         tracer.match_activations(inference_results)
     finally:
