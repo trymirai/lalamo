@@ -83,9 +83,9 @@ def test_kronecker_transform_matches_explicit_kronecker_product() -> None:
         (QtipGaussianSpec(4, 8, 128), 80),
     ],
 )
-def test_tape_blocks_are_back_to_back_msb_first_states(spec: QtipGaussianSpec, row_bytes: int) -> None:
-    # Each block packs its 16-bit start state, then each step's new low bits, MSB first; a restart row pads to
-    # 16 bytes, a connected tape to a byte.
+def test_tape_blocks_are_back_to_back_reversed_states(spec: QtipGaussianSpec, row_bytes: int) -> None:
+    # Each block is its 16-bit start state, then each step's new low bits, reversed and packed LSB first; a restart
+    # row pads to 16 bytes, a connected tape to a byte.
     columns = 2 * spec.restart_columns or 128
     bits, block_columns = spec.transition_bits, spec.restart_columns or columns
     generator = np.random.default_rng(bits)
@@ -93,13 +93,14 @@ def test_tape_blocks_are_back_to_back_msb_first_states(spec: QtipGaussianSpec, r
     for _ in range(columns // block_columns):
         state = int(generator.integers(1 << 16))
         states.append(state)
-        tape += f"{state:016b}"
+        block = f"{state:016b}"
         for symbol in generator.integers(1 << bits, size=block_columns // spec.vector_width - 1):
             state = ((state << bits) | int(symbol)) & 0xFFFF
             states.append(state)
-            tape += f"{symbol:0{bits}b}"
+            block += f"{symbol:0{bits}b}"
+        tape += block[::-1]
     assert len(tape) <= 8 * row_bytes
-    codes = jnp.asarray(np.frombuffer(int(tape.ljust(8 * row_bytes, "0"), 2).to_bytes(row_bytes), np.uint8))[None]
+    codes = jnp.asarray(np.packbits(np.fromiter(tape.ljust(8 * row_bytes, "0"), np.uint8), bitorder="little"))[None]
     assert spec.code_bytes(columns) == row_bytes
     np.testing.assert_array_equal(spec.states(codes, columns)[0], states)
 
