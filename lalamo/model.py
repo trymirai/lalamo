@@ -1,9 +1,11 @@
 import json
+import warnings
 from abc import abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
 
+import jax.numpy as jnp
 from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 
@@ -56,10 +58,15 @@ class BaseModel[ConfigT: BaseModelConfig](LalamoModule[ConfigT]):
             config = BaseModelConfig.from_json(json.load(config_file))
 
         with (directory / "model.safetensors").open("rb") as weights_file:
-            metadata, arrays = safe_read(weights_file)
+            metadata, arrays, tensor_infos = safe_read(weights_file)
             decoded_metadata = {}
             if metadata is not None:
                 decoded_metadata = {key: json.loads(value) for key, value in metadata.items()}
+            fp32_scales = sum(
+                tensor_infos[name].dtype == jnp.float32
+                for name in tensor_infos
+                if name.endswith(".scales") and name.removesuffix(".scales") + ".spec" in decoded_metadata
+            )
             template = config.init_from_directory(directory, EmptyInitializer(dtype, sharding_config))
             result = Exportable.load_exported(
                 template,
@@ -70,6 +77,12 @@ class BaseModel[ConfigT: BaseModelConfig](LalamoModule[ConfigT]):
             )
 
         assert isinstance(result, cls)
+        if fp32_scales:
+            warnings.warn(
+                f"Loaded {fp32_scales} quantization scale tensors stored in FP32; use BF16 scales.",
+                UserWarning,
+                stacklevel=2,
+            )
         return result
 
 
