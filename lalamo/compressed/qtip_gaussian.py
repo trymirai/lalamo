@@ -60,6 +60,8 @@ class QtipGaussianSpec(WeightMatrixSpec):
     vector_width: Literal[2, 4]
     transition_bits: Literal[4, 6, 7, 8]
     restart_columns: Literal[0, 64, 128]
+    # 2: each block's bits reversed, least significant first.
+    tape: Literal[2] = 2
 
     def __post_init__(self) -> None:
         match self.vector_width, self.transition_bits, self.restart_columns:
@@ -80,16 +82,21 @@ class QtipGaussianSpec(WeightMatrixSpec):
             return (bits + 127) // 128 * 16
         return (bits + 7) // 8
 
+    def block_bits(self, columns: int) -> int:
+        return STATE_BITS + ((self.restart_columns or columns) // self.vector_width - 1) * self.transition_bits
+
     def states(self, codes: UInt8[Array, "*rows bytes"], columns: int) -> Array:
+        # State g of an L-bit block is the little-endian 16-bit field at bit L - 16 - g * T.
         step = np.arange(columns // self.vector_width)
-        offset = step * self.transition_bits
-        if self.restart_columns:
-            steps_per_block = self.restart_columns // self.vector_width
-            offset += (step // steps_per_block) * (STATE_BITS - self.transition_bits)
+        steps_per_block = (self.restart_columns or columns) // self.vector_width
+        block_bits = self.block_bits(columns)
+        offset = (
+            (step // steps_per_block + 1) * block_bits - STATE_BITS - step % steps_per_block * self.transition_bits
+        )
         byte = offset // 8
         data = jnp.pad(codes, [(0, 0)] * (codes.ndim - 1) + [(0, 2)]).astype(jnp.uint32)
-        word = (data[..., byte] << 16) | (data[..., byte + 1] << 8) | data[..., byte + 2]
-        shift = jnp.asarray(8 - offset % 8, dtype=jnp.uint32)
+        word = data[..., byte] | (data[..., byte + 1] << 8) | (data[..., byte + 2] << 16)
+        shift = jnp.asarray(offset % 8, dtype=jnp.uint32)
         return (word >> shift) & 0xFFFF
 
     def compress(
