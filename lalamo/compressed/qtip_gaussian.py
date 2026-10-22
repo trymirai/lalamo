@@ -5,20 +5,20 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.sharding import NamedSharding, PartitionSpec
-from jaxtyping import Array, DTypeLike, Float, Int8, Key, UInt8, UInt32
+from jaxtyping import Array, DTypeLike, Float, Int, Int8, Key, UInt8, UInt32
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import is_dummy_or_tracer
-from lalamo.utils.sharding import ShardingConfig, sharding_of, with_sharding
+from lalamo.utils.sharding import ShardingConfig, lookup_sharded_indices, sharding_of, with_sharding
 from lalamo.weight_matrix import (
     CompressionImplementation,
+    EmbeddingMatrix,
     FullPrecisionMatrix,
     FullPrecisionSpec,
     Layout,
     MatmulConfig,
-    WeightMatrix,
     WeightMatrixSpec,
 )
 
@@ -126,7 +126,7 @@ class QtipGaussianSpec(WeightMatrixSpec):
         )
 
 
-class QtipGaussianMatrix(WeightMatrix[QtipGaussianSpec]):
+class QtipGaussianMatrix(EmbeddingMatrix[QtipGaussianSpec]):
     dtype_: DTypeLike = field(static=True)
     columns: int = field(static=True)
     codes: UInt8[Array, "rows bytes"]
@@ -166,15 +166,29 @@ class QtipGaussianMatrix(WeightMatrix[QtipGaussianSpec]):
             self.decompress(), sharding_config=self.sharding_config, is_sharded=self.is_sharded
         )
 
+    def lookup_embedding(
+        self,
+        row_index: int | Int[Array, "*batch"],
+        *,
+        keychain: Keychain,  # noqa: ARG002
+        dtype: DTypeLike | None = None,
+        forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
+    ) -> Array:
+        rows = self.decode_rows(
+            lookup_sharded_indices(self.codes, row_index), lookup_sharded_indices(self.scales, row_index)
+        )
+        return rows.astype(self.dtype if dtype is None else dtype)
+
     def dot(
         self,
         vector: Float[Array, " source_channels"],
         *,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
-        transposed: bool = False,
+        transposed: bool = False,  # noqa: ARG002
     ) -> Array:
-        assert not transposed, "QTIP Gaussian matrices are projections, never tied embeddings"
+        # Rows are always the output channels: a projection's outputs, or a tied table's vocabulary entries, whose
+        # readout (the "transposed" product of an embedding) is the same row-by-row dot.
         mesh = sharding_of(vector).mesh
         # FSDP shares the batch and matrix axis. Gather packed rows, so token batching owns that axis;
         # only 128 rows are ever decoded at once.

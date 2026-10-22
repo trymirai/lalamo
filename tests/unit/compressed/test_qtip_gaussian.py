@@ -8,6 +8,7 @@ import pytest
 
 from lalamo.compressed.hybrid import HybridMatrix, KroneckerRotation, kronecker_transform
 from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec, codebook_from_table
+from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain
 from tests.helpers import make_test_sharding_config
 
@@ -56,6 +57,12 @@ def test_saved_tapes_decode_like_their_producers() -> None:
             np.testing.assert_allclose(actual, dense @ vector, rtol=1e-5, atol=1e-5 * np.abs(dense).max())
             # bf16 trellis weights round once, after the rotation.
             np.testing.assert_array_equal(hybrid.astype(jnp.bfloat16).decompress(), dense.astype(jnp.bfloat16))
+            # As a tied table: a lookup decodes and unrotates rows, and the table loads into an embedding template.
+            rows, keychain = jnp.asarray([3, 0, 2]), Keychain.init(0, sharding_config=config)
+            looked_up = hybrid.lookup_embedding(rows, keychain=keychain)
+            np.testing.assert_array_equal(looked_up, rotation.unprocess_weights(leaf.decompress()[rows]))
+            template = EmptyInitializer(jnp.float32, config).embedding_matrix(*leaf.shape)
+            np.testing.assert_array_equal(template.load_exported(hybrid.export()).decompress(), dense)
 
 
 def test_kronecker_transform_matches_explicit_kronecker_product() -> None:
