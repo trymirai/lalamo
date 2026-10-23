@@ -1,0 +1,236 @@
+from collections.abc import Iterable
+from dataclasses import replace
+from functools import cache
+from typing import Any
+
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+from jax import ShapeDtypeStruct
+from jaxtyping import Array, DTypeLike, Float
+
+from lalamo.compressed.hybrid import HybridMatrix, IncoherenceSigns, KroneckerRotation
+from lalamo.compressed.lattice import COLUMNS_PER_LADDER_INDEX, LADDER_INDEX_BITS, LatticeMatrix, LatticeSpec
+from lalamo.compressed.mlx import MLXMatrix, MLXSpec
+from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec, codebook_from_table
+from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
+from lalamo.compressed.utils.packing import unpack_uint8_to_uint
+from lalamo.exportable import ExportResults
+from lalamo.model import BaseModel
+from lalamo.models.language_model import LanguageModel
+from lalamo.utils.json import JSON
+from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.surgery import load_as
+from lalamo.weight_matrix import Layout, ShapeDtypeMatrix, WeightMatrix
+
+
+def merge_rows(top: WeightMatrix, bottom: WeightMatrix) -> WeightMatrix | None:
+    if (top.spec, top.dtype) != (bottom.spec, bottom.dtype):
+        return None
+    if isinstance(top, MLXMatrix):
+        return jax.tree.map(lambda *planes: jnp.concatenate(planes), top, bottom)
+    if (
+        isinstance(top, QtipGaussianMatrix)
+        and isinstance(bottom, QtipGaussianMatrix)
+        and jnp.array_equal(top.codebook, bottom.codebook)
+    ):
+        return replace(
+            top, codes=jnp.concatenate((top.codes, bottom.codes)), scales=jnp.concatenate((top.scales, bottom.scales))
+        )
+    return None
+
+
+def native_config(value: JSON) -> JSON:
+    # Older packages carry a null pard_token and save attention as separate qkv and gate projections.
+    if isinstance(value, list):
+        return [native_config(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    value = dict(value)
+    pard_token = value.pop("pard_token", None)
+    assert pard_token is None, "PARD checkpoints are not supported"
+    if value.get("type") == "AttentionConfig" and "qkv_projection_config" in value:
+        qkv = value.pop("qkv_projection_config")
+        gate = value.pop("gate_projection_config")
+        has_biases = value.pop("has_qkv_biases")
+        assert gate == qkv and not has_biases, "Legacy qkv and gate projections share one bias-free config"
+        value |= {"qkvg_projection_config": qkv, "has_qkvg_biases": False, "has_gate": True}
+    return {name: native_config(item) for name, item in value.items()}
+
+
+def is_packed_checkpoint(metadata: dict[str, JSON], tensor_names: Iterable[str]) -> bool:
+    # Lalamo's own saves also tag trellis leaves "QtipGaussianSpec", but keep a five-float codebook under each matrix.
+    return any(name.startswith("qtip_shared.") for name in tensor_names) or any(
+        isinstance(spec, dict) and spec["type"] in ("D4S4Spec", "I4S4Spec") for spec in metadata.values()
+    )
+
+
+def load_packed_checkpoint(template: BaseModel, exported: ExportResults, dtype: DTypeLike | None) -> LanguageModel:
+    assert isinstance(template, LanguageModel)
+    arrays, specs = exported
+    sharding_config = template.sharding_config
+    # RoPE is recomputed from the config, as uzu does; older packages' saved tables match it to one float32 ulp.
+    consumed = {name for name in arrays if name.startswith("decoder.transformer.ropes.")}
+    consumed_specs: set[str] = set()
+
+    def parameter(name: str) -> Array:
+        consumed.add(name)
+        return arrays[name]
+
+    def saved_spec(path: ParameterPath) -> dict[str, Any]:
+        consumed_specs.add(path / "spec")
+        spec = specs[path / "spec"]
+        assert isinstance(spec, dict)
+        return spec
+
+    @cache
+    def codebook(table_name: str) -> Float[Array, " codebook"]:
+        return codebook_from_table(parameter(table_name))
+
+    def fold_post_gains(path: ParameterPath, scale: Array, axes: Iterable[str]) -> Array:
+        scale = scale.astype(jnp.float32)
+        for index, axis in enumerate(axes):
+            gain = parameter(path / "post_gains" / index)
+            match axis:
+                case "row":
+                    scale = scale * gain.astype(jnp.float32)
+                case "column":
+                    if not bool(jnp.all(gain == 1)):
+                        raise ValueError(f"Column post-gains cannot fold into row scales at {path}")
+                case _:
+                    raise ValueError(f"Unknown post-gain axis {axis!r} at {path}")
+        return scale
+
+    def row_stack(parts: tuple[WeightMatrix, ...]) -> WeightMatrix:
+        assert parts
+        if len(parts) == 1:
+            return parts[0]
+        spec = RowStackSpec(tuple((part.shape[0], part.spec) for part in parts))
+        return RowStackMatrix(spec, sharding_config, parts[0].is_sharded, parts)
+
+    def stack_projections(hybrids: Iterable[WeightMatrix]) -> WeightMatrix:
+        # Neighbours under one saved rotation become one hybrid, in which neighbouring same-format leaves merge.
+        groups: list[tuple[IncoherenceSigns | KroneckerRotation, list[WeightMatrix]]] = []
+        for hybrid in hybrids:
+            assert isinstance(hybrid, HybridMatrix) and hybrid.incoherence_signs is not None
+            if not groups or not eqx.tree_equal(groups[-1][0], hybrid.incoherence_signs):
+                groups.append((hybrid.incoherence_signs, []))
+            leaves = groups[-1][1]
+            if leaves and (joined := merge_rows(leaves[-1], hybrid.quantized)) is not None:
+                leaves[-1] = joined
+            else:
+                leaves.append(hybrid.quantized)
+        fused = tuple(HybridMatrix.of(row_stack(tuple(leaves)), rotation) for rotation, leaves in groups)
+        return row_stack(fused)
+
+    def load_weight(path: ParameterPath, saved: dict[str, Any], target: ShapeDtypeMatrix) -> WeightMatrix:
+        columns = target.shape[1]
+        is_sharded = target.is_sharded
+        saved = dict(saved)
+        matrix: WeightMatrix
+        match saved.pop("type"):
+            case "FullPrecisionSpec":
+                matrix = target.load_exported(ExportResults(arrays, specs), prefix=path)
+                consumed.add(path / "weights")
+            case "QtipGaussianSpec":
+                table_name = saved.pop("table", f"qtip_shared.codebook_v{saved['vector_width']}")
+                layout, scale_dtype = saved.pop("layout"), saved.pop("scale_dtype", "float16")
+                scales, gains = parameter(path / "scales"), parameter(path / "gains")
+                assert layout == Layout.OUTPUT_INPUT, f"QTIP leaves are stored output-input at {path}"
+                assert scales.dtype == scale_dtype, f"Saved scales differ from their spec at {path}"
+                row_scale = scales.astype(jnp.float32) * gains.astype(jnp.float32)
+                for index in range(saved.pop("pre_gain_count", 0)):
+                    row_scale = row_scale * parameter(path / "pre_gains" / index).astype(jnp.float32)
+                row_scale = fold_post_gains(path, row_scale, saved.pop("post_gain_axes", ()))
+                leaf = QtipGaussianMatrix(
+                    spec=QtipGaussianSpec.from_json({"type": "QtipGaussianSpec", **saved}),
+                    sharding_config=sharding_config,
+                    is_sharded=is_sharded,
+                    # The saved gains carry the matrix dtype.
+                    dtype_=gains.dtype,
+                    columns=columns,
+                    codes=parameter(path / "codes"),
+                    scales=row_scale,
+                    codebook=codebook(table_name),
+                )
+                rotation = KroneckerRotation(
+                    signs=parameter(f"qtip_shared.signs_{columns}"), small_q=parameter(f"qtip_shared.q_{columns}")
+                )
+                matrix = HybridMatrix.of(leaf, rotation)
+            case "RowStackSpec":
+                # Each part's saved spec is inline in the stack's; the parts have no spec entries of their own.
+                rows, part_specs = zip(*saved.pop("parts"), strict=True)
+                assert saved == {"layout": Layout.OUTPUT_INPUT}, f"Unexpected row stack {saved} at {path}"
+                parts = [load_weight(path / "parts" / index, spec, target) for index, spec in enumerate(part_specs)]
+                assert tuple(part.shape[0] for part in parts) == rows
+                matrix = stack_projections(parts)
+            case "HybridSpec":
+                # Saved as HybridMatrix.export writes it, minus the spec entry of the inner matrix.
+                inner_spec = {path / "quantized" / "spec": saved["quantization_spec"]}
+                matrix = target.load_exported(ExportResults(arrays, {**specs, **inner_spec}), prefix=path)
+                consumed.update(path / name for name in matrix.export().arrays)
+            case "I4S4Spec":
+                # Level 2c - 15 times the group scale s = row scale * ladder value is (2s) * c - 15s: affine, once
+                # the nibbles are swapped to low-first. Gains fold into s in float32, exact for powers of two.
+                row_scales = parameter(path / "row_scales")
+                groups = unpack_uint8_to_uint(parameter(path / "ladder_indices"), LADDER_INDEX_BITS)
+                ladder = jnp.take(parameter(path / "ladder"), groups).astype(jnp.float32)
+                row_scale = fold_post_gains(path, row_scales, saved.pop("post_gain_axes", ()))
+                scales = row_scale[:, None] * ladder
+                assert saved == {"layout": Layout.OUTPUT_INPUT}, f"Unexpected I4S4 leaf {saved} at {path}"
+                codes = parameter(path / "codes")
+                quantized = MLXSpec(4, COLUMNS_PER_LADDER_INDEX, Layout.OUTPUT_INPUT).from_packed_parameters(
+                    packed_weights=(codes << 4) | (codes >> 4),
+                    scales=(2 * scales).astype(dtype or row_scales.dtype),
+                    biases=(-15 * scales).astype(dtype or row_scales.dtype),
+                    sharding_config=sharding_config,
+                    is_sharded=is_sharded,
+                )
+                signs = IncoherenceSigns(parameter(path / "input_hadamard_factors"), None)
+                matrix = HybridMatrix.of(quantized, signs)
+            case "D4S4Spec":
+                if saved.pop("post_gain_axes", ()):
+                    raise ValueError(f"Lattice post-gains do not commute with the Hadamard rotation at {path}")
+                lattice = LatticeSpec.from_json({"type": "LatticeSpec", "kind": "d4", **saved})
+                leaf = LatticeMatrix(
+                    spec=lattice,
+                    sharding_config=sharding_config,
+                    is_sharded=is_sharded,
+                    codes=parameter(path / "codes"),
+                    row_scales=parameter(path / "row_scales"),
+                    ladder_indices=parameter(path / "ladder_indices"),
+                    ladder=parameter(path / "ladder"),
+                    table=parameter(path / "table"),
+                )
+                if lattice.layout == Layout.INPUT_OUTPUT:
+                    rotation = IncoherenceSigns(None, parameter(path / "output_hadamard_factors"))
+                else:
+                    rotation = IncoherenceSigns(parameter(path / "input_hadamard_factors"), None)
+                matrix = HybridMatrix.of(leaf, rotation)
+            case other:
+                raise ValueError(f"Unsupported packed checkpoint weight format {other!r} at {path}")
+        if dtype is not None:
+            matrix = matrix.astype(dtype)
+        return matrix
+
+    def restore(jax_path: tuple[object, ...], leaf: object) -> object:
+        path = ParameterPath() / jax_path
+        if isinstance(leaf, ShapeDtypeStruct | Array):
+            return load_as(leaf, parameter(path))
+        if not isinstance(leaf, ShapeDtypeMatrix):
+            return leaf
+        # Older packages save the attention projection as a qkv leaf and a gate leaf.
+        parent = path.removesuffix("qkvg_projection.weights")
+        if parent + "qkv_projection.weights.spec" in specs:
+            qkv, gate = (ParameterPath(f"{parent}{name}_projection.weights") for name in ("qkv", "gate"))
+            parts = [load_weight(part, saved_spec(part), leaf) for part in (qkv, gate)]
+            return load_as(leaf, stack_projections(parts))
+        return load_as(leaf, load_weight(path, saved_spec(path), leaf))
+
+    model = jax.tree_util.tree_map_with_path(restore, template, is_leaf=lambda node: isinstance(node, WeightMatrix))
+    if unused := arrays.keys() - consumed:
+        raise ValueError(f"Unconsumed packed checkpoint tensors: {sorted(unused)}")
+    if unused := specs.keys() - consumed_specs:
+        raise ValueError(f"Unconsumed packed checkpoint specifications: {sorted(unused)}")
+    assert isinstance(model, LanguageModel)
+    return model
