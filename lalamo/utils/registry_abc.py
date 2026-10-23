@@ -104,7 +104,7 @@ def _descendant_by_name(registry_abc: type[RegistryABC], type_name: str) -> type
 
 
 def make_registry_abc_converter(*, forbid_extra_keys: bool = False) -> GenConverter:
-    converter = make_converter(forbid_extra_keys=forbid_extra_keys)
+    converter = make_converter(forbid_extra_keys=forbid_extra_keys, unstruct_collection_overrides={tuple: list})
 
     converter.register_unstructure_hook_func(
         lambda t: t in [jnp.dtype, DTypeLike],
