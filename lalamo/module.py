@@ -235,13 +235,27 @@ class Keychain(eqx.Module):
         )
 
 
+def _require_config_fields(source: JSON, current: JSON, path: str = "config") -> None:
+    if isinstance(source, dict) and isinstance(current, dict):
+        missing = current.keys() - source.keys()
+        if missing:
+            raise ValueError(f"Missing fields in {path}: {', '.join(sorted(missing))}. Re-export with current Lalamo.")
+        for name, value in current.items():
+            _require_config_fields(source[name], value, f"{path}.{name}")
+    elif isinstance(source, list) and isinstance(current, list):
+        for index, (saved, value) in enumerate(zip(source, current, strict=True)):
+            _require_config_fields(saved, value, f"{path}[{index}]")
+
+
 @dataclass(frozen=True)
 class LalamoConfig:
     _converter: ClassVar[GenConverter] = make_registry_abc_converter(forbid_extra_keys=True)
 
     @classmethod
     def from_json(cls, json_object: JSON) -> Self:
-        return cls._converter.structure(json_object, cls)
+        config = cls._converter.structure(json_object, cls)
+        _require_config_fields(json_object, config.to_json())
+        return config
 
     def to_json(self) -> JSON:
         return self._converter.unstructure(self)

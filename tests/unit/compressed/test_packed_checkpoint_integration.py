@@ -22,7 +22,7 @@ def test_packed_checkpoint_loads_every_saved_tensor() -> None:
     config = ShardingConfig.replicated(jax.devices()[:1])
     with jax.set_mesh(config.mesh), (directory / "model.safetensors").open("rb") as stream:
         model = LanguageModel.load(directory, config)
-        metadata, saved = safe_read(stream)
+        metadata, saved, _ = safe_read(stream)
         trellis_paths = [name.removesuffix(".gains") for name in saved if name.endswith(".gains")]
         folds = {
             f"{path}.scales": (

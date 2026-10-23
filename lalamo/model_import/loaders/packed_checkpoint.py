@@ -191,7 +191,7 @@ def load_packed_checkpoint(template: BaseModel, exported: ExportResults, dtype: 
             case "D4S4Spec":
                 if saved.pop("post_gain_axes", ()):
                     raise ValueError(f"Lattice post-gains do not commute with the Hadamard rotation at {path}")
-                lattice = LatticeSpec.from_json({"type": "LatticeSpec", **saved})
+                lattice = LatticeSpec.from_json({"type": "LatticeSpec", "kind": "d4", **saved})
                 leaf = LatticeMatrix(
                     spec=lattice,
                     sharding_config=sharding_config,

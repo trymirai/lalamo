@@ -1,49 +1,76 @@
+import json
+from pathlib import Path
+
+import polars as pl
 import pytest
+from cattrs.errors import ClassValidationError
 from frozendict import frozendict
 from tokenizers import Tokenizer
-from tokenizers.models import WordLevel
+from tokenizers.decoders import ByteFallback, ByteLevel, Decoder
+from tokenizers.models import BPE, WordLevel
 
-from lalamo.model_import.model_specs.output_parser_regexes import (
-    GEMMA4_OUTPUT_PARSER_REGEX,
-    GRANITE_THINKING_OUTPUT_PARSER_REGEX,
-    OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-)
+from lalamo.data.huggingface_message import HFConversation, load_hf_parquet
+from lalamo.model_import.model_spec import LanguageModelSpec
+from lalamo.model_import.model_specs.gemma import GEMMA4_RESPONSE_FORMAT
+from lalamo.model_import.model_specs.granite import GRANITE_RESPONSE_FORMAT
+from lalamo.model_import.model_specs.lfm2 import LIQUID_RESPONSE_FORMAT, LIQUID_THINKING_RESPONSE_FORMAT
+from lalamo.model_import.model_specs.qwen import QWEN_RESPONSE_FORMAT
 from lalamo.model_import.model_specs.reasoning_configs import BOOLEAN_REASONING_DEFAULT_ON_CONFIG
+from lalamo.model_registry import ModelRegistry
 from lalamo.models.chat_codec import (
+    THINKING_RESPONSE_FORMAT,
     AssistantMessage,
     ChatCodec,
     ChatCodecConfig,
     ReasoningConfig,
     ReasoningEffort,
+    ResponseFormat,
+    ToolCall,
+    ToolSchema,
     UserMessage,
+    parse_hf_message,
 )
 
 
 def _chat_codec(
     *,
     prompt_template: str = "",
-    output_parser_regex: str | None = None,
+    response_format: ResponseFormat | None = None,
     reasoning_config: ReasoningConfig | None = None,
 ) -> ChatCodec:
-    return ChatCodecConfig(
+    config = ChatCodecConfig(
         prompt_template=prompt_template,
-        output_parser_regex=output_parser_regex,
+        response_format=response_format,
         system_role_name="system",
         user_role_name="user",
         assistant_role_name="assistant",
         eos_token=None,
         bos_token=None,
         reasoning_config=reasoning_config,
-    ).init(Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]")))
+    )
+    return ChatCodecConfig.from_json(config.to_json()).init(
+        Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]"))
+    )
 
 
-def test_reasoning_config_requires_a_mapping_for_its_default() -> None:
-    with pytest.raises(ValueError, match="default reasoning effort"):
-        ReasoningConfig(
-            default_reasoning_effort=ReasoningEffort.MEDIUM,
-            field_name="reasoning_effort",
-            reasoning_effort_to_field_value=frozendict({ReasoningEffort.LOW: "low"}),
-        )
+@pytest.mark.parametrize(
+    "missing_field", [None, "default_reasoning_effort", "field_name", "reasoning_effort_to_field_value"]
+)
+def test_loading_rejects_incomplete_or_unmapped_reasoning_effort(missing_field: str | None) -> None:
+    config = _chat_codec().config.to_json()
+    assert isinstance(config, dict)
+    reasoning: dict = {
+        "default_reasoning_effort": "medium",
+        "field_name": "reasoning_effort",
+        "reasoning_effort_to_field_value": {"medium": "medium"},
+    }
+    if missing_field is None:
+        reasoning["default_reasoning_effort"] = "high"
+    else:
+        reasoning.pop(missing_field)
+    config["reasoning_config"] = reasoning
+    with pytest.raises(ClassValidationError):
+        ChatCodecConfig.from_json(config)
 
 
 def test_reasoning_effort_is_rendered_through_the_configured_field() -> None:
@@ -92,35 +119,382 @@ def test_boolean_template_field_uses_medium_as_enabled() -> None:
     )
 
 
+def test_mixture_parquet_row_renders_as_huggingface_request(tmp_path: Path) -> None:
+    calls = [{"type": "function", "id": "call_1", "function": {"name": "add", "arguments": {"a": 1}}}]
+    tools = [{"type": "function", "function": {"name": "add", "parameters": {"type": "object"}}}]
+    messages = [
+        {"role": "user", "content": "Add."},
+        {"role": "assistant", "content": "", "reasoning_content": "Think.", "tool_calls": calls},
+        {"role": "tool", "content": "1", "tool_call_id": "call_1"},
+    ]
+    stored_calls = [{**calls[0], "function": {"name": "add", "arguments": json.dumps({"a": 1})}}]
+    stored_messages = [
+        {"role": "user", "content": "Add.", "reasoning": None, "tool_calls": None, "tool_call_id": None},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "Think.",
+            "tool_calls": json.dumps(stored_calls),
+            "tool_call_id": None,
+        },
+        {"role": "tool", "content": "1", "reasoning": None, "tool_calls": None, "tool_call_id": "call_1"},
+    ]
+    path = tmp_path / "mixture.parquet"
+    row = {"messages": stored_messages, "tools": json.dumps(tools), "metadata": {"source_row": 0}}
+    pl.DataFrame([row]).write_parquet(path)
+
+    (loaded,) = load_hf_parquet(path).collect().to_dicts()
+    conversation = HFConversation.from_dict(loaded)
+    codec = _chat_codec(prompt_template='{{ {"messages": messages, "tools": tools} | tojson }}')
+    assert json.loads(codec.render_request(conversation.messages, tools=conversation.tools)) == {
+        "messages": messages,
+        "tools": tools,
+    }
+    assert json.loads(codec.render_request(conversation.messages))["tools"] is None
+
+
+@pytest.mark.parametrize("tool_calls", [None, []])
+def test_rendered_request_preserves_empty_text_and_omits_absent_fields(tool_calls: list | None) -> None:
+    messages: list[dict] = [
+        {"role": "system", "content": ""},
+        {"role": "user", "content": ""},
+        {"role": "assistant", "content": "", "reasoning_content": ""},
+        {"role": "tool", "content": "", "name": "", "tool_call_id": ""},
+        {"role": "tool", "content": ""},
+    ]
+    source = [*messages]
+    source[2] = {**source[2], "tool_calls": tool_calls}
+    codec = _chat_codec(prompt_template="{{ messages | tojson }}")
+    assert json.loads(codec.render_request([parse_hf_message(message) for message in source])) == messages
+
+
 @pytest.mark.parametrize(
-    ("output_parser_regex", "full_output"),
+    "payload",
     [
-        (OPTIONAL_THINKING_OUTPUT_PARSER_REGEX, "<think>reasoning</think>answer"),
-        (GRANITE_THINKING_OUTPUT_PARSER_REGEX, "<think>reasoning</think><response>answer</response>"),
-        (GEMMA4_OUTPUT_PARSER_REGEX, "<|channel>thought\nreasoning<channel|>answer<turn|>"),
+        {"role": "user", "content": 123},
+        {"role": "assistant", "content": {"text": "wrong shape"}},
+        {"role": "system", "content": [{"type": "image_url", "image_url": {"url": "example"}}]},
+        {"role": "assistant", "name": "invalid"},
+        {"role": "assistant", "reasoning": "one", "thinking": "two"},
+        {"role": "tool", "reasoning": "invalid"},
+        {"role": "user", "tool_calls": []},
+        {"role": "assistant", "tool_calls": [{"type": "function", "function": {"name": "x", "arguments": "[]"}}]},
+    ],
+)
+def test_message_rejects_invalid_wire_fields(payload: dict) -> None:
+    with pytest.raises((TypeError, ClassValidationError)):
+        parse_hf_message(payload)
+
+
+@pytest.mark.parametrize(
+    ("response_format", "full_output"),
+    [
+        (THINKING_RESPONSE_FORMAT, "<think>reasoning</think>answer"),
+        (GRANITE_RESPONSE_FORMAT, "<think>reasoning</think><response>answer</response>"),
+        (GEMMA4_RESPONSE_FORMAT, "<|channel>thought\nreasoning<channel|>answer<turn|>"),
     ],
     ids=["optional-thinking", "granite", "gemma4"],
 )
-def test_generation_is_parsed_at_every_truncation_stage(output_parser_regex: str, full_output: str) -> None:
-    codec = _chat_codec(output_parser_regex=output_parser_regex)
+def test_generation_is_parsed_at_every_truncation_stage(response_format: ResponseFormat, full_output: str) -> None:
+    codec = _chat_codec(response_format=response_format)
     mid_thinking = full_output[: full_output.index("reasoning") + len("reas")]
     mid_response = full_output[: full_output.index("answer") + len("answ")]
 
-    assert codec.parse_response("answer") == AssistantMessage(chain_of_thought=None, response="answer")
-    assert codec.parse_response(mid_thinking) == AssistantMessage(chain_of_thought="reas", response="")
-    assert codec.parse_response(mid_response) == AssistantMessage(chain_of_thought="reasoning", response="answ")
-    assert codec.parse_response(full_output) == AssistantMessage(chain_of_thought="reasoning", response="answer")
-
-
-def test_optional_thinking_parses_response_without_an_opening_tag() -> None:
-    codec = _chat_codec(output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX)
-
-    expected = AssistantMessage(chain_of_thought="reasoning", response="answer")
-    assert codec.parse_response("reasoning</think>answer") == expected
+    assert codec.parse_response("answer", prompt="") == AssistantMessage(chain_of_thought=None, response="answer")
+    assert codec.parse_response(mid_thinking, prompt="") == AssistantMessage(chain_of_thought="reas", response="")
+    assert codec.parse_response(mid_response, prompt="") == AssistantMessage(
+        chain_of_thought="reasoning", response="answ"
+    )
+    assert codec.parse_response(full_output, prompt="") == AssistantMessage(
+        chain_of_thought="reasoning", response="answer"
+    )
 
 
 def test_granite_parses_a_response_missing_its_wrapper() -> None:
-    codec = _chat_codec(output_parser_regex=GRANITE_THINKING_OUTPUT_PARSER_REGEX)
+    codec = _chat_codec(response_format=GRANITE_RESPONSE_FORMAT)
 
     expected = AssistantMessage(chain_of_thought="reasoning", response="answer")
-    assert codec.parse_response("<think>reasoning</think>answer") == expected
+    assert codec.parse_response("<think>reasoning</think>answer", prompt="") == expected
+
+
+def _registered_codec(repo: str) -> ChatCodec:
+    spec = ModelRegistry.init(allow_third_party_plugins=False).repo_to_model[repo]
+    assert isinstance(spec, LanguageModelSpec)
+    return _chat_codec(response_format=spec.response_format)
+
+
+@pytest.mark.parametrize(
+    ("repo", "full_output", "reasoning"),
+    [
+        (
+            "meta-models/Muse-Glimmer-30B",
+            "to=self<|message|>reasoning<|eom|><|start|>assistant to=user<|message|>answer<|eot|>",
+            "reasoning",
+        ),
+        ("meta-models/Muse-Glimmer-30B", "to=user<|message|>answer<|eot|>", None),
+        ("Qwen/Qwen3.8-27B", "reasoning\n</think>\n\nanswer", "reasoning\n"),
+        ("Qwen/Qwen3.8-27B", "reasoning</think>answer", "reasoning"),
+        ("Qwen/Qwen3.5-9B", "answer", None),
+        ("LiquidAI/LFM2.5-1.2B-Thinking", "<think>reasoning</think>answer", "reasoning"),
+        (
+            "ibm-granite/granite-3.3-2b-instruct",
+            "<think>reasoning</think><response>answer</response>",
+            "reasoning",
+        ),
+        ("google/gemma-4-E2B-it", "<|channel>thought\nreasoning<channel|>answer<turn|>", "reasoning"),
+        ("google/gemma-4-E2B-it", "answer<turn|>", None),
+        (
+            "openai/gpt-oss-20b",
+            "<|channel|>analysis<|message|>reasoning<|end|><|start|>assistant<|channel|>final<|message|>"
+            "answer<|return|>",
+            "reasoning",
+        ),
+        ("openai/gpt-oss-20b", "<|channel|>final<|message|>answer<|return|>", None),
+    ],
+)
+def test_registered_chat_formats_parse_text(repo: str, full_output: str, reasoning: str | None) -> None:
+    codec = _registered_codec(repo)
+    expected = AssistantMessage(chain_of_thought=reasoning, response="answer")
+    assert codec.parse_response(full_output, prompt="") == expected
+
+
+@pytest.mark.parametrize(
+    ("repo", "prompt", "generated", "reasoning"),
+    [
+        ("Qwen/Qwen3.8-27B", "<think>\n", "reasoning\n</think>\n\nanswer", "reasoning\n"),
+        (
+            "ibm-granite/granite-3.3-2b-instruct",
+            "<think>",
+            "reasoning</think><response>answer</response>",
+            "reasoning",
+        ),
+        ("google/gemma-4-E2B-it", "<|channel>thought\n", "reasoning<channel|>answer<turn|>", "reasoning"),
+        (
+            "openai/gpt-oss-20b",
+            "<|start|>assistant<|channel|>analysis<|message|>",
+            "reasoning<|end|><|start|>assistant<|channel|>final<|message|>answer<|return|>",
+            "reasoning",
+        ),
+    ],
+)
+def test_prompt_opened_reasoning_channel(repo: str, prompt: str, generated: str, reasoning: str) -> None:
+    codec = _registered_codec(repo)
+    assert codec.parse_response(generated, prompt=prompt) == AssistantMessage(
+        chain_of_thought=reasoning, response="answer"
+    )
+
+
+_TOOLS: tuple[ToolSchema, ...] = (
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "count": {"type": "integer"},
+                    "enabled": {"type": "boolean"},
+                    "data": {"type": "object"},
+                    "missing": {"type": "null"},
+                },
+            },
+        },
+    },
+)
+_CALL: ToolCall = {
+    "type": "function",
+    "function": {
+        "name": "lookup",
+        "arguments": {
+            "text": "  null é🙂  ",
+            "count": -2,
+            "enabled": True,
+            "data": {"flags": [True, None, False]},
+            "missing": None,
+        },
+    },
+}
+_QWEN_CALL = (
+    "<tool_call>\n<function=lookup>\n<parameter=text>\n  null é🙂  \n</parameter>\n"
+    "<parameter=count>\n-2\n</parameter>\n<parameter=enabled>\nTrue\n</parameter>\n"
+    '<parameter=data>\n{"flags": [true, null, false]}\n</parameter>\n'
+    "<parameter=missing>\nNone\n</parameter>\n</function>\n</tool_call>"
+)
+_LIQUID_CALL = (
+    '<|tool_call_start|>[lookup(text="  null é🙂  ", count=-2, enabled=True, '
+    'data={"flags": [true, null, false]}, missing=None)]<|tool_call_end|>'
+)
+_MUSE_CALL = (
+    'to=lookup<|message|><atem:function_calls>\n<atem:invoke name="lookup">\n'
+    '<atem:parameter name="text">  null é🙂  </atem:parameter>\n'
+    '<atem:parameter name="count">-2</atem:parameter>\n'
+    '<atem:parameter name="enabled">true</atem:parameter>\n'
+    '<atem:parameter name="data">{"flags": [true, null, false]}</atem:parameter>\n'
+    '<atem:parameter name="missing">null</atem:parameter>\n'
+    "</atem:invoke>\n</atem:function_calls>"
+)
+
+
+@pytest.mark.parametrize(
+    ("repo", "raw", "reasoning"),
+    [
+        ("Qwen/Qwen3.5-0.8B", "<think>reasoning</think>before" + _QWEN_CALL * 2 + "after", "reasoning"),
+        ("LiquidAI/LFM2.5-1.2B-Instruct", "before" + _LIQUID_CALL * 2 + "after", None),
+        ("LiquidAI/LFM2.5-1.2B-Thinking", "<think>reasoning</think>before" + _LIQUID_CALL * 2 + "after", "reasoning"),
+        (
+            "meta-models/Muse-Glimmer-30B",
+            "to=self<|message|>reasoning<|eom|><|start|>assistant to=user<|message|>before"
+            "<|eom|><|start|>assistant "
+            + _MUSE_CALL
+            + "<|eom|><|start|>assistant "
+            + _MUSE_CALL
+            + "<|eom|><|start|>assistant to=user<|message|>after",
+            "reasoning",
+        ),
+    ],
+)
+def test_native_tool_calls_parse(repo: str, raw: str, reasoning: str | None) -> None:
+    codec = _registered_codec(repo)
+    expected = AssistantMessage(chain_of_thought=reasoning, response="beforeafter", tool_calls=(_CALL, _CALL))
+    assert codec.parse_response(raw, tools=_TOOLS, prompt="") == expected
+    assert codec.parse_response(raw, prompt="").tool_calls == ()
+
+
+@pytest.mark.parametrize(
+    ("response_format", "raw"),
+    [
+        (QWEN_RESPONSE_FORMAT, "<tool_call><function=lookup>"),
+        (QWEN_RESPONSE_FORMAT, "<tool_call>lookup</tool_call>"),
+        (
+            QWEN_RESPONSE_FORMAT,
+            "<tool_call><function=lookup><parameter=count>2</parameter>junk</function></tool_call>",
+        ),
+        (
+            QWEN_RESPONSE_FORMAT,
+            "<tool_call><function=lookup><parameter=count>1</parameter>"
+            "<parameter=count>2</parameter></function></tool_call>",
+        ),
+        (LIQUID_RESPONSE_FORMAT, "<|tool_call_start|>[lookup("),
+        (LIQUID_RESPONSE_FORMAT, "<|tool_call_start|>[lookup(text=evil())]<|tool_call_end|>"),
+        (LIQUID_RESPONSE_FORMAT, "<|tool_call_start|>[lookup(**data)]<|tool_call_end|>"),
+        (LIQUID_RESPONSE_FORMAT, "<|tool_call_start|>[lookup(text='x', text='y')]<|tool_call_end|>"),
+    ],
+)
+def test_malformed_tool_calls_remain_text(response_format: ResponseFormat, raw: str) -> None:
+    codec = _chat_codec(response_format=response_format)
+    assert codec.parse_response(raw, tools=_TOOLS, prompt="") == AssistantMessage(response=raw)
+
+
+@pytest.mark.parametrize(
+    ("response_format", "call"), [(QWEN_RESPONSE_FORMAT, _QWEN_CALL), (LIQUID_THINKING_RESPONSE_FORMAT, _LIQUID_CALL)]
+)
+def test_tool_examples_inside_reasoning_are_never_called(response_format: ResponseFormat, call: str) -> None:
+    codec = _chat_codec(response_format=response_format)
+    assert codec.parse_response("<think>" + call + "</think>answer", tools=_TOOLS, prompt="") == AssistantMessage(
+        chain_of_thought=call, response="answer"
+    )
+
+
+def test_prompt_closed_reasoning_preserves_text_and_tool_calls() -> None:
+    codec = _registered_codec("Qwen/Qwen3.5-0.8B")
+    prompt = "<think>\n\n</think>\n\n"
+    assert codec.parse_response("\nUse </think> here.", prompt=prompt) == AssistantMessage(
+        response="\nUse </think> here."
+    )
+    assert codec.parse_response(_QWEN_CALL + "Use </think> here.", prompt=prompt, tools=_TOOLS) == AssistantMessage(
+        response="Use </think> here.", tool_calls=(_CALL,)
+    )
+
+
+def test_generated_reasoning_opener_can_repeat_the_prompt_opener() -> None:
+    codec = _registered_codec("Qwen/Qwen3.5-0.8B")
+    assert codec.parse_response("<think>reasoning</think>answer", prompt="<think>\n") == AssistantMessage(
+        chain_of_thought="reasoning", response="answer"
+    )
+
+
+def test_empty_reasoning_preserves_answer_whitespace() -> None:
+    codec = _chat_codec(response_format=THINKING_RESPONSE_FORMAT)
+    assert codec.parse_response("</think>\n\nanswer", prompt="") == AssistantMessage(response="\n\nanswer")
+
+
+@pytest.mark.parametrize(
+    "response_format",
+    [
+        {"reasoning_pattern": "("},
+        {"reasoning_pattern": "(?P<chain_of_thougth>.*)"},
+        {"prefixes": ["<think>"]},
+        {"reasoning_pattern": "(?P<response>.*)", "prefixes": ["prefix"]},
+        {"turn_pattern": "(?P<response>.+)", "reasoning_pattern": "(?P<response>.*)"},
+        {"turn_pattern": "(?P<response>.+)", "tool_calls": {"tags": ["<call>", "</call>"]}},
+        {
+            "tool_calls": {
+                "tags": ["<call>", "</call>"],
+                "function_pattern": "(.*)",
+                "parameter_pattern": "(.*)(.*)",
+            }
+        },
+    ],
+)
+def test_loading_rejects_invalid_response_formats(response_format: dict) -> None:
+    config = _chat_codec().config.to_json()
+    assert isinstance(config, dict)
+    with pytest.raises(ClassValidationError):
+        ChatCodecConfig.from_json(config | {"response_format": response_format})
+
+
+def test_turn_patterns_cannot_stall_parsing() -> None:
+    codec = _chat_codec(response_format=ResponseFormat(turn_pattern="(?P<response>)"))
+    with pytest.raises(ValueError, match="must consume text"):
+        codec.parse_response("answer", prompt="")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[]",
+        "[lookup.text(count=1)]",
+        "[lookup(count={1, 2})]",
+        "[lookup(text=b'x')]",
+        "[lookup(count=1j)]",
+        "[lookup(data=(1, 2))]",
+        "[lookup(data={1: 'x'})]",
+        "[lookup(data={[]: 'x'})]",
+        "[lookup(count=1e999)]",
+    ],
+)
+def test_liquid_non_json_calls_remain_text(body: str) -> None:
+    codec = _registered_codec("LiquidAI/LFM2.5-1.2B-Instruct")
+    raw = "<|tool_call_start|>" + body + "<|tool_call_end|>"
+    assert codec.parse_response(raw, tools=_TOOLS, prompt="") == AssistantMessage(response=raw)
+
+
+def test_liquid_calls_accept_hyphenated_openai_names() -> None:
+    codec = _chat_codec(response_format=LIQUID_RESPONSE_FORMAT)
+    tools: tuple[ToolSchema, ...] = ({"type": "function", "function": {"name": "get-weather"}},)
+    message = codec.parse_response(
+        "<|tool_call_start|>[get-weather(city='Paris')]<|tool_call_end|>", tools=tools, prompt=""
+    )
+    assert message.tool_calls == (
+        {"type": "function", "function": {"name": "get-weather", "arguments": {"city": "Paris"}}},
+    )
+
+
+def test_liquid_hyphenated_names_are_only_replaced_in_call_positions() -> None:
+    codec = _chat_codec(response_format=LIQUID_RESPONSE_FORMAT)
+    tools: tuple[ToolSchema, ...] = ({"type": "function", "function": {"name": "get-weather"}},)
+    raw = """<|tool_call_start|>[get-weather(text="x, get-weather(")]<|tool_call_end|>"""
+    (call,) = codec.parse_response(raw, tools=tools, prompt="").tool_calls
+    assert call["function"] == {"name": "get-weather", "arguments": {"text": "x, get-weather("}}
+
+
+@pytest.mark.parametrize(
+    ("vocabulary", "decoder"),
+    [({"<0xC3>": 0, "<0xA9>": 1}, ByteFallback()), ({"Ã": 0, "©": 1}, ByteLevel())],
+)
+def test_token_bytes_keep_partial_utf8_sequences(vocabulary: dict[str, int], decoder: Decoder) -> None:
+    tokenizer = Tokenizer(BPE(vocab=vocabulary, merges=[]))
+    tokenizer.decoder = decoder
+    codec = _chat_codec().config.init(tokenizer)
+    assert [codec.decode_token_bytes(token_id) for token_id in (0, 1)] == [b"\xc3", b"\xa9"]

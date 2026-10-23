@@ -6,12 +6,12 @@ from typing import NamedTuple
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from einops import einsum, rearrange, repeat
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
-from lalamo.utils.sharding import sharding_of
 
 __all__ = [
     "CausalConvResult",
@@ -105,26 +105,22 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         required_context = num_suffix_tokens + self.kernel_size - 1
 
         inputs_with_history = _causal_conv_context(state, inputs_for_state)
-        convolution_inputs = inputs_with_history[None, -required_context:, :].astype(output_dtype)
-        if coefficient_deltas is None:
-            results = _separable_causal_conv(
-                convolution_inputs,
-                self.weights.astype(output_dtype),
-            ).squeeze(0)
-        else:
-            weights = self.weights.astype(output_dtype)[None] + repeat(
+        weights = self.weights.astype(output_dtype)[None]
+        if coefficient_deltas is not None:
+            weights = weights + repeat(
                 coefficient_deltas.astype(output_dtype),
                 "suffix_tokens kernel groups -> suffix_tokens (groups group_size) kernel",
                 suffix_tokens=num_suffix_tokens,
                 kernel=self.kernel_size,
                 group_size=self.input_dim // coefficient_deltas.shape[-1],
             )
-            input_windows = _causal_conv_windows(convolution_inputs.squeeze(0), self.kernel_size)
-            results = einsum(
-                input_windows,
-                weights,
-                "suffix_tokens channels kernel, suffix_tokens channels kernel -> suffix_tokens channels",
-            )
+        input_windows = _causal_conv_windows(
+            inputs_with_history[-required_context:].astype(output_dtype), self.kernel_size
+        )
+        accumulation_dtype = np.promote_types(output_dtype, np.float32)
+        results = jnp.sum(
+            input_windows.astype(accumulation_dtype) * weights.astype(accumulation_dtype), axis=-1
+        ).astype(output_dtype)
         if self.biases is not None:
             results = results + self.biases.astype(output_dtype)
 
@@ -169,30 +165,6 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         return output, new_state
 
 
-def _separable_causal_conv_impl(
-    inputs: Float[Array, "batch context_tokens channels"],
-    weights: Float[Array, "channels kernel"],
-) -> Float[Array, "batch suffix_tokens channels"]:
-    input_dim, _ = weights.shape
-    return jax.lax.conv_general_dilated(
-        inputs,
-        weights[:, :, None],
-        window_strides=(1,),
-        feature_group_count=input_dim,
-        padding="VALID",
-        dimension_numbers=("NTC", "OTI", "NTC"),
-        out_sharding=sharding_of(inputs),
-    )
-
-
-@jax.custom_vjp
-def _separable_causal_conv(
-    inputs: Float[Array, "batch context_tokens channels"],
-    weights: Float[Array, "channels kernel"],
-) -> Float[Array, "batch suffix_tokens channels"]:
-    return _separable_causal_conv_impl(inputs, weights)
-
-
 def _causal_conv_windows(
     inputs: Float[Array, "*batch context_tokens channels"],
     kernel_size: int,
@@ -204,46 +176,6 @@ def _causal_conv_windows(
     token_indices = suffix_positions[:, None] + kernel_positions[None, :]
     windows = jnp.take(inputs, token_indices, axis=-2)
     return rearrange(windows, "... suffix_tokens kernel channels -> ... suffix_tokens channels kernel")
-
-
-def _separable_causal_conv_forward(
-    inputs: Float[Array, "batch context_tokens channels"],
-    weights: Float[Array, "channels kernel"],
-) -> tuple[
-    Float[Array, "batch suffix_tokens channels"],
-    tuple[Float[Array, "batch context_tokens channels"], Float[Array, "channels kernel"]],
-]:
-    outputs = _separable_causal_conv_impl(inputs, weights)
-    return outputs, (inputs, weights)
-
-
-def _separable_causal_conv_backward(
-    residuals: tuple[Float[Array, "*sample batch context_tokens channels"], Float[Array, "channels kernel"]],
-    output_gradients: Float[Array, "*sample batch suffix_tokens channels"],
-) -> tuple[Float[Array, "*sample batch context_tokens channels"], Float[Array, "*sample channels kernel"]]:
-    inputs, weights = residuals
-    _, kernel_size = weights.shape
-    input_windows = _causal_conv_windows(inputs, kernel_size)
-    weight_gradients = einsum(
-        output_gradients,
-        input_windows,
-        "... batch suffix_tokens channels, ... batch suffix_tokens channels kernel -> ... channels kernel",
-    )
-    output_gradient_padding = ((0, 0),) * (output_gradients.ndim - 2) + (
-        (kernel_size - 1, kernel_size - 1),
-        (0, 0),
-    )
-    padded_output_gradients = jnp.pad(output_gradients, output_gradient_padding)
-    output_gradient_windows = _causal_conv_windows(padded_output_gradients, kernel_size)
-    input_gradients = einsum(
-        output_gradient_windows,
-        jnp.flip(weights, axis=-1),
-        "... context_tokens channels kernel, channels kernel -> ... context_tokens channels",
-    )
-    return input_gradients, weight_gradients
-
-
-_separable_causal_conv.defvjp(_separable_causal_conv_forward, _separable_causal_conv_backward)
 
 
 def _causal_conv_context(

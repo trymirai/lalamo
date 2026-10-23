@@ -49,7 +49,7 @@ class ModelRegistry:
 
     @classmethod
     @functools.cache
-    def build(cls, allow_third_party_plugins: bool = True) -> "ModelRegistry":
+    def init(cls, allow_third_party_plugins: bool = True) -> "ModelRegistry":
         models = tuple(model for model_list in ALL_MODEL_LISTS for model in model_list)
 
         if allow_third_party_plugins:

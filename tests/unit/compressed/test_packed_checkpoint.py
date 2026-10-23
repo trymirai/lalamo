@@ -141,7 +141,7 @@ def tiny_untied_model() -> LanguageModel:
     config = LanguageModelConfig(
         token_codec_config=ChatCodecConfig(
             prompt_template="{{ messages[0]['content'] }}",
-            output_parser_regex=None,
+            response_format=None,
             system_role_name="system",
             user_role_name="user",
             assistant_role_name="assistant",
@@ -275,7 +275,8 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
 
     restored.save(tmp_path / "exported")
     reloaded = LanguageModel.load(tmp_path / "exported", sharding_config, jnp.bfloat16)
-    assert eqx.tree_equal(eqx.filter(reloaded, eqx.is_array), eqx.filter(restored, eqx.is_array))
+    assert eqx.tree_equal(eqx.filter(reloaded.decoder, eqx.is_array), eqx.filter(restored.decoder, eqx.is_array))
+    assert reloaded.token_codec.config == restored.token_codec.config
 
     batch_sharding = restored.sharding_config.resolve_sharding((LogicalAxis.BATCH, None))
     tokens = jax.device_put(jnp.array([[1, 2, 3], [3, 2, 1]], dtype=jnp.int32), batch_sharding)

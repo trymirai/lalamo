@@ -103,8 +103,8 @@ class IncoherenceProcessingMode(StrEnum):
 
 
 class IncoherenceSigns(eqx.Module):
-    input_signs: Int[Array, " in_channels"] | None = field(trainable=False)
-    output_signs: Int[Array, " out_channels"] | None = field(trainable=False)
+    input_signs: Int[Array, "*components in_channels"] | None = field(trainable=False)
+    output_signs: Int[Array, "*components out_channels"] | None = field(trainable=False)
 
     @classmethod
     def random_init(
@@ -150,7 +150,7 @@ class IncoherenceSigns(eqx.Module):
         )
         if self.input_signs is not None:
             input_signs = self.input_signs.astype(weights.dtype)
-            weights = hadamard_transform(weights * input_signs, block_size)
+            weights = hadamard_transform(weights * input_signs[..., None, :], block_size)
         if self.output_signs is not None:
             output_signs = self.output_signs.astype(weights.dtype)
             weights = _hadamard_transform_output_axis(weights * output_signs[..., None], block_size)
@@ -183,7 +183,7 @@ class IncoherenceSigns(eqx.Module):
         )
         restored = hadamard_transform(weights, block_size)
         input_signs = self.input_signs.astype(restored.dtype)
-        return jax.device_put(restored * input_signs, input_sharding)
+        return jax.device_put(restored * input_signs[..., None, :], input_sharding)
 
     def unprocess_weight_output_axis(
         self,
@@ -371,7 +371,11 @@ class HybridSpec(WeightMatrixSpec):
             is_sharded=is_sharded,
             quantized=quantized,
             adapter=adapter,
-            incoherence_signs=incoherence_signs,
+            # Expert modules slice and vmap every array along their component axes.
+            incoherence_signs=jax.tree.map(
+                lambda signs: jnp.broadcast_to(signs, (*weights.shape[:-2], signs.shape[-1])),
+                incoherence_signs,
+            ),
         )
 
 

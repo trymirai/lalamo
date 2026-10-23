@@ -7,6 +7,7 @@ from .gemma4 import HFGemma4Config
 from .gpt_oss import HFGPTOssConfig
 from .granite import HFGraniteConfig
 from .lfm2 import HFLFM2Config
+from .lfm2_moe import HFLFM2MoeConfig
 from .llama import HFLlamaConfig
 from .llamba import HFLlambaConfig
 from .mistral import HFMistralConfig
@@ -32,6 +33,7 @@ __all__ = [
     "HFGemma4Config",
     "HFGraniteConfig",
     "HFLFM2Config",
+    "HFLFM2MoeConfig",
     "HFLlamaConfig",
     "HFLlambaConfig",
     "HFMistralConfig",
