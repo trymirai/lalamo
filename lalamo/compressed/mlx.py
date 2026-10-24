@@ -126,7 +126,7 @@ def _packed_weights_to_master_weights(
 
 @dataclass(frozen=True)
 class MLXSpec(QuantizedSpec):
-    bits: Literal[1, 4, 8]
+    bits: Literal[1, 2, 4, 8]
     group_size: int
     layout: Layout = Layout.OUTPUT_INPUT
 
