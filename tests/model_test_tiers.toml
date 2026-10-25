@@ -27,6 +27,7 @@ standard = [
   "mistralai/Devstral-Small-2505",
   "openai/gpt-oss-20b",
   "Nanbeige/Nanbeige4.1-3B",
+  "Nanbeige/Nanbeige4.3-33B",
   "Qwen/Qwen2.5-Coder-0.5B-Instruct",
   "Qwen/Qwen3-0.6B",
   "Qwen/Qwen3-0.6B-MLX-4bit",
