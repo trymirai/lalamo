@@ -15,12 +15,13 @@ from jaxtyping import Array, DTypeLike
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 
-from lalamo.compressed.hybrid import (
-    HybridSpec,
-    IncoherenceKind,
+from lalamo.compressed.hybrid import HybridSpec
+from lalamo.compressed.incoherence import (
+    HadamardProcessor,
+    HadamardSpec,
     IncoherenceProcessingMode,
-    IncoherenceSigns,
-    KroneckerRotation,
+    KroneckerProcessor,
+    KroneckerSpec,
 )
 from lalamo.compressed.int import IntSpec
 from lalamo.compressed.mlx import MLXSpec
@@ -68,14 +69,14 @@ def assert_loaded_every_saved_tensor(
     model: LanguageModel, saved: Mapping[str, Array], folds: Mapping[str, tuple[str, ...]]
 ) -> None:
     # `folds` maps each trellis leaf's saved scales to the saved row gains its one loaded scale multiplies.
-    for leaf in jax.tree.leaves(model, is_leaf=lambda node: isinstance(node, QtipGaussianMatrix | KroneckerRotation)):
+    for leaf in jax.tree.leaves(model, is_leaf=lambda node: isinstance(node, QtipGaussianMatrix | KroneckerProcessor)):
         if isinstance(leaf, QtipGaussianMatrix):
             width = leaf.spec.vector_width
             tables = [table for name, table in saved.items() if re.fullmatch(rf"qtip_shared\.\w+_v{width}", name)]
             assert any(np.array_equal(leaf.codebook, codebook_from_table(table)) for table in tables)
-        if isinstance(leaf, KroneckerRotation):
+        if isinstance(leaf, KroneckerProcessor):
             np.testing.assert_array_equal(leaf.signs, saved[f"qtip_shared.signs_{len(leaf.signs)}"])
-            np.testing.assert_array_equal(leaf.small_q, saved[f"qtip_shared.q_{len(leaf.signs)}"])
+            np.testing.assert_array_equal(leaf.orthogonal_factor, saved[f"qtip_shared.q_{len(leaf.signs)}"])
     loaded = model.export().arrays
     folded = {name for stages in folds.values() for name in stages} - folds.keys()
     for saved_name, value in saved.items():
@@ -108,8 +109,8 @@ def saved_i4s4(arrays: Mapping[str, Array], path: str, axes: Sequence[str], shar
     ladder = np.repeat(np.asarray(arrays[path + ".ladder"], np.float32)[groups], 64, axis=1)
     row_gains = [arrays[f"{path}.post_gains.{index}"] for index, axis in enumerate(axes) if axis == "row"]
     row_scales = math.prod(row_gains, start=np.asarray(arrays[path + ".row_scales"], np.float32))
-    signs = IncoherenceSigns(jnp.asarray(arrays[path + ".input_hadamard_factors"]), None)
-    return signs.unprocess_weights(jnp.asarray(levels * ladder * row_scales[:, None]), 32, sharding_config)
+    signs = HadamardProcessor.of(jnp.asarray(arrays[path + ".input_hadamard_factors"]), None)
+    return signs.unprocess_weights(jnp.asarray(levels * ladder * row_scales[:, None]), sharding_config)
 
 
 def test_i4s4_reference_matches_torch_decoded_rows() -> None:
@@ -224,7 +225,7 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     arrays[embedding + ".output_hadamard_factors"] = random_signs()
     arrays[embedding + ".table"] = jnp.asarray(generator.integers(-8, 8, (256, 4), dtype=np.int8))
     metadata[embedding + ".spec"] = {"type": "D4S4Spec", "layout": "input_output"}
-    int4 = HybridSpec(IntSpec(4, 64, is_symmetric=True), None, 32, IncoherenceProcessingMode.INPUT)
+    int4 = HybridSpec(IntSpec(4, 64, is_symmetric=True), None, HadamardSpec(32, IncoherenceProcessingMode.INPUT))
     readout_weights = jax.random.normal(jax.random.key(0), (VOCABULARY, MODEL_DIM), jnp.bfloat16)
     readout_hybrid = int4.compress(readout_weights, key=jax.random.key(1), sharding_config=make_test_sharding_config())
     metadata[readout + ".spec"] = readout_hybrid.spec.to_json()
@@ -254,10 +255,8 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     matrices = weight_matrices(restored)
     sharding_config = make_test_sharding_config()
     # Same-format trellis neighbours merge under their shared Kronecker rotation; I4S4 parts of other signs do not.
-    kronecker = HybridSpec(
-        RowStackSpec(((16, v4), (8, v2))), None, None, IncoherenceProcessingMode.INPUT, IncoherenceKind.KRONECKER
-    )
-    folded_i4s4 = HybridSpec(MLXSpec(4, 64), None, incoherence_processing_mode=IncoherenceProcessingMode.INPUT)
+    kronecker = HybridSpec(RowStackSpec(((16, v4), (8, v2))), None, KroneckerSpec())
+    folded_i4s4 = HybridSpec(MLXSpec(4, 64), None, HadamardSpec(32, IncoherenceProcessingMode.INPUT))
     stack = matrices[qkvg]
     assert isinstance(stack, RowStackMatrix)
     assert stack.spec == RowStackSpec(((24, kronecker), (4, folded_i4s4), (4, folded_i4s4)))

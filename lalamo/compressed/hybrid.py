@@ -1,20 +1,14 @@
-from dataclasses import dataclass, replace
-from enum import StrEnum
-from typing import Literal
+from dataclasses import dataclass, field, replace
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax.core import Tracer
-from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.initializer import EmptyInitializer
-from lalamo.kernels.hadamard import hadamard_transform
-from lalamo.module import Keychain, field
+from lalamo.module import Keychain
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
-from lalamo.utils.sharding import ShardingConfig, sharding_of
+from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import (
     CompressionImplementation,
     EmbeddingMatrix,
@@ -26,259 +20,20 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
+from .incoherence import HadamardSpec, IncoherenceProcessor, IncoherenceProcessorSpec
 from .lattice import LatticeMatrix
 
 __all__ = [
     "HybridMatrix",
     "HybridSpec",
-    "IncoherenceKind",
-    "IncoherenceProcessingMode",
-    "KroneckerRotation",
 ]
-
-
-def _random_incoherence_signs(
-    channels: int,
-    key: Key[Array, ""],
-    sharding_config: ShardingConfig,
-) -> Int[Array, " channels"]:
-    sharding = sharding_config.make_sharding((None,))
-    signs = jnp.where(jax.random.bernoulli(key, shape=(channels,)), 1, -1)
-    return jax.device_put(signs, sharding)
-
-
-def _hadamard_transform_output_axis(
-    inputs: Float[Array, "*components out_channels in_channels"],
-    block_size: Literal[32, 64, 128],
-) -> Float[Array, "*components out_channels in_channels"]:
-    transposed = jnp.swapaxes(inputs, -1, -2)
-    transformed_transposed = hadamard_transform(transposed, block_size)
-    return jnp.swapaxes(transformed_transposed, -1, -2)
-
-
-def _process_preconditioner_block(
-    block: Float[Array, "*components channels channels"] | None,
-    signs: Int[Array, " channels"] | None,
-    block_size: Literal[32, 64, 128],
-    sharding_config: ShardingConfig,
-) -> Float[Array, "*components channels channels"] | None:
-    if block is None or signs is None:
-        return block
-    block = jax.device_put(block, sharding_config.resolve_sharding((None,) * block.ndim))
-    signs = jax.device_put(signs, sharding_config.resolve_sharding((None,)))
-    signs = signs.astype(block.dtype)
-    signed_block = block * signs[..., None] * signs[None, ...]
-    return _hadamard_transform_output_axis(
-        hadamard_transform(signed_block, block_size),
-        block_size,
-    )
-
-
-def _process_preconditioner(
-    preconditioner: Preconditioner,
-    incoherence_signs: "IncoherenceSigns",
-    block_size: Literal[32, 64, 128],
-    sharding_config: ShardingConfig,
-) -> Preconditioner:
-    return Preconditioner.init(
-        input_block=_process_preconditioner_block(
-            preconditioner.input_block,
-            incoherence_signs.input_signs,
-            block_size,
-            sharding_config,
-        ),
-        output_block=_process_preconditioner_block(
-            preconditioner.output_block,
-            incoherence_signs.output_signs,
-            block_size,
-            sharding_config,
-        ),
-    )
-
-
-class IncoherenceProcessingMode(StrEnum):
-    INPUT = "input"
-    OUTPUT = "output"
-    INPUT_OUTPUT = "input_output"
-
-
-class IncoherenceSigns(eqx.Module):
-    input_signs: Int[Array, "*components in_channels"] | None = field(trainable=False)
-    output_signs: Int[Array, "*components out_channels"] | None = field(trainable=False)
-
-    @classmethod
-    def random_init(
-        cls,
-        input_dim: int,
-        output_dim: int,
-        mode: IncoherenceProcessingMode,
-        key: Key[Array, ""] | None,
-        sharding_config: ShardingConfig,
-    ) -> "IncoherenceSigns":
-        if key is None:
-            raise ValueError("Cannot initialize random incoherence signs without a random key.")
-        key = jax.device_put(key, sharding_config.make_sharding(()))
-        input_key, output_key = jax.random.split(key, 2)
-        if mode == IncoherenceProcessingMode.OUTPUT:
-            input_signs = None
-        else:
-            input_signs = _random_incoherence_signs(
-                channels=input_dim,
-                key=input_key,
-                sharding_config=sharding_config,
-            )
-        if mode == IncoherenceProcessingMode.INPUT:
-            output_signs = None
-        else:
-            output_signs = _random_incoherence_signs(
-                channels=output_dim,
-                key=output_key,
-                sharding_config=sharding_config,
-            )
-        return cls(input_signs=input_signs, output_signs=output_signs)
-
-    def process_weights(
-        self,
-        weights: Float[Array, "*components out_channels in_channels"],
-        block_size: Literal[32, 64, 128],
-        sharding_config: ShardingConfig,
-    ) -> Float[Array, "*components out_channels in_channels"]:
-        input_sharding = sharding_of(weights)
-        weights = jax.device_put(
-            weights,
-            sharding_config.resolve_sharding((None,) * weights.ndim),
-        )
-        if self.input_signs is not None:
-            input_signs = self.input_signs.astype(weights.dtype)
-            weights = hadamard_transform(weights * input_signs[..., None, :], block_size)
-        if self.output_signs is not None:
-            output_signs = self.output_signs.astype(weights.dtype)
-            weights = _hadamard_transform_output_axis(weights * output_signs[..., None], block_size)
-        return jax.device_put(weights, input_sharding)
-
-    def unprocess_weights(
-        self,
-        weights: Float[Array, "*components out_channels in_channels"],
-        block_size: Literal[32, 64, 128],
-        sharding_config: ShardingConfig,
-    ) -> Float[Array, "*components out_channels in_channels"]:
-        return self.unprocess_weight_input_axis(
-            self.unprocess_weight_output_axis(weights, block_size, sharding_config),
-            block_size,
-            sharding_config,
-        )
-
-    def unprocess_weight_input_axis(
-        self,
-        weights: Float[Array, "*components out_channels in_channels"],
-        block_size: Literal[32, 64, 128],
-        sharding_config: ShardingConfig,
-    ) -> Float[Array, "*components out_channels in_channels"]:
-        if self.input_signs is None:
-            return weights
-        input_sharding = sharding_of(weights)
-        weights = jax.device_put(
-            weights,
-            sharding_config.resolve_sharding((None,) * weights.ndim),
-        )
-        restored = hadamard_transform(weights, block_size)
-        input_signs = self.input_signs.astype(restored.dtype)
-        return jax.device_put(restored * input_signs[..., None, :], input_sharding)
-
-    def unprocess_weight_output_axis(
-        self,
-        weights: Float[Array, "*components out_channels in_channels"],
-        block_size: Literal[32, 64, 128],
-        sharding_config: ShardingConfig,
-    ) -> Float[Array, "*components out_channels in_channels"]:
-        if self.output_signs is None:
-            return weights
-        input_sharding = sharding_of(weights)
-        weights = jax.device_put(
-            weights,
-            sharding_config.resolve_sharding((None,) * weights.ndim),
-        )
-        restored = _hadamard_transform_output_axis(weights, block_size)
-        output_signs = self.output_signs.astype(restored.dtype)
-        return jax.device_put(restored * output_signs[..., None], input_sharding)
-
-    def input_transform(
-        self,
-        vector: Float[Array, "*batch source_channels"],
-        block_size: Literal[32, 64, 128],
-        *,
-        transposed: bool = False,
-    ) -> Float[Array, "*batch source_channels"]:
-        signs = self.input_signs
-        if transposed:
-            signs = self.output_signs
-        if signs is None:
-            return vector
-        return hadamard_transform(vector * signs.astype(vector.dtype), block_size)
-
-    def output_transform(
-        self,
-        vector: Float[Array, "*batch target_channels"],
-        block_size: Literal[32, 64, 128],
-        *,
-        transposed: bool = False,
-    ) -> Float[Array, "*batch target_channels"]:
-        signs = self.output_signs
-        if transposed:
-            signs = self.input_signs
-        if signs is None:
-            return vector
-        transformed = hadamard_transform(vector, block_size)
-        return transformed * signs.astype(transformed.dtype)
-
-
-class IncoherenceKind(StrEnum):
-    HADAMARD = "hadamard"
-    KRONECKER = "kronecker"
-
-
-def kronecker_transform(values: Array, small_q: Array) -> Array:
-    # Multiplies by the saved kron(H, Q) without materializing it.
-    order = small_q.shape[0]
-    width = values.shape[-1] // order
-    assert small_q.shape == (order, order)
-    assert width > 0 and width & (width - 1) == 0
-    result = values.reshape(*values.shape[:-1], width, order)
-    stride = 1
-    while stride < width:
-        grouped = result.reshape(*values.shape[:-1], -1, 2, stride, order)
-        left, right = grouped[..., 0, :, :], grouped[..., 1, :, :]
-        result = jnp.concatenate((left + right, left - right), axis=-2).reshape(result.shape)
-        stride *= 2
-    result = result / jnp.sqrt(jnp.asarray(width, dtype=values.dtype))
-    if order == 1:
-        return (result * small_q[0, 0]).reshape(values.shape)
-    return jnp.matmul(result, small_q, precision=DotAlgorithmPreset.F32_F32_F32).reshape(values.shape)
-
-
-class KroneckerRotation(eqx.Module):
-    signs: Float[Array, " in_channels"] = field(trainable=False)
-    small_q: Float[Array, "order order"] = field(trainable=False)
-
-    def unprocess_weights(
-        self,
-        weights: Float[Array, "*components out_channels in_channels"],
-    ) -> Float[Array, "*components out_channels in_channels"]:
-        return (kronecker_transform(weights.astype(jnp.float32), self.small_q) * self.signs).astype(weights.dtype)
-
-    def input_transform(
-        self, vector: Float[Array, "*batch source_channels"]
-    ) -> Float[Array, "*batch source_channels"]:
-        return kronecker_transform(vector.astype(jnp.float32) * self.signs, self.small_q.T).astype(vector.dtype)
 
 
 @dataclass(frozen=True)
 class HybridSpec(WeightMatrixSpec):
     quantization_spec: WeightMatrixSpec
     adapter_spec: WeightMatrixSpec | None
-    incoherence_block_size: Literal[32, 64, 128] | None = 32
-    incoherence_processing_mode: IncoherenceProcessingMode = IncoherenceProcessingMode.INPUT_OUTPUT
-    incoherence_kind: IncoherenceKind = IncoherenceKind.HADAMARD
+    incoherence_spec: IncoherenceProcessorSpec | None = field(default_factory=HadamardSpec)
 
     @supports_dummy_arrays()
     def compress(
@@ -292,14 +47,6 @@ class HybridSpec(WeightMatrixSpec):
         is_sharded: bool = True,
     ) -> "HybridMatrix":
         *_, output_dim, input_dim = weights.shape
-        if self.incoherence_kind == IncoherenceKind.KRONECKER:
-            zeros = EmptyInitializer(jnp.float32, sharding_config).zeros  # the rotation is only ever loaded
-            order = input_dim // (input_dim & -input_dim)
-            quantized = self.quantization_spec.compress(
-                weights, implementation=implementation, sharding_config=sharding_config, is_sharded=is_sharded
-            )
-            rotation = KroneckerRotation(zeros((input_dim,)), zeros((order, order)))
-            return HybridMatrix(self, sharding_config, is_sharded, quantized, None, rotation)
         if key is None and isinstance(weights, Tracer):
             key = jax.random.key(0)
 
@@ -311,24 +58,13 @@ class HybridSpec(WeightMatrixSpec):
         else:
             quantization_key, adapter_key, incoherence_key = None, None, None
 
-        incoherence_signs = None
+        processor = None
         quantization_preconditioner = preconditioner
-        if self.incoherence_block_size is not None:
-            incoherence_signs = IncoherenceSigns.random_init(
-                input_dim=input_dim,
-                output_dim=output_dim,
-                mode=self.incoherence_processing_mode,
-                key=incoherence_key,
-                sharding_config=sharding_config,
-            )
-            weights = incoherence_signs.process_weights(weights, self.incoherence_block_size, sharding_config)
+        if self.incoherence_spec is not None:
+            processor = self.incoherence_spec.init(input_dim, output_dim, incoherence_key, sharding_config)
+            weights = processor.process_weights(weights, sharding_config)
             if preconditioner is not None:
-                quantization_preconditioner = _process_preconditioner(
-                    preconditioner,
-                    incoherence_signs,
-                    self.incoherence_block_size,
-                    sharding_config,
-                )
+                quantization_preconditioner = processor.process_preconditioner(preconditioner, sharding_config)
 
         quantized = self.quantization_spec.compress(
             weights,
@@ -341,13 +77,8 @@ class HybridSpec(WeightMatrixSpec):
         if self.adapter_spec is not None:
             residual = weights - quantized.decompress()
             adapter_preconditioner = preconditioner
-            if incoherence_signs is not None:
-                assert self.incoherence_block_size is not None
-                residual = incoherence_signs.unprocess_weight_input_axis(
-                    residual,
-                    self.incoherence_block_size,
-                    sharding_config,
-                )
+            if processor is not None:
+                residual = processor.unprocess_input_axis(residual, sharding_config)
                 if preconditioner is not None:
                     assert quantization_preconditioner is not None
                     adapter_preconditioner = Preconditioner.init(
@@ -372,33 +103,19 @@ class HybridSpec(WeightMatrixSpec):
             quantized=quantized,
             adapter=adapter,
             # Expert modules slice and vmap every array along their component axes.
-            incoherence_signs=jax.tree.map(
-                lambda signs: jnp.broadcast_to(signs, (*weights.shape[:-2], signs.shape[-1])),
-                incoherence_signs,
-            ),
+            incoherence_processor=None if processor is None else processor.with_components(weights.shape[:-2]),
         )
 
 
 class HybridMatrix(EmbeddingMatrix[HybridSpec]):
     quantized: WeightMatrix[WeightMatrixSpec]
     adapter: WeightMatrix[WeightMatrixSpec] | None
-    incoherence_signs: IncoherenceSigns | KroneckerRotation | None
+    incoherence_processor: IncoherenceProcessor | None
 
     @classmethod
-    def of(
-        cls,
-        quantized: WeightMatrix[WeightMatrixSpec],
-        rotation: IncoherenceSigns | KroneckerRotation,
-    ) -> "HybridMatrix":
-        if isinstance(rotation, KroneckerRotation):
-            spec = HybridSpec(quantized.spec, None, None, IncoherenceProcessingMode.INPUT, IncoherenceKind.KRONECKER)
-        else:
-            assert (rotation.input_signs is None) != (rotation.output_signs is None)
-            mode = IncoherenceProcessingMode.INPUT
-            if rotation.input_signs is None:
-                mode = IncoherenceProcessingMode.OUTPUT
-            spec = HybridSpec(quantized.spec, None, incoherence_processing_mode=mode)
-        return cls(spec, quantized.sharding_config, quantized.is_sharded, quantized, None, rotation)
+    def of(cls, quantized: WeightMatrix[WeightMatrixSpec], processor: IncoherenceProcessor) -> "HybridMatrix":
+        spec = HybridSpec(quantized.spec, None, processor.spec)
+        return cls(spec, quantized.sharding_config, quantized.is_sharded, quantized, None, processor)
 
     def to_full_precision(self) -> FullPrecisionMatrix:
         layout = Layout.OUTPUT_INPUT
@@ -426,26 +143,14 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
         return replace(self, quantized=quantized, adapter=adapter)
 
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
-        # Trellis and lattice leaves decode in float32 and round once, after the rotation, as uzu does.
-        quantized = self.quantized
-        if isinstance(self.incoherence_signs, KroneckerRotation) or isinstance(quantized, LatticeMatrix):
-            quantized = quantized.astype(jnp.float32)
-        result = quantized.decompress()
-        block_size = self.spec.incoherence_block_size
-        if isinstance(self.incoherence_signs, KroneckerRotation):
-            result = self.incoherence_signs.unprocess_weights(result)
-        elif self.incoherence_signs is not None:
-            assert block_size is not None
-            result = self.incoherence_signs.unprocess_weights(result, block_size, self.sharding_config)
+        # Decoded in float32 and rounded once, after the rotation.
+        result = self.quantized.astype(jnp.float32).decompress()
+        if self.incoherence_processor is not None:
+            result = self.incoherence_processor.unprocess_weights(result, self.sharding_config)
         if self.adapter is not None:
             adapter = self.adapter.decompress()
-            if isinstance(self.incoherence_signs, IncoherenceSigns):
-                assert block_size is not None
-                adapter = self.incoherence_signs.unprocess_weight_output_axis(
-                    adapter,
-                    block_size,
-                    self.sharding_config,
-                )
+            if self.incoherence_processor is not None:
+                adapter = self.incoherence_processor.unprocess_output_axis(adapter, self.sharding_config)
             result = result + adapter
         return result.astype(self.dtype)
 
@@ -465,32 +170,20 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
         forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, "*batch out_channels"]:
         self._raise_if_batched()
-        if isinstance(self.incoherence_signs, IncoherenceSigns) and self.incoherence_signs.input_signs is not None:
-            raise ValueError("Hybrid embedding lookup is only supported when input RHT is disabled.")
         if not isinstance(self.quantized, EmbeddingMatrix):
             raise TypeError("Hybrid embedding lookup requires an embedding-compatible quantization matrix.")
         if self.adapter is not None:
             raise TypeError("Hybrid embedding lookup does not support adapters.")
-        if dtype is None:
-            dtype = self.dtype
-        decode_dtype = dtype
-        if isinstance(self.quantized, LatticeMatrix):
-            decode_dtype = jnp.float32
-        if isinstance(self.incoherence_signs, KroneckerRotation):
-            # uzu's lookup rounds a decoded row to the table dtype before unrotating it.
-            decode_dtype = self.quantized.dtype
-        result = self.quantized.lookup_embedding(
+        # Rows are decoded and rotated in float32 and rounded once, like decompress.
+        rows = self.quantized.lookup_embedding(
             row_index,
-            dtype=decode_dtype,
+            dtype=jnp.float32,
             keychain=keychain,
             forward_pass_config=forward_pass_config,
         )
-        if isinstance(self.incoherence_signs, KroneckerRotation):
-            result = self.incoherence_signs.unprocess_weights(result)
-        elif isinstance(self.incoherence_signs, IncoherenceSigns):
-            assert self.spec.incoherence_block_size is not None
-            result = self.incoherence_signs.output_transform(result, self.spec.incoherence_block_size)
-        return result.astype(dtype)
+        if self.incoherence_processor is not None:
+            rows = self.incoherence_processor.unprocess_embedding(rows)
+        return rows.astype(self.dtype if dtype is None else dtype)
 
     def dot(
         self,
@@ -505,15 +198,8 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
 
         quantized_keychain, adapter_keychain = keychain.split(2)
         transformed_vector = vector
-        if isinstance(self.incoherence_signs, KroneckerRotation):
-            transformed_vector = self.incoherence_signs.input_transform(vector)
-        elif self.incoherence_signs is not None:
-            assert self.spec.incoherence_block_size is not None
-            transformed_vector = self.incoherence_signs.input_transform(
-                vector,
-                self.spec.incoherence_block_size,
-                transposed=transposed,
-            )
+        if self.incoherence_processor is not None:
+            transformed_vector = self.incoherence_processor.input_transform(vector, transposed=transposed)
         result = self.quantized.dot(
             transformed_vector,
             keychain=quantized_keychain,
@@ -527,11 +213,6 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
                 forward_pass_config=forward_pass_config,
             )
 
-        if isinstance(self.incoherence_signs, IncoherenceSigns):
-            assert self.spec.incoherence_block_size is not None
-            result = self.incoherence_signs.output_transform(
-                result,
-                self.spec.incoherence_block_size,
-                transposed=transposed,
-            )
+        if self.incoherence_processor is not None:
+            result = self.incoherence_processor.output_transform(result, transposed=transposed)
         return result

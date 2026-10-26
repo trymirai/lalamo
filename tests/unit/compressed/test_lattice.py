@@ -4,7 +4,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from lalamo.compressed.hybrid import HybridMatrix, IncoherenceSigns
+from lalamo.compressed.hybrid import HybridMatrix
+from lalamo.compressed.incoherence import HadamardProcessor
 from lalamo.compressed.lattice import LatticeMatrix, LatticeSpec
 from lalamo.module import Keychain
 from lalamo.weight_matrix import Layout
@@ -28,7 +29,7 @@ def saved_rows() -> tuple[HybridMatrix, np.ndarray]:
             ladder=jnp.asarray(data["ladder"]),
             table=jnp.asarray(data["table"]),
         ).astype(jnp.float32)
-        rotation = IncoherenceSigns(None, jnp.asarray(data["signs"]))
+        rotation = HadamardProcessor.of(None, jnp.asarray(data["signs"]))
         return HybridMatrix.of(leaf, rotation), data["d4_expected"].T
 
 

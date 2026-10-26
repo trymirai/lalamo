@@ -6,7 +6,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from lalamo.compressed.hybrid import HybridMatrix, KroneckerRotation, kronecker_transform
+from lalamo.compressed.hybrid import HybridMatrix
+from lalamo.compressed.incoherence import KroneckerProcessor, kronecker_transform
 from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec, codebook_from_table
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain
@@ -49,7 +50,9 @@ def test_saved_tapes_decode_like_their_producers() -> None:
             expected = production[states, : spec.vector_width].reshape(leaf.shape) * scales
             np.testing.assert_allclose(leaf.decompress(), expected, rtol=1e-6, atol=1e-9, err_msg=name)
 
-            rotation = KroneckerRotation(jnp.asarray(data[f"{name}_signs"]), jnp.asarray(data[f"{name}_small_q"]))
+            rotation = KroneckerProcessor.of(
+                jnp.asarray(data[f"{name}_signs"]).astype(jnp.int32), jnp.asarray(data[f"{name}_small_q"])
+            )
             hybrid = HybridMatrix.of(leaf, rotation)
             dense = hybrid.decompress()
             vector = jax.device_put(jnp.linspace(-1, 1, leaf.shape[1]), config.make_sharding((None,)))
@@ -60,7 +63,7 @@ def test_saved_tapes_decode_like_their_producers() -> None:
             # As a tied table: a lookup decodes and unrotates rows, and the table loads into an embedding template.
             rows, keychain = jnp.asarray([3, 0, 2]), Keychain.init(0, sharding_config=config)
             looked_up = hybrid.lookup_embedding(rows, keychain=keychain)
-            np.testing.assert_array_equal(looked_up, rotation.unprocess_weights(leaf.decompress()[rows]))
+            np.testing.assert_array_equal(looked_up, rotation.unprocess_embedding(leaf.decompress()[rows]))
             template = EmptyInitializer(jnp.float32, config).embedding_matrix(*leaf.shape)
             np.testing.assert_array_equal(template.load_exported(hybrid.export()).decompress(), dense)
 

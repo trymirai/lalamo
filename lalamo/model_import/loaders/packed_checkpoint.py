@@ -9,7 +9,8 @@ import jax.numpy as jnp
 from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.compressed.hybrid import HybridMatrix, IncoherenceSigns, KroneckerRotation
+from lalamo.compressed.hybrid import HybridMatrix
+from lalamo.compressed.incoherence import HadamardProcessor, IncoherenceProcessor, KroneckerProcessor
 from lalamo.compressed.lattice import COLUMNS_PER_LADDER_INDEX, LADDER_INDEX_BITS, LatticeMatrix, LatticeSpec
 from lalamo.compressed.mlx import MLXMatrix, MLXSpec
 from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec, codebook_from_table
@@ -110,11 +111,11 @@ def load_packed_checkpoint(template: BaseModel, exported: ExportResults, dtype: 
 
     def stack_projections(hybrids: Iterable[WeightMatrix]) -> WeightMatrix:
         # Neighbours under one saved rotation become one hybrid, in which neighbouring same-format leaves merge.
-        groups: list[tuple[IncoherenceSigns | KroneckerRotation, list[WeightMatrix]]] = []
+        groups: list[tuple[IncoherenceProcessor, list[WeightMatrix]]] = []
         for hybrid in hybrids:
-            assert isinstance(hybrid, HybridMatrix) and hybrid.incoherence_signs is not None
-            if not groups or not eqx.tree_equal(groups[-1][0], hybrid.incoherence_signs):
-                groups.append((hybrid.incoherence_signs, []))
+            assert isinstance(hybrid, HybridMatrix) and hybrid.incoherence_processor is not None
+            if not groups or not eqx.tree_equal(groups[-1][0], hybrid.incoherence_processor):
+                groups.append((hybrid.incoherence_processor, []))
             leaves = groups[-1][1]
             if leaves and (joined := merge_rows(leaves[-1], hybrid.quantized)) is not None:
                 leaves[-1] = joined
@@ -153,8 +154,9 @@ def load_packed_checkpoint(template: BaseModel, exported: ExportResults, dtype: 
                     scales=row_scale,
                     codebook=codebook(table_name),
                 )
-                rotation = KroneckerRotation(
-                    signs=parameter(f"qtip_shared.signs_{columns}"), small_q=parameter(f"qtip_shared.q_{columns}")
+                rotation = KroneckerProcessor.of(
+                    parameter(f"qtip_shared.signs_{columns}").astype(jnp.int32),
+                    parameter(f"qtip_shared.q_{columns}"),
                 )
                 matrix = HybridMatrix.of(leaf, rotation)
             case "RowStackSpec":
@@ -186,7 +188,7 @@ def load_packed_checkpoint(template: BaseModel, exported: ExportResults, dtype: 
                     sharding_config=sharding_config,
                     is_sharded=is_sharded,
                 )
-                signs = IncoherenceSigns(parameter(path / "input_hadamard_factors"), None)
+                signs = HadamardProcessor.of(parameter(path / "input_hadamard_factors"), None)
                 matrix = HybridMatrix.of(quantized, signs)
             case "D4S4Spec":
                 if saved.pop("post_gain_axes", ()):
@@ -203,9 +205,9 @@ def load_packed_checkpoint(template: BaseModel, exported: ExportResults, dtype: 
                     table=parameter(path / "table"),
                 )
                 if lattice.layout == Layout.INPUT_OUTPUT:
-                    rotation = IncoherenceSigns(None, parameter(path / "output_hadamard_factors"))
+                    rotation = HadamardProcessor.of(None, parameter(path / "output_hadamard_factors"))
                 else:
-                    rotation = IncoherenceSigns(parameter(path / "input_hadamard_factors"), None)
+                    rotation = HadamardProcessor.of(parameter(path / "input_hadamard_factors"), None)
                 matrix = HybridMatrix.of(leaf, rotation)
             case other:
                 raise ValueError(f"Unsupported packed checkpoint weight format {other!r} at {path}")
