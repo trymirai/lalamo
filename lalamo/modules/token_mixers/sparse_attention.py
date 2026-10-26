@@ -9,9 +9,11 @@ from jaxtyping import Array, DTypeLike, Float, Int
 from lalamo.initializer import Initializer
 from lalamo.kernels.attention import (
     pallas_sparse_attention,
+    pallas_top_k_blocks,
     sparse_rows_mask,
     stable_reduction_attention,
     xla_sparse_attention,
+    xla_top_k_blocks,
 )
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
 from lalamo.modules.linear import Linear, LinearConfig
@@ -82,6 +84,19 @@ class IndexerSelection(NamedTuple):
     state: IndexerCacheLayer
 
 
+def select_top_blocks(
+    scores: Float[Array, "queries blocks"],
+    num_visible_blocks: Int[Array, " queries"],
+    k: int,
+    forward_pass_config: MixerForwardPassConfig,
+) -> Int[Array, "queries k"]:
+    match forward_pass_config.attention_implementation:
+        case AttentionImplementation.PALLAS:
+            return pallas_top_k_blocks(scores, num_visible_blocks, k)
+        case AttentionImplementation.XLA | AttentionImplementation.STABLE_REDUCTION:
+            return xla_top_k_blocks(scores, num_visible_blocks, k)
+
+
 class SparseAttentionIndexer(LalamoModule[SparseAttentionIndexerConfig]):
     projection: Linear
     query_norm: Normalization
@@ -126,11 +141,12 @@ class SparseAttentionIndexer(LalamoModule[SparseAttentionIndexerConfig]):
             "tokens heads channels, blocks channels -> tokens heads blocks",
         )
         scores = jnp.sum(jax.nn.relu(head_scores), axis=1) * self.config.head_dim**-0.5
-        is_visible = jnp.arange(updated_state.num_blocks, dtype=jnp.int32)[None, :] < num_visible_blocks[:, None]
-        scores = jnp.where(is_visible, scores, -jnp.inf)
-
-        top_scores, top_blocks = jax.lax.top_k(scores, min(self.config.block_budget, updated_state.num_blocks))
-        selected_blocks = jnp.where(jnp.isfinite(top_scores), top_blocks, -1)
+        selected_blocks = select_top_blocks(
+            scores,
+            num_visible_blocks,
+            min(self.config.block_budget, updated_state.num_blocks),
+            forward_pass_config,
+        )
         tail_blocks = jnp.where((query_positions + 1) % compression_ratio != 0, num_visible_blocks, -1)
         return IndexerSelection(
             selected_blocks=jnp.concatenate([selected_blocks, tail_blocks[:, None]], axis=1),

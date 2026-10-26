@@ -1,13 +1,21 @@
 import warnings
+from enum import Enum
 from functools import partial
 from typing import cast
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from lalamo.initializer import RandomInitializer
-from lalamo.kernels.attention import pallas_decode_attention, pallas_sparse_attention, xla_sparse_attention
+from lalamo.kernels.attention import (
+    pallas_decode_attention,
+    pallas_sparse_attention,
+    pallas_top_k_blocks,
+    xla_sparse_attention,
+    xla_top_k_blocks,
+)
 from lalamo.kernels.deltanet import deltanet_recurrent_scan
 from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.kernels.mosaic import supports_mosaic_gpu
@@ -168,6 +176,55 @@ def test_sparse_attention_matches_xla(
     assert_close(result=result, reference=reference, atol=2e-2, rtol=3e-2)
 
 
+class ScoreDistribution(Enum):
+    NORMAL = "normal"
+    QUANTIZED = "quantized"
+    ZEROS = "zeros"
+
+
+@pytest.mark.parametrize(
+    ("batch_size", "num_queries", "num_blocks", "k", "distribution"),
+    [
+        pytest.param(4, 1, 65_536, 512, ScoreDistribution.NORMAL, id="decode-two-stage"),
+        pytest.param(4, 1, 50_001, 512, ScoreDistribution.QUANTIZED, id="decode-ties-unaligned"),
+        pytest.param(1, 512, 8_192, 512, ScoreDistribution.NORMAL, id="prefill-single-stage"),
+        pytest.param(2, 300, 4_100, 512, ScoreDistribution.ZEROS, id="prefill-all-ties"),
+        pytest.param(4, 3, 20_000, 100, ScoreDistribution.QUANTIZED, id="small-k"),
+    ],
+)
+def test_top_k_blocks_matches_xla(
+    batch_size: int,
+    num_queries: int,
+    num_blocks: int,
+    k: int,
+    distribution: ScoreDistribution,
+) -> None:
+    sharding_config = ShardingConfig.replicated()
+    if not supports_mosaic_gpu(sharding_config.mesh, minimum_compute_capability=10):
+        pytest.skip("requires Blackwell Pallas support")
+    shape = (batch_size, num_queries, num_blocks)
+    match distribution:
+        case ScoreDistribution.NORMAL:
+            scores = jax.random.normal(jax.random.key(0), shape, dtype=jnp.float32)
+        case ScoreDistribution.QUANTIZED:
+            scores = jnp.floor(jax.random.uniform(jax.random.key(0), shape) * 8) / 4
+        case ScoreDistribution.ZEROS:
+            scores = jnp.zeros(shape, dtype=jnp.float32)
+    num_visible_blocks = jax.random.randint(jax.random.key(1), (batch_size * num_queries,), 0, num_blocks + 1)
+    num_visible_blocks = num_visible_blocks.at[:4].set(jnp.array([num_blocks, k, k + 1, 0]))
+    scores = jax.device_put(scores, sharding_config.make_sharding((None, None, None)))
+    num_visible_blocks = jax.device_put(
+        num_visible_blocks.reshape(batch_size, num_queries).astype(jnp.int32),
+        sharding_config.make_sharding((None, None)),
+    )
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="Pallas top-k")
+        result = jax.jit(jax.vmap(partial(pallas_top_k_blocks, k=k)))(scores, num_visible_blocks)
+    reference = jax.vmap(partial(xla_top_k_blocks, k=k))(scores, num_visible_blocks)
+    np.testing.assert_array_equal(np.asarray(result), np.asarray(reference))
+
+
 def test_sparse_attention_module_pallas_matches_xla() -> None:
     sharding_config = ShardingConfig.replicated()
     if not supports_mosaic_gpu(sharding_config.mesh, minimum_compute_capability=10):
@@ -243,6 +300,7 @@ def test_sparse_attention_module_pallas_matches_xla() -> None:
 
     with warnings.catch_warnings():
         warnings.filterwarnings("error", message="Pallas sparse attention")
+        warnings.filterwarnings("error", message="Pallas top-k")
         pallas_prefill, pallas_decode = prefill_then_decode(inputs, AttentionImplementation.PALLAS)
     xla_prefill, xla_decode = prefill_then_decode(inputs, AttentionImplementation.XLA)
     assert_close(result=pallas_prefill, reference=xla_prefill, atol=2e-2, rtol=3e-2)

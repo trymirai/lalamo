@@ -87,6 +87,18 @@ def sparse_rows_mask(
     )
 
 
+def xla_top_k_blocks(
+    scores: Float[Array, "queries blocks"],
+    num_visible_blocks: Int[Array, " queries"],
+    k: int,
+) -> Int[Array, "queries k"]:
+    _, num_blocks = scores.shape
+    is_visible = jnp.arange(num_blocks, dtype=jnp.int32)[None, :] < num_visible_blocks[:, None]
+    top_scores, top_blocks = jax.lax.top_k(jnp.where(is_visible, scores, -jnp.inf), k)
+    ascending_blocks = jnp.sort(jnp.where(jnp.isfinite(top_scores), top_blocks, num_blocks), axis=-1)
+    return jnp.where(ascending_blocks < num_blocks, ascending_blocks, -1)
+
+
 def xla_sparse_attention(
     queries: Float[Array, "dst_tokens heads head_dim"],
     keys: Float[Array, "src_tokens key_value_heads head_dim"],
