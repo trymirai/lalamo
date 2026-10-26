@@ -3,7 +3,7 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 from einops import einsum, rearrange
-from jaxtyping import Array, Bool, Float
+from jaxtyping import Array, Bool, Float, Int
 
 
 def xla_attention(
@@ -73,3 +73,28 @@ def xla_attention(
             )
 
     return jnp.where(has_values[:, None, None], result, 0).astype(original_dtype)
+
+
+def sparse_rows_mask(
+    rows: Int[Array, "dst_tokens rows"],
+    num_src_tokens: int,
+) -> Bool[Array, "dst_tokens src_tokens"]:
+    num_dst_tokens, _ = rows.shape
+    return (
+        jnp.zeros((num_dst_tokens, num_src_tokens), dtype=jnp.bool)
+        .at[jnp.arange(num_dst_tokens)[:, None], rows]
+        .set(True, mode="drop")
+    )
+
+
+def xla_sparse_attention(
+    queries: Float[Array, "dst_tokens heads head_dim"],
+    keys: Float[Array, "src_tokens key_value_heads head_dim"],
+    values: Float[Array, "src_tokens key_value_heads head_dim"],
+    rows: Int[Array, "dst_tokens rows"],
+    scale: float | Float[Array, ""] | None,
+    logit_soft_cap: float | Float[Array, ""] | None,
+) -> Float[Array, "dst_tokens heads head_dim"]:
+    num_src_tokens, _, _ = keys.shape
+    mask = sparse_rows_mask(rows, num_src_tokens)
+    return xla_attention(queries, keys, values, None, mask, scale, logit_soft_cap)

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -16,6 +17,7 @@ from lalamo.modules.token_mixer import (
     AttentionImplementation,
     MixerForwardPassConfig,
     PositionalEmbeddingSelector,
+    StateLayerBase,
     TokenMixerBase,
     TokenMixerConfig,
     TokenMixerResult,
@@ -26,8 +28,13 @@ from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 
 __all__ = [
     "Attention",
+    "AttentionBase",
     "AttentionConfig",
+    "AttentionConfigBase",
+    "AttentionParameters",
     "AttentionResult",
+    "OwnedKeyValueProjection",
+    "SharedKeyValueProjection",
 ]
 
 
@@ -89,8 +96,16 @@ def _attention_kernel(
 AttentionResult = TokenMixerResult[KVCacheLayer]
 
 
+class AttentionParameters(NamedTuple):
+    qkvg_projection: Linear
+    out_projection: Linear
+    query_norm: Normalization | None
+    key_norm: Normalization | None
+    sinks: Float[Array, " heads"] | None
+
+
 @dataclass(frozen=True)
-class AttentionConfig(TokenMixerConfig):
+class AttentionConfigBase(TokenMixerConfig):
     # Unified QKVG projection; ungated attention omits the G output segment.
     qkvg_projection_config: LinearConfig
     out_projection_config: LinearConfig
@@ -115,11 +130,11 @@ class AttentionConfig(TokenMixerConfig):
     normalize_values: bool = False
     is_kv_sharing: bool = False
 
-    def init(
+    def init_parameters(
         self,
         initializer: Initializer,
         model_dim: int,
-    ) -> "Attention":
+    ) -> AttentionParameters:
         q_output_dim = self.num_heads * self.head_dim
         if self.is_kv_sharing:
             output_dims = (q_output_dim,)
@@ -166,9 +181,7 @@ class AttentionConfig(TokenMixerConfig):
         else:
             sinks = None
 
-        return Attention(
-            config=self,
-            sharding_config=initializer.sharding_config,
+        return AttentionParameters(
             qkvg_projection=qkvg_projection,
             out_projection=out_projection,
             query_norm=query_norm,
@@ -177,7 +190,38 @@ class AttentionConfig(TokenMixerConfig):
         )
 
 
-class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
+@dataclass(frozen=True)
+class AttentionConfig(AttentionConfigBase):
+    def init(
+        self,
+        initializer: Initializer,
+        model_dim: int,
+    ) -> "Attention":
+        parameters = self.init_parameters(initializer, model_dim)
+        return Attention(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            qkvg_projection=parameters.qkvg_projection,
+            out_projection=parameters.out_projection,
+            query_norm=parameters.query_norm,
+            key_norm=parameters.key_norm,
+            sinks=parameters.sinks,
+        )
+
+
+class OwnedKeyValueProjection(NamedTuple):
+    queries: Float[Array, "tokens heads head_channels"]
+    gate: Float[Array, "tokens gate_channels"] | None
+    keys: Float[Array, "tokens groups head_channels"]
+    values: Float[Array, "tokens groups head_channels"]
+
+
+class SharedKeyValueProjection(NamedTuple):
+    queries: Float[Array, "tokens heads head_channels"]
+    gate: Float[Array, "tokens gate_channels"] | None
+
+
+class AttentionBase[ConfigT: AttentionConfigBase, StateLayerT: StateLayerBase](TokenMixerBase[ConfigT, StateLayerT]):
     qkvg_projection: Linear
     out_projection: Linear
 
@@ -224,6 +268,66 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             heads = call_vmapped(positional_embeddings.apply, heads, in_axes=1, out_axes=1)
         return heads
 
+    def project(
+        self,
+        inputs: Float[Array, "tokens channels"],
+        positional_embeddings: PositionalEmbeddings | None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> OwnedKeyValueProjection | SharedKeyValueProjection:
+        projections = call_vmapped(
+            self.qkvg_projection,
+            inputs,
+            forward_pass_config=forward_pass_config.matmul_config,
+            keychain=keychain,
+        )
+        queries = self._prepare_heads(projections[0], self.config.num_heads, self.query_norm, positional_embeddings)
+        if self.config.has_gate:
+            gate = projections[-1]
+        else:
+            gate = None
+        if self.config.is_kv_sharing:
+            return SharedKeyValueProjection(queries=queries, gate=gate)
+
+        _, keys, values, *_ = projections
+        keys = self._prepare_heads(keys, self.config.num_groups, self.key_norm, positional_embeddings)
+        values = rearrange(
+            values,
+            "tokens (groups head_channels) -> tokens groups head_channels",
+            groups=self.config.num_groups,
+            head_channels=self.config.head_dim,
+        )
+        if self.config.normalize_values:
+            values = _rms_normalize(values, eps=1e-6)
+        return OwnedKeyValueProjection(queries=queries, gate=gate, keys=keys, values=values)
+
+    def output_projection(
+        self,
+        attention_output: Float[Array, "tokens heads head_channels"],
+        gate: Float[Array, "tokens gate_channels"] | None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
+        *,
+        keychain: Keychain,
+    ) -> Float[Array, "tokens channels"]:
+        flattened_output = rearrange(
+            attention_output,
+            "tokens heads head_channels -> tokens (heads head_channels)",
+            heads=self.config.num_heads,
+            head_channels=self.config.head_dim,
+        )
+        if gate is not None:
+            flattened_output = flattened_output * jax.nn.sigmoid(gate)
+        (result,) = call_vmapped(
+            self.out_projection,
+            flattened_output,
+            forward_pass_config=forward_pass_config.matmul_config,
+            keychain=keychain,
+        )
+        return result
+
+
+class Attention(AttentionBase[AttentionConfig, KVCacheLayer]):
     def project_key_value_heads(
         self,
         inputs: Float[Array, "new_tokens channels"],
@@ -235,24 +339,10 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         Float[Array, "new_tokens groups head_channels"],
         Float[Array, "new_tokens groups head_channels"],
     ]:
-        if self.config.is_kv_sharing:
-            raise ValueError("KV-sharing attention layers do not own key/value projections.")
-        _, keys, values, *_ = call_vmapped(
-            self.qkvg_projection,
-            inputs,
-            forward_pass_config=forward_pass_config.matmul_config,
-            keychain=keychain,
-        )
-        keys = self._prepare_heads(keys, self.config.num_groups, self.key_norm, positional_embeddings)
-        values = rearrange(
-            values,
-            "tokens (groups head_channels) -> tokens groups head_channels",
-            groups=self.config.num_groups,
-            head_channels=self.config.head_dim,
-        )
-        if self.config.normalize_values:
-            values = _rms_normalize(values, eps=1e-6)
-        return keys, values
+        projection = self.project(inputs, positional_embeddings, forward_pass_config, keychain=keychain)
+        if isinstance(projection, SharedKeyValueProjection):
+            raise TypeError("KV-sharing attention layers do not own key/value projections.")
+        return projection.keys, projection.values
 
     def __call__(
         self,
@@ -269,46 +359,27 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
     ) -> AttentionResult:
         qkvg_keychain, out_keychain = keychain.split(2)
         assert reuse_cache == self.config.is_kv_sharing, "reuse_cache must match AttentionConfig.is_kv_sharing"
-        projections = call_vmapped(
-            self.qkvg_projection,
-            inputs,
-            forward_pass_config=forward_pass_config.matmul_config,
-            keychain=qkvg_keychain,
-        )
-        queries = projections[0]
-        if self.config.has_gate:
-            gate = projections[-1]
-        else:
-            gate = None
+        projection = self.project(inputs, positional_embeddings, forward_pass_config, keychain=qkvg_keychain)
 
-        queries = self._prepare_heads(queries, self.config.num_heads, self.query_norm, positional_embeddings)
-
-        num_suffix_tokens, _, _ = queries.shape
-        if reuse_cache:
+        num_suffix_tokens, _, _ = projection.queries.shape
+        if isinstance(projection, SharedKeyValueProjection):
             if state is None:
                 raise ValueError("a KV-sharing layer must receive the source layer's cache as `state`")
             prefix_length = state.current_prefix_length() - num_suffix_tokens
             updated_state = state
         else:
-            _, keys, values, *_ = projections
             prefix_length = 0 if state is None else state.current_prefix_length()
-            keys = self._prepare_heads(keys, self.config.num_groups, self.key_norm, positional_embeddings)
-            values = rearrange(
-                values,
-                "tokens (groups head_channels) -> tokens groups head_channels",
-                groups=self.config.num_groups,
-                head_channels=self.config.head_dim,
-            )
-            if self.config.normalize_values:
-                values = _rms_normalize(values, eps=1e-6)
             if state is None:
                 updated_state = DynamicKVCacheLayer.init(
-                    self.has_sinks, keys.astype(values.dtype), values, length=length_without_padding
+                    self.has_sinks,
+                    projection.keys.astype(projection.values.dtype),
+                    projection.values,
+                    length=length_without_padding,
                 )
             else:
-                updated_state = state.extend(keys, values, added_length=length_without_padding)
+                updated_state = state.extend(projection.keys, projection.values, added_length=length_without_padding)
 
-        queries = queries.astype(updated_state.keys.dtype)
+        queries = projection.queries.astype(updated_state.keys.dtype)
         if attention_parent_indices is not None:
             mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices)
         else:
@@ -334,18 +405,10 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             logit_soft_cap=self.config.logit_soft_cap,
             forward_pass_config=forward_pass_config,
         )
-        attention_output = rearrange(
+        result = self.output_projection(
             attention_output,
-            "tokens heads head_channels -> tokens (heads head_channels)",
-            heads=self.config.num_heads,
-            head_channels=self.config.head_dim,
-        )
-        if gate is not None:
-            attention_output = attention_output * jax.nn.sigmoid(gate)
-        (result,) = call_vmapped(
-            self.out_projection,
-            attention_output,
-            forward_pass_config=forward_pass_config.matmul_config,
+            projection.gate,
+            forward_pass_config,
             keychain=out_keychain,
         )
 

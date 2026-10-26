@@ -13,6 +13,7 @@ from jaxtyping import Array, Bool, Float, Int
 from lalamo.kernels.mosaic import supports_mosaic_gpu
 from lalamo.utils.sharding import sharding_of
 
+from .mosaic_common import COMPILER_PARAMS, KEY_VALUE_HEAD_AXIS, make_split_reduction, tiled_smem
 from .xla import xla_attention
 
 type _Ref = Any
@@ -20,33 +21,7 @@ type _NumSplits = Literal[1, 2, 4, 8]
 
 _BLOCK_SIZE = 128
 _NUM_SPLITS: tuple[_NumSplits, ...] = (1, 2, 4, 8)
-_KEY_VALUE_HEAD_AXIS = "pallas_decode_key_value_head"
-_QUERY_HEAD_AXIS = "pallas_decode_query_head"
 _SPLIT_AXIS = "pallas_decode_split"
-_COMPILER_PARAMS = plgpu.CompilerParams(
-    approx_math=True,
-    lowering_semantics=plgpu.LoweringSemantics.Lane,
-    reduction_scratch_bytes=8_192,
-)
-
-
-def _tiled_smem(
-    shape: tuple[int, int],
-    dtype: jax.typing.DTypeLike,
-    *,
-    swizzle: int | None = None,
-) -> pl.MemoryRef:
-    element_bits = jnp.dtype(dtype).itemsize * 8
-    if swizzle is None:
-        swizzle = plgpu.find_swizzle(shape[-1] * element_bits)
-    return plgpu.SMEM(
-        shape,
-        dtype,
-        transforms=(
-            plgpu.TilingTransform((8, 8 * swizzle // element_bits)),
-            plgpu.SwizzleTransform(swizzle),
-        ),
-    )
 
 
 @cache
@@ -113,7 +88,7 @@ def _make_main(
             values_high_barrier_ref = cast("_Ref", None)
         keys_smem_ref, values_high_smem_ref = key_value_smem_union
         probabilities_smem_ref, output_smem_ref = probability_output_smem_union
-        key_value_head_index = jax.lax.axis_index(_KEY_VALUE_HEAD_AXIS)
+        key_value_head_index = jax.lax.axis_index(KEY_VALUE_HEAD_AXIS)
         if num_splits == 1:
             split_index = 0
         else:
@@ -405,15 +380,15 @@ def _make_main(
             plgpu.wait_smem_to_gmem(0, wait_read_only=True)
 
     scratch_types = (
-        _tiled_smem((padded_query_heads, head_dim), jnp.bfloat16),
+        tiled_smem((padded_query_heads, head_dim), jnp.bfloat16),
         plgpu.RefUnion(
-            _tiled_smem((_BLOCK_SIZE, head_dim), jnp.bfloat16),
-            _tiled_smem((_BLOCK_SIZE, _BLOCK_SIZE), jnp.bfloat16, swizzle=32),
+            tiled_smem((_BLOCK_SIZE, head_dim), jnp.bfloat16),
+            tiled_smem((_BLOCK_SIZE, _BLOCK_SIZE), jnp.bfloat16, swizzle=32),
         ),
-        _tiled_smem((_BLOCK_SIZE, _BLOCK_SIZE), jnp.bfloat16, swizzle=32),
+        tiled_smem((_BLOCK_SIZE, _BLOCK_SIZE), jnp.bfloat16, swizzle=32),
         plgpu.RefUnion(
-            _tiled_smem((_BLOCK_SIZE, padded_output_heads), jnp.bfloat16),
-            _tiled_smem((padded_output_heads, _BLOCK_SIZE), jnp.bfloat16),
+            tiled_smem((_BLOCK_SIZE, padded_output_heads), jnp.bfloat16),
+            tiled_smem((padded_output_heads, _BLOCK_SIZE), jnp.bfloat16),
         ),
         plgpu.Barrier(),
         plgpu.Barrier(num_arrivals=2),
@@ -436,9 +411,9 @@ def _make_main(
                 jnp.bfloat16,
             ),
             grid=(num_key_value_heads,),
-            grid_names=(_KEY_VALUE_HEAD_AXIS,),
+            grid_names=(KEY_VALUE_HEAD_AXIS,),
             scratch_types=scratch_types,
-            compiler_params=_COMPILER_PARAMS,
+            compiler_params=COMPILER_PARAMS,
             kernel_name=f"tcgen_decode_fused_{kernel_suffix}",
         )
 
@@ -455,103 +430,10 @@ def _make_main(
             jax.ShapeDtypeStruct((*partial_prefix, head_dim), jnp.bfloat16),
         ),
         grid=(num_key_value_heads, num_splits),
-        grid_names=(_KEY_VALUE_HEAD_AXIS, _SPLIT_AXIS),
+        grid_names=(KEY_VALUE_HEAD_AXIS, _SPLIT_AXIS),
         scratch_types=scratch_types,
-        compiler_params=_COMPILER_PARAMS,
+        compiler_params=COMPILER_PARAMS,
         kernel_name=f"tcgen_decode_fused_main_{kernel_suffix}_s{num_splits}",
-    )
-
-
-@cache
-def _make_reduction(
-    num_key_value_heads: int,
-    padded_query_heads: Literal[8, 16],
-    head_dim: Literal[128, 256, 512],
-    num_splits: Literal[2, 4, 8],
-) -> Callable[[Array, Array, Array], Array]:
-    output_layout = plgpu.Layout.WG_STRIDED(
-        (head_dim,),
-        vec_size=head_dim // 128,
-    )
-
-    def kernel(
-        main_maxima_ref: _Ref,
-        main_normalizers_ref: _Ref,
-        main_outputs_ref: _Ref,
-        outputs_ref: _Ref,
-    ) -> None:
-        key_value_head_index = jax.lax.axis_index(_KEY_VALUE_HEAD_AXIS)
-        query_head_index = jax.lax.axis_index(_QUERY_HEAD_AXIS)
-        initial_index = (key_value_head_index, 0, query_head_index)
-        maximum = plgpu.load(
-            main_maxima_ref.at[initial_index],
-            layout=plgpu.Layout.WG_SPLAT,
-            optimized=False,
-        )
-        normalizer = plgpu.load(
-            main_normalizers_ref.at[initial_index],
-            layout=plgpu.Layout.WG_SPLAT,
-            optimized=False,
-        )
-        output = plgpu.load(
-            main_outputs_ref.at[*initial_index, :],
-            layout=output_layout,
-            optimized=False,
-        ).astype(jnp.float32)
-
-        for split_index in range(1, num_splits):
-            main_index = (key_value_head_index, split_index, query_head_index)
-            block_maximum = plgpu.load(
-                main_maxima_ref.at[main_index],
-                layout=plgpu.Layout.WG_SPLAT,
-                optimized=False,
-            )
-            block_normalizer = plgpu.load(
-                main_normalizers_ref.at[main_index],
-                layout=plgpu.Layout.WG_SPLAT,
-                optimized=False,
-            )
-            block_output = plgpu.load(
-                main_outputs_ref.at[*main_index, :],
-                layout=output_layout,
-                optimized=False,
-            ).astype(jnp.float32)
-            has_values = block_normalizer > 0
-            updated_maximum = jnp.where(
-                has_values,
-                jnp.maximum(maximum, block_maximum),
-                maximum,
-            )
-            carry_scale = jnp.where(
-                has_values,
-                jnp.exp2((maximum - updated_maximum) * math.log2(math.e)),
-                1,
-            )
-            block_scale = jnp.where(
-                has_values,
-                jnp.exp2((block_maximum - updated_maximum) * math.log2(math.e)),
-                0,
-            )
-            maximum = updated_maximum
-            normalizer = normalizer * carry_scale + block_normalizer * block_scale
-            output = output * carry_scale + block_output * block_scale
-
-        outputs_ref.at[key_value_head_index, query_head_index, :][...] = jnp.where(
-            normalizer > 0,
-            output / normalizer,
-            0,
-        ).astype(jnp.bfloat16)
-
-    return plgpu.kernel(
-        kernel,
-        out_type=jax.ShapeDtypeStruct(
-            (num_key_value_heads, padded_query_heads, head_dim),
-            jnp.bfloat16,
-        ),
-        grid=(num_key_value_heads, padded_query_heads),
-        grid_names=(_KEY_VALUE_HEAD_AXIS, _QUERY_HEAD_AXIS),
-        compiler_params=_COMPILER_PARAMS,
-        kernel_name=f"tcgen_decode_fused_reduce_d{head_dim}_q{padded_query_heads}_s{num_splits}",
     )
 
 
@@ -594,7 +476,7 @@ def _pallas_decode_attention(
         return output[:, :query_heads_per_key_value_head].reshape(queries.shape)
 
     partials = main(grouped_queries, keys, values, mask, start, end, scale)
-    reduced = _make_reduction(
+    reduced = make_split_reduction(
         num_key_value_heads,
         padded_query_heads,
         head_dim,
