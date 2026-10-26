@@ -321,16 +321,16 @@ class KroneckerProcessor(IncoherenceProcessor[KroneckerSpec]):
     def process_weights(
         self,
         weights: Float[Array, "*components out_channels in_channels"],
-        sharding_config: ShardingConfig,  # noqa: ARG002
+        sharding_config: ShardingConfig,
     ) -> Float[Array, "*components out_channels in_channels"]:
-        return weights
+        raise NotImplementedError("Kronecker rotations are loaded from saved parameters, not fitted")
 
     def process_preconditioner(
         self,
         preconditioner: Preconditioner,
-        sharding_config: ShardingConfig,  # noqa: ARG002
+        sharding_config: ShardingConfig,
     ) -> Preconditioner:
-        return preconditioner
+        raise NotImplementedError("Kronecker rotations are loaded from saved parameters, not fitted")
 
     def unprocess_input_axis(
         self,

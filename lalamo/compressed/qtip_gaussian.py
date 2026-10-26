@@ -10,7 +10,6 @@ from jaxtyping import Array, DTypeLike, Float, Int, Int8, Key, UInt8, UInt32
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.dummy_array import is_dummy_or_tracer
 from lalamo.utils.sharding import ShardingConfig, lookup_sharded_indices, sharding_of, with_sharding
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -103,14 +102,21 @@ class QtipGaussianSpec(WeightMatrixSpec):
         self,
         weights: Float[Array, "out_channels in_channels"],
         *,
-        key: Key[Array, ""] | None = None,  # noqa: ARG002
-        preconditioner: Preconditioner | None = None,  # noqa: ARG002
-        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
+        key: Key[Array, ""] | None = None,
+        preconditioner: Preconditioner | None = None,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "QtipGaussianMatrix":
-        if not is_dummy_or_tracer(weights):
-            raise ValueError("QTIP Gaussian matrices must be loaded from saved parameters; fitting is not supported")
+        raise NotImplementedError("QTIP Gaussian matrices are loaded from saved parameters, not fitted")
+
+    def empty(
+        self,
+        weights: Float[Array, "out_channels in_channels"],
+        *,
+        sharding_config: ShardingConfig,
+        is_sharded: bool = True,
+    ) -> "QtipGaussianMatrix":
         rows, columns = weights.shape
         row_axis, _ = Layout.OUTPUT_INPUT.weight_partition(0, is_sharded=is_sharded)
         initializer = EmptyInitializer(weights.dtype, sharding_config)

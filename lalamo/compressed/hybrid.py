@@ -36,6 +36,31 @@ class HybridSpec(WeightMatrixSpec):
     incoherence_spec: IncoherenceProcessorSpec | None = field(default_factory=HadamardSpec)
 
     @supports_dummy_arrays()
+    def empty(
+        self,
+        weights: Float[Array, "*components out_channels in_channels"],
+        *,
+        sharding_config: ShardingConfig,
+        is_sharded: bool = True,
+    ) -> "HybridMatrix":
+        *components, output_dim, input_dim = weights.shape
+        processor = None
+        if self.incoherence_spec is not None:
+            processor = self.incoherence_spec.init(input_dim, output_dim, jax.random.key(42), sharding_config)
+            processor = processor.with_components(tuple(components))
+        adapter = None
+        if self.adapter_spec is not None:
+            adapter = self.adapter_spec.empty(weights, sharding_config=sharding_config, is_sharded=is_sharded)
+        return HybridMatrix(
+            spec=self,
+            sharding_config=sharding_config,
+            is_sharded=is_sharded,
+            quantized=self.quantization_spec.empty(weights, sharding_config=sharding_config, is_sharded=is_sharded),
+            adapter=adapter,
+            incoherence_processor=processor,
+        )
+
+    @supports_dummy_arrays()
     def compress(
         self,
         weights: Float[Array, "*components out_channels in_channels"],

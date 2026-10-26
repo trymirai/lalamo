@@ -8,7 +8,6 @@ from jaxtyping import Array, DTypeLike, Float, Int, Int8, Key, UInt8
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.dummy_array import is_dummy_or_tracer
 from lalamo.utils.precision import use_dot_algorithm_preset
 from lalamo.utils.sharding import ShardingConfig, lookup_sharded_indices, sharding_of
 from lalamo.weight_matrix import (
@@ -46,14 +45,21 @@ class LatticeSpec(WeightMatrixSpec):
         self,
         weights: Float[Array, "out_channels in_channels"],
         *,
-        key: Key[Array, ""] | None = None,  # noqa: ARG002
-        preconditioner: Preconditioner | None = None,  # noqa: ARG002
-        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
+        key: Key[Array, ""] | None = None,
+        preconditioner: Preconditioner | None = None,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "LatticeMatrix":
-        if not is_dummy_or_tracer(weights):
-            raise ValueError("Lattice matrices must be loaded from saved parameters; fitting is not supported")
+        raise NotImplementedError("Lattice matrices are loaded from saved parameters, not fitted")
+
+    def empty(
+        self,
+        weights: Float[Array, "out_channels in_channels"],
+        *,
+        sharding_config: ShardingConfig,
+        is_sharded: bool = True,
+    ) -> "LatticeMatrix":
         rows, columns = self.layout.weight_shape((), *weights.shape)
         row_axis, _ = self.layout.weight_partition(0, is_sharded=is_sharded)
         initializer = EmptyInitializer(weights.dtype, sharding_config)

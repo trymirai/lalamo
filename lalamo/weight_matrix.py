@@ -107,6 +107,16 @@ class WeightMatrixSpec(RegistryABC):
         is_sharded: bool = True,
     ) -> "WeightMatrix": ...
 
+    def empty(
+        self,
+        weights: Float[Array, "*components out_channels in_channels"],
+        *,
+        sharding_config: ShardingConfig,
+        is_sharded: bool = True,
+    ) -> "WeightMatrix":
+        # A matrix of dummy arrays shaped like `weights` (themselves dummies), to load saved parameters into.
+        return self.compress(weights, sharding_config=sharding_config, is_sharded=is_sharded)
+
 
 WeightMatrixSpecT_co = TypeVar("WeightMatrixSpecT_co", bound=WeightMatrixSpec, covariant=True)
 
@@ -558,7 +568,7 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
             weights = dummy_array(
                 weights.shape[::-1], weights.dtype, sharding_of(weights), weak_type=weights.weak_type
             )
-        dummy_layer = loaded_spec.compress(
+        dummy_layer = loaded_spec.empty(
             weights,
             sharding_config=self.sharding_config,
             is_sharded=self.is_sharded,

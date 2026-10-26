@@ -7,7 +7,6 @@ from jaxtyping import Array, DTypeLike, Float, Key
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.dummy_array import is_dummy_or_tracer
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -27,18 +26,25 @@ class RowStackSpec(WeightMatrixSpec):
         self,
         weights: Float[Array, "out_channels in_channels"],
         *,
-        key: Key[Array, ""] | None = None,  # noqa: ARG002
-        preconditioner: Preconditioner | None = None,  # noqa: ARG002
-        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
+        key: Key[Array, ""] | None = None,
+        preconditioner: Preconditioner | None = None,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "RowStackMatrix":
-        if not is_dummy_or_tracer(weights):
-            raise ValueError("Row stacks must be constructed from existing matrices")
+        raise NotImplementedError("Row stacks are assembled from existing matrices, not fitted")
+
+    def empty(
+        self,
+        weights: Float[Array, "out_channels in_channels"],
+        *,
+        sharding_config: ShardingConfig,
+        is_sharded: bool = True,
+    ) -> "RowStackMatrix":
         assert sum(rows for rows, _ in self.parts) == weights.shape[0]
         initializer = EmptyInitializer(weights.dtype, sharding_config)
         parts = tuple(
-            spec.compress(
+            spec.empty(
                 initializer.zeros((rows, weights.shape[1])),
                 sharding_config=sharding_config,
                 is_sharded=is_sharded,
