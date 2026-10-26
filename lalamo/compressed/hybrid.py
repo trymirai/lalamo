@@ -21,7 +21,6 @@ from lalamo.weight_matrix import (
 )
 
 from .incoherence import HadamardSpec, IncoherenceProcessor, IncoherenceProcessorSpec
-from .lattice import LatticeMatrix
 
 __all__ = [
     "HybridMatrix",
@@ -57,7 +56,7 @@ class HybridSpec(WeightMatrixSpec):
             is_sharded=is_sharded,
             quantized=self.quantization_spec.empty(weights, sharding_config=sharding_config, is_sharded=is_sharded),
             adapter=adapter,
-            incoherence_processor=processor,
+            incoherence_signs=processor,
         )
 
     @supports_dummy_arrays()
@@ -128,14 +127,14 @@ class HybridSpec(WeightMatrixSpec):
             quantized=quantized,
             adapter=adapter,
             # Expert modules slice and vmap every array along their component axes.
-            incoherence_processor=None if processor is None else processor.with_components(weights.shape[:-2]),
+            incoherence_signs=None if processor is None else processor.with_components(weights.shape[:-2]),
         )
 
 
 class HybridMatrix(EmbeddingMatrix[HybridSpec]):
     quantized: WeightMatrix[WeightMatrixSpec]
     adapter: WeightMatrix[WeightMatrixSpec] | None
-    incoherence_processor: IncoherenceProcessor | None
+    incoherence_signs: IncoherenceProcessor | None
 
     @classmethod
     def of(cls, quantized: WeightMatrix[WeightMatrixSpec], processor: IncoherenceProcessor) -> "HybridMatrix":
@@ -143,9 +142,7 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
         return cls(spec, quantized.sharding_config, quantized.is_sharded, quantized, None, processor)
 
     def to_full_precision(self) -> FullPrecisionMatrix:
-        layout = Layout.OUTPUT_INPUT
-        if isinstance(self.quantized, LatticeMatrix):
-            layout = self.quantized.spec.layout
+        layout = getattr(self.quantized.spec, "layout", Layout.OUTPUT_INPUT)
         return FullPrecisionSpec(layout=layout).compress(
             self.decompress(),
             sharding_config=self.sharding_config,
@@ -170,12 +167,12 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
     def decompress(self) -> Float[Array, "*components out_channels in_channels"]:
         # Decoded in float32 and rounded once, after the rotation.
         result = self.quantized.astype(jnp.float32).decompress()
-        if self.incoherence_processor is not None:
-            result = self.incoherence_processor.unprocess_weights(result, self.sharding_config)
+        if self.incoherence_signs is not None:
+            result = self.incoherence_signs.unprocess_weights(result, self.sharding_config)
         if self.adapter is not None:
             adapter = self.adapter.decompress()
-            if self.incoherence_processor is not None:
-                adapter = self.incoherence_processor.unprocess_output_axis(adapter, self.sharding_config)
+            if self.incoherence_signs is not None:
+                adapter = self.incoherence_signs.unprocess_output_axis(adapter, self.sharding_config)
             result = result + adapter
         return result.astype(self.dtype)
 
@@ -206,8 +203,8 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
             keychain=keychain,
             forward_pass_config=forward_pass_config,
         )
-        if self.incoherence_processor is not None:
-            rows = self.incoherence_processor.unprocess_embedding(rows)
+        if self.incoherence_signs is not None:
+            rows = self.incoherence_signs.unprocess_embedding(rows)
         return rows.astype(self.dtype if dtype is None else dtype)
 
     def dot(
@@ -223,8 +220,8 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
 
         quantized_keychain, adapter_keychain = keychain.split(2)
         transformed_vector = vector
-        if self.incoherence_processor is not None:
-            transformed_vector = self.incoherence_processor.input_transform(vector, transposed=transposed)
+        if self.incoherence_signs is not None:
+            transformed_vector = self.incoherence_signs.input_transform(vector, transposed=transposed)
         result = self.quantized.dot(
             transformed_vector,
             keychain=quantized_keychain,
@@ -238,6 +235,6 @@ class HybridMatrix(EmbeddingMatrix[HybridSpec]):
                 forward_pass_config=forward_pass_config,
             )
 
-        if self.incoherence_processor is not None:
-            result = self.incoherence_processor.output_transform(result, transposed=transposed)
+        if self.incoherence_signs is not None:
+            result = self.incoherence_signs.output_transform(result, transposed=transposed)
         return result

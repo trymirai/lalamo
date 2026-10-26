@@ -5,7 +5,7 @@ from pathlib import Path
 import jax
 import pytest
 
-from lalamo.models.language_model import LanguageModel
+from lalamo.model_import.loaders.packed_checkpoint import import_packed_checkpoint
 from lalamo.safetensors import safe_read
 from lalamo.utils.sharding import ShardingConfig
 from tests.unit.compressed.test_packed_checkpoint import assert_loaded_every_saved_tensor, saved_i4s4, weight_matrices
@@ -21,7 +21,7 @@ def test_packed_checkpoint_loads_every_saved_tensor() -> None:
     # The test session exposes eight CPU devices; replicating the checkpoint on each would hold eight copies.
     config = ShardingConfig.replicated(jax.devices()[:1])
     with jax.set_mesh(config.mesh), (directory / "model.safetensors").open("rb") as stream:
-        model = LanguageModel.load(directory, config)
+        model = import_packed_checkpoint(directory, config)
         metadata, saved, _ = safe_read(stream)
         trellis_paths = [name.removesuffix(".gains") for name in saved if name.endswith(".gains")]
         folds = {

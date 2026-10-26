@@ -24,7 +24,9 @@ from lalamo.compressed.incoherence import (
     KroneckerSpec,
 )
 from lalamo.compressed.int import IntSpec
+from lalamo.compressed.lattice import LatticeSpec
 from lalamo.compressed.mlx import MLXSpec
+from lalamo.compressed.output_stack import OutputStackMatrix, OutputStackPart, OutputStackSpec
 from lalamo.compressed.qtip_gaussian import (
     STATE_BITS,
     QtipGaussianMatrix,
@@ -32,8 +34,8 @@ from lalamo.compressed.qtip_gaussian import (
     codebook_from_table,
     states_to_levels,
 )
-from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
 from lalamo.initializer import RandomInitializer
+from lalamo.model_import.loaders.packed_checkpoint import import_packed_checkpoint
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.models.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
 from lalamo.module import Keychain
@@ -44,7 +46,7 @@ from lalamo.safetensors import safe_write
 from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
-from lalamo.weight_matrix import WeightMatrix
+from lalamo.weight_matrix import Layout, WeightMatrix
 from tests.helpers import build_tiny_attention_decoder_config, make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
@@ -80,7 +82,10 @@ def assert_loaded_every_saved_tensor(
     loaded = model.export().arrays
     folded = {name for stages in folds.values() for name in stages} - folds.keys()
     for saved_name, value in saved.items():
+        # The D4 table and ladder are constants of the lattice spec; the loader checks them.
         if saved_name.startswith(("qtip_shared.", "decoder.transformer.ropes.")) or saved_name in folded:
+            continue
+        if saved_name.endswith((".table", ".ladder")):
             continue
         # Lattice sign vectors and the legacy qkv and gate leaves have their own names on disk.
         name = re.sub(r"\.(input|output)_hadamard_factors$", r".\1_signs", saved_name)
@@ -221,9 +226,10 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     arrays[embedding + ".codes"] = packed_bytes((VOCABULARY, MODEL_DIM // 4))
     arrays[embedding + ".row_scales"] = uniform((VOCABULARY,), jnp.bfloat16)
     arrays[embedding + ".ladder_indices"] = packed_bytes((VOCABULARY, MODEL_DIM // 128))
-    arrays[embedding + ".ladder"] = uniform((16,), jnp.float16)
+    lattice = LatticeSpec(Layout.INPUT_OUTPUT)
+    arrays[embedding + ".ladder"] = lattice.ladder
     arrays[embedding + ".output_hadamard_factors"] = random_signs()
-    arrays[embedding + ".table"] = jnp.asarray(generator.integers(-8, 8, (256, 4), dtype=np.int8))
+    arrays[embedding + ".table"] = lattice.table
     metadata[embedding + ".spec"] = {"type": "D4S4Spec", "layout": "input_output"}
     int4 = HybridSpec(IntSpec(4, 64, is_symmetric=True), None, HadamardSpec(32, IncoherenceProcessingMode.INPUT))
     readout_weights = jax.random.normal(jax.random.key(0), (VOCABULARY, MODEL_DIM), jnp.bfloat16)
@@ -250,16 +256,18 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
         del mixer["has_gate"]
     save_model(tmp_path, config, model, arrays, metadata)
 
-    restored = LanguageModel.load(tmp_path, make_test_sharding_config())
+    restored = import_packed_checkpoint(tmp_path, make_test_sharding_config())
 
     matrices = weight_matrices(restored)
     sharding_config = make_test_sharding_config()
     # Same-format trellis neighbours merge under their shared Kronecker rotation; I4S4 parts of other signs do not.
-    kronecker = HybridSpec(RowStackSpec(((16, v4), (8, v2))), None, KroneckerSpec())
+    kronecker = HybridSpec(OutputStackSpec((OutputStackPart(16, v4), OutputStackPart(8, v2))), None, KroneckerSpec())
     folded_i4s4 = HybridSpec(MLXSpec(4, 64), None, HadamardSpec(32, IncoherenceProcessingMode.INPUT))
     stack = matrices[qkvg]
-    assert isinstance(stack, RowStackMatrix)
-    assert stack.spec == RowStackSpec(((24, kronecker), (4, folded_i4s4), (4, folded_i4s4)))
+    assert isinstance(stack, OutputStackMatrix)
+    assert stack.spec == OutputStackSpec(
+        (OutputStackPart(24, kronecker), OutputStackPart(4, folded_i4s4), OutputStackPart(4, folded_i4s4))
+    )
     for index, part in zip((3, 4), stack.parts[1:], strict=True):
         expected = saved_i4s4(arrays, f"{qkvg}.parts.{index}", ("row", "column"), sharding_config)
         np.testing.assert_array_equal(part.astype(jnp.float32).decompress(), expected)
@@ -293,7 +301,7 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     bad_gains = arrays | {f"{gain_path}.post_gains.1": jnp.zeros(MODEL_DIM, jnp.float32)}
     save_model(tmp_path / "column-gain", config, model, bad_gains, metadata)
     with pytest.raises(ValueError, match="Column post-gains"):
-        LanguageModel.load(tmp_path / "column-gain", sharding_config)
+        import_packed_checkpoint(tmp_path / "column-gain", sharding_config)
 
     bad_spec = metadata[gain_path + ".spec"]
     assert isinstance(bad_spec, dict)
@@ -301,4 +309,4 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     bad_spec["post_gain_axes"] = ["row", "unknown"]
     save_model(tmp_path / "unknown-gain", config, model, arrays, metadata | {gain_path + ".spec": bad_spec})
     with pytest.raises(ValueError, match="Unknown post-gain axis"):
-        LanguageModel.load(tmp_path / "unknown-gain", sharding_config)
+        import_packed_checkpoint(tmp_path / "unknown-gain", sharding_config)

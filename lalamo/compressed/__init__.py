@@ -16,9 +16,9 @@ from .microfloat import (
     MicrofloatSpec,
 )
 from .mlx import MLXMatrix, MLXMatrixForInference, MLXMatrixForTraining, MLXSpec
+from .output_stack import OutputStackMatrix, OutputStackPart, OutputStackSpec
 from .qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec
 from .quantized_spec import QuantizedSpec
-from .row_stack import RowStackMatrix, RowStackSpec
 
 __all__ = [
     "HybridMatrix",
@@ -44,9 +44,10 @@ __all__ = [
     "MicrofloatMatrixForTraining",
     "MicrofloatScaleMode",
     "MicrofloatSpec",
+    "OutputStackMatrix",
+    "OutputStackPart",
+    "OutputStackSpec",
     "QtipGaussianMatrix",
     "QtipGaussianSpec",
     "QuantizedSpec",
-    "RowStackMatrix",
-    "RowStackSpec",
 ]

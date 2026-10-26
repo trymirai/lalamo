@@ -126,7 +126,7 @@ def test_hybrid_compress_without_incoherence_does_not_require_key() -> None:
     matrix = spec.compress(weights, sharding_config=make_test_sharding_config())
 
     assert isinstance(matrix, HybridMatrix)
-    assert matrix.incoherence_processor is None
+    assert matrix.incoherence_signs is None
     _assert_close(result=matrix.decompress(), reference=weights)
 
 
@@ -141,9 +141,9 @@ def test_hybrid_incoherence_decompress_restores_original_basis() -> None:
     matrix = spec.compress(weights, key=jax.random.key(0), sharding_config=make_test_sharding_config())
 
     assert isinstance(matrix, HybridMatrix)
-    assert isinstance(matrix.incoherence_processor, HadamardProcessor)
-    input_signs = matrix.incoherence_processor.input_signs
-    output_signs = matrix.incoherence_processor.output_signs
+    assert isinstance(matrix.incoherence_signs, HadamardProcessor)
+    input_signs = matrix.incoherence_signs.input_signs
+    output_signs = matrix.incoherence_signs.output_signs
     assert input_signs is not None
     assert output_signs is not None
     assert input_signs.shape == (64,)
@@ -160,10 +160,10 @@ def test_hybrid_input_incoherence_leaves_output_basis_unprocessed() -> None:
     ).compress(weights, key=jax.random.key(1), sharding_config=make_test_sharding_config())
     vector = _replicated_vector((jnp.arange(64, dtype=jnp.float32) - 3) / 7)
 
-    assert isinstance(matrix.incoherence_processor, HadamardProcessor)
-    input_signs = matrix.incoherence_processor.input_signs
+    assert isinstance(matrix.incoherence_signs, HadamardProcessor)
+    input_signs = matrix.incoherence_signs.input_signs
     assert input_signs is not None
-    assert matrix.incoherence_processor.output_signs is None
+    assert matrix.incoherence_signs.output_signs is None
     _assert_close(
         result=matrix.quantized.decompress(),
         reference=hadamard_transform(weights * input_signs, block_size=32),
@@ -184,9 +184,9 @@ def test_hybrid_output_incoherence_leaves_input_basis_unprocessed() -> None:
     ).compress(weights, key=jax.random.key(2), sharding_config=make_test_sharding_config())
     vector = _replicated_vector((jnp.arange(64, dtype=jnp.float32) - 3) / 7)
 
-    assert isinstance(matrix.incoherence_processor, HadamardProcessor)
-    output_signs = matrix.incoherence_processor.output_signs
-    assert matrix.incoherence_processor.input_signs is None
+    assert isinstance(matrix.incoherence_signs, HadamardProcessor)
+    output_signs = matrix.incoherence_signs.output_signs
+    assert matrix.incoherence_signs.input_signs is None
     assert output_signs is not None
     _assert_close(
         result=matrix.quantized.decompress(),
@@ -263,14 +263,14 @@ def test_hybrid_adapter_compresses_residual_with_original_input_and_transformed_
         incoherence_spec=HadamardSpec(32),
     ).compress(weights, key=jax.random.key(3), sharding_config=make_test_sharding_config())
 
-    assert isinstance(matrix.incoherence_processor, HadamardProcessor)
+    assert isinstance(matrix.incoherence_signs, HadamardProcessor)
     assert matrix.adapter is not None
-    transformed_weights = matrix.incoherence_processor.process_weights(
+    transformed_weights = matrix.incoherence_signs.process_weights(
         weights,
         make_test_sharding_config(),
     )
     transformed_residual = transformed_weights - matrix.quantized.decompress()
-    expected_adapter = matrix.incoherence_processor.unprocess_input_axis(
+    expected_adapter = matrix.incoherence_signs.unprocess_input_axis(
         transformed_residual,
         make_test_sharding_config(),
     )
@@ -327,7 +327,7 @@ def test_hybrid_incoherence_adapts_preconditioner_to_adapter_basis() -> None:
         _weights(), key=jax.random.key(6), preconditioner=preconditioner, sharding_config=make_test_sharding_config()
     )
 
-    assert isinstance(matrix.incoherence_processor, HadamardProcessor)
+    assert isinstance(matrix.incoherence_signs, HadamardProcessor)
     assert len(quantization_calls) == 1
     assert len(adapter_calls) == 1
     quantization_preconditioner = quantization_calls[0]
@@ -342,8 +342,8 @@ def test_hybrid_incoherence_adapts_preconditioner_to_adapter_basis() -> None:
     assert quantization_output_block is not None
     assert adapter_input_block is not None
     assert adapter_output_block is not None
-    input_signs = matrix.incoherence_processor.input_signs
-    output_signs = matrix.incoherence_processor.output_signs
+    input_signs = matrix.incoherence_signs.input_signs
+    output_signs = matrix.incoherence_signs.output_signs
     assert input_signs is not None
     assert output_signs is not None
     _assert_close(
@@ -376,10 +376,10 @@ def test_hybrid_input_incoherence_keeps_output_preconditioner_basis() -> None:
         _weights(), key=jax.random.key(7), preconditioner=preconditioner, sharding_config=make_test_sharding_config()
     )
 
-    assert isinstance(matrix.incoherence_processor, HadamardProcessor)
-    input_signs = matrix.incoherence_processor.input_signs
+    assert isinstance(matrix.incoherence_signs, HadamardProcessor)
+    input_signs = matrix.incoherence_signs.input_signs
     assert input_signs is not None
-    assert matrix.incoherence_processor.output_signs is None
+    assert matrix.incoherence_signs.output_signs is None
     assert len(quantization_calls) == 1
     quantization_preconditioner = quantization_calls[0]
     assert quantization_preconditioner is not None

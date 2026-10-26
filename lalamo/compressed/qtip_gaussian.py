@@ -5,20 +5,18 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.sharding import NamedSharding, PartitionSpec
-from jaxtyping import Array, DTypeLike, Float, Int, Int8, Key, UInt8, UInt32
+from jaxtyping import Array, DTypeLike, Float, Int, Int8, UInt8, UInt32
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, field
-from lalamo.preconditioner import Preconditioner
 from lalamo.utils.sharding import ShardingConfig, lookup_sharded_indices, sharding_of, with_sharding
 from lalamo.weight_matrix import (
-    CompressionImplementation,
     EmbeddingMatrix,
     FullPrecisionMatrix,
     FullPrecisionSpec,
     Layout,
+    LoadOnlySpec,
     MatmulConfig,
-    WeightMatrixSpec,
 )
 
 # Every step's 16-bit state hashes to its levels; each tape block opens with its first state in 16 bits.
@@ -55,10 +53,11 @@ def codebook_from_table(table: Float[Array, "states width"]) -> Float[Array, " c
 
 
 @dataclass(frozen=True)
-class QtipGaussianSpec(WeightMatrixSpec):
+class QtipGaussianSpec(LoadOnlySpec):
     vector_width: Literal[2, 4]
     transition_bits: Literal[4, 6, 7, 8]
     restart_columns: Literal[0, 64, 128]
+    layout: Layout = Layout.OUTPUT_INPUT
     # 2: each block's bits reversed, least significant first.
     tape: Literal[2] = 2
 
@@ -98,18 +97,6 @@ class QtipGaussianSpec(WeightMatrixSpec):
         shift = jnp.asarray(offset % 8, dtype=jnp.uint32)
         return (word >> shift) & 0xFFFF
 
-    def compress(
-        self,
-        weights: Float[Array, "out_channels in_channels"],
-        *,
-        key: Key[Array, ""] | None = None,
-        preconditioner: Preconditioner | None = None,
-        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-        sharding_config: ShardingConfig,
-        is_sharded: bool = True,
-    ) -> "QtipGaussianMatrix":
-        raise NotImplementedError("QTIP Gaussian matrices are loaded from saved parameters, not fitted")
-
     def empty(
         self,
         weights: Float[Array, "out_channels in_channels"],
@@ -117,8 +104,8 @@ class QtipGaussianSpec(WeightMatrixSpec):
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "QtipGaussianMatrix":
-        rows, columns = weights.shape
-        row_axis, _ = Layout.OUTPUT_INPUT.weight_partition(0, is_sharded=is_sharded)
+        rows, columns = self.layout.weight_shape((), *weights.shape)
+        row_axis, _ = self.layout.weight_partition(0, is_sharded=is_sharded)
         initializer = EmptyInitializer(weights.dtype, sharding_config)
         return QtipGaussianMatrix(
             spec=self,
@@ -165,10 +152,10 @@ class QtipGaussianMatrix(EmbeddingMatrix[QtipGaussianSpec]):
         return ((self.codebook[0] * levels + offsets) * scales[..., None]).astype(self.dtype)
 
     def decompress(self) -> Array:
-        return self.decode_rows(self.codes, self.scales)
+        return self.spec.layout.to_output_input(self.decode_rows(self.codes, self.scales))
 
     def to_full_precision(self) -> FullPrecisionMatrix:
-        return FullPrecisionSpec().compress(
+        return FullPrecisionSpec(self.spec.layout).compress(
             self.decompress(), sharding_config=self.sharding_config, is_sharded=self.is_sharded
         )
 
@@ -180,6 +167,8 @@ class QtipGaussianMatrix(EmbeddingMatrix[QtipGaussianSpec]):
         dtype: DTypeLike | None = None,
         forward_pass_config: MatmulConfig = MatmulConfig(),  # noqa: ARG002
     ) -> Array:
+        if self.spec.layout != Layout.INPUT_OUTPUT:
+            raise ValueError("Embedding lookup requires input-output layout")
         rows = self.decode_rows(
             lookup_sharded_indices(self.codes, row_index), lookup_sharded_indices(self.scales, row_index)
         )
@@ -191,10 +180,11 @@ class QtipGaussianMatrix(EmbeddingMatrix[QtipGaussianSpec]):
         *,
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
-        transposed: bool = False,  # noqa: ARG002
+        transposed: bool = False,
     ) -> Array:
-        # Rows are always the output channels: a projection's outputs, or a tied table's vocabulary entries, whose
-        # readout (the "transposed" product of an embedding) is the same row-by-row dot.
+        # A row-by-row dot: a projection's outputs, or the readout (the transposed product) of an embedding table.
+        if transposed != (self.spec.layout == Layout.INPUT_OUTPUT):
+            raise ValueError("A trellis matrix multiplies row by row, so its rows are the output channels")
         mesh = sharding_of(vector).mesh
         # FSDP shares the batch and matrix axis. Gather packed rows, so token batching owns that axis;
         # only 128 rows are ever decoded at once.

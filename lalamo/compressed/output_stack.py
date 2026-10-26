@@ -2,16 +2,15 @@ from dataclasses import dataclass, replace
 from typing import Self
 
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, Key
+from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain
-from lalamo.preconditioner import Preconditioner
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import (
-    CompressionImplementation,
     FullPrecisionMatrix,
     FullPrecisionSpec,
+    LoadOnlySpec,
     MatmulConfig,
     WeightMatrix,
     WeightMatrixSpec,
@@ -19,20 +18,14 @@ from lalamo.weight_matrix import (
 
 
 @dataclass(frozen=True)
-class RowStackSpec(WeightMatrixSpec):
-    parts: tuple[tuple[int, WeightMatrixSpec], ...]
+class OutputStackPart:
+    out_channels: int
+    spec: WeightMatrixSpec
 
-    def compress(
-        self,
-        weights: Float[Array, "out_channels in_channels"],
-        *,
-        key: Key[Array, ""] | None = None,
-        preconditioner: Preconditioner | None = None,
-        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-        sharding_config: ShardingConfig,
-        is_sharded: bool = True,
-    ) -> "RowStackMatrix":
-        raise NotImplementedError("Row stacks are assembled from existing matrices, not fitted")
+
+@dataclass(frozen=True)
+class OutputStackSpec(LoadOnlySpec):
+    parts: tuple[OutputStackPart, ...]
 
     def empty(
         self,
@@ -40,26 +33,26 @@ class RowStackSpec(WeightMatrixSpec):
         *,
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
-    ) -> "RowStackMatrix":
-        assert sum(rows for rows, _ in self.parts) == weights.shape[0]
+    ) -> "OutputStackMatrix":
+        assert sum(part.out_channels for part in self.parts) == weights.shape[0]
         initializer = EmptyInitializer(weights.dtype, sharding_config)
         parts = tuple(
-            spec.empty(
-                initializer.zeros((rows, weights.shape[1])),
+            part.spec.empty(
+                initializer.zeros((part.out_channels, weights.shape[1])),
                 sharding_config=sharding_config,
                 is_sharded=is_sharded,
             )
-            for rows, spec in self.parts
+            for part in self.parts
         )
-        return RowStackMatrix(spec=self, sharding_config=sharding_config, is_sharded=is_sharded, parts=parts)
+        return OutputStackMatrix(spec=self, sharding_config=sharding_config, is_sharded=is_sharded, parts=parts)
 
 
-class RowStackMatrix(WeightMatrix[RowStackSpec]):
+class OutputStackMatrix(WeightMatrix[OutputStackSpec]):
     parts: tuple[WeightMatrix, ...]
 
     def __check_init__(self) -> None:
         assert self.parts
-        assert tuple((part.shape[0], part.spec) for part in self.parts) == self.spec.parts
+        assert tuple(OutputStackPart(part.shape[0], part.spec) for part in self.parts) == self.spec.parts
         assert all(part.shape[1] == self.parts[0].shape[1] and part.dtype == self.dtype for part in self.parts)
 
     @property
@@ -89,7 +82,7 @@ class RowStackMatrix(WeightMatrix[RowStackSpec]):
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
     ) -> Array:
-        assert not transposed, "Row stacks are fused projections, never tied embeddings"
+        assert not transposed, "Output stacks are fused projections, never tied embeddings"
         return jnp.concatenate(
             tuple(part.dot(vector, keychain=keychain, forward_pass_config=forward_pass_config) for part in self.parts)
         )

@@ -1,6 +1,8 @@
+import json
 from collections.abc import Iterable
 from dataclasses import replace
 from functools import cache
+from pathlib import Path
 from typing import Any
 
 import equinox as eqx
@@ -10,17 +12,25 @@ from jax import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.compressed.hybrid import HybridMatrix
-from lalamo.compressed.incoherence import HadamardProcessor, IncoherenceProcessor, KroneckerProcessor
+from lalamo.compressed.incoherence import (
+    HadamardProcessor,
+    IncoherenceProcessingMode,
+    IncoherenceProcessor,
+    KroneckerProcessor,
+)
 from lalamo.compressed.lattice import COLUMNS_PER_LADDER_INDEX, LADDER_INDEX_BITS, LatticeMatrix, LatticeSpec
 from lalamo.compressed.mlx import MLXMatrix, MLXSpec
+from lalamo.compressed.output_stack import OutputStackMatrix, OutputStackPart, OutputStackSpec
 from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec, codebook_from_table
-from lalamo.compressed.row_stack import RowStackMatrix, RowStackSpec
 from lalamo.compressed.utils.packing import unpack_uint8_to_uint
 from lalamo.exportable import ExportResults
-from lalamo.model import BaseModel
+from lalamo.initializer import EmptyInitializer
+from lalamo.model import BaseModelConfig
 from lalamo.models.language_model import LanguageModel
+from lalamo.safetensors import safe_read
 from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import Layout, ShapeDtypeMatrix, WeightMatrix
 
@@ -59,15 +69,20 @@ def native_config(value: JSON) -> JSON:
     return {name: native_config(item) for name, item in value.items()}
 
 
-def is_packed_checkpoint(metadata: dict[str, JSON], tensor_names: Iterable[str]) -> bool:
-    # Lalamo's own saves also tag trellis leaves "QtipGaussianSpec", but keep a five-float codebook under each matrix.
-    return any(name.startswith("qtip_shared.") for name in tensor_names) or any(
-        isinstance(spec, dict) and spec["type"] in ("D4S4Spec", "I4S4Spec") for spec in metadata.values()
-    )
+def import_packed_checkpoint(
+    directory: Path | str, sharding_config: ShardingConfig, dtype: DTypeLike | None = None
+) -> LanguageModel:
+    directory = Path(directory)
+    config = BaseModelConfig.from_json(native_config(json.loads((directory / "config.json").read_text())))
+    with (directory / "model.safetensors").open("rb") as weights_file:
+        metadata, arrays, _ = safe_read(weights_file)
+        specs = {name: json.loads(value) for name, value in (metadata or {}).items()}
+        template = config.init_from_directory(directory, EmptyInitializer(dtype, sharding_config))
+        assert isinstance(template, LanguageModel)
+        return load_packed_checkpoint(template, ExportResults(arrays, specs), dtype)
 
 
-def load_packed_checkpoint(template: BaseModel, exported: ExportResults, dtype: DTypeLike | None) -> LanguageModel:
-    assert isinstance(template, LanguageModel)
+def load_packed_checkpoint(template: LanguageModel, exported: ExportResults, dtype: DTypeLike | None) -> LanguageModel:
     arrays, specs = exported
     sharding_config = template.sharding_config
     # RoPE is recomputed from the config, as uzu does; older packages' saved tables match it to one float32 ulp.
@@ -102,27 +117,27 @@ def load_packed_checkpoint(template: BaseModel, exported: ExportResults, dtype: 
                     raise ValueError(f"Unknown post-gain axis {axis!r} at {path}")
         return scale
 
-    def row_stack(parts: tuple[WeightMatrix, ...]) -> WeightMatrix:
+    def output_stack(parts: tuple[WeightMatrix, ...]) -> WeightMatrix:
         assert parts
         if len(parts) == 1:
             return parts[0]
-        spec = RowStackSpec(tuple((part.shape[0], part.spec) for part in parts))
-        return RowStackMatrix(spec, sharding_config, parts[0].is_sharded, parts)
+        spec = OutputStackSpec(tuple(OutputStackPart(part.shape[0], part.spec) for part in parts))
+        return OutputStackMatrix(spec, sharding_config, parts[0].is_sharded, parts)
 
     def stack_projections(hybrids: Iterable[WeightMatrix]) -> WeightMatrix:
         # Neighbours under one saved rotation become one hybrid, in which neighbouring same-format leaves merge.
         groups: list[tuple[IncoherenceProcessor, list[WeightMatrix]]] = []
         for hybrid in hybrids:
-            assert isinstance(hybrid, HybridMatrix) and hybrid.incoherence_processor is not None
-            if not groups or not eqx.tree_equal(groups[-1][0], hybrid.incoherence_processor):
-                groups.append((hybrid.incoherence_processor, []))
+            assert isinstance(hybrid, HybridMatrix) and hybrid.incoherence_signs is not None
+            if not groups or not eqx.tree_equal(groups[-1][0], hybrid.incoherence_signs):
+                groups.append((hybrid.incoherence_signs, []))
             leaves = groups[-1][1]
             if leaves and (joined := merge_rows(leaves[-1], hybrid.quantized)) is not None:
                 leaves[-1] = joined
             else:
                 leaves.append(hybrid.quantized)
-        fused = tuple(HybridMatrix.of(row_stack(tuple(leaves)), rotation) for rotation, leaves in groups)
-        return row_stack(fused)
+        fused = tuple(HybridMatrix.of(output_stack(tuple(leaves)), rotation) for rotation, leaves in groups)
+        return output_stack(fused)
 
     def load_weight(path: ParameterPath, saved: dict[str, Any], target: ShapeDtypeMatrix) -> WeightMatrix:
         columns = target.shape[1]
@@ -143,8 +158,11 @@ def load_packed_checkpoint(template: BaseModel, exported: ExportResults, dtype: 
                 for index in range(saved.pop("pre_gain_count", 0)):
                     row_scale = row_scale * parameter(path / "pre_gains" / index).astype(jnp.float32)
                 row_scale = fold_post_gains(path, row_scale, saved.pop("post_gain_axes", ()))
+                # A table keeps one tape row per vocabulary entry: in an embedding slot those rows are its inputs.
                 leaf = QtipGaussianMatrix(
-                    spec=QtipGaussianSpec.from_json({"type": "QtipGaussianSpec", **saved}),
+                    spec=QtipGaussianSpec.from_json(
+                        {"type": "QtipGaussianSpec", **saved, "layout": target.spec.layout}
+                    ),
                     sharding_config=sharding_config,
                     is_sharded=is_sharded,
                     # The saved gains carry the matrix dtype.
@@ -154,9 +172,13 @@ def load_packed_checkpoint(template: BaseModel, exported: ExportResults, dtype: 
                     scales=row_scale,
                     codebook=codebook(table_name),
                 )
+                mode = IncoherenceProcessingMode.INPUT
+                if target.spec.layout == Layout.INPUT_OUTPUT:
+                    mode = IncoherenceProcessingMode.OUTPUT
                 rotation = KroneckerProcessor.of(
                     parameter(f"qtip_shared.signs_{columns}").astype(jnp.int32),
                     parameter(f"qtip_shared.q_{columns}"),
+                    mode,
                 )
                 matrix = HybridMatrix.of(leaf, rotation)
             case "RowStackSpec":
@@ -201,9 +223,11 @@ def load_packed_checkpoint(template: BaseModel, exported: ExportResults, dtype: 
                     codes=parameter(path / "codes"),
                     row_scales=parameter(path / "row_scales"),
                     ladder_indices=parameter(path / "ladder_indices"),
-                    ladder=parameter(path / "ladder"),
-                    table=parameter(path / "table"),
                 )
+                for name in ("table", "ladder"):
+                    assert jnp.array_equal(parameter(path / name), getattr(lattice, name)), (
+                        f"Unexpected D4 {name} at {path}"
+                    )
                 if lattice.layout == Layout.INPUT_OUTPUT:
                     rotation = HadamardProcessor.of(None, parameter(path / "output_hadamard_factors"))
                 else:
