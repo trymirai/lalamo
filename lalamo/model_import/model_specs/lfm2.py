@@ -85,8 +85,7 @@ LFM2_MODELS = (
                 generation_config=GenerationConfig(temperature=0.1, top_k=50, repetition_penalty=1.05),
                 chat_template=FileSpec("chat_template.jinja"),
             ),
-            output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-            end_of_thinking_tag="</think>",
+            response_format=LIQUID_THINKING_RESPONSE_FORMAT,
         ),
     ]
 )
