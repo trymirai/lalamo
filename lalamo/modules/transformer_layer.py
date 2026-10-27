@@ -237,11 +237,12 @@ class Sublayer[BodyT: LalamoModule, StreamT](LalamoModule[SublayerConfig]):
     ) -> tuple[StreamT, SublayerActivationTrace, AuxT]:
         def apply(
             inputs: Float[Array, "batch suffix_tokens channels"],
+            sublayer_keychain: Keychain,
         ) -> tuple[Float[Array, "batch suffix_tokens channels"], tuple[SublayerActivationTrace, AuxT]]:
             normalized_inputs = call_vmapped_twice(self.pre_norm, inputs) if self.pre_norm is not None else inputs
 
             if self.conv is not None:
-                conv_keychain, body_keychain = keychain.split()
+                conv_keychain, body_keychain = sublayer_keychain.split()
                 conv_inputs, conv_coefficients = self.conv.prepare(
                     normalized_inputs,
                     matmul_config,
@@ -250,7 +251,7 @@ class Sublayer[BodyT: LalamoModule, StreamT](LalamoModule[SublayerConfig]):
                 conv_outputs, aux = call_body(conv_inputs, body_keychain)
                 body_outputs = self.conv.finish(conv_outputs, conv_coefficients)
             else:
-                body_outputs, aux = call_body(normalized_inputs, keychain)
+                body_outputs, aux = call_body(normalized_inputs, sublayer_keychain)
 
             normalized_outputs = (
                 call_vmapped_twice(self.post_norm, body_outputs) if self.post_norm is not None else None
@@ -265,7 +266,7 @@ class Sublayer[BodyT: LalamoModule, StreamT](LalamoModule[SublayerConfig]):
             )
             return update, (activation_trace, aux)
 
-        updated_stream, (activation_trace, aux) = self.connection(stream, apply)
+        updated_stream, (activation_trace, aux) = self.connection(stream, apply, matmul_config, keychain=keychain)
         return updated_stream, activation_trace, aux
 
 

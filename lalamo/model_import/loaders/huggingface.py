@@ -16,6 +16,7 @@ from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding
 from lalamo.modules.linear import Linear
 from lalamo.modules.mlp import DenseMLP, MixtureOfExperts, MLPBase
 from lalamo.modules.normalization import Normalization
+from lalamo.modules.residual import GatedResidualConnection, GatedResidualHead, GatedStreamReader
 from lalamo.modules.token_mixers.attention import Attention, AttentionBase, AttentionConfig, AttentionConfigBase
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv
 from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
@@ -805,6 +806,62 @@ def load_sparse_attention(
         attention,
         (indexer_projection, indexer_query_norm, indexer_key_norm),
     )
+
+
+def load_gated_stream_reader(
+    module: GatedStreamReader,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> GatedStreamReader:
+    scales = rearrange(
+        weights_dict[path / "hc_norm" / "weight"],
+        "(streams channels) -> streams channels",
+        streams=module.config.stream_count,
+    )
+    down_projection = load_linear(
+        module.down_projection,
+        weights_dict,
+        path / "input_mix_weight_down",
+        implementation=implementation,
+    )
+    up_projection = load_linear(
+        module.up_projection,
+        weights_dict,
+        path / "input_mix_weight_up",
+        implementation=implementation,
+    )
+    return load_as_at(
+        lambda m: (m.norm.scales, m.down_projection, m.up_projection),
+        module,
+        (scales, down_projection, up_projection),
+    )
+
+
+def load_gated_residual_connection(
+    module: GatedResidualConnection,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> GatedResidualConnection:
+    reader = load_gated_stream_reader(module.reader, weights_dict, path, implementation=implementation)
+    injection = load_linear(
+        module.injection, weights_dict, path / "block_inject_weight", implementation=implementation
+    )
+    return load_as_at(lambda m: (m.reader, m.injection), module, (reader, injection))
+
+
+def load_gated_residual_head(
+    module: GatedResidualHead,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> GatedResidualHead:
+    reader = load_gated_stream_reader(module.reader, weights_dict, path, implementation=implementation)
+    return load_as_at(lambda m: (m.reader,), module, (reader,))
 
 
 def _load_conv(

@@ -196,7 +196,7 @@ class Transformer[StreamT](LalamoModule[TransformerConfig]):
 
         residual_dtype = inner_features.dtype
         stream = self.residual_head.expand(inner_features)
-        layer_keychains = keychain.split(len(self.layers))
+        *layer_keychains, readout_keychain = keychain.split(len(self.layers) + 1)
         updated_states: dict[int, TransformerLayerState | None] = {}
         layer_results = []
 
@@ -246,7 +246,11 @@ class Transformer[StreamT](LalamoModule[TransformerConfig]):
             if kv_source_layer_index is None:
                 updated_states[layer_index] = layer_result.updated_state
 
-        outputs = self.residual_head.readout(stream)
+        outputs = self.residual_head.readout(
+            stream,
+            forward_pass_config.mlp_forward_pass_config.matmul_config,
+            keychain=readout_keychain,
+        )
         assert outputs.dtype == residual_dtype
         pre_norm_outputs = outputs if return_suffix_tokens is not None else None
         normalized_outputs = call_vmapped_twice(self.output_norm, outputs) if self.output_norm is not None else outputs
