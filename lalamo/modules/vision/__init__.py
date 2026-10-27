@@ -1,5 +1,6 @@
 from .forward_pass_config import VisionAttentionImplementation, VisionForwardPassConfig
 from .image_grid import ImageGrid, PatchCoordinates
+from .image_positions import ImagePositionScheme, MRoPEImagePositions
 from .image_preprocessing import ImagePreprocessingConfig, PreprocessedImages
 from .patch_embedding import PatchEmbedding, PatchEmbeddingConfig
 from .patch_merger import PatchMerger, PatchMergerConfig
@@ -12,9 +13,11 @@ from .vision_rope import VisionRoPEConfig
 
 __all__ = [
     "ImageGrid",
+    "ImagePositionScheme",
     "ImagePreprocessingConfig",
     "InterpolatedPositionEmbedding",
     "InterpolatedPositionEmbeddingConfig",
+    "MRoPEImagePositions",
     "PatchCoordinates",
     "PatchEmbedding",
     "PatchEmbeddingConfig",

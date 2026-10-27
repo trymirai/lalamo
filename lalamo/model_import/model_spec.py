@@ -41,6 +41,8 @@ class ConfigMap:
     generation_params_overrides: GenerationConfig | None = None
     chat_template: FileSpec | JSONFieldSpec | str | None = None
     system_prompt: FileSpec | str | None = None
+    # Only read when importing with vision.
+    image_processor_config: FileSpec = field(default=FileSpec("preprocessor_config.json"))
 
 
 @dataclass(frozen=True)

@@ -17,6 +17,7 @@ from cattrs.preconf.json import make_converter
 from cattrs.strategies import configure_tagged_union
 from frozendict import frozendict
 from jinja2 import Environment, Template
+from PIL import Image
 from tokenizers import Tokenizer
 
 from lalamo.token_codec import TokenCodec, TokenCodecConfig
@@ -27,7 +28,9 @@ __all__ = [
     "AssistantMessage",
     "ChatCodec",
     "ChatCodecConfig",
+    "ContentPart",
     "FunctionCall",
+    "ImagePart",
     "Message",
     "PythonToolCalls",
     "ReasoningConfig",
@@ -35,6 +38,7 @@ __all__ = [
     "ResponseFormat",
     "SystemMessage",
     "TaggedToolCalls",
+    "TextPart",
     "ToolCall",
     "ToolMessage",
     "ToolSchema",
@@ -298,8 +302,29 @@ class HuggingFaceMessage(TypedDict):
 
 
 @dataclass(frozen=True)
+class TextPart:
+    text: str
+
+
+@dataclass(frozen=True, eq=False)
+class ImagePart:
+    """An image inside a message. Only its position reaches the chat template; pixels go to the vision encoder."""
+
+    image: Image.Image
+
+
+type ContentPart = TextPart | ImagePart
+
+
+@dataclass(frozen=True)
 class UserMessage:
-    content: str
+    content: str | tuple[ContentPart, ...]
+
+    @property
+    def images(self) -> tuple[Image.Image, ...]:
+        if isinstance(self.content, str):
+            return ()
+        return tuple(part.image for part in self.content if isinstance(part, ImagePart))
 
 
 @dataclass(frozen=True)
@@ -329,6 +354,30 @@ def _structure_text(value: JSON, _: type[str]) -> str:
     if not isinstance(value, str):
         raise TypeError("Expected text.")
     return value
+
+
+# HF chat templates take content either as a string or as a list of typed parts.
+message_converter.register_unstructure_hook(TextPart, lambda part: {"type": "text", "text": part.text})
+message_converter.register_unstructure_hook(ImagePart, lambda _part: {"type": "image"})
+
+
+def _structure_content(value: JSON, _: object) -> str | tuple[ContentPart, ...]:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, list):
+        raise TypeError("Expected message content to be text or a list of parts.")
+    parts: list[ContentPart] = []
+    for part in value:
+        if not isinstance(part, dict) or part.get("type") != "text" or not isinstance(part.get("text"), str):
+            raise TypeError("Only text parts can be read from serialized conversations; images carry pixels.")
+        parts.append(TextPart(part["text"]))
+    return tuple(parts)
+
+
+message_converter.register_structure_hook_func(
+    lambda cls: cls == (str | tuple[ContentPart, ...]),
+    _structure_content,
+)
 
 
 @message_converter.register_structure_hook_factory(lambda cls: get_origin(cls) in (dict, tuple))

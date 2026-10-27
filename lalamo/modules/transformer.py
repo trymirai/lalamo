@@ -96,7 +96,7 @@ class Transformer(LalamoModule[TransformerConfig]):
     def __call__(
         self,
         inner_features: Float[Array, "batch suffix_tokens channels"],
-        token_positions: Int[Array, "batch suffix_tokens"],
+        token_positions: Int[Array, "batch suffix_tokens *position_axes"],
         state: State | None,
         return_updated_state: bool,
         return_layer_results: bool,
@@ -114,10 +114,10 @@ class Transformer(LalamoModule[TransformerConfig]):
                 "inner_features must be a 3D array of size (batch_size, sequence_length, hidden_dim),"
                 f" got {inner_features.shape}",
             )
-        if token_positions.ndim != 2:
+        if token_positions.ndim not in (2, 3):
             raise ValueError(
-                "token_positions must be a 2D array of size (batch_size, sequence_length),"
-                f" got {token_positions.shape}",
+                "token_positions must have shape (batch_size, sequence_length), or (batch_size, sequence_length, axes)"
+                f" for multi-axis RoPE such as M-RoPE, got {token_positions.shape}",
             )
         if return_suffix_tokens is not None:
             if return_layer_results or return_positional_embeddings:

@@ -1,5 +1,5 @@
 import json
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +17,7 @@ from lalamo.models import (
     LanguageModelConfig,
     TTSConfig,
     TTSModelConfig,
+    VisionLanguageModelConfig,
 )
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.modules.classifier import ClassifierConfig
@@ -25,7 +26,13 @@ from lalamo.utils.registry_abc import RegistryABC
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import CompressionImplementation
 
-__all__ = ["ForeignClassifierConfig", "ForeignConfig", "ForeignLMConfig", "ForeignTTSConfig"]
+__all__ = [
+    "ForeignClassifierConfig",
+    "ForeignConfig",
+    "ForeignLMConfig",
+    "ForeignTTSConfig",
+    "ForeignVisionLanguageConfig",
+]
 
 
 @dataclass(frozen=True)
@@ -89,6 +96,23 @@ class ForeignLMConfig(ForeignConfig[LanguageModelConfig], RegistryABC):
             decoder_config=self.to_decoder_config(metadata_dict),
             generation_config=generation_config,
         )
+
+
+class ForeignVisionLanguageConfig(ABC):
+    """Implemented by foreign LM configs whose checkpoints also ship a vision tower.
+
+    Vision is opt-in at import time: the same checkpoint still converts to a plain ``LanguageModel``
+    unless vision is requested, so text-only exports stay exactly as they were.
+    """
+
+    @abstractmethod
+    def to_vision_language_config(
+        self,
+        metadata_dict: Mapping[str, str],
+        token_codec_config: ChatCodecConfig,
+        generation_config: GenerationConfig,
+        image_processor_config_path: Path,
+    ) -> VisionLanguageModelConfig: ...
 
 
 @dataclass(frozen=True)

@@ -1,14 +1,23 @@
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, Self
 
+import equinox as eqx
+from jaxtyping import Array
+
+from lalamo.model import Model
+from lalamo.model_import.loaders.vision import load_qwen3_5_vision_encoder
+from lalamo.model_import.model_configs.foreign_config import ForeignVisionLanguageConfig
+from lalamo.models import GenerationConfig, VisionLanguageModel, VisionLanguageModelConfig
+from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, SoftmaxRouting
+from lalamo.modules.mrope import MRoPEConfig, MRoPELayout
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
@@ -16,8 +25,12 @@ from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.token_mixers.deltanet import DeltaNetConfig
 from lalamo.modules.transformer import TransformerConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.modules.vision import MRoPEImagePositions
+from lalamo.utils.parameter_path import ParameterPath
+from lalamo.weight_matrix import CompressionImplementation
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
+from .qwen3_5_vision import HFQwen35ImageProcessorConfig, HFQwen35VisionConfig
 
 __all__ = ["HFQwen35Config"]
 
@@ -26,10 +39,12 @@ __all__ = ["HFQwen35Config"]
 class Qwen35RopeParameters:
     rope_theta: float
     partial_rotary_factor: float
+    mrope_section: tuple[int, int, int] | None = None
+    mrope_interleaved: bool = False
 
 
 @dataclass(frozen=True)
-class HFQwen35Config(HuggingFaceLMConfig):
+class HFQwen35Config(HuggingFaceLMConfig, ForeignVisionLanguageConfig):
     model_type: Literal["qwen3_5", "qwen3_5_moe"]
     hidden_size: int
     num_hidden_layers: int
@@ -60,6 +75,10 @@ class HFQwen35Config(HuggingFaceLMConfig):
     eos_token_id: int | list[int] = field(default_factory=list)
     quantization: QuantizationConfigType | None = None
 
+    # Present in the multimodal checkpoints; ignored unless vision is requested at import time.
+    vision_config: HFQwen35VisionConfig | None = None
+    image_token_id: int | None = None
+
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
         json_path = Path(json_path)
@@ -70,6 +89,73 @@ class HFQwen35Config(HuggingFaceLMConfig):
         text_config = config.pop("text_config", {})
         merged = {**text_config, **config}
         return cls._converter.structure(merged, cls)
+
+    def to_vision_language_config(
+        self,
+        metadata_dict: Mapping[str, str],
+        token_codec_config: ChatCodecConfig,
+        generation_config: GenerationConfig,
+        image_processor_config_path: Path,
+    ) -> VisionLanguageModelConfig:
+        if self.vision_config is None or self.image_token_id is None:
+            raise ValueError("This Qwen3.5 checkpoint has no vision tower.")
+        mrope_section = self.rope_parameters.mrope_section
+        if mrope_section is None or not self.rope_parameters.mrope_interleaved:
+            raise ValueError("Qwen3.5 vision requires interleaved M-RoPE parameters in the config.")
+
+        decoder_config = self.to_decoder_config(metadata_dict)
+        # M-RoPE equals the plain RoPE on text, so only the rope configs change; weights are identical.
+        layer_configs = tuple(
+            replace(
+                layer_config,
+                rope_config=MRoPEConfig(
+                    base=layer_config.rope_config.base,
+                    max_sequence_length=layer_config.rope_config.max_sequence_length,
+                    head_dim=layer_config.rope_config.head_dim,
+                    sections=mrope_section,
+                    layout=MRoPELayout.INTERLEAVED,
+                ),
+            )
+            if layer_config.rope_config is not None
+            else layer_config
+            for layer_config in decoder_config.transformer_config.layer_configs
+        )
+        decoder_config = replace(
+            decoder_config,
+            transformer_config=replace(decoder_config.transformer_config, layer_configs=layer_configs),
+        )
+        return VisionLanguageModelConfig(
+            token_codec_config=token_codec_config,
+            decoder_config=decoder_config,
+            generation_config=generation_config,
+            vision_encoder_config=self.vision_config.to_vision_encoder_config(),
+            image_preprocessing_config=HFQwen35ImageProcessorConfig.from_json(
+                image_processor_config_path,
+            ).to_image_preprocessing_config(),
+            image_position_scheme=MRoPEImagePositions(),
+            image_token_id=self.image_token_id,
+        )
+
+    def _load_weights(
+        self,
+        model: Model,
+        weights_dict: Mapping[str, Array],
+        *,
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    ) -> Model:
+        model = super()._load_weights(model, weights_dict, implementation=implementation)
+        if not isinstance(model, VisionLanguageModel):
+            return model
+        vision_path = ParameterPath("model.visual")
+        if not any(key.startswith(f"{vision_path}.") for key in weights_dict):
+            raise ValueError(f"The checkpoint has no vision weights under {vision_path}.")
+        vision_encoder = load_qwen3_5_vision_encoder(
+            model.vision_encoder,
+            weights_dict,
+            vision_path,
+            implementation=implementation,
+        )
+        return eqx.tree_at(lambda m: m.vision_encoder, model, vision_encoder)
 
     def to_decoder_config(
         self,

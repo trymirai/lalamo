@@ -448,6 +448,12 @@ def convert(
             help="Overwrite existing model files.",
         ),
     ] = False,
+    include_vision: Annotated[
+        bool,
+        Option(
+            help="Also convert the vision tower, producing a vision-language model (multimodal checkpoints only).",
+        ),
+    ] = False,
 ) -> None:
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
@@ -457,6 +463,7 @@ def convert(
         output_dir,
         dtype,
         partial(CliConversionCallbacks, overwrite=overwrite),
+        include_vision=include_vision,
     )
 
 

@@ -79,7 +79,7 @@ class DecoderForwardPassConfig:
 
 class DecoderActivationTrace(Exportable, eqx.Module):
     token_ids: Int[Array, "batch suffix_tokens"]
-    token_positions: Int[Array, "batch suffix_tokens"]
+    token_positions: Int[Array, "batch suffix_tokens *position_axes"]
     state: State | None
 
     rope_embeddings: tuple[PositionalEmbeddings, ...] | None
@@ -221,7 +221,7 @@ class Decoder(LalamoModule[DecoderConfig]):
     def __call__(
         self,
         token_ids: Int[Array, "batch suffix_tokens"],
-        token_positions: Int[Array, "batch suffix_tokens"],
+        token_positions: Int[Array, "batch suffix_tokens *position_axes"],
         state: State | None = None,
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
@@ -229,17 +229,24 @@ class Decoder(LalamoModule[DecoderConfig]):
         forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
+        input_embeddings: Float[Array, "batch suffix_tokens channels"] | None = None,
         *,
         keychain: Keychain,
     ) -> DecoderResult:
+        """Run the decoder.
+
+        ``input_embeddings``, when given, replaces the token embedding lookup. Multimodal models use it
+        to pass text embeddings with image features spliced in. ``token_ids`` are still required: they
+        feed per-layer embeddings and must match ``input_embeddings`` in shape.
+        """
         if token_ids.ndim != 2:
             raise ValueError(
                 f"token_ids must be a 2D array of size (batch_size, sequence_length), got {token_ids.shape}",
             )
-        if token_positions.ndim != 2:
+        if token_positions.ndim not in (2, 3):
             raise ValueError(
-                "token_positions must be a 2D array of size (batch_size, sequence_length),"
-                f" got {token_positions.shape}",
+                "token_positions must have shape (batch_size, sequence_length), or (batch_size, sequence_length, axes)"
+                f" for multi-axis RoPE such as M-RoPE, got {token_positions.shape}",
             )
         if return_suffix_tokens is not None:
             _, sequence_length = token_ids.shape
@@ -251,11 +258,21 @@ class Decoder(LalamoModule[DecoderConfig]):
             if return_activation_trace:
                 raise ValueError("return_suffix_tokens cannot be combined with return_activation_trace.")
         embedding_keychain, ple_keychain, transformer_keychain, readout_keychain = keychain.split(4)
-        inner_features = self.embedding.embed(
-            token_ids,
-            forward_pass_config=forward_pass_config.embedding_forward_pass_config,
-            keychain=embedding_keychain,
-        )
+        if input_embeddings is None:
+            inner_features = self.embedding.embed(
+                token_ids,
+                forward_pass_config=forward_pass_config.embedding_forward_pass_config,
+                keychain=embedding_keychain,
+            )
+        else:
+            if input_embeddings.shape[:2] != token_ids.shape:
+                raise ValueError(
+                    f"input_embeddings {input_embeddings.shape} do not match token_ids {token_ids.shape}.",
+                )
+            # Match what the embedding lookup would produce, so both paths feed the transformer identically.
+            inner_features = input_embeddings.astype(
+                forward_pass_config.embedding_forward_pass_config.activation_dtype
+            )
         if self.embedding_norm is not None:
             inner_features = call_vmapped_twice(
                 self.embedding_norm,
