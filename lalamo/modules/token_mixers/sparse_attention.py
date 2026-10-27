@@ -22,12 +22,14 @@ from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixer import (
     AttentionImplementation,
     MixerForwardPassConfig,
+    PositionalEmbeddingSelector,
     StateLayerBase,
+    TokenMixerBase,
+    TokenMixerConfig,
     TokenMixerResult,
 )
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
-from .attention import AttentionBase, AttentionConfigBase, SharedKeyValueProjection
 from .indexer_cache import DynamicIndexerCacheLayer, IndexerCacheLayer, StaticIndexerCacheLayer
 from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 
@@ -97,6 +99,23 @@ def select_top_blocks(
             return xla_top_k_blocks(scores, num_visible_blocks, k)
 
 
+def prepare_heads(
+    projection: Float[Array, "tokens channels"],
+    num_heads: int,
+    head_dim: int,
+    norm: Normalization,
+    positional_embeddings: PositionalEmbeddings,
+) -> Float[Array, "tokens heads head_channels"]:
+    heads = rearrange(
+        projection,
+        "tokens (heads head_channels) -> tokens heads head_channels",
+        heads=num_heads,
+        head_channels=head_dim,
+    )
+    heads = call_vmapped_twice(norm, heads)
+    return call_vmapped(positional_embeddings.apply, heads, in_axes=1, out_axes=1)
+
+
 class SparseAttentionIndexer(LalamoModule[SparseAttentionIndexerConfig]):
     projection: Linear
     query_norm: Normalization
@@ -119,14 +138,13 @@ class SparseAttentionIndexer(LalamoModule[SparseAttentionIndexerConfig]):
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=keychain,
         )
-        queries = rearrange(
+        queries = prepare_heads(
             raw_queries,
-            "tokens (heads head_channels) -> tokens heads head_channels",
-            heads=self.config.num_heads,
-            head_channels=self.config.head_dim,
+            self.config.num_heads,
+            self.config.head_dim,
+            self.query_norm,
+            positional_embeddings,
         )
-        queries = call_vmapped_twice(self.query_norm, queries)
-        queries = call_vmapped(positional_embeddings.apply, queries, in_axes=1, out_axes=1)
 
         if state is None:
             state = DynamicIndexerCacheLayer.empty(compression_ratio, self.config.head_dim, raw_keys.dtype)
@@ -155,32 +173,37 @@ class SparseAttentionIndexer(LalamoModule[SparseAttentionIndexerConfig]):
         )
 
 
-@dataclass(frozen=True, kw_only=True)
-class SparseAttentionConfig(AttentionConfigBase):
+@dataclass(frozen=True)
+class SparseAttentionConfig(TokenMixerConfig):
+    qkvg_projection_config: LinearConfig
+    out_projection_config: LinearConfig
+    query_norm_config: NormalizationConfig
+    key_norm_config: NormalizationConfig
     indexer_config: SparseAttentionIndexerConfig
-
-    def __post_init__(self) -> None:
-        if not self.is_causal:
-            raise ValueError("Sparse attention must be causal")
-        if self.has_sinks:
-            raise ValueError("Sparse attention does not support attention sinks")
-        if self.sliding_window_size is not None:
-            raise ValueError("Sparse attention does not support sliding windows")
-        if self.is_kv_sharing:
-            raise ValueError("Sparse attention does not support KV sharing")
-        if self.normalize_values:
-            raise ValueError("Sparse attention does not support value normalization")
+    num_heads: int
+    num_groups: int
+    head_dim: int
 
     def init(self, initializer: Initializer, model_dim: int) -> "SparseAttention":
-        parameters = self.init_parameters(initializer, model_dim)
+        query_dim = self.num_heads * self.head_dim
+        key_value_dim = self.num_groups * self.head_dim
         return SparseAttention(
             config=self,
             sharding_config=initializer.sharding_config,
-            qkvg_projection=parameters.qkvg_projection,
-            out_projection=parameters.out_projection,
-            query_norm=parameters.query_norm,
-            key_norm=parameters.key_norm,
-            sinks=parameters.sinks,
+            qkvg_projection=self.qkvg_projection_config.init(
+                initializer,
+                input_dim=model_dim,
+                output_dims=(query_dim, key_value_dim, key_value_dim, query_dim),
+                has_biases=False,
+            ),
+            out_projection=self.out_projection_config.init(
+                initializer,
+                query_dim,
+                (model_dim,),
+                has_biases=False,
+            ),
+            query_norm=self.query_norm_config.init(initializer, input_dim=self.head_dim),
+            key_norm=self.key_norm_config.init(initializer, input_dim=self.head_dim),
             indexer=self.indexer_config.init(initializer, model_dim),
         )
 
@@ -210,16 +233,14 @@ def sparse_attention_kernel(
     values: Float[Array, "src_tokens groups head_channels"],
     *,
     rows: Int[Array, "dst_tokens rows"],
-    scale: float | None,
-    logit_soft_cap: float | None,
     forward_pass_config: MixerForwardPassConfig,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
     num_src_tokens, _, _ = keys.shape
     match forward_pass_config.attention_implementation:
         case AttentionImplementation.PALLAS:
-            return pallas_sparse_attention(queries, keys, values, rows, scale, logit_soft_cap)
+            return pallas_sparse_attention(queries, keys, values, rows, None, None)
         case AttentionImplementation.XLA:
-            return xla_sparse_attention(queries, keys, values, rows, scale, logit_soft_cap)
+            return xla_sparse_attention(queries, keys, values, rows, None, None)
         case AttentionImplementation.STABLE_REDUCTION:
             return stable_reduction_attention(
                 queries,
@@ -227,15 +248,27 @@ def sparse_attention_kernel(
                 values,
                 bias=None,
                 mask=sparse_rows_mask(rows, num_src_tokens),
-                scale=scale,
-                logit_soft_cap=logit_soft_cap,
+                scale=None,
+                logit_soft_cap=None,
                 tile_size=forward_pass_config.attention_tile_size,
                 accumulation_dtype=forward_pass_config.attention_accumulation_dtype,
             )
 
 
-class SparseAttention(AttentionBase[SparseAttentionConfig, SparseAttentionStateLayer]):
+class SparseAttention(TokenMixerBase[SparseAttentionConfig, SparseAttentionStateLayer]):
+    qkvg_projection: Linear
+    out_projection: Linear
+    query_norm: Normalization
+    key_norm: Normalization
     indexer: SparseAttentionIndexer
+
+    @property
+    def model_dim(self) -> int:
+        return self.qkvg_projection.input_dim
+
+    @property
+    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
+        return PositionalEmbeddingSelector.GLOBAL
 
     def __call__(
         self,
@@ -258,10 +291,32 @@ class SparseAttention(AttentionBase[SparseAttentionConfig, SparseAttentionStateL
             raise ValueError("Sparse attention requires positional embeddings")
         qkvg_keychain, indexer_keychain, out_keychain = keychain.split(3)
 
-        projection = self.project(inputs, positional_embeddings, forward_pass_config, keychain=qkvg_keychain)
-        if isinstance(projection, SharedKeyValueProjection):
-            raise NotImplementedError("Sparse attention does not support KV sharing")
-        queries, gate, keys, values = projection
+        raw_queries, raw_keys, raw_values, gate = call_vmapped(
+            self.qkvg_projection,
+            inputs,
+            forward_pass_config=forward_pass_config.matmul_config,
+            keychain=qkvg_keychain,
+        )
+        queries = prepare_heads(
+            raw_queries,
+            self.config.num_heads,
+            self.config.head_dim,
+            self.query_norm,
+            positional_embeddings,
+        )
+        keys = prepare_heads(
+            raw_keys,
+            self.config.num_groups,
+            self.config.head_dim,
+            self.key_norm,
+            positional_embeddings,
+        )
+        values = rearrange(
+            raw_values,
+            "tokens (groups head_channels) -> tokens groups head_channels",
+            groups=self.config.num_groups,
+            head_channels=self.config.head_dim,
+        )
 
         if state is None:
             kv_cache = DynamicKVCacheLayer.init(
@@ -288,11 +343,18 @@ class SparseAttention(AttentionBase[SparseAttentionConfig, SparseAttentionStateL
             kv_cache.keys,
             kv_cache.values,
             rows=selected_rows(kv_cache, selection, self.config.indexer_config.compression_ratio),
-            scale=self.config.scale,
-            logit_soft_cap=self.config.logit_soft_cap,
             forward_pass_config=forward_pass_config,
         )
-        result = self.output_projection(attention_output, gate, forward_pass_config, keychain=out_keychain)
+        gated_output = rearrange(
+            attention_output,
+            "tokens heads head_channels -> tokens (heads head_channels)",
+        ) * jax.nn.sigmoid(gate)
+        (result,) = call_vmapped(
+            self.out_projection,
+            gated_output,
+            forward_pass_config=forward_pass_config.matmul_config,
+            keychain=out_keychain,
+        )
 
         if return_updated_state:
             updated_state = SparseAttentionStateLayer(kv_cache=kv_cache, indexer_cache=selection.state)

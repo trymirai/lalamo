@@ -78,9 +78,7 @@ from .token_mixer import (
 )
 from .token_mixers import (
     Attention,
-    AttentionBase,
     AttentionConfig,
-    AttentionConfigBase,
     DeltaNet,
     DeltaNetConfig,
     Mamba2,
@@ -119,9 +117,7 @@ __all__ = [
     "GELU",
     "Activation",
     "Attention",
-    "AttentionBase",
     "AttentionConfig",
-    "AttentionConfigBase",
     "AttentionImplementation",
     "Classifier",
     "ClassifierActivationTrace",

@@ -242,17 +242,6 @@ def test_sparse_attention_module_pallas_matches_xla() -> None:
         out_projection_config=LinearConfig(),
         query_norm_config=norm_config,
         key_norm_config=norm_config,
-        num_heads=24,
-        num_groups=2,
-        head_dim=256,
-        is_causal=True,
-        scale=None,
-        sliding_window_size=None,
-        logit_soft_cap=None,
-        has_sinks=False,
-        has_qkvg_biases=False,
-        has_out_biases=False,
-        has_gate=True,
         indexer_config=SparseAttentionIndexerConfig(
             projection_config=LinearConfig(),
             query_norm_config=norm_config,
@@ -262,6 +251,9 @@ def test_sparse_attention_module_pallas_matches_xla() -> None:
             compression_ratio=4,
             token_budget=2_048,
         ),
+        num_heads=24,
+        num_groups=2,
+        head_dim=256,
     )
     module = config.init(
         RandomInitializer(default_dtype=jnp.bfloat16, sharding_config=sharding_config, key=jax.random.key(0)),

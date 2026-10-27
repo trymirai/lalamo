@@ -16,12 +16,12 @@ from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding
 from lalamo.modules.linear import Linear
 from lalamo.modules.mlp import DenseMLP, MixtureOfExperts, MLPBase
 from lalamo.modules.normalization import Normalization
-from lalamo.modules.token_mixers.attention import Attention, AttentionBase, AttentionConfig, AttentionConfigBase
+from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv
 from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
 from lalamo.modules.token_mixers.mamba import Mamba2, Mamba2Config
 from lalamo.modules.token_mixers.short_conv import ShortConv, ShortConvConfig
-from lalamo.modules.token_mixers.sparse_attention import SparseAttention
+from lalamo.modules.token_mixers.sparse_attention import SparseAttention, SparseAttentionConfig
 from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
@@ -730,13 +730,13 @@ def _reorder_gated_attention_weights(
     return reordered_weights
 
 
-def load_attention[AttentionT: AttentionBase](
-    module: AttentionT,
+def load_attention(
+    module: Attention,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-) -> AttentionT:
+) -> Attention:
     projection_sublayers = ["q_proj"] if module.config.is_kv_sharing else ["q_proj", "k_proj", "v_proj"]
     projection_weights = weights_dict
     if module.config.has_gate:
@@ -790,7 +790,16 @@ def load_sparse_attention(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> SparseAttention:
-    attention = load_attention(module, weights_dict, path, implementation=implementation)
+    qkvg_projection = load_linear(
+        module.qkvg_projection,
+        _reorder_gated_attention_weights(weights_dict, path, module.config.num_heads, module.config.head_dim),
+        path,
+        sublayers_to_fuse=["q_proj", "k_proj", "v_proj", "g_proj"],
+        implementation=implementation,
+    )
+    out_projection = load_linear(module.out_projection, weights_dict, path / "o_proj", implementation=implementation)
+    query_norm = load_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
+    key_norm = load_rmsnorm(module.key_norm, weights_dict, path / "k_norm")
     indexer_path = path / "indexer"
     indexer_projection = load_linear(
         module.indexer.projection,
@@ -801,9 +810,25 @@ def load_sparse_attention(
     indexer_query_norm = load_rmsnorm(module.indexer.query_norm, weights_dict, indexer_path / "q_layernorm")
     indexer_key_norm = load_rmsnorm(module.indexer.key_norm, weights_dict, indexer_path / "k_layernorm")
     return load_as_at(
-        lambda m: (m.indexer.projection, m.indexer.query_norm, m.indexer.key_norm),
-        attention,
-        (indexer_projection, indexer_query_norm, indexer_key_norm),
+        lambda m: (
+            m.qkvg_projection,
+            m.out_projection,
+            m.query_norm,
+            m.key_norm,
+            m.indexer.projection,
+            m.indexer.query_norm,
+            m.indexer.key_norm,
+        ),
+        module,
+        (
+            qkvg_projection,
+            out_projection,
+            query_norm,
+            key_norm,
+            indexer_projection,
+            indexer_query_norm,
+            indexer_key_norm,
+        ),
     )
 
 
@@ -1210,7 +1235,7 @@ def _get_mixer_key(
 ) -> str:
     mixer_config = layer.config.mixer_config
     match mixer_config:
-        case AttentionConfigBase():
+        case AttentionConfig() | SparseAttentionConfig():
             return mixer_key[AttentionConfig]
         case DeltaNetConfig():
             return mixer_key[DeltaNetConfig]

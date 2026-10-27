@@ -1,4 +1,4 @@
-from .attention import Attention, AttentionBase, AttentionConfig, AttentionConfigBase
+from .attention import Attention, AttentionConfig
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .deltanet import DeltaNet, DeltaNetConfig
 from .mamba import Mamba2, Mamba2Config
@@ -13,9 +13,7 @@ from .sparse_attention import (
 
 __all__ = [
     "Attention",
-    "AttentionBase",
     "AttentionConfig",
-    "AttentionConfigBase",
     "DeltaNet",
     "DeltaNetConfig",
     "Mamba2",
