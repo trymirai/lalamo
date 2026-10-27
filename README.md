@@ -50,6 +50,38 @@ ModelSpec(
 )
 ```
 
+## Vision Input
+
+Qwen3.5 checkpoints can read images and PDFs. Vision is opt-in: a plain conversion keeps the text-only model, and `--include-vision` also converts the vision tower.
+
+```bash
+uv run lalamo convert Qwen/Qwen3.5-0.8B --include-vision
+```
+
+From Python, images go into a user message as `ImagePart`s next to the question. A PDF is rendered to one image per page, so it is passed the same way.
+
+```python
+from PIL import Image
+
+from lalamo.data import pdf_image_parts
+from lalamo.model_import.common import import_model
+from lalamo.models.chat_codec import ImagePart, TextPart, UserMessage
+from lalamo.module import Keychain
+from lalamo.utils.sharding import ShardingConfig
+
+sharding_config = ShardingConfig.replicated()
+model = import_model("Qwen/Qwen3.5-0.8B", sharding_config=sharding_config, include_vision=True).model
+keychain = Keychain.init(0, sharding_config=sharding_config)
+
+photo = UserMessage((ImagePart(Image.open("cat.jpg")), TextPart("What animal is this?")))
+print(model.reply([photo], keychain=keychain).response)
+
+invoice = UserMessage((*pdf_image_parts("invoice.pdf"), TextPart("What is the total due?")))
+print(model.reply([invoice], keychain=keychain).response)
+```
+
+Each image costs one token per 32×32 pixel block after resizing, so a US-letter page rendered at the default 144 DPI takes about 1,900 tokens. `PdfRenderConfig` sets the DPI and can reject documents with more than a given number of pages. Video input is not supported yet, and the CLI chat and the server accept text only.
+
 ## Optional Features
 
 ### PyAudio

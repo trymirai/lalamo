@@ -18,6 +18,7 @@ dependencies = [
     "orbax-checkpoint==0.11.33",
     "pillow>=10.0.0",
     "polars>=1.33.1",
+    "pypdfium2>=5.0.0",
     "requests>=2.32.5",
     "rich>=14.0.0",
     "soundfile>=0.13.1",

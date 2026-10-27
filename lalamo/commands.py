@@ -165,6 +165,8 @@ def convert(
         ],
         ConversionCallbacks,
     ] = ConversionCallbacks,
+    *,
+    include_vision: bool = False,
 ) -> None:
     effective_dtype = dtype or DType.BFLOAT16
     callbacks = callbacks_type(
@@ -194,6 +196,7 @@ def convert(
         sharding_config=ShardingConfig.replicated(),
         dtype=jnp.dtype(effective_dtype.value),
         progress_callback=progress_callback,
+        include_vision=include_vision,
     )
     callbacks.saving_model()
     imported_model.model.save(output_dir)

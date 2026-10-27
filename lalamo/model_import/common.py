@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple, cast
 
+import equinox as eqx
 from jaxtyping import Array, DTypeLike
 from tokenizers import Tokenizer
 
@@ -23,6 +24,7 @@ from lalamo.models import (
     LanguageModel,
     TTSModel,
     TTSModelConfig,
+    VisionLanguageModel,
 )
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.models.tts_codec import TTSCodecConfig
@@ -34,8 +36,21 @@ from lalamo.weight_matrix import CompressionImplementation
 
 from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config, merge_token_ids
 from .huggingface_tokenizer_config import HFTokenizerConfig
-from .model_configs.foreign_config import ForeignConfig, ForeignLMConfig
-from .model_spec import ClassifierModelSpec, FileSpec, JSONFieldSpec, LanguageModelSpec, ModelSpec, TTSModelSpec
+from .model_configs.foreign_config import (
+    ForeignConfig,
+    ForeignLMConfig,
+    ForeignVisionEncoderConfig,
+    ForeignVisionLanguageConfig,
+)
+from .model_spec import (
+    ClassifierModelSpec,
+    FileSpec,
+    JSONFieldSpec,
+    LanguageModelSpec,
+    ModelSpec,
+    TTSModelSpec,
+    VisionEncoderSpec,
+)
 from .origins import (
     DownloadingFileEvent,
     FinishedDownloadingFileEvent,
@@ -283,22 +298,47 @@ def _import_language_model(
     dtype: DTypeLike | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    include_vision: bool = False,
 ) -> LanguageModel:
     foreign_decoder_config = _load_foreign_config(model_spec, progress_callback=progress_callback)
-
     tokenizer, token_codec_config = _import_chat_codec(model_spec, progress_callback=progress_callback)
     generation_config = _import_generation_config(model_spec, foreign_decoder_config, progress_callback)
 
+    if not include_vision:
+        with _load_checkpoint(model_spec, progress_callback) as checkpoint:
+            return _load_model(
+                LanguageModel,
+                foreign_config=foreign_decoder_config,
+                model_config=foreign_decoder_config.to_lalamo_config(
+                    metadata_dict=checkpoint.metadata,
+                    token_codec_config=token_codec_config,
+                    generation_config=generation_config,
+                ),
+                tokenizer=tokenizer,
+                dtype=dtype,
+                weights_dict=checkpoint.weights,
+                progress_callback=progress_callback,
+                implementation=implementation,
+                sharding_config=sharding_config,
+            )
+
+    vision_spec = model_spec.vision_encoder
+    if vision_spec is None or not isinstance(foreign_decoder_config, ForeignVisionLanguageConfig):
+        raise ValueError(f"{model_spec.name} has no vision support in lalamo.")
+    foreign_vision_config, preprocessing_config = _load_vision_configs(
+        model_spec.origin, vision_spec, progress_callback
+    )
     with _load_checkpoint(model_spec, progress_callback) as checkpoint:
-        model_config = foreign_decoder_config.to_lalamo_config(
-            metadata_dict=checkpoint.metadata,
-            token_codec_config=token_codec_config,
-            generation_config=generation_config,
-        )
-        return _load_model(
-            LanguageModel,
+        model = _load_model(
+            VisionLanguageModel,
             foreign_config=foreign_decoder_config,
-            model_config=model_config,
+            model_config=foreign_decoder_config.to_vision_language_config(
+                metadata_dict=checkpoint.metadata,
+                token_codec_config=token_codec_config,
+                generation_config=generation_config,
+                vision_encoder_config=foreign_vision_config.to_vision_encoder_config(),
+                image_preprocessing_config=preprocessing_config,
+            ),
             tokenizer=tokenizer,
             dtype=dtype,
             weights_dict=checkpoint.weights,
@@ -306,6 +346,13 @@ def _import_language_model(
             implementation=implementation,
             sharding_config=sharding_config,
         )
+        vision_encoder = foreign_vision_config.load_weights(
+            model.vision_encoder,
+            checkpoint.weights,
+            ParameterPath(vision_spec.weights_path),
+            implementation=implementation,
+        )
+    return eqx.tree_at(lambda m: m.vision_encoder, model, vision_encoder)
 
 
 def _import_classifier(
@@ -401,6 +448,7 @@ def import_model(
     progress_callback: Callable[[StatusEvent], None] | None = None,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     to_full_precision: bool = False,
+    include_vision: bool = False,
 ) -> ImportResults:
     if isinstance(model_spec, str):
         registry_model_spec = ModelRegistry.init().repo_to_model.get(model_spec)
@@ -436,7 +484,10 @@ def import_model(
                 dtype=dtype,
                 progress_callback=progress_callback,
                 implementation=implementation,
+                include_vision=include_vision,
             )
+        case _ if include_vision:
+            raise ValueError(f"Vision is only available for language models, not {type(model_spec).__name__}.")
         case ClassifierModelSpec():
             model = _import_classifier(
                 model_spec,
@@ -472,6 +523,25 @@ def import_model(
     return ImportResults(model, metadata)
 
 
+def _load_vision_configs(
+    origin: Origin,
+    vision_spec: VisionEncoderSpec,
+    progress_callback: Callable[[StatusEvent], None] | None,
+) -> tuple[ForeignVisionEncoderConfig, ImagePreprocessingConfig]:
+    foreign_config = vision_spec.config_type.from_json(
+        origin.resolve_file(vision_spec.model_config, progress_callback)
+    )
+    preprocessing_config = vision_spec.image_processor_config_type.from_json(
+        origin.resolve_file(vision_spec.image_processor_config, progress_callback),
+    ).to_image_preprocessing_config()
+    encoder_config = foreign_config.to_vision_encoder_config()
+    if preprocessing_config.spatial_merge_size != encoder_config.spatial_merge_size:
+        raise ValueError("Preprocessor and vision tower disagree on the spatial merge size.")
+    if preprocessing_config.patch_size != encoder_config.patch_embedding_config.patch_size:
+        raise ValueError("Preprocessor and vision tower disagree on the patch size.")
+    return foreign_config, preprocessing_config
+
+
 class ImportedVisionEncoder(NamedTuple):
     encoder: VisionEncoder
     preprocessing_config: ImagePreprocessingConfig
@@ -489,18 +559,8 @@ def import_vision_encoder(
         raise ValueError(f"{model_spec.name} has no vision encoder.")
     vision_spec = model_spec.vision_encoder
 
-    foreign_config = vision_spec.config_type.from_json(
-        model_spec.origin.resolve_file(vision_spec.model_config, progress_callback),
-    )
-    preprocessing_config = vision_spec.image_processor_config_type.from_json(
-        model_spec.origin.resolve_file(vision_spec.image_processor_config, progress_callback),
-    ).to_image_preprocessing_config()
+    foreign_config, preprocessing_config = _load_vision_configs(model_spec.origin, vision_spec, progress_callback)
     encoder_config = foreign_config.to_vision_encoder_config()
-    if preprocessing_config.spatial_merge_size != encoder_config.spatial_merge_size:
-        raise ValueError("Preprocessor and vision tower disagree on the spatial merge size.")
-    if preprocessing_config.patch_size != encoder_config.patch_embedding_config.patch_size:
-        raise ValueError("Preprocessor and vision tower disagree on the patch size.")
-
     with _load_checkpoint(model_spec, progress_callback) as checkpoint:
         encoder = foreign_config.load_weights(
             encoder_config.init(EmptyInitializer(default_dtype=dtype, sharding_config=sharding_config)),

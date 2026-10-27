@@ -45,9 +45,10 @@ class PrefillResults(NamedTuple):
 
 class Chunk(eqx.Module):
     tokens: Int[Array, "num_chunks batch chunk_size"]
-    indices: Int[Array, "num_chunks batch chunk_size"]
+    indices: Int[Array, "num_chunks batch chunk_size *position_axes"]
     sequence_ends: Int[Array, "num_chunks batch"]
     is_last_token_inside: Bool[Array, "num_chunks batch"]
+    embeddings: Float[Array, "num_chunks batch chunk_size channels"] | None = None
 
 
 class DecodingState(NamedTuple):
@@ -148,6 +149,8 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
         token_ids: Int[Array, "batch tokens"],
         lengths_without_padding: Int[Array, " batch"] | None,
         chunk_size: int,
+        input_embeddings: Float[Array, "batch tokens channels"] | None = None,
+        token_positions: Int[Array, "batch tokens *position_axes"] | None = None,
     ) -> Chunk:
         batch_size, sequence_length = token_ids.shape
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
@@ -169,12 +172,27 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
             chunk_size=chunk_size,
         )
         tokens = jax.device_put(tokens, chunk_token_sharding)
-        indices = rearrange(
-            jnp.broadcast_to(jnp.arange(padded_length, dtype=jnp.int32), (batch_size, padded_length)),
-            "batch (num_chunks chunk_size) -> num_chunks batch chunk_size",
-            chunk_size=chunk_size,
-        )
-        indices = jax.device_put(indices, chunk_token_sharding)
+
+        def split_into_chunks(values: Array) -> Array:
+            """Pad the token axis to whole chunks and move the chunk axis first; trailing axes are kept."""
+            trailing_padding = ((0, 0),) * (values.ndim - 2)
+            padded = jnp.pad(values, ((0, 0), (0, padded_length - sequence_length), *trailing_padding))
+            chunked = rearrange(
+                padded,
+                "batch (num_chunks chunk_size) ... -> num_chunks batch chunk_size ...",
+                chunk_size=chunk_size,
+            )
+            return jax.device_put(
+                chunked,
+                self.sharding_config.make_sharding((None, batch_axis, *(None,) * (chunked.ndim - 2))),
+            )
+
+        if token_positions is None:
+            token_positions = jnp.broadcast_to(
+                jnp.arange(sequence_length, dtype=jnp.int32), (batch_size, sequence_length)
+            )
+        indices = split_into_chunks(token_positions)
+        embeddings = split_into_chunks(input_embeddings) if input_embeddings is not None else None
         chunk_starts = jnp.arange(num_chunks, dtype=jnp.int32) * chunk_size
         sequence_ends = jnp.clip(lengths_without_padding[None, :] - chunk_starts[:, None], 0, chunk_size)
         sequence_ends = jax.device_put(sequence_ends, chunk_vector_sharding)
@@ -189,6 +207,7 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
             indices=indices,
             sequence_ends=sequence_ends,
             is_last_token_inside=is_last_token_inside,
+            embeddings=embeddings,
         )
 
     @eqx.filter_jit
@@ -201,10 +220,20 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
         chunk_size: int = 512,
         initial_state: State | None = None,
         prefix_lengths: Int[Array, " batch"] | None = None,
+        input_embeddings: Float[Array, "batch tokens channels"] | None = None,
+        token_positions: Int[Array, "batch tokens *position_axes"] | None = None,
         *,
         keychain: Keychain,
     ) -> PrefillResults:
-        """Prefills `token_ids`; with `initial_state`, they continue each row's `prefix_lengths` cached tokens."""
+        """Prefills `token_ids`; with `initial_state`, they continue each row's `prefix_lengths` cached tokens.
+
+        Multimodal prompts pass `input_embeddings` (text embeddings with image features spliced in) and
+        `token_positions` (absolute RoPE positions, e.g. per-axis M-RoPE positions). Explicit positions are
+        absolute, so they cannot be combined with `prefix_lengths`. The returned `last_token_indices` is then
+        the largest position of each row's last token, which is where decoding continues from.
+        """
+        if token_positions is not None and prefix_lengths is not None:
+            raise ValueError("Explicit token_positions are absolute and cannot be combined with prefix_lengths.")
         batch_size, sequence_length = token_ids.shape
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
         batch_vector_sharding = self.sharding_config.make_sharding((batch_axis,))
@@ -216,8 +245,21 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
         if forward_pass_config is None:
             forward_pass_config = DecoderForwardPassConfig.for_inference()
 
-        chunks = self._make_attention_chunks(token_ids, lengths_without_padding, chunk_size)
+        chunks = self._make_attention_chunks(
+            token_ids,
+            lengths_without_padding,
+            chunk_size,
+            input_embeddings,
+            token_positions,
+        )
         last_token_indices = lengths_without_padding - 1
+        if token_positions is not None:
+            last_token_positions = jnp.take_along_axis(
+                token_positions,
+                jnp.reshape(jnp.maximum(last_token_indices, 0), (batch_size, 1, *(1,) * (token_positions.ndim - 2))),
+                axis=1,
+            )
+            last_token_indices = jnp.max(jnp.reshape(last_token_positions, (batch_size, -1)), axis=1)
         if prefix_lengths is not None:
             chunks = eqx.tree_at(lambda chunk: chunk.indices, chunks, chunks.indices + prefix_lengths[None, :, None])
             last_token_indices = last_token_indices + prefix_lengths
@@ -251,6 +293,7 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
                 lengths_without_padding=chunk.sequence_ends,
                 forward_pass_config=forward_pass_config,
                 return_suffix_tokens=1,
+                input_embeddings=chunk.embeddings,
                 keychain=current_chunk_keychain,
             )
             assert decoder_result.updated_state is not None
@@ -283,6 +326,8 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
         num_top_logits_to_return: int | None = None,
         prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
         decode_forward_pass_config: DecoderForwardPassConfig | None = None,
+        prompt_embeddings: Float[Array, "batch prompt_tokens channels"] | None = None,
+        prompt_positions: Int[Array, "batch prompt_tokens *position_axes"] | None = None,
         *,
         keychain: Keychain,
     ) -> GenerationResults:
@@ -339,6 +384,8 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
             prompt_length + max_output_length + 1,
             prompt_lengths_without_padding,
             prefill_forward_pass_config,
+            input_embeddings=prompt_embeddings,
+            token_positions=prompt_positions,
             keychain=prefill_keychain,
         )
         initial_state = DecodingState(
