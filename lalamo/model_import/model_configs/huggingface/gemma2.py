@@ -2,6 +2,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
+from lalamo.modules import AdditiveResidualConfig, SublayerConfig
 from lalamo.modules.activations import GELU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
@@ -100,17 +101,14 @@ class HFGemma2Config(HuggingFaceLMConfig):
                 sliding_window_size=sliding_window_size,
             )
             transformer_layer_config = TransformerLayerConfig(
-                pre_mixer_norm_config=rmsnorm_config,
-                mixer_config=attention_config,
-                post_mixer_norm_config=rmsnorm_config,
-                pre_mlp_norm_config=rmsnorm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=rmsnorm_config,
+                mixer=SublayerConfig.sandwich_norm(rmsnorm_config, attention_config, rmsnorm_config),
+                mlp=SublayerConfig.sandwich_norm(rmsnorm_config, mlp_config, rmsnorm_config),
                 rope_config=rope_config,
             )
             layer_configs.append(transformer_layer_config)
 
         transformer_config = TransformerConfig(
+            residual_config=AdditiveResidualConfig(),
             layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,

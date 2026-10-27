@@ -45,6 +45,14 @@ from .normalization import (
     NormalizationConfig,
     UpcastMode,
 )
+from .residual import (
+    AdditiveResidualConfig,
+    AdditiveResidualConnection,
+    AdditiveResidualHead,
+    ResidualConfig,
+    ResidualConnectionBase,
+    ResidualHeadBase,
+)
 from .rope import (
     LinearScalingRoPEConfig,
     LlamaRoPEConfig,
@@ -66,6 +74,15 @@ from .speculators import (
     WeaverConfig,
     WeaverPrefix,
 )
+from .stream_ops import (
+    PerLayerEmbeddingInjection,
+    PerLayerEmbeddingInjectionConfig,
+    ResidualScale,
+    ResidualScaleConfig,
+    StreamOpBase,
+    StreamOpConfig,
+    StreamOpContext,
+)
 from .token_mixer import (
     AttentionImplementation,
     MixerForwardPassConfig,
@@ -75,6 +92,7 @@ from .token_mixer import (
     TokenMixerBase,
     TokenMixerConfig,
     TokenMixerResult,
+    TransformerLayerState,
 )
 from .token_mixers import (
     Attention,
@@ -105,8 +123,9 @@ from .token_mixers.kv_cache import (
 )
 from .transformer import Transformer, TransformerConfig, TransformerForwardPassConfig, TransformerResult
 from .transformer_layer import (
-    PLELayer,
-    PLELayerConfig,
+    Sublayer,
+    SublayerActivationTrace,
+    SublayerConfig,
     TransformerLayer,
     TransformerLayerActivationTrace,
     TransformerLayerConfig,
@@ -118,6 +137,9 @@ from .transformer_layer import (
 __all__ = [
     "GELU",
     "Activation",
+    "AdditiveResidualConfig",
+    "AdditiveResidualConnection",
+    "AdditiveResidualHead",
     "Attention",
     "AttentionBase",
     "AttentionConfig",
@@ -169,12 +191,17 @@ __all__ = [
     "MixtureOfExpertsConfig",
     "Normalization",
     "NormalizationConfig",
-    "PLELayer",
-    "PLELayerConfig",
     "PLEModelConfig",
     "PerLayerEmbedding",
+    "PerLayerEmbeddingInjection",
+    "PerLayerEmbeddingInjectionConfig",
     "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
+    "ResidualConfig",
+    "ResidualConnectionBase",
+    "ResidualHeadBase",
+    "ResidualScale",
+    "ResidualScaleConfig",
     "RoPE",
     "RoPEConfig",
     "RoutingBias",
@@ -197,6 +224,12 @@ __all__ = [
     "StateLayerBase",
     "StaticIndexerCacheLayer",
     "StaticKVCacheLayer",
+    "StreamOpBase",
+    "StreamOpConfig",
+    "StreamOpContext",
+    "Sublayer",
+    "SublayerActivationTrace",
+    "SublayerConfig",
     "TiedEmbedding",
     "TiedEmbeddingConfig",
     "TokenMixerBase",
@@ -211,6 +244,7 @@ __all__ = [
     "TransformerLayerConv",
     "TransformerLayerConvConfig",
     "TransformerLayerResult",
+    "TransformerLayerState",
     "TransformerResult",
     "UnscaledRoPEConfig",
     "UntiedEmbedding",

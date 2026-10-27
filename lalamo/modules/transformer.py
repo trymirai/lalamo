@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import equinox as eqx
+import jax
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
@@ -8,8 +9,9 @@ from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, field
 
 from .normalization import Normalization, NormalizationConfig
+from .residual import ResidualConfig, ResidualHeadBase
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
-from .token_mixer import State, StateLayerBase
+from .token_mixer import State, TransformerLayerState
 from .transformer_layer import (
     TransformerForwardPassConfig,
     TransformerLayer,
@@ -36,8 +38,9 @@ class TransformerResult(Exportable, eqx.Module):
 
 @dataclass(frozen=True)
 class TransformerConfig(LalamoConfig):
+    residual_config: ResidualConfig
     layer_configs: tuple[TransformerLayerConfig, ...]
-    output_norm_config: NormalizationConfig
+    output_norm_config: NormalizationConfig | None
     model_dim: int
     hidden_dim: int
 
@@ -60,15 +63,19 @@ class TransformerConfig(LalamoConfig):
     def init(self, initializer: Initializer) -> "Transformer":
         ropes, rope_indices = self._init_ropes(initializer)
 
+        residual_head = self.residual_config.init_head(initializer, self.model_dim)
         layers = tuple(
             layer_config.init(
                 initializer,
+                residual_config=self.residual_config,
                 model_dim=self.model_dim,
                 hidden_dim=layer_config.hidden_dim if layer_config.hidden_dim is not None else self.hidden_dim,
             )
             for layer_config in self.layer_configs
         )
-        output_norm = self.output_norm_config.init(initializer, self.model_dim)
+        output_norm = (
+            self.output_norm_config.init(initializer, self.model_dim) if self.output_norm_config is not None else None
+        )
 
         return Transformer(
             config=self,
@@ -80,17 +87,19 @@ class TransformerConfig(LalamoConfig):
                 for layer_index, layer_config in enumerate(self.layer_configs)
                 if layer_config.kv_source_layer_index is None
             ),
+            residual_head=residual_head,
             layers=layers,
             output_norm=output_norm,
         )
 
 
-class Transformer(LalamoModule[TransformerConfig]):
+class Transformer[StreamT](LalamoModule[TransformerConfig]):
     ropes: tuple[RoPE, ...]
     rope_indices: tuple[int, ...] = field(static=True)
     kv_source_layer_indices: tuple[int, ...] = field(static=True)
-    layers: tuple[TransformerLayer, ...]
-    output_norm: Normalization
+    residual_head: ResidualHeadBase[ResidualConfig, StreamT]
+    layers: tuple[TransformerLayer[StreamT], ...]
+    output_norm: Normalization | None
 
     @eqx.filter_jit
     def __call__(
@@ -186,12 +195,13 @@ class Transformer(LalamoModule[TransformerConfig]):
             suffix_rope_embeddings = ()
 
         residual_dtype = inner_features.dtype
+        stream = self.residual_head.expand(inner_features)
         layer_keychains = keychain.split(len(self.layers))
-        updated_states: dict[int, StateLayerBase | None] = {}
+        updated_states: dict[int, TransformerLayerState | None] = {}
         layer_results = []
 
         for layer_index, (layer, layer_keychain) in enumerate(zip(self.layers, layer_keychains, strict=True)):
-            assert inner_features.dtype == residual_dtype
+            assert all(leaf.dtype == residual_dtype for leaf in jax.tree.leaves(stream))
             runs_on_suffix_only = last_state_owner_index is not None and layer_index > last_state_owner_index
             rope_index = self.rope_indices[layer_index]
             active_rope_embeddings = suffix_rope_embeddings if runs_on_suffix_only else rope_embeddings
@@ -217,7 +227,7 @@ class Transformer(LalamoModule[TransformerConfig]):
                 )
 
             layer_result = layer(
-                inner_features,
+                stream,
                 positional_embeddings,
                 state=effective_state,
                 return_updated_state=must_return_state,
@@ -230,15 +240,16 @@ class Transformer(LalamoModule[TransformerConfig]):
                 keychain=layer_keychain,
             )
 
-            inner_features = layer_result.outputs
+            stream = layer_result.outputs
             layer_results.append(layer_result)
 
             if kv_source_layer_index is None:
                 updated_states[layer_index] = layer_result.updated_state
 
-        assert inner_features.dtype == residual_dtype
-        pre_norm_outputs = inner_features if return_suffix_tokens is not None else None
-        normalized_outputs = call_vmapped_twice(self.output_norm, inner_features)
+        outputs = self.residual_head.readout(stream)
+        assert outputs.dtype == residual_dtype
+        pre_norm_outputs = outputs if return_suffix_tokens is not None else None
+        normalized_outputs = call_vmapped_twice(self.output_norm, outputs) if self.output_norm is not None else outputs
 
         if return_updated_state:
             compact_state_layers = []

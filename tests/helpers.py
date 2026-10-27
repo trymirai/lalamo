@@ -12,6 +12,7 @@ from lalamo.initializer import RandomInitializer
 from lalamo.models import LanguageModel
 from lalamo.module import ForwardPassMode, Keychain
 from lalamo.modules import (
+    AdditiveResidualConfig,
     Decoder,
     DecoderConfig,
     DecoderForwardPassConfig,
@@ -19,6 +20,7 @@ from lalamo.modules import (
     Identity,
     LinearConfig,
     NormalizationConfig,
+    SublayerConfig,
     TiedEmbeddingConfig,
     TransformerConfig,
     TransformerLayerConfig,
@@ -136,18 +138,15 @@ def build_tiny_attention_decoder_config(kv_source_layer_indices: tuple[int | Non
         )
         layer_configs.append(
             TransformerLayerConfig(
-                pre_mixer_norm_config=norm_config,
-                mixer_config=attention_config,
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=norm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=None,
+                mixer=SublayerConfig.pre_norm(norm_config, attention_config),
+                mlp=SublayerConfig.pre_norm(norm_config, mlp_config),
                 rope_config=rope_config,
                 kv_source_layer_index=kv_source,
             ),
         )
 
     transformer_config = TransformerConfig(
+        residual_config=AdditiveResidualConfig(),
         layer_configs=tuple(layer_configs),
         output_norm_config=norm_config,
         model_dim=model_dim,

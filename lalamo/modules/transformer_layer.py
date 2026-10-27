@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Self
@@ -12,19 +13,22 @@ from jaxtyping import Array, DTypeLike, Float, Int
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, LogicalAxis
+from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import GradientEstimator, MatmulConfig
 
-from .activations import Activation
 from .linear import Linear, LinearConfig
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
+from .residual import ResidualConfig, ResidualConnectionBase
 from .rope import PositionalEmbeddings, RoPEConfig
+from .stream_ops import StreamOpBase, StreamOpConfig, StreamOpContext
 from .token_mixer import (
     MixerForwardPassConfig,
     PositionalEmbeddingSelector,
     StateLayerBase,
     TokenMixerBase,
     TokenMixerConfig,
+    TransformerLayerState,
 )
 from .token_mixers.attention import Attention
 from .token_mixers.convolutions import SeparableCausalConv, SeparableCausalConvConfig
@@ -32,9 +36,10 @@ from .token_mixers.kv_cache import PagedKVCacheLayer
 from .utils import call_vmapped, call_vmapped_twice, gather_suffix_tokens
 
 __all__ = [
-    "PLELayer",
-    "PLELayerConfig",
     "PositionalEmbeddingSelector",
+    "Sublayer",
+    "SublayerActivationTrace",
+    "SublayerConfig",
     "TransformerForwardPassConfig",
     "TransformerLayer",
     "TransformerLayerActivationTrace",
@@ -78,86 +83,6 @@ class TransformerForwardPassConfig:
             mixer_forward_pass_config=MixerForwardPassConfig.for_training(gradient_estimator, precision),
             mlp_forward_pass_config=MLPForwardPassConfig.for_training(gradient_estimator, precision),
         )
-
-
-class TransformerLayerActivationTrace(Exportable, eqx.Module):
-    inputs: Float[Array, "batch suffix_tokens channels"]
-    positional_embeddings: PositionalEmbeddings | None
-    state: StateLayerBase | None
-
-    mlp_inputs: Float[Array, "batch suffix_tokens channels"]
-    pre_mixer_norm: Float[Array, "batch suffix_tokens channels"]
-    mixer: Float[Array, "batch suffix_tokens channels"]
-    post_mixer_norm: Float[Array, "batch suffix_tokens channels"] | None
-    pre_mlp_norm: Float[Array, "batch suffix_tokens channels"]
-    mlp: Float[Array, "batch suffix_tokens channels"]
-    post_mlp_norm: Float[Array, "batch suffix_tokens channels"] | None
-
-
-class TransformerLayerResult(Exportable, eqx.Module):
-    outputs: Float[Array, "batch suffix_tokens channels"]
-    updated_state: StateLayerBase | None
-    activation_trace: TransformerLayerActivationTrace | None
-
-
-@dataclass(frozen=True)
-class PLELayerConfig(LalamoConfig):
-    linear_config: LinearConfig
-    norm_config: NormalizationConfig
-    ple_dim: int
-    activation: Activation
-
-    def init(self, initializer: Initializer, model_dim: int) -> "PLELayer":
-        gate = self.linear_config.init(
-            initializer,
-            input_dim=model_dim,
-            output_dims=(self.ple_dim,),
-            has_biases=False,
-        )
-        projection = self.linear_config.init(
-            initializer,
-            input_dim=self.ple_dim,
-            output_dims=(model_dim,),
-            has_biases=False,
-        )
-        norm = self.norm_config.init(initializer, model_dim)
-        return PLELayer(
-            config=self,
-            sharding_config=initializer.sharding_config,
-            gate=gate,
-            projection=projection,
-            norm=norm,
-        )
-
-
-class PLELayer(LalamoModule[PLELayerConfig]):
-    gate: Linear
-    projection: Linear
-    norm: Normalization
-
-    def __call__(
-        self,
-        outputs: Float[Array, "batch suffix_tokens channels"],
-        per_layer_input: Float[Array, "batch suffix_tokens ple_dim"],
-        *,
-        keychain: Keychain,
-    ) -> Float[Array, "batch suffix_tokens channels"]:
-        gate_keychain, projection_keychain = keychain.split()
-        (ple_gated,) = call_vmapped_twice(
-            self.gate,
-            outputs,
-            keychain=gate_keychain,
-            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
-        )
-        ple_gated = self.config.activation(ple_gated) * per_layer_input
-        (ple_projected,) = call_vmapped_twice(
-            self.projection,
-            ple_gated,
-            keychain=projection_keychain,
-            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
-        )
-        ple_normed = call_vmapped_twice(self.norm, ple_projected)
-        return outputs + ple_normed
 
 
 @dataclass(frozen=True)
@@ -239,76 +164,210 @@ class TransformerLayerConv(LalamoModule[TransformerLayerConvConfig]):
         )
 
 
+class SublayerActivationTrace(Exportable, eqx.Module):
+    inputs: Float[Array, "batch suffix_tokens channels"]
+    pre_norm: Float[Array, "batch suffix_tokens channels"]
+    body: Float[Array, "batch suffix_tokens channels"]
+    post_norm: Float[Array, "batch suffix_tokens channels"] | None
+
+
+@dataclass(frozen=True)
+class SublayerConfig[BodyConfigT](LalamoConfig):
+    pre_norm_config: NormalizationConfig | None
+    conv_config: TransformerLayerConvConfig | None
+    body_config: BodyConfigT
+    post_norm_config: NormalizationConfig | None
+
+    @classmethod
+    def pre_norm(cls, norm_config: NormalizationConfig, body_config: BodyConfigT) -> Self:
+        return cls(pre_norm_config=norm_config, conv_config=None, body_config=body_config, post_norm_config=None)
+
+    @classmethod
+    def sandwich_norm(
+        cls,
+        pre_norm_config: NormalizationConfig,
+        body_config: BodyConfigT,
+        post_norm_config: NormalizationConfig,
+    ) -> Self:
+        return cls(
+            pre_norm_config=pre_norm_config,
+            conv_config=None,
+            body_config=body_config,
+            post_norm_config=post_norm_config,
+        )
+
+    def init[BodyT: LalamoModule, StreamT](
+        self,
+        initializer: Initializer,
+        model_dim: int,
+        body: BodyT,
+        connection: ResidualConnectionBase[ResidualConfig, StreamT],
+    ) -> "Sublayer[BodyT, StreamT]":
+        pre_norm = self.pre_norm_config.init(initializer, model_dim) if self.pre_norm_config is not None else None
+        conv = self.conv_config.init(initializer, model_dim) if self.conv_config is not None else None
+        post_norm = self.post_norm_config.init(initializer, model_dim) if self.post_norm_config is not None else None
+        return Sublayer(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            connection=connection,
+            pre_norm=pre_norm,
+            conv=conv,
+            body=body,
+            post_norm=post_norm,
+        )
+
+
+class Sublayer[BodyT: LalamoModule, StreamT](LalamoModule[SublayerConfig]):
+    connection: ResidualConnectionBase[ResidualConfig, StreamT]
+    pre_norm: Normalization | None
+    conv: TransformerLayerConv | None
+    body: BodyT
+    post_norm: Normalization | None
+
+    def __call__[AuxT](
+        self,
+        stream: StreamT,
+        call_body: Callable[
+            [Float[Array, "batch suffix_tokens channels"], Keychain],
+            tuple[Float[Array, "batch suffix_tokens channels"], AuxT],
+        ],
+        matmul_config: MatmulConfig,
+        *,
+        keychain: Keychain,
+    ) -> tuple[StreamT, SublayerActivationTrace, AuxT]:
+        def apply(
+            inputs: Float[Array, "batch suffix_tokens channels"],
+        ) -> tuple[Float[Array, "batch suffix_tokens channels"], tuple[SublayerActivationTrace, AuxT]]:
+            normalized_inputs = call_vmapped_twice(self.pre_norm, inputs) if self.pre_norm is not None else inputs
+
+            if self.conv is not None:
+                conv_keychain, body_keychain = keychain.split()
+                conv_inputs, conv_coefficients = self.conv.prepare(
+                    normalized_inputs,
+                    matmul_config,
+                    keychain=conv_keychain,
+                )
+                conv_outputs, aux = call_body(conv_inputs, body_keychain)
+                body_outputs = self.conv.finish(conv_outputs, conv_coefficients)
+            else:
+                body_outputs, aux = call_body(normalized_inputs, keychain)
+
+            normalized_outputs = (
+                call_vmapped_twice(self.post_norm, body_outputs) if self.post_norm is not None else None
+            )
+            update = normalized_outputs if normalized_outputs is not None else body_outputs
+
+            activation_trace = SublayerActivationTrace(
+                inputs=inputs,
+                pre_norm=normalized_inputs,
+                body=body_outputs,
+                post_norm=normalized_outputs,
+            )
+            return update, (activation_trace, aux)
+
+        updated_stream, (activation_trace, aux) = self.connection(stream, apply)
+        return updated_stream, activation_trace, aux
+
+
+class TransformerLayerActivationTrace[StreamT](Exportable, eqx.Module):
+    inputs: StreamT
+    positional_embeddings: PositionalEmbeddings | None
+    state: TransformerLayerState | None
+
+    prologue: tuple[StreamT, ...]
+    mixer: SublayerActivationTrace
+    mlp: SublayerActivationTrace
+    epilogue: tuple[StreamT, ...]
+
+
+class TransformerLayerResult[StreamT](Exportable, eqx.Module):
+    outputs: StreamT
+    updated_state: TransformerLayerState | None
+    activation_trace: TransformerLayerActivationTrace[StreamT] | None
+
+
 @dataclass(frozen=True)
 class TransformerLayerConfig(LalamoConfig):
-    pre_mixer_norm_config: NormalizationConfig | None
-    mixer_conv_config: TransformerLayerConvConfig | None = dataclass_field(default=None, kw_only=True)
-    mixer_config: TokenMixerConfig
-    post_mixer_norm_config: NormalizationConfig | None
-    pre_mlp_norm_config: NormalizationConfig
-    mlp_conv_config: TransformerLayerConvConfig | None = dataclass_field(default=None, kw_only=True)
-    mlp_config: MLPConfig
-    post_mlp_norm_config: NormalizationConfig | None
+    prologue_configs: tuple[StreamOpConfig, ...] = dataclass_field(default=(), kw_only=True)
+    mixer: SublayerConfig[TokenMixerConfig]
+    mlp: SublayerConfig[MLPConfig]
+    epilogue_configs: tuple[StreamOpConfig, ...] = dataclass_field(default=(), kw_only=True)
     hidden_dim: int | None = None
-    ple_config: PLELayerConfig | None = None
-    has_post_layer_scalar: bool = False
     kv_source_layer_index: int | None = None
     rope_config: RoPEConfig | None = None
 
     def init(
         self,
         initializer: Initializer,
+        residual_config: ResidualConfig,
         model_dim: int,
         hidden_dim: int,
     ) -> "TransformerLayer":
-        pre_mixer_norm = (
-            self.pre_mixer_norm_config.init(initializer, model_dim) if self.pre_mixer_norm_config else None
+        prologue = tuple(
+            op_config.init(initializer, residual_config, model_dim) for op_config in self.prologue_configs
         )
-        mixer = self.mixer_config.init(initializer, model_dim=model_dim)
-        post_mixer_norm = (
-            self.post_mixer_norm_config.init(initializer, model_dim) if self.post_mixer_norm_config else None
+        mixer = self.mixer.init(
+            initializer,
+            model_dim,
+            body=self.mixer.body_config.init(initializer, model_dim=model_dim),
+            connection=residual_config.init_connection(initializer, model_dim),
         )
-        pre_mlp_norm = self.pre_mlp_norm_config.init(initializer, model_dim)
-        mlp = self.mlp_config.init(initializer, model_dim, hidden_dim)
-        post_mlp_norm = self.post_mlp_norm_config.init(initializer, model_dim) if self.post_mlp_norm_config else None
-        ple = self.ple_config.init(initializer, model_dim) if self.ple_config else None
-        post_layer_scalar = initializer.ones((1,)) if self.has_post_layer_scalar else None
-        mixer_conv = self.mixer_conv_config.init(initializer, model_dim) if self.mixer_conv_config else None
-        mlp_conv = self.mlp_conv_config.init(initializer, model_dim) if self.mlp_conv_config else None
+        mlp = self.mlp.init(
+            initializer,
+            model_dim,
+            body=self.mlp.body_config.init(initializer, model_dim, hidden_dim),
+            connection=residual_config.init_connection(initializer, model_dim),
+        )
+        epilogue = tuple(
+            op_config.init(initializer, residual_config, model_dim) for op_config in self.epilogue_configs
+        )
         return TransformerLayer(
             config=self,
             sharding_config=initializer.sharding_config,
-            pre_mixer_norm=pre_mixer_norm,
-            mixer_conv=mixer_conv,
+            prologue=prologue,
             mixer=mixer,
-            post_mixer_norm=post_mixer_norm,
-            pre_mlp_norm=pre_mlp_norm,
-            mlp_conv=mlp_conv,
             mlp=mlp,
-            post_mlp_norm=post_mlp_norm,
-            ple=ple,
-            post_layer_scalar=post_layer_scalar,
+            epilogue=epilogue,
         )
 
 
-class TransformerLayer(LalamoModule[TransformerLayerConfig]):
-    pre_mixer_norm: Normalization | None
-    mixer_conv: TransformerLayerConv | None
-    mixer: TokenMixerBase
-    post_mixer_norm: Normalization | None
-    pre_mlp_norm: Normalization
-    mlp_conv: TransformerLayerConv | None
-    mlp: MLPBase
-    post_mlp_norm: Normalization | None
-    ple: PLELayer | None
-    post_layer_scalar: Float[Array, "1"] | None
+def gather_suffix_stream[StreamT](
+    stream: StreamT,
+    context: StreamOpContext,
+    return_suffix_tokens: int,
+    sharding_config: ShardingConfig,
+) -> tuple[StreamT, StreamOpContext]:
+    def gather(features: Array) -> Array:
+        return gather_suffix_tokens(features, context.lengths_without_padding, return_suffix_tokens, sharding_config)
+
+    per_layer_input = gather(context.per_layer_input) if context.per_layer_input is not None else None
+    return jax.tree.map(gather, stream), StreamOpContext(per_layer_input=per_layer_input, lengths_without_padding=None)
+
+
+class TransformerLayer[StreamT](LalamoModule[TransformerLayerConfig]):
+    prologue: tuple[StreamOpBase[StreamOpConfig, StreamT], ...]
+    mixer: Sublayer[TokenMixerBase, StreamT]
+    mlp: Sublayer[MLPBase, StreamT]
+    epilogue: tuple[StreamOpBase[StreamOpConfig, StreamT], ...]
+
+    @property
+    def suffix_gather_stage(self) -> int:
+        stage_token_locality = (
+            self.config.mlp.conv_config is None,
+            *(op_config.is_token_local for op_config in self.config.epilogue_configs),
+        )
+        return next(
+            stage_index
+            for stage_index in range(len(stage_token_locality) + 1)
+            if all(stage_token_locality[stage_index:])
+        )
 
     @eqx.filter_jit
     def __call__(
         self,
-        inputs: Float[Array, "batch suffix_tokens channels"],
+        stream: StreamT,
         positional_embeddings: PositionalEmbeddings | None,
-        state: StateLayerBase | None = None,
+        state: TransformerLayerState | None = None,
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
@@ -318,31 +377,39 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return_suffix_tokens: int | None = None,
         *,
         keychain: Keychain,
-    ) -> TransformerLayerResult:
-        if inputs.ndim != 3:
-            raise ValueError(
-                f"Inputs to decoder layers must be a 3D arrays of size (batch_size, sequence_length, hidden_dim),"
-                f" got {inputs.shape}",
-            )
+    ) -> TransformerLayerResult[StreamT]:
         if return_suffix_tokens is not None and return_activation_trace:
             raise ValueError("return_suffix_tokens cannot be combined with return_activation_trace.")
-        mixer_keychain, mlp_keychain, ple_keychain = keychain.split(3)
-
-        if self.pre_mixer_norm is not None:
-            normalized_mixer_inputs = call_vmapped_twice(self.pre_mixer_norm, inputs)
+        mixer_keychain, mlp_keychain, stream_op_keychain = keychain.split(3)
+        num_stream_ops = len(self.prologue) + len(self.epilogue)
+        if num_stream_ops > 0:
+            stream_op_keychains = stream_op_keychain.split(num_stream_ops)
         else:
-            normalized_mixer_inputs = inputs
+            stream_op_keychains = ()
+        prologue_keychains = stream_op_keychains[: len(self.prologue)]
+        epilogue_keychains = stream_op_keychains[len(self.prologue) :]
 
-        if self.mixer_conv is not None:
-            mixer_transform_keychain, mixer_keychain = mixer_keychain.split()
-            transformed_mixer_inputs, mixer_transform_state = self.mixer_conv.prepare(
-                normalized_mixer_inputs,
-                forward_pass_config.mixer_forward_pass_config.matmul_config,
-                keychain=mixer_transform_keychain,
-            )
+        if state is None:
+            mixer_state = None
+            stream_op_states = (None,) * num_stream_ops
+        elif self.config.kv_source_layer_index is not None:
+            mixer_state = state.mixer
+            stream_op_states = (None,) * num_stream_ops
         else:
-            transformed_mixer_inputs = normalized_mixer_inputs
-            mixer_transform_state = None
+            mixer_state = state.mixer
+            stream_op_states = state.stream_ops
+        prologue_states = stream_op_states[: len(self.prologue)]
+        epilogue_states = stream_op_states[len(self.prologue) :]
+
+        inputs = stream
+        context = StreamOpContext(per_layer_input=per_layer_input, lengths_without_padding=lengths_without_padding)
+
+        prologue_streams = []
+        updated_prologue_states = []
+        for op, op_state, op_keychain in zip(self.prologue, prologue_states, prologue_keychains, strict=True):
+            stream, updated_op_state = op(stream, context, op_state, keychain=op_keychain)
+            prologue_streams.append(stream)
+            updated_prologue_states.append(updated_op_state)
 
         def call_mixer(
             mixer_inputs: tuple[
@@ -355,11 +422,13 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             *,
             keychain: Keychain,
         ) -> tuple[Float[Array, "suffix_tokens channels"], StateLayerBase | None]:
-            mixer_input, positional_embedding, mixer_state, length_without_padding, parent_indices = mixer_inputs
-            return self.mixer(
+            mixer_input, positional_embedding, single_mixer_state, length_without_padding, parent_indices = (
+                mixer_inputs
+            )
+            return self.mixer.body(
                 mixer_input,
                 positional_embedding,
-                mixer_state,
+                single_mixer_state,
                 return_updated_state=return_updated_state or return_activation_trace,
                 length_without_padding=length_without_padding,
                 forward_pass_config=forward_pass_config.mixer_forward_pass_config,
@@ -368,139 +437,112 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 keychain=keychain,
             )
 
-        if isinstance(state, PagedKVCacheLayer):
-            assert isinstance(self.mixer, Attention) and lengths_without_padding is None
-            mixer_outputs, updated_state = self.mixer.paged_decode(
-                transformed_mixer_inputs,
-                positional_embeddings,
-                state,
-                forward_pass_config.mixer_forward_pass_config,
-                keychain=mixer_keychain,
-            )
-        else:
-            mixer_outputs, updated_state = call_vmapped(
+        def call_mixer_body(
+            mixer_inputs: Float[Array, "batch suffix_tokens channels"],
+            body_keychain: Keychain,
+        ) -> tuple[Float[Array, "batch suffix_tokens channels"], StateLayerBase | None]:
+            if isinstance(mixer_state, PagedKVCacheLayer):
+                assert isinstance(self.mixer.body, Attention) and lengths_without_padding is None
+                mixer_outputs, updated_paged_state = self.mixer.body.paged_decode(
+                    mixer_inputs,
+                    positional_embeddings,
+                    mixer_state,
+                    forward_pass_config.mixer_forward_pass_config,
+                    keychain=body_keychain,
+                )
+                return mixer_outputs, updated_paged_state
+            return call_vmapped(
                 call_mixer,
                 (
-                    transformed_mixer_inputs,
+                    mixer_inputs,
                     positional_embeddings,
-                    state,
+                    mixer_state,
                     lengths_without_padding,
                     attention_parent_indices,
                 ),
-                keychain=mixer_keychain,
+                keychain=body_keychain,
                 added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
             )
-        if self.mixer_conv is not None:
-            assert mixer_transform_state is not None
-            mixer_outputs = self.mixer_conv.finish(mixer_outputs, mixer_transform_state)
-        if self.post_mixer_norm is not None:
-            normalized_mixer_outputs = call_vmapped_twice(self.post_mixer_norm, mixer_outputs)
-            mlp_inputs = inputs + normalized_mixer_outputs
-        else:
-            normalized_mixer_outputs = None
-            mlp_inputs = inputs + mixer_outputs
 
-        assert mlp_inputs.dtype == inputs.dtype
+        stream, mixer_trace, updated_mixer_state = self.mixer(
+            stream,
+            call_mixer_body,
+            forward_pass_config.mixer_forward_pass_config.matmul_config,
+            keychain=mixer_keychain,
+        )
 
-        if return_suffix_tokens is not None and self.mlp_conv is None:
-            mlp_inputs = gather_suffix_tokens(
+        suffix_gather_stage = self.suffix_gather_stage
+        if return_suffix_tokens is not None and suffix_gather_stage == 0:
+            stream, context = gather_suffix_stream(stream, context, return_suffix_tokens, self.sharding_config)
+
+        def call_mlp_body(
+            mlp_inputs: Float[Array, "batch suffix_tokens channels"],
+            body_keychain: Keychain,
+        ) -> tuple[Float[Array, "batch suffix_tokens channels"], None]:
+            mlp_outputs = self.mlp.body(
                 mlp_inputs,
-                lengths_without_padding,
-                return_suffix_tokens,
-                self.sharding_config,
+                lengths_without_padding=context.lengths_without_padding,
+                forward_pass_config=forward_pass_config.mlp_forward_pass_config,
+                keychain=body_keychain,
             )
-            if per_layer_input is not None:
-                per_layer_input = gather_suffix_tokens(
-                    per_layer_input,
-                    lengths_without_padding,
-                    return_suffix_tokens,
-                    self.sharding_config,
-                )
-            # The gathered window is tail-aligned, while MLP padding masks assume the valid tokens
-            # form a prefix, so the window is treated as fully valid instead.
-            mlp_lengths_without_padding = None
-        else:
-            mlp_lengths_without_padding = lengths_without_padding
+            return mlp_outputs, None
 
-        normalized_mlp_inputs = call_vmapped_twice(self.pre_mlp_norm, mlp_inputs)
-        if self.mlp_conv is not None:
-            mlp_transform_keychain, mlp_keychain = mlp_keychain.split()
-            transformed_mlp_inputs, mlp_transform_state = self.mlp_conv.prepare(
-                normalized_mlp_inputs,
-                forward_pass_config.mlp_forward_pass_config.matmul_config,
-                keychain=mlp_transform_keychain,
-            )
-        else:
-            transformed_mlp_inputs = normalized_mlp_inputs
-            mlp_transform_state = None
-        mlp_outputs = self.mlp(
-            transformed_mlp_inputs,
-            lengths_without_padding=mlp_lengths_without_padding,
-            forward_pass_config=forward_pass_config.mlp_forward_pass_config,
+        stream, mlp_trace, _ = self.mlp(
+            stream,
+            call_mlp_body,
+            forward_pass_config.mlp_forward_pass_config.matmul_config,
             keychain=mlp_keychain,
         )
-        if self.mlp_conv is not None:
-            assert mlp_transform_state is not None
-            mlp_outputs = self.mlp_conv.finish(mlp_outputs, mlp_transform_state)
-        if self.post_mlp_norm is not None:
-            normalized_mlp_outputs = call_vmapped_twice(self.post_mlp_norm, mlp_outputs)
-            outputs = mlp_inputs + normalized_mlp_outputs
+
+        epilogue_streams = []
+        updated_epilogue_states = []
+        for epilogue_index, (op, op_state, op_keychain) in enumerate(
+            zip(self.epilogue, epilogue_states, epilogue_keychains, strict=True),
+        ):
+            if return_suffix_tokens is not None and suffix_gather_stage == epilogue_index + 1:
+                stream, context = gather_suffix_stream(stream, context, return_suffix_tokens, self.sharding_config)
+            stream, updated_op_state = op(stream, context, op_state, keychain=op_keychain)
+            epilogue_streams.append(stream)
+            updated_epilogue_states.append(updated_op_state)
+        if return_suffix_tokens is not None and suffix_gather_stage == len(self.epilogue) + 1:
+            stream, context = gather_suffix_stream(stream, context, return_suffix_tokens, self.sharding_config)
+
+        if updated_mixer_state is not None:
+            updated_state = TransformerLayerState(
+                mixer=updated_mixer_state,
+                stream_ops=(*updated_prologue_states, *updated_epilogue_states),
+            )
         else:
-            normalized_mlp_outputs = None
-            outputs = mlp_inputs + mlp_outputs
-
-        if return_suffix_tokens is not None and self.mlp_conv is not None:
-            outputs = gather_suffix_tokens(
-                outputs,
-                lengths_without_padding,
-                return_suffix_tokens,
-                self.sharding_config,
-            )
-            if per_layer_input is not None:
-                per_layer_input = gather_suffix_tokens(
-                    per_layer_input,
-                    lengths_without_padding,
-                    return_suffix_tokens,
-                    self.sharding_config,
-                )
-
-        if self.ple is not None and per_layer_input is not None:
-            outputs = self.ple(
-                outputs,
-                per_layer_input,
-                keychain=ple_keychain,
-            )
-        if self.post_layer_scalar is not None:
-            outputs = outputs * self.post_layer_scalar
+            updated_state = None
 
         if return_activation_trace:
             activation_trace = TransformerLayerActivationTrace(
                 inputs=inputs,
                 positional_embeddings=positional_embeddings,
                 state=state,
-                pre_mixer_norm=normalized_mixer_inputs,
-                mixer=mixer_outputs,
-                post_mixer_norm=normalized_mixer_outputs,
-                mlp_inputs=mlp_inputs,
-                pre_mlp_norm=normalized_mlp_inputs,
-                mlp=mlp_outputs,
-                post_mlp_norm=normalized_mlp_outputs,
+                prologue=tuple(prologue_streams),
+                mixer=mixer_trace,
+                mlp=mlp_trace,
+                epilogue=tuple(epilogue_streams),
             )
         else:
             activation_trace = None
 
-        assert outputs.dtype == inputs.dtype
         return TransformerLayerResult(
-            outputs=outputs,
+            outputs=stream,
             updated_state=updated_state,
             activation_trace=activation_trace,
         )
 
-    def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> StateLayerBase:
+    def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> TransformerLayerState:
+        layer_state = TransformerLayerState(
+            mixer=self.mixer.body.init_static_state(capacity, dtype),
+            stream_ops=tuple(op.init_static_state(capacity, dtype) for op in (*self.prologue, *self.epilogue)),
+        )
         return jax.tree.map(
             lambda array: jax.device_put(
                 jnp.repeat(array[None, ...], batch_size, axis=0),
                 self.sharding_config.resolve_sharding((LogicalAxis.BATCH, *((None,) * array.ndim))),
             ),
-            self.mixer.init_static_state(capacity, dtype),
+            layer_state,
         )
