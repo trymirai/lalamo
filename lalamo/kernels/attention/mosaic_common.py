@@ -1,7 +1,7 @@
 import math
 from collections.abc import Callable
 from functools import cache
-from typing import Any, Literal
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -16,8 +16,6 @@ __all__ = [
     "make_split_reduction",
     "tiled_smem",
 ]
-
-type _Ref = Any
 
 KEY_VALUE_HEAD_AXIS = "pallas_decode_key_value_head"
 QUERY_HEAD_AXIS = "pallas_decode_query_head"
@@ -60,10 +58,10 @@ def make_split_reduction(
     )
 
     def kernel(
-        main_maxima_ref: _Ref,
-        main_normalizers_ref: _Ref,
-        main_outputs_ref: _Ref,
-        outputs_ref: _Ref,
+        main_maxima_ref: jax.Ref,
+        main_normalizers_ref: jax.Ref,
+        main_outputs_ref: jax.Ref,
+        outputs_ref: jax.Ref,
     ) -> None:
         key_value_head_index = jax.lax.axis_index(KEY_VALUE_HEAD_AXIS)
         query_head_index = jax.lax.axis_index(QUERY_HEAD_AXIS)
