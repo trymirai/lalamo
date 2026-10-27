@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from einops import einsum
 from jax.sharding import Mesh, NamedSharding, Sharding
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import LogicalAxis
@@ -175,27 +175,20 @@ def test_separable_causal_conv_updates_state_from_unpadded_suffix(fake_mesh: Mes
     assert result.state.sharding == make_sharding((None, None))
 
 
-def test_separable_causal_conv_step_matches_last_full_call_output() -> None:
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
+def test_separable_causal_conv_step_matches_last_full_call_output(dtype: DTypeLike) -> None:
     module = _conv()
-    state = jnp.array([[10.0, 11.0, 12.0, 13.0], [14.0, 15.0, 16.0, 17.0]], dtype=jnp.float32)
-    token = jnp.array([0.0, 0.25, 0.5, 0.75], dtype=jnp.float32)
+    state = jnp.array([[10.0, 11.0, 12.0, 13.0], [14.0, 15.0, 16.0, 17.0]], dtype=dtype)
+    token = jnp.array([0.0, 0.25, 0.5, 0.75], dtype=dtype)
 
     step_output, next_state = module.step(token, state)
     full_output = module(token[None, :], state=state, return_updated_state=True)
 
+    assert step_output.dtype == full_output.outputs.dtype == dtype
+
     _assert_close(result=step_output, reference=full_output.outputs[0])
     assert full_output.state is not None
     _assert_close(result=next_state, reference=full_output.state)
-
-
-def test_separable_causal_conv_step_output_dtype_matches_token_dtype() -> None:
-    module = _conv()
-    state = jnp.array([[10.0, 11.0, 12.0, 13.0], [14.0, 15.0, 16.0, 17.0]], dtype=jnp.bfloat16)
-    token = jnp.array([0.0, 0.25, 0.5, 0.75], dtype=jnp.bfloat16)
-
-    step_output, _ = module.step(token, state)
-
-    assert step_output.dtype == token.dtype
 
 
 def test_separable_causal_conv_weight_gradient_matches_reference() -> None:

@@ -8,8 +8,13 @@ from jax import numpy as jnp
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.kernels.attention import pallas_decode_attention, stable_reduction_attention, xla_attention
-from lalamo.module import Keychain
+from lalamo.kernels.attention import (
+    paged_decode_attention,
+    pallas_decode_attention,
+    stable_reduction_attention,
+    xla_attention,
+)
+from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
@@ -24,7 +29,7 @@ from lalamo.modules.token_mixer import (
 )
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
-from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
+from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, PagedKVCacheLayer, StaticKVCacheLayer
 
 __all__ = [
     "Attention",
@@ -391,7 +396,7 @@ class Attention(AttentionBase[AttentionConfig, KVCacheLayer]):
             )
         if self.sinks is not None:
             sink_bias = jnp.zeros((self.config.num_heads, *mask.shape), dtype=queries.dtype)
-            sink_bias = sink_bias.at[:, :, 0].set(self.sinks[:, None])
+            sink_bias = sink_bias.at[:, :, 0].set(self.sinks[:, None].astype(sink_bias.dtype))
         else:
             sink_bias = None
 
@@ -419,6 +424,54 @@ class Attention(AttentionBase[AttentionConfig, KVCacheLayer]):
             outputs=result,
             state=updated_state,
         )
+
+    def paged_decode(
+        self,
+        inputs: Float[Array, "batch 1 channels"],
+        positional_embeddings: PositionalEmbeddings | None,
+        state: PagedKVCacheLayer,
+        forward_pass_config: MixerForwardPassConfig,
+        *,
+        keychain: Keychain,
+    ) -> TokenMixerResult[PagedKVCacheLayer]:
+        qkvg_keychain, out_keychain = keychain.split(2)
+        batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
+        projection = call_vmapped(
+            self.project,
+            inputs,
+            positional_embeddings,
+            forward_pass_config=forward_pass_config,
+            keychain=qkvg_keychain,
+            added_sharding_axis=batch_axis,
+        )
+        if isinstance(projection, OwnedKeyValueProjection):
+            state = state.append(projection.keys[:, 0], projection.values[:, 0])
+        queries = projection.queries[:, 0].astype(state.keys.dtype)
+        scale = self.config.scale if self.config.scale is not None else self.config.head_dim**-0.5
+
+        attention_output = paged_decode_attention(
+            queries,
+            state.keys,
+            state.values,
+            state.block_tables,
+            state.lengths,
+            scale=scale,
+            logit_soft_cap=self.config.logit_soft_cap,
+            sinks=self.sinks,
+            sliding_window_size=self.config.sliding_window_size,
+        )
+
+        attention_output = rearrange(attention_output, "batch heads channels -> batch 1 (heads channels)")
+        if projection.gate is not None:
+            attention_output *= jax.nn.sigmoid(projection.gate)
+        (outputs,) = call_vmapped_twice(
+            self.out_projection,
+            attention_output,
+            forward_pass_config=forward_pass_config.matmul_config,
+            keychain=out_keychain,
+            added_sharding_axes=(batch_axis, None),
+        )
+        return TokenMixerResult(outputs, state)
 
     def init_static_state(self, capacity: int, dtype: DTypeLike) -> StaticKVCacheLayer:
         return StaticKVCacheLayer.init(

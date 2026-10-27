@@ -19,12 +19,9 @@ class TokenCodecConfig(LalamoConfig, RegistryABC):
 
 
 @dataclass(frozen=True)
-class TokenCodec[RequestT, ResponseT, ConfigT: TokenCodecConfig](RegistryABC):
+class TokenCodec[ConfigT: TokenCodecConfig]:
     config: ConfigT
     tokenizer: Tokenizer
 
-    @abstractmethod
-    def encode_request(self, request: RequestT) -> list[int]: ...
-
-    @abstractmethod
-    def decode_response(self, response: list[int]) -> ResponseT: ...
+    def encode_text(self, text: str) -> list[int]:
+        return self.tokenizer.encode(text, add_special_tokens=False).ids
