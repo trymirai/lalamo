@@ -40,6 +40,7 @@ from .mlp import (
     SigmoidRouting,
     SoftmaxRouting,
 )
+from .mrope import MRoPEConfig, MRoPELayout, PositionAxis
 from .normalization import (
     Normalization,
     NormalizationConfig,
@@ -150,6 +151,8 @@ __all__ = [
     "MLPBase",
     "MLPConfig",
     "MLPForwardPassConfig",
+    "MRoPEConfig",
+    "MRoPELayout",
     "Mamba2",
     "Mamba2Config",
     "MixerForwardPassConfig",
@@ -161,6 +164,7 @@ __all__ = [
     "PLELayerConfig",
     "PLEModelConfig",
     "PerLayerEmbedding",
+    "PositionAxis",
     "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
     "RoPE",

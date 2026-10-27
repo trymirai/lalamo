@@ -31,7 +31,7 @@ from lalamo.weight_matrix import CompressionImplementation
 
 from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config, merge_token_ids
 from .huggingface_tokenizer_config import HFTokenizerConfig
-from .model_configs.foreign_config import ForeignConfig, ForeignLMConfig
+from .model_configs.foreign_config import ForeignConfig, ForeignLMConfig, ForeignVisionLanguageConfig
 from .model_spec import ClassifierModelSpec, FileSpec, JSONFieldSpec, LanguageModelSpec, ModelSpec, TTSModelSpec
 from .origins import (
     DownloadingFileEvent,
@@ -278,18 +278,33 @@ def _import_language_model(
     dtype: DTypeLike | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+    include_vision: bool = False,
 ) -> LanguageModel:
     foreign_decoder_config = _load_foreign_config(model_spec, progress_callback=progress_callback)
+    if include_vision and not isinstance(foreign_decoder_config, ForeignVisionLanguageConfig):
+        raise ValueError(f"{model_spec.name} has no vision support in lalamo.")
 
     tokenizer, token_codec_config = _import_chat_codec(model_spec, progress_callback=progress_callback)
     generation_config = _import_generation_config(model_spec, foreign_decoder_config, progress_callback)
 
     with _load_checkpoint(model_spec, progress_callback) as checkpoint:
-        model_config = foreign_decoder_config.to_lalamo_config(
-            metadata_dict=checkpoint.metadata,
-            token_codec_config=token_codec_config,
-            generation_config=generation_config,
-        )
+        if include_vision:
+            assert isinstance(foreign_decoder_config, ForeignVisionLanguageConfig)
+            model_config = foreign_decoder_config.to_vision_language_config(
+                metadata_dict=checkpoint.metadata,
+                token_codec_config=token_codec_config,
+                generation_config=generation_config,
+                image_processor_config_path=model_spec.origin.resolve_file(
+                    model_spec.configs.image_processor_config,
+                    progress_callback,
+                ),
+            )
+        else:
+            model_config = foreign_decoder_config.to_lalamo_config(
+                metadata_dict=checkpoint.metadata,
+                token_codec_config=token_codec_config,
+                generation_config=generation_config,
+            )
         return _load_model(
             LanguageModel,
             foreign_config=foreign_decoder_config,
@@ -396,6 +411,7 @@ def import_model(
     progress_callback: Callable[[StatusEvent], None] | None = None,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     to_full_precision: bool = False,
+    include_vision: bool = False,
 ) -> ImportResults:
     if isinstance(model_spec, str):
         registry_model_spec = ModelRegistry.init().repo_to_model.get(model_spec)
@@ -431,7 +447,10 @@ def import_model(
                 dtype=dtype,
                 progress_callback=progress_callback,
                 implementation=implementation,
+                include_vision=include_vision,
             )
+        case _ if include_vision:
+            raise ValueError(f"Vision is only available for language models, not {type(model_spec).__name__}.")
         case ClassifierModelSpec():
             model = _import_classifier(
                 model_spec,
