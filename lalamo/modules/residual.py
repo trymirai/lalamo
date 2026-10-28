@@ -28,7 +28,15 @@ __all__ = [
     "ResidualConfig",
     "ResidualConnectionBase",
     "ResidualHeadBase",
+    "normalize_streams",
 ]
+
+
+def normalize_streams(
+    norm: Normalization,
+    streams: Float[Array, "batch suffix_tokens streams channels"],
+) -> Float[Array, "batch suffix_tokens streams channels"]:
+    return eqx.filter_vmap(call_vmapped_twice, in_axes=(0, 2), out_axes=2)(norm, streams)
 
 
 @dataclass(frozen=True)
@@ -180,7 +188,7 @@ class GatedStreamReader(LalamoModule[GatedResidualConfig]):
     ) -> tuple[Float[Array, "batch suffix_tokens streams channels"], Float[Array, "batch suffix_tokens channels"]]:
         down_keychain, up_keychain = keychain.split()
         added_sharding_axes = (self.sharding_config.resolve_axis(LogicalAxis.BATCH), None)
-        normalized_streams = eqx.filter_vmap(call_vmapped_twice, in_axes=(0, 2), out_axes=2)(self.norm, stream)
+        normalized_streams = normalize_streams(self.norm, stream)
         flat_normalized_streams = rearrange(
             normalized_streams, "batch tokens streams channels -> batch tokens (streams channels)"
         )

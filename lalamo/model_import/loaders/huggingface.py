@@ -15,6 +15,7 @@ from lalamo.modules.decoder import Decoder
 from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding
 from lalamo.modules.linear import Linear
 from lalamo.modules.mlp import DenseMLP, MixtureOfExperts, MLPBase
+from lalamo.modules.ngram_injection import NGramInjection
 from lalamo.modules.normalization import Normalization
 from lalamo.modules.residual import GatedResidualConnection, GatedResidualHead, GatedStreamReader
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
@@ -887,6 +888,68 @@ def load_gated_residual_head(
 ) -> GatedResidualHead:
     reader = load_gated_stream_reader(module.reader, weights_dict, path, implementation=implementation)
     return load_as_at(lambda m: (m.reader,), module, (reader,))
+
+
+def load_ngram_injection(
+    module: NGramInjection,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> NGramInjection:
+    (stream_dim,) = module.key_projection.output_dims
+    (model_dim,) = module.value_projection.output_dims
+    stream_count = stream_dim // model_dim
+
+    def load_stream_norm(norm: Normalization, norm_path: ParameterPath) -> Normalization:
+        scales = rearrange(
+            weights_dict[norm_path / "weight"],
+            "(streams channels) -> streams channels",
+            streams=stream_count,
+        )
+        return load_as_at(lambda m: (m.scales,), norm, (scales,))
+
+    embedding_path = path / "ple_embedding" / "ngram_embedding"
+    ngram_embedding = load_input_embedding_matrix(
+        module.ngram_embedding,
+        {embedding_path / "weight": weights_dict[embedding_path / "weight"][: module.config.hash_config.num_rows]},
+        embedding_path,
+        implementation=implementation,
+    )
+    key_projection = load_linear(module.key_projection, weights_dict, path / "key_proj", implementation=implementation)
+    value_projection = load_linear(
+        module.value_projection,
+        weights_dict,
+        path / "value_proj",
+        implementation=implementation,
+    )
+    conv_taps = rearrange(weights_dict[path / "conv1d" / "weight"], "channels 1 taps -> channels taps")
+    _, num_taps = conv_taps.shape
+    dilation, misalignment = divmod(module.conv.kernel_size - 1, num_taps - 1)
+    if misalignment != 0:
+        raise ValueError(f"Cannot expand {num_taps} conv taps into a kernel of size {module.conv.kernel_size}.")
+    conv_weights = jnp.zeros_like(module.conv.weights).at[:, ::dilation].set(conv_taps)
+    return load_as_at(
+        lambda m: (
+            m.ngram_embedding,
+            m.key_projection,
+            m.value_projection,
+            m.key_norm,
+            m.query_norm,
+            m.conv_norm,
+            m.conv.weights,
+        ),
+        module,
+        (
+            ngram_embedding,
+            key_projection,
+            value_projection,
+            load_stream_norm(module.key_norm, path / "norm_key"),
+            load_stream_norm(module.query_norm, path / "norm_query"),
+            load_stream_norm(module.conv_norm, path / "norm_conv"),
+            conv_weights,
+        ),
+    )
 
 
 def _load_conv(

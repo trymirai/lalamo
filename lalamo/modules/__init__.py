@@ -40,6 +40,12 @@ from .mlp import (
     SigmoidRouting,
     SoftmaxRouting,
 )
+from .ngram_injection import (
+    NGramHashConfig,
+    NGramInjection,
+    NGramInjectionConfig,
+    NGramInjectionState,
+)
 from .normalization import (
     Normalization,
     NormalizationConfig,
@@ -193,6 +199,10 @@ __all__ = [
     "MixerForwardPassConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "NGramHashConfig",
+    "NGramInjection",
+    "NGramInjectionConfig",
+    "NGramInjectionState",
     "Normalization",
     "NormalizationConfig",
     "PLEModelConfig",
