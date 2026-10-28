@@ -24,8 +24,6 @@ from .xla import xla_top_k_blocks
 
 __all__ = ["pallas_top_k_blocks"]
 
-type KernelRef = Any
-
 NUM_BINS = 2048
 NUM_WARPGROUPS = 4
 NUM_THREADS = 128 * NUM_WARPGROUPS
@@ -105,7 +103,7 @@ def block_barrier(_ctx: object) -> None:
     gpu.barrier()
 
 
-def make_set_state(entries: Sequence[tuple[StateSlot, int]]) -> Callable[[KernelRef], None]:
+def make_set_state(entries: Sequence[tuple[StateSlot, int]]) -> Callable[[jax.Ref], None]:
     @plgpu.inline_mgpu(arg_types=(plgpu.RefType(),))
     def set_state(_ctx: object, state_ref: ir.Value) -> None:
         with mgpu_utils.when(arith.cmpi(arith.CmpIPredicate.eq, mgpu_utils.thread_idx(), i32_constant(0))):
@@ -116,7 +114,7 @@ def make_set_state(entries: Sequence[tuple[StateSlot, int]]) -> Callable[[Kernel
     return set_state
 
 
-def make_histogram_add(layout: ParameterizedLayout) -> Callable[[Array, KernelRef], None]:
+def make_histogram_add(layout: ParameterizedLayout) -> Callable[[Array, jax.Ref], None]:
     @plgpu.inline_mgpu(arg_types=(layout, plgpu.RefType()))
     def histogram_add(_ctx: object, bins: mgpu.FragmentedArray, histogram_ref: ir.Value) -> None:
         base = mgpu_utils.memref_ptr(histogram_ref)
@@ -136,7 +134,7 @@ def make_histogram_add(layout: ParameterizedLayout) -> Callable[[Array, KernelRe
 def make_compact(
     layout: ParameterizedLayout,
     capacity: int,
-) -> Callable[[Array, Array, KernelRef, KernelRef, KernelRef], None]:
+) -> Callable[[Array, Array, jax.Ref, jax.Ref, jax.Ref], None]:
     @plgpu.inline_mgpu(arg_types=(layout, layout, plgpu.RefType(), plgpu.RefType(), plgpu.RefType()))
     def compact(
         _ctx: object,
@@ -163,7 +161,7 @@ def make_compact(
     return compact
 
 
-def make_find_bin(direction: ScanDirection, shift: int, target: StateSlot) -> Callable[[KernelRef, KernelRef], None]:
+def make_find_bin(direction: ScanDirection, shift: int, target: StateSlot) -> Callable[[jax.Ref, jax.Ref], None]:
     bins_per_thread = NUM_BINS // NUM_THREADS
 
     @plgpu.inline_mgpu(arg_types=(plgpu.RefType(), plgpu.RefType()))
@@ -216,7 +214,7 @@ def make_find_bin(direction: ScanDirection, shift: int, target: StateSlot) -> Ca
 def make_rank_scatter(
     layout: ParameterizedLayout,
     padded_k: int,
-) -> Callable[[Array, KernelRef, KernelRef], None]:
+) -> Callable[[Array, jax.Ref, jax.Ref], None]:
     @plgpu.inline_mgpu(arg_types=(layout, plgpu.RefType(), plgpu.RefType()))
     def rank_scatter(
         _ctx: object,
@@ -297,15 +295,15 @@ def make_selection(
     sorts_output = stage != SelectionStage.SEGMENT_CANDIDATES
 
     def kernel(
-        values_ref: KernelRef,
-        visible_or_positions_ref: KernelRef,
-        out_indices_ref: KernelRef,
-        out_values_ref: KernelRef,
-        histogram_ref: KernelRef,
-        state_ref: KernelRef,
-        index_buffer_ref: KernelRef,
-        value_buffer_ref: KernelRef,
-        sorted_ref: KernelRef,
+        values_ref: jax.Ref,
+        visible_or_positions_ref: jax.Ref,
+        out_indices_ref: jax.Ref,
+        out_values_ref: jax.Ref,
+        histogram_ref: jax.Ref,
+        state_ref: jax.Ref,
+        index_buffer_ref: jax.Ref,
+        value_buffer_ref: jax.Ref,
+        sorted_ref: jax.Ref,
     ) -> None:
         program = pl.program_id(0)
         warpgroup = lax.axis_index("warpgroup")

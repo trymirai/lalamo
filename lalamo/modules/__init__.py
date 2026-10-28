@@ -100,9 +100,7 @@ from .token_mixer import (
 )
 from .token_mixers import (
     Attention,
-    AttentionBase,
     AttentionConfig,
-    AttentionConfigBase,
     DeltaNet,
     DeltaNetConfig,
     Mamba2,
@@ -145,9 +143,7 @@ __all__ = [
     "AdditiveResidualConnection",
     "AdditiveResidualHead",
     "Attention",
-    "AttentionBase",
     "AttentionConfig",
-    "AttentionConfigBase",
     "AttentionImplementation",
     "Classifier",
     "ClassifierActivationTrace",

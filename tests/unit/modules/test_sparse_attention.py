@@ -85,17 +85,6 @@ def make_lalamo_attention(hf_attention: Qwen4ExpTextAttention) -> SparseAttentio
         out_projection_config=LinearConfig(),
         query_norm_config=norm_config,
         key_norm_config=norm_config,
-        num_heads=NUM_HEADS,
-        num_groups=NUM_GROUPS,
-        head_dim=HEAD_DIM,
-        is_causal=True,
-        scale=None,
-        sliding_window_size=None,
-        logit_soft_cap=None,
-        has_sinks=False,
-        has_qkvg_biases=False,
-        has_out_biases=False,
-        has_gate=True,
         indexer_config=SparseAttentionIndexerConfig(
             projection_config=LinearConfig(),
             query_norm_config=norm_config,
@@ -105,6 +94,9 @@ def make_lalamo_attention(hf_attention: Qwen4ExpTextAttention) -> SparseAttentio
             compression_ratio=COMPRESSION_RATIO,
             token_budget=TOKEN_BUDGET,
         ),
+        num_heads=NUM_HEADS,
+        num_groups=NUM_GROUPS,
+        head_dim=HEAD_DIM,
     )
     module = config.init(
         EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
@@ -124,14 +116,14 @@ def dense_counterpart(module: SparseAttention) -> Attention:
         num_heads=config.num_heads,
         num_groups=config.num_groups,
         head_dim=config.head_dim,
-        is_causal=config.is_causal,
-        scale=config.scale,
-        sliding_window_size=config.sliding_window_size,
-        logit_soft_cap=config.logit_soft_cap,
-        has_sinks=config.has_sinks,
-        has_qkvg_biases=config.has_qkvg_biases,
-        has_out_biases=config.has_out_biases,
-        has_gate=config.has_gate,
+        is_causal=True,
+        scale=None,
+        sliding_window_size=None,
+        logit_soft_cap=None,
+        has_sinks=False,
+        has_qkvg_biases=False,
+        has_out_biases=False,
+        has_gate=True,
     )
     return Attention(
         config=dense_config,
@@ -140,7 +132,7 @@ def dense_counterpart(module: SparseAttention) -> Attention:
         out_projection=module.out_projection,
         query_norm=module.query_norm,
         key_norm=module.key_norm,
-        sinks=module.sinks,
+        sinks=None,
     )
 
 
