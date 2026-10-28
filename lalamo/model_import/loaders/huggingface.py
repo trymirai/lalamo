@@ -790,16 +790,7 @@ def load_sparse_attention(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> SparseAttention:
-    qkvg_projection = load_linear(
-        module.qkvg_projection,
-        _reorder_gated_attention_weights(weights_dict, path, module.config.num_heads, module.config.head_dim),
-        path,
-        sublayers_to_fuse=["q_proj", "k_proj", "v_proj", "g_proj"],
-        implementation=implementation,
-    )
-    out_projection = load_linear(module.out_projection, weights_dict, path / "o_proj", implementation=implementation)
-    query_norm = load_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
-    key_norm = load_rmsnorm(module.key_norm, weights_dict, path / "k_norm")
+    attention = load_attention(module.attention, weights_dict, path, implementation=implementation)
     indexer_path = path / "indexer"
     indexer_projection = load_linear(
         module.indexer.projection,
@@ -810,25 +801,9 @@ def load_sparse_attention(
     indexer_query_norm = load_rmsnorm(module.indexer.query_norm, weights_dict, indexer_path / "q_layernorm")
     indexer_key_norm = load_rmsnorm(module.indexer.key_norm, weights_dict, indexer_path / "k_layernorm")
     return load_as_at(
-        lambda m: (
-            m.qkvg_projection,
-            m.out_projection,
-            m.query_norm,
-            m.key_norm,
-            m.indexer.projection,
-            m.indexer.query_norm,
-            m.indexer.key_norm,
-        ),
+        lambda m: (m.attention, m.indexer.projection, m.indexer.query_norm, m.indexer.key_norm),
         module,
-        (
-            qkvg_projection,
-            out_projection,
-            query_norm,
-            key_norm,
-            indexer_projection,
-            indexer_query_norm,
-            indexer_key_norm,
-        ),
+        (attention, indexer_projection, indexer_query_norm, indexer_key_norm),
     )
 
 

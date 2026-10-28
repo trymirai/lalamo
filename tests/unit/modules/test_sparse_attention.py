@@ -15,7 +15,7 @@ from lalamo.modules.linear import LinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import PositionalEmbeddings, UnscaledRoPEConfig
 from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPassConfig
-from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.token_mixers.sparse_attention import (
     SparseAttention,
     SparseAttentionConfig,
@@ -81,10 +81,23 @@ def make_lalamo_attention(hf_attention: Qwen4ExpTextAttention) -> SparseAttentio
         subtract_mean=False,
     )
     config = SparseAttentionConfig(
-        qkvg_projection_config=LinearConfig(),
-        out_projection_config=LinearConfig(),
-        query_norm_config=norm_config,
-        key_norm_config=norm_config,
+        attention_config=AttentionConfig(
+            qkvg_projection_config=LinearConfig(),
+            out_projection_config=LinearConfig(),
+            query_norm_config=norm_config,
+            key_norm_config=norm_config,
+            num_heads=NUM_HEADS,
+            num_groups=NUM_GROUPS,
+            head_dim=HEAD_DIM,
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
+            logit_soft_cap=None,
+            has_sinks=False,
+            has_qkvg_biases=False,
+            has_out_biases=False,
+            has_gate=True,
+        ),
         indexer_config=SparseAttentionIndexerConfig(
             projection_config=LinearConfig(),
             query_norm_config=norm_config,
@@ -94,9 +107,6 @@ def make_lalamo_attention(hf_attention: Qwen4ExpTextAttention) -> SparseAttentio
             compression_ratio=COMPRESSION_RATIO,
             token_budget=TOKEN_BUDGET,
         ),
-        num_heads=NUM_HEADS,
-        num_groups=NUM_GROUPS,
-        head_dim=HEAD_DIM,
     )
     module = config.init(
         EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
@@ -104,36 +114,6 @@ def make_lalamo_attention(hf_attention: Qwen4ExpTextAttention) -> SparseAttentio
     )
     weights = {name: torch_to_jax(tensor.detach()) for name, tensor in hf_attention.state_dict().items()}
     return load_sparse_attention(module, weights, ParameterPath())
-
-
-def dense_counterpart(module: SparseAttention) -> Attention:
-    config = module.config
-    dense_config = AttentionConfig(
-        qkvg_projection_config=config.qkvg_projection_config,
-        out_projection_config=config.out_projection_config,
-        query_norm_config=config.query_norm_config,
-        key_norm_config=config.key_norm_config,
-        num_heads=config.num_heads,
-        num_groups=config.num_groups,
-        head_dim=config.head_dim,
-        is_causal=True,
-        scale=None,
-        sliding_window_size=None,
-        logit_soft_cap=None,
-        has_sinks=False,
-        has_qkvg_biases=False,
-        has_out_biases=False,
-        has_gate=True,
-    )
-    return Attention(
-        config=dense_config,
-        sharding_config=module.sharding_config,
-        qkvg_projection=module.qkvg_projection,
-        out_projection=module.out_projection,
-        query_norm=module.query_norm,
-        key_norm=module.key_norm,
-        sinks=None,
-    )
 
 
 def make_hidden_states(num_tokens: int) -> Float[Array, "tokens channels"]:
@@ -248,7 +228,7 @@ def test_matches_dense_attention_only_within_token_budget() -> None:
     keychain = Keychain.init(0, sharding_config=make_test_sharding_config())
 
     sparse_outputs = module(hidden_states, positional_embeddings(0, SEQUENCE_LENGTH), keychain=keychain).outputs
-    dense_outputs = dense_counterpart(module)(
+    dense_outputs = module.attention(
         hidden_states,
         positional_embeddings(0, SEQUENCE_LENGTH),
         keychain=keychain,

@@ -25,6 +25,7 @@ from lalamo.modules.linear import LinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPassConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.token_mixers.sparse_attention import SparseAttentionConfig, SparseAttentionIndexerConfig
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 from tests.common import assert_close, gpu_only
@@ -238,10 +239,23 @@ def test_sparse_attention_module_pallas_matches_xla() -> None:
         subtract_mean=False,
     )
     config = SparseAttentionConfig(
-        qkvg_projection_config=LinearConfig(),
-        out_projection_config=LinearConfig(),
-        query_norm_config=norm_config,
-        key_norm_config=norm_config,
+        attention_config=AttentionConfig(
+            qkvg_projection_config=LinearConfig(),
+            out_projection_config=LinearConfig(),
+            query_norm_config=norm_config,
+            key_norm_config=norm_config,
+            num_heads=24,
+            num_groups=2,
+            head_dim=256,
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
+            logit_soft_cap=None,
+            has_sinks=False,
+            has_qkvg_biases=False,
+            has_out_biases=False,
+            has_gate=True,
+        ),
         indexer_config=SparseAttentionIndexerConfig(
             projection_config=LinearConfig(),
             query_norm_config=norm_config,
@@ -251,9 +265,6 @@ def test_sparse_attention_module_pallas_matches_xla() -> None:
             compression_ratio=4,
             token_budget=2_048,
         ),
-        num_heads=24,
-        num_groups=2,
-        head_dim=256,
     )
     module = config.init(
         RandomInitializer(default_dtype=jnp.bfloat16, sharding_config=sharding_config, key=jax.random.key(0)),
