@@ -7,7 +7,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jax.lax import dynamic_slice_in_dim, dynamic_update_slice_in_dim
+from jax.lax import dynamic_slice_in_dim
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.modules.normalization import Normalization
@@ -23,8 +23,8 @@ class IndexerCacheLayer(StateLayerBase):
     compression_ratio: int = eqx.field(static=True)
     compressed_keys: Float[Array, "*batch blocks head_channels"]
     tail_keys: Float[Array, "*batch tail_tokens head_channels"]
-    tail_start_cosines: Float[Array, "*batch head_channels"]
-    tail_start_sines: Float[Array, "*batch head_channels"]
+    tail_cosines: Float[Array, "*batch tail_tokens head_channels"]
+    tail_sines: Float[Array, "*batch tail_tokens head_channels"]
     num_tokens: Int[Array, "*batch"]
 
     def __post_init__(self) -> None:
@@ -62,51 +62,35 @@ class IndexerCacheLayer(StateLayerBase):
         added_length: Int[Array, ""] | int | None = None,
     ) -> Self:
         self.raise_if_batched()
-        num_new_tokens, head_dim = added_keys.shape
+        num_new_tokens, _ = added_keys.shape
         if added_length is None:
             added_length = num_new_tokens
         ratio = self.compression_ratio
         rope_dim = positional_embeddings.head_dim
-        num_touched_blocks = math.ceil((ratio - 1 + num_new_tokens) / ratio)
-        buffer_length = num_touched_blocks * ratio + ratio - 1
+        rotation_dtype = positional_embeddings.cosines.dtype
         tail_length = self.num_tokens % ratio
-        first_block = self.num_tokens // ratio
-
-        is_tail = jnp.arange(buffer_length, dtype=jnp.int32) < tail_length
-        new_keys = dynamic_update_slice_in_dim(
-            jnp.zeros((buffer_length, head_dim), dtype=self.tail_keys.dtype),
-            added_keys.astype(self.tail_keys.dtype),
-            tail_length,
-            0,
+        num_touched_blocks = math.ceil((ratio - 1 + num_new_tokens) / ratio)
+        histories = (
+            jnp.concatenate([self.tail_keys, added_keys.astype(self.tail_keys.dtype)]),
+            jnp.concatenate([self.tail_cosines[:, :rope_dim].astype(rotation_dtype), positional_embeddings.cosines]),
+            jnp.concatenate([self.tail_sines[:, :rope_dim].astype(rotation_dtype), positional_embeddings.sines]),
         )
-        stored_keys = jnp.pad(self.tail_keys, ((0, buffer_length - ratio + 1), (0, 0)))
-        aligned_keys = jnp.where(is_tail[:, None], stored_keys, new_keys)
-
-        def align_rotations(
-            stored: Float[Array, " head_channels"],
-            current: Float[Array, "new_tokens rope_channels"],
-        ) -> Float[Array, "buffer_tokens rope_channels"]:
-            aligned = dynamic_update_slice_in_dim(
-                jnp.zeros((buffer_length, rope_dim), dtype=current.dtype),
-                current,
-                tail_length,
-                0,
+        block_keys, block_cosines, block_sines = (
+            dynamic_slice_in_dim(
+                jnp.pad(history, ((0, num_touched_blocks * ratio - num_new_tokens), (0, 0))),
+                ratio - 1 - tail_length,
+                num_touched_blocks * ratio,
             )
-            return aligned.at[0].set(jnp.where(tail_length > 0, stored[:rope_dim].astype(current.dtype), aligned[0]))
-
-        aligned_cosines = align_rotations(self.tail_start_cosines, positional_embeddings.cosines)
-        aligned_sines = align_rotations(self.tail_start_sines, positional_embeddings.sines)
-        block_start_embeddings = PositionalEmbeddings(
-            cosines=aligned_cosines[::ratio][:num_touched_blocks],
-            sines=aligned_sines[::ratio][:num_touched_blocks],
+            for history in histories
         )
 
         grouped_keys = rearrange(
-            aligned_keys[: num_touched_blocks * ratio],
+            block_keys,
             "(blocks ratio) head_channels -> blocks ratio head_channels",
             ratio=ratio,
         )
         pooled_keys = jnp.mean(grouped_keys.astype(jnp.float32), axis=1).astype(grouped_keys.dtype)
+        block_start_embeddings = PositionalEmbeddings(cosines=block_cosines[::ratio], sines=block_sines[::ratio])
         rotated_keys = block_start_embeddings.apply(call_vmapped(key_norm, pooled_keys))
 
         compressed_keys = self.compressed_keys_with_room_for(num_new_tokens)
@@ -115,7 +99,7 @@ class IndexerCacheLayer(StateLayerBase):
         block_offsets = jnp.arange(num_touched_blocks, dtype=jnp.int32)
         target_blocks = jnp.where(
             block_offsets < num_completed_blocks,
-            first_block + block_offsets,
+            self.num_tokens // ratio + block_offsets,
             num_capacity_blocks,
         )
         compressed_keys = compressed_keys.at[target_blocks].set(
@@ -123,17 +107,15 @@ class IndexerCacheLayer(StateLayerBase):
             mode="drop",
         )
 
-        tail_start = num_completed_blocks * ratio
+        tail_keys, tail_cosines, tail_sines = (
+            dynamic_slice_in_dim(history, added_length, ratio - 1) for history in histories
+        )
         return replace(
             self,
             compressed_keys=compressed_keys,
-            tail_keys=dynamic_slice_in_dim(aligned_keys, tail_start, ratio - 1, 0),
-            tail_start_cosines=self.tail_start_cosines.at[:rope_dim].set(
-                aligned_cosines[tail_start].astype(self.tail_start_cosines.dtype),
-            ),
-            tail_start_sines=self.tail_start_sines.at[:rope_dim].set(
-                aligned_sines[tail_start].astype(self.tail_start_sines.dtype),
-            ),
+            tail_keys=tail_keys,
+            tail_cosines=self.tail_cosines.at[:, :rope_dim].set(tail_cosines.astype(self.tail_cosines.dtype)),
+            tail_sines=self.tail_sines.at[:, :rope_dim].set(tail_sines.astype(self.tail_sines.dtype)),
             num_tokens=self.num_tokens + added_length,
         )
 
@@ -151,8 +133,8 @@ class DynamicIndexerCacheLayer(IndexerCacheLayer):
             compression_ratio=compression_ratio,
             compressed_keys=jnp.zeros((0, head_dim), dtype=dtype),
             tail_keys=jnp.zeros((compression_ratio - 1, head_dim), dtype=dtype),
-            tail_start_cosines=jnp.zeros((head_dim,), dtype=jnp.float32),
-            tail_start_sines=jnp.zeros((head_dim,), dtype=jnp.float32),
+            tail_cosines=jnp.zeros((compression_ratio - 1, head_dim), dtype=jnp.float32),
+            tail_sines=jnp.zeros((compression_ratio - 1, head_dim), dtype=jnp.float32),
             num_tokens=jnp.array(0, dtype=jnp.int32),
         )
 
@@ -171,14 +153,14 @@ class StaticIndexerCacheLayer(IndexerCacheLayer):
         sharding_config: ShardingConfig,
     ) -> Self:
         matrix_sharding = sharding_config.make_sharding((None, None))
-        vector_sharding = sharding_config.make_sharding((None,))
         scalar_sharding = sharding_config.make_sharding(())
         num_blocks = math.ceil(capacity / compression_ratio)
+        tail_shape = (compression_ratio - 1, head_dim)
         return cls(
             compression_ratio=compression_ratio,
             compressed_keys=jax.device_put(jnp.zeros((num_blocks, head_dim), dtype=dtype), matrix_sharding),
-            tail_keys=jax.device_put(jnp.zeros((compression_ratio - 1, head_dim), dtype=dtype), matrix_sharding),
-            tail_start_cosines=jax.device_put(jnp.zeros((head_dim,), dtype=jnp.float32), vector_sharding),
-            tail_start_sines=jax.device_put(jnp.zeros((head_dim,), dtype=jnp.float32), vector_sharding),
+            tail_keys=jax.device_put(jnp.zeros(tail_shape, dtype=dtype), matrix_sharding),
+            tail_cosines=jax.device_put(jnp.zeros(tail_shape, dtype=jnp.float32), matrix_sharding),
+            tail_sines=jax.device_put(jnp.zeros(tail_shape, dtype=jnp.float32), matrix_sharding),
             num_tokens=jax.device_put(jnp.array(0, dtype=jnp.int32), scalar_sharding),
         )

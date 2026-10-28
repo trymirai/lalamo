@@ -116,6 +116,19 @@ def prepare_heads(
     return call_vmapped(positional_embeddings.apply, heads, in_axes=1, out_axes=1)
 
 
+def block_scores(
+    queries: Float[Array, "tokens heads channels"],
+    compressed_keys: Float[Array, "blocks channels"],
+) -> Float[Array, "tokens blocks"]:
+    _, _, head_dim = queries.shape
+    head_scores = einsum(
+        queries.astype(jnp.float32),
+        compressed_keys.astype(jnp.float32),
+        "tokens heads channels, blocks channels -> tokens heads blocks",
+    )
+    return jnp.sum(jax.nn.relu(head_scores), axis=1) * head_dim**-0.5
+
+
 class SparseAttentionIndexer(LalamoModule[SparseAttentionIndexerConfig]):
     projection: Linear
     query_norm: Normalization
@@ -131,7 +144,6 @@ class SparseAttentionIndexer(LalamoModule[SparseAttentionIndexerConfig]):
         *,
         keychain: Keychain,
     ) -> IndexerSelection:
-        compression_ratio = self.config.compression_ratio
         raw_queries, raw_keys = call_vmapped(
             self.projection,
             inputs,
@@ -145,29 +157,21 @@ class SparseAttentionIndexer(LalamoModule[SparseAttentionIndexerConfig]):
             self.query_norm,
             positional_embeddings,
         )
-
         if state is None:
-            state = DynamicIndexerCacheLayer.empty(compression_ratio, self.config.head_dim, raw_keys.dtype)
-        updated_state = state.extend(raw_keys, positional_embeddings, self.key_norm, length_without_padding)
+            state = DynamicIndexerCacheLayer.empty(self.config.compression_ratio, self.config.head_dim, raw_keys.dtype)
 
-        num_suffix_tokens, _, _ = queries.shape
+        num_suffix_tokens, _ = inputs.shape
         query_positions = state.num_tokens + jnp.arange(num_suffix_tokens, dtype=jnp.int32)
-        num_visible_blocks = (query_positions + 1) // compression_ratio
-        head_scores = einsum(
-            queries.astype(jnp.float32),
-            updated_state.compressed_keys.astype(jnp.float32),
-            "tokens heads channels, blocks channels -> tokens heads blocks",
-        )
-        scores = jnp.sum(jax.nn.relu(head_scores), axis=1) * self.config.head_dim**-0.5
-        selected_blocks = select_top_blocks(
-            scores,
-            num_visible_blocks,
+        first_incomplete_blocks = (query_positions + 1) // self.config.compression_ratio
+        updated_state = state.extend(raw_keys, positional_embeddings, self.key_norm, length_without_padding)
+        top_blocks = select_top_blocks(
+            block_scores(queries, updated_state.compressed_keys),
+            first_incomplete_blocks,
             min(self.config.block_budget, updated_state.num_blocks),
             forward_pass_config,
         )
-        tail_blocks = jnp.where((query_positions + 1) % compression_ratio != 0, num_visible_blocks, -1)
         return IndexerSelection(
-            selected_blocks=jnp.concatenate([selected_blocks, tail_blocks[:, None]], axis=1),
+            selected_blocks=jnp.concatenate([top_blocks, first_incomplete_blocks[:, None]], axis=1),
             query_positions=query_positions,
             state=updated_state,
         )

@@ -131,14 +131,12 @@ def test_incremental_extend_matches_reference(
     cache = fill(empty_cache, keys, embeddings, key_norm, chunk_lengths, num_padding_tokens)
 
     num_blocks = NUM_TOKENS // COMPRESSION_RATIO
-    tail_length = NUM_TOKENS % COMPRESSION_RATIO
+    tail_start = NUM_TOKENS - (COMPRESSION_RATIO - 1)
     assert int(cache.num_tokens) == NUM_TOKENS
     assert_close(
         result=cache.compressed_keys[:num_blocks],
         reference=reference_compressed_keys(keys, embeddings, key_norm),
     )
-    assert_close(result=cache.tail_keys[:tail_length], reference=keys[num_blocks * COMPRESSION_RATIO :])
-    assert_close(
-        result=cache.tail_start_cosines[:ROPE_DIM],
-        reference=embeddings.cosines[num_blocks * COMPRESSION_RATIO],
-    )
+    assert_close(result=cache.tail_keys, reference=keys[tail_start:])
+    assert_close(result=cache.tail_cosines[:, :ROPE_DIM], reference=embeddings.cosines[tail_start:])
+    assert_close(result=cache.tail_sines[:, :ROPE_DIM], reference=embeddings.sines[tail_start:])
