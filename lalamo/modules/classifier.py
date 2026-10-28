@@ -235,7 +235,6 @@ class Classifier(LalamoModule[ClassifierConfig]):
             return_positional_embeddings=return_activation_trace,
             lengths_without_padding=lengths_without_padding,
             forward_pass_config=forward_pass_config.transformer_forward_pass_config,
-            token_ids=token_ids,
             keychain=transformer_keychain,
         )
 

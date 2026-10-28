@@ -284,7 +284,6 @@ class Decoder(LalamoModule[DecoderConfig]):
             per_layer_inputs=per_layer_inputs,
             attention_parent_indices=attention_parent_indices,
             return_suffix_tokens=return_suffix_tokens,
-            token_ids=token_ids,
             keychain=transformer_keychain,
         )
 

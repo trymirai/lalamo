@@ -30,10 +30,9 @@ from .token_mixer import (
     TokenMixerConfig,
     TransformerLayerState,
 )
-from .token_mixers.attention import Attention, AttentionConfig
+from .token_mixers.attention import Attention
 from .token_mixers.convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .token_mixers.kv_cache import PagedKVCacheLayer
-from .token_mixers.sparse_attention import SparseAttentionConfig
 from .utils import call_vmapped, call_vmapped_twice, gather_suffix_tokens
 
 __all__ = [
@@ -298,13 +297,6 @@ class TransformerLayerConfig(LalamoConfig):
     kv_source_layer_index: int | None = None
     rope_config: RoPEConfig | None = None
 
-    def __post_init__(self) -> None:
-        has_stateful_stream_ops = any(
-            op_config.is_stateful for op_config in (*self.prologue_configs, *self.epilogue_configs)
-        )
-        if has_stateful_stream_ops and isinstance(self.mixer.body_config, AttentionConfig | SparseAttentionConfig):
-            raise ValueError("Stateful stream ops require a mixer without a KV cache.")
-
     def init(
         self,
         initializer: Initializer,
@@ -349,20 +341,15 @@ def gather_suffix_stream[StreamT](
     def gather(features: Array) -> Array:
         return gather_suffix_tokens(features, context.lengths_without_padding, return_suffix_tokens, sharding_config)
 
-    token_ids = gather(context.token_ids) if context.token_ids is not None else None
     per_layer_input = gather(context.per_layer_input) if context.per_layer_input is not None else None
-    return jax.tree.map(gather, stream), StreamOpContext(
-        token_ids=token_ids,
-        per_layer_input=per_layer_input,
-        lengths_without_padding=None,
-    )
+    return jax.tree.map(gather, stream), StreamOpContext(per_layer_input=per_layer_input, lengths_without_padding=None)
 
 
 class TransformerLayer[StreamT](LalamoModule[TransformerLayerConfig]):
-    prologue: tuple[StreamOpBase[StreamOpConfig, StreamT, StateLayerBase], ...]
+    prologue: tuple[StreamOpBase[StreamOpConfig, StreamT], ...]
     mixer: Sublayer[TokenMixerBase, StreamT]
     mlp: Sublayer[MLPBase, StreamT]
-    epilogue: tuple[StreamOpBase[StreamOpConfig, StreamT, StateLayerBase], ...]
+    epilogue: tuple[StreamOpBase[StreamOpConfig, StreamT], ...]
 
     @property
     def suffix_gather_stage(self) -> int:
@@ -389,7 +376,6 @@ class TransformerLayer[StreamT](LalamoModule[TransformerLayerConfig]):
         per_layer_input: Float[Array, "batch suffix_tokens ple_dim"] | None = None,
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
-        token_ids: Int[Array, "batch suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
     ) -> TransformerLayerResult[StreamT]:
@@ -417,11 +403,7 @@ class TransformerLayer[StreamT](LalamoModule[TransformerLayerConfig]):
         epilogue_states = stream_op_states[len(self.prologue) :]
 
         inputs = stream
-        context = StreamOpContext(
-            token_ids=token_ids,
-            per_layer_input=per_layer_input,
-            lengths_without_padding=lengths_without_padding,
-        )
+        context = StreamOpContext(per_layer_input=per_layer_input, lengths_without_padding=lengths_without_padding)
 
         prologue_streams = []
         updated_prologue_states = []

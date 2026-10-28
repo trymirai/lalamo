@@ -27,7 +27,6 @@ __all__ = [
 
 
 class StreamOpContext(eqx.Module):
-    token_ids: Int[Array, "batch suffix_tokens"] | None
     per_layer_input: Float[Array, "batch suffix_tokens ple_dim"] | None
     lengths_without_padding: Int[Array, " batch"] | None
 
@@ -38,27 +37,23 @@ class StreamOpConfig(LalamoConfig, RegistryABC):
     @abstractmethod
     def is_token_local(self) -> bool: ...
 
-    @property
-    @abstractmethod
-    def is_stateful(self) -> bool: ...
-
     @abstractmethod
     def init(self, initializer: Initializer, residual_config: ResidualConfig, model_dim: int) -> "StreamOpBase": ...
 
 
-class StreamOpBase[ConfigT: StreamOpConfig, StreamT, StateT: StateLayerBase](LalamoModule[ConfigT]):
+class StreamOpBase[ConfigT: StreamOpConfig, StreamT](LalamoModule[ConfigT]):
     @abstractmethod
     def __call__(
         self,
         stream: StreamT,
         context: StreamOpContext,
-        state: StateT | None,
+        state: StateLayerBase | None,
         *,
         keychain: Keychain,
-    ) -> tuple[StreamT, StateT | None]: ...
+    ) -> tuple[StreamT, StateLayerBase | None]: ...
 
     @abstractmethod
-    def init_static_state(self, capacity: int, dtype: DTypeLike) -> StateT | None: ...
+    def init_static_state(self, capacity: int, dtype: DTypeLike) -> StateLayerBase | None: ...
 
 
 @dataclass(frozen=True)
@@ -71,10 +66,6 @@ class PerLayerEmbeddingInjectionConfig(StreamOpConfig):
     @property
     def is_token_local(self) -> bool:
         return True
-
-    @property
-    def is_stateful(self) -> bool:
-        return False
 
     def init(
         self,
@@ -109,7 +100,7 @@ class PerLayerEmbeddingInjectionConfig(StreamOpConfig):
 
 
 class PerLayerEmbeddingInjection(
-    StreamOpBase[PerLayerEmbeddingInjectionConfig, Float[Array, "batch suffix_tokens channels"], StateLayerBase],
+    StreamOpBase[PerLayerEmbeddingInjectionConfig, Float[Array, "batch suffix_tokens channels"]],
 ):
     gate: Linear
     projection: Linear
@@ -152,10 +143,6 @@ class ResidualScaleConfig(StreamOpConfig):
     def is_token_local(self) -> bool:
         return True
 
-    @property
-    def is_stateful(self) -> bool:
-        return False
-
     def init(
         self,
         initializer: Initializer,
@@ -171,9 +158,7 @@ class ResidualScaleConfig(StreamOpConfig):
         )
 
 
-class ResidualScale(
-    StreamOpBase[ResidualScaleConfig, Float[Array, "batch suffix_tokens channels"], StateLayerBase],
-):
+class ResidualScale(StreamOpBase[ResidualScaleConfig, Float[Array, "batch suffix_tokens channels"]]):
     scale: Float[Array, "1"]
 
     def __call__(
