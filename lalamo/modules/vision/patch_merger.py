@@ -1,17 +1,15 @@
 from dataclasses import dataclass
 
 import equinox as eqx
-import jax
 from einops import rearrange
 from jaxtyping import Array, Float
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
+from lalamo.modules.mlp import MLPForwardPassConfig, UngatedMLP, UngatedMLPConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.utils import call_vmapped
 from lalamo.weight_matrix import MatmulConfig
-
-from .vision_mlp import VisionMLP, VisionMLPConfig
 
 __all__ = [
     "PatchMerger",
@@ -21,16 +19,10 @@ __all__ = [
 
 @dataclass(frozen=True)
 class PatchMergerConfig(LalamoConfig):
-    """Fuses each ``merge x merge`` block of patches into one token for the language model.
-
-    Each patch is normalised, the patches of a block are concatenated into one wide vector,
-    and an MLP projects that vector to the text model's hidden size. Blocks are already
-    contiguous in the token sequence (see ``ImageGrid.patch_coordinates``), so concatenation
-    is a reshape and no gather is needed.
-    """
+    """Normalises patches, concatenates each ``merge x merge`` block, and projects it to the text model width."""
 
     norm_config: NormalizationConfig
-    mlp_config: VisionMLPConfig
+    mlp_config: UngatedMLPConfig
 
     def init(
         self,
@@ -44,13 +36,13 @@ class PatchMergerConfig(LalamoConfig):
             config=self,
             sharding_config=initializer.sharding_config,
             norm=self.norm_config.init(initializer, model_dim),
-            mlp=self.mlp_config.init(initializer, merged_dim, merged_dim, output_dim),
+            mlp=self.mlp_config.init_projection(initializer, merged_dim, merged_dim, output_dim),
         )
 
 
 class PatchMerger(LalamoModule[PatchMergerConfig]):
     norm: Normalization
-    mlp: VisionMLP
+    mlp: UngatedMLP
 
     @eqx.filter_jit
     def __call__(
@@ -61,16 +53,15 @@ class PatchMerger(LalamoModule[PatchMergerConfig]):
         *,
         keychain: Keychain,
     ) -> Float[Array, "merged_tokens out_channels"]:
-        # Under tensor parallelism the channels of a patch are spread across devices. Fusing a block
-        # concatenates whole patches, so the normalised patches are gathered onto every device first.
-        # Vision tokens are never sharded, so full replication is exactly what is needed.
-        normalized = jax.sharding.reshard(
-            call_vmapped(self.norm, inputs),
-            self.sharding_config.make_sharding((None, None)),
-        )
+        # The preprocessor emits each block's patches contiguously, so fusing a block is a reshape.
         merged = rearrange(
-            normalized,
+            call_vmapped(self.norm, inputs),
             "(merged_tokens block) channels -> merged_tokens (block channels)",
             block=spatial_merge_size**2,
         )
-        return self.mlp(merged, forward_pass_config, keychain=keychain)
+        return call_vmapped(
+            self.mlp.call_unbatched,
+            merged,
+            forward_pass_config=MLPForwardPassConfig(matmul_config=forward_pass_config),
+            keychain=keychain,
+        )

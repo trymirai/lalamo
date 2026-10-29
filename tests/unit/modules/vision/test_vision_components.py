@@ -84,7 +84,7 @@ def test_mlp() -> None:
     hidden_states = _hidden_states(GRID_CASES["single-wide"])
     first_layer, *_ = lalamo_encoder().layers
     first_block = hf_block(0)
-    result = first_layer.mlp(hidden_states, keychain=keychain())
+    result = call_vmapped(first_layer.mlp.call_unbatched, hidden_states, keychain=keychain())
     _assert_matches(result, first_block.mlp(to_torch(hidden_states)), "MLP")
 
 

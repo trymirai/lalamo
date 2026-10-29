@@ -11,6 +11,7 @@ from jaxtyping import Array, DTypeLike
 from tokenizers import Tokenizer
 
 from lalamo.audio.utils import dummy_char_level_tokenizer_config
+from lalamo.initializer import EmptyInitializer
 from lalamo.model import Model, ModelConfig
 from lalamo.model_import.loaders.fishaudio_loaders import load_tokenizer_from_fishaudio_tiktoken
 from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
@@ -25,6 +26,8 @@ from lalamo.models import (
 )
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.models.tts_codec import TTSCodecConfig
+from lalamo.modules.vision import ImagePreprocessingConfig, VisionEncoder
+from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.template_hacking import fix_chat_template
 from lalamo.weight_matrix import CompressionImplementation
@@ -49,11 +52,13 @@ __all__ = [
     "FinishedDownloadingFileEvent",
     "FinishedInitializingModelEvent",
     "ImportResults",
+    "ImportedVisionEncoder",
     "InitializingModelEvent",
     "ModelMetadata",
     "ModelSpec",
     "StatusEvent",
     "import_model",
+    "import_vision_encoder",
 ]
 
 
@@ -465,3 +470,42 @@ def import_model(
         grammar_start_tokens=model_spec.grammar_start_tokens if isinstance(model_spec, LanguageModelSpec) else (),
     )
     return ImportResults(model, metadata)
+
+
+class ImportedVisionEncoder(NamedTuple):
+    encoder: VisionEncoder
+    preprocessing_config: ImagePreprocessingConfig
+
+
+def import_vision_encoder(
+    model_spec: ModelSpec,
+    *,
+    sharding_config: ShardingConfig,
+    dtype: DTypeLike | None = None,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> ImportedVisionEncoder:
+    if not isinstance(model_spec, LanguageModelSpec) or model_spec.vision_encoder is None:
+        raise ValueError(f"{model_spec.name} has no vision encoder.")
+    vision_spec = model_spec.vision_encoder
+
+    foreign_config = vision_spec.config_type.from_json(
+        model_spec.origin.resolve_file(vision_spec.model_config, progress_callback),
+    )
+    preprocessing_config = vision_spec.image_processor_config_type.from_json(
+        model_spec.origin.resolve_file(vision_spec.image_processor_config, progress_callback),
+    ).to_image_preprocessing_config()
+    encoder_config = foreign_config.to_vision_encoder_config()
+    if preprocessing_config.spatial_merge_size != encoder_config.spatial_merge_size:
+        raise ValueError("Preprocessor and vision tower disagree on the spatial merge size.")
+    if preprocessing_config.patch_size != encoder_config.patch_embedding_config.patch_size:
+        raise ValueError("Preprocessor and vision tower disagree on the patch size.")
+
+    with _load_checkpoint(model_spec, progress_callback) as checkpoint:
+        encoder = foreign_config.load_weights(
+            encoder_config.init(EmptyInitializer(default_dtype=dtype, sharding_config=sharding_config)),
+            checkpoint.weights,
+            ParameterPath(vision_spec.weights_path),
+            implementation=implementation,
+        )
+    return ImportedVisionEncoder(encoder=encoder, preprocessing_config=preprocessing_config)

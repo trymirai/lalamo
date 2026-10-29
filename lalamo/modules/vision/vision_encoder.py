@@ -39,17 +39,7 @@ class VisionEncoderResult(Exportable, eqx.Module):
 
 @dataclass(frozen=True)
 class VisionEncoderConfig(LalamoConfig):
-    """Turns preprocessed image patches into embeddings the language model can consume.
-
-    The pipeline is: patch embedding, plus an interpolated absolute position embedding, then a
-    stack of pre-norm ViT blocks with 2D RoPE, then a patch merger that fuses each
-    ``spatial_merge_size x spatial_merge_size`` block into one output token of width
-    ``output_dim``.
-
-    ``spatial_merge_size`` lives here and nowhere else. RoPE, the position embedding and the
-    merger all depend on it, and they get it as an argument, so the sub-configs can never
-    disagree about it.
-    """
+    """Patch embedding, ViT blocks with 2D RoPE, and a patch merger producing language model embeddings."""
 
     patch_embedding_config: PatchEmbeddingConfig
     position_embedding_config: InterpolatedPositionEmbeddingConfig
@@ -74,6 +64,8 @@ class VisionEncoderConfig(LalamoConfig):
         return sum(grid.num_merged_tokens(self.spatial_merge_size) for grid in grids)
 
     def init(self, initializer: Initializer) -> "VisionEncoder":
+        if initializer.sharding_config.logical_to_physical:
+            raise ValueError("Vision encoders cannot be sharded; use a replicated ShardingConfig.")
         return VisionEncoder(
             config=self,
             sharding_config=initializer.sharding_config,
@@ -102,17 +94,9 @@ class VisionEncoder(LalamoModule[VisionEncoderConfig]):
         return_activation_trace: bool = False,
         keychain: Keychain,
     ) -> VisionEncoderResult:
-        """Encode a packed batch of images.
-
-        ``patches`` holds the patches of every image back to back, exactly as the preprocessor
-        emits them, and ``grids`` describes how to cut that sequence into images. ``grids`` must
-        be a tuple of ``ImageGrid``s (not a list), because it is a static argument and has to be
-        hashable for ``filter_jit``.
-        """
+        """Encode the patches of several images, packed back to back; ``grids`` gives each image's size."""
         num_patches, _ = patches.shape
-        expected_patches = sum(grid.num_patches for grid in grids)
-        if num_patches != expected_patches:
-            raise ValueError(f"Got {num_patches} patches but the grids describe {expected_patches}.")
+        assert num_patches == sum(grid.num_patches for grid in grids)
 
         merge_size = self.config.spatial_merge_size
         embedding_keychain, merger_keychain, *layer_keychains = keychain.split(len(self.layers) + 2)

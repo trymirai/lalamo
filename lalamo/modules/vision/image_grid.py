@@ -17,13 +17,7 @@ class PatchCoordinates(NamedTuple):
 
 @dataclass(frozen=True)
 class ImageGrid:
-    """Size of one image (or video clip) measured in vision patches.
-
-    HuggingFace calls this ``grid_thw``. The fields are plain Python ints on purpose: they decide
-    array shapes inside the encoder, so they have to be static under ``jax.jit``. Every distinct
-    grid compiles its own program, which is fine because the preprocessor snaps image sizes to
-    multiples of ``patch_size * spatial_merge_size`` and the set of shapes stays small in practice.
-    """
+    """Size of one image in patches (HF's ``grid_thw``). Static under jit: each distinct grid compiles once."""
 
     num_frames: int
     height_in_patches: int
@@ -53,13 +47,7 @@ class ImageGrid:
         return self.num_patches // spatial_merge_size**2
 
     def patch_coordinates(self, spatial_merge_size: int) -> PatchCoordinates:
-        """Row and column of every patch in one frame, listed in the order the encoder receives them.
-
-        Patches do not arrive in raster order. The preprocessor keeps every ``merge x merge`` block
-        of neighbouring patches contiguous, so that the patch merger at the end of the encoder can
-        fuse a block with a plain reshape. The visiting order is therefore: block row, block column,
-        row inside the block, column inside the block.
-        """
+        """Row and column of each patch, in HF's order: each ``merge x merge`` block of patches is contiguous."""
         self.require_mergeable(spatial_merge_size)
         block_rows, block_cols, rows_in_block, cols_in_block = np.meshgrid(
             np.arange(self.height_in_patches // spatial_merge_size),

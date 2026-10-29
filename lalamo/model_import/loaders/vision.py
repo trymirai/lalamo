@@ -4,8 +4,9 @@ from einops import rearrange
 from jaxtyping import Array
 
 from lalamo.modules.linear import Linear
+from lalamo.modules.mlp import UngatedMLP
 from lalamo.modules.normalization import Normalization
-from lalamo.modules.vision import PatchEmbedding, PatchMerger, VisionAttention, VisionEncoder, VisionLayer, VisionMLP
+from lalamo.modules.vision import PatchEmbedding, PatchMerger, VisionAttention, VisionEncoder, VisionLayer
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.surgery import load_as_at
 from lalamo.weight_matrix import CompressionImplementation
@@ -24,11 +25,11 @@ def _load_layer_norm(module: Normalization, weights_dict: Mapping[str, Array], p
 
 
 def _load_mlp(
-    module: VisionMLP,
+    module: UngatedMLP,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     implementation: CompressionImplementation,
-) -> VisionMLP:
+) -> UngatedMLP:
     up_projection = load_linear(module.up_projection, weights_dict, path / "linear_fc1", implementation=implementation)
     down_projection = load_linear(
         module.down_projection,
@@ -103,7 +104,7 @@ def _load_merger(
 def load_qwen3_5_vision_encoder(
     module: VisionEncoder,
     weights_dict: Mapping[str, Array],
-    path: ParameterPath = ParameterPath("model.visual"),
+    path: ParameterPath,
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> VisionEncoder:

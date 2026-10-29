@@ -6,9 +6,11 @@ from lalamo.model_import.model_configs import (
     HFQwen2Config,
     HFQwen3Config,
     HFQwen35Config,
+    HFQwen35ImageProcessorConfig,
+    HFQwen35VisionConfig,
     HFQwen38FlashNextConfig,
 )
-from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
+from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec, VisionEncoderSpec
 from lalamo.model_import.model_specs.reasoning_configs import (
     BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
     BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
@@ -259,6 +261,15 @@ QWEN3 = [
 ]
 
 
+QWEN35_VISION_ENCODER = VisionEncoderSpec(
+    config_type=HFQwen35VisionConfig,
+    image_processor_config_type=HFQwen35ImageProcessorConfig,
+    model_config=FileSpec("config.json"),
+    image_processor_config=FileSpec("preprocessor_config.json"),
+    weights_path="model.visual",
+)
+
+
 QWEN35 = [
     LanguageModelSpec(
         vendor="Alibaba",
@@ -267,6 +278,7 @@ QWEN35 = [
         size="0.8B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-0.8B"),
         config_type=HFQwen35Config,
+        vision_encoder=QWEN35_VISION_ENCODER,
         response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
@@ -328,6 +340,7 @@ QWEN35 = [
         size="2B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-2B"),
         config_type=HFQwen35Config,
+        vision_encoder=QWEN35_VISION_ENCODER,
         response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
@@ -387,6 +400,7 @@ QWEN35 = [
         size="4B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-4B"),
         config_type=HFQwen35Config,
+        vision_encoder=QWEN35_VISION_ENCODER,
         response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
@@ -445,6 +459,7 @@ QWEN35 = [
         size="9B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-9B"),
         config_type=HFQwen35Config,
+        vision_encoder=QWEN35_VISION_ENCODER,
         response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
@@ -488,6 +503,7 @@ QWEN35 = [
         size="27B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-27B"),
         config_type=HFQwen35Config,
+        vision_encoder=QWEN35_VISION_ENCODER,
         response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
@@ -528,6 +544,7 @@ QWEN35 = [
         size="35B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-35B-A3B"),
         config_type=HFQwen35Config,
+        vision_encoder=QWEN35_VISION_ENCODER,
         response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),

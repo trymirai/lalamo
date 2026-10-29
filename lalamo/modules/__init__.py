@@ -39,6 +39,8 @@ from .mlp import (
     RoutingFunction,
     SigmoidRouting,
     SoftmaxRouting,
+    UngatedMLP,
+    UngatedMLPConfig,
 )
 from .ngram_injection import (
     NGramHashConfig,
@@ -261,6 +263,8 @@ __all__ = [
     "TransformerLayerResult",
     "TransformerLayerState",
     "TransformerResult",
+    "UngatedMLP",
+    "UngatedMLPConfig",
     "UnscaledRoPEConfig",
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",

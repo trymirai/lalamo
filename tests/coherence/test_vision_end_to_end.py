@@ -27,7 +27,8 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase, Qwen3_5ForCondi
 from transformers.modeling_outputs import BaseModelOutputWithPooling
 from transformers.models.qwen2_vl.image_processing_pil_qwen2_vl import Qwen2VLImageProcessorPil
 
-from lalamo.model_import.vision import import_qwen3_5_vision_encoder
+from lalamo.model_import.common import import_vision_encoder
+from lalamo.model_registry import ModelRegistry
 from lalamo.module import Keychain
 from lalamo.modules.vision import ImageGrid, VisionForwardPassConfig
 from lalamo.utils.sharding import ShardingConfig
@@ -64,7 +65,11 @@ def _photo(filename: str) -> Image.Image:
 
 def _lalamo_image_embeddings(image: Image.Image) -> tuple[torch.Tensor, ImageGrid]:
     sharding_config = ShardingConfig.replicated(jax.devices()[:1])
-    imported = import_qwen3_5_vision_encoder(REPO, sharding_config=sharding_config, dtype=jnp.float32)
+    imported = import_vision_encoder(
+        ModelRegistry.init().repo_to_model[REPO],
+        sharding_config=sharding_config,
+        dtype=jnp.float32,
+    )
     preprocessed = imported.preprocessing_config.preprocess([image])
     patches = jax.device_put(jnp.asarray(preprocessed.patches), sharding_config.make_sharding((None, None)))
     result = imported.encoder(

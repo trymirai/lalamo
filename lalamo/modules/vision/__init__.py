@@ -7,7 +7,6 @@ from .position_embedding import InterpolatedPositionEmbedding, InterpolatedPosit
 from .vision_attention import VisionAttention, VisionAttentionConfig
 from .vision_encoder import VisionEncoder, VisionEncoderActivationTrace, VisionEncoderConfig, VisionEncoderResult
 from .vision_layer import VisionLayer, VisionLayerActivationTrace, VisionLayerConfig, VisionLayerResult
-from .vision_mlp import VisionMLP, VisionMLPConfig
 from .vision_rope import VisionRoPEConfig
 
 __all__ = [
@@ -33,7 +32,5 @@ __all__ = [
     "VisionLayerActivationTrace",
     "VisionLayerConfig",
     "VisionLayerResult",
-    "VisionMLP",
-    "VisionMLPConfig",
     "VisionRoPEConfig",
 ]

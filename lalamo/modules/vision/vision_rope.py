@@ -14,19 +14,7 @@ __all__ = ["VisionRoPEConfig"]
 
 @dataclass(frozen=True)
 class VisionRoPEConfig(LalamoConfig):
-    """Two-dimensional rotary embedding used inside the vision transformer.
-
-    Every patch carries a (row, column) position. The head is split in two halves: the first
-    half rotates with the row, the second with the column. Each half uses the usual
-    ``base ** (-2i / d)`` frequency ladder with ``d = head_dim / 2``.
-
-    The result is returned as the same ``PositionalEmbeddings`` the text decoder uses, laid out
-    as ``[row_freqs, col_freqs, row_freqs, col_freqs]``. That layout makes the standard
-    rotate-half application (``PositionalEmbeddings.apply``) produce exactly the rotation HF
-    performs in ``apply_rotary_pos_emb_vision``.
-
-    There are no learned parameters, so this is a config without a matching module.
-    """
+    """2D RoPE: the first half of each head rotates with the patch row, the second half with the column."""
 
     base: float
     head_dim: int

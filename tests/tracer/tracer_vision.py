@@ -1,9 +1,4 @@
-"""Activation-by-activation comparison of a Qwen3.5 vision tower against HuggingFace, on real weights.
-
-The HF reference is a bare ``Qwen3_5VisionModel`` loaded from the same safetensors shard(s) as the
-lalamo encoder. The full multimodal model is never instantiated, so even the 27B checkpoint only needs
-its vision shard (~1 GB of vision weights) instead of the whole 54 GB.
-"""
+"""Activation-by-activation comparison of a Qwen3.5 vision tower against a bare HF ``Qwen3_5VisionModel``."""
 
 import gc
 from dataclasses import dataclass
@@ -19,7 +14,9 @@ from safetensors import safe_open
 from transformers import AutoConfig
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
 
-from lalamo.model_import.vision import VISION_WEIGHTS_PATH, import_qwen3_5_vision_encoder, resolve_vision_weight_files
+from lalamo.model_import.common import import_vision_encoder
+from lalamo.model_import.origins import hf_resolve_weights
+from lalamo.model_registry import ModelRegistry
 from lalamo.module import Keychain
 from lalamo.modules.vision import ImageGrid, VisionEncoderResult, VisionForwardPassConfig
 from tests.common import assert_close
@@ -69,9 +66,9 @@ def synthetic_image(width: int, height: int, seed: int) -> Image.Image:
 def _load_hf_vision_model(repo: str, dtype: DType) -> Qwen3_5VisionModel:
     vision_config = AutoConfig.from_pretrained(repo).vision_config
     model = Qwen3_5VisionModel._from_config(vision_config, attn_implementation="eager", torch_dtype=dtype.torch_dtype)  # noqa: SLF001
-    prefix = f"{VISION_WEIGHTS_PATH}."
+    prefix = "model.visual."
     state_dict = {}
-    for path in resolve_vision_weight_files(repo):
+    for path in hf_resolve_weights(repo, ".safetensors"):
         with safe_open(path, framework="pt") as shard:
             state_dict |= {
                 key.removeprefix(prefix): shard.get_tensor(key).to(dtype.torch_dtype)
@@ -189,8 +186,8 @@ def _match_activations(
 def run_vision_tracer(spec: VisionModelTestSpec) -> None:
     configure_precision_for_tests()
     sharding_config = _tracer_sharding_config()
-    imported = import_qwen3_5_vision_encoder(
-        spec.model_repo,
+    imported = import_vision_encoder(
+        ModelRegistry.init().repo_to_model[spec.model_repo],
         sharding_config=sharding_config,
         dtype=spec.dtype.jax_dtype,
     )
