@@ -25,7 +25,7 @@ from lalamo.models import GenerationConfig
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.models.language_model import LanguageModelConfig
 from lalamo.module import Keychain
-from lalamo.modules.token_mixer import MixerForwardPassConfig, State
+from lalamo.modules.token_mixer import MixerForwardPassConfig, State, TransformerLayerState
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.token_mixers.kv_cache import PagedKVCacheLayer, PagedKVCachePool, StaticKVCacheLayer
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
@@ -169,7 +169,7 @@ def test_attention_paged_decode_matches_dense_continuation(
     window: int | None, has_sinks: bool, cap: float | None
 ) -> None:
     sharding = ShardingConfig.replicated(jax.devices()[:1])
-    config = build_tiny_attention_decoder_config((None,)).transformer_config.layer_configs[0].mixer_config
+    config = build_tiny_attention_decoder_config((None,)).transformer_config.layer_configs[0].mixer.body_config
     assert isinstance(config, AttentionConfig)
     config = replace(
         config,
@@ -233,16 +233,17 @@ def test_static_prefill_to_pages_preserves_tokens_at_page_boundaries(has_sinks: 
         values=jnp.pad(cache.values, ((0, pages * 32 + int(has_sinks) - cache.capacity), (0, 0), (0, 0))),
     )
     merged, _ = _merge_prefill(
-        State((pool,)),
+        State((TransformerLayerState(mixer=pool, stream_ops=()),)),
         jnp.zeros((1, 1)),
-        State((jax.tree.map(lambda leaf: leaf[None], padded),)),
+        State((TransformerLayerState(mixer=jax.tree.map(lambda leaf: leaf[None], padded), stream_ops=()),)),
         jnp.zeros((1, 1)),
         tables,
         jnp.array([0], dtype=jnp.int32),
     )
-    assert isinstance(merged[0], PagedKVCachePool)
+    merged_pool = merged[0].mixer
+    assert isinstance(merged_pool, PagedKVCachePool)
     appended = PagedKVCacheLayer(
-        merged[0].keys, merged[0].values, tables, jnp.array([length], dtype=jnp.int32)
+        merged_pool.keys, merged_pool.values, tables, jnp.array([length], dtype=jnp.int32)
     ).append(jnp.array([[[length + 1.0]]]), jnp.array([[[2 * (length + 1.0)]]]))
     read_keys, read_values = appended.read_pages(tables)
 
@@ -256,12 +257,17 @@ def test_mixed_cached_and_blank_prefixes_match_fresh_attention(has_sinks: bool, 
     sharding = ShardingConfig.replicated(jax.devices()[:1])
     decoder_config = build_tiny_attention_decoder_config((None,))
     (layer,) = decoder_config.transformer_config.layer_configs
-    assert isinstance(layer.mixer_config, AttentionConfig)
+    assert isinstance(layer.mixer.body_config, AttentionConfig)
     decoder_config = replace(
         decoder_config,
         transformer_config=replace(
             decoder_config.transformer_config,
-            layer_configs=(replace(layer, mixer_config=replace(layer.mixer_config, has_sinks=has_sinks)),),
+            layer_configs=(
+                replace(
+                    layer,
+                    mixer=replace(layer.mixer, body_config=replace(layer.mixer.body_config, has_sinks=has_sinks)),
+                ),
+            ),
         ),
     )
     model = LanguageModelConfig(
@@ -272,7 +278,7 @@ def test_mixed_cached_and_blank_prefixes_match_fresh_attention(has_sinks: bool, 
         Tokenizer(WordLevel({"[UNK]": 0}, unk_token="[UNK]")),
         RandomInitializer(default_dtype=jnp.float32, sharding_config=sharding, key=jax.random.key(7)),
     )
-    attention = model.decoder.transformer.layers[0].mixer
+    attention = model.decoder.transformer.layers[0].mixer.body
     assert isinstance(attention.config, AttentionConfig)
     forward = MixerForwardPassConfig.for_tracer_tests()
     keychain = Keychain.init(0, sharding_config=sharding)
@@ -295,7 +301,7 @@ def test_mixed_cached_and_blank_prefixes_match_fresh_attention(has_sinks: bool, 
     engine.model = model
     engine.config = ContinuousBatchingConfig(total_pages=2)
     engine.total_pages = 2
-    engine._state = State((pool,))  # noqa: SLF001
+    engine._state = State((TransformerLayerState(mixer=pool, stream_ops=()),))  # noqa: SLF001
     received: list[TokenEvent] = []
     batch = [
         BatchingSequence(
@@ -312,7 +318,7 @@ def test_mixed_cached_and_blank_prefixes_match_fresh_attention(has_sinks: bool, 
             (1,), 1, (), received.extend, GenerationConfig().default_policy(), jax.random.key(1), return_logprobs=False
         ),
     ]
-    restored = engine._prefix_state(batch, [length, 0], 64)[0]  # noqa: SLF001
+    restored = engine._prefix_state(batch, [length, 0], 64)[0].mixer  # noqa: SLF001
     assert isinstance(restored, StaticKVCacheLayer)
     for row, fresh_inputs in enumerate((inputs, inputs[-1:])):
         continued = attention(

@@ -2,7 +2,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Literal, Self
 
 import equinox as eqx
 from jaxtyping import Array
@@ -17,9 +17,14 @@ from lalamo.model_import.loaders.huggingface import (
 )
 from lalamo.models import LanguageModel
 from lalamo.modules import (
+    AdditiveResidualConfig,
     DecoderConfig,
-    PLELayerConfig,
+    PerLayerEmbeddingInjection,
+    PerLayerEmbeddingInjectionConfig,
     PLEModelConfig,
+    ResidualScale,
+    ResidualScaleConfig,
+    SublayerConfig,
     TiedEmbeddingConfig,
     TransformerConfig,
 )
@@ -125,7 +130,7 @@ class HFGemma4TextConfig:
         ple_embed_scale = self.hidden_size_per_layer_input**0.5
         inverse_hidden_scale = self.hidden_size**-0.5
         two_input_mixing_scale = 2.0**-0.5
-        ple_layer_config = PLELayerConfig(
+        ple_layer_config = PerLayerEmbeddingInjectionConfig(
             linear_config=linear_config,
             norm_config=rms_norm_config,
             ple_dim=self.hidden_size_per_layer_input,
@@ -195,21 +200,17 @@ class HFGemma4TextConfig:
             )
 
             transformer_layer_config = TransformerLayerConfig(
-                pre_mixer_norm_config=rms_norm_config,
-                mixer_config=attention_config,
-                post_mixer_norm_config=rms_norm_config,
-                pre_mlp_norm_config=rms_norm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=rms_norm_config,
+                mixer=SublayerConfig.sandwich_norm(rms_norm_config, attention_config, rms_norm_config),
+                mlp=SublayerConfig.sandwich_norm(rms_norm_config, mlp_config, rms_norm_config),
                 hidden_dim=layer_intermediate,
-                ple_config=ple_layer_config,
-                has_post_layer_scalar=True,
+                epilogue_configs=(ple_layer_config, ResidualScaleConfig()),
                 kv_source_layer_index=None if owns_kv_cache else kv_source,
                 rope_config=layer_rope_config,
             )
             layer_configs.append(transformer_layer_config)
 
         transformer_config = TransformerConfig(
+            residual_config=AdditiveResidualConfig(),
             layer_configs=tuple(layer_configs),
             output_norm_config=rms_norm_config,
             model_dim=self.hidden_size,
@@ -299,30 +300,34 @@ class HFGemma4Config(HuggingFaceLMConfig):
         layers_base = base / "layers"
         new_layers = []
         for i, layer in enumerate(model.transformer.layers):
-            if layer.ple is None:
-                new_layers.append(layer)
-                continue
             layer_path = layers_base / i
-            new_ple = replace(
-                layer.ple,
-                gate=load_linear(
-                    layer.ple.gate,
-                    weights_dict,
-                    layer_path / "per_layer_input_gate",
-                    implementation=implementation,
-                ),
-                projection=load_linear(
-                    layer.ple.projection,
-                    weights_dict,
-                    layer_path / "per_layer_projection",
-                    implementation=implementation,
-                ),
-                norm=load_rmsnorm(layer.ple.norm, weights_dict, layer_path / "post_per_layer_input_norm"),
-            )
-            layer_updates: dict[str, Any] = {"ple": new_ple}
-            if layer.post_layer_scalar is not None:
-                layer_updates["post_layer_scalar"] = weights_dict[layer_path / "layer_scalar"]
-            new_layers.append(replace(layer, **layer_updates))
+            new_epilogue = []
+            for op in layer.epilogue:
+                match op:
+                    case PerLayerEmbeddingInjection():
+                        new_epilogue.append(
+                            replace(
+                                op,
+                                gate=load_linear(
+                                    op.gate,
+                                    weights_dict,
+                                    layer_path / "per_layer_input_gate",
+                                    implementation=implementation,
+                                ),
+                                projection=load_linear(
+                                    op.projection,
+                                    weights_dict,
+                                    layer_path / "per_layer_projection",
+                                    implementation=implementation,
+                                ),
+                                norm=load_rmsnorm(op.norm, weights_dict, layer_path / "post_per_layer_input_norm"),
+                            ),
+                        )
+                    case ResidualScale():
+                        new_epilogue.append(replace(op, scale=weights_dict[layer_path / "layer_scalar"]))
+                    case _:
+                        raise TypeError(f"Unsupported Gemma4 epilogue op: {type(op).__name__}")
+            new_layers.append(replace(layer, epilogue=tuple(new_epilogue)))
 
         return replace(
             model,

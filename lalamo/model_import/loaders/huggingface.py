@@ -16,6 +16,7 @@ from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding
 from lalamo.modules.linear import Linear
 from lalamo.modules.mlp import DenseMLP, MixtureOfExperts, MLPBase
 from lalamo.modules.normalization import Normalization
+from lalamo.modules.residual import GatedResidualConnection, GatedResidualHead, GatedStreamReader
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv
 from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
@@ -29,7 +30,7 @@ from lalamo.weight_matrix import CompressionImplementation, EmbeddingMatrix, Lay
 
 from .common import load_full_precision
 
-__all__ = ["load_huggingface_decoder", "load_linear", "load_rmsnorm"]
+__all__ = ["load_huggingface_decoder", "load_linear", "load_optional_rmsnorm", "load_rmsnorm"]
 
 
 AWQ_UINT4_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
@@ -661,7 +662,7 @@ def load_rmsnorm(
     return load_as_at(lambda m: (m.scales,), module, (scales,))
 
 
-def _load_optional_rmsnorm(
+def load_optional_rmsnorm(
     module: Normalization | None,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
@@ -780,6 +781,62 @@ def load_attention(
         module,
         (qkvg_projection, out_projection, query_norm, key_norm, sinks),
     )
+
+
+def load_gated_stream_reader(
+    module: GatedStreamReader,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> GatedStreamReader:
+    scales = rearrange(
+        weights_dict[path / "hc_norm" / "weight"],
+        "(streams channels) -> streams channels",
+        streams=module.config.stream_count,
+    )
+    down_projection = load_linear(
+        module.down_projection,
+        weights_dict,
+        path / "input_mix_weight_down",
+        implementation=implementation,
+    )
+    up_projection = load_linear(
+        module.up_projection,
+        weights_dict,
+        path / "input_mix_weight_up",
+        implementation=implementation,
+    )
+    return load_as_at(
+        lambda m: (m.norm.scales, m.down_projection, m.up_projection),
+        module,
+        (scales, down_projection, up_projection),
+    )
+
+
+def load_gated_residual_connection(
+    module: GatedResidualConnection,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> GatedResidualConnection:
+    reader = load_gated_stream_reader(module.reader, weights_dict, path, implementation=implementation)
+    injection = load_linear(
+        module.injection, weights_dict, path / "block_inject_weight", implementation=implementation
+    )
+    return load_as_at(lambda m: (m.reader, m.injection), module, (reader, injection))
+
+
+def load_gated_residual_head(
+    module: GatedResidualHead,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> GatedResidualHead:
+    reader = load_gated_stream_reader(module.reader, weights_dict, path, implementation=implementation)
+    return load_as_at(lambda m: (m.reader,), module, (reader,))
 
 
 def _load_conv(
@@ -1010,54 +1067,53 @@ def load_transformer_layer(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> TransformerLayer:
-    pre_attention_norm = _load_optional_rmsnorm(module.pre_mixer_norm, weights_dict, mixer_path / pre_mixer_norm_key)
-    # Load mixer (attention or mamba)
-    if isinstance(module.mixer, Attention):
+    pre_attention_norm = load_optional_rmsnorm(module.mixer.pre_norm, weights_dict, mixer_path / pre_mixer_norm_key)
+    mixer_body = module.mixer.body
+    if isinstance(mixer_body, Attention):
         mixer = load_attention(
-            module.mixer,
+            mixer_body,
             weights_dict,
             mixer_path / mixer_key,
             implementation=implementation,
         )
-    elif isinstance(module.mixer, DeltaNet):
+    elif isinstance(mixer_body, DeltaNet):
         mixer = load_delta_net_attention(
-            module.mixer,
+            mixer_body,
             weights_dict,
             mixer_path / mixer_key,
             permute_conv,
             implementation=implementation,
         )
-    elif isinstance(module.mixer, Mamba2):
+    elif isinstance(mixer_body, Mamba2):
         mixer = load_mamba2(
-            module.mixer,
+            mixer_body,
             weights_dict,
             mixer_path / mixer_key,
             permute_conv,
             implementation=implementation,
         )
-    elif isinstance(module.mixer, ShortConv):
+    elif isinstance(mixer_body, ShortConv):
         mixer = load_short_conv(
-            module.mixer,
+            mixer_body,
             weights_dict,
             mixer_path / mixer_key,
             permute_conv,
             implementation=implementation,
         )
     else:
-        mixer = module.mixer
+        mixer = mixer_body
 
-    assert isinstance(module.pre_mlp_norm, Normalization)
-    if module.post_mixer_norm is not None:
+    if module.mixer.post_norm is not None:
         post_attention_norm = load_rmsnorm(
-            module.post_mixer_norm, weights_dict, mixer_path / "post_attention_layernorm"
+            module.mixer.post_norm, weights_dict, mixer_path / "post_attention_layernorm"
         )
-        pre_mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, mlp_path / "pre_feedforward_layernorm")
+        pre_mlp_norm = load_optional_rmsnorm(module.mlp.pre_norm, weights_dict, mlp_path / "pre_feedforward_layernorm")
     else:
         post_attention_norm = None
-        pre_mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, mlp_path / pre_mlp_norm_key)
+        pre_mlp_norm = load_optional_rmsnorm(module.mlp.pre_norm, weights_dict, mlp_path / pre_mlp_norm_key)
 
     mlp = load_mlp(
-        module.mlp,
+        module.mlp.body,
         weights_dict,
         mlp_path / mlp_key,
         up_proj_key,
@@ -1066,16 +1122,16 @@ def load_transformer_layer(
         implementation=implementation,
     )
 
-    post_mlp_norm = _load_optional_rmsnorm(module.post_mlp_norm, weights_dict, mlp_path / "post_feedforward_layernorm")
+    post_mlp_norm = load_optional_rmsnorm(module.mlp.post_norm, weights_dict, mlp_path / "post_feedforward_layernorm")
 
     return load_as_at(
         lambda m: (
-            m.pre_mixer_norm,
-            m.mixer,
-            m.post_mixer_norm,
-            m.pre_mlp_norm,
-            m.mlp,
-            m.post_mlp_norm,
+            m.mixer.pre_norm,
+            m.mixer.body,
+            m.mixer.post_norm,
+            m.mlp.pre_norm,
+            m.mlp.body,
+            m.mlp.post_norm,
         ),
         module,
         (
@@ -1176,7 +1232,7 @@ def _get_mixer_key(
     mixer_key: dict[type[object], str],
     layer: TransformerLayer,
 ) -> str:
-    mixer_config = layer.config.mixer_config
+    mixer_config = layer.config.mixer.body_config
     match mixer_config:
         case AttentionConfig():
             return mixer_key[AttentionConfig]
@@ -1331,7 +1387,9 @@ def load_huggingface_decoder(
         )
         for i, layer in enumerate(module.transformer.layers)
     )
-    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, layout.decoder_path / layout.norm_key)
+    output_norm = load_optional_rmsnorm(
+        module.transformer.output_norm, weights_dict, layout.decoder_path / layout.norm_key
+    )
     return load_as_at(
         lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm),
         module,
@@ -1374,8 +1432,8 @@ def load_huggingface_classifier(
         )
         out_projection = load_linear(module.out_projection, weights_dict, path / "Wo", implementation=implementation)
 
-        query_norm = _load_optional_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
-        key_norm = _load_optional_rmsnorm(module.key_norm, weights_dict, path / "k_norm")
+        query_norm = load_optional_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
+        key_norm = load_optional_rmsnorm(module.key_norm, weights_dict, path / "k_norm")
 
         return load_as_at(
             lambda m: (m.qkvg_projection, m.out_projection, m.query_norm, m.key_norm),
@@ -1408,28 +1466,27 @@ def load_huggingface_classifier(
         weights_dict: Mapping[str, Array],
         path: ParameterPath,
     ) -> TransformerLayer:
-        pre_attention_norm = _load_optional_rmsnorm(module.pre_mixer_norm, weights_dict, path / "attn_norm")
+        pre_attention_norm = load_optional_rmsnorm(module.mixer.pre_norm, weights_dict, path / "attn_norm")
 
-        assert isinstance(module.mixer, Attention)
-        attention = load_attention_local(module.mixer, weights_dict, path / "attn")
-        assert isinstance(module.pre_mlp_norm, Normalization)
-        if module.post_mixer_norm is not None:
-            post_attention_norm = load_rmsnorm(module.post_mixer_norm, weights_dict, path / "post_attention_layernorm")
-            pre_mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, path / "pre_feedforward_layernorm")
+        assert isinstance(module.mixer.body, Attention)
+        attention = load_attention_local(module.mixer.body, weights_dict, path / "attn")
+        if module.mixer.post_norm is not None:
+            post_attention_norm = load_rmsnorm(module.mixer.post_norm, weights_dict, path / "post_attention_layernorm")
+            pre_mlp_norm = load_optional_rmsnorm(module.mlp.pre_norm, weights_dict, path / "pre_feedforward_layernorm")
         else:
             post_attention_norm = None
-            pre_mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, path / "mlp_norm")
+            pre_mlp_norm = load_optional_rmsnorm(module.mlp.pre_norm, weights_dict, path / "mlp_norm")
 
-        mlp = load_mlp_local(module.mlp, weights_dict, path / "mlp")
-        post_mlp_norm = _load_optional_rmsnorm(module.post_mlp_norm, weights_dict, path / "post_feedforward_layernorm")
+        mlp = load_mlp_local(module.mlp.body, weights_dict, path / "mlp")
+        post_mlp_norm = load_optional_rmsnorm(module.mlp.post_norm, weights_dict, path / "post_feedforward_layernorm")
         return load_as_at(
             lambda m: (
-                m.pre_mixer_norm,
-                m.mixer,
-                m.post_mixer_norm,
-                m.pre_mlp_norm,
-                m.mlp,
-                m.post_mlp_norm,
+                m.mixer.pre_norm,
+                m.mixer.body,
+                m.mixer.post_norm,
+                m.mlp.pre_norm,
+                m.mlp.body,
+                m.mlp.post_norm,
             ),
             module,
             (
@@ -1454,7 +1511,7 @@ def load_huggingface_classifier(
         load_transformer_layer_local(layer, weights_dict, decoder_path / "layers" / i)
         for i, layer in enumerate(module.transformer.layers)
     )
-    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / "final_norm")
+    output_norm = load_optional_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / "final_norm")
     head_dense = load_linear(
         module.prediction_head.dense,
         weights_dict,
