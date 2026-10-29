@@ -14,7 +14,8 @@ from jax.sharding import NamedSharding, PartitionSpec
 from jaxtyping import Array, Float
 from tokenizers import Tokenizer
 
-from lalamo.modules.audio.fishaudio import DescriptAudioCodec, FishAudioTextDecoder
+from lalamo.modules.audio.fishaudio import DescriptAudioCodec, FishAudioTextDecoder, FishAudioTextDecoderConfig
+from lalamo.modules.audio.fishaudio.fishaudio_audio_decoding import DescriptAudioCodecConfig
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     FishAudioSpecialInferenceTokens,
 )
@@ -27,6 +28,7 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     DACDecoder,
     DACDecoderBlock,
     DownsampleResidualVectorQuantize,
+    DownsampleResidualVectorQuantizeConfig,
     ResidualUnit,
     ResidualVectorQuantize,
     Upsampler,
@@ -34,15 +36,15 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     VectorQuantize,
 )
 from lalamo.modules.linear import Linear
-from lalamo.modules.mlp import DenseMLP, MLPBase
+from lalamo.modules.mlp import DenseMLP
 from lalamo.modules.normalization import Normalization
 from lalamo.modules.token_mixers.attention import Attention
-from lalamo.modules.transformer import Transformer
-from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import sharding_of, with_sharding
 from lalamo.utils.surgery import load_as_at
+from lalamo.weight_matrix import CompressionImplementation
 
+from .binding import Binder
 from .common import load_full_precision
 from .huggingface import load_rmsnorm, load_tied_embedding
 from .nanocodec_loaders import (
@@ -190,191 +192,69 @@ def _load_rope_norm(
     return load_as_at(lambda m: (m.scales,), norm, (permuted_scales,))
 
 
-def load_transformer_block(
-    module: Transformer,
+def load_fish_attention(
+    module: Attention,
     weights_dict: Mapping[str, Array],
-    fast: bool = False,
-    path: ParameterPath | None = None,
-) -> Transformer:
-    def load_attention_local(
-        attn_module: Attention,
-        weights_dict: Mapping[str, Array],
-        path: ParameterPath,
-        scaling_to_fuse: Array | None = None,
-    ) -> Attention:
-        qkvg_projection = load_linear_and_fuse_scaling(
-            attn_module.qkvg_projection,
-            weights_dict,
-            path / "wqkv",
-            sublayers_to_fuse=None,
-        )
-        assert isinstance(qkvg_projection, Linear)
+    path: ParameterPath,
+    *,
+    layer_scale_path: ParameterPath,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG001
+) -> Attention:
+    qkvg_projection = load_linear_and_fuse_scaling(module.qkvg_projection, weights_dict, path / "wqkv")
+    assert isinstance(qkvg_projection, Linear)
 
-        # Permute QKV weights from interleaved RoPE format to rotate-half format
-        permuted_qkv_weights = _permute_qkv_for_rope_rotate_half(
-            qkvg_projection.weights.decompress(),
-            num_heads=attn_module.config.num_heads,
-            num_groups=attn_module.config.num_groups,
-            head_dim=attn_module.config.head_dim,
-        )
-        new_weights = qkvg_projection.weights.spec.compress(
-            permuted_qkv_weights,
-            sharding_config=qkvg_projection.weights.sharding_config,
-        )
-        qkvg_projection = eqx.tree_at(lambda m: (m.weights,), qkvg_projection, (new_weights,))
-        assert isinstance(qkvg_projection, Linear)
-
-        out_projection = load_linear_and_fuse_scaling(
-            attn_module.out_projection,
-            weights_dict,
-            path / "wo",
-            scaling_to_fuse=scaling_to_fuse,
-        )
-
-        query_norm = _load_rope_norm(attn_module.query_norm, weights_dict, path / "q_norm")
-        key_norm = _load_rope_norm(attn_module.key_norm, weights_dict, path / "k_norm")
-
-        return load_as_at(
-            lambda m: (m.qkvg_projection, m.out_projection, m.query_norm, m.key_norm),
-            attn_module,
-            (qkvg_projection, out_projection, query_norm, key_norm),
-        )
-
-    def load_mlp(
-        module: MLPBase,
-        weights_dict: Mapping[str, Array],
-        path: ParameterPath,
-        up_proj_key: str,
-        gate_proj_key: str,
-        down_proj_key: str,
-        scaling_to_fuse: Array | None = None,
-    ) -> MLPBase:
-        assert isinstance(module, DenseMLP)
-        dense_module: DenseMLP = module
-        # Standard dense MLP with separate sublayers.
-        up_projection = load_linear_and_fuse_scaling(
-            dense_module.up_projection,
-            weights_dict,
-            path,
-            sublayers_to_fuse=[up_proj_key, gate_proj_key],
-        )
-        down_projection = load_linear_and_fuse_scaling(
-            dense_module.down_projection,
-            weights_dict,
-            path / down_proj_key,
-            scaling_to_fuse=scaling_to_fuse,
-        )
-        return load_as_at(
-            _dense_mlp_projections,
-            dense_module,
-            (up_projection, down_projection),
-        )
-
-    def load_transformer_layer_local(
-        module: TransformerLayer,
-        weights_dict: Mapping[str, Array],
-        path: ParameterPath,
-    ) -> TransformerLayer:
-        if module.pre_mixer_norm is not None:
-            assert isinstance(module.pre_mixer_norm, Normalization)
-            pre_mixer_norm = load_rmsnorm(
-                module.pre_mixer_norm,
-                weights_dict,
-                path / "attention_norm",
-            )
-        else:
-            pre_mixer_norm = None
-
-        layer_scale_path = path / "attention_layer_scale" / "gamma"
-        layer_scale_weights = weights_dict.get(layer_scale_path, None)
-        post_mixer_norm = None
-
-        assert isinstance(module.mixer, Attention)
-        attention = load_attention_local(
-            attn_module=module.mixer,
-            weights_dict=weights_dict,
-            path=path / "attention",
-            scaling_to_fuse=layer_scale_weights,
-        )
-
-        assert isinstance(module.pre_mlp_norm, Normalization)
-        pre_mlp_norm = load_rmsnorm(
-            module.pre_mlp_norm,
-            weights_dict,
-            path / "ffn_norm",
-        )
-
-        layer_scale_path = path / "ffn_layer_scale" / "gamma"
-        layer_scale_weights = weights_dict.get(layer_scale_path, None)
-        post_mlp_norm = None
-
-        mlp = load_mlp(
-            module=module.mlp,
-            weights_dict=weights_dict,
-            path=path / "feed_forward",
-            up_proj_key="w3",
-            gate_proj_key="w1",
-            down_proj_key="w2",
-            scaling_to_fuse=layer_scale_weights,
-        )
-
-        return load_as_at(
-            lambda m: (
-                m.pre_mixer_norm,
-                m.mixer,
-                m.post_mixer_norm,
-                m.pre_mlp_norm,
-                m.mlp,
-                m.post_mlp_norm,
-            ),
-            module,
-            (
-                pre_mixer_norm,
-                attention,
-                post_mixer_norm,
-                pre_mlp_norm,
-                mlp,
-                post_mlp_norm,
-            ),
-        )
-
-    base_path = ParameterPath() if path is None else path
-
-    layers_name = "layers" if not fast else "fast_layers"
-    norm_name = "norm" if not fast else "fast_norm"
-
-    transformer_layers = tuple(
-        load_transformer_layer_local(layer, weights_dict, base_path / layers_name / i)
-        for i, layer in enumerate(module.layers)
+    # Permute QKV weights from interleaved RoPE format to rotate-half format
+    permuted_qkv_weights = _permute_qkv_for_rope_rotate_half(
+        qkvg_projection.weights.decompress(),
+        num_heads=module.config.num_heads,
+        num_groups=module.config.num_groups,
+        head_dim=module.config.head_dim,
     )
-    output_norm = load_rmsnorm(module.output_norm, weights_dict, base_path / norm_name)
+    new_weights = qkvg_projection.weights.spec.compress(
+        permuted_qkv_weights,
+        sharding_config=qkvg_projection.weights.sharding_config,
+    )
+    qkvg_projection = eqx.tree_at(lambda m: (m.weights,), qkvg_projection, (new_weights,))
 
+    out_projection = load_linear_and_fuse_scaling(
+        module.out_projection,
+        weights_dict,
+        path / "wo",
+        scaling_to_fuse=weights_dict.get(layer_scale_path),
+    )
     return load_as_at(
-        lambda m: (
-            m.layers,
-            m.output_norm,
-        ),
+        lambda m: (m.qkvg_projection, m.out_projection, m.query_norm, m.key_norm),
         module,
         (
-            transformer_layers,
-            output_norm,
+            qkvg_projection,
+            out_projection,
+            _load_rope_norm(module.query_norm, weights_dict, path / "q_norm"),
+            _load_rope_norm(module.key_norm, weights_dict, path / "k_norm"),
         ),
     )
 
 
-def load_fish_audio_text_decoding_modules(
-    transformer: Transformer,
-    output: Linear,
+def load_fish_mlp(
+    module: DenseMLP,
     weights_dict: Mapping[str, Array],
-    fast: bool = False,
-) -> tuple[Transformer, Linear]:
-    transformer = load_transformer_block(transformer, weights_dict=weights_dict, fast=fast)
-
-    base_path = ParameterPath()
-    output_linear_name = "output" if not fast else "fast_output"
-    output_linear = load_linear_and_fuse_scaling(output, weights_dict, base_path / output_linear_name)
-
-    return (transformer, output_linear)
+    path: ParameterPath,
+    *,
+    layer_scale_path: ParameterPath,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG001
+) -> DenseMLP:
+    return load_as_at(
+        _dense_mlp_projections,
+        module,
+        (
+            load_linear_and_fuse_scaling(module.up_projection, weights_dict, path, sublayers_to_fuse=["w3", "w1"]),
+            load_linear_and_fuse_scaling(
+                module.down_projection,
+                weights_dict,
+                path / "w2",
+                scaling_to_fuse=weights_dict.get(layer_scale_path),
+            ),
+        ),
+    )
 
 
 def load_vector_quantize(
@@ -589,6 +469,8 @@ def load_upsampler(
 
 def load_downsample_rvq(
     module: DownsampleResidualVectorQuantize,
+    config: DownsampleResidualVectorQuantizeConfig,
+    binder: Binder,
     weights_dict: Mapping[str, Array],
     path: ParameterPath | None = None,
 ) -> DownsampleResidualVectorQuantize:
@@ -671,7 +553,8 @@ def load_downsample_rvq(
         base_path / "upsample",
     )
 
-    post_module = load_transformer_block(module.post_module, weights_dict, fast=False, path=base_path / "post_module")
+    # The post-module program is bound to its absolute checkpoint paths when its config is built.
+    post_module = binder.load(module.post_module, config.post_module_config, weights_dict)
 
     return load_as_at(
         lambda m: (m.semantic_quantizer, m.quantizer, m.upsampler, m.post_module),
@@ -813,8 +696,19 @@ def load_audio_decoder(
     )
 
 
-def load_descript_audio_codec(dac_module: DescriptAudioCodec, state_dict: Mapping[str, Any]) -> DescriptAudioCodec:
-    loaded_quantizer = load_downsample_rvq(dac_module.quantizer, state_dict, path=ParameterPath("quantizer"))
+def load_descript_audio_codec(
+    dac_module: DescriptAudioCodec,
+    dac_config: DescriptAudioCodecConfig,
+    binder: Binder,
+    state_dict: Mapping[str, Any],
+) -> DescriptAudioCodec:
+    loaded_quantizer = load_downsample_rvq(
+        dac_module.quantizer,
+        dac_config.quantizer_config,
+        binder,
+        state_dict,
+        path=ParameterPath("quantizer"),
+    )
     loaded_decoder = load_audio_decoder(dac_module.decoder, state_dict, path=ParameterPath("decoder"))
 
     return DescriptAudioCodec(
@@ -827,39 +721,12 @@ def load_descript_audio_codec(dac_module: DescriptAudioCodec, state_dict: Mappin
 
 def load_fishaudio_text_decoder(
     module: FishAudioTextDecoder,
+    config: FishAudioTextDecoderConfig,
+    binder: Binder,
     weights_dict: Mapping[str, Array],
     decoder_path: ParameterPath | None = None,
 ) -> FishAudioTextDecoder:
     basepath = ParameterPath() if decoder_path is None else decoder_path
-    transformer_slow, readout_slow = load_fish_audio_text_decoding_modules(
-        module.transformer_slow,
-        module.readout_slow,
-        weights_dict,
-        fast=False,
-    )
-    transformer_fast, readout_fast = load_fish_audio_text_decoding_modules(
-        module.transformer_fast,
-        module.readout_fast,
-        weights_dict,
-        fast=True,
-    )
-    embeddings_slow = load_tied_embedding(
-        module.embeddings_slow,
-        weights_dict,
-        basepath / "embeddings",
-    )
-    embeddings_fast = load_tied_embedding(
-        module.embeddings_fast,
-        weights_dict,
-        basepath / "fast_embeddings",
-    )
-
-    codebook_embeddings = load_tied_embedding(
-        module.codebook_embeddings,
-        weights_dict,
-        basepath / "codebook_embeddings",
-    )
-
     if isinstance(module.fast_model_projection, Linear):
         fast_model_projection = load_linear_and_fuse_scaling(
             module.fast_model_projection,
@@ -873,23 +740,23 @@ def load_fishaudio_text_decoder(
     return load_as_at(
         lambda m: (
             m.embeddings_slow,
-            m.transformer_slow,
+            m.slow_model,
             m.readout_slow,
             m.embeddings_fast,
-            m.transformer_fast,
+            m.fast_model,
             m.readout_fast,
             m.codebook_embeddings,
             m.fast_model_projection,
         ),
         module,
         (
-            embeddings_slow,
-            transformer_slow,
-            readout_slow,
-            embeddings_fast,
-            transformer_fast,
-            readout_fast,
-            codebook_embeddings,
+            load_tied_embedding(module.embeddings_slow, weights_dict, basepath / "embeddings"),
+            binder.load(module.slow_model, config.slow_model_config, weights_dict),
+            load_linear_and_fuse_scaling(module.readout_slow, weights_dict, basepath / "output"),
+            load_tied_embedding(module.embeddings_fast, weights_dict, basepath / "fast_embeddings"),
+            binder.load(module.fast_model, config.fast_model_config, weights_dict),
+            load_linear_and_fuse_scaling(module.readout_fast, weights_dict, basepath / "fast_output"),
+            load_tied_embedding(module.codebook_embeddings, weights_dict, basepath / "codebook_embeddings"),
             fast_model_projection,
         ),
     )
@@ -897,10 +764,18 @@ def load_fishaudio_text_decoder(
 
 def load_fishaudio_audio_decoder(
     module: DescriptAudioCodec,
+    config: DescriptAudioCodecConfig,
+    binder: Binder,
     weights_dict: Mapping[str, Array],
     base_path: ParameterPath,
 ) -> DescriptAudioCodec:
-    loaded_quantizer = load_downsample_rvq(module.quantizer, weights_dict, base_path / "quantizer")
+    loaded_quantizer = load_downsample_rvq(
+        module.quantizer,
+        config.quantizer_config,
+        binder,
+        weights_dict,
+        base_path / "quantizer",
+    )
     loaded_decoder = load_audio_decoder(module.decoder, weights_dict, base_path / "decoder")
 
     return load_as_at(

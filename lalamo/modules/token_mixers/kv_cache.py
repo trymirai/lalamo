@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
-from lalamo.modules.token_mixer import StateLayerBase
+from lalamo.modules.flow import StateLayerBase
 from lalamo.utils.sharding import ShardingConfig
 
 __all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "PagedKVCacheLayer", "PagedKVCachePool", "StaticKVCacheLayer"]
@@ -113,7 +113,13 @@ class KVCacheLayer(StateLayerBase):
         return mask
 
     @abstractmethod
-    def current_prefix_length(self) -> Int[Array, ""] | int: ...
+    def current_prefix_length(
+        self,
+        suffix_length: int = 0,
+        suffix_length_without_padding: Int[Array, ""] | int | None = None,
+    ) -> Int[Array, ""] | int:
+        """Stored prefix positions before a suffix that is already in this cache."""
+        ...
 
     @abstractmethod
     def extend(
@@ -184,11 +190,16 @@ class PagedKVCacheLayer(PagedKVCachePool):
 
 
 class DynamicKVCacheLayer(KVCacheLayer):
-    padding_mask: Bool[Array, " tokens"] | None = None
+    padding_mask: Bool[Array, "*batch tokens"] | None = None
 
-    def current_prefix_length(self) -> int:
+    def current_prefix_length(
+        self,
+        suffix_length: int = 0,
+        suffix_length_without_padding: Int[Array, ""] | int | None = None,  # noqa: ARG002
+    ) -> int:
         self._raise_if_batched()
-        return self.keys.shape[0]
+        # Dynamic caches retain padding slots; static caches omit them when appending.
+        return self.keys.shape[0] - suffix_length
 
     @classmethod
     def init(
@@ -284,9 +295,15 @@ class DynamicKVCacheLayer(KVCacheLayer):
 class StaticKVCacheLayer(KVCacheLayer):
     current_length: Int[Array, "*batch"]
 
-    def current_prefix_length(self) -> Int[Array, ""]:
+    def current_prefix_length(
+        self,
+        suffix_length: int = 0,
+        suffix_length_without_padding: Int[Array, ""] | int | None = None,
+    ) -> Int[Array, ""]:
         self._raise_if_batched()
-        return self.current_length
+        if suffix_length_without_padding is None:
+            suffix_length_without_padding = suffix_length
+        return self.current_length - suffix_length_without_padding
 
     def attention_mask(
         self,

@@ -1,12 +1,13 @@
 import json
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Self
 
+from lalamo.model_import.loaders.binding import Binder
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
+from lalamo.modules.flow import StepConfig
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, SoftmaxRouting
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
@@ -14,10 +15,9 @@ from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.token_mixers.deltanet import DeltaNetConfig
-from lalamo.modules.transformer import TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.utils.parameter_path import ParameterPath
 
-from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
+from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType, residual_decoder
 
 __all__ = ["HFQwen35Config"]
 
@@ -71,10 +71,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
         merged = {**text_config, **config}
         return cls._converter.structure(merged, cls)
 
-    def to_decoder_config(
-        self,
-        metadata_dict: Mapping[str, str],  # noqa: ARG002
-    ) -> DecoderConfig:
+    def build_decoder(self, at: Binder) -> DecoderConfig:
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
@@ -122,6 +119,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
                 has_down_biases=False,
                 up_clipping=None,
                 gate_clipping=None,
+                hidden_dim=self.moe_intermediate_size,
             )
             mlp_config = MixtureOfExpertsConfig(
                 num_routed_experts=self.num_experts,
@@ -132,9 +130,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
                 expert_config=experts_config,
                 gate_config=linear_config,
                 num_shared_experts=1,
-                expert_hidden_dim=self.moe_intermediate_size,
             )
-            hidden_dim = self.moe_intermediate_size
         else:
             assert self.intermediate_size is not None
             mlp_config = DenseMLPConfig(
@@ -144,11 +140,12 @@ class HFQwen35Config(HuggingFaceLMConfig):
                 has_down_biases=False,
                 up_clipping=None,
                 gate_clipping=None,
+                hidden_dim=self.intermediate_size,
             )
-            hidden_dim = self.intermediate_size
 
-        layer_configs = []
-        for layer_type in self.layer_types:
+        layers: list[tuple[StepConfig, StepConfig]] = []
+        for index, layer_type in enumerate(self.layer_types):
+            path = ParameterPath("model.layers") / index
             if layer_type == "linear_attention":
                 mixer_config = DeltaNetConfig(
                     in_proj_config=linear_config,
@@ -180,29 +177,17 @@ class HFQwen35Config(HuggingFaceLMConfig):
                     scale=None,
                     sliding_window_size=None,
                     has_gate=True,
+                    rope_config=rope_config,
                 )
 
-            layer_configs.append(
-                TransformerLayerConfig(
-                    pre_mixer_norm_config=rmsnorm_config,
-                    mixer_config=mixer_config,
-                    post_mixer_norm_config=None,
-                    pre_mlp_norm_config=rmsnorm_config,
-                    mlp_config=mlp_config,
-                    post_mlp_norm_config=None,
-                    rope_config=rope_config if layer_type != "linear_attention" else None,
-                ),
-            )
+            mixer_key = "linear_attn" if layer_type == "linear_attention" else "self_attn"
+            layers.append((at(path / mixer_key, mixer_config), at(path / "mlp", mlp_config)))
 
-        transformer_config = TransformerConfig(
-            layer_configs=tuple(layer_configs),
-            output_norm_config=rmsnorm_config,
+        return residual_decoder(
+            at,
+            embedding=at("model.embed_tokens", embedding_config),
+            layers=layers,
+            norm=rmsnorm_config,
             model_dim=self.hidden_size,
-            hidden_dim=hidden_dim,
-        )
-
-        return DecoderConfig(
-            embedding_config=embedding_config,
-            transformer_config=transformer_config,
             vocab_size=self.vocab_size,
         )

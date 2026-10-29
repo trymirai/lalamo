@@ -7,7 +7,10 @@ from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.initializer import Initializer
-from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.module import Keychain, LalamoModule
+
+from .flow import Context, StepConfig
+from .utils import call_vmapped_twice
 
 __all__ = [
     "Normalization",
@@ -22,19 +25,21 @@ class UpcastMode(StrEnum):
 
 
 @dataclass(frozen=True)
-class NormalizationConfig(LalamoConfig):
+class NormalizationConfig(StepConfig):
     epsilon: float
     scale_offset: float | None
     upcast_mode: UpcastMode
     subtract_mean: bool
     has_scale: bool = True
     has_biases: bool = False
+    group_size: int | None = None
 
     def __post_init__(self) -> None:
         if not self.has_scale and self.scale_offset is not None:
             raise ValueError("scale_offset is meaningless for a weightless normalization.")
 
-    def init(self, initializer: Initializer, input_dim: int) -> "Normalization":
+    def init(self, initializer: Initializer, model_dim: int) -> "Normalization":
+        input_dim = model_dim
         if self.has_scale:
             scales = initializer.ones((input_dim,), dtype=jnp.float32)
         else:
@@ -68,6 +73,8 @@ class Normalization(LalamoModule[NormalizationConfig]):
         accumulation_precision: DTypeLike = jnp.float32,
     ) -> Float[Array, " channels"]:
         upcasted_inputs = inputs.astype(accumulation_precision)
+        if self.config.group_size is not None:
+            upcasted_inputs = upcasted_inputs.reshape(-1, self.config.group_size)
 
         if not self.config.has_scale:
             scales = None
@@ -82,11 +89,12 @@ class Normalization(LalamoModule[NormalizationConfig]):
             scales += self.config.scale_offset
 
         if self.config.subtract_mean:
-            mean = jnp.mean(upcasted_inputs)
+            mean = jnp.mean(upcasted_inputs, axis=-1, keepdims=True)
             upcasted_inputs = upcasted_inputs - mean
 
-        adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.config.epsilon
+        adjusted_variance = jnp.mean(jnp.square(upcasted_inputs), axis=-1, keepdims=True) + self.config.epsilon
         normalized_x = upcasted_inputs * jax.lax.rsqrt(adjusted_variance)
+        normalized_x = normalized_x.reshape(inputs.shape)
 
         if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
             normalized_x = normalized_x.astype(inputs.dtype)
@@ -100,3 +108,13 @@ class Normalization(LalamoModule[NormalizationConfig]):
             result = result + self.biases.astype(result.dtype)
 
         return result.astype(inputs.dtype)
+
+    def forward(
+        self,
+        x: Float[Array, "batch tokens channels"],
+        *operands: Array,
+        ctx: Context,  # noqa: ARG002
+        keychain: Keychain,  # noqa: ARG002
+    ) -> Float[Array, "batch tokens channels"]:
+        () = operands
+        return call_vmapped_twice(self, x)

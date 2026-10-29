@@ -121,47 +121,24 @@ GEMMA4 = [
     LanguageModelSpec(
         vendor="Google",
         family="Gemma-4",
-        name="gemma-4-e2b",
-        size="5B",
-        origin=HuggingFaceOrigin(repo="google/gemma-4-E2B"),
+        name=f"gemma-4-{variant.lower()}{suffix}",
+        size=size,
+        origin=HuggingFaceOrigin(repo=f"google/gemma-4-{variant}{suffix}"),
         config_type=HFGemma4Config,
-        configs=ConfigMap(chat_template=GEMMA4_BASE_CHAT_TEMPLATE),
-    ),
-    LanguageModelSpec(
-        vendor="Google",
-        family="Gemma-4",
-        name="gemma-4-e2b-it",
-        size="5B",
-        origin=HuggingFaceOrigin(repo="google/gemma-4-E2B-it"),
-        config_type=HFGemma4Config,
-        configs=ConfigMap(
-            chat_template=FileSpec("chat_template.jinja"),
+        configs=configs,
+        response_format=response_format,
+        reasoning_config=reasoning_config,
+    )
+    for variant, size in (("E2B", "5B"), ("E4B", "8B"), ("26B-A4B", "26B"), ("31B", "31B"))
+    for suffix, configs, response_format, reasoning_config in (
+        ("", ConfigMap(chat_template=GEMMA4_BASE_CHAT_TEMPLATE), None, None),
+        (
+            "-it",
+            ConfigMap(chat_template=FileSpec("chat_template.jinja")),
+            GEMMA4_RESPONSE_FORMAT,
+            BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         ),
-        response_format=GEMMA4_RESPONSE_FORMAT,
-        reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
-    ),
-    LanguageModelSpec(
-        vendor="Google",
-        family="Gemma-4",
-        name="gemma-4-e4b",
-        size="8B",
-        origin=HuggingFaceOrigin(repo="google/gemma-4-E4B"),
-        config_type=HFGemma4Config,
-        configs=ConfigMap(chat_template=GEMMA4_BASE_CHAT_TEMPLATE),
-    ),
-    LanguageModelSpec(
-        vendor="Google",
-        family="Gemma-4",
-        name="gemma-4-e4b-it",
-        size="8B",
-        origin=HuggingFaceOrigin(repo="google/gemma-4-E4B-it"),
-        config_type=HFGemma4Config,
-        configs=ConfigMap(
-            chat_template=FileSpec("chat_template.jinja"),
-        ),
-        response_format=GEMMA4_RESPONSE_FORMAT,
-        reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
-    ),
+    )
 ]
 
 GEMMA_MODELS = GEMMA3 + GEMMA4

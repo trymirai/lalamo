@@ -11,6 +11,7 @@ from tokenizers import Tokenizer
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.model import Model, ModelConfig
+from lalamo.model_import.loaders.binding import Binder
 from lalamo.models import (
     ClassifierModelConfig,
     GenerationConfig,
@@ -69,10 +70,11 @@ class ForeignConfig[ConfigT: ModelConfig](RegistryABC):
 @dataclass(frozen=True)
 class ForeignLMConfig(ForeignConfig[LanguageModelConfig], RegistryABC):
     @abstractmethod
-    def to_decoder_config(
-        self,
-        metadata_dict: Mapping[str, str],
-    ) -> DecoderConfig: ...
+    def build_decoder(self, at: Binder) -> DecoderConfig:
+        """Builds the decoder program, binding every weight-bearing primitive to its checkpoint path with `at`."""
+
+    def to_decoder_config(self) -> DecoderConfig:
+        return self.build_decoder(Binder())
 
     @property
     @abstractmethod
@@ -80,13 +82,12 @@ class ForeignLMConfig(ForeignConfig[LanguageModelConfig], RegistryABC):
 
     def to_lalamo_config(
         self,
-        metadata_dict: Mapping[str, str],
         token_codec_config: ChatCodecConfig,
         generation_config: GenerationConfig,
     ) -> LanguageModelConfig:
         return LanguageModelConfig(
             token_codec_config=token_codec_config,
-            decoder_config=self.to_decoder_config(metadata_dict),
+            decoder_config=self.to_decoder_config(),
             generation_config=generation_config,
         )
 
@@ -94,9 +95,11 @@ class ForeignLMConfig(ForeignConfig[LanguageModelConfig], RegistryABC):
 @dataclass(frozen=True)
 class ForeignClassifierConfig(ForeignConfig[ClassifierModelConfig], RegistryABC):
     @abstractmethod
-    def to_classifier_config(
-        self,
-    ) -> ClassifierConfig: ...
+    def build_classifier(self, at: Binder) -> ClassifierConfig:
+        """Builds the classifier program, binding every weight-bearing primitive to its checkpoint path with `at`."""
+
+    def to_classifier_config(self) -> ClassifierConfig:
+        return self.build_classifier(Binder())
 
 
 @dataclass(frozen=True)

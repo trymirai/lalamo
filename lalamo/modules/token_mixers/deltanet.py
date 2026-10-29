@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import einops
 import equinox as eqx
@@ -10,16 +10,16 @@ from lalamo.initializer import Initializer
 from lalamo.kernels.deltanet import deltanet_recurrent_scan
 from lalamo.kernels.mosaic import supports_mosaic_gpu
 from lalamo.module import Keychain
-from lalamo.modules.linear import Linear, LinearConfig
-from lalamo.modules.normalization import Normalization, NormalizationConfig
-from lalamo.modules.rope import PositionalEmbeddings
-from lalamo.modules.token_mixer import (
+from lalamo.modules.activations import Activation, SiLU
+from lalamo.modules.flow import (
     MixerForwardPassConfig,
-    PositionalEmbeddingSelector,
     TokenMixerBase,
     TokenMixerConfig,
     TokenMixerResult,
 )
+from lalamo.modules.linear import Linear, LinearConfig
+from lalamo.modules.normalization import Normalization, NormalizationConfig
+from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixers.convolutions import ConvPrecision
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
@@ -56,6 +56,7 @@ class DeltaNetConfig(TokenMixerConfig):
     head_dim: int
     value_head_dim: int
     kernel_size: int
+    output_gate: Activation = field(default_factory=SiLU)
 
     def init(
         self,
@@ -114,10 +115,6 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
     @property
     def model_dim(self) -> int:
         return self.in_proj.input_dim
-
-    @property
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        return PositionalEmbeddingSelector.NONE
 
     @property
     def num_heads(self) -> int:
@@ -289,7 +286,6 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
-        reuse_cache: bool = False,
         *,
         keychain: Keychain,
     ) -> TokenMixerResult[SSMStateLayer]:
@@ -297,8 +293,6 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             raise ValueError("Positional embeddings are not supported for DeltaNet.")
         if attention_parent_indices is not None:
             raise ValueError("Attention parent indices are not supported for DeltaNet.")
-        if reuse_cache:
-            raise ValueError("KV cache sharing is not supported for DeltaNet.")
 
         in_keychain, out_keychain = keychain.split()
         num_tokens, *_ = inputs.shape
@@ -323,7 +317,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
             return_updated_state,
             precision=ConvPrecision.MATCH_WEIGHTS,
         )
-        conv_output = jax.nn.silu(conv_output).astype(mixed_qkv.dtype)
+        conv_output = SiLU()(conv_output).astype(mixed_qkv.dtype)
         assert conv_output.shape[0] == num_tokens
         decay_input = decay_input.astype(jnp.float32)
 
@@ -371,7 +365,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
 
         def norm_gate(x: Float[Array, " channels"], gate: Float[Array, " channels"]) -> Float[Array, " channels"]:
             normed = self.norm(x)
-            return normed * jax.nn.silu(gate.astype(jnp.float32)).astype(x.dtype)
+            return (normed.astype(jnp.float32) * self.config.output_gate(gate.astype(jnp.float32))).astype(x.dtype)
 
         num_tokens, *_ = gate.shape
         gate = gate.reshape(num_tokens, self.config.num_heads, self.config.value_head_dim)

@@ -46,6 +46,9 @@ standard = [
   "microsoft/Phi-4-mini-instruct",
 ]
 extra = [
+  "wdlctc/open-attnres-full",
+  "wdlctc/open-attnres-block",
+  "Qwen/Qwen3.8-Flash-Next",
   "ibm-granite/granite-3.3-8b-instruct",
   "ibm-granite/granite-3.1-2b-instruct",
   "ibm-granite/granite-3.1-8b-instruct",
@@ -71,6 +74,10 @@ extra = [
   "google/gemma-4-E2B",
   "google/gemma-4-E4B",
   "google/gemma-4-E4B-it",
+  "google/gemma-4-26B-A4B",
+  "google/gemma-4-26B-A4B-it",
+  "google/gemma-4-31B",
+  "google/gemma-4-31B-it",
   "mlx-community/SmolLM3-3B-4bit",
   "mlx-community/SmolLM3-3B-8bit",
   "POLARIS-Project/Polaris-4B-Preview",

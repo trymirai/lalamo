@@ -4,17 +4,26 @@ import pytest
 from jax import Array
 from jaxtyping import Int
 
+from lalamo.initializer import RandomInitializer
 from lalamo.modules import (
     Decoder,
-    DecoderForwardPassConfig,
     DecoderResult,
     EmbeddingForwardPassConfig,
     Keychain,
+    ModelForwardPassConfig,
 )
+from lalamo.modules.flow import Context, EmitConfig, FlowForwardPassConfig, SequenceConfig, residual, run
+from lalamo.utils.sharding import ShardingConfig
 from tests.common import assert_close
-from tests.helpers import build_tiny_attention_decoder, make_test_sharding_config
+from tests.helpers import (
+    build_tiny_attention_decoder,
+    make_test_sharding_config,
+    tiny_attention_config,
+    tiny_mlp_config,
+    tiny_norm_config,
+)
 
-FORWARD_PASS_CONFIG = DecoderForwardPassConfig(
+FORWARD_PASS_CONFIG = ModelForwardPassConfig(
     embedding_forward_pass_config=EmbeddingForwardPassConfig(activation_dtype=jnp.float32),
 )
 
@@ -52,9 +61,9 @@ def run_decoder(
 @pytest.mark.parametrize("num_suffix_tokens", [1, 3])
 @pytest.mark.parametrize(
     "decoder",
-    [(None, None, None), (None, None, 0, 1)],
+    [(), (None, None, None), (None, None, 0, 1)],
     indirect=True,
-    ids=["plain", "trailing_shared_kv"],
+    ids=["no_temporal_steps", "plain", "trailing_shared_kv"],
 )
 def test_suffix_logits_match_full_pass(decoder: Decoder, num_suffix_tokens: int) -> None:
     batch_size, sequence_length = 3, 10
@@ -143,47 +152,35 @@ def test_suffix_logits_across_chunk_boundary(decoder: Decoder) -> None:
         )
 
 
-def test_pre_norm_outputs_populated_only_in_suffix_mode(decoder: Decoder) -> None:
-    transformer = decoder.transformer
+@pytest.mark.parametrize("has_attention", [False, True])
+def test_taps_observe_suffix_outputs(*, has_attention: bool) -> None:
+    hidden_states = EmitConfig("hidden_states")
+    sharding_config = ShardingConfig.replicated(jax.devices("cpu")[:8])
+    program = SequenceConfig(
+        (
+            *((residual(tiny_norm_config(), tiny_attention_config()),) if has_attention else ()),
+            residual(tiny_norm_config(), tiny_mlp_config()),
+            hidden_states,
+            tiny_norm_config(),
+        ),
+    ).init(RandomInitializer(jnp.float32, sharding_config, key=jax.random.key(4)), model_dim=8)
     batch_size, sequence_length = 2, 6
-    inner_features = jax.random.normal(
-        jax.random.key(2),
-        (batch_size, sequence_length, transformer.config.model_dim),
-        dtype=jnp.float32,
-    )
-    token_positions = jnp.broadcast_to(
-        jnp.arange(sequence_length, dtype=jnp.int32),
-        (batch_size, sequence_length),
-    )
+    inner_features = jax.random.normal(jax.random.key(2), (batch_size, sequence_length, 8), dtype=jnp.float32)
+    token_positions = jnp.broadcast_to(jnp.arange(sequence_length, dtype=jnp.int32), (batch_size, sequence_length))
+    context = Context(None, token_positions, None, None, FlowForwardPassConfig(), sharding_config)
+    keychain = Keychain.init(3, sharding_config=sharding_config)
 
-    full_result = transformer(
-        inner_features,
-        token_positions,
-        state=None,
-        return_updated_state=False,
-        return_layer_results=True,
-        return_positional_embeddings=False,
-        lengths_without_padding=None,
-        keychain=Keychain.init(3, sharding_config=make_test_sharding_config()),
-    )
-    suffix_result = transformer(
-        inner_features,
-        token_positions,
-        state=None,
-        return_updated_state=False,
-        return_layer_results=False,
-        return_positional_embeddings=False,
-        lengths_without_padding=None,
-        return_suffix_tokens=1,
-        keychain=Keychain.init(3, sharding_config=make_test_sharding_config()),
-    )
+    full_result = run(program, inner_features, context, keychain=keychain, taps=(hidden_states,), trace=True)
+    suffix_result = run(program, inner_features, context, keychain=keychain, taps=(hidden_states,), suffix=1)
 
-    assert full_result.pre_norm_outputs is None
-    assert suffix_result.pre_norm_outputs is not None
-    assert full_result.layer_results is not None
+    assert full_result.trace is not None
+    *_, pre_norm_step, _ = full_result.trace
+    (full_hidden_states,) = full_result.taps
+    (suffix_hidden_states,) = suffix_result.taps
+    assert_close(result=full_hidden_states, reference=pre_norm_step.outputs, operation_name="tap outputs")
     assert_close(
-        result=suffix_result.pre_norm_outputs,
-        reference=full_result.layer_results[-1].outputs[:, -1:],
+        result=suffix_hidden_states,
+        reference=full_hidden_states[:, -1:],
         operation_name="pre-norm suffix outputs",
     )
     assert_close(
@@ -191,3 +188,49 @@ def test_pre_norm_outputs_populated_only_in_suffix_mode(decoder: Decoder) -> Non
         reference=full_result.outputs[:, -1:],
         operation_name="post-norm suffix outputs",
     )
+
+
+@pytest.mark.parametrize("with_prefix", [False, True])
+def test_shared_kv_suffix_matches_full_with_dynamic_padding(*, with_prefix: bool) -> None:
+    decoder = build_tiny_attention_decoder((None, None, 0, 1))
+    sharding = decoder.sharding_config
+    keychain = Keychain.init(1, sharding_config=sharding)
+    tokens = jax.random.randint(jax.random.key(0), (2, 10), 0, decoder.vocab_size)
+    positions = jnp.broadcast_to(jnp.arange(10, dtype=jnp.int32), tokens.shape)
+    state = None
+    if with_prefix:
+        prefix = decoder(
+            tokens[:, :4],
+            positions[:, :4],
+            return_updated_state=True,
+            lengths_without_padding=jnp.array([4, 3]),
+            forward_pass_config=FORWARD_PASS_CONFIG,
+            keychain=keychain,
+        )
+        state = prefix.updated_state
+        assert state is not None
+    tokens, positions = tokens[:, 4:], positions[:, 4:]
+    lengths = jnp.array([6, 3])
+    full = decoder(
+        tokens,
+        positions,
+        state,
+        lengths_without_padding=lengths,
+        forward_pass_config=FORWARD_PASS_CONFIG,
+        keychain=keychain,
+    )
+    suffix = decoder(
+        tokens,
+        positions,
+        state,
+        lengths_without_padding=lengths,
+        return_suffix_tokens=2,
+        forward_pass_config=FORWARD_PASS_CONFIG,
+        keychain=keychain,
+    )
+    for row, length in enumerate(lengths.tolist()):
+        assert_close(
+            result=suffix.logits[row],
+            reference=full.logits[row, length - 2 : length],
+            operation_name="shared-KV dynamic suffix",
+        )

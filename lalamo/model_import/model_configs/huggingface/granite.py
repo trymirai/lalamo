@@ -5,6 +5,7 @@ from typing import Literal
 from jaxtyping import Array
 
 from lalamo.model import Model
+from lalamo.model_import.loaders.binding import Binder
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
@@ -13,12 +14,10 @@ from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.modules.transformer import TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
 from lalamo.utils.lazy_collections import MappedValues
 from lalamo.weight_matrix import CompressionImplementation
 
-from .common import HuggingFaceLMConfig
+from .common import HuggingFaceLMConfig, residual_decoder
 
 __all__ = ["HFGraniteConfig"]
 
@@ -50,10 +49,7 @@ class HFGraniteConfig(HuggingFaceLMConfig):
 
     head_dim: int | None = None
 
-    def to_decoder_config(
-        self,
-        metadata_dict: Mapping[str, str],  # noqa: ARG002
-    ) -> DecoderConfig:
+    def build_decoder(self, at: Binder) -> DecoderConfig:
         assert self.rope_scaling is None, "Granite with rope scaling is not supported"
         head_dim = self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads
 
@@ -91,6 +87,7 @@ class HFGraniteConfig(HuggingFaceLMConfig):
             is_causal=True,
             scale=self.attention_multiplier,
             sliding_window_size=None,
+            rope_config=rope_config,
         )
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
@@ -99,25 +96,17 @@ class HFGraniteConfig(HuggingFaceLMConfig):
             has_down_biases=self.mlp_bias,
             up_clipping=None,
             gate_clipping=None,
-        )
-        transformer_layer_config = TransformerLayerConfig(
-            pre_mixer_norm_config=rmsnorm_config,
-            mixer_config=attention_config,
-            post_mixer_norm_config=None,
-            pre_mlp_norm_config=rmsnorm_config,
-            mlp_config=mlp_config,
-            post_mlp_norm_config=None,
-            rope_config=rope_config,
-        )
-        transformer_config = TransformerConfig(
-            layer_configs=(transformer_layer_config,) * self.num_hidden_layers,
-            output_norm_config=rmsnorm_config,
-            model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
         )
-        return DecoderConfig(
-            embedding_config=embedding_config,
-            transformer_config=transformer_config,
+        return residual_decoder(
+            at,
+            embedding=at("model.embed_tokens", embedding_config),
+            layers=[
+                (at(f"model.layers.{index}.self_attn", attention_config), at(f"model.layers.{index}.mlp", mlp_config))
+                for index in range(self.num_hidden_layers)
+            ],
+            norm=rmsnorm_config,
+            model_dim=self.hidden_size,
             vocab_size=self.vocab_size,
         )
 

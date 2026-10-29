@@ -1,7 +1,9 @@
-from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import partial
 from typing import Literal
 
+from lalamo.model_import.loaders.binding import Binder
+from lalamo.model_import.loaders.huggingface import load_mlp
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
@@ -12,10 +14,8 @@ from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.token_mixers.short_conv import ShortConvConfig
-from lalamo.modules.transformer import TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
 
-from .common import HuggingFaceLMConfig
+from .common import HuggingFaceLMConfig, residual_decoder
 from .lfm2 import RopeParameters
 
 
@@ -51,7 +51,7 @@ class HFLFM2MoeConfig(HuggingFaceLMConfig):
     use_expert_bias: Literal[True]
     vocab_size: int
 
-    def to_decoder_config(self, metadata_dict: Mapping[str, str]) -> DecoderConfig:  # noqa: ARG002
+    def build_decoder(self, at: Binder) -> DecoderConfig:
         assert self.rope_parameters.rope_type == "default"
         assert self.routed_scaling_factor == 1.0
         assert len(self.layer_types) == self.num_hidden_layers
@@ -83,6 +83,7 @@ class HFLFM2MoeConfig(HuggingFaceLMConfig):
             has_sinks=False,
             has_qkvg_biases=False,
             has_out_biases=False,
+            rope_config=rope_config,
         )
         conv_config = ShortConvConfig(
             in_projection_config=linear_config,
@@ -97,9 +98,10 @@ class HFLFM2MoeConfig(HuggingFaceLMConfig):
             has_down_biases=False,
             up_clipping=None,
             gate_clipping=None,
+            hidden_dim=self.intermediate_size,
         )
         moe_config = MixtureOfExpertsConfig(
-            expert_config=dense_config,
+            expert_config=replace(dense_config, hidden_dim=self.moe_intermediate_size),
             router_config=linear_config,
             # LFM's expert bias affects selection only, not the mixture weights.
             routing_function=SigmoidRouting(bias_mode=RoutingBias.GATING),
@@ -107,27 +109,28 @@ class HFLFM2MoeConfig(HuggingFaceLMConfig):
             num_active_routed_experts=self.num_experts_per_tok,
             router_has_biases=False,
             num_shared_experts=0,
-            expert_hidden_dim=self.moe_intermediate_size,
         )
-        layer_configs = tuple(
-            TransformerLayerConfig(
-                pre_mixer_norm_config=norm_config,
-                mixer_config={"conv": conv_config, "full_attention": attention_config}[layer_type],
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=norm_config,
-                mlp_config=dense_config if layer_index < self.num_dense_layers else moe_config,
-                post_mlp_norm_config=None,
-                rope_config=rope_config if layer_type == "full_attention" else None,
-            )
-            for layer_index, layer_type in enumerate(self.layer_types)
-        )
-        return DecoderConfig(
-            embedding_config=TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None),
-            transformer_config=TransformerConfig(
-                layer_configs=layer_configs,
-                output_norm_config=norm_config,
-                model_dim=self.hidden_size,
-                hidden_dim=self.intermediate_size,
-            ),
+        mixer_configs = {"conv": conv_config, "full_attention": attention_config}
+        mixer_keys = {"conv": "conv", "full_attention": "self_attn"}
+        load_feed_forward = partial(load_mlp, up_proj_key="w3", gate_proj_key="w1", down_proj_key="w2")
+        return residual_decoder(
+            at,
+            embedding=at("model.embed_tokens", TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None)),
+            layers=[
+                (
+                    at(f"model.layers.{index}.{mixer_keys[layer_type]}", mixer_configs[layer_type]),
+                    at(
+                        f"model.layers.{index}.feed_forward",
+                        dense_config if index < self.num_dense_layers else moe_config,
+                        load=load_feed_forward,
+                    ),
+                )
+                for index, layer_type in enumerate(self.layer_types)
+            ],
+            norm=norm_config,
+            model_dim=self.hidden_size,
             vocab_size=self.vocab_size,
+            mixer_norm="operator_norm",
+            mlp_norm="ffn_norm",
+            output_norm="embedding_norm",
         )

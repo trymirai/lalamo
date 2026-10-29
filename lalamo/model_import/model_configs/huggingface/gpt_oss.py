@@ -1,7 +1,7 @@
-from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
+from lalamo.model_import.loaders.binding import Binder
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
@@ -10,10 +10,8 @@ from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, SoftmaxRo
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import YARNRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.modules.transformer import TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
 
-from .common import HuggingFaceLMConfig
+from .common import HuggingFaceLMConfig, residual_decoder
 
 __all__ = ["HFGPTOssConfig"]
 
@@ -64,10 +62,7 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
     output_router_logits: bool | None = None
     router_aux_loss_coef: float | None = None
 
-    def to_decoder_config(
-        self,
-        metadata_dict: Mapping[str, str],  # noqa: ARG002
-    ) -> DecoderConfig:
+    def build_decoder(self, at: Binder) -> DecoderConfig:
         # Embedding
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
@@ -125,6 +120,7 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
             has_down_biases=True,
             up_clipping=(-self.swiglu_limit + 1.0, self.swiglu_limit + 1.0),
             gate_clipping=(None, self.swiglu_limit),
+            hidden_dim=self.intermediate_size,
         )
         moe_config = MixtureOfExpertsConfig(
             num_routed_experts=self.num_local_experts,
@@ -134,7 +130,6 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
             router_has_biases=True,
             num_shared_experts=0,
             expert_config=experts_config,
-            expert_hidden_dim=self.intermediate_size,
         )
 
         # Per-layer sliding-window
@@ -150,44 +145,34 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
                 else [None] * self.num_hidden_layers
             )
 
-        layer_configs = []
-        for sliding_window_size in sliding_window_sizes:
-            attention_config = AttentionConfig(
-                qkvg_projection_config=linear_config,
-                out_projection_config=linear_config,
-                query_norm_config=None,
-                key_norm_config=None,
-                logit_soft_cap=None,
-                has_sinks=True,
-                has_qkvg_biases=self.attention_bias,
-                has_out_biases=self.attention_bias,
-                num_heads=self.num_attention_heads,
-                num_groups=self.num_key_value_heads,
-                head_dim=head_dim,
-                is_causal=True,
-                scale=None,
-                sliding_window_size=sliding_window_size,
-            )
-            transformer_layer_config = TransformerLayerConfig(
-                pre_mixer_norm_config=rmsnorm_config,
-                mixer_config=attention_config,
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=rmsnorm_config,
-                mlp_config=moe_config,
-                post_mlp_norm_config=None,
-                rope_config=rope_config,
-            )
-            layer_configs.append(transformer_layer_config)
-
-        transformer_config = TransformerConfig(
-            layer_configs=tuple(layer_configs),
-            output_norm_config=rmsnorm_config,
-            model_dim=self.hidden_size,
-            hidden_dim=self.intermediate_size,
+        attention_config = AttentionConfig(
+            qkvg_projection_config=linear_config,
+            out_projection_config=linear_config,
+            query_norm_config=None,
+            key_norm_config=None,
+            logit_soft_cap=None,
+            has_sinks=True,
+            has_qkvg_biases=self.attention_bias,
+            has_out_biases=self.attention_bias,
+            num_heads=self.num_attention_heads,
+            num_groups=self.num_key_value_heads,
+            head_dim=head_dim,
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
+            rope_config=rope_config,
         )
-
-        return DecoderConfig(
-            embedding_config=embedding_config,
-            transformer_config=transformer_config,
+        return residual_decoder(
+            at,
+            embedding=at("model.embed_tokens", embedding_config),
+            layers=[
+                (
+                    at(f"model.layers.{index}.self_attn", replace(attention_config, sliding_window_size=window)),
+                    at(f"model.layers.{index}.mlp", moe_config),
+                )
+                for index, window in enumerate(sliding_window_sizes)
+            ],
+            norm=rmsnorm_config,
+            model_dim=self.hidden_size,
             vocab_size=self.vocab_size,
         )

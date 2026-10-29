@@ -25,11 +25,11 @@ from lalamo.models import GenerationConfig
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.models.language_model import LanguageModelConfig
 from lalamo.module import Keychain
-from lalamo.modules.token_mixer import MixerForwardPassConfig, State
-from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.flow import MixerForwardPassConfig, State, state_owners
+from lalamo.modules.token_mixers.attention import Attention
 from lalamo.modules.token_mixers.kv_cache import PagedKVCacheLayer, PagedKVCachePool, StaticKVCacheLayer
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
-from tests.helpers import build_tiny_attention_decoder_config
+from tests.helpers import build_tiny_decoder_config, tiny_attention_config
 
 
 @pytest.fixture(autouse=True)
@@ -169,10 +169,8 @@ def test_attention_paged_decode_matches_dense_continuation(
     window: int | None, has_sinks: bool, cap: float | None
 ) -> None:
     sharding = ShardingConfig.replicated(jax.devices()[:1])
-    config = build_tiny_attention_decoder_config((None,)).transformer_config.layer_configs[0].mixer_config
-    assert isinstance(config, AttentionConfig)
     config = replace(
-        config,
+        tiny_attention_config(),
         num_heads=4,
         num_groups=2,
         head_dim=64,
@@ -254,16 +252,7 @@ def test_static_prefill_to_pages_preserves_tokens_at_page_boundaries(has_sinks: 
 @pytest.mark.parametrize("length", [31, 32, 33])
 def test_mixed_cached_and_blank_prefixes_match_fresh_attention(has_sinks: bool, length: int) -> None:
     sharding = ShardingConfig.replicated(jax.devices()[:1])
-    decoder_config = build_tiny_attention_decoder_config((None,))
-    (layer,) = decoder_config.transformer_config.layer_configs
-    assert isinstance(layer.mixer_config, AttentionConfig)
-    decoder_config = replace(
-        decoder_config,
-        transformer_config=replace(
-            decoder_config.transformer_config,
-            layer_configs=(replace(layer, mixer_config=replace(layer.mixer_config, has_sinks=has_sinks)),),
-        ),
-    )
+    decoder_config = build_tiny_decoder_config((replace(tiny_attention_config(), has_sinks=has_sinks),))
     model = LanguageModelConfig(
         token_codec_config=ChatCodecConfig("", None, "system", "user", "assistant", None, None),
         decoder_config=decoder_config,
@@ -272,8 +261,8 @@ def test_mixed_cached_and_blank_prefixes_match_fresh_attention(has_sinks: bool, 
         Tokenizer(WordLevel({"[UNK]": 0}, unk_token="[UNK]")),
         RandomInitializer(default_dtype=jnp.float32, sharding_config=sharding, key=jax.random.key(7)),
     )
-    attention = model.decoder.transformer.layers[0].mixer
-    assert isinstance(attention.config, AttentionConfig)
+    (attention,) = state_owners(model.decoder.program)
+    assert isinstance(attention, Attention)
     forward = MixerForwardPassConfig.for_tracer_tests()
     keychain = Keychain.init(0, sharding_config=sharding)
     inputs = jax.random.normal(jax.random.key(8), (length + 1, 8))

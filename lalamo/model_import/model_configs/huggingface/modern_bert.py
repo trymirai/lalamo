@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from lalamo.model_import.loaders.binding import Binder
+from lalamo.model_import.loaders.huggingface import load_modern_bert_attention, load_modern_bert_mlp
 from lalamo.modules.activations import GELU
 from lalamo.modules.classifier import (
     ClassifierConfig,
@@ -8,13 +10,13 @@ from lalamo.modules.classifier import (
     PredictionHeadConfig,
 )
 from lalamo.modules.embedding import TiedEmbeddingConfig
+from lalamo.modules.flow import EmitConfig, SequenceConfig, StepConfig, residual
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.modules.transformer import TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.utils.parameter_path import ParameterPath
 
 from .common import (
     AWQQuantizationConfig,
@@ -79,9 +81,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             for layer_index in range(self.num_hidden_layers)
         )
 
-    def to_classifier_config(
-        self,
-    ) -> ClassifierConfig:
+    def build_classifier(self, at: Binder) -> ClassifierConfig:
         head_dim = self.hidden_size // self.num_attention_heads
         embedding_config = TiedEmbeddingConfig(
             input_scale=None,
@@ -122,13 +122,13 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             has_down_biases=False,
             up_clipping=None,
             gate_clipping=None,
+            hidden_dim=self.intermediate_size,
         )
 
-        # In ModernBERT architecture first Transformer layer has no pre-attention normalization
-        pre_attn_configs = [transformer_norm_config if i > 0 else None for i in range(self.num_hidden_layers)]
-
-        transformer_layer_configs = []
-        for sliding_window_size, pre_attn_config in zip(sliding_window_sizes, pre_attn_configs, strict=True):
+        steps: list[StepConfig] = [at("model.embeddings.norm", embedding_norm_config)]
+        taps: list[EmitConfig] = []
+        for index, sliding_window_size in enumerate(sliding_window_sizes):
+            path = ParameterPath("model.layers") / index
             attention_config = AttentionConfig(
                 qkvg_projection_config=linear_config,
                 out_projection_config=linear_config,
@@ -144,25 +144,25 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
                 scale=None,
                 is_causal=False,
                 sliding_window_size=sliding_window_size,
+                rope_config=global_rope_config if sliding_window_size is None else local_rope_config,
             )
-            layer_rope_config = global_rope_config if sliding_window_size is None else local_rope_config
-            layer_config = TransformerLayerConfig(
-                pre_mixer_norm_config=pre_attn_config,
-                mixer_config=attention_config,
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=transformer_norm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=None,
-                rope_config=layer_rope_config,
-            )
-            transformer_layer_configs.append(layer_config)
-
-        transformer_config = TransformerConfig(
-            layer_configs=tuple(transformer_layer_configs),
-            output_norm_config=transformer_norm_config,
-            model_dim=self.hidden_size,
-            hidden_dim=self.intermediate_size,
-        )
+            attention = at(path / "attn", attention_config, load=load_modern_bert_attention)
+            # The first ModernBERT layer has no pre-attention normalization.
+            if index == 0:
+                attention_branch = residual(attention)
+            else:
+                attention_branch = residual(at(path / "attn_norm", transformer_norm_config), attention)
+            tap = EmitConfig(f"hidden_states.{index}")
+            steps += [
+                attention_branch,
+                residual(
+                    at(path / "mlp_norm", transformer_norm_config),
+                    at(path / "mlp", mlp_config, load=load_modern_bert_mlp),
+                ),
+                tap,
+            ]
+            taps.append(tap)
+        steps.append(at("model.final_norm", transformer_norm_config))
 
         prediction_head_dense_config = LinearConfig()
         prediction_head_norm_config = NormalizationConfig(
@@ -184,14 +184,13 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
         output_labels = [self.id2label[idx] for idx in range(len(self.id2label))]
 
         return ClassifierConfig(
-            embedding_config=embedding_config,
-            embedding_norm_config=embedding_norm_config,
-            transformer_config=transformer_config,
+            embedding_config=at("model.embeddings.tok_embeddings", embedding_config),
+            program=SequenceConfig(tuple(steps)),
             prediction_head_config=prediction_head_config,
             vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
-            hidden_dim=self.hidden_size,
             num_labels=len(self.id2label),
             classifier_pooling=PoolingType(self.classifier_pooling),
             output_labels=tuple(output_labels),
+            taps=tuple(taps),
         )

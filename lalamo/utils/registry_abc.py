@@ -1,5 +1,9 @@
 from abc import ABC
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from functools import cache
 from types import UnionType
 from typing import Any, Self, TypeVar, Union, cast, get_args, get_origin
 from weakref import WeakSet
@@ -14,7 +18,34 @@ from lalamo.utils.dtype import dtype_to_str, str_to_dtype
 __all__ = [
     "RegistryABC",
     "make_registry_abc_converter",
+    "reference_scope",
 ]
+
+
+@dataclass(frozen=True)
+class _References:
+    ordinals: dict[int, int]
+    objects: list[object]
+
+
+_references: ContextVar[_References | None] = ContextVar("lalamo_references", default=None)
+
+
+@contextmanager
+def reference_scope() -> Iterator[None]:
+    """Within the scope, objects of classes with `shared_by_reference` are written once and later as `{"ref": k}`.
+
+    Ordinals follow the post-order of (un)structuring, so they are derived at the serialization boundary.
+    """
+    token = _references.set(_References({}, []))
+    try:
+        yield
+    finally:
+        _references.reset(token)
+
+
+def _is_shared_by_reference(cls: type) -> bool:
+    return getattr(cls, "shared_by_reference", False)
 
 
 class RegistryABC(ABC):
@@ -165,13 +196,25 @@ def make_registry_abc_converter(*, forbid_extra_keys: bool = False) -> GenConver
         _: object,
         converter: GenConverter,
     ) -> Callable[[object], dict[str, Any] | None]:
+        @cache
+        def unstructure_fields(config_type: type) -> Callable[[object], dict[str, Any]]:
+            # Unlike `unstructure_attrs_asdict`, generated functions resolve string annotations,
+            # e.g. a config field that refers to its own class.
+            return converter.gen_unstructure_attrs_fromdict(config_type)
+
         def unstructure_abc(obj: object) -> dict[str, Any] | None:
             if obj is None:
                 return None
-            return {
+            references = _references.get() if _is_shared_by_reference(type(obj)) else None
+            if references is not None and id(obj) in references.ordinals:
+                return {"ref": references.ordinals[id(obj)]}
+            result = {
                 "type": obj.__class__.__name__,
-                **converter.unstructure_attrs_asdict(obj),
+                **unstructure_fields(type(obj))(obj),
             }
+            if references is not None:
+                references.ordinals[id(obj)] = len(references.ordinals)
+            return result
 
         return unstructure_abc
 
@@ -190,11 +233,19 @@ def make_registry_abc_converter(*, forbid_extra_keys: bool = False) -> GenConver
         ) -> RegistryABC | None:
             if config is None:
                 return None
+            references = _references.get()
+            if "ref" in config:
+                if references is None:
+                    raise ValueError("Config references can only be resolved inside a reference scope.")
+                return cast("RegistryABC", references.objects[config["ref"]])
 
             new_config = dict(config)
             type_name = cast("str", new_config.pop("type"))
             target_type = _descendant_by_name(resolved_registry_abc, type_name)
-            return converter.gen_structure_attrs_fromdict(target_type)(new_config, target_type)
+            result = converter.gen_structure_attrs_fromdict(target_type)(new_config, target_type)
+            if references is not None and _is_shared_by_reference(target_type):
+                references.objects.append(result)
+            return result
 
         return structure_abc
 

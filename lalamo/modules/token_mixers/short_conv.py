@@ -7,16 +7,15 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain
-from lalamo.modules.linear import Linear, LinearConfig
-from lalamo.modules.rope import PositionalEmbeddings
-from lalamo.modules.token_mixer import (
+from lalamo.modules.flow import (
     MixerForwardPassConfig,
-    PositionalEmbeddingSelector,
     StateLayerBase,
     TokenMixerBase,
     TokenMixerConfig,
     TokenMixerResult,
 )
+from lalamo.modules.linear import Linear, LinearConfig
+from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixers.convolutions import ConvPrecision, SeparableCausalConv, SeparableCausalConvConfig
 from lalamo.modules.utils import call_vmapped
 
@@ -95,10 +94,6 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
     def model_dim(self) -> int:
         return self.in_projection.input_dim
 
-    @property
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        return PositionalEmbeddingSelector.NONE
-
     @eqx.filter_jit
     def __call__(
         self,
@@ -109,7 +104,6 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
-        reuse_cache: bool = False,
         *,
         keychain: Keychain,
     ) -> TokenMixerResult[ShortConvStateLayer]:
@@ -117,8 +111,6 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
             raise ValueError("Positional embeddings are not supported for ShortConv.")
         if attention_parent_indices is not None:
             raise ValueError("Attention parent indices are not supported for ShortConv.")
-        if reuse_cache:
-            raise ValueError("KV cache sharing is not supported for ShortConv.")
 
         in_keychain, out_keychain = keychain.split()
         pre_conv_gate, post_conv_gate, x = call_vmapped(

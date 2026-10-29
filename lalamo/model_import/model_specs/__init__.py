@@ -8,6 +8,7 @@ from lalamo.model_import.model_spec import (
     TTSModelSpec,
 )
 
+from .attention_residuals import ATTENTION_RESIDUAL_MODELS
 from .bonsai import BONSAI_MODELS
 from .deepseek import DEEPSEEK_MODELS
 from .essential_ai import RNJ_MODELS
@@ -42,6 +43,7 @@ __all__ = [
 TTS_MODELS = FISHAUDIO_TTS_MODELS
 
 ALL_MODEL_LISTS = [
+    ATTENTION_RESIDUAL_MODELS,
     GRANITE_MODELS,
     LFM2_MODELS,
     LLAMA_MODELS,

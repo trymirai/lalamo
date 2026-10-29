@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Literal
 
@@ -9,11 +9,18 @@ from jaxtyping import Array
 
 from lalamo.model import Model
 from lalamo.model_import.loaders import (
+    huggingface_loader,
     load_huggingface_classifier,
     load_huggingface_decoder,
 )
+from lalamo.model_import.loaders.binding import Binder
 from lalamo.model_import.model_configs import ForeignClassifierConfig, ForeignLMConfig
 from lalamo.models import ClassifierModel, LanguageModel
+from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.embedding import EmbeddingConfig
+from lalamo.modules.flow import EmitConfig, SequenceConfig, StepConfig, residual
+from lalamo.modules.normalization import NormalizationConfig
+from lalamo.utils.parameter_path import ParameterPath
 from lalamo.weight_matrix import CompressionImplementation
 
 __all__ = [
@@ -22,7 +29,46 @@ __all__ = [
     "GPTQQuantizationConfig",
     "HuggingFaceClassifierConfig",
     "HuggingFaceLMConfig",
+    "residual_decoder",
 ]
+
+
+def residual_decoder(
+    at: Binder,
+    *,
+    embedding: EmbeddingConfig,
+    layers: Sequence[tuple[StepConfig, StepConfig]],
+    norm: NormalizationConfig,
+    model_dim: int,
+    vocab_size: int,
+    base: str = "model",
+    mixer_norm: str = "input_layernorm",
+    mlp_norm: str = "post_attention_layernorm",
+    post_mixer_norm: str | None = None,
+    post_mlp_norm: str | None = None,
+    output_norm: str = "norm",
+    output_norm_config: NormalizationConfig | None = None,
+) -> DecoderConfig:
+    """The common checkpoint layout `x += post_norm(mixer(norm(x))); x += post_norm(mlp(norm(x)))` with a final norm.
+
+    `layers` holds the already bound mixer and MLP of every checkpoint layer; a tap marks each layer's output.
+    Post norms are only present when their checkpoint names are given; the final norm defaults to the block norm.
+    """
+    steps: list[StepConfig] = []
+    taps: list[EmitConfig] = []
+    for index, (mixer, mlp) in enumerate(layers):
+        path = ParameterPath(base) / "layers" / index
+        tap = EmitConfig(f"hidden_states.{index}")
+        mixer_branch = [at(path / mixer_norm, norm), mixer]
+        if post_mixer_norm is not None:
+            mixer_branch.append(at(path / post_mixer_norm, norm))
+        mlp_branch = [at(path / mlp_norm, norm), mlp]
+        if post_mlp_norm is not None:
+            mlp_branch.append(at(path / post_mlp_norm, norm))
+        steps += [residual(*mixer_branch), residual(*mlp_branch), tap]
+        taps.append(tap)
+    steps.append(at(ParameterPath(base) / output_norm, output_norm_config or norm))
+    return DecoderConfig(embedding, SequenceConfig(tuple(steps)), model_dim, vocab_size, tuple(taps))
 
 
 @dataclass(frozen=True)
@@ -113,11 +159,9 @@ class HuggingFaceLMConfig(ForeignLMConfig):
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> Model:
         assert isinstance(model, LanguageModel)
-        decoder = load_huggingface_decoder(
-            module=model.decoder,
-            weights_dict=weights_dict,
-            implementation=implementation,
-        )
+        binder = Binder(huggingface_loader)
+        config = self.build_decoder(binder)
+        decoder = load_huggingface_decoder(model.decoder, config, binder, weights_dict, implementation=implementation)
         return eqx.tree_at(lambda m: (m.decoder,), model, (decoder,))
 
 
@@ -131,9 +175,13 @@ class HuggingFaceClassifierConfig(ForeignClassifierConfig):
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
     ) -> Model:
         assert isinstance(model, ClassifierModel)
+        binder = Binder(huggingface_loader)
+        config = self.build_classifier(binder)
         classifier = load_huggingface_classifier(
-            module=model.classifier,
-            weights_dict=weights_dict,
+            model.classifier,
+            config,
+            binder,
+            weights_dict,
             implementation=implementation,
         )
         return eqx.tree_at(lambda m: (m.classifier,), model, (classifier,))

@@ -18,8 +18,12 @@ from lalamo.compressed.microfloat import MicrofloatMatrixForInference
 from lalamo.compressed.mlx import MLXMatrixForInference, MLXMatrixForTraining
 from lalamo.initializer import EmptyInitializer, Initializer
 from lalamo.model import Model, ModelConfig
-from lalamo.model_import.loaders.dflash_loader import load_dflash_sublayer_transform, load_hf_dflash_draft_model
+from lalamo.model_import.loaders.binding import Binder
+from lalamo.model_import.loaders.dflash_loader import load_hf_dflash_draft_model
 from lalamo.model_import.loaders.huggingface import (
+    huggingface_loader,
+    load_dynamic_conv,
+    load_dynamic_conv_kernels,
     load_huggingface_classifier,
     load_input_embedding_matrix,
     load_linear,
@@ -32,9 +36,9 @@ from lalamo.model_import.model_configs.huggingface import HFDFlashConfig, Modern
 from lalamo.models.chat_codec import ChatCodec, ChatCodecConfig
 from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, LogicalAxis
 from lalamo.modules.activations import SiLU
-from lalamo.modules.classifier import Classifier
-from lalamo.modules.decoder import PerLayerEmbedding, PLEModelConfig
+from lalamo.modules.classifier import Classifier, ClassifierConfig
 from lalamo.modules.embedding import TiedEmbedding, UntiedEmbeddingConfig
+from lalamo.modules.flow import Context, FlowForwardPassConfig, leaves
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.mlp import (
     DenseMLP,
@@ -44,8 +48,10 @@ from lalamo.modules.mlp import (
     MLPForwardPassConfig,
     SoftmaxRouting,
 )
-from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.normalization import Normalization, NormalizationConfig, UpcastMode
+from lalamo.modules.per_layer import PerLayerInputs, PerLayerInputsConfig
 from lalamo.modules.token_mixers.attention import Attention
+from lalamo.modules.token_mixers.convolutions import DynamicConv, DynamicConvKernels
 from lalamo.safetensors import safe_write
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.parameter_path import ParameterPath
@@ -56,7 +62,6 @@ from lalamo.weight_matrix import (
     FullPrecisionSpec,
     GradientEstimator,
     Layout,
-    MatmulConfig,
     WeightMatrix,
 )
 from tests.common import assert_close
@@ -153,6 +158,7 @@ def _gpt_oss_moe_template() -> MixtureOfExperts:
         has_down_biases=True,
         gate_clipping=(None, 7.0),
         up_clipping=(-6.0, 8.0),
+        hidden_dim=32,
     )
     config = MixtureOfExpertsConfig(
         expert_config=expert_config,
@@ -162,10 +168,9 @@ def _gpt_oss_moe_template() -> MixtureOfExperts:
         num_active_routed_experts=1,
         router_has_biases=True,
         num_shared_experts=0,
-        expert_hidden_dim=32,
     )
     initializer = EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config())
-    return config.init(initializer, model_dim=64, hidden_dim=64)
+    return config.init(initializer, model_dim=64)
 
 
 def _split_moe_template() -> MixtureOfExperts:
@@ -177,6 +182,7 @@ def _split_moe_template() -> MixtureOfExperts:
         has_down_biases=False,
         gate_clipping=None,
         up_clipping=None,
+        hidden_dim=3,
     )
     config = MixtureOfExpertsConfig(
         expert_config=expert_config,
@@ -186,11 +192,10 @@ def _split_moe_template() -> MixtureOfExperts:
         num_active_routed_experts=1,
         router_has_biases=False,
         num_shared_experts=1,
-        expert_hidden_dim=3,
         gate_config=linear_config,
     )
     initializer = EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config())
-    return config.init(initializer, model_dim=INPUT_DIM, hidden_dim=INPUT_DIM)
+    return config.init(initializer, model_dim=INPUT_DIM)
 
 
 def _mlx_weights(path: ParameterPath) -> Mapping[str, Array]:
@@ -306,17 +311,18 @@ def test_load_muse_glimmer_checkpoint_reshapes_to_qwen_dflash(tmp_path: Path) ->
         assert reshaped_config.sliding_window == 32
         assert reshaped_config.is_causal is False
 
+        _, attention, _, _, mlp, _, output_norm = leaves(model.program)
+        assert isinstance(attention, Attention)
+        assert isinstance(mlp, DenseMLP)
+        assert isinstance(output_norm, Normalization)
         assert model.context_norm.scales is not None
-        assert model.output_norm.scales is not None
+        assert output_norm.scales is not None
         assert np.array_equal(model.context_projection.weights.decompress(), weights["encoder.fc.weight"])
         assert np.array_equal(model.context_norm.scales, weights["encoder.output_norm_enc.weight"])
-        assert np.array_equal(model.output_norm.scales, weights["norm.weight"])
+        assert np.array_equal(output_norm.scales, weights["norm.weight"])
 
-        (layer,) = model.layers
-        assert isinstance(layer.mixer, Attention)
-        assert isinstance(layer.mlp, DenseMLP)
-        assert not layer.mixer.config.is_causal
-        assert layer.mixer.config.sliding_window_size == 32
+        assert not attention.config.is_causal
+        assert attention.config.sliding_window_size == 32
         expected_qkv = np.concatenate(
             tuple(weights[f"layers.0.self_attn.{projection}_proj.weight"] for projection in ("q", "k", "v")),
             axis=0,
@@ -329,13 +335,13 @@ def test_load_muse_glimmer_checkpoint_reshapes_to_qwen_dflash(tmp_path: Path) ->
             tuple(weights[f"layers.0.self_attn.{projection}_proj.weight"] for projection in ("k", "v")),
             axis=0,
         )
-        assert np.array_equal(layer.mixer.qkvg_projection.weights.decompress(), expected_qkv)
-        assert np.array_equal(layer.mlp.up_projection.weights.decompress(), expected_up_gate)
+        assert np.array_equal(attention.qkvg_projection.weights.decompress(), expected_qkv)
+        assert np.array_equal(mlp.up_projection.weights.decompress(), expected_up_gate)
         assert np.array_equal(model.state_kv_projection.weights.decompress(), expected_state_kv)
 
 
-def _classifier_template() -> Classifier:
-    config = ModernBERTConfig(
+def _classifier_template(binder: Binder) -> tuple[Classifier, ClassifierConfig]:
+    foreign_config = ModernBERTConfig(
         architectures=["ModernBertForSequenceClassification"],
         attention_bias=False,
         attention_dropout=0.0,
@@ -376,20 +382,24 @@ def _classifier_template() -> Classifier:
         id2label={0: "negative", 1: "positive"},
         label2id={"negative": 0, "positive": 1},
     )
-    return config.to_classifier_config().init(
+    config = foreign_config.build_classifier(binder)
+    classifier = config.init(
         EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
     )
+    return classifier, config
 
 
 def _classifier_weights(classifier: Classifier) -> Mapping[str, Array]:
     assert isinstance(classifier.embedding, TiedEmbedding)
-    layer = classifier.transformer.layers[0]
-    assert isinstance(layer.mixer, Attention)
-    assert isinstance(layer.mlp, DenseMLP)
-    assert layer.pre_mlp_norm is not None
-    assert classifier.embedding_norm.scales is not None
-    assert layer.pre_mlp_norm.scales is not None
-    assert classifier.transformer.output_norm.scales is not None
+    embedding_norm, attention, _, mlp_norm, mlp, _, output_norm = leaves(classifier.program)
+    assert isinstance(attention, Attention)
+    assert isinstance(mlp, DenseMLP)
+    assert isinstance(embedding_norm, Normalization)
+    assert isinstance(mlp_norm, Normalization)
+    assert isinstance(output_norm, Normalization)
+    assert embedding_norm.scales is not None
+    assert mlp_norm.scales is not None
+    assert output_norm.scales is not None
     assert classifier.prediction_head.norm.scales is not None
 
     base_path = ParameterPath()
@@ -401,21 +411,21 @@ def _classifier_weights(classifier: Classifier) -> Mapping[str, Array]:
         decoder_path / "embeddings" / "tok_embeddings" / "weight": _classifier_tensor(
             (CLASSIFIER_VOCAB_SIZE, CLASSIFIER_HIDDEN_SIZE),
         ),
-        decoder_path / "embeddings" / "norm" / "weight": _classifier_tensor(classifier.embedding_norm.scales.shape),
+        decoder_path / "embeddings" / "norm" / "weight": _classifier_tensor(embedding_norm.scales.shape),
         decoder_path / "layers" / 0 / "attn" / "Wqkv" / "weight": _classifier_tensor(
-            layer.mixer.qkvg_projection.weights.shape,
+            attention.qkvg_projection.weights.shape,
         ),
         decoder_path / "layers" / 0 / "attn" / "Wo" / "weight": _classifier_tensor(
-            layer.mixer.out_projection.weights.shape,
+            attention.out_projection.weights.shape,
         ),
-        decoder_path / "layers" / 0 / "mlp_norm" / "weight": _classifier_tensor(layer.pre_mlp_norm.scales.shape),
+        decoder_path / "layers" / 0 / "mlp_norm" / "weight": _classifier_tensor(mlp_norm.scales.shape),
         decoder_path / "layers" / 0 / "mlp" / "Wi" / "weight": _classifier_tensor(
-            layer.mlp.up_projection.weights.shape,
+            mlp.up_projection.weights.shape,
         ),
         decoder_path / "layers" / 0 / "mlp" / "Wo" / "weight": _classifier_tensor(
-            layer.mlp.down_projection.weights.shape,
+            mlp.down_projection.weights.shape,
         ),
-        decoder_path / "final_norm" / "weight": _classifier_tensor(classifier.transformer.output_norm.scales.shape),
+        decoder_path / "final_norm" / "weight": _classifier_tensor(output_norm.scales.shape),
         head_path / "dense" / "weight": _classifier_tensor(classifier.prediction_head.dense.weights.shape),
         head_path / "norm" / "weight": _classifier_tensor(classifier.prediction_head.norm.scales.shape),
         classifier_path / "weight": _classifier_tensor(classifier.prediction_head.readout.weights.shape),
@@ -466,7 +476,7 @@ def test_mlx_quantized_per_layer_embedding_forwards_training_config() -> None:
     assert token_embedding.spec.bits == 8
     assert token_embedding.spec.layout == Layout.INPUT_OUTPUT
 
-    config = PLEModelConfig(
+    config = PerLayerInputsConfig(
         ple_dim=OUTPUT_DIM,
         num_layers=NUM_GROUPS,
         ple_vocab_size=OUTPUT_DIM,
@@ -481,7 +491,7 @@ def test_mlx_quantized_per_layer_embedding_forwards_training_config() -> None:
             subtract_mean=False,
         ),
     )
-    per_layer_embedding = PerLayerEmbedding(
+    per_layer_inputs = PerLayerInputs(
         config=config,
         sharding_config=initializer.sharding_config,
         token_embedding=token_embedding,
@@ -493,13 +503,20 @@ def test_mlx_quantized_per_layer_embedding_forwards_training_config() -> None:
         ),
         projection_norm=config.norm_config.init(initializer, config.ple_dim),
     )
-    forward_pass_config = MatmulConfig.for_training(GradientEstimator.LOCAL_ADDITIVE_NOISE)
+    token_ids = jnp.zeros((1, 1), dtype=jnp.int32)
+    context = Context(
+        token_ids=token_ids,
+        token_positions=token_ids,
+        lengths=None,
+        parents=None,
+        forward_pass_config=FlowForwardPassConfig.for_training(GradientEstimator.LOCAL_ADDITIVE_NOISE),
+        sharding_config=initializer.sharding_config,
+    )
 
     with pytest.raises(ValueError, match="Local additive noise is not implemented"):
-        per_layer_embedding(
-            jnp.zeros((1, 1), dtype=jnp.int32),
+        per_layer_inputs.forward(
             jnp.ones((1, 1, OUTPUT_DIM), dtype=jnp.bfloat16),
-            forward_pass_config=forward_pass_config,
+            ctx=context,
             keychain=Keychain.init(0, sharding_config=initializer.sharding_config),
         )
 
@@ -710,10 +727,11 @@ def test_load_moe_preserves_expert_sharding_and_outputs(mode: ForwardPassMode) -
 
 
 def test_load_huggingface_classifier_uses_hf_embedding_layout() -> None:
-    classifier = _classifier_template()
+    binder = Binder(huggingface_loader)
+    classifier, config = _classifier_template(binder)
     weights = _classifier_weights(classifier)
 
-    loaded = load_huggingface_classifier(classifier, weights)
+    loaded = load_huggingface_classifier(classifier, config, binder, weights)
 
     assert isinstance(loaded.embedding, TiedEmbedding)
     assert isinstance(classifier.embedding, TiedEmbedding)
@@ -886,26 +904,24 @@ def test_model_export_load_with_strong_initializer_forces_saved_float_dtypes(tmp
 
 
 @pytest.mark.parametrize("dtype", [None, jnp.float32, jnp.bfloat16])
-def test_load_dflash2_sublayer_transform(dtype: DTypeLike | None) -> None:
+def test_load_dflash2_sublayer_convolutions(dtype: DTypeLike | None) -> None:
     config = HFDFlashConfig.from_dict(_dflash_hf_config(dflash2=True)).to_dflash_draft_config()
     model = config.init(EmptyInitializer(dtype, make_test_sharding_config()))
-    layer = model.layers[0]
+    attention_kernels, *_ = (step for step in leaves(model.program) if isinstance(step, DynamicConvKernels))
+    pre_conv, post_conv, *_ = (step for step in leaves(model.program) if isinstance(step, DynamicConv))
     source_dtype = dtype or jnp.bfloat16
     base_kernel = jnp.arange(16, dtype=source_dtype).reshape(2, 2, 4)
     kernel_projection = jnp.arange(32, dtype=source_dtype).reshape(8, 4)
-    weights = {
-        "attention_conv.base_kernel": base_kernel,
-        "attention_conv.kernel_projection.weight": kernel_projection,
+    path = ParameterPath("attention_conv")
+    weights: dict[str, Array] = {
+        path / "base_kernel": base_kernel,
+        path / "kernel_projection" / "weight": kernel_projection,
     }
 
-    module = load_dflash_sublayer_transform(
-        layer.mixer_conv,
-        weights,
-        ParameterPath("attention_conv"),
-    )
+    loaded_kernels = load_dynamic_conv_kernels(attention_kernels, weights, path)
+    loaded_pre_conv, loaded_post_conv = (load_dynamic_conv(conv, weights, path) for conv in (pre_conv, post_conv))
 
-    assert module is not None
-    exported = module.export()
-    assert_close(result=exported.arrays["pre_conv.weights"], reference=base_kernel[0, ::-1].T)
-    assert_close(result=exported.arrays["post_conv.weights"], reference=base_kernel[1, ::-1].T)
-    assert_close(result=module.kernel_projection.weights.decompress(), reference=kernel_projection)
+    assert (loaded_pre_conv.config.side, loaded_post_conv.config.side) == (0, 1)
+    assert_close(result=loaded_pre_conv.conv.weights, reference=base_kernel[0, ::-1].T)
+    assert_close(result=loaded_post_conv.conv.weights, reference=base_kernel[1, ::-1].T)
+    assert_close(result=loaded_kernels.projection.weights.decompress(), reference=kernel_projection)

@@ -9,13 +9,12 @@ from jax import numpy as jnp
 
 from lalamo import FileSpec
 from lalamo.initializer import EmptyInitializer
-from lalamo.model_import.loaders.fishaudio_loaders import (
-    load_tokenizer_from_fishaudio_tiktoken,
-    load_transformer_block,
-)
+from lalamo.model_import.loaders.binding import Binder
+from lalamo.model_import.loaders.fishaudio_loaders import load_tokenizer_from_fishaudio_tiktoken
+from lalamo.model_import.loaders.huggingface import huggingface_loader
 from lalamo.model_import.model_specs.fishaudio import FISHAUDIO_TTS_MODELS
 from lalamo.module import Keychain, LogicalAxis
-from lalamo.modules.utils import call_vmapped
+from lalamo.modules.flow import Context, FlowForwardPassConfig, leaves, run
 from lalamo.utils.torch_interop import torch_to_jax
 from tests.common import assert_close
 from tests.helpers import make_sharding, make_test_sharding_config
@@ -51,13 +50,15 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     config = fish_model.config
     assert isinstance(config, DualARModelArgs)
 
-    transformer_cfg, _ = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(config)
-    lalamo_transformer = transformer_cfg.init(
+    binder = Binder(huggingface_loader)
+    program_config, _ = ConfigMapping.lalamo_program_from_fish_text_decoder_cfg(binder, config, fast=False)
+    program = program_config.init(
         EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config()),
+        config.dim,
     )
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_model.state_dict())
-    lalamo_transformer = load_transformer_block(lalamo_transformer, weights_dict)
+    program = binder.load(program, program_config, weights_dict)
 
     batch_size = 2
     seq_length = 16
@@ -82,20 +83,27 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     fish_layer = fish_model.layers[0]
     fish_layer_result = fish_layer(embedded_input_torch, freqs_cis, mask, input_pos=input_pos)
 
-    (rope,) = lalamo_transformer.ropes
-    pos_emb_lalamo = jax.device_put(
-        call_vmapped(rope, input_pos_lalamo),
-        make_sharding((LogicalAxis.BATCH, None, None)),
+    context = Context(
+        None,
+        input_pos_lalamo,
+        None,
+        None,
+        FlowForwardPassConfig(),
+        make_test_sharding_config(),
     )
-    lalamo_layer = lalamo_transformer.layers[0]
-    lalamo_layer_result = lalamo_layer(
+    result = run(
+        program,
         embedded_input_lalamo,
-        pos_emb_lalamo,
+        context,
         keychain=Keychain.init(0, sharding_config=make_test_sharding_config()),
+        trace=True,
     )
+    assert result.trace is not None
+    # The first layer is a mixer residual followed by an MLP residual.
+    first_layer_size = sum(len(leaves(step)) for step in program.steps[:2])
 
     fish_output_jax = torch_to_jax(fish_layer_result)
-    lalamo_output = lalamo_layer_result.outputs
+    lalamo_output = result.trace[first_layer_size - 1].outputs
 
     assert_close(
         result=lalamo_output,

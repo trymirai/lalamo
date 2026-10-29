@@ -15,9 +15,9 @@ from lalamo.modules.audio.common_modules import (
     Snake1dConfig,
 )
 from lalamo.modules.embedding import EmbeddingForwardPassConfig, TiedEmbedding, TiedEmbeddingConfig
+from lalamo.modules.flow import Context, FlowForwardPassConfig, Sequence, SequenceConfig, run
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
-from lalamo.modules.transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 from lalamo.utils.sharding import with_sharding
 
@@ -431,7 +431,8 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
 class DownsampleResidualVectorQuantizeConfig(LalamoConfig):
     semantic_quantizer_config: ResidualVectorQuantizeConfig
     quantizer_config: ResidualVectorQuantizeConfig
-    post_module_config: TransformerConfig
+    post_module_config: SequenceConfig
+    post_module_dim: int
     upsampler_config: UpsamplerConfig
 
     def init(
@@ -454,7 +455,7 @@ class DownsampleResidualVectorQuantizeConfig(LalamoConfig):
             codebook_size=quantizer_params.codebook_size,
             codebook_dim=quantizer_params.codebook_dim,
         )
-        post_module = self.post_module_config.init(initializer)
+        post_module = self.post_module_config.init(initializer, self.post_module_dim)
         upsampler = self.upsampler_config.init(
             initializer,
             trans_conv_params_per_block=upsampler_trans_conv_params,
@@ -478,7 +479,7 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
     1. Decoding semantic codes through the semantic quantizer
     2. Decoding residual codes through the residual quantizer
     3. Summing the semantic and residual representations
-    4. Processing through a transformer post-module
+    4. Processing through a transformer-style post-module program
     5. Upsampling to the target temporal resolution
 
     Input: Integer codes with shape (batch, n_codebooks, tokens)
@@ -489,7 +490,7 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
 
     semantic_quantizer: ResidualVectorQuantize
     quantizer: ResidualVectorQuantize
-    post_module: Transformer
+    post_module: Sequence
     upsampler: Upsampler
 
     @property
@@ -532,18 +533,12 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
             self.sharding_config.resolve_sharding((LogicalAxis.BATCH, None)),
         )
 
-        post_result = self.post_module(
-            inner_features=z_q,
-            token_positions=token_positions,
-            state=None,
-            return_updated_state=False,
-            return_layer_results=False,
-            return_positional_embeddings=False,
-            lengths_without_padding=None,
-            forward_pass_config=TransformerForwardPassConfig(),
+        z_q = run(
+            self.post_module,
+            z_q,
+            Context(None, token_positions, None, None, FlowForwardPassConfig(), self.sharding_config),
             keychain=post_keychain,
-        )
-        z_q = post_result.outputs
+        ).outputs
         return self.upsampler(z_q, keychain=upsampler_keychain)
 
     def __call__(

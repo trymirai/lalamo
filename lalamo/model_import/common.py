@@ -286,7 +286,6 @@ def _import_language_model(
 
     with _load_checkpoint(model_spec, progress_callback) as checkpoint:
         model_config = foreign_decoder_config.to_lalamo_config(
-            metadata_dict=checkpoint.metadata,
             token_codec_config=token_codec_config,
             generation_config=generation_config,
         )

@@ -23,8 +23,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.exportable import Exportable
-from lalamo.initializer import Initializer
-from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.module import LalamoConfig
 from lalamo.utils.registry_abc import RegistryABC
 
 __all__ = [
@@ -32,7 +31,7 @@ __all__ = [
     "LlamaRoPEConfig",
     "LongRoPEConfig",
     "PositionalEmbeddings",
-    "RoPE",
+    "ProportionalRoPEConfig",
     "RoPEConfig",
     "UnscaledRoPEConfig",
     "YARNRoPEConfig",
@@ -101,18 +100,28 @@ class RoPEConfig(LalamoConfig, RegistryABC):
         sines = (jnp.sin(embeddings) * self._attention_scaling_factor).astype(jnp.float32)
         return PositionalEmbeddings(cosines=cosines, sines=sines)
 
-    def init(self, initializer: Initializer) -> "RoPE":
-        return RoPE(config=self, sharding_config=initializer.sharding_config)
-
-
-class RoPE(LalamoModule[RoPEConfig]):
-    @eqx.filter_jit
-    def __call__(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
-        return self.config.compute_positional_embeddings(timesteps)
-
 
 class UnscaledRoPEConfig(RoPEConfig):
     pass
+
+
+@dataclass(frozen=True)
+class ProportionalRoPEConfig(RoPEConfig):
+    partial_rotary_factor: float
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.partial_rotary_factor <= 1:
+            raise ValueError("The rotary proportion must be between zero and one.")
+
+    def _scale_inverse_frequencies(
+        self, inverse_frequencies: Float[Array, " rotary_pairs"]
+    ) -> Float[Array, " rotary_pairs"]:
+        # Gemma rotates pairs across the full head; unused pairs have zero frequency.
+        return jnp.where(
+            jnp.arange(inverse_frequencies.size) < int(self.partial_rotary_factor * self.head_dim // 2),
+            inverse_frequencies,
+            0,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)

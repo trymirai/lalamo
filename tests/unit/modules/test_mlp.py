@@ -72,6 +72,7 @@ def _dense_mlp(config: DenseMLPConfig | None = None) -> DenseMLP:
             has_down_biases=True,
             gate_clipping=(-0.5, 0.75),
             up_clipping=(-0.25, 0.5),
+            hidden_dim=HIDDEN_DIM,
         )
     return DenseMLP(
         config=config,
@@ -133,6 +134,7 @@ def _moe(
         has_down_biases=True,
         gate_clipping=None,
         up_clipping=None,
+        hidden_dim=HIDDEN_DIM,
     )
     config = MixtureOfExpertsConfig(
         expert_config=expert_config,
@@ -142,7 +144,6 @@ def _moe(
         num_active_routed_experts=num_active_routed_experts,
         router_has_biases=True,
         num_shared_experts=num_shared_experts,
-        expert_hidden_dim=HIDDEN_DIM,
         gate_config=LinearConfig() if use_shared_gate else None,
     )
     return MixtureOfExperts(
@@ -205,6 +206,7 @@ def _reference(module: DenseMLP, inputs: Array) -> Array:
 
 
 def _router_logits_reference(module: MixtureOfExperts, inputs: Array) -> Array:
+    assert module.router is not None
     router_weights = jnp.asarray(jax.device_get(module.router.weights.decompress()))
     logits = router_weights @ inputs
     if module.router.biases is not None:
@@ -291,6 +293,7 @@ def _differentiable_moe_reference(
             result = result + experts.down_projection.biases[None, None]
         return result
 
+    assert module.router is not None
     router_weights = module.router.weights
     assert isinstance(router_weights, FullPrecisionMatrix)
     router_logits = jnp.einsum("bti,ei->bte", inputs, router_weights.decompress())
@@ -402,7 +405,6 @@ def test_sharded_routed_and_replicated_shared_experts_match_reference(
             key=jax.random.key(20),
         ),
         MODEL_DIM,
-        HIDDEN_DIM,
     )
 
     assert module.shared_experts is not None

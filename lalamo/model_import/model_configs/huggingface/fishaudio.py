@@ -1,16 +1,21 @@
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Self
 
 from jaxtyping import Array
 
 from lalamo.model import Model
+from lalamo.model_import.loaders.binding import Binder
 from lalamo.model_import.loaders.fishaudio_loaders import (
+    load_fish_attention,
+    load_fish_mlp,
     load_fishaudio_audio_decoder,
     load_fishaudio_text_decoder,
 )
+from lalamo.model_import.loaders.huggingface import huggingface_loader
 from lalamo.model_import.model_configs import ForeignTTSConfig
 from lalamo.models import TTSConfig, TTSModel
 from lalamo.modules.activations import GELU, SiLU
@@ -39,13 +44,12 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
 )
 from lalamo.modules.audio.vocoders import NoopVocoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
+from lalamo.modules.flow import EmitConfig, SequenceConfig, StepConfig, residual
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.modules.transformer import TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.surgery import load_as_at
 from lalamo.weight_matrix import CompressionImplementation
@@ -57,74 +61,93 @@ def _tts_decoders(model: TTSModel) -> tuple[object, object]:
     return model.text_decoder, model.audio_decoder
 
 
-def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
+def fish_transformer_program(
+    at: Binder,
+    path: ParameterPath,
+    *,
+    num_layers: int,
+    attention: AttentionConfig,
+    mlp: DenseMLPConfig,
+    norm: NormalizationConfig,
+    layers_name: str = "layers",
+    output_norm_name: str = "norm",
+) -> tuple[SequenceConfig, EmitConfig]:
+    """FishAudio's pre-norm transformer; also returns a tap on the hidden state before the output norm."""
+    steps: list[StepConfig] = []
+    for index in range(num_layers):
+        layer_path = path / layers_name / index
+        load_attention = partial(load_fish_attention, layer_scale_path=layer_path / "attention_layer_scale" / "gamma")
+        load_mlp = partial(load_fish_mlp, layer_scale_path=layer_path / "ffn_layer_scale" / "gamma")
+        steps += [
+            residual(
+                at(layer_path / "attention_norm", norm),
+                at(layer_path / "attention", attention, load=load_attention),
+            ),
+            residual(
+                at(layer_path / "ffn_norm", norm),
+                at(layer_path / "feed_forward", mlp, load=load_mlp),
+            ),
+        ]
+    hidden_states = EmitConfig("hidden_states")
+    return SequenceConfig((*steps, hidden_states, at(path / output_norm_name, norm))), hidden_states
+
+
+def fish_audio_codec_post_module(
+    at: Binder,
     config: Mapping[Any, Any],
     window_size: int,
-    input_dim: int,
-) -> TransformerConfig:
+) -> SequenceConfig:
     # FishAudio post-init treats -1 as n_head.
     n_local_heads = config["n_head"] if config["n_local_heads"] == -1 else config["n_local_heads"]
-
-    rope_config = UnscaledRoPEConfig(
-        base=float(config["rope_base"]),
-        max_sequence_length=config["block_size"],
-        head_dim=config["head_dim"],
-    )
-
-    norm_config_pre = NormalizationConfig(
+    norm_config = NormalizationConfig(
         epsilon=config["norm_eps"],
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         subtract_mean=False,
     )
-
     linear_config = LinearConfig()
-    mixer_config = AttentionConfig(
-        qkvg_projection_config=linear_config,
-        out_projection_config=linear_config,
-        query_norm_config=None,
-        key_norm_config=None,
-        num_heads=config["n_head"],
-        num_groups=n_local_heads,
-        head_dim=config["head_dim"],
-        is_causal=True,
-        scale=None,
-        sliding_window_size=window_size,
-        logit_soft_cap=None,
-        has_sinks=False,
-        has_qkvg_biases=False,
-        has_out_biases=False,
+    program, _ = fish_transformer_program(
+        at,
+        ParameterPath("quantizer.post_module"),
+        num_layers=config["n_layer"],
+        attention=AttentionConfig(
+            qkvg_projection_config=linear_config,
+            out_projection_config=linear_config,
+            query_norm_config=None,
+            key_norm_config=None,
+            num_heads=config["n_head"],
+            num_groups=n_local_heads,
+            head_dim=config["head_dim"],
+            is_causal=True,
+            scale=None,
+            sliding_window_size=window_size,
+            logit_soft_cap=None,
+            has_sinks=False,
+            has_qkvg_biases=False,
+            has_out_biases=False,
+            rope_config=UnscaledRoPEConfig(
+                base=float(config["rope_base"]),
+                max_sequence_length=config["block_size"],
+                head_dim=config["head_dim"],
+            ),
+        ),
+        mlp=DenseMLPConfig(
+            linear_config=linear_config,
+            activation=SiLU(),
+            has_up_biases=False,
+            has_down_biases=False,
+            gate_clipping=None,
+            up_clipping=None,
+            hidden_dim=config["intermediate_size"],
+        ),
+        norm=norm_config,
     )
-
-    mlp_config = DenseMLPConfig(
-        linear_config=linear_config,
-        activation=SiLU(),
-        has_up_biases=False,
-        has_down_biases=False,
-        gate_clipping=None,
-        up_clipping=None,
-    )
-
-    layer_config = TransformerLayerConfig(
-        pre_mixer_norm_config=norm_config_pre,
-        mixer_config=mixer_config,
-        post_mixer_norm_config=None,
-        pre_mlp_norm_config=norm_config_pre,
-        mlp_config=mlp_config,
-        post_mlp_norm_config=None,
-        rope_config=rope_config,
-    )
-
-    return TransformerConfig(
-        layer_configs=(layer_config,) * config["n_layer"],
-        output_norm_config=norm_config_pre,
-        model_dim=input_dim,
-        hidden_dim=config["intermediate_size"],
-    )
+    return program
 
 
 def instantiate_dac_config_from_fishaudio_config(
     fish_dac_config: Mapping[Any, Any],
+    at: Binder,
 ) -> DescriptAudioCodecConfig:
     samplerate = fish_dac_config["sample_rate"]
     fish_quantizer_config = fish_dac_config["quantizer"]
@@ -161,11 +184,10 @@ def instantiate_dac_config_from_fishaudio_config(
     block_configs = tuple(upsampling_block_config for _ in range(num_blocks))
     upsampler_config = UpsamplerConfig(block_configs=block_configs)
 
-    post_module_transformer_foreign = post_module_config_dict["config"]
-    post_module_config = lalamo_transformer_cfg_from_fish_audio_codec_cfg(
-        post_module_transformer_foreign,
+    post_module_config = fish_audio_codec_post_module(
+        at,
+        post_module_config_dict["config"],
         window_size=post_module_config_dict["window_size"],
-        input_dim=post_module_config_dict["input_dim"],
     )
 
     vq_config = VectorQuantizeConfig(
@@ -183,6 +205,7 @@ def instantiate_dac_config_from_fishaudio_config(
         semantic_quantizer_config=lalamo_rvq_config,
         quantizer_config=lalamo_rvq_config,
         post_module_config=post_module_config,
+        post_module_dim=post_module_config_dict["input_dim"],
         upsampler_config=upsampler_config,
     )
     res_unit_config = ResidualUnitConfig(
@@ -259,23 +282,13 @@ class FishAudioConfig(ForeignTTSConfig):
     semantic_token_end_id: int = -1
     im_end_token_id: int = -1
 
-    def extract_textual_transformer_configs(
-        self,
-        fast_module: bool = False,
-    ) -> tuple[TransformerConfig, LinearConfig]:
-        n_layer = self.n_fast_layer if fast_module else self.n_layer
-        n_head = self.fast_n_head if fast_module else self.n_head
-        dim = self.fast_dim if fast_module else self.dim
-        intermediate_size = self.fast_intermediate_size if fast_module else self.intermediate_size
-        n_local_heads = self.fast_n_local_heads if fast_module else self.n_local_heads
-        head_dim = self.fast_head_dim if fast_module else self.head_dim
-        attention_qk_norm = self.fast_attention_qk_norm if fast_module else self.attention_qk_norm
-
-        rope_config = UnscaledRoPEConfig(
-            base=float(self.rope_base),
-            max_sequence_length=self.max_seq_len,
-            head_dim=head_dim,
-        )
+    def textual_program(self, at: Binder, *, fast: bool) -> tuple[SequenceConfig, EmitConfig]:
+        n_layer = self.n_fast_layer if fast else self.n_layer
+        n_head = self.fast_n_head if fast else self.n_head
+        intermediate_size = self.fast_intermediate_size if fast else self.intermediate_size
+        n_local_heads = self.fast_n_local_heads if fast else self.n_local_heads
+        head_dim = self.fast_head_dim if fast else self.head_dim
+        attention_qk_norm = self.fast_attention_qk_norm if fast else self.attention_qk_norm
 
         norm_config = NormalizationConfig(
             epsilon=self.norm_eps,
@@ -283,84 +296,70 @@ class FishAudioConfig(ForeignTTSConfig):
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
-
         linear_config = LinearConfig()
-        mixer_config = AttentionConfig(
-            qkvg_projection_config=linear_config,
-            out_projection_config=linear_config,
-            query_norm_config=norm_config if attention_qk_norm else None,
-            key_norm_config=norm_config if attention_qk_norm else None,
-            num_heads=n_head,
-            num_groups=n_local_heads,
-            head_dim=head_dim,
-            is_causal=True,
-            scale=None,
-            sliding_window_size=None,
-            logit_soft_cap=None,
-            has_sinks=False,
-            has_qkvg_biases=False,
-            has_out_biases=False,
+        return fish_transformer_program(
+            at,
+            ParameterPath(),
+            num_layers=n_layer,
+            attention=AttentionConfig(
+                qkvg_projection_config=linear_config,
+                out_projection_config=linear_config,
+                query_norm_config=norm_config if attention_qk_norm else None,
+                key_norm_config=norm_config if attention_qk_norm else None,
+                num_heads=n_head,
+                num_groups=n_local_heads,
+                head_dim=head_dim,
+                is_causal=True,
+                scale=None,
+                sliding_window_size=None,
+                logit_soft_cap=None,
+                has_sinks=False,
+                has_qkvg_biases=False,
+                has_out_biases=False,
+                rope_config=UnscaledRoPEConfig(
+                    base=float(self.rope_base),
+                    max_sequence_length=self.max_seq_len,
+                    head_dim=head_dim,
+                ),
+            ),
+            mlp=DenseMLPConfig(
+                linear_config=linear_config,
+                activation=SiLU(),
+                has_up_biases=False,
+                has_down_biases=False,
+                gate_clipping=None,
+                up_clipping=None,
+                hidden_dim=intermediate_size,
+            ),
+            norm=norm_config,
+            layers_name="fast_layers" if fast else "layers",
+            output_norm_name="fast_norm" if fast else "norm",
         )
-
-        mlp_config = DenseMLPConfig(
-            linear_config=linear_config,
-            activation=SiLU(),
-            has_up_biases=False,
-            has_down_biases=False,
-            gate_clipping=None,
-            up_clipping=None,
-        )
-
-        layer_config = TransformerLayerConfig(
-            pre_mixer_norm_config=norm_config,
-            mixer_config=mixer_config,
-            post_mixer_norm_config=None,
-            pre_mlp_norm_config=norm_config,
-            mlp_config=mlp_config,
-            post_mlp_norm_config=None,
-            rope_config=rope_config,
-        )
-
-        transformer_cfg = TransformerConfig(
-            layer_configs=(layer_config,) * n_layer,
-            output_norm_config=norm_config,
-            model_dim=dim,
-            hidden_dim=intermediate_size,
-        )
-        linear_out_cfg = LinearConfig()
-
-        return (transformer_cfg, linear_out_cfg)
 
     def to_tts_config(self) -> TTSConfig:
+        return self.build_tts_config(Binder())
+
+    def build_tts_config(self, at: Binder) -> TTSConfig:
         audio_decoder_config = instantiate_dac_config_from_fishaudio_config(
             fish_dac_config=get_default_fishaudio_dac_config(),
+            at=at,
         )
+        slow_program, slow_hidden_states = self.textual_program(at, fast=False)
+        fast_program, _ = self.textual_program(at, fast=True)
 
-        slow_transformer_cfg, slow_readout_cfg = self.extract_textual_transformer_configs(
-            fast_module=False,
-        )
-        fast_transformer_cfg, fast_readout_cfg = self.extract_textual_transformer_configs(
-            fast_module=True,
-        )
-        slow_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None)
-        fast_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None)
-
-        codebook_embeddings_cfg = TiedEmbeddingConfig(
-            input_scale=None,
-            logit_soft_cap=None,
-        )
         if self.dim == self.fast_dim:
             fast_model_projection_config = None
         else:
             fast_model_projection_config = LinearConfig()
         text_decoder_config = FishAudioTextDecoderConfig(
-            slow_embeddings_config=slow_embedding_cfg,
-            slow_model_config=slow_transformer_cfg,
-            slow_readout_config=slow_readout_cfg,
-            fast_embeddings_config=fast_embedding_cfg,
-            fast_model_config=fast_transformer_cfg,
-            fast_readout_config=fast_readout_cfg,
-            codebook_embeddings_config=codebook_embeddings_cfg,
+            slow_embeddings_config=TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None),
+            slow_model_config=slow_program,
+            slow_hidden_states=slow_hidden_states,
+            slow_readout_config=LinearConfig(),
+            fast_embeddings_config=TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None),
+            fast_model_config=fast_program,
+            fast_readout_config=LinearConfig(),
+            codebook_embeddings_config=TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None),
             fast_model_projection_config=fast_model_projection_config,
             semantic_token_begin_id=self.semantic_token_begin_id,
             semantic_token_end_id=self.semantic_token_end_id,
@@ -389,11 +388,28 @@ class FishAudioConfig(ForeignTTSConfig):
         assert isinstance(model, TTSModel)
         tts_model: TTSModel = model
 
+        binder = Binder(huggingface_loader)
+        tts_config = self.build_tts_config(binder)
+        assert isinstance(tts_config.text_decoder_config, FishAudioTextDecoderConfig)
+        assert isinstance(tts_config.audio_decoder_config, DescriptAudioCodecConfig)
+
         assert isinstance(tts_model.text_decoder, FishAudioTextDecoder)
-        loaded_text_decoder = load_fishaudio_text_decoder(tts_model.text_decoder, weights_dict, ParameterPath())
+        loaded_text_decoder = load_fishaudio_text_decoder(
+            tts_model.text_decoder,
+            tts_config.text_decoder_config,
+            binder,
+            weights_dict,
+            ParameterPath(),
+        )
 
         assert isinstance(tts_model.audio_decoder, DescriptAudioCodec)
-        loaded_audio_decoder = load_fishaudio_audio_decoder(tts_model.audio_decoder, weights_dict, ParameterPath())
+        loaded_audio_decoder = load_fishaudio_audio_decoder(
+            tts_model.audio_decoder,
+            tts_config.audio_decoder_config,
+            binder,
+            weights_dict,
+            ParameterPath(),
+        )
 
         return load_as_at(
             _tts_decoders,

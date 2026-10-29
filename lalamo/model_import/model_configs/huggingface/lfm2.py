@@ -1,7 +1,9 @@
-from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import Literal
 
+from lalamo.model_import.loaders.binding import Binder
+from lalamo.model_import.loaders.huggingface import load_mlp
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
@@ -12,10 +14,8 @@ from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.token_mixers.short_conv import ShortConvConfig
-from lalamo.modules.transformer import TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
 
-from .common import HuggingFaceLMConfig
+from .common import HuggingFaceLMConfig, residual_decoder
 
 
 @dataclass(frozen=True)
@@ -93,10 +93,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
         assert flat is not None
         return flat
 
-    def to_decoder_config(
-        self,
-        metadata_dict: Mapping[str, str],  # noqa: ARG002
-    ) -> DecoderConfig:
+    def build_decoder(self, at: Binder) -> DecoderConfig:
         assert self.num_attention_heads == self.num_heads
         head_dim = self.hidden_size // self.num_attention_heads
 
@@ -141,6 +138,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
             has_sinks=False,
             has_qkvg_biases=False,
             has_out_biases=False,
+            rope_config=rope_config,
         )
 
         short_conv_config = ShortConvConfig(
@@ -148,15 +146,6 @@ class HFLFM2Config(HuggingFaceLMConfig):
             conv_config=SeparableCausalConvConfig(has_biases=self.conv_bias),
             out_projection_config=linear_config,
             kernel_size=self.conv_L_cache,
-        )
-
-        mlp_config = DenseMLPConfig(
-            linear_config=linear_config,
-            activation=SiLU(),
-            has_up_biases=False,
-            has_down_biases=False,
-            up_clipping=None,
-            gate_clipping=None,
         )
 
         if self.layer_types is not None:
@@ -167,19 +156,6 @@ class HFLFM2Config(HuggingFaceLMConfig):
             ]
         else:
             raise RuntimeError("Either layer_types or full_attn_idxs must be present.")
-
-        layer_configs = [
-            TransformerLayerConfig(
-                pre_mixer_norm_config=block_norm_config,
-                mixer_config={"conv": short_conv_config, "full_attention": attention_config}[layer_type],
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=block_norm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=None,
-                rope_config=rope_config if layer_type == "full_attention" else None,
-            )
-            for layer_type in layer_types
-        ]
 
         output_norm_config = NormalizationConfig(
             epsilon=self.norm_eps,
@@ -196,15 +172,34 @@ class HFLFM2Config(HuggingFaceLMConfig):
                 (hidden_dim_adjusted + self.block_multiple_of - 1) // self.block_multiple_of * self.block_multiple_of,
             )
 
-        transformer_config = TransformerConfig(
-            layer_configs=tuple(layer_configs),
-            output_norm_config=output_norm_config,
-            model_dim=self.hidden_size,
+        mlp_config = DenseMLPConfig(
+            linear_config=linear_config,
+            activation=SiLU(),
+            has_up_biases=False,
+            has_down_biases=False,
+            up_clipping=None,
+            gate_clipping=None,
             hidden_dim=hidden_dim,
         )
 
-        return DecoderConfig(
-            embedding_config=embedding_config,
-            transformer_config=transformer_config,
+        mixer_configs = {"conv": short_conv_config, "full_attention": attention_config}
+        mixer_keys = {"conv": "conv", "full_attention": "self_attn"}
+        load_feed_forward = partial(load_mlp, up_proj_key="w3", gate_proj_key="w1", down_proj_key="w2")
+        return residual_decoder(
+            at,
+            embedding=at("model.embed_tokens", embedding_config),
+            layers=[
+                (
+                    at(f"model.layers.{index}.{mixer_keys[layer_type]}", mixer_configs[layer_type]),
+                    at(f"model.layers.{index}.feed_forward", mlp_config, load=load_feed_forward),
+                )
+                for index, layer_type in enumerate(layer_types)
+            ],
+            norm=block_norm_config,
+            model_dim=self.hidden_size,
             vocab_size=self.vocab_size,
+            mixer_norm="operator_norm",
+            mlp_norm="ffn_norm",
+            output_norm="embedding_norm",
+            output_norm_config=output_norm_config,
         )

@@ -15,9 +15,11 @@ from .huggingface import (
     HFMuseGlimmerConfig,
     HFPhi3Config,
     HFQwen2Config,
+    HFQwen3AttnResConfig,
     HFQwen3Config,
     HFQwen3NextConfig,
     HFQwen35Config,
+    HFQwen38Config,
     HFSmolLM3Config,
 )
 
@@ -41,8 +43,10 @@ __all__ = [
     "HFMuseGlimmerConfig",
     "HFPhi3Config",
     "HFQwen2Config",
+    "HFQwen3AttnResConfig",
     "HFQwen3Config",
     "HFQwen3NextConfig",
     "HFQwen35Config",
+    "HFQwen38Config",
     "HFSmolLM3Config",
 ]

@@ -3,8 +3,7 @@ import gc
 import importlib.util
 import os
 from abc import abstractmethod
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Self
 
@@ -14,22 +13,23 @@ import pytest
 import torch
 from jax.sharding import AxisType
 from jaxtyping import Array
-from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
 from lalamo import ClassifierModel, LanguageModel
-from lalamo.model_import.common import import_model
+from lalamo.model_import.common import _load_foreign_config, import_model
+from lalamo.model_import.loaders.binding import Binder, Binding
+from lalamo.model_import.model_configs import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
+from lalamo.model_registry import ModelRegistry
 from lalamo.module import Keychain
-from lalamo.modules.classifier import (
-    ClassifierActivationTrace,
-    ClassifierForwardPassConfig,
-    ClassifierResult,
-)
-from lalamo.modules.decoder import (
-    DecoderActivationTrace,
-    DecoderForwardPassConfig,
-    DecoderResult,
-)
+from lalamo.modules.classifier import ClassifierActivationTrace, ClassifierConfig, ClassifierResult
+from lalamo.modules.decoder import DecoderActivationTrace, DecoderConfig, DecoderResult
+from lalamo.modules.flow import Sequence, StepTrace, TokenMixerBase, leaves
+from lalamo.modules.forward_pass import ModelForwardPassConfig
+from lalamo.modules.mlp import MLPBase
+from lalamo.modules.normalization import Normalization
+from lalamo.modules.rope import PositionalEmbeddings
+from lalamo.modules.token_mixers.attention import Attention
 from lalamo.utils.memory import get_available_bytes_on_default_device
+from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from tests.common import assert_close, checkify_forward
 from tests.helpers import si, unsi
@@ -91,7 +91,13 @@ ActivationTrace = ClassifierActivationTrace | DecoderActivationTrace
 InferenceResult = ClassifierResult | DecoderResult
 
 
-class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
+class ModelTracer[ArrayT, ModuleT]:
+    """Matches every traced program primitive against the reference module stored at its checkpoint path.
+
+    Primitives are fed lalamo's own inputs, so each comparison isolates one module; taps and outputs are then
+    compared end to end with the reference forward pass.
+    """
+
     @abstractmethod
     def from_jax(self, array: Array) -> ArrayT: ...
 
@@ -99,332 +105,156 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     def to_jax(self, array: ArrayT) -> Array: ...
 
     @abstractmethod
+    def module_at(self, path: ParameterPath) -> ModuleT | None: ...
+
+    @abstractmethod
     def embedding(self, token_ids: ArrayT) -> ArrayT: ...
 
     @abstractmethod
-    def rope_fns(self) -> list[tuple[str, Callable[[ArrayT, ArrayT], tuple[ArrayT, ArrayT]]]]:
-        """Returns list of (label, rope_fn) pairs for each unique rope to test."""
-        ...
+    def norm(self, norm: ModuleT, x: ArrayT) -> ArrayT: ...
 
     @abstractmethod
-    def rmsnorm(self, rmsnorm: RMSNormT, x: ArrayT) -> ArrayT: ...
-
-    @abstractmethod
-    def attention(
+    def mixer(
         self,
-        attention: AttentionT,
-        hidden_states: ArrayT,
-        position_embeddings: tuple[ArrayT, ArrayT] | None,
+        mixer: ModuleT,
+        x: ArrayT,
+        positional_embeddings: tuple[ArrayT, ArrayT] | None,
+        path: ParameterPath,
     ) -> ArrayT: ...
 
     @abstractmethod
-    def mlp(self, mlp: MlpT, x: ArrayT) -> ArrayT: ...
-
-    @abstractmethod
-    def layer(
-        self,
-        layer: LayerT,
-        hidden_states: ArrayT,
-        position_embeddings: tuple[ArrayT, ArrayT] | None,
-    ) -> ArrayT: ...
-
-    @abstractmethod
-    def layer_pre_attention_norm(self, layer: LayerT) -> RMSNormT: ...
-
-    @abstractmethod
-    def layer_attention(self, layer: LayerT) -> AttentionT: ...
-
-    @abstractmethod
-    def layer_post_attention_norm(self, layer: LayerT) -> RMSNormT | None: ...
-
-    @abstractmethod
-    def layer_pre_mlp_norm(self, layer: LayerT) -> RMSNormT: ...
-
-    @abstractmethod
-    def layer_mlp(self, layer: LayerT) -> MlpT: ...
-
-    @abstractmethod
-    def layer_post_mlp_norm(self, layer: LayerT) -> RMSNormT | None: ...
-
-    @abstractmethod
-    def iterate_layers(self) -> Iterable[LayerT]: ...
-
-    @abstractmethod
-    def output_norm(self) -> RMSNormT: ...
+    def mlp(self, mlp: ModuleT, x: ArrayT) -> ArrayT: ...
 
     @abstractmethod
     def readout(self, x: ArrayT) -> ArrayT: ...
 
     @abstractmethod
-    def forward(self, input_ids: ArrayT, position_ids: ArrayT) -> tuple[tuple[ArrayT, ...], ArrayT, ArrayT]: ...
+    def forward(self, input_ids: ArrayT, position_ids: ArrayT) -> tuple[tuple[ArrayT, ...], ArrayT, ArrayT]:
+        """Returns the reference hidden states (embeddings first), the final norm output and the logits."""
 
-    @abstractmethod
-    def normalized_output(self, result: InferenceResult) -> ArrayT: ...
+    def rope(self, mixer: ModuleT, path: ParameterPath, positions: ArrayT) -> tuple[ArrayT, ArrayT] | None:  # noqa: ARG002
+        """The reference cosines and sines used by the mixer at `path`, if the reference exposes them."""
+        return None
 
-    def match_embedding(self, activation_trace: ActivationTrace) -> None:
-        first_layer_results, *_ = activation_trace.layer_results
-        assert first_layer_results.activation_trace is not None
-        llm_results = first_layer_results.activation_trace.inputs
+    def build(self, foreign_config: ForeignConfig, at: Binder) -> DecoderConfig | ClassifierConfig:
+        match foreign_config:
+            case ForeignLMConfig():
+                return foreign_config.build_decoder(at)
+            case ForeignClassifierConfig():
+                return foreign_config.build_classifier(at)
+        raise TypeError(f"Cannot trace {type(foreign_config).__name__}.")
 
-        ref_input = self.from_jax(activation_trace.token_ids[None, ...])
-        ref_native_embedding = self.embedding(ref_input)
-        ref_embedding = self.to_jax(ref_native_embedding).squeeze(0)
-
+    def match_step(
+        self,
+        binding: Binding | None,
+        step: StepTrace,
+        primitive: object,
+        token_positions: Array,
+    ) -> None:
+        reference = self.module_at(binding.path) if binding is not None else None
+        if binding is None or reference is None:
+            return
+        name = str(binding.path)
+        inputs = self.from_jax(step.inputs)
+        match primitive:
+            case Normalization():
+                reference_outputs = self.norm(reference, inputs)
+            case TokenMixerBase():
+                positional_embeddings = None
+                if isinstance(primitive, Attention) and primitive.config.rope_config is not None:
+                    embeddings = jax.vmap(primitive.config.rope_config.compute_positional_embeddings)(token_positions)
+                    self.match_rope(embeddings, reference, binding.path, token_positions, name)
+                    positional_embeddings = (self.from_jax(embeddings.cosines), self.from_jax(embeddings.sines))
+                reference_outputs = self.mixer(reference, inputs, positional_embeddings, binding.path)
+            case MLPBase() if not step.operands:
+                reference_outputs = self.mlp(reference, inputs)
+            case _:
+                return
         assert_close(
-            result=llm_results,
-            reference=ref_embedding,
-            operation_name="Embedding",
+            result=step.outputs,
+            reference=self.to_jax(reference_outputs),
+            operation_name=name,
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
     def match_rope(
         self,
-        activation_trace: ActivationTrace,
-        rope_index: int,
-        ref_rope: Callable[[ArrayT, ArrayT], tuple[ArrayT, ArrayT]],
-        label: str,
-    ) -> None:
-        assert activation_trace.rope_embeddings is not None
-        llm_results = activation_trace.rope_embeddings[rope_index]
-
-        ref_x = self.from_jax(jnp.array((), jnp.float32))
-        ref_position_ids = self.from_jax(activation_trace.token_positions)
-        ref_native_cosines, ref_native_sines = ref_rope(ref_x, ref_position_ids)
-        ref_cosines = self.to_jax(ref_native_cosines)
-        ref_sines = self.to_jax(ref_native_sines)
-
-        _, _, head_dim = llm_results.cosines.shape
-        llm_cosines = llm_results.cosines
-        llm_sines = llm_results.sines
-        if head_dim == ref_cosines.shape[-1] * 2:
-            llm_cosines = llm_cosines[:, :, : head_dim // 2].astype(jnp.float32)
-            llm_sines = llm_sines[:, :, : head_dim // 2].astype(jnp.float32)
-
-        assert_close(
-            result=llm_cosines,
-            reference=ref_cosines,
-            operation_name=f"{label} RoPE Cosines",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-        assert_close(
-            result=llm_sines,
-            reference=ref_sines,
-            operation_name=f"{label} RoPE Sines",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-
-    def match_rmsnorm(self, llm_inputs: Array, llm_outputs: Array, ref_layer: RMSNormT, name: str) -> None:
-        ref_inputs = self.from_jax(llm_inputs)
-        torch_outputs = self.rmsnorm(ref_layer, ref_inputs)
-        ref_outputs = self.to_jax(torch_outputs)
-
-        assert_close(
-            result=llm_outputs,
-            reference=ref_outputs,
-            operation_name=name,
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-
-    def match_attention(
-        self,
-        llm_inputs: Array,
-        llm_outputs: Array,
-        ref_attention: AttentionT,
-        position_embeddings: tuple[Array, Array] | None,
+        embeddings: PositionalEmbeddings,
+        reference: ModuleT,
+        path: ParameterPath,
+        token_positions: Array,
         name: str,
     ) -> None:
-        ref_inputs = self.from_jax(llm_inputs)
-
-        if position_embeddings is not None:
-            jax_cosines, jax_sines = position_embeddings
-            head_dim = jax_cosines.shape[-1] // 2
-
-            if isinstance(ref_attention, GptOssAttention):
-                jax_cosines = jax_cosines[:, :, :head_dim]
-                jax_sines = jax_sines[:, :, :head_dim]
-
-            ref_position_embeddings = (self.from_jax(jax_cosines), self.from_jax(jax_sines))
-        else:
-            ref_position_embeddings = None
-
-        ref_native_outputs = self.attention(ref_attention, ref_inputs, ref_position_embeddings)
-        ref_outputs = self.to_jax(ref_native_outputs)
-
-        assert_close(
-            result=llm_outputs,
-            reference=ref_outputs,
-            operation_name=name,
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-
-    def match_mlp(self, llm_inputs: Array, llm_outputs: Array, ref_mlp: MlpT, name: str) -> None:
-        ref_inputs = self.from_jax(llm_inputs)
-        ref_native_outputs = self.mlp(ref_mlp, ref_inputs)
-        ref_outputs = self.to_jax(ref_native_outputs)
-        assert_close(
-            result=llm_outputs,
-            reference=ref_outputs,
-            operation_name=name,
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-
-    def match_layer(self, ref_layer: LayerT, layer_index: int, full_activation_trace: ActivationTrace) -> None:
-        layer_result = full_activation_trace.layer_results[layer_index]
-        activation_trace = layer_result.activation_trace
-        assert activation_trace is not None
-
-        ref_pre_attention_norm = self.layer_pre_attention_norm(ref_layer)
-        self.match_rmsnorm(
-            activation_trace.inputs,
-            activation_trace.pre_mixer_norm,
-            ref_pre_attention_norm,
-            f"Layer {layer_index} Pre Attention RMSNorm",
-        )
-
-        ref_attention = self.layer_attention(ref_layer)
-        if activation_trace.positional_embeddings is not None:
-            position_embeddings = (
-                activation_trace.positional_embeddings.cosines,
-                activation_trace.positional_embeddings.sines,
-            )
-        else:
-            position_embeddings = None
-        self.match_attention(
-            activation_trace.pre_mixer_norm,
-            activation_trace.mixer,
-            ref_attention,
-            position_embeddings,
-            f"Layer {layer_index} Attention",
-        )
-
-        ref_post_attention_norm = self.layer_post_attention_norm(ref_layer)
-        if ref_post_attention_norm is not None:
-            assert activation_trace.post_mixer_norm is not None
-            self.match_rmsnorm(
-                activation_trace.mixer,
-                activation_trace.post_mixer_norm,
-                ref_post_attention_norm,
-                f"Layer {layer_index} Post Attention RMSNorm",
-            )
-
-        ref_pre_mlp_norm = self.layer_pre_mlp_norm(ref_layer)
-        self.match_rmsnorm(
-            activation_trace.mlp_inputs,
-            activation_trace.pre_mlp_norm,
-            ref_pre_mlp_norm,
-            f"Layer {layer_index} Pre MLP RMSNorm",
-        )
-
-        ref_mlp = self.layer_mlp(ref_layer)
-        self.match_mlp(
-            activation_trace.pre_mlp_norm,
-            activation_trace.mlp,
-            ref_mlp,
-            f"Layer {layer_index} MLP",
-        )
-
-        ref_post_mlp_norm = self.layer_post_mlp_norm(ref_layer)
-        if ref_post_mlp_norm is not None:
-            assert activation_trace.post_mlp_norm is not None
-            self.match_rmsnorm(
-                activation_trace.mlp,
-                activation_trace.post_mlp_norm,
-                ref_post_mlp_norm,
-                f"Layer {layer_index} Post MLP RMSNorm",
-            )
-
-        # Test full decoder layer
-        ref_inputs = self.from_jax(activation_trace.inputs)
-        if activation_trace.positional_embeddings is not None:
-            ref_position_embeddings = (
-                self.from_jax(activation_trace.positional_embeddings.cosines),
-                self.from_jax(activation_trace.positional_embeddings.sines),
-            )
-        else:
-            ref_position_embeddings = None
-
-        ref_native_outputs = self.layer(ref_layer, ref_inputs, ref_position_embeddings)
-
-        ref_outputs = self.to_jax(ref_native_outputs)
-
-        if ref_outputs.ndim != 3:
-            ref_outputs = ref_outputs[None, ...]
-
-        assert ref_outputs.ndim == 3
-
-        assert_close(
-            result=layer_result.outputs,
-            reference=ref_outputs,
-            operation_name=f"Layer {layer_index} Full Output",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-
-    def match_readout(self, result: DecoderResult | ClassifierResult) -> None:
-        assert result.activation_trace is not None
-
-        llm_logits = result.logits
-
-        ref_normalized_outputs = self.normalized_output(result)
-        ref_native_logits = self.readout(ref_normalized_outputs)
-        ref_logits = self.to_jax(ref_native_logits).squeeze(0)
-
-        assert_close(
-            result=llm_logits,
-            reference=ref_logits,
-            operation_name="Readout (lm_head)",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-
-    def match_activations(self, result: InferenceResult) -> None:
-        assert result.activation_trace is not None
-        for i, (label, rope_fn) in enumerate(self.rope_fns()):
-            self.match_rope(result.activation_trace, i, rope_fn, label)
-        self.match_embedding(result.activation_trace)
-
-        for i, ref_layer in enumerate(self.iterate_layers()):
-            self.match_layer(ref_layer, i, result.activation_trace)
-
-        self.match_rmsnorm(
-            result.activation_trace.layer_results[-1].outputs,
-            result.activation_trace.output_norm,
-            self.output_norm(),
-            "Output RMSNorm",
-        )
-
-        self.match_readout(result)
-
-        hf_input_ids = self.from_jax(result.activation_trace.token_ids)
-        hf_token_positions = self.from_jax(result.activation_trace.token_positions)
-        hf_hidden_states, hf_last_norm_output, hf_output_logits = self.forward(hf_input_ids, hf_token_positions)
-
-        for i, (hf_layer_inputs, layer_result) in enumerate(
-            zip(hf_hidden_states, result.activation_trace.layer_results, strict=False),
+        reference_embeddings = self.rope(reference, path, self.from_jax(token_positions))
+        if reference_embeddings is None:
+            return
+        for label, values, native_reference_values in zip(
+            ("cosines", "sines"),
+            (embeddings.cosines, embeddings.sines),
+            reference_embeddings,
+            strict=True,
         ):
-            layer_activation_trace = layer_result.activation_trace
-            assert layer_activation_trace is not None
-            ref_layer_inputs = self.to_jax(hf_layer_inputs)
+            reference_values = self.to_jax(native_reference_values)
+            *_, head_dim = values.shape
+            # Some references only return the first half of rotate-half tables.
+            compared_values = values[..., : head_dim // 2] if head_dim == reference_values.shape[-1] * 2 else values
             assert_close(
-                result=layer_activation_trace.inputs,
-                reference=ref_layer_inputs,
+                result=compared_values.astype(jnp.float32),
+                reference=reference_values,
+                operation_name=f"{name} RoPE {label}",
                 fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-                operation_name=f"End2End Layer {i} inputs",
             )
 
-        ref_last_norm_output = self.to_jax(hf_last_norm_output)
+    def match_activations(
+        self,
+        result: InferenceResult,
+        program: Sequence,
+        sources: tuple[Binding | None, ...],
+    ) -> None:
+        trace = result.activation_trace
+        assert trace is not None
+
         assert_close(
-            result=result.activation_trace.output_norm,
-            reference=ref_last_norm_output,
+            result=trace.embeddings,
+            reference=self.to_jax(self.embedding(self.from_jax(trace.token_ids))),
+            operation_name="Embedding",
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-            operation_name="End2End Output RMSNorm",
+        )
+        for binding, step, primitive in zip(sources, trace.steps, leaves(program), strict=True):
+            self.match_step(binding, step, primitive, trace.token_positions)
+
+        normalized_outputs = trace.output_pooling if isinstance(trace, ClassifierActivationTrace) else trace.outputs
+        assert_close(
+            result=result.logits,
+            reference=self.to_jax(self.readout(self.from_jax(normalized_outputs[None, ...]))).squeeze(0),
+            operation_name="Readout",
+            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-        ref_probas = jax.nn.softmax(self.to_jax(hf_output_logits), axis=-1)
-        llm_probas = jax.nn.softmax(result.logits, axis=-1)
+        reference_hidden_states, reference_outputs, reference_logits = self.forward(
+            self.from_jax(trace.token_ids),
+            self.from_jax(trace.token_positions),
+        )
+        # Taps mark layer outputs, which the reference reports after its embeddings.
+        _, *reference_layer_outputs = reference_hidden_states
+        for index, (tap, reference_tap) in enumerate(zip(trace.taps, reference_layer_outputs, strict=False)):
+            assert_close(
+                result=tap,
+                reference=self.to_jax(reference_tap),
+                operation_name=f"End2End tap {index}",
+                fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
+            )
         assert_close(
-            result=llm_probas,
-            reference=ref_probas,
+            result=trace.outputs,
+            reference=self.to_jax(reference_outputs),
+            operation_name="End2End outputs",
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
+        )
+        assert_close(
+            result=jax.nn.softmax(result.logits, axis=-1),
+            reference=jax.nn.softmax(self.to_jax(reference_logits), axis=-1),
             operation_name="End2End Token Probabilities",
+            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
     @classmethod
@@ -476,6 +306,10 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
         test_spec.model_repo,
         dtype=test_spec.dtype,
     )
+    binder = Binder()
+    foreign_config = _load_foreign_config(ModelRegistry.init().repo_to_model[test_spec.model_repo])
+    traced_config = tracer.build(foreign_config, binder)
+    sources = binder.sources(traced_config.program)
 
     model = None
     inference_results = None
@@ -492,7 +326,16 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
         keychain = Keychain.init(0, sharding_config=sharding_config)
         with jax.disable_jit():
             if isinstance(model, LanguageModel):
-                forward_pass_config = DecoderForwardPassConfig.for_tracer_tests()
+                program = model.decoder.program
+                forward_pass_config = ModelForwardPassConfig.for_tracer_tests()
+                if test_spec.dtype is not None:
+                    forward_pass_config = replace(
+                        forward_pass_config,
+                        embedding_forward_pass_config=replace(
+                            forward_pass_config.embedding_forward_pass_config,
+                            activation_dtype=test_spec.dtype.jax_dtype,
+                        ),
+                    )
                 err, inference_results = checkify_forward(model.decoder)(
                     token_ids=token_ids,
                     token_positions=token_positions,
@@ -503,7 +346,8 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
                 )
                 err.throw()
             elif isinstance(model, ClassifierModel):
-                forward_pass_config = ClassifierForwardPassConfig.for_tracer_tests()
+                program = model.classifier.program
+                forward_pass_config = ModelForwardPassConfig.for_tracer_tests()
                 err, inference_results = checkify_forward(model.classifier)(
                     token_ids=token_ids,
                     token_positions=token_positions,
@@ -515,7 +359,7 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
             else:
                 raise TypeError(f"Unsupported model type for tracing: {type(model).__name__}")
 
-        tracer.match_activations(inference_results)
+        tracer.match_activations(inference_results, program, sources)
     finally:
         if model is not None:
             del model

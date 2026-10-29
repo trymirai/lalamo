@@ -1,8 +1,8 @@
 import json
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from lalamo.model_import.loaders.binding import Binder
 from lalamo.model_import.model_configs.huggingface.common import (
     AWQQuantizationConfig,
     GPTQQuantizationConfig,
@@ -18,10 +18,7 @@ class QuantizedConfig(HuggingFaceLMConfig):
     quantization: QuantizationConfigType = None
     quantization_config: QuantizationConfigType | None = None
 
-    def to_decoder_config(
-        self,
-        metadata_dict: Mapping[str, str],
-    ) -> DecoderConfig:
+    def build_decoder(self, at: Binder) -> DecoderConfig:
         raise NotImplementedError
 
 

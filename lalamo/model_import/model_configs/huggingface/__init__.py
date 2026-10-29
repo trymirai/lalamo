@@ -17,6 +17,8 @@ from .phi3 import HFPhi3Config
 from .qwen2 import HFQwen2Config
 from .qwen3 import HFQwen3Config
 from .qwen3_5 import HFQwen35Config
+from .qwen3_8 import HFQwen38Config
+from .qwen3_attnres import HFQwen3AttnResConfig
 from .qwen3_next import HFQwen3NextConfig
 from .smollm3 import HFSmolLM3Config
 from .weaver import HFWeaverConfig
@@ -40,9 +42,11 @@ __all__ = [
     "HFMuseGlimmerConfig",
     "HFPhi3Config",
     "HFQwen2Config",
+    "HFQwen3AttnResConfig",
     "HFQwen3Config",
     "HFQwen3NextConfig",
     "HFQwen35Config",
+    "HFQwen38Config",
     "HFSmolLM3Config",
     "HFWeaverConfig",
     "HuggingFaceLMConfig",

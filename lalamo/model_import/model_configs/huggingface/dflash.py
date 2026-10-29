@@ -6,15 +6,21 @@ from typing import ClassVar, Literal, Self
 
 import cattrs
 
+from lalamo.model_import.loaders.binding import Binder
 from lalamo.modules.activations import SiLU
+from lalamo.modules.flow import EmitConfig, SequenceConfig, SinkConfig, StepConfig, residual
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
 from lalamo.modules.speculators.dflash import DFlashDraftConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig, TransformerLayerConvConfig
+from lalamo.modules.token_mixers.convolutions import (
+    DynamicConvConfig,
+    DynamicConvKernelsConfig,
+    SeparableCausalConvConfig,
+)
+from lalamo.utils.parameter_path import ParameterPath
 
 __all__ = [
     "DFlashYarnRopeScalingConfig",
@@ -217,6 +223,9 @@ class HFDFlashConfig:
         )
 
     def to_dflash_draft_config(self) -> DFlashDraftConfig:
+        return self.build_dflash_draft(Binder())
+
+    def build_dflash_draft(self, at: Binder) -> DFlashDraftConfig:
         (architecture,) = self.architectures
         assert self.dflash_config.target_layer_ids
         assert all(0 <= layer_id < self.num_target_layers for layer_id in self.dflash_config.target_layer_ids)
@@ -235,53 +244,64 @@ class HFDFlashConfig:
             has_down_biases=False,
             gate_clipping=None,
             up_clipping=None,
+            hidden_dim=self.intermediate_size,
         )
         rope_config = self._rope_config(self.max_position_embeddings)
-        if architecture == "DFlash2DraftModel":
-            conv_kernel_size = self.dflash_config.conv_kernel_size
-            conv_group_size = self.dflash_config.conv_group_size
-            if conv_kernel_size is None or conv_group_size is None:
-                raise ValueError("DFlash2DraftModel requires both conv_kernel_size and conv_group_size.")
-            conv_config = TransformerLayerConvConfig(
-                conv_config=SeparableCausalConvConfig(has_biases=False),
-                kernel_projection_config=linear_config,
-                conv_kernel_size=conv_kernel_size,
-                conv_group_size=conv_group_size,
+        conv_kernel_size = self.dflash_config.conv_kernel_size
+        conv_group_size = self.dflash_config.conv_group_size
+        if architecture == "DFlash2DraftModel" and (conv_kernel_size is None or conv_group_size is None):
+            raise ValueError("DFlash2DraftModel requires both conv_kernel_size and conv_group_size.")
+
+        def convolved(path: ParameterPath, body: StepConfig) -> tuple[StepConfig, ...]:
+            """DFlash2 wraps a sublayer body in causal convolutions with per-token kernel offsets."""
+            if architecture != "DFlash2DraftModel":
+                return (body,)
+            assert conv_kernel_size is not None and conv_group_size is not None
+            conv_config = SeparableCausalConvConfig(has_biases=False)
+            kernels = EmitConfig(
+                "conv_kernels",
+                at(path, DynamicConvKernelsConfig(linear_config, conv_kernel_size, conv_group_size)),
             )
-        else:
-            conv_config = None
-        layer_configs = tuple(
-            TransformerLayerConfig(
-                pre_mixer_norm_config=norm_config,
-                mixer_conv_config=conv_config,
-                mixer_config=AttentionConfig(
-                    qkvg_projection_config=linear_config,
-                    out_projection_config=linear_config,
-                    query_norm_config=norm_config,
-                    key_norm_config=norm_config,
-                    num_heads=self.num_attention_heads,
-                    num_groups=self.num_key_value_heads,
-                    head_dim=self.head_dim,
-                    is_causal=(self.is_causal if self.is_causal is not None else sliding_window_size is not None),
-                    scale=self._attention_scale(),
-                    sliding_window_size=sliding_window_size,
-                    logit_soft_cap=None,
-                    has_sinks=False,
-                    has_qkvg_biases=self.attention_bias,
-                    has_out_biases=self.attention_bias,
-                ),
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=norm_config,
-                mlp_conv_config=conv_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=None,
+            return (
+                kernels,
+                SinkConfig((kernels,), at(path, DynamicConvConfig(conv_config, conv_kernel_size, side=0))),
+                body,
+                SinkConfig((kernels,), at(path, DynamicConvConfig(conv_config, conv_kernel_size, side=1))),
+            )
+
+        steps: list[StepConfig] = []
+        for index, sliding_window_size in enumerate(self._layer_sliding_window_sizes()):
+            path = ParameterPath("layers") / index
+            attention_config = AttentionConfig(
+                qkvg_projection_config=linear_config,
+                out_projection_config=linear_config,
+                query_norm_config=norm_config,
+                key_norm_config=norm_config,
+                num_heads=self.num_attention_heads,
+                num_groups=self.num_key_value_heads,
+                head_dim=self.head_dim,
+                is_causal=(self.is_causal if self.is_causal is not None else sliding_window_size is not None),
+                scale=self._attention_scale(),
+                sliding_window_size=sliding_window_size,
+                logit_soft_cap=None,
+                has_sinks=False,
+                has_qkvg_biases=self.attention_bias,
+                has_out_biases=self.attention_bias,
                 rope_config=rope_config,
             )
-            for sliding_window_size in self._layer_sliding_window_sizes()
-        )
+            steps += [
+                residual(
+                    at(path / "input_layernorm", norm_config),
+                    *convolved(path / "attention_conv", at(path / "self_attn", attention_config)),
+                ),
+                residual(
+                    at(path / "post_attention_layernorm", norm_config),
+                    *convolved(path / "mlp_conv", at(path / "mlp", mlp_config)),
+                ),
+            ]
+        steps.append(at("norm", norm_config))
         return DFlashDraftConfig(
             model_dim=self.hidden_size,
-            hidden_dim=self.intermediate_size,
             block_size=self.block_size,
             mask_token_id=self.dflash_config.mask_token_id,
             target_layer_ids=self.dflash_config.target_layer_ids,
@@ -289,7 +309,5 @@ class HFDFlashConfig:
             vocab_size=self.vocab_size,
             context_projection_config=linear_config,
             context_norm_config=norm_config,
-            rope_config=rope_config,
-            layer_configs=layer_configs,
-            output_norm_config=norm_config,
+            program=SequenceConfig(tuple(steps)),
         )

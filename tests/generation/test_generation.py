@@ -12,23 +12,23 @@ from lalamo.models import LanguageModel
 from lalamo.models.chat_codec import UserMessage
 from lalamo.models.language_model import _COMPILED_PROMPT_LENGTHS, GenerationConfig
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis, ShardingConfig
-from lalamo.modules import DecoderForwardPassConfig
+from lalamo.modules import ModelForwardPassConfig
 from tests.conftest import ConvertModel, filter_specs, load_converted_model, mark_by_size
 from tests.model_test_tiers import ModelTier
 
 core_llm_specs = filter_specs(model_type=LanguageModelSpec, max_tier=ModelTier.CORE)
 
 
-def _stable_generation_forward_pass_configs() -> tuple[DecoderForwardPassConfig, DecoderForwardPassConfig]:
-    prefill_forward_pass_config = DecoderForwardPassConfig.for_tracer_tests()
-    decode_forward_pass_config = DecoderForwardPassConfig.for_tracer_tests()
-    decode_transformer_config = decode_forward_pass_config.transformer_forward_pass_config
+def _stable_generation_forward_pass_configs() -> tuple[ModelForwardPassConfig, ModelForwardPassConfig]:
+    prefill_forward_pass_config = ModelForwardPassConfig.for_tracer_tests()
+    decode_forward_pass_config = ModelForwardPassConfig.for_tracer_tests()
+    decode_flow_config = decode_forward_pass_config.flow_forward_pass_config
     decode_forward_pass_config = replace(
         decode_forward_pass_config,
-        transformer_forward_pass_config=replace(
-            decode_transformer_config,
+        flow_forward_pass_config=replace(
+            decode_flow_config,
             mlp_forward_pass_config=replace(
-                decode_transformer_config.mlp_forward_pass_config,
+                decode_flow_config.mlp_forward_pass_config,
                 mode=ForwardPassMode.SINGLE_TOKEN,
             ),
         ),
@@ -272,8 +272,8 @@ def test_streaming_vs_eager_consistency(replicated_language_model: LanguageModel
     )
 
     generation_config = GenerationConfig(temperature=0.0)
-    prefill_forward_pass_config = DecoderForwardPassConfig.for_inference(precision=DotAlgorithmPreset.F32_F32_F32)
-    decode_forward_pass_config = DecoderForwardPassConfig.for_inference(
+    prefill_forward_pass_config = ModelForwardPassConfig.for_inference(precision=DotAlgorithmPreset.F32_F32_F32)
+    decode_forward_pass_config = ModelForwardPassConfig.for_inference(
         ForwardPassMode.SINGLE_TOKEN,
         precision=DotAlgorithmPreset.F32_F32_F32,
     )

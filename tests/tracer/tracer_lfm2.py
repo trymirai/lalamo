@@ -1,155 +1,45 @@
-from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Self
 
 import torch
-from jaxtyping import Array
-from torch import Tensor
+from torch import Tensor, nn
 from transformers import AutoModelForCausalLM
-from transformers.models.lfm2.modeling_lfm2 import (
-    Lfm2Attention,
-    Lfm2DecoderLayer,
-    Lfm2ForCausalLM,
-    Lfm2MLP,
-    Lfm2RMSNorm,
-    Lfm2ShortConv,
-)
+from transformers.models.lfm2.modeling_lfm2 import Lfm2Attention
 
-from lalamo.modules.decoder import DecoderResult
-from lalamo.utils.torch_interop import jax_to_torch, torch_to_jax
-from tests.tracer.tracer import DType, InferenceResult, ModelTracer
-from tests.tracer.tracer_huggingface import _build_hf_attention_mask, _load_hf_model
+from lalamo.utils.parameter_path import ParameterPath
+from tests.tracer.tracer import DType
+from tests.tracer.tracer_huggingface import HFDecoderTracer, _build_hf_attention_mask, _load_hf_model, _named_modules
 
 
 @dataclass(frozen=True)
-class LFM2DecoderTracer(
-    ModelTracer[
-        Tensor,
-        Lfm2DecoderLayer,
-        Lfm2RMSNorm,
-        Lfm2Attention | Lfm2ShortConv,
-        Lfm2MLP,
-    ],
-):
-    hf_model: Lfm2ForCausalLM
-    device: torch.device
-
-    def from_jax(self, array: Array) -> Tensor:
-        return jax_to_torch(array).to(self.device)
-
-    def to_jax(self, array: Tensor) -> Array:
-        return torch_to_jax(array)
-
-    def embedding(self, token_ids: Tensor) -> Tensor:
-        return self.hf_model.model.embed_tokens.forward(token_ids)
-
-    def rope_fns(self) -> list[tuple[str, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]]]:
-        has_attention_layers = any(layer.is_attention_layer for layer in self.hf_model.model.layers)
-        if not has_attention_layers:
-            return []
-        return [("Global", self.hf_model.model.rotary_emb.forward)]
-
-    def rmsnorm(self, rmsnorm: Lfm2RMSNorm, x: Tensor) -> Tensor:
-        return rmsnorm.forward(x)
-
-    def attention(
+class LFM2DecoderTracer(HFDecoderTracer):
+    def mixer(
         self,
-        attention: Lfm2Attention | Lfm2ShortConv,
-        hidden_states: Tensor,
-        position_embeddings: tuple[Tensor, Tensor] | None,
+        mixer: nn.Module,
+        x: Tensor,
+        positional_embeddings: tuple[Tensor, Tensor] | None,
+        path: ParameterPath,  # noqa: ARG002
     ) -> Tensor:
-        attention_mask = _build_hf_attention_mask(hidden_states, attention)  # type: ignore[arg-type]
-
-        if isinstance(attention, Lfm2Attention):
-            assert position_embeddings is not None
-
-            attention_output, _ = attention.forward(
-                hidden_states=hidden_states,
-                position_embeddings=position_embeddings,
+        x = x.to(self.device)
+        attention_mask = _build_hf_attention_mask(x, mixer)
+        if isinstance(mixer, Lfm2Attention):
+            assert positional_embeddings is not None
+            cosines, sines = positional_embeddings
+            attention_output, _ = mixer.forward(
+                hidden_states=x,
+                position_embeddings=(cosines.to(self.device), sines.to(self.device)),
                 attention_mask=attention_mask,
             )
-        else:
-            attention_output = attention.forward(
-                hidden_states=hidden_states,
-                attention_mask=attention_mask,
-            )
+            return attention_output
+        return mixer.forward(hidden_states=x, attention_mask=attention_mask)
 
-        return attention_output
+    def rope(self, mixer: nn.Module, path: ParameterPath, positions: Tensor) -> tuple[Tensor, Tensor] | None:  # noqa: ARG002
+        return self.hf_model.model.rotary_emb.forward(torch.zeros((), dtype=torch.float32), positions)
 
-    def mlp(self, mlp: Lfm2MLP, x: Tensor) -> Tensor:
-        return mlp.forward(x)
-
-    def layer(
-        self,
-        layer: Lfm2DecoderLayer,
-        hidden_states: Tensor,
-        position_embeddings: tuple[Tensor, Tensor] | None,
-    ) -> Tensor:
-        torch_outputs, *_ = layer.forward(
-            hidden_states=hidden_states,
-            position_embeddings=position_embeddings,  # type: ignore[arg-type]
-        )
-
-        return torch_outputs
-
-    def layer_pre_attention_norm(self, layer: Lfm2DecoderLayer) -> Lfm2RMSNorm:
-        return layer.operator_norm
-
-    def layer_post_attention_norm(self, layer: Lfm2DecoderLayer) -> None:
-        del layer
-
-    def layer_pre_mlp_norm(self, layer: Lfm2DecoderLayer) -> Lfm2RMSNorm:
-        return layer.ffn_norm
-
-    def layer_post_mlp_norm(self, layer: Lfm2DecoderLayer) -> None:
-        del layer
-
-    def layer_attention(self, layer: Lfm2DecoderLayer) -> Lfm2Attention | Lfm2ShortConv:
-        return layer.self_attn if layer.is_attention_layer else layer.conv
-
-    def layer_mlp(self, layer: Lfm2DecoderLayer) -> Lfm2MLP:
-        assert isinstance(layer.feed_forward, Lfm2MLP)
-
-        return layer.feed_forward
-
-    def iterate_layers(self) -> Iterable[Lfm2DecoderLayer]:
-        return self.hf_model.model.layers  # type: ignore[return-value]
-
-    def output_norm(self) -> Lfm2RMSNorm:
-        return self.hf_model.model.embedding_norm
-
-    def readout(self, x: Tensor) -> Tensor:
-        return self.hf_model.lm_head(x)
-
-    def forward(
-        self,
-        input_ids: Tensor,
-        position_ids: Tensor,
-    ) -> tuple[tuple[Tensor, ...], Tensor, Tensor]:
-        hf_outputs = self.hf_model.forward(
-            input_ids=input_ids.long(),
-            position_ids=position_ids.long(),
-            output_hidden_states=True,
-        )
-
-        assert hf_outputs.hidden_states is not None
-        assert hf_outputs.logits is not None
-
-        *hf_hidden_states, hf_last_norm_output = hf_outputs.hidden_states
-
-        return (tuple(hf_hidden_states), hf_last_norm_output, hf_outputs.logits)
-
-    @torch.no_grad()
-    def match_activations(self, result: InferenceResult) -> None:
-        return super().match_activations(result)
-
-    def normalized_output(self, result: InferenceResult) -> Tensor:
-        assert result.activation_trace is not None
-        assert isinstance(result, DecoderResult)
-        return self.from_jax(result.activation_trace.output_norm[None, ...])
+    def forward(self, input_ids: Tensor, position_ids: Tensor) -> tuple[tuple[Tensor, ...], Tensor, Tensor]:
+        return super().forward(input_ids.long(), position_ids.long())
 
     @classmethod
     def load(cls, model_repo: str, dtype: DType | None) -> Self:
         hf_model, device = _load_hf_model(AutoModelForCausalLM, model_repo, dtype)
-
-        return cls(hf_model, device)
+        return cls(hf_model, device, _named_modules(hf_model))

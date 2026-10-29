@@ -26,13 +26,13 @@ from lalamo.models import GenerationConfig, LanguageModel
 from lalamo.models.chat_codec import THINKING_RESPONSE_FORMAT, AssistantMessage, ChatCodecConfig, UserMessage
 from lalamo.models.language_model import LanguageModelConfig
 from lalamo.module import Keychain, ShardingConfig
-from lalamo.modules import DecoderForwardPassConfig
+from lalamo.modules import ModelForwardPassConfig
 from lalamo.modules.activations import SiLU
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.token_mixers.mamba import Mamba2Config
 from lalamo.server import create_app
-from tests.helpers import build_tiny_attention_decoder_config, dense_log_softmax_rows
+from tests.helpers import build_tiny_attention_decoder_config, build_tiny_decoder_config, dense_log_softmax_rows
 
 pytestmark = pytest.mark.fast
 
@@ -40,8 +40,6 @@ pytestmark = pytest.mark.fast
 @pytest.fixture(scope="module")
 def recurrent_model() -> LanguageModel:
     """A CPU model with only recurrent state, whose tokens decode to distinct words `w<id>.`."""
-    decoder = build_tiny_attention_decoder_config((None,))
-    (layer,) = decoder.transformer_config.layer_configs
     mixer = Mamba2Config(
         in_projection_config=LinearConfig(),
         out_projection_config=LinearConfig(),
@@ -55,13 +53,7 @@ def recurrent_model() -> LanguageModel:
         has_in_biases=False,
         has_out_biases=False,
     )
-    decoder = replace(
-        decoder,
-        transformer_config=replace(
-            decoder.transformer_config,
-            layer_configs=(replace(layer, mixer_config=mixer, rope_config=None),),
-        ),
-    )
+    decoder = build_tiny_decoder_config((mixer,))
     tokenizer = Tokenizer(
         WordLevel({"[UNK]": 0, "prompt": 1, **{f"w{index}.": index for index in range(2, 64)}}, unk_token="[UNK]")
     )
@@ -280,7 +272,7 @@ def test_prefill_continuation_preserves_prefix_when_padding_exceeds_capacity() -
         RandomInitializer(default_dtype=jnp.float32, sharding_config=sharding_config, key=jax.random.key(4)),
     )
     keychain = Keychain.init(0, sharding_config=sharding_config)
-    forward_pass_config = DecoderForwardPassConfig.for_tracer_tests()
+    forward_pass_config = ModelForwardPassConfig.for_tracer_tests()
     tokens = jax.random.randint(jax.random.key(5), (2, 56), 0, model.decoder.vocab_size)
     prefix = model.prefill_tokens(
         tokens[:, :24], 64, jnp.array([24, 0]), forward_pass_config, chunk_size=24, keychain=keychain

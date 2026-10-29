@@ -1,37 +1,25 @@
 import json
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Literal, Self
 
-import equinox as eqx
-from jaxtyping import Array
-
-from lalamo.model import Model
-from lalamo.model_import.loaders.huggingface import (
-    load_huggingface_decoder,
-    load_input_embedding_matrix,
-    load_linear,
-    load_rmsnorm,
-    resolve_decoder_load_layout,
-)
-from lalamo.models import LanguageModel
-from lalamo.modules import (
-    DecoderConfig,
-    PLELayerConfig,
-    PLEModelConfig,
-    TiedEmbeddingConfig,
-    TransformerConfig,
-)
+from lalamo.model_import.loaders.binding import Binder
 from lalamo.modules.activations import GELU
-from lalamo.modules.decoder import Decoder
+from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig
+from lalamo.modules.flow import Add, EmitConfig, SequenceConfig, SinkConfig, StepConfig, residual
 from lalamo.modules.linear import LinearConfig
-from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.mlp import DenseMLPConfig, Gemma4RouterConfig, RoutedExpertsConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.per_layer import (
+    MultiplyByLayerInput,
+    PerLayerInputsConfig,
+    ProjectionConfig,
+    ScaleConfig,
+)
+from lalamo.modules.rope import ProportionalRoPEConfig, RoPEConfig, UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
-from lalamo.weight_matrix import CompressionImplementation
+from lalamo.utils.parameter_path import ParameterPath
 
 from .common import HuggingFaceLMConfig
 
@@ -76,11 +64,13 @@ class HFGemma4TextConfig:
     num_kv_shared_layers: int
     use_double_wide_mlp: bool
     tie_word_embeddings: bool
+    attention_k_eq_v: bool
+    enable_moe_block: bool
+    num_experts: int | None
+    top_k_experts: int | None
+    moe_intermediate_size: int | None = None
 
-    def to_decoder_config(
-        self,
-        metadata_dict: Mapping[str, str],  # noqa: ARG002
-    ) -> DecoderConfig:
+    def build_decoder(self, at: Binder) -> DecoderConfig:
         assert self.tie_word_embeddings, "Gemma-4 import only supports tied word embeddings"
         embedding_config = TiedEmbeddingConfig(
             input_scale=self.hidden_size**0.5,
@@ -103,124 +93,169 @@ class HFGemma4TextConfig:
             has_down_biases=False,
             up_clipping=None,
             gate_clipping=None,
-        )
-
-        full_attention_params = self.rope_parameters.full_attention
-        sliding_attention_params = self.rope_parameters.sliding_attention
-        full_partial_rotary_factor = (
-            1.0 if full_attention_params.partial_rotary_factor is None else full_attention_params.partial_rotary_factor
-        )
-        full_rotary_dim = int(full_partial_rotary_factor * self.global_head_dim)
-        global_rope_config = UnscaledRoPEConfig(
-            base=full_attention_params.rope_theta,
-            max_sequence_length=self.max_position_embeddings,
-            head_dim=full_rotary_dim,
-        )
-        local_rope_config = UnscaledRoPEConfig(
-            base=sliding_attention_params.rope_theta,
-            max_sequence_length=self.max_position_embeddings,
-            head_dim=self.head_dim,
-        )
-
-        ple_embed_scale = self.hidden_size_per_layer_input**0.5
-        inverse_hidden_scale = self.hidden_size**-0.5
-        two_input_mixing_scale = 2.0**-0.5
-        ple_layer_config = PLELayerConfig(
-            linear_config=linear_config,
-            norm_config=rms_norm_config,
-            ple_dim=self.hidden_size_per_layer_input,
-            activation=GELU(),
-        )
-        ple_model_config = PLEModelConfig(
-            ple_dim=self.hidden_size_per_layer_input,
-            num_layers=self.num_hidden_layers,
-            ple_vocab_size=self.vocab_size_per_layer_input,
-            ple_embed_scale=ple_embed_scale,
-            model_projection_scale=inverse_hidden_scale,
-            input_scale=two_input_mixing_scale,
-            linear_config=linear_config,
-            norm_config=rms_norm_config,
-        )
-
-        first_kv_shared = self.num_hidden_layers - self.num_kv_shared_layers
-        last_of_type: dict[str, int] = {}
-        kv_source_per_layer: list[int] = []
-        for i, lt in enumerate(self.layer_types):
-            if i < first_kv_shared:
-                kv_source_per_layer.append(i)
-                last_of_type[lt] = i
-            else:
-                source = last_of_type.get(lt)
-                assert source is not None, f"layer {i} marked shared but no prior {lt} layer exists"
-                kv_source_per_layer.append(source)
-
-        layer_configs = []
-        for i, layer_type in enumerate(self.layer_types):
-            is_global = layer_type == "full_attention"
-            sliding_window_size = None if is_global else self.sliding_window
-            layer_head_dim = self.global_head_dim if is_global else self.head_dim
-            layer_rope_config = global_rope_config if is_global else local_rope_config
-
-            kv_source = kv_source_per_layer[i]
-            owns_kv_cache = kv_source == i
-
-            # `use_double_wide_mlp` only applies to layers that share a KV cache
-            # with an earlier layer — those layers get a 2x-wide MLP to compensate.
-            if self.use_double_wide_mlp and not owns_kv_cache:
-                layer_intermediate = self.intermediate_size * 2
-            else:
-                layer_intermediate = self.intermediate_size
-
-            num_kv_heads = self.num_key_value_heads
-            if is_global and self.num_global_key_value_heads is not None:
-                num_kv_heads = self.num_global_key_value_heads
-
-            attention_config = AttentionConfig(
-                qkvg_projection_config=linear_config,
-                out_projection_config=linear_config,
-                query_norm_config=rms_norm_config,
-                key_norm_config=rms_norm_config,
-                logit_soft_cap=None,
-                has_sinks=False,
-                has_qkvg_biases=self.attention_bias,
-                has_out_biases=self.attention_bias,
-                num_heads=self.num_attention_heads,
-                num_groups=num_kv_heads,
-                head_dim=layer_head_dim,
-                is_causal=True,
-                scale=1.0,
-                sliding_window_size=sliding_window_size,
-                normalize_values=True,
-                is_kv_sharing=not owns_kv_cache,
-            )
-
-            transformer_layer_config = TransformerLayerConfig(
-                pre_mixer_norm_config=rms_norm_config,
-                mixer_config=attention_config,
-                post_mixer_norm_config=rms_norm_config,
-                pre_mlp_norm_config=rms_norm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=rms_norm_config,
-                hidden_dim=layer_intermediate,
-                ple_config=ple_layer_config,
-                has_post_layer_scalar=True,
-                kv_source_layer_index=None if owns_kv_cache else kv_source,
-                rope_config=layer_rope_config,
-            )
-            layer_configs.append(transformer_layer_config)
-
-        transformer_config = TransformerConfig(
-            layer_configs=tuple(layer_configs),
-            output_norm_config=rms_norm_config,
-            model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
         )
 
+        router_config = None
+        experts_config = None
+        if self.enable_moe_block:
+            if self.num_experts is None or self.top_k_experts is None or self.moe_intermediate_size is None:
+                raise ValueError("Gemma4 MoE requires expert count, top-k, and intermediate size.")
+            router_config = Gemma4RouterConfig(
+                linear_config=linear_config,
+                norm_config=replace(rms_norm_config, has_scale=False),
+                num_experts=self.num_experts,
+                num_active_experts=self.top_k_experts,
+            )
+            # The experts are routed by the separately emitted router.
+            experts_config = RoutedExpertsConfig(
+                expert_config=replace(mlp_config, hidden_dim=self.moe_intermediate_size),
+                num_routed_experts=self.num_experts,
+            )
+
+        def rope_config(parameters: RopeParameters, head_dim: int) -> RoPEConfig:
+            factor = parameters.partial_rotary_factor
+            if factor is None:
+                factor = 1.0
+            if parameters.rope_type == "proportional":
+                return ProportionalRoPEConfig(
+                    base=parameters.rope_theta,
+                    max_sequence_length=self.max_position_embeddings,
+                    head_dim=head_dim,
+                    partial_rotary_factor=factor,
+                )
+            return UnscaledRoPEConfig(
+                base=parameters.rope_theta,
+                max_sequence_length=self.max_position_embeddings,
+                head_dim=int(factor * head_dim),
+            )
+
+        global_rope_config = rope_config(self.rope_parameters.full_attention, self.global_head_dim)
+        local_rope_config = rope_config(self.rope_parameters.sliding_attention, self.head_dim)
+
+        steps: list[StepConfig] = []
+        per_layer_inputs = None
+        if self.hidden_size_per_layer_input:
+            per_layer_inputs = EmitConfig(
+                "per_layer_inputs",
+                at(
+                    "model",
+                    PerLayerInputsConfig(
+                        ple_dim=self.hidden_size_per_layer_input,
+                        num_layers=self.num_hidden_layers,
+                        ple_vocab_size=self.vocab_size_per_layer_input,
+                        ple_embed_scale=self.hidden_size_per_layer_input**0.5,
+                        model_projection_scale=self.hidden_size**-0.5,
+                        input_scale=2.0**-0.5,
+                        linear_config=linear_config,
+                        norm_config=rms_norm_config,
+                    ),
+                ),
+            )
+            steps.append(per_layer_inputs)
+
+        # The last `num_kv_shared_layers` layers read the cache of the last earlier owner of the same type.
+        first_kv_shared = self.num_hidden_layers - self.num_kv_shared_layers
+        last_owner_of_type: dict[str, AttentionConfig] = {}
+        taps: list[EmitConfig] = []
+        for index, layer_type in enumerate(self.layer_types):
+            path = ParameterPath("model.layers") / index
+            is_global = layer_type == "full_attention"
+            kv_source = last_owner_of_type[layer_type] if index >= first_kv_shared else None
+
+            num_kv_heads = self.num_key_value_heads
+            if is_global and self.attention_k_eq_v and self.num_global_key_value_heads is not None:
+                num_kv_heads = self.num_global_key_value_heads
+
+            attention = at(
+                path / "self_attn",
+                AttentionConfig(
+                    qkvg_projection_config=linear_config,
+                    out_projection_config=linear_config,
+                    query_norm_config=rms_norm_config,
+                    key_norm_config=rms_norm_config,
+                    logit_soft_cap=None,
+                    has_sinks=False,
+                    has_qkvg_biases=self.attention_bias,
+                    has_out_biases=self.attention_bias,
+                    num_heads=self.num_attention_heads,
+                    num_groups=num_kv_heads,
+                    head_dim=self.global_head_dim if is_global else self.head_dim,
+                    is_causal=True,
+                    scale=1.0,
+                    sliding_window_size=None if is_global else self.sliding_window,
+                    value_norm_config=replace(rms_norm_config, has_scale=False) if kv_source is None else None,
+                    kv_source=kv_source,
+                    values_from_keys=self.attention_k_eq_v and is_global and kv_source is None,
+                    rope_config=global_rope_config if is_global else local_rope_config,
+                ),
+            )
+            if kv_source is None:
+                last_owner_of_type[layer_type] = attention
+
+            # `use_double_wide_mlp` only applies to layers that share a KV cache
+            # with an earlier layer — those layers get a 2x-wide MLP to compensate.
+            layer_mlp_config = mlp_config
+            if self.use_double_wide_mlp and kv_source is not None:
+                layer_mlp_config = replace(mlp_config, hidden_dim=self.intermediate_size * 2)
+
+            dense_steps = (
+                at(path / "pre_feedforward_layernorm", rms_norm_config),
+                at(path / "mlp", layer_mlp_config),
+            )
+            if router_config is None or experts_config is None:
+                feed_forward = residual(*dense_steps, at(path / "post_feedforward_layernorm", rms_norm_config))
+            else:
+                routing = EmitConfig("routing", at(path / "router", router_config))
+                dense = EmitConfig(
+                    "dense",
+                    SequenceConfig((*dense_steps, at(path / "post_feedforward_layernorm_1", rms_norm_config))),
+                )
+                feed_forward = residual(
+                    routing,
+                    dense,
+                    at(path / "pre_feedforward_layernorm_2", rms_norm_config),
+                    SinkConfig((routing,), at(path, experts_config)),
+                    at(path / "post_feedforward_layernorm_2", rms_norm_config),
+                    SinkConfig((dense,), Add()),
+                    at(path / "post_feedforward_layernorm", rms_norm_config),
+                )
+
+            steps += [
+                residual(
+                    at(path / "input_layernorm", rms_norm_config),
+                    attention,
+                    at(path / "post_attention_layernorm", rms_norm_config),
+                ),
+                feed_forward,
+            ]
+            if per_layer_inputs is not None:
+                steps.append(
+                    residual(
+                        at(
+                            path / "per_layer_input_gate",
+                            ProjectionConfig(linear_config, output_dim=self.hidden_size_per_layer_input),
+                        ),
+                        GELU(),
+                        SinkConfig((per_layer_inputs,), MultiplyByLayerInput(index)),
+                        at(
+                            path / "per_layer_projection",
+                            ProjectionConfig(linear_config, input_dim=self.hidden_size_per_layer_input),
+                        ),
+                        at(path / "post_per_layer_input_norm", rms_norm_config),
+                    ),
+                )
+            tap = EmitConfig(f"hidden_states.{index}")
+            steps += [at(path / "layer_scalar", ScaleConfig()), tap]
+            taps.append(tap)
+        steps.append(at("model.norm", rms_norm_config))
+
         return DecoderConfig(
-            embedding_config=embedding_config,
-            transformer_config=transformer_config,
-            vocab_size=self.vocab_size,
-            ple_model_config=ple_model_config,
+            at("model.embed_tokens", embedding_config),
+            SequenceConfig(tuple(steps)),
+            self.hidden_size,
+            self.vocab_size,
+            tuple(taps),
         )
 
 
@@ -240,92 +275,5 @@ class HFGemma4Config(HuggingFaceLMConfig):
         config["eos_token_id"] = [eos_token_id] if isinstance(eos_token_id, int) else list(eos_token_id)
         return cls._converter.structure(config, cls)
 
-    def to_decoder_config(
-        self,
-        metadata_dict: Mapping[str, str],
-    ) -> DecoderConfig:
-        return self.text_config.to_decoder_config(metadata_dict=metadata_dict)
-
-    def _load_weights(
-        self,
-        model: Model,
-        weights_dict: Mapping[str, Array],
-        *,
-        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-    ) -> Model:
-        assert isinstance(model, LanguageModel)
-        decoder = load_huggingface_decoder(
-            module=model.decoder,
-            weights_dict=weights_dict,
-            implementation=implementation,
-        )
-        decoder = self._load_ple_weights(decoder, weights_dict, implementation=implementation)
-        return eqx.tree_at(lambda m: (m.decoder,), model, (decoder,))
-
-    def _load_ple_weights(
-        self,
-        model: Decoder,
-        weights_dict: Mapping[str, Array],
-        *,
-        implementation: CompressionImplementation,
-    ) -> Decoder:
-        if model.per_layer_embedding is None:
-            return model
-
-        layout = resolve_decoder_load_layout(weights_dict)
-        base = layout.decoder_path
-
-        new_per_layer_embedding = replace(
-            model.per_layer_embedding,
-            token_embedding=load_input_embedding_matrix(
-                model.per_layer_embedding.token_embedding,
-                weights_dict,
-                base / "embed_tokens_per_layer",
-                implementation=implementation,
-            ),
-            model_projection=load_linear(
-                model.per_layer_embedding.model_projection,
-                weights_dict,
-                base / "per_layer_model_projection",
-                implementation=implementation,
-            ),
-            projection_norm=load_rmsnorm(
-                model.per_layer_embedding.projection_norm,
-                weights_dict,
-                base / "per_layer_projection_norm",
-            ),
-        )
-
-        layers_base = base / "layers"
-        new_layers = []
-        for i, layer in enumerate(model.transformer.layers):
-            if layer.ple is None:
-                new_layers.append(layer)
-                continue
-            layer_path = layers_base / i
-            new_ple = replace(
-                layer.ple,
-                gate=load_linear(
-                    layer.ple.gate,
-                    weights_dict,
-                    layer_path / "per_layer_input_gate",
-                    implementation=implementation,
-                ),
-                projection=load_linear(
-                    layer.ple.projection,
-                    weights_dict,
-                    layer_path / "per_layer_projection",
-                    implementation=implementation,
-                ),
-                norm=load_rmsnorm(layer.ple.norm, weights_dict, layer_path / "post_per_layer_input_norm"),
-            )
-            layer_updates: dict[str, Any] = {"ple": new_ple}
-            if layer.post_layer_scalar is not None:
-                layer_updates["post_layer_scalar"] = weights_dict[layer_path / "layer_scalar"]
-            new_layers.append(replace(layer, **layer_updates))
-
-        return replace(
-            model,
-            per_layer_embedding=new_per_layer_embedding,
-            transformer=replace(model.transformer, layers=tuple(new_layers)),
-        )
+    def build_decoder(self, at: Binder) -> DecoderConfig:
+        return self.text_config.build_decoder(at)

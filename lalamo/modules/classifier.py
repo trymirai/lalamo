@@ -1,32 +1,35 @@
 from dataclasses import dataclass
-from dataclasses import field as dataclass_field
 from enum import StrEnum
-from typing import Self
 
 import equinox as eqx
 from jax import numpy as jnp
-from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, Float, Int
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
-from lalamo.module import ForwardPassMode, Keychain, LalamoConfig, LalamoModule, LogicalAxis
-from lalamo.weight_matrix import GradientEstimator
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis
 
 from .activations import Activation
-from .embedding import EmbeddingBase, EmbeddingConfig, EmbeddingForwardPassConfig
+from .embedding import EmbeddingBase, EmbeddingConfig
+from .flow import (
+    Context,
+    EmitConfig,
+    Sequence,
+    SequenceConfig,
+    StepTrace,
+    Value,
+    run,
+    validate_program,
+)
+from .forward_pass import ModelForwardPassConfig
 from .linear import Linear, LinearConfig
 from .normalization import Normalization, NormalizationConfig
-from .rope import PositionalEmbeddings
-from .transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
-from .transformer_layer import TransformerLayerResult
-from .utils import call_vmapped, call_vmapped_twice
+from .utils import call_vmapped
 
 __all__ = [
     "Classifier",
     "ClassifierActivationTrace",
     "ClassifierConfig",
-    "ClassifierForwardPassConfig",
     "ClassifierResult",
 ]
 
@@ -110,12 +113,10 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
 class ClassifierActivationTrace(Exportable, eqx.Module):
     token_ids: Int[Array, "batch tokens"]
     token_positions: Int[Array, "batch tokens"]
-
-    rope_embeddings: tuple[PositionalEmbeddings, ...] | None
-
-    embedding_norm_output: Float[Array, "batch tokens channels"]
-    layer_results: tuple[TransformerLayerResult, ...]
-    output_norm: Float[Array, "batch tokens channels"]
+    embeddings: Float[Array, "batch tokens channels"]
+    steps: tuple[StepTrace, ...]
+    taps: tuple[Value, ...]
+    outputs: Float[Array, "batch tokens channels"]
     output_pooling: Float[Array, "batch channels"]
     logits: Float[Array, "batch logits"]
 
@@ -126,85 +127,38 @@ class ClassifierResult(Exportable, eqx.Module):
 
 
 @dataclass(frozen=True)
-class ClassifierForwardPassConfig:
-    embedding_forward_pass_config: EmbeddingForwardPassConfig = dataclass_field(
-        default_factory=EmbeddingForwardPassConfig,
-    )
-    transformer_forward_pass_config: TransformerForwardPassConfig = dataclass_field(
-        default_factory=TransformerForwardPassConfig,
-    )
-
-    @classmethod
-    def for_tracer_tests(cls) -> Self:
-        return cls(
-            embedding_forward_pass_config=EmbeddingForwardPassConfig.for_tracer_tests(),
-            transformer_forward_pass_config=TransformerForwardPassConfig.for_tracer_tests(),
-        )
-
-    @classmethod
-    def for_inference(
-        cls,
-        mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
-    ) -> Self:
-        return cls(
-            embedding_forward_pass_config=EmbeddingForwardPassConfig.for_inference(precision),
-            transformer_forward_pass_config=TransformerForwardPassConfig.for_inference(mode, precision),
-        )
-
-    @classmethod
-    def for_training(
-        cls,
-        gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC_ROUNDING,
-        precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT,
-    ) -> Self:
-        return cls(
-            embedding_forward_pass_config=EmbeddingForwardPassConfig.for_training(gradient_estimator, precision),
-            transformer_forward_pass_config=TransformerForwardPassConfig.for_training(gradient_estimator, precision),
-        )
-
-
-@dataclass(frozen=True)
 class ClassifierConfig(LalamoConfig):
     embedding_config: EmbeddingConfig
-    embedding_norm_config: NormalizationConfig
-    transformer_config: TransformerConfig
+    program: SequenceConfig
     prediction_head_config: PredictionHeadConfig
 
     vocab_size: int
     model_dim: int
-    hidden_dim: int
     num_labels: int
     classifier_pooling: PoolingType
     output_labels: tuple[str, ...] | None = None
+    taps: tuple[EmitConfig, ...] = ()
+
+    def __post_init__(self) -> None:
+        validate_program(self.program, self.taps)
 
     def init(self, initializer: Initializer) -> "Classifier":
-        embedding = self.embedding_config.init(
-            initializer,
-            model_dim=self.model_dim,
-            vocab_size=self.vocab_size,
-        )
-        embedding_norm = self.embedding_norm_config.init(initializer, self.model_dim)
-        transformer = self.transformer_config.init(initializer)
-        prediction_head = self.prediction_head_config.init(
-            initializer,
-            input_size=self.hidden_dim,
-            num_labels=self.num_labels,
-        )
         return Classifier(
             config=self,
             sharding_config=initializer.sharding_config,
-            embedding=embedding,
-            embedding_norm=embedding_norm,
-            transformer=transformer,
-            prediction_head=prediction_head,
+            embedding=self.embedding_config.init(initializer, model_dim=self.model_dim, vocab_size=self.vocab_size),
+            program=self.program.init(initializer, self.model_dim),
+            prediction_head=self.prediction_head_config.init(
+                initializer,
+                input_size=self.model_dim,
+                num_labels=self.num_labels,
+            ),
         )
 
 
 class Classifier(LalamoModule[ClassifierConfig]):
     embedding: EmbeddingBase
-    embedding_norm: Normalization
-    transformer: Transformer
+    program: Sequence
     prediction_head: PredictionHead
 
     @eqx.filter_jit
@@ -214,35 +168,38 @@ class Classifier(LalamoModule[ClassifierConfig]):
         token_positions: Int[Array, "batch tokens"],
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: ClassifierForwardPassConfig = ClassifierForwardPassConfig(),
+        forward_pass_config: ModelForwardPassConfig = ModelForwardPassConfig(),
         *,
         keychain: Keychain,
     ) -> ClassifierResult:
-        embedding_keychain, transformer_keychain, prediction_head_keychain = keychain.split(3)
-        inner_features = self.embedding.embed(
+        embedding_keychain, program_keychain, prediction_head_keychain = keychain.split(3)
+        embeddings = self.embedding.embed(
             token_ids,
             forward_pass_config=forward_pass_config.embedding_forward_pass_config,
             keychain=embedding_keychain,
         )
-        normalized_embeddings = call_vmapped_twice(self.embedding_norm, inner_features)
-
-        transformer_result = self.transformer(
-            inner_features=normalized_embeddings,
-            token_positions=token_positions,
-            state=None,
-            return_updated_state=False,
-            return_layer_results=return_activation_trace,
-            return_positional_embeddings=return_activation_trace,
-            lengths_without_padding=lengths_without_padding,
-            forward_pass_config=forward_pass_config.transformer_forward_pass_config,
-            keychain=transformer_keychain,
+        result = run(
+            self.program,
+            embeddings,
+            Context(
+                token_ids,
+                token_positions,
+                lengths_without_padding,
+                None,
+                forward_pass_config.flow_forward_pass_config,
+                self.sharding_config,
+            ),
+            keychain=program_keychain,
+            taps=self.config.taps if return_activation_trace else (),
+            trace=return_activation_trace,
         )
+        outputs = result.outputs
 
         if self.config.classifier_pooling == PoolingType.CLS:
-            pooled_output = transformer_result.outputs[:, 0, :]
+            pooled_output = outputs[:, 0, :]
         elif self.config.classifier_pooling == PoolingType.MEAN:
-            attention_mask = jnp.ones((*token_ids.shape, 1), dtype=transformer_result.outputs.dtype)
-            pooled_output = (transformer_result.outputs * attention_mask).sum(axis=1) / attention_mask.sum(axis=1)
+            attention_mask = jnp.ones((*token_ids.shape, 1), dtype=outputs.dtype)
+            pooled_output = (outputs * attention_mask).sum(axis=1) / attention_mask.sum(axis=1)
         else:
             raise TypeError(f"classifier_pooling of unknown type: {self.config.classifier_pooling}")
 
@@ -252,14 +209,14 @@ class Classifier(LalamoModule[ClassifierConfig]):
         )
 
         if return_activation_trace:
-            assert transformer_result.layer_results is not None
+            assert result.trace is not None
             activation_trace = ClassifierActivationTrace(
                 token_ids=token_ids,
                 token_positions=token_positions,
-                rope_embeddings=transformer_result.rope_embeddings,
-                embedding_norm_output=normalized_embeddings,
-                layer_results=tuple(transformer_result.layer_results),
-                output_norm=transformer_result.outputs,
+                embeddings=embeddings,
+                steps=result.trace,
+                taps=result.taps,
+                outputs=outputs,
                 output_pooling=pooled_output,
                 logits=logits,
             )

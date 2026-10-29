@@ -5,6 +5,7 @@ from typing import Literal
 from jaxtyping import Array
 
 from lalamo.model import Model
+from lalamo.model_import.loaders.binding import Binder
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
@@ -13,12 +14,10 @@ from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import LongRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.modules.transformer import TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
 from lalamo.utils.lazy_collections import LazyDict
 from lalamo.weight_matrix import CompressionImplementation
 
-from .common import HuggingFaceLMConfig, QuantizationConfigType
+from .common import HuggingFaceLMConfig, QuantizationConfigType, residual_decoder
 
 __all__ = ["HFPhi3Config"]
 
@@ -60,10 +59,7 @@ class HFPhi3Config(HuggingFaceLMConfig):
     def rotary_dim(self) -> int:
         return int(self.head_dim * self.partial_rotary_factor)
 
-    def to_decoder_config(
-        self,
-        metadata_dict: Mapping[str, str],  # noqa: ARG002
-    ) -> DecoderConfig:
+    def build_decoder(self, at: Binder) -> DecoderConfig:
         original_context_length = self.original_max_position_embeddings
         assert self.tie_word_embeddings, "Phi-4-mini only has tied embeddings"
         embedding_config = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None)
@@ -91,46 +87,35 @@ class HFPhi3Config(HuggingFaceLMConfig):
             has_down_biases=False,
             up_clipping=None,
             gate_clipping=None,
-        )
-
-        layer_configs = []
-        for _ in range(self.num_hidden_layers):
-            attention_config = AttentionConfig(
-                qkvg_projection_config=linear_config,
-                out_projection_config=linear_config,
-                query_norm_config=None,
-                key_norm_config=None,
-                logit_soft_cap=None,
-                has_sinks=False,
-                has_qkvg_biases=False,
-                has_out_biases=False,
-                num_heads=self.num_attention_heads,
-                num_groups=self.num_key_value_heads,
-                head_dim=self.head_dim,
-                is_causal=True,
-                scale=None,
-                sliding_window_size=None,
-            )
-            layer_configs.append(
-                TransformerLayerConfig(
-                    pre_mixer_norm_config=rmsnorm_config,
-                    mixer_config=attention_config,
-                    post_mixer_norm_config=None,
-                    pre_mlp_norm_config=rmsnorm_config,
-                    mlp_config=mlp_config,
-                    post_mlp_norm_config=None,
-                    rope_config=rope_config,
-                )
-            )
-        transformer_config = TransformerConfig(
-            layer_configs=tuple(layer_configs),
-            output_norm_config=rmsnorm_config,
-            model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
         )
-        return DecoderConfig(
-            embedding_config=embedding_config,
-            transformer_config=transformer_config,
+
+        attention_config = AttentionConfig(
+            qkvg_projection_config=linear_config,
+            out_projection_config=linear_config,
+            query_norm_config=None,
+            key_norm_config=None,
+            logit_soft_cap=None,
+            has_sinks=False,
+            has_qkvg_biases=False,
+            has_out_biases=False,
+            num_heads=self.num_attention_heads,
+            num_groups=self.num_key_value_heads,
+            head_dim=self.head_dim,
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
+            rope_config=rope_config,
+        )
+        return residual_decoder(
+            at,
+            embedding=at("model.embed_tokens", embedding_config),
+            layers=[
+                (at(f"model.layers.{index}.self_attn", attention_config), at(f"model.layers.{index}.mlp", mlp_config))
+                for index in range(self.num_hidden_layers)
+            ],
+            norm=rmsnorm_config,
+            model_dim=self.hidden_size,
             vocab_size=self.vocab_size,
         )
 

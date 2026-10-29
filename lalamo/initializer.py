@@ -85,6 +85,7 @@ class Initializer(ABC):
         model_dim: int,
         dtype: DTypeLike | None = None,
         *,
+        is_sharded: bool = False,
         standard_deviation: float | None = None,
     ) -> EmbeddingMatrix: ...
 
@@ -154,6 +155,7 @@ class EmptyInitializer(Initializer):
         model_dim: int,
         dtype: DTypeLike | None = None,
         *,
+        is_sharded: bool = False,
         standard_deviation: float | None = None,  # noqa: ARG002
     ) -> ShapeDtypeMatrix:
         return ShapeDtypeSpec(layout=Layout.INPUT_OUTPUT).compress(
@@ -163,7 +165,7 @@ class EmptyInitializer(Initializer):
                 (None, None),
             ),
             sharding_config=self.sharding_config,
-            is_sharded=False,
+            is_sharded=is_sharded,
         )
 
 
@@ -236,6 +238,7 @@ class RandomInitializer(Initializer):
         model_dim: int,
         dtype: DTypeLike | None = None,
         *,
+        is_sharded: bool = False,
         standard_deviation: float | None = None,
     ) -> FullPrecisionMatrix:
         if standard_deviation is None:
@@ -249,5 +252,5 @@ class RandomInitializer(Initializer):
         return FullPrecisionSpec(Layout.INPUT_OUTPUT).compress(
             weights,
             sharding_config=self.sharding_config,
-            is_sharded=False,
+            is_sharded=is_sharded,
         )

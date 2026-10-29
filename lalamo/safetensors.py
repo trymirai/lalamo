@@ -1,6 +1,6 @@
 import json
 import struct
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from io import BufferedReader, BufferedWriter
 from typing import Any, ClassVar, Self
@@ -9,9 +9,11 @@ import cattrs
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.sharding import Sharding
 from jaxtyping import Array
 
 from lalamo.utils.lazy_collections import LazyDict
+from lalamo.utils.sharding import array_from_host
 
 SF2J = {
     "BOOL": jnp.dtype(jnp.bool_),
@@ -66,22 +68,41 @@ class SFTensorInfo:
         return self._converter.unstructure(self)
 
 
+@dataclass(frozen=True)
+class SafeTensorArrays(Mapping[str, Array]):
+    fd: BufferedReader
+    tensor_infos: Mapping[str, SFTensorInfo]
+    data_offset: int
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.tensor_infos)
+
+    def __len__(self) -> int:
+        return len(self.tensor_infos)
+
+    def __getitem__(self, key: str) -> Array:
+        return self.read_tensor(key)
+
+    def read_tensor(self, key: str, sharding: Sharding | None = None) -> Array:
+        info = self.tensor_infos[key]
+        self.fd.seek(self.data_offset + info.start)
+        array = np.fromfile(self.fd, info.dtype, info.size // info.dtype.itemsize).reshape(info.shape)
+        if sharding is None:
+            return jnp.asarray(array)
+        # Place final shards directly: a 51B embedding cannot first fit on one GPU.
+        return array_from_host(array, sharding)
+
+
 def safe_read(
     fd: BufferedReader,
-) -> tuple[dict[str, str] | None, LazyDict[str, Array], LazyDict[str, SFTensorInfo]]:
+) -> tuple[dict[str, str] | None, SafeTensorArrays, LazyDict[str, SFTensorInfo]]:
     header_size = struct.unpack("<Q", fd.read(8))[0]
     header: dict[str, dict[str, Any]] = json.loads(fd.read(header_size))
     metadata: dict[str, str] | None = header.pop("__metadata__", None)
     data_offset = fd.tell()
     tensor_infos = LazyDict(set(header), lambda name: SFTensorInfo.from_dict(header[name]))
 
-    def _load_tensor(key: str) -> Array:
-        info = tensor_infos[key]
-        fd.seek(data_offset + info.start)
-        return jnp.asarray(np.fromfile(fd, info.dtype, info.size // info.dtype.itemsize)).reshape(info.shape)
-
-    lazy_tensors = LazyDict(tensor_infos.stored_keys, _load_tensor)
-    return metadata, lazy_tensors, tensor_infos
+    return metadata, SafeTensorArrays(fd, tensor_infos, data_offset), tensor_infos
 
 
 def safe_write(

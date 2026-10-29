@@ -3,7 +3,7 @@ from typing import Self
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from lalamo.modules.token_mixer import StateLayerBase
+from lalamo.modules.flow import StateLayerBase
 
 __all__ = ["SSMStateLayer"]
 

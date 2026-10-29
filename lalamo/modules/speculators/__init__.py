@@ -7,7 +7,6 @@ from .dflash import (
 )
 from .weaver import (
     Weaver,
-    WeaverBlock,
     WeaverConfig,
     WeaverPrefix,
 )
@@ -19,7 +18,6 @@ __all__ = [
     "DFlashSpeculator",
     "DFlashSpeculatorConfig",
     "Weaver",
-    "WeaverBlock",
     "WeaverConfig",
     "WeaverPrefix",
 ]

@@ -4,19 +4,34 @@ from enum import StrEnum
 from typing import TypeGuard
 
 import jax
+import numpy as np
 from jax import Array, ShapeDtypeStruct, typeof
-from jax.sharding import AxisType, Mesh, NamedSharding, PartitionSpec
-from jaxtyping import Int, Shaped
+from jax.sharding import AxisType, Mesh, NamedSharding, PartitionSpec, Sharding
+from jaxtyping import DTypeLike, Int, Shaped
+from numpy.typing import NDArray
 
 __all__ = [
     "LogicalAxis",
     "ShardingConfig",
+    "array_from_host",
     "is_sharded",
     "lookup_sharded_indices",
     "reshard_as",
     "sharding_of",
     "with_sharding",
 ]
+
+
+def array_from_host(
+    array: NDArray[np.generic],
+    sharding: Sharding,
+    *,
+    dtype: DTypeLike | None = None,
+) -> Array:
+    # JAX's CUDA host packing can crash on very large strided views.
+    return jax.make_array_from_callback(
+        array.shape, sharding, lambda indices: np.asarray(array[indices], dtype=dtype, order="C")
+    )
 
 
 class LogicalAxis(StrEnum):

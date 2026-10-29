@@ -6,6 +6,7 @@ import jax.tree_util as jtu
 from jax import ShapeDtypeStruct
 from jaxtyping import Array
 
+from lalamo.safetensors import SafeTensorArrays
 from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
 
@@ -63,7 +64,11 @@ class Exportable:
                 return subtree
 
             try:
-                return load_as(subtree, exported_data.arrays[path])
+                if isinstance(exported_data.arrays, SafeTensorArrays):
+                    array = exported_data.arrays.read_tensor(path, subtree.sharding)
+                else:
+                    array = exported_data.arrays[path]
+                return load_as(subtree, array)
             except Exception as e:
                 raise ValueError(f"Failed to load {path}: {e}") from e
 

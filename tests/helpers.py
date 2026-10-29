@@ -14,16 +14,17 @@ from lalamo.module import ForwardPassMode, Keychain
 from lalamo.modules import (
     Decoder,
     DecoderConfig,
-    DecoderForwardPassConfig,
     DenseMLPConfig,
     Identity,
     LinearConfig,
+    ModelForwardPassConfig,
     NormalizationConfig,
+    SequenceConfig,
+    StepConfig,
     TiedEmbeddingConfig,
-    TransformerConfig,
-    TransformerLayerConfig,
     UnscaledRoPEConfig,
     UpcastMode,
+    residual,
 )
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
@@ -44,7 +45,7 @@ def dense_log_softmax_rows(model: LanguageModel, prompt: tuple[int, ...], token_
             jnp.asarray([[position]]),
             state=state,
             return_updated_state=True,
-            forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+            forward_pass_config=ModelForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
             keychain=keychain,
         )
         assert decoded.updated_state is not None
@@ -89,78 +90,75 @@ def make_sharding(logical_axes: tuple[LogicalAxis | None, ...]) -> NamedSharding
     return sharding_config.resolve_sharding(logical_axes)
 
 
-def build_tiny_attention_decoder_config(kv_source_layer_indices: tuple[int | None, ...]) -> DecoderConfig:
-    model_dim = 8
-    hidden_dim = 16
-    vocab_size = 32
-    max_sequence_length = 16
-
-    norm_config = NormalizationConfig(
+def tiny_norm_config() -> NormalizationConfig:
+    return NormalizationConfig(
         epsilon=1e-5,
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         subtract_mean=False,
     )
-    mlp_config = DenseMLPConfig(
+
+
+def tiny_mlp_config() -> DenseMLPConfig:
+    return DenseMLPConfig(
         linear_config=LinearConfig(),
         activation=Identity(),
         has_up_biases=False,
         has_down_biases=False,
         gate_clipping=None,
         up_clipping=None,
+        hidden_dim=16,
     )
-    rope_config = UnscaledRoPEConfig(
-        base=10_000.0,
-        max_sequence_length=max_sequence_length,
+
+
+def tiny_attention_config(kv_source: AttentionConfig | None = None) -> AttentionConfig:
+    return AttentionConfig(
+        qkvg_projection_config=LinearConfig(),
+        out_projection_config=LinearConfig(),
+        query_norm_config=None,
+        key_norm_config=None,
+        num_heads=2,
+        num_groups=2,
         head_dim=4,
+        is_causal=True,
+        scale=None,
+        sliding_window_size=None,
+        logit_soft_cap=None,
+        has_sinks=False,
+        has_qkvg_biases=False,
+        has_out_biases=False,
+        kv_source=kv_source,
+        rope_config=UnscaledRoPEConfig(base=10_000.0, max_sequence_length=16, head_dim=4),
     )
 
-    layer_configs = []
-    for kv_source in kv_source_layer_indices:
-        attention_config = AttentionConfig(
-            qkvg_projection_config=LinearConfig(),
-            out_projection_config=LinearConfig(),
-            query_norm_config=None,
-            key_norm_config=None,
-            num_heads=2,
-            num_groups=2,
-            head_dim=4,
-            is_causal=True,
-            scale=None,
-            sliding_window_size=None,
-            logit_soft_cap=None,
-            has_sinks=False,
-            has_qkvg_biases=False,
-            has_out_biases=False,
-            is_kv_sharing=kv_source is not None,
-        )
-        layer_configs.append(
-            TransformerLayerConfig(
-                pre_mixer_norm_config=norm_config,
-                mixer_config=attention_config,
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=norm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=None,
-                rope_config=rope_config,
-                kv_source_layer_index=kv_source,
-            ),
-        )
 
-    transformer_config = TransformerConfig(
-        layer_configs=tuple(layer_configs),
-        output_norm_config=norm_config,
-        model_dim=model_dim,
-        hidden_dim=hidden_dim,
-    )
+def build_tiny_decoder_config(mixers: Sequence[StepConfig]) -> DecoderConfig:
+    """Eight-dimensional pre-norm decoder with one layer per mixer."""
+    steps = [
+        step
+        for mixer in mixers
+        for step in (residual(tiny_norm_config(), mixer), residual(tiny_norm_config(), tiny_mlp_config()))
+    ]
     return DecoderConfig(
         embedding_config=TiedEmbeddingConfig(
             input_scale=None,
             logit_soft_cap=None,
         ),
-        transformer_config=transformer_config,
-        vocab_size=vocab_size,
+        program=SequenceConfig((*steps, tiny_norm_config())),
+        model_dim=8,
+        vocab_size=32,
     )
+
+
+def build_tiny_attention_decoder_config(kv_source_layer_indices: tuple[int | None, ...]) -> DecoderConfig:
+    """Layer `i` borrows the KV cache of layer `kv_source_layer_indices[i]`."""
+
+    @cache
+    def layer_attention(index: int) -> AttentionConfig:
+        kv_source = kv_source_layer_indices[index]
+        return tiny_attention_config(None if kv_source is None else layer_attention(kv_source))
+
+    return build_tiny_decoder_config([layer_attention(index) for index in range(len(kv_source_layer_indices))])
 
 
 def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]) -> Decoder:
@@ -177,8 +175,12 @@ __all__ = [
     "UNITS",
     "build_tiny_attention_decoder",
     "build_tiny_attention_decoder_config",
+    "build_tiny_decoder_config",
     "make_sharding",
     "make_test_sharding_config",
     "si",
+    "tiny_attention_config",
+    "tiny_mlp_config",
+    "tiny_norm_config",
     "unsi",
 ]

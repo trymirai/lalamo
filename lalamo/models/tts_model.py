@@ -15,7 +15,7 @@ from lalamo.module import Keychain, LalamoConfig
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfig
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfig
 from lalamo.modules.audio.vocoders import Vocoder, VocoderConfig
-from lalamo.modules.decoder import DecoderForwardPassConfig
+from lalamo.modules.forward_pass import ModelForwardPassConfig
 from lalamo.sampling import SamplingPolicy
 
 __all__ = [
@@ -75,7 +75,7 @@ class TTSModel(Model[TTSModelConfig, TTSCodec]):
         sampling_policy: SamplingPolicy | None = None,
         *,
         keychain: Keychain,
-        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
+        forward_pass_config: ModelForwardPassConfig = ModelForwardPassConfig(),
     ) -> Array:
         return self.text_decoder.decode_utterance(
             text_tokens,
@@ -90,7 +90,7 @@ class TTSModel(Model[TTSModelConfig, TTSCodec]):
         sampling_policy: SamplingPolicy | None = None,
         *,
         keychain: Keychain,
-        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
+        forward_pass_config: ModelForwardPassConfig = ModelForwardPassConfig(),
     ) -> TTSGenerationResult:
         text_keychain, audio_keychain = keychain.split()
         prompt = self.token_codec.render_request(messages)

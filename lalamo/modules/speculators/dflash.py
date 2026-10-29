@@ -9,14 +9,22 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, SpeculatorState
+from lalamo.modules.flow import (
+    Context,
+    FlowForwardPassConfig,
+    Sequence,
+    SequenceConfig,
+    State,
+    run,
+    state_owners,
+    validate_program,
+)
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
-from lalamo.modules.rope import PositionalEmbeddings, RoPE, RoPEConfig
 from lalamo.modules.speculator import Speculator, SpeculatorConfig
 from lalamo.modules.speculators.weaver import Weaver, WeaverConfig
-from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
+from lalamo.modules.token_mixers.attention import Attention
 from lalamo.modules.token_mixers.kv_cache import StaticKVCacheLayer
-from lalamo.modules.transformer_layer import TransformerForwardPassConfig, TransformerLayer, TransformerLayerConfig
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
@@ -26,24 +34,18 @@ __all__ = [
 ]
 
 
-def _layer_attention_config(layer_config: TransformerLayerConfig) -> AttentionConfig:
-    mixer_config = layer_config.mixer_config
-    if not isinstance(mixer_config, AttentionConfig):
-        raise TypeError(f"DFlash draft layers must use attention mixers, got {type(mixer_config).__name__}.")
-    return mixer_config
-
-
-def _layer_attention(layer: TransformerLayer) -> Attention:
-    mixer = layer.mixer
-    if not isinstance(mixer, Attention):
-        raise TypeError(f"DFlash draft layers must use attention mixers, got {type(mixer).__name__}.")
-    return mixer
+def _attentions(program: Sequence) -> tuple[Attention, ...]:
+    attentions = []
+    for owner in state_owners(program):
+        if not isinstance(owner, Attention):
+            raise TypeError("DFlash draft programs must only hold state in attention mixers.")
+        attentions.append(owner)
+    return tuple(attentions)
 
 
 @dataclass(frozen=True)
 class DFlashDraftConfig(LalamoConfig):
     model_dim: int
-    hidden_dim: int
     block_size: int
     mask_token_id: int
     target_layer_ids: tuple[int, ...]
@@ -51,13 +53,14 @@ class DFlashDraftConfig(LalamoConfig):
     vocab_size: int
     context_projection_config: LinearConfig
     context_norm_config: NormalizationConfig
-    rope_config: RoPEConfig
-    layer_configs: tuple[TransformerLayerConfig, ...]
-    output_norm_config: NormalizationConfig
+    program: SequenceConfig
+
+    def __post_init__(self) -> None:
+        validate_program(self.program)
 
     def init(self, initializer: Initializer) -> "DFlashDraftModel":
         context_feature_dim = len(self.target_layer_ids) * self.model_dim
-        attention_configs = tuple(_layer_attention_config(layer_config) for layer_config in self.layer_configs)
+        program = self.program.init(initializer, self.model_dim)
         return DFlashDraftModel(
             config=self,
             sharding_config=initializer.sharding_config,
@@ -68,17 +71,15 @@ class DFlashDraftConfig(LalamoConfig):
                 has_biases=False,
             ),
             context_norm=self.context_norm_config.init(initializer, self.model_dim),
-            rope=self.rope_config.init(initializer),
             state_kv_projection=LinearConfig().init(
                 initializer,
                 self.model_dim,
-                tuple(2 * config.num_groups * config.head_dim for config in attention_configs),
+                tuple(
+                    2 * attention.config.num_groups * attention.config.head_dim for attention in _attentions(program)
+                ),
                 has_biases=False,
             ),
-            layers=tuple(
-                layer_config.init(initializer, self.model_dim, self.hidden_dim) for layer_config in self.layer_configs
-            ),
-            output_norm=self.output_norm_config.init(initializer, self.model_dim),
+            program=program,
         )
 
 
@@ -143,13 +144,15 @@ class DFlashDraftState(SpeculatorState):
 class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
     context_projection: Linear
     context_norm: Normalization
-    rope: RoPE
     state_kv_projection: Linear
-    layers: tuple[TransformerLayer, ...]
-    output_norm: Normalization
+    program: Sequence
 
-    def state_kv_projection_from_layers(self, layers: tuple[TransformerLayer, ...]) -> Linear:
-        qkvg_projections = tuple(_layer_attention(layer).qkvg_projection for layer in layers)
+    @property
+    def attentions(self) -> tuple[Attention, ...]:
+        return _attentions(self.program)
+
+    def state_kv_projection_from_attentions(self) -> Linear:
+        qkvg_projections = tuple(attention.qkvg_projection for attention in self.attentions)
         key_value_weights = jnp.concatenate(
             tuple(projection.weights.decompress()[projection.output_dims[0] :] for projection in qkvg_projections),
             axis=0,
@@ -162,23 +165,18 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
         )
         return eqx.tree_at(lambda projection: projection.weights, self.state_kv_projection, weights)
 
-    def positional_embeddings(
+    def _context(
         self,
         token_positions: Int[Array, "batch tokens"],
-        forward_pass_config: TransformerForwardPassConfig,
-    ) -> PositionalEmbeddings:
-        embeddings = call_vmapped(
-            self.rope,
-            token_positions,
-            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
-        )
-        return embeddings.astype(forward_pass_config.mixer_forward_pass_config.rope_dtype)
+        forward_pass_config: FlowForwardPassConfig,
+    ) -> Context:
+        return Context(None, token_positions, None, None, forward_pass_config, self.sharding_config)
 
     @eqx.filter_jit
     def project_target_features(
         self,
         target_features: Float[Array, "batch tokens target_channels"],
-        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
+        forward_pass_config: FlowForwardPassConfig = FlowForwardPassConfig(),
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch tokens channels"]:
@@ -186,7 +184,7 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
         (target_hidden,) = call_vmapped_twice(
             self.context_projection,
             target_features,
-            forward_pass_config=forward_pass_config.mixer_forward_pass_config.matmul_config,
+            forward_pass_config=forward_pass_config.matmul_config,
             keychain=keychain,
             added_sharding_axes=(batch_axis, None),
         )
@@ -206,14 +204,14 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
         lengths_sharding = self.sharding_config.resolve_sharding((LogicalAxis.BATCH,))
         total_capacity = context_capacity + self.config.block_size
 
-        def empty_layer_state(attention_config: AttentionConfig) -> StaticKVCacheLayer:
+        def empty_layer_state(attention: Attention) -> StaticKVCacheLayer:
             cache = jax.device_put(
                 jnp.zeros(
                     (
                         batch_size,
                         total_capacity,
-                        attention_config.num_groups,
-                        attention_config.head_dim,
+                        attention.config.num_groups,
+                        attention.config.head_dim,
                     ),
                     dtype=dtype,
                 ),
@@ -226,9 +224,7 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
                 current_length=jax.device_put(jnp.zeros((batch_size,), dtype=jnp.int32), lengths_sharding),
             )
 
-        return DFlashDraftState(
-            layer_states=tuple(empty_layer_state(_layer_attention(layer).config) for layer in self.layers),
-        )
+        return DFlashDraftState(layer_states=tuple(empty_layer_state(attention) for attention in self.attentions))
 
     @eqx.filter_jit
     def append_state(
@@ -237,31 +233,34 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
         target_features: Float[Array, "batch tokens target_channels"],
         token_positions: Int[Array, "batch tokens"],
         num_tokens_to_append: Int[Array, " batch"],
-        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
+        forward_pass_config: FlowForwardPassConfig = FlowForwardPassConfig(),
         *,
         keychain: Keychain,
     ) -> DFlashDraftState:
-        context_keychain, *layer_keychains = keychain.split(len(self.layers) + 1)
+        attentions = self.attentions
+        context_keychain, *layer_keychains = keychain.split(len(attentions) + 1)
         target_hidden = self.project_target_features(
             target_features,
             forward_pass_config,
             keychain=context_keychain,
         )
-        positional_embeddings = self.positional_embeddings(token_positions, forward_pass_config)
+        ctx = self._context(token_positions, forward_pass_config)
         cache_sharding = self.sharding_config.resolve_sharding((LogicalAxis.BATCH, None, None, None))
         first_layer_state, *_ = state.layer_states
         _, total_capacity, _, _ = first_layer_state.keys.shape
         return state.append(
             tuple(
                 call_vmapped(
-                    _layer_attention(layer).project_key_value_heads,
+                    attention.project_key_value_heads,
                     target_hidden,
-                    positional_embeddings,
+                    None
+                    if attention.config.rope_config is None
+                    else ctx.positional_embeddings(attention.config.rope_config),
                     forward_pass_config=forward_pass_config.mixer_forward_pass_config,
                     keychain=layer_keychain,
-                    added_sharding_axis=layer.sharding_config.resolve_axis(LogicalAxis.BATCH),
+                    added_sharding_axis=attention.sharding_config.resolve_axis(LogicalAxis.BATCH),
                 )
-                for layer, layer_keychain in zip(self.layers, layer_keychains, strict=True)
+                for attention, layer_keychain in zip(attentions, layer_keychains, strict=True)
             ),
             num_tokens_to_append,
             total_capacity - self.config.block_size,
@@ -274,7 +273,7 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
         noise_embeddings: Float[Array, "batch block channels"],
         state: DFlashDraftState,
         last_token_indices: Int[Array, " batch"],
-        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),
+        forward_pass_config: FlowForwardPassConfig = FlowForwardPassConfig(),
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch block channels"]:
@@ -282,27 +281,13 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
         draft_positions = (
             last_token_indices[:, None] + jnp.arange(1, block_size + 1, dtype=last_token_indices.dtype)[None, :]
         )
-        positional_embeddings = self.positional_embeddings(draft_positions, forward_pass_config)
-
-        layer_keychains = keychain.split(len(self.layers))
-        batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
-
-        hidden_states = noise_embeddings
-        for layer, layer_state, layer_keychain in zip(self.layers, state.layer_states, layer_keychains, strict=True):
-            layer_result = layer(
-                hidden_states,
-                positional_embeddings,
-                layer_state,
-                forward_pass_config=forward_pass_config,
-                keychain=layer_keychain,
-            )
-            hidden_states = layer_result.outputs
-
-        return call_vmapped_twice(
-            self.output_norm,
-            hidden_states,
-            added_sharding_axes=(batch_axis, None),
-        )
+        return run(
+            self.program,
+            noise_embeddings,
+            self._context(draft_positions, forward_pass_config),
+            State(state.layer_states),
+            keychain=keychain,
+        ).outputs
 
 
 @dataclass(frozen=True)

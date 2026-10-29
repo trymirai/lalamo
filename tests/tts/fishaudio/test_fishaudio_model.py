@@ -9,17 +9,14 @@ from fish_speech.models.text2semantic.llama import DualARModelArgs
 from jax import numpy as jnp
 
 from lalamo.initializer import EmptyInitializer
-from lalamo.model_import.loaders.fishaudio_loaders import (
-    load_descript_audio_codec,
-)
-from lalamo.model_import.model_configs.huggingface.fishaudio import (
-    instantiate_dac_config_from_fishaudio_config,
-    load_fishaudio_text_decoder,
-)
+from lalamo.model_import.loaders.binding import Binder
+from lalamo.model_import.loaders.fishaudio_loaders import load_descript_audio_codec, load_fishaudio_text_decoder
+from lalamo.model_import.loaders.huggingface import huggingface_loader
+from lalamo.model_import.model_configs.huggingface.fishaudio import instantiate_dac_config_from_fishaudio_config
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain, LogicalAxis, ShardingConfig
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
-from lalamo.modules.decoder import DecoderForwardPassConfig
+from lalamo.modules.forward_pass import ModelForwardPassConfig
 from lalamo.sampling import SamplingPolicy
 from lalamo.utils.torch_interop import torch_to_jax
 from tests.common import assert_close
@@ -50,7 +47,8 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
     fish_model = pytorch_tts_generator.text_decoder.fish_model
 
     assert isinstance(fish_model.config, DualARModelArgs)
-    lalamo_config = from_fish_audio_config(fish_model.config, fish_model.tokenizer)
+    binder = Binder(huggingface_loader)
+    lalamo_config = from_fish_audio_config(fish_model.config, fish_model.tokenizer, binder)
 
     sharding_config = ShardingConfig.replicated()
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_model.state_dict())
@@ -58,6 +56,8 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
         lalamo_config.init(
             EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=sharding_config),
         ),
+        lalamo_config,
+        binder,
         weights_dict,
     )
 
@@ -83,7 +83,7 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
             batch_key=jax.random.key(456),
             sharding_config=sharding_config,
         ),
-        forward_pass_config=DecoderForwardPassConfig.for_tracer_tests(),
+        forward_pass_config=ModelForwardPassConfig.for_tracer_tests(),
     )
     output_lalamo = decode_result.token_codes
 
@@ -101,13 +101,12 @@ def test_dac_matches_pytorch(fish_audio_local_model_path: Path) -> None:
     fish_dac.eval()
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_dac.state_dict())
-    audio_decoder_cfg = instantiate_dac_config_from_fishaudio_config(
-        get_default_fishaudio_dac_config(),
-    )
+    binder = Binder(huggingface_loader)
+    audio_decoder_cfg = instantiate_dac_config_from_fishaudio_config(get_default_fishaudio_dac_config(), binder)
     lalamo_dac = audio_decoder_cfg.init(
         EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()),
     )
-    lalamo_dac = load_descript_audio_codec(lalamo_dac, weights_dict)
+    lalamo_dac = load_descript_audio_codec(lalamo_dac, audio_decoder_cfg, binder, weights_dict)
 
     fish_dac_omega_config = get_default_fishaudio_dac_config()
 

@@ -1,7 +1,7 @@
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
+from lalamo.model_import.loaders.binding import Binder
 from lalamo.modules.activations import GELU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
@@ -10,10 +10,8 @@ from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import LinearScalingRoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.modules.transformer import TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
 
-from .common import HuggingFaceLMConfig, QuantizationConfigType
+from .common import HuggingFaceLMConfig, QuantizationConfigType, residual_decoder
 
 __all__ = ["HFGemma3Config", "HFGemma3TextConfig"]
 
@@ -69,10 +67,7 @@ class HFGemma3TextConfigRaw:
                 result.append(self.sliding_window)
         return result
 
-    def to_decoder_config(
-        self,
-        metadata_dict: Mapping[str, str],  # noqa: ARG002
-    ) -> DecoderConfig:
+    def build_decoder(self, at: Binder) -> DecoderConfig:
         input_scale = self.hidden_size**0.5
         attention_scale = self.query_pre_attn_scalar**-0.5
         embedding_config = TiedEmbeddingConfig(
@@ -127,10 +122,11 @@ class HFGemma3TextConfigRaw:
             has_down_biases=False,
             up_clipping=None,
             gate_clipping=None,
+            hidden_dim=self.intermediate_size,
         )
-        layer_configs = []
-        for sliding_window_size in self.sliding_window_sizes:
-            attention_config = AttentionConfig(
+        # Global layers (no sliding window) use the global RoPE, local layers the local one.
+        attention_configs = [
+            AttentionConfig(
                 qkvg_projection_config=linear_config,
                 out_projection_config=linear_config,
                 query_norm_config=rms_norm_config,
@@ -145,32 +141,23 @@ class HFGemma3TextConfigRaw:
                 is_causal=True,
                 scale=attention_scale,
                 sliding_window_size=sliding_window_size,
+                rope_config=global_rope_config if sliding_window_size is None else local_rope_config,
             )
-            # Global layers (sliding_window_size=None) use global_rope_config,
-            # local layers use local_rope_config
-            rope_config = global_rope_config if sliding_window_size is None else local_rope_config
-            transformer_layer_config = TransformerLayerConfig(
-                pre_mixer_norm_config=rms_norm_config,
-                mixer_config=attention_config,
-                post_mixer_norm_config=rms_norm_config,
-                pre_mlp_norm_config=rms_norm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=rms_norm_config,
-                rope_config=rope_config,
-            )
-            layer_configs.append(transformer_layer_config)
-
-        transformer_config = TransformerConfig(
-            layer_configs=tuple(layer_configs),
-            output_norm_config=rms_norm_config,
+            for sliding_window_size in self.sliding_window_sizes
+        ]
+        return residual_decoder(
+            at,
+            embedding=at("model.embed_tokens", embedding_config),
+            layers=[
+                (at(f"model.layers.{index}.self_attn", attention), at(f"model.layers.{index}.mlp", mlp_config))
+                for index, attention in enumerate(attention_configs)
+            ],
+            norm=rms_norm_config,
             model_dim=self.hidden_size,
-            hidden_dim=self.intermediate_size,
-        )
-
-        return DecoderConfig(
-            embedding_config=embedding_config,
-            transformer_config=transformer_config,
             vocab_size=self.vocab_size,
+            mlp_norm="pre_feedforward_layernorm",
+            post_mixer_norm="post_attention_layernorm",
+            post_mlp_norm="post_feedforward_layernorm",
         )
 
 
@@ -210,8 +197,5 @@ class HFGemma3Config(HuggingFaceLMConfig):
     quantization: QuantizationConfigType = None
     quantization_config: QuantizationConfigType = None
 
-    def to_decoder_config(
-        self,
-        metadata_dict: Mapping[str, str],
-    ) -> DecoderConfig:
-        return self.text_config.to_decoder_config(metadata_dict=metadata_dict)
+    def build_decoder(self, at: Binder) -> DecoderConfig:
+        return self.text_config.build_decoder(at)

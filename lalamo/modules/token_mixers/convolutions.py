@@ -1,7 +1,7 @@
 import math
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import NamedTuple
+from typing import ClassVar, NamedTuple
 
 import equinox as eqx
 import jax
@@ -11,11 +11,18 @@ from einops import einsum, rearrange, repeat
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis
+from lalamo.modules.flow import Context, StepConfig
+from lalamo.modules.linear import Linear, LinearConfig
+from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
 __all__ = [
     "CausalConvResult",
     "ConvPrecision",
+    "DynamicConv",
+    "DynamicConvConfig",
+    "DynamicConvKernels",
+    "DynamicConvKernelsConfig",
     "SeparableCausalConv",
     "SeparableCausalConvConfig",
 ]
@@ -196,3 +203,90 @@ def _updated_causal_conv_state(
         slice_size=inputs_with_history.shape[0] - inputs.shape[0],
         axis=0,
     )
+
+
+@dataclass(frozen=True)
+class DynamicConvKernelsConfig(StepConfig):
+    """Predicts per-token kernel deltas for a pair of `DynamicConv`s (side 0 before a body, side 1 after it)."""
+
+    linear_config: LinearConfig
+    kernel_size: int
+    group_size: int
+
+    def init(self, initializer: Initializer, model_dim: int) -> "DynamicConvKernels":
+        if model_dim % self.group_size != 0:
+            raise ValueError(f"conv group size {self.group_size} must divide model_dim {model_dim}.")
+        return DynamicConvKernels(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            projection=self.linear_config.init(
+                initializer,
+                model_dim,
+                (2 * self.kernel_size * (model_dim // self.group_size),),
+                has_biases=False,
+                is_sharded=False,
+            ),
+        )
+
+
+class DynamicConvKernels(LalamoModule[DynamicConvKernelsConfig]):
+    projection: Linear
+
+    def forward(
+        self,
+        x: Float[Array, "batch tokens channels"],
+        *operands: Array,
+        ctx: Context,
+        keychain: Keychain,
+    ) -> Float[Array, "batch tokens sides kernel groups"]:
+        () = operands
+        (coefficients,) = call_vmapped_twice(
+            self.projection,
+            x,
+            forward_pass_config=ctx.forward_pass_config.matmul_config,
+            keychain=keychain,
+            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
+        )
+        coefficients = rearrange(
+            coefficients,
+            "batch tokens (sides kernel groups) -> batch tokens sides kernel groups",
+            sides=2,
+            kernel=self.config.kernel_size,
+        )
+        return jnp.flip(coefficients, axis=3)
+
+
+@dataclass(frozen=True)
+class DynamicConvConfig(StepConfig):
+    conv_config: SeparableCausalConvConfig
+    kernel_size: int
+    side: int
+
+    def init(self, initializer: Initializer, model_dim: int) -> "DynamicConv":
+        return DynamicConv(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            conv=self.conv_config.init(initializer, model_dim, self.kernel_size, dtype=initializer.default_dtype),
+        )
+
+
+class DynamicConv(LalamoModule[DynamicConvConfig]):
+    """A causal depthwise convolution whose kernel is offset per token by a `DynamicConvKernels` operand."""
+
+    temporal: ClassVar[bool] = True
+
+    conv: SeparableCausalConv
+
+    def forward(
+        self,
+        x: Float[Array, "batch tokens channels"],
+        *operands: Float[Array, "batch tokens sides kernel groups"],
+        ctx: Context,  # noqa: ARG002
+        keychain: Keychain,  # noqa: ARG002
+    ) -> Float[Array, "batch tokens channels"]:
+        (coefficients,) = operands
+        return call_vmapped(
+            lambda inputs, deltas: self.conv(inputs, coefficient_deltas=deltas).outputs,
+            x,
+            coefficients[:, :, self.config.side],
+        )

@@ -14,7 +14,7 @@ from jaxtyping import Array, DTypeLike, Key
 
 from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.json import JSON
-from lalamo.utils.registry_abc import make_registry_abc_converter
+from lalamo.utils.registry_abc import make_registry_abc_converter, reference_scope
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 
 from .exportable import Exportable
@@ -253,12 +253,14 @@ class LalamoConfig:
 
     @classmethod
     def from_json(cls, json_object: JSON) -> Self:
-        config = cls._converter.structure(json_object, cls)
+        with reference_scope():
+            config = cls._converter.structure(json_object, cls)
         _require_config_fields(json_object, config.to_json())
         return config
 
     def to_json(self) -> JSON:
-        return self._converter.unstructure(self)
+        with reference_scope():
+            return self._converter.unstructure(self)
 
 
 ConfigT_co = TypeVar("ConfigT_co", bound=LalamoConfig, covariant=True)
@@ -339,6 +341,7 @@ else:
 class LalamoModule(Exportable, eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
     config: ConfigT_co = field(static=True)
     sharding_config: ShardingConfig = field(static=True)
+    temporal: ClassVar[bool] = False
 
     def astype(self, dtype: DTypeLike) -> Self:
         from lalamo.weight_matrix import WeightMatrix  # noqa: PLC0415

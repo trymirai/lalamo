@@ -1,20 +1,70 @@
+import jax
 import jax.numpy as jnp
 import pytest
 
 from lalamo.modules import (
     Decoder,
-    DecoderForwardPassConfig,
     DynamicKVCacheLayer,
     EmbeddingForwardPassConfig,
     ForwardPassMode,
     Keychain,
+    ModelForwardPassConfig,
     StaticKVCacheLayer,
-    TransformerForwardPassConfig,
 )
+from lalamo.modules.flow import FlowForwardPassConfig, leaves
 from lalamo.modules.token_mixers.attention import Attention
 from lalamo.modules.token_mixers.kv_cache import build_tree_attention_mask, tree_ancestor_mask
 from tests.common import assert_close
 from tests.helpers import build_tiny_attention_decoder, make_test_sharding_config
+
+
+@pytest.mark.parametrize("capacity", [None, 16], ids=["dynamic", "static"])
+def test_padded_shared_kv_tree_matches_each_unpadded_row(capacity: int | None) -> None:
+    model = build_tiny_attention_decoder((None, None, 0, 1))
+    sharding = model.sharding_config
+    with jax.set_mesh(sharding.mesh):
+        tokens = jax.random.randint(jax.random.key(0), (2, 9), 0, model.vocab_size)
+        positions = jnp.broadcast_to(jnp.arange(9, dtype=jnp.int32), tokens.shape)
+        keychain = Keychain.init(0, sharding_config=sharding)
+        forward = ModelForwardPassConfig.for_tracer_tests()
+        state = None
+        if capacity is not None:
+            state = model.init_static_state(2, capacity, jnp.float32)
+        prefix = model(
+            tokens[:, :4],
+            positions[:, :4],
+            state,
+            return_updated_state=True,
+            forward_pass_config=forward,
+            keychain=keychain,
+        ).updated_state
+        assert prefix is not None
+        parents = jnp.array([[-1, 0, 0, 2, 1], [-1, 0, 0, 2, 1]], dtype=jnp.int32)
+        lengths = jnp.array([5, 3], dtype=jnp.int32)
+        batch = model(
+            tokens[:, 4:],
+            positions[:, 4:],
+            prefix,
+            lengths_without_padding=lengths,
+            attention_parent_indices=parents,
+            forward_pass_config=forward,
+            keychain=keychain,
+        )
+        for row, length in enumerate(lengths.tolist()):
+            row_state = jax.tree.map(lambda array, row=row: array[row : row + 1], prefix)
+            single = model(
+                tokens[row : row + 1, 4 : 4 + length],
+                positions[row : row + 1, 4 : 4 + length],
+                row_state,
+                attention_parent_indices=parents[row : row + 1, :length],
+                forward_pass_config=forward,
+                keychain=keychain,
+            )
+            assert_close(
+                result=batch.logits[row, :length],
+                reference=single.logits[0],
+                operation_name="padded shared-KV tree",
+            )
 
 
 @pytest.fixture
@@ -79,12 +129,12 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
     prefix_token_ids = jnp.array([[1, 2, 3]], dtype=jnp.int32)
     prefix_positions = jnp.array([[0, 1, 2]], dtype=jnp.int32)
     chain_token_ids = jnp.array([4, 5, 6], dtype=jnp.int32)
-    forward_pass_config = DecoderForwardPassConfig(
+    forward_pass_config = ModelForwardPassConfig(
         embedding_forward_pass_config=EmbeddingForwardPassConfig(activation_dtype=jnp.float32),
     )
-    single_token_forward_pass_config = DecoderForwardPassConfig(
+    single_token_forward_pass_config = ModelForwardPassConfig(
         embedding_forward_pass_config=EmbeddingForwardPassConfig(activation_dtype=jnp.float32),
-        transformer_forward_pass_config=TransformerForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+        flow_forward_pass_config=FlowForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
     )
 
     prefix_result = decoder(
@@ -129,10 +179,8 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
 
 @pytest.mark.parametrize("decoder", [(None, 0)], indirect=True, ids=["shared_kv"])
 def test_kv_sharing_layer_projects_queries_only(decoder: Decoder) -> None:
-    owner = decoder.transformer.layers[0].mixer
-    shared = decoder.transformer.layers[1].mixer
-    assert isinstance(owner, Attention)
-    assert isinstance(shared, Attention)
+    owner, shared = (step for step in leaves(decoder.program) if isinstance(step, Attention))
+    assert shared.config.kv_source is owner.config
     assert owner.qkvg_projection.output_dims == (8, 8, 8)
     assert shared.qkvg_projection.output_dims == (8,)
     assert shared.key_norm is None
@@ -156,7 +204,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         jnp.array([[10]], dtype=jnp.int32),
         jnp.array([[2]], dtype=jnp.int32),
         state=state_a,
-        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+        forward_pass_config=ModelForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(50, sharding_config=make_test_sharding_config()),
     )
     logits_a = result_a.logits[0, 0]
@@ -166,7 +214,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         jnp.array([[20]], dtype=jnp.int32),
         jnp.array([[2]], dtype=jnp.int32),
         state=state_b,
-        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+        forward_pass_config=ModelForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(60, sharding_config=make_test_sharding_config()),
     )
     logits_b = result_b.logits[0, 0]
@@ -176,7 +224,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         jnp.array([[2, 2]], dtype=jnp.int32),
         state=prefix_result.updated_state,
         attention_parent_indices=jnp.array([[-1, -1]], dtype=jnp.int32),
-        forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+        forward_pass_config=ModelForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(70, sharding_config=make_test_sharding_config()),
     )
 

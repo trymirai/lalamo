@@ -8,7 +8,7 @@ from einops import rearrange
 from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
-from lalamo.initializer import EmptyInitializer, RandomInitializer
+from lalamo.initializer import RandomInitializer
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
@@ -17,7 +17,6 @@ from lalamo.modules.rope import (
     LlamaRoPEConfig,
     LongRoPEConfig,
     PositionalEmbeddings,
-    RoPE,
     RoPEConfig,
     UnscaledRoPEConfig,
     YARNRoPEConfig,
@@ -31,14 +30,8 @@ HEAD_DIM = 4
 NUM_TIMESTEPS = 8
 
 
-def _rope(config: RoPEConfig | None = None) -> RoPE:
-    if config is None:
-        config = UnscaledRoPEConfig(base=10_000.0, max_sequence_length=NUM_TIMESTEPS, head_dim=HEAD_DIM)
-    return config.init(
-        RandomInitializer(
-            default_dtype=jnp.float32, sharding_config=make_test_sharding_config(), key=jax.random.key(0)
-        ),
-    )
+def _rope() -> RoPEConfig:
+    return UnscaledRoPEConfig(base=10_000.0, max_sequence_length=NUM_TIMESTEPS, head_dim=HEAD_DIM)
 
 
 def _assert_named_sharding(sharding: Sharding, mesh: Mesh) -> None:
@@ -79,8 +72,8 @@ def _select_reference(table: Array, timesteps: Array) -> Array:
     return table[jnp.asarray(jax.device_get(timesteps))]
 
 
-def _full_table(rope: RoPE) -> PositionalEmbeddings:
-    return rope.config.compute_positional_embeddings(jnp.arange(NUM_TIMESTEPS, dtype=jnp.int32))
+def _full_table(rope: RoPEConfig) -> PositionalEmbeddings:
+    return rope.compute_positional_embeddings(jnp.arange(NUM_TIMESTEPS, dtype=jnp.int32))
 
 
 @pytest.mark.parametrize(
@@ -138,8 +131,8 @@ def _full_table(rope: RoPE) -> PositionalEmbeddings:
         ),
     ],
 )
-def test_rope_config_init_produces_finite_tables(config: RoPEConfig) -> None:
-    embeddings = _full_table(_rope(config))
+def test_rope_configs_produce_finite_tables(config: RoPEConfig) -> None:
+    embeddings = _full_table(config)
 
     assert embeddings.sines.shape == (NUM_TIMESTEPS, HEAD_DIM)
     assert embeddings.cosines.shape == (NUM_TIMESTEPS, HEAD_DIM)
@@ -153,7 +146,7 @@ def test_rope_selects_timesteps_under_jit() -> None:
     rope = _rope()
     timesteps = jnp.array([0, 1, 3, 5], dtype=jnp.int32)
 
-    embeddings = eqx.filter_jit(lambda rope, timesteps: rope(timesteps))(rope, timesteps)
+    embeddings = eqx.filter_jit(lambda rope, timesteps: rope.compute_positional_embeddings(timesteps))(rope, timesteps)
 
     table = _full_table(rope)
     _assert_close(result=embeddings.sines, reference=_select_reference(table.sines, timesteps))
@@ -172,7 +165,7 @@ def test_rope_call_vmapped_over_batches_preserves_batch_sharding(fake_mesh: Mesh
     timesteps = jax.device_put(timesteps, make_sharding((LogicalAxis.BATCH, None)))
 
     embeddings = call_vmapped(
-        rope,
+        rope.compute_positional_embeddings,
         timesteps,
         added_sharding_axis=make_test_sharding_config().resolve_axis(LogicalAxis.BATCH),
     )
@@ -189,7 +182,7 @@ def test_rope_call_vmapped_over_batches_preserves_batch_sharding(fake_mesh: Mesh
 def test_positional_embeddings_apply_matches_reference_and_preserves_sharding(fake_mesh: Mesh) -> None:
     rope = _rope()
     timesteps = jnp.array([0, 1, 3, 5], dtype=jnp.int32)
-    embeddings = rope(timesteps)
+    embeddings = rope.compute_positional_embeddings(timesteps)
     heads = _sharded_heads(jnp.arange(4 * 6, dtype=jnp.float32).reshape(4, 6) / 10)
 
     result = embeddings.apply(heads)
@@ -200,7 +193,7 @@ def test_positional_embeddings_apply_matches_reference_and_preserves_sharding(fa
 
 
 def test_positional_embeddings_apply_rejects_too_small_head_dim() -> None:
-    embeddings = _rope()(jnp.array([0, 1], dtype=jnp.int32))
+    embeddings = _rope().compute_positional_embeddings(jnp.array([0, 1], dtype=jnp.int32))
 
     with pytest.raises(ValueError, match="exceeds input head_dim"):
         embeddings.apply(jnp.zeros((2, HEAD_DIM - 1), dtype=jnp.float32))
@@ -244,7 +237,7 @@ def test_attention_project_key_value_heads_matches_cache_written_by_call(fake_me
         jnp.arange(num_tokens * module.model_dim, dtype=jnp.float32).reshape(num_tokens, module.model_dim) / 10,
         make_sharding((None, None)),
     )
-    positional_embeddings = _rope()(jnp.arange(num_tokens, dtype=jnp.int32))
+    positional_embeddings = _rope().compute_positional_embeddings(jnp.arange(num_tokens, dtype=jnp.int32))
 
     keys, values = module.project_key_value_heads(
         inputs,
@@ -274,21 +267,6 @@ def test_attention_project_key_value_heads_matches_cache_written_by_call(fake_me
         result=values,
         reference=rearrange(raw_values, "tokens (groups head_channels) -> tokens groups head_channels", groups=2),
     )
-
-
-def test_rope_exports_no_arrays_and_regenerates_from_config() -> None:
-    original = _rope()
-    timesteps = jnp.array([0, 1, 3, 5], dtype=jnp.int32)
-
-    assert original.export().arrays == {}
-
-    template = original.config.init(EmptyInitializer(jnp.float32, make_test_sharding_config()))
-    restored = template.load_exported(original.export())
-    embeddings = restored(timesteps)
-
-    table = _full_table(original)
-    _assert_close(result=embeddings.sines, reference=_select_reference(table.sines, timesteps))
-    _assert_close(result=embeddings.cosines, reference=_select_reference(table.cosines, timesteps))
 
 
 LONGROPE_BASE = 10_000.0

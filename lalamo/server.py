@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
+import jax
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, Json, ValidationError
@@ -174,9 +175,10 @@ def create_app(
 
     def run_engine() -> None:
         try:
-            while not stop_event.is_set():
-                if not engine.step():
-                    stop_event.wait(0.001)
+            with jax.set_mesh(model.sharding_config.mesh):
+                while not stop_event.is_set():
+                    if not engine.step():
+                        stop_event.wait(0.001)
         except Exception as error:  # noqa: BLE001
             engine_errors.append(error)
             traceback.print_exception(error)

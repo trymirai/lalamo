@@ -168,7 +168,7 @@ def test_normalization_export_load_roundtrips_and_preserves_template_sharding(fa
     original = _normalization()
     template = original.config.init(
         EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=make_test_sharding_config()),
-        input_dim=original.input_dim,
+        model_dim=original.input_dim,
     )
     inputs = _sharded_input(jnp.array([1.0, -2.0, 3.0, -4.0], dtype=jnp.float32))
 

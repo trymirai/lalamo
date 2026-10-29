@@ -17,12 +17,12 @@ from lalamo.module import LogicalAxis
 from lalamo.modules import (
     Decoder,
     DecoderConfig,
-    DecoderForwardPassConfig,
     ForwardPassMode,
     Keychain,
     KeychainBroadcastMode,
+    ModelForwardPassConfig,
 )
-from lalamo.modules.token_mixer import State
+from lalamo.modules.flow import State
 from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy
 
@@ -197,7 +197,7 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
         token_ids: Int[Array, "batch tokens"],
         state_capacity: int,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: DecoderForwardPassConfig | None = None,
+        forward_pass_config: ModelForwardPassConfig | None = None,
         chunk_size: int = 512,
         initial_state: State | None = None,
         prefix_lengths: Int[Array, " batch"] | None = None,
@@ -214,7 +214,7 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
                 batch_vector_sharding,
             )
         if forward_pass_config is None:
-            forward_pass_config = DecoderForwardPassConfig.for_inference()
+            forward_pass_config = ModelForwardPassConfig.for_inference()
 
         chunks = self._make_attention_chunks(token_ids, lengths_without_padding, chunk_size)
         last_token_indices = lengths_without_padding - 1
@@ -281,17 +281,17 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
         prompt_lengths_without_padding: Int[Array, " batch"] | None = None,
         max_output_length: int = 8192,
         num_top_logits_to_return: int | None = None,
-        prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
-        decode_forward_pass_config: DecoderForwardPassConfig | None = None,
+        prefill_forward_pass_config: ModelForwardPassConfig | None = None,
+        decode_forward_pass_config: ModelForwardPassConfig | None = None,
         *,
         keychain: Keychain,
     ) -> GenerationResults:
         if max_output_length < 1:
             raise ValueError("max_output_length must be at least 1.")
         if prefill_forward_pass_config is None:
-            prefill_forward_pass_config = DecoderForwardPassConfig.for_inference()
+            prefill_forward_pass_config = ModelForwardPassConfig.for_inference()
         if decode_forward_pass_config is None:
-            decode_forward_pass_config = DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN)
+            decode_forward_pass_config = ModelForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN)
 
         batch_size, prompt_length = prompt_token_ids.shape
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
@@ -445,8 +445,8 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
         messages: Iterable[Message],
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
-        prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
-        decode_forward_pass_config: DecoderForwardPassConfig | None = None,
+        prefill_forward_pass_config: ModelForwardPassConfig | None = None,
+        decode_forward_pass_config: ModelForwardPassConfig | None = None,
         *,
         reasoning_effort: ReasoningEffort | None = None,
         keychain: Keychain,
@@ -478,17 +478,17 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
         prompt_token_ids: Int[Array, " prompt_tokens"],
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
-        prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
-        decode_forward_pass_config: DecoderForwardPassConfig | None = None,
+        prefill_forward_pass_config: ModelForwardPassConfig | None = None,
+        decode_forward_pass_config: ModelForwardPassConfig | None = None,
         *,
         keychain: Keychain,
     ) -> Iterable[Int[Array, ""]]:
         if max_output_length < 1:
             raise ValueError("max_output_length must be at least 1.")
         if prefill_forward_pass_config is None:
-            prefill_forward_pass_config = DecoderForwardPassConfig.for_inference()
+            prefill_forward_pass_config = ModelForwardPassConfig.for_inference()
         if decode_forward_pass_config is None:
-            decode_forward_pass_config = DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN)
+            decode_forward_pass_config = ModelForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN)
 
         generation_config = self.config.generation_config.override_with(generation_config or GenerationConfig())
 
@@ -573,8 +573,8 @@ class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
         prompt: str,
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
-        prefill_forward_pass_config: DecoderForwardPassConfig | None = None,
-        decode_forward_pass_config: DecoderForwardPassConfig | None = None,
+        prefill_forward_pass_config: ModelForwardPassConfig | None = None,
+        decode_forward_pass_config: ModelForwardPassConfig | None = None,
         *,
         keychain: Keychain,
     ) -> Iterable[str]:

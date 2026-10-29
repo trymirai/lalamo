@@ -1,7 +1,7 @@
-from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
+from lalamo.model_import.loaders.binding import Binder
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
@@ -10,10 +10,8 @@ from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.modules.transformer import TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
 
-from .common import HuggingFaceLMConfig
+from .common import HuggingFaceLMConfig, residual_decoder
 
 __all__ = ["HFMistralConfig"]
 
@@ -42,10 +40,7 @@ class HFMistralConfig(HuggingFaceLMConfig):
     vocab_size: int
     head_dim: int | None = None
 
-    def to_decoder_config(
-        self,
-        metadata_dict: Mapping[str, str],  # noqa: ARG002
-    ) -> DecoderConfig:
+    def build_decoder(self, at: Binder) -> DecoderConfig:
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
@@ -81,47 +76,38 @@ class HFMistralConfig(HuggingFaceLMConfig):
             has_down_biases=False,
             up_clipping=None,
             gate_clipping=None,
-        )
-
-        layer_configs = []
-        for _ in range(self.num_hidden_layers):
-            attention_config = AttentionConfig(
-                qkvg_projection_config=linear_config,
-                out_projection_config=linear_config,
-                query_norm_config=None,
-                key_norm_config=None,
-                logit_soft_cap=None,
-                has_sinks=False,
-                has_qkvg_biases=False,
-                has_out_biases=False,
-                num_heads=self.num_attention_heads,
-                num_groups=self.num_key_value_heads,
-                head_dim=head_dim,
-                is_causal=True,
-                scale=None,
-                sliding_window_size=self.sliding_window,
-            )
-
-            transformer_layer_config = TransformerLayerConfig(
-                pre_mixer_norm_config=rmsnorm_config,
-                mixer_config=attention_config,
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=rmsnorm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=None,
-                rope_config=rope_config,
-            )
-            layer_configs.append(transformer_layer_config)
-
-        transformer_config = TransformerConfig(
-            layer_configs=tuple(layer_configs),
-            output_norm_config=rmsnorm_config,
-            model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
         )
 
-        return DecoderConfig(
-            embedding_config=embedding_config,
-            transformer_config=transformer_config,
+        attention_config = AttentionConfig(
+            qkvg_projection_config=linear_config,
+            out_projection_config=linear_config,
+            query_norm_config=None,
+            key_norm_config=None,
+            logit_soft_cap=None,
+            has_sinks=False,
+            has_qkvg_biases=False,
+            has_out_biases=False,
+            num_heads=self.num_attention_heads,
+            num_groups=self.num_key_value_heads,
+            head_dim=head_dim,
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
+            rope_config=rope_config,
+        )
+        windows = [self.sliding_window] * self.num_hidden_layers
+        return residual_decoder(
+            at,
+            embedding=at("model.embed_tokens", embedding_config),
+            layers=[
+                (
+                    at(f"model.layers.{index}.self_attn", replace(attention_config, sliding_window_size=window)),
+                    at(f"model.layers.{index}.mlp", mlp_config),
+                )
+                for index, window in enumerate(windows)
+            ],
+            norm=rmsnorm_config,
+            model_dim=self.hidden_size,
             vocab_size=self.vocab_size,
         )

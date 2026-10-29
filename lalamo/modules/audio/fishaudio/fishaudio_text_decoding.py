@@ -11,11 +11,10 @@ from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
 )
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfig
-from lalamo.modules.decoder import DecoderForwardPassConfig
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
+from lalamo.modules.flow import Context, EmitConfig, Sequence, SequenceConfig, State, init_state, run, validate_program
+from lalamo.modules.forward_pass import ModelForwardPassConfig
 from lalamo.modules.linear import Linear, LinearConfig
-from lalamo.modules.token_mixer import State
-from lalamo.modules.transformer import Transformer, TransformerConfig
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 from lalamo.sampling import SamplingPolicy
 
@@ -40,11 +39,13 @@ class DecodeUtteranceLoopState(NamedTuple):
 @dataclass(frozen=True)
 class FishAudioTextDecoderConfig(TTSTextDecoderConfig):
     slow_embeddings_config: TiedEmbeddingConfig
-    slow_model_config: TransformerConfig
+    slow_model_config: SequenceConfig
+    # The slow model's hidden state before its output norm, which feeds the fast model.
+    slow_hidden_states: EmitConfig
     slow_readout_config: LinearConfig
 
     fast_embeddings_config: TiedEmbeddingConfig
-    fast_model_config: TransformerConfig
+    fast_model_config: SequenceConfig
     fast_readout_config: LinearConfig
 
     codebook_embeddings_config: TiedEmbeddingConfig
@@ -64,6 +65,10 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfig):
 
     short_logits_size: int = 1024
     repeat_window_size: int = 16
+
+    def __post_init__(self) -> None:
+        validate_program(self.slow_model_config, (self.slow_hidden_states,))
+        validate_program(self.fast_model_config)
 
     def init(self, initializer: Initializer) -> "FishAudioTextDecoder":
         embeddings_slow = self.slow_embeddings_config.init(
@@ -99,7 +104,7 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfig):
             config=self,
             sharding_config=initializer.sharding_config,
             embeddings_slow=embeddings_slow,
-            transformer_slow=self.slow_model_config.init(initializer),
+            slow_model=self.slow_model_config.init(initializer, self.slow_model_dim),
             readout_slow=self.slow_readout_config.init(
                 initializer,
                 input_dim=self.slow_model_dim,
@@ -107,7 +112,7 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfig):
                 has_biases=False,
             ),
             embeddings_fast=embeddings_fast,
-            transformer_fast=self.fast_model_config.init(initializer),
+            fast_model=self.fast_model_config.init(initializer, self.fast_model_dim),
             readout_fast=self.fast_readout_config.init(
                 initializer,
                 input_dim=self.fast_model_dim,
@@ -121,11 +126,11 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfig):
 
 class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     embeddings_slow: TiedEmbedding
-    transformer_slow: Transformer
+    slow_model: Sequence
     readout_slow: Linear
 
     embeddings_fast: TiedEmbedding
-    transformer_fast: Transformer
+    fast_model: Sequence
     readout_fast: Linear
 
     codebook_embeddings: TiedEmbedding
@@ -142,7 +147,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         keychain: Keychain,
         input_pos: Int[Array, "batch tokens"] | None = None,
         state: State | None = None,
-        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
+        forward_pass_config: ModelForwardPassConfig = ModelForwardPassConfig(),
     ) -> FishAudioTextDecoderResult:
         batch_size, seq_length = text_tokens.shape
         if input_pos is None:
@@ -180,7 +185,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         self,
         inp: Int[Array, "batch codebooks tokens"],
         apply_codebook_embeddings: bool = False,
-        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
+        forward_pass_config: ModelForwardPassConfig = ModelForwardPassConfig(),
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch tokens embedding"]:
@@ -254,7 +259,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         sampling_policy: SamplingPolicy | None = None,
         *,
         keychain: Keychain,
-        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
+        forward_pass_config: ModelForwardPassConfig = ModelForwardPassConfig(),
     ) -> Int[Array, "num_codebooks semantic_tokens"]:
         """
         Generate semantic tokens for a full utterance given text tokens in an autoregressive
@@ -298,11 +303,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             forward_pass_config=forward_pass_config,
             keychain=embed_keychain,
         )
-        initial_slow_state = self.transformer_slow.init_static_state(
-            batch_size,
-            max_seq_len,
-            embeddings.dtype,
-        )
+        initial_slow_state = init_state(self.slow_model, batch_size, max_seq_len, embeddings.dtype)
         first_codes, state_slow = decode_next_token(
             model=self,
             x=embeddings,
@@ -392,36 +393,43 @@ def decode_next_token(
     sampling_policy: SamplingPolicy,
     *,
     keychain: Keychain,
-    forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
+    forward_pass_config: ModelForwardPassConfig = ModelForwardPassConfig(),
     previous_tokens: Array | None = None,
     previous_tokens_length: Int[Array, ""] | None = None,
 ) -> tuple[Int[Array, "batch codebooks"], State | None]:
     batch_size = x.shape[0]
     assert batch_size == 1, "Batch scheduling not supported yet"
     (
-        slow_transformer_keychain,
+        slow_model_keychain,
         fast_projection_keychain,
         slow_readout_keychain,
-        fast_transformer_keychain,
+        fast_model_keychain,
         fast_readout_keychain,
         fast_embed_keychain,
     ) = keychain.split(6)
     slow_sampling_keychain, loop_sampling_keychain = keychain.split()
 
-    slow_model_result = model.transformer_slow(
-        inner_features=x,
-        token_positions=input_pos,
-        state=state_slow,
+    def context(token_positions: Int[Array, "batch tokens"]) -> Context:
+        return Context(
+            None,
+            token_positions,
+            None,
+            None,
+            forward_pass_config.flow_forward_pass_config,
+            model.sharding_config,
+        )
+
+    slow_model_result = run(
+        model.slow_model,
+        x,
+        context(input_pos),
+        state_slow,
+        keychain=slow_model_keychain,
         return_updated_state=True,
-        return_layer_results=False,
-        return_positional_embeddings=False,
-        lengths_without_padding=None,
-        forward_pass_config=forward_pass_config.transformer_forward_pass_config,
-        return_suffix_tokens=1,
-        keychain=slow_transformer_keychain,
+        suffix=1,
+        taps=(model.config.slow_hidden_states,),
     )
-    assert slow_model_result.pre_norm_outputs is not None
-    hidden_states = slow_model_result.pre_norm_outputs
+    (hidden_states,) = slow_model_result.taps
     if model.fast_model_projection is not None:
         (hidden_states,) = call_vmapped(
             model.fast_model_projection,
@@ -450,21 +458,18 @@ def decode_next_token(
     first_fast_code = jnp.maximum(first_fast_code, 0)
     codebooks = codebooks.at[0, 1].set(first_fast_code[0])
 
-    state_fast = model.transformer_fast.init_static_state(batch_size, n_codes, hidden_states.dtype)
+    state_fast = init_state(model.fast_model, batch_size, n_codes, hidden_states.dtype)
 
     input_pos_fast = jnp.zeros((batch_size, 1), dtype=jnp.int32)
-    fast_first_result = model.transformer_fast(
-        inner_features=hidden_states,
-        token_positions=input_pos_fast,
-        state=state_fast,
+    fast_first_result = run(
+        model.fast_model,
+        hidden_states,
+        context(input_pos_fast),
+        state_fast,
+        keychain=fast_model_keychain,
         return_updated_state=True,
-        return_layer_results=False,
-        return_positional_embeddings=False,
-        lengths_without_padding=None,
-        forward_pass_config=forward_pass_config.transformer_forward_pass_config,
-        keychain=fast_transformer_keychain,
     )
-    state_fast = fast_first_result.updated_state
+    state_fast = fast_first_result.state
 
     embedded_logits = call_vmapped(
         model.embeddings_fast.embed,
@@ -480,26 +485,23 @@ def decode_next_token(
         loop_input: tuple[Int[Array, ""], Array],
     ) -> tuple[tuple[State | None, Array, Any], None]:
         index, sample_vmapped_key = loop_input
-        transformer_state, logits, codebooks = iteration_state
+        fast_state, logits, codebooks = iteration_state
         logits = logits.reshape(logits.shape[0], 1, -1)
         input_pos_fast = jnp.array([index - 1])[None, :]
-        fast_result = model.transformer_fast(
-            inner_features=logits,
-            token_positions=input_pos_fast,
-            state=transformer_state,
+        fast_result = run(
+            model.fast_model,
+            logits,
+            context(input_pos_fast),
+            fast_state,
+            keychain=fast_model_keychain,
             return_updated_state=True,
-            return_layer_results=False,
-            return_positional_embeddings=False,
-            lengths_without_padding=None,
-            forward_pass_config=forward_pass_config.transformer_forward_pass_config,
-            keychain=fast_transformer_keychain,
         )
         (fast_logits,) = call_vmapped_twice(
             model.readout_fast,
             fast_result.outputs,
             keychain=fast_readout_keychain,
         )
-        new_state = fast_result.updated_state
+        new_state = fast_result.state
 
         short_logits = fast_logits[:, :, : model.config.short_logits_size]
         code = _sample_with_previous_tokens(
@@ -531,7 +533,7 @@ def decode_next_token(
     )
     _, _, codebooks = scan_result
 
-    return codebooks, slow_model_result.updated_state
+    return codebooks, slow_model_result.state
 
 
 def _sample_with_previous_tokens(

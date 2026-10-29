@@ -8,8 +8,8 @@ from jax.sharding import Mesh, NamedSharding, Sharding
 from jaxtyping import Array
 
 from lalamo.module import Keychain, LogicalAxis
+from lalamo.modules.flow import AttentionImplementation, MixerForwardPassConfig
 from lalamo.modules.linear import Linear, LinearConfig
-from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPassConfig
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.dummy_array import dummy_array
@@ -41,10 +41,12 @@ def _attention(
     *,
     logit_soft_cap: float | None = None,
     has_gate: bool = False,
-    is_kv_sharing: bool = False,
+    kv_source: AttentionConfig | None = None,
 ) -> Attention:
     qkv_dim = NUM_HEADS * HEAD_DIM
-    output_dims = (qkv_dim,) if is_kv_sharing else (qkv_dim, qkv_dim, qkv_dim)
+    output_dims = (qkv_dim, qkv_dim, qkv_dim)
+    if kv_source is not None:
+        output_dims = (qkv_dim,)
     if has_gate:
         output_dims = (*output_dims, qkv_dim)
     return Attention(
@@ -64,13 +66,14 @@ def _attention(
             has_qkvg_biases=False,
             has_out_biases=False,
             has_gate=has_gate,
-            is_kv_sharing=is_kv_sharing,
+            kv_source=kv_source,
         ),
         sharding_config=make_test_sharding_config(),
         qkvg_projection=_linear(_weights((sum(output_dims), MODEL_DIM)), output_dims),
         out_projection=_linear(_weights((MODEL_DIM, qkv_dim), offset=100), (MODEL_DIM,)),
         query_norm=None,
         key_norm=None,
+        value_norm=None,
         sinks=None,
     )
 
@@ -153,7 +156,7 @@ def test_gated_attention_matches_reference(fake_mesh: Mesh) -> None:
 
 def test_gated_kv_sharing_matches_equivalent_full_projection(fake_mesh: Mesh) -> None:
     source = _attention()
-    query_gate = _attention(has_gate=True, is_kv_sharing=True)
+    query_gate = _attention(has_gate=True, kv_source=source.config)
     query_weights, gate_weights = jnp.split(query_gate.qkvg_projection.weights.decompress(), 2)
     _, key_weights, value_weights = jnp.split(source.qkvg_projection.weights.decompress(), 3)
     full = _attention(has_gate=True)
@@ -175,7 +178,6 @@ def test_gated_kv_sharing_matches_equivalent_full_projection(fake_mesh: Mesh) ->
         inputs,
         positional_embeddings=None,
         state=source_result.state,
-        reuse_cache=True,
         keychain=Keychain.init(13, sharding_config=make_test_sharding_config()),
     )
     full_result = full(
@@ -331,6 +333,7 @@ def test_attention_export_load_roundtrips_and_preserves_template_sharding(fake_m
         ),
         query_norm=None,
         key_norm=None,
+        value_norm=None,
         sinks=None,
     )
     inputs = _sharded_sequence(_inputs())

@@ -10,9 +10,9 @@ from jaxtyping import Array
 from lalamo.initializer import RandomInitializer
 from lalamo.kernels.deltanet import deltanet_recurrent_scan
 from lalamo.module import Keychain, LogicalAxis, ShardingConfig
+from lalamo.modules.flow import MixerForwardPassConfig
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.token_mixer import MixerForwardPassConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
 from lalamo.modules.token_mixers.ssm_state import SSMStateLayer

@@ -8,16 +8,15 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain
-from lalamo.modules.activations import Activation
-from lalamo.modules.linear import Linear, LinearConfig
-from lalamo.modules.rope import PositionalEmbeddings
-from lalamo.modules.token_mixer import (
+from lalamo.modules.activations import Activation, SiLU
+from lalamo.modules.flow import (
     MixerForwardPassConfig,
-    PositionalEmbeddingSelector,
     TokenMixerBase,
     TokenMixerConfig,
     TokenMixerResult,
 )
+from lalamo.modules.linear import Linear, LinearConfig
+from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixers.convolutions import ConvPrecision
 from lalamo.modules.utils import call_vmapped
 
@@ -183,10 +182,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
     def conv_dim(self) -> int:
         return self.inner_dim + 2 * self.config.num_groups * self.config.state_dim
 
-    @property
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        return PositionalEmbeddingSelector.NONE
-
     def _step(
         self,
         values: Float[Array, "heads head_dim"],
@@ -238,7 +233,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
 
         y = y + self.skip_connection_weight.astype(y.dtype)[:, None] * values
         y = rearrange(y, "heads head_dim -> (heads head_dim)")
-        gated = y * jax.nn.silu(gate + self.gate_bias.astype(gate.dtype))
+        gated = y * SiLU()(gate + self.gate_bias.astype(gate.dtype))
         (output,) = self.out_projection(
             gated,
             keychain=keychain,
@@ -300,7 +295,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
                 output = output + d[:, None] * values_t
             if z is not None:
                 gate = z_t + z_bias if z_bias is not None else z_t
-                output = output * jax.nn.silu(gate)
+                output = output * SiLU()(gate)
 
             propagated_state = jax.lax.cond(index < num_steps_arr, lambda: updated_state, lambda: carry_state)
             return (index + 1, propagated_state), output
@@ -435,7 +430,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
 
         if z is not None:
             gate = z + z_bias[None, :, :] if z_bias is not None else z
-            y = y * jax.nn.silu(gate)
+            y = y * SiLU()(gate)
 
         y = y[:seq_len]
 
@@ -594,7 +589,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
-        reuse_cache: bool = False,
         precision: DTypeLike = jnp.float32,
         *,
         keychain: Keychain,
@@ -603,8 +597,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             raise ValueError("Positional embeddings are not supported for Mamba2.")
         if attention_parent_indices is not None:
             raise ValueError("Attention parent indices are not supported for Mamba2.")
-        if reuse_cache:
-            raise ValueError("KV cache sharing is not supported for Mamba2.")
 
         if state is None:
             state = SSMStateLayer.init(

@@ -1,7 +1,7 @@
-from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
+from lalamo.model_import.loaders.binding import Binder
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
@@ -10,10 +10,8 @@ from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import YARNRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.modules.transformer import TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
 
-from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
+from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType, residual_decoder
 
 __all__ = ["HFBonsaiConfig"]
 
@@ -53,10 +51,7 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
     quantization: QuantizationConfigType = None
 
-    def to_decoder_config(
-        self,
-        metadata_dict: Mapping[str, str],  # noqa: ARG002
-    ) -> DecoderConfig:
+    def build_decoder(self, at: Binder) -> DecoderConfig:
         assert isinstance(self.quantization, MLXQuantizationConfig), "HFBonsaiConfig requires MLX quantization config"
         assert not self.use_sliding_window, "Sliding window attention is not supported for Bonsai"
         if self.tie_word_embeddings:
@@ -95,6 +90,7 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
             has_down_biases=False,
             up_clipping=None,
             gate_clipping=None,
+            hidden_dim=self.intermediate_size,
         )
 
         attention_config = AttentionConfig(
@@ -113,23 +109,17 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
             scale=None,
             sliding_window_size=None,
         )
-        transformer_layer_config = TransformerLayerConfig(
-            pre_mixer_norm_config=rmsnorm_config,
-            mixer_config=attention_config,
-            post_mixer_norm_config=None,
-            pre_mlp_norm_config=rmsnorm_config,
-            mlp_config=mlp_config,
-            post_mlp_norm_config=None,
-            rope_config=rope_config,
-        )
-        transformer_config = TransformerConfig(
-            layer_configs=(transformer_layer_config,) * self.num_hidden_layers,
-            output_norm_config=rmsnorm_config,
+        return residual_decoder(
+            at,
+            embedding=at("model.embed_tokens", embedding_config),
+            layers=[
+                (
+                    at(f"model.layers.{index}.self_attn", replace(attention_config, rope_config=rope_config)),
+                    at(f"model.layers.{index}.mlp", mlp_config),
+                )
+                for index in range(self.num_hidden_layers)
+            ],
+            norm=rmsnorm_config,
             model_dim=self.hidden_size,
-            hidden_dim=self.intermediate_size,
-        )
-        return DecoderConfig(
-            embedding_config=embedding_config,
-            transformer_config=transformer_config,
             vocab_size=self.vocab_size,
         )

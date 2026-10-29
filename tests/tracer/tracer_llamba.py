@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterable
+from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import batched
 from typing import Self
@@ -8,14 +8,20 @@ import mlx.core as mx
 from jaxtyping import Array
 from mlx import nn
 
-from lalamo.modules.decoder import DecoderResult
+from lalamo.model_import.loaders.binding import Binder
+from lalamo.model_import.model_configs import ForeignConfig, HFLlambaConfig
+from lalamo.model_import.model_configs.huggingface.llamba import LlambaCheckpointLayout
+from lalamo.modules.classifier import ClassifierConfig
+from lalamo.modules.decoder import DecoderConfig
 from lalamo.utils.mlx_interop import jax_to_mlx, mlx_to_jax
-from tests.tracer.tracer import DType, InferenceResult, ModelTracer
+from lalamo.utils.parameter_path import ParameterPath
+from tests.tracer.tracer import DType, ModelTracer
 
 
 @dataclass(frozen=True)
-class LlambaDecoderTracer(ModelTracer[mx.array, tuple[nn.Module, nn.Module], nn.RMSNorm, nn.Module, nn.Module]):
+class LlambaDecoderTracer(ModelTracer[mx.array, nn.Module]):
     model: nn.Module
+    modules: Mapping[str, nn.Module]
 
     def from_jax(self, array: Array) -> mx.array:
         return jax_to_mlx(array)
@@ -23,102 +29,55 @@ class LlambaDecoderTracer(ModelTracer[mx.array, tuple[nn.Module, nn.Module], nn.
     def to_jax(self, array: mx.array) -> Array:
         return mlx_to_jax(array)
 
+    def build(self, foreign_config: ForeignConfig, at: Binder) -> DecoderConfig | ClassifierConfig:
+        # The traced checkpoints are MLX conversions.
+        assert isinstance(foreign_config, HFLlambaConfig)
+        return foreign_config.build_decoder(at, LlambaCheckpointLayout.MLX)
+
+    def module_at(self, path: ParameterPath) -> nn.Module | None:
+        return self.modules.get(str(path))
+
+    def _child(self, name: str) -> nn.Module:
+        child = getattr(self.model, name)
+        assert child is not None
+        return child
+
     def embedding(self, token_ids: mx.array) -> mx.array:
-        assert self.model.embedding is not None
+        return self._child("embedding")(token_ids)
 
-        return self.model.embedding(token_ids)
+    def norm(self, norm: nn.Module, x: mx.array) -> mx.array:
+        return norm(x)
 
-    def rope_fns(self) -> list[tuple[str, Callable[[mx.array, mx.array], tuple[mx.array, mx.array]]]]:
-        return []
-
-    def rmsnorm(self, rmsnorm: nn.Module, x: mx.array) -> mx.array:
-        return rmsnorm(x)
-
-    def attention(
+    def mixer(
         self,
-        attention: nn.Module,
-        hidden_states: mx.array,
-        position_embeddings: tuple[mx.array, mx.array] | None,
+        mixer: nn.Module,
+        x: mx.array,
+        positional_embeddings: tuple[mx.array, mx.array] | None,
+        path: ParameterPath,  # noqa: ARG002
     ) -> mx.array:
-        assert position_embeddings is None
-
-        ssd_output, _ssd_states = attention(hidden_states)
+        assert positional_embeddings is None
+        ssd_output, _ssd_states = mixer(x)
         return ssd_output
 
     def mlp(self, mlp: nn.Module, x: mx.array) -> mx.array:
         return mlp(x)
 
-    def layer(
-        self,
-        layer: tuple[nn.Module, nn.Module],
-        hidden_states: mx.array,
-        position_embeddings: tuple[mx.array, mx.array] | None,
-    ) -> mx.array:
-        assert position_embeddings is None
-
-        ssd_output, _ssd_state = layer[0](hidden_states)
-        return layer[1](ssd_output)
-
-    def layer_pre_attention_norm(self, layer: tuple[nn.Module, nn.Module]) -> nn.RMSNorm:
-        assert layer[0].norm is not None
-
-        return layer[0].norm
-
-    def layer_attention(self, layer: tuple[nn.Module, nn.Module]) -> nn.Module:
-        assert layer[0].layer is not None
-
-        return layer[0].layer
-
-    def layer_mlp(self, layer: tuple[nn.Module, nn.Module]) -> nn.Module:
-        assert layer[1].layer is not None
-
-        return layer[1].layer
-
-    def layer_pre_mlp_norm(self, layer: tuple[nn.Module, nn.Module]) -> nn.RMSNorm:
-        assert layer[1].norm is not None
-
-        return layer[1].norm
-
-    def iterate_layers(self) -> Iterable[tuple[nn.Module, nn.Module]]:
-        assert self.model.model is not None
-
-        return batched(self.model.model.layers, n=2)
-
-    def output_norm(self) -> nn.RMSNorm:
-        assert self.model.model is not None
-
-        return self.model.model.norm
-
     def readout(self, x: mx.array) -> mx.array:
-        assert self.model.head is not None
-        return self.model.head(x)
+        return self._child("head")(x)
 
-    def forward(
-        self,
-        input_ids: mx.array,
-        position_ids: mx.array,
-    ) -> tuple[tuple[mx.array, ...], mx.array, mx.array]:
+    def forward(self, input_ids: mx.array, position_ids: mx.array) -> tuple[tuple[mx.array, ...], mx.array, mx.array]:
         assert mx.array_equal(position_ids.squeeze(), mx.arange(position_ids.shape[-1])), (
             "mlx always does sequential position_ids"
         )
-
-        assert self.model.embedding is not None
-        assert self.model.model is not None
-        assert self.model.head is not None
-
         hidden_states = [self.embedding(input_ids)]
-        for layer in self.iterate_layers():
-            hidden_states.append(self.layer(layer, hidden_states[-1], None))
-
-        last_norm_output, _ssm_states = self.model.model(self.model.embedding(input_ids))
-        output_logits = self.model.head(last_norm_output)
-
-        return (tuple(hidden_states[:-1]), last_norm_output, output_logits)
-
-    def normalized_output(self, result: InferenceResult) -> mx.array:
-        assert result.activation_trace is not None
-        assert isinstance(result, DecoderResult)
-        return self.from_jax(result.activation_trace.output_norm[None, ...])
+        backbone = self._child("model")
+        layers = backbone.layers
+        assert layers is not None
+        for mixer_block, mlp_block in batched(layers, n=2):
+            ssd_output, _ssd_state = mixer_block(hidden_states[-1])
+            hidden_states.append(mlp_block(ssd_output))
+        last_norm_output, _ssm_states = backbone(self.embedding(input_ids))
+        return (tuple(hidden_states[:-1]), last_norm_output, self.readout(last_norm_output))
 
     @classmethod
     def load(cls, model_repo: str, dtype: DType | None) -> Self:
@@ -127,4 +86,4 @@ class LlambaDecoderTracer(ModelTracer[mx.array, tuple[nn.Module, nn.Module], nn.
         if dtype is not None:
             model.set_dtype(dtype.mlx_dtype)
 
-        return cls(model)
+        return cls(model, dict(model.named_modules()))

@@ -1,5 +1,6 @@
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import replace
+from functools import partial
 from typing import Literal
 
 import equinox as eqx
@@ -10,26 +11,34 @@ from jaxtyping import Array
 
 from lalamo.compressed import IntMatrix, IntSpec, MicrofloatSpec, MLXMatrix, MLXSpec
 from lalamo.compressed.utils.packing import pack_uint_to_uint8
-from lalamo.modules.classifier import Classifier
-from lalamo.modules.decoder import Decoder
+from lalamo.module import LalamoModule
+from lalamo.modules.classifier import Classifier, ClassifierConfig
+from lalamo.modules.decoder import Decoder, DecoderConfig
 from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding
 from lalamo.modules.linear import Linear
-from lalamo.modules.mlp import DenseMLP, MixtureOfExperts, MLPBase
+from lalamo.modules.mlp import DenseMLP, Gemma4Router, MixtureOfExperts, MLPBase, RoutedExperts
 from lalamo.modules.normalization import Normalization
-from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
-from lalamo.modules.token_mixers.convolutions import SeparableCausalConv
-from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
-from lalamo.modules.token_mixers.mamba import Mamba2, Mamba2Config
-from lalamo.modules.token_mixers.short_conv import ShortConv, ShortConvConfig
-from lalamo.modules.transformer_layer import TransformerLayer
+from lalamo.modules.per_layer import PerLayerInputs, Projection, Scale
+from lalamo.modules.token_mixers.attention import Attention
+from lalamo.modules.token_mixers.convolutions import DynamicConv, DynamicConvKernels, SeparableCausalConv
+from lalamo.modules.token_mixers.deltanet import DeltaNet
+from lalamo.modules.token_mixers.mamba import Mamba2
+from lalamo.modules.token_mixers.short_conv import ShortConv
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at
 from lalamo.weight_matrix import CompressionImplementation, EmbeddingMatrix, Layout, WeightMatrix
 
+from .binding import Binder, CheckpointView, Loader
 from .common import load_full_precision
 
-__all__ = ["load_huggingface_decoder", "load_linear", "load_rmsnorm"]
+__all__ = [
+    "huggingface_loader",
+    "load_huggingface_classifier",
+    "load_huggingface_decoder",
+    "load_linear",
+    "load_rmsnorm",
+]
 
 
 AWQ_UINT4_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
@@ -473,8 +482,8 @@ def load_mlp(
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
 
-def load_moe(
-    module: MixtureOfExperts,
+def load_moe[ExpertsT: MixtureOfExperts | RoutedExperts](
+    module: ExpertsT,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     up_proj_key: str = "up_proj",
@@ -482,17 +491,12 @@ def load_moe(
     down_proj_key: str = "down_proj",
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-) -> MixtureOfExperts:
-    if (path / "router.weight") in weights_dict or (path / "router.qweight") in weights_dict:
-        router_path = path / "router"
-    elif (path / "gate.weight") in weights_dict or (path / "gate.qweight") in weights_dict:
-        router_path = path / "gate"
-    else:
-        router_path = path / "router"
-    router = load_linear(module.router, weights_dict, router_path, implementation=implementation)
-
+    router_path: ParameterPath | None = None,
+) -> ExpertsT:
     num_routed = module.config.num_routed_experts
-    num_shared = module.config.num_shared_experts
+    num_shared = 0
+    if isinstance(module, MixtureOfExperts):
+        num_shared = module.config.num_shared_experts
     experts_path = path / "experts"
     gate_up_path = experts_path / "gate_up_proj"
     down_path = experts_path / "down_proj"
@@ -541,7 +545,7 @@ def load_moe(
         )
 
     def load_shared_experts() -> DenseMLP | None:
-        if module.shared_experts is None:
+        if not isinstance(module, MixtureOfExperts) or module.shared_experts is None:
             return None
         if (path / "shared_expert" / "up_proj.weight") in weights_dict:
             if num_shared != 1:
@@ -629,6 +633,19 @@ def load_moe(
         )
         shared_experts = load_shared_experts()
 
+    if isinstance(module, RoutedExperts):
+        return load_as_at(lambda model: (model.routed_experts,), module, (routed_experts,))
+    assert isinstance(module, MixtureOfExperts)
+
+    if router_path is None:
+        if (path / "router.weight") in weights_dict or (path / "router.qweight") in weights_dict:
+            router_path = path / "router"
+        elif (path / "gate.weight") in weights_dict or (path / "gate.qweight") in weights_dict:
+            router_path = path / "gate"
+        else:
+            router_path = path / "router"
+    router = load_linear(module.router, weights_dict, router_path, implementation=implementation)
+
     gate = None
     if module.gate is not None:
         gate_path = None
@@ -644,10 +661,13 @@ def load_moe(
     if module.expert_bias is not None:
         expert_bias = weights_dict[path / "expert_bias"]
 
-    return load_as_at(
-        lambda m: (m.router, m.routed_experts, m.shared_experts, m.gate, m.expert_bias),
+    return replace(
         module,
-        (router, routed_experts, shared_experts, gate, expert_bias),
+        router=router,
+        routed_experts=routed_experts,
+        shared_experts=shared_experts,
+        gate=gate,
+        expert_bias=expert_bias,
     )
 
 
@@ -736,7 +756,12 @@ def load_attention(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> Attention:
-    projection_sublayers = ["q_proj"] if module.config.is_kv_sharing else ["q_proj", "k_proj", "v_proj"]
+    if module.config.kv_source is not None:
+        projection_sublayers = ["q_proj"]
+    elif module.config.values_from_keys:
+        projection_sublayers = ["q_proj", "k_proj"]
+    else:
+        projection_sublayers = ["q_proj", "k_proj", "v_proj"]
     projection_weights = weights_dict
     if module.config.has_gate:
         if (path / "gate_proj" / "weight") in weights_dict or (path / "gate_proj" / "qweight") in weights_dict:
@@ -994,101 +1019,6 @@ def load_delta_net_attention(
     )
 
 
-def load_transformer_layer(
-    module: TransformerLayer,
-    weights_dict: Mapping[str, Array],
-    mixer_path: ParameterPath,
-    mlp_path: ParameterPath,
-    mixer_key: str,
-    mlp_key: str,
-    pre_mixer_norm_key: str,
-    pre_mlp_norm_key: str,
-    up_proj_key: str,
-    gate_proj_key: str,
-    down_proj_key: str,
-    permute_conv: bool,
-    *,
-    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-) -> TransformerLayer:
-    pre_attention_norm = _load_optional_rmsnorm(module.pre_mixer_norm, weights_dict, mixer_path / pre_mixer_norm_key)
-    # Load mixer (attention or mamba)
-    if isinstance(module.mixer, Attention):
-        mixer = load_attention(
-            module.mixer,
-            weights_dict,
-            mixer_path / mixer_key,
-            implementation=implementation,
-        )
-    elif isinstance(module.mixer, DeltaNet):
-        mixer = load_delta_net_attention(
-            module.mixer,
-            weights_dict,
-            mixer_path / mixer_key,
-            permute_conv,
-            implementation=implementation,
-        )
-    elif isinstance(module.mixer, Mamba2):
-        mixer = load_mamba2(
-            module.mixer,
-            weights_dict,
-            mixer_path / mixer_key,
-            permute_conv,
-            implementation=implementation,
-        )
-    elif isinstance(module.mixer, ShortConv):
-        mixer = load_short_conv(
-            module.mixer,
-            weights_dict,
-            mixer_path / mixer_key,
-            permute_conv,
-            implementation=implementation,
-        )
-    else:
-        mixer = module.mixer
-
-    assert isinstance(module.pre_mlp_norm, Normalization)
-    if module.post_mixer_norm is not None:
-        post_attention_norm = load_rmsnorm(
-            module.post_mixer_norm, weights_dict, mixer_path / "post_attention_layernorm"
-        )
-        pre_mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, mlp_path / "pre_feedforward_layernorm")
-    else:
-        post_attention_norm = None
-        pre_mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, mlp_path / pre_mlp_norm_key)
-
-    mlp = load_mlp(
-        module.mlp,
-        weights_dict,
-        mlp_path / mlp_key,
-        up_proj_key,
-        gate_proj_key,
-        down_proj_key,
-        implementation=implementation,
-    )
-
-    post_mlp_norm = _load_optional_rmsnorm(module.post_mlp_norm, weights_dict, mlp_path / "post_feedforward_layernorm")
-
-    return load_as_at(
-        lambda m: (
-            m.pre_mixer_norm,
-            m.mixer,
-            m.post_mixer_norm,
-            m.pre_mlp_norm,
-            m.mlp,
-            m.post_mlp_norm,
-        ),
-        module,
-        (
-            pre_attention_norm,
-            mixer,
-            post_attention_norm,
-            pre_mlp_norm,
-            mlp,
-            post_mlp_norm,
-        ),
-    )
-
-
 def _load_output_embedding_matrix(
     matrix: WeightMatrix,
     weights_dict: Mapping[str, Array],
@@ -1172,320 +1102,242 @@ def load_untied_embedding(
     )
 
 
-def _get_mixer_key(
-    mixer_key: dict[type[object], str],
-    layer: TransformerLayer,
-) -> str:
-    mixer_config = layer.config.mixer_config
-    match mixer_config:
-        case AttentionConfig():
-            return mixer_key[AttentionConfig]
-        case DeltaNetConfig():
-            return mixer_key[DeltaNetConfig]
-        case Mamba2Config():
-            return mixer_key[Mamba2Config]
-        case ShortConvConfig():
-            return mixer_key[ShortConvConfig]
-        case _:
-            raise TypeError(f"Unsupported mixer config: {type(mixer_config)}")
-
-
-@dataclass(frozen=True)
-class DecoderLoadLayout:
-    decoder_path: ParameterPath
-    embedding_path: ParameterPath
-    pre_mixer_norm_key: str
-    mixer_key: dict[type[object], str]
-    permute_conv: bool
-    pre_mlp_norm_key: str
-    mlp_key: str
-    up_proj_key: str
-    gate_proj_key: str
-    down_proj_key: str
-    alternating_layers: bool
-    norm_key: str
-    lm_head_path: ParameterPath
-
-
-def _decoder_load_layout(
+def load_scale(
+    module: Scale,
     weights_dict: Mapping[str, Array],
-    root_path: ParameterPath,
-) -> DecoderLoadLayout:
-    if root_path.endswith(".language_model"):
-        decoder_path = root_path
-    else:
-        decoder_path = root_path / "model"
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG001
+) -> Scale:
+    return load_as_at(lambda m: (m.scale,), module, (weights_dict[path],))
 
-    nested_lm_head_path = root_path / "lm_head"
-    if _has_prefix(weights_dict, ParameterPath("lm_head")):
-        lm_head_path = ParameterPath("lm_head")
-    else:
-        lm_head_path = nested_lm_head_path
 
-    standard_layout = DecoderLoadLayout(
-        decoder_path=decoder_path,
-        embedding_path=decoder_path / "embed_tokens",
-        pre_mixer_norm_key="input_layernorm",
-        mixer_key={AttentionConfig: "self_attn", DeltaNetConfig: "linear_attn"},
-        permute_conv=False,
-        pre_mlp_norm_key="post_attention_layernorm",
-        mlp_key="mlp",
-        up_proj_key="up_proj",
-        gate_proj_key="gate_proj",
-        down_proj_key="down_proj",
-        alternating_layers=False,
-        norm_key="norm",
-        lm_head_path=lm_head_path,
+def load_projection(
+    module: Projection,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> Projection:
+    return load_as_at(
+        lambda m: (m.linear,),
+        module,
+        (load_linear(module.linear, weights_dict, path, implementation=implementation),),
     )
 
-    backbone_path = root_path / "backbone"
-    if _has_prefix(weights_dict, backbone_path):
-        return replace(
-            standard_layout,
-            decoder_path=backbone_path,
-            embedding_path=backbone_path / "embedding",
-            mixer_key={Mamba2Config: "mixer"},
-            norm_key="final_layernorm",
-        )
-    if _has_prefix(weights_dict, root_path / "embedding.encoder"):
-        return replace(
-            standard_layout,
-            embedding_path=root_path / "embedding.encoder",
-            pre_mixer_norm_key="norm",
-            mixer_key={Mamba2Config: "layer"},
-            pre_mlp_norm_key="norm",
-            mlp_key="layer",
-            up_proj_key="gate_proj",
-            gate_proj_key="in_proj",
-            down_proj_key="out_proj",
-            alternating_layers=True,
-            lm_head_path=root_path / "head.linear",
-        )
-    if (decoder_path / "layers" / "0" / "operator_norm" / "weight") in weights_dict:
-        return replace(
-            standard_layout,
-            pre_mixer_norm_key="operator_norm",
-            mixer_key={ShortConvConfig: "conv", AttentionConfig: "self_attn"},
-            permute_conv=_is_mlx(weights_dict, standard_layout.embedding_path, None),
-            pre_mlp_norm_key="ffn_norm",
-            mlp_key="feed_forward",
-            up_proj_key="w3",
-            gate_proj_key="w1",
-            down_proj_key="w2",
-            norm_key="embedding_norm",
-        )
-    return standard_layout
+
+def load_dynamic_conv_kernels(
+    module: DynamicConvKernels,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> DynamicConvKernels:
+    return load_as_at(
+        lambda m: (m.projection,),
+        module,
+        (load_linear(module.projection, weights_dict, path / "kernel_projection", implementation=implementation),),
+    )
 
 
-def resolve_decoder_load_layout(weights_dict: Mapping[str, Array]) -> DecoderLoadLayout:
-    if _has_prefix(weights_dict, ParameterPath("model.language_model")):
-        root_path = ParameterPath("model.language_model")
-    elif _has_prefix(weights_dict, ParameterPath("language_model")):
-        root_path = ParameterPath("language_model")
-    else:
-        root_path = ParameterPath()
-    return _decoder_load_layout(weights_dict, root_path)
+def load_dynamic_conv(
+    module: DynamicConv,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG001
+) -> DynamicConv:
+    # One `base_kernel` holds the kernels of both convolutions around a sublayer, stored oldest tap last.
+    base_kernels = rearrange(
+        jnp.flip(weights_dict[path / "base_kernel"], axis=1),
+        "sides kernel channels -> sides channels kernel",
+        sides=2,
+    )
+    return load_as_at(lambda m: (m.conv.weights,), module, (base_kernels[module.config.side],))
+
+
+def load_gemma4_router(
+    module: Gemma4Router,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> Gemma4Router:
+    return load_as_at(
+        lambda m: (m.projection, m.scale, m.expert_scales),
+        module,
+        (
+            load_linear(module.projection, weights_dict, path / "proj", implementation=implementation),
+            weights_dict[path / "scale"],
+            weights_dict[path / "per_expert_scale"],
+        ),
+    )
+
+
+def load_per_layer_inputs(
+    module: PerLayerInputs,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> PerLayerInputs:
+    return load_as_at(
+        lambda m: (m.token_embedding, m.model_projection, m.projection_norm),
+        module,
+        (
+            load_input_embedding_matrix(
+                module.token_embedding,
+                weights_dict,
+                path / "embed_tokens_per_layer",
+                implementation=implementation,
+            ),
+            load_linear(
+                module.model_projection,
+                weights_dict,
+                path / "per_layer_model_projection",
+                implementation=implementation,
+            ),
+            load_rmsnorm(module.projection_norm, weights_dict, path / "per_layer_projection_norm"),
+        ),
+    )
+
+
+def _load_normalization(
+    module: Normalization,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation,  # noqa: ARG001
+) -> Normalization:
+    return load_rmsnorm(module, weights_dict, path)
+
+
+def huggingface_loader(module: LalamoModule) -> Loader:
+    """The loader for a bound primitive stored in the standard Hugging Face layout."""
+    match module:
+        case Normalization():
+            return _load_normalization
+        case Attention():
+            return load_attention
+        case DenseMLP():
+            return partial(load_mlp, up_proj_key="up_proj", gate_proj_key="gate_proj", down_proj_key="down_proj")
+        case MixtureOfExperts() | RoutedExperts():
+            return load_moe
+        case DeltaNet():
+            return partial(load_delta_net_attention, permute_conv=False)
+        case Mamba2():
+            return partial(load_mamba2, permute_conv=False)
+        case ShortConv():
+            return partial(load_short_conv, permute_conv=False)
+        case TiedEmbedding():
+            return load_tied_embedding
+        case UntiedEmbedding():
+            return partial(load_untied_embedding, lm_head_path=ParameterPath("lm_head"))
+        case Gemma4Router():
+            return load_gemma4_router
+        case PerLayerInputs():
+            return load_per_layer_inputs
+        case Projection():
+            return load_projection
+        case DynamicConvKernels():
+            return load_dynamic_conv_kernels
+        case DynamicConv():
+            return load_dynamic_conv
+        case Scale():
+            return load_scale
+    raise TypeError(f"No default checkpoint loader for {type(module).__name__}; bind it with an explicit loader.")
 
 
 def load_huggingface_decoder(
     module: Decoder,
+    config: DecoderConfig,
+    binder: Binder,
     weights_dict: Mapping[str, Array],
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> Decoder:
-    layout = resolve_decoder_load_layout(weights_dict)
-
-    if isinstance(module.embedding, TiedEmbedding):
-        embedding = load_tied_embedding(
-            module.embedding,
-            weights_dict,
-            layout.embedding_path,
-            implementation=implementation,
-        )
-    elif isinstance(module.embedding, UntiedEmbedding):
-        embedding = load_untied_embedding(
-            module.embedding,
-            weights_dict,
-            layout.embedding_path,
-            layout.lm_head_path,
-            implementation=implementation,
-        )
-    else:
-        raise TypeError(f"Unsupported embedding type: {type(module.embedding)}")
-
-    decoder_layers = tuple(
-        load_transformer_layer(
-            layer,
-            weights_dict,
-            layout.decoder_path / "layers" / ((i * 2) if layout.alternating_layers else i),
-            layout.decoder_path / "layers" / ((i * 2 + 1) if layout.alternating_layers else i),
-            _get_mixer_key(layout.mixer_key, layer),
-            layout.mlp_key,
-            layout.pre_mixer_norm_key,
-            layout.pre_mlp_norm_key,
-            layout.up_proj_key,
-            layout.gate_proj_key,
-            layout.down_proj_key,
-            layout.permute_conv,
-            implementation=implementation,
-        )
-        for i, layer in enumerate(module.transformer.layers)
-    )
-    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, layout.decoder_path / layout.norm_key)
+    weights_dict = CheckpointView.of(weights_dict)
     return load_as_at(
-        lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm),
+        lambda m: (m.embedding, m.program),
         module,
-        (embedding, decoder_layers, output_norm),
+        (
+            binder.load(module.embedding, config.embedding_config, weights_dict, implementation=implementation),
+            binder.load(module.program, config.program, weights_dict, implementation=implementation),
+        ),
+    )
+
+
+def load_modern_bert_attention(
+    module: Attention,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> Attention:
+    return load_as_at(
+        lambda m: (m.qkvg_projection, m.out_projection),
+        module,
+        (
+            load_linear(module.qkvg_projection, weights_dict, path / "Wqkv", implementation=implementation),
+            load_linear(module.out_projection, weights_dict, path / "Wo", implementation=implementation),
+        ),
+    )
+
+
+def load_modern_bert_mlp(
+    module: DenseMLP,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> DenseMLP:
+    # ModernBERT stores [gate; up] while the fused projection expects [up; gate].
+    assert not module.up_projection.has_biases
+    weights = weights_dict[path / "Wi" / "weight"]
+    rows, _ = weights.shape
+    shuffled_weights = jnp.vstack((weights[rows // 2 :, :], weights[: rows // 2, :]))
+    return load_as_at(
+        _dense_mlp_projections,
+        module,
+        (
+            _update_linear(
+                module.up_projection, load_full_precision(module.up_projection.weights, shuffled_weights), None
+            ),
+            load_linear(module.down_projection, weights_dict, path / "Wo", implementation=implementation),
+        ),
     )
 
 
 def load_huggingface_classifier(
     module: Classifier,
+    config: ClassifierConfig,
+    binder: Binder,
     weights_dict: Mapping[str, Array],
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> Classifier:
-    def load_linear_with_reshuffling(
-        module: Linear,
-        weights_dict: Mapping[str, Array],
-        path: ParameterPath,
-    ) -> Linear:
-        """Loads a linear layer and reshuffles some weights in resulting matrix to meet
-        requirements of downstream 'split' in MLP layer in attention."""
-
-        assert not module.has_biases
-        weights = weights_dict[path / "weight"]
-        rows, _ = weights.shape
-        shuffled_weights = jnp.vstack((weights[rows // 2 :, :], weights[: rows // 2, :]))
-        new_weights = load_full_precision(module.weights, shuffled_weights)
-        return _update_linear(module, new_weights, None)
-
-    def load_attention_local(
-        module: Attention,
-        weights_dict: Mapping[str, Array],
-        path: ParameterPath,
-    ) -> Attention:
-        qkvg_projection = load_linear(
-            module.qkvg_projection,
-            weights_dict,
-            path / "Wqkv",
-            sublayers_to_fuse=None,
-            implementation=implementation,
-        )
-        out_projection = load_linear(module.out_projection, weights_dict, path / "Wo", implementation=implementation)
-
-        query_norm = _load_optional_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
-        key_norm = _load_optional_rmsnorm(module.key_norm, weights_dict, path / "k_norm")
-
-        return load_as_at(
-            lambda m: (m.qkvg_projection, m.out_projection, m.query_norm, m.key_norm),
-            module,
-            (qkvg_projection, out_projection, query_norm, key_norm),
-        )
-
-    def load_mlp_local(module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLPBase:
-        assert isinstance(module, DenseMLP)
-        dense_module: DenseMLP = module
-        up_projection = load_linear_with_reshuffling(
-            dense_module.up_projection,
-            weights_dict,
-            path / "Wi",
-        )
-        down_projection = load_linear(
-            dense_module.down_projection,
-            weights_dict,
-            path / "Wo",
-            implementation=implementation,
-        )
-        return load_as_at(
-            _dense_mlp_projections,
-            dense_module,
-            (up_projection, down_projection),
-        )
-
-    def load_transformer_layer_local(
-        module: TransformerLayer,
-        weights_dict: Mapping[str, Array],
-        path: ParameterPath,
-    ) -> TransformerLayer:
-        pre_attention_norm = _load_optional_rmsnorm(module.pre_mixer_norm, weights_dict, path / "attn_norm")
-
-        assert isinstance(module.mixer, Attention)
-        attention = load_attention_local(module.mixer, weights_dict, path / "attn")
-        assert isinstance(module.pre_mlp_norm, Normalization)
-        if module.post_mixer_norm is not None:
-            post_attention_norm = load_rmsnorm(module.post_mixer_norm, weights_dict, path / "post_attention_layernorm")
-            pre_mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, path / "pre_feedforward_layernorm")
-        else:
-            post_attention_norm = None
-            pre_mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, path / "mlp_norm")
-
-        mlp = load_mlp_local(module.mlp, weights_dict, path / "mlp")
-        post_mlp_norm = _load_optional_rmsnorm(module.post_mlp_norm, weights_dict, path / "post_feedforward_layernorm")
-        return load_as_at(
-            lambda m: (
-                m.pre_mixer_norm,
-                m.mixer,
-                m.post_mixer_norm,
-                m.pre_mlp_norm,
-                m.mlp,
-                m.post_mlp_norm,
-            ),
-            module,
-            (
-                pre_attention_norm,
-                attention,
-                post_attention_norm,
-                pre_mlp_norm,
-                mlp,
-                post_mlp_norm,
-            ),
-        )
-
-    base_path = ParameterPath()
-    decoder_path = base_path / "model"
-    head_path = base_path / "head"
-    classifier_path = base_path / "classifier"
-    assert isinstance(module.embedding, TiedEmbedding)
-    embedding = load_tied_embedding(module.embedding, weights_dict, decoder_path / "embeddings" / "tok_embeddings")
-    embedding_norm = load_rmsnorm(module.embedding_norm, weights_dict, base_path / "model" / "embeddings" / "norm")
-
-    decoder_layers = tuple(
-        load_transformer_layer_local(layer, weights_dict, decoder_path / "layers" / i)
-        for i, layer in enumerate(module.transformer.layers)
-    )
-    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / "final_norm")
-    head_dense = load_linear(
-        module.prediction_head.dense,
-        weights_dict,
-        head_path / "dense",
-        implementation=implementation,
-    )
-    head_norm = load_rmsnorm(module.prediction_head.norm, weights_dict, head_path / "norm")
-    head_readout = load_linear(
-        module.prediction_head.readout,
-        weights_dict,
-        classifier_path,
-        implementation=implementation,
-    )
+    head_path = ParameterPath("head")
     return load_as_at(
         lambda m: (
             m.embedding,
-            m.embedding_norm,
-            m.transformer.layers,
-            m.transformer.output_norm,
+            m.program,
             m.prediction_head.dense,
             m.prediction_head.norm,
             m.prediction_head.readout,
         ),
         module,
         (
-            embedding,
-            embedding_norm,
-            decoder_layers,
-            output_norm,
-            head_dense,
-            head_norm,
-            head_readout,
+            binder.load(module.embedding, config.embedding_config, weights_dict, implementation=implementation),
+            binder.load(module.program, config.program, weights_dict, implementation=implementation),
+            load_linear(
+                module.prediction_head.dense, weights_dict, head_path / "dense", implementation=implementation
+            ),
+            load_rmsnorm(module.prediction_head.norm, weights_dict, head_path / "norm"),
+            load_linear(
+                module.prediction_head.readout,
+                weights_dict,
+                ParameterPath("classifier"),
+                implementation=implementation,
+            ),
         ),
     )

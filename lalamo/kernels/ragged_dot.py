@@ -15,11 +15,15 @@ def ragged_dot(
     group_sizes: Int[Array, " experts"],
     precision: DotAlgorithmPreset,
 ) -> Float[Array, "tokens output_channels"]:
+    # JAX's GPU ragged lowering drops dot algorithms; its precision flag must request full FP32 explicitly.
+    dot_precision: DotAlgorithmPreset | lax.Precision = precision
+    if precision == DotAlgorithmPreset.F32_F32_F32:
+        dot_precision = lax.Precision.HIGHEST
     return lax.ragged_dot(
         vectors,
         expert_weights,
         group_sizes,
-        precision=precision,
+        precision=dot_precision,
         out_sharding=sharding_of(vectors),
     )
 

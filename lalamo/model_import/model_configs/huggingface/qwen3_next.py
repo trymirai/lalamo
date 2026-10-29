@@ -1,10 +1,11 @@
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
+from lalamo.model_import.loaders.binding import Binder
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
+from lalamo.modules.flow import StepConfig
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, SoftmaxRouting
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
@@ -12,10 +13,9 @@ from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.token_mixers.deltanet import DeltaNetConfig
-from lalamo.modules.transformer import TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.utils.parameter_path import ParameterPath
 
-from .common import HuggingFaceLMConfig, QuantizationConfigType
+from .common import HuggingFaceLMConfig, QuantizationConfigType, residual_decoder
 
 __all__ = ["HFQwen3NextConfig"]
 
@@ -67,10 +67,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
     quantization: QuantizationConfigType | None = None
     quantization_config: QuantizationConfigType | None = None
 
-    def to_decoder_config(
-        self,
-        metadata_dict: Mapping[str, str],  # noqa: ARG002
-    ) -> DecoderConfig:
+    def build_decoder(self, at: Binder) -> DecoderConfig:
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
@@ -119,6 +116,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                 has_down_biases=False,
                 up_clipping=None,
                 gate_clipping=None,
+                hidden_dim=self.moe_intermediate_size,
             )
             moe_config = MixtureOfExpertsConfig(
                 num_routed_experts=self.num_experts,
@@ -129,11 +127,11 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                 expert_config=experts_config,
                 gate_config=linear_config,
                 num_shared_experts=1,
-                expert_hidden_dim=self.moe_intermediate_size,
             )
 
-        layer_configs = []
+        layers: list[tuple[StepConfig, StepConfig]] = []
         for layer_idx in range(self.num_hidden_layers):
+            path = ParameterPath("model.layers") / layer_idx
             is_linear_attention = (layer_idx + 1) % self.full_attention_interval != 0
             if is_linear_attention:
                 mixer_config = DeltaNetConfig(
@@ -166,6 +164,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                     scale=None,
                     sliding_window_size=None,
                     has_gate=True,
+                    rope_config=rope_config,
                 )
 
             if (
@@ -182,28 +181,17 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                     has_down_biases=False,
                     up_clipping=None,
                     gate_clipping=None,
+                    hidden_dim=self.intermediate_size,
                 )
 
-            transformer_layer_config = TransformerLayerConfig(
-                pre_mixer_norm_config=rmsnorm_config,
-                mixer_config=mixer_config,
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=rmsnorm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=None,
-                rope_config=None if is_linear_attention else rope_config,
-            )
-            layer_configs.append(transformer_layer_config)
+            mixer_key = "linear_attn" if is_linear_attention else "self_attn"
+            layers.append((at(path / mixer_key, mixer_config), at(path / "mlp", mlp_config)))
 
-        transformer_config = TransformerConfig(
-            layer_configs=tuple(layer_configs),
-            output_norm_config=rmsnorm_config,
+        return residual_decoder(
+            at,
+            embedding=at("model.embed_tokens", embedding_config),
+            layers=layers,
+            norm=rmsnorm_config,
             model_dim=self.hidden_size,
-            hidden_dim=self.intermediate_size,
-        )
-
-        return DecoderConfig(
-            embedding_config=embedding_config,
-            transformer_config=transformer_config,
             vocab_size=self.vocab_size,
         )

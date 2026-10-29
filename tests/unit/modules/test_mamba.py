@@ -7,8 +7,8 @@ from jaxtyping import Array
 
 from lalamo.initializer import RandomInitializer
 from lalamo.modules.activations import SiLU
+from lalamo.modules.flow import MixerForwardPassConfig
 from lalamo.modules.linear import LinearConfig
-from lalamo.modules.token_mixer import MixerForwardPassConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.token_mixers.mamba import Mamba2, Mamba2Config
 from tests.common import assert_close, tolerance

@@ -17,10 +17,11 @@ from jaxtyping import Array, Float, Int, Key
 from lalamo.models import GenerationConfig, LanguageModel
 from lalamo.models.language_model import PrefillResults
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
-from lalamo.modules import Decoder, DecoderForwardPassConfig, State
-from lalamo.modules.token_mixer import StateLayerBase
+from lalamo.modules import Decoder, ModelForwardPassConfig, State
+from lalamo.modules.flow import StateLayerBase, leaves, state_owners
 from lalamo.modules.token_mixers.attention import Attention
 from lalamo.modules.token_mixers.kv_cache import PagedKVCacheLayer, PagedKVCachePool, StaticKVCacheLayer
+from lalamo.modules.token_mixers.qsa import QSACachePool, QSAPagedState, QSAState, QwenSparseAttention
 from lalamo.modules.utils import call_vmapped
 from lalamo.sampling import SamplingPolicy
 
@@ -136,35 +137,49 @@ def _decode(
             positions,
             state=state,
             return_updated_state=True,
-            forward_pass_config=DecoderForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
+            forward_pass_config=ModelForwardPassConfig.for_inference(ForwardPassMode.SINGLE_TOKEN),
             keychain=Keychain.init(0, sharding_config=decoder.sharding_config),
         )
         assert decoded.updated_state is not None
         carry = (decoded.updated_state, decoded.logits[:, 0].astype(jnp.float32), sampling_policy, sampling_keys)
         return carry, (token_ids, logprobs)
 
-    views = State(
-        PagedKVCacheLayer(layer.keys, layer.values, block_tables, lengths)
-        if isinstance(layer, PagedKVCachePool)
-        else jax.tree.map(lambda array: array[slots], layer)
-        for layer in state
-    )
+    views = []
+    for layer in state:
+        if isinstance(layer, QSACachePool):
+            views.append(
+                QSAPagedState(
+                    PagedKVCacheLayer(layer.cache.keys, layer.cache.values, block_tables, lengths),
+                    layer.index_keys,
+                    layer.positions,
+                )
+            )
+        elif isinstance(layer, PagedKVCachePool):
+            views.append(PagedKVCacheLayer(layer.keys, layer.values, block_tables, lengths))
+        else:
+            views.append(jax.tree.map(lambda array: array[slots], layer))
+    views = State(views)
     (views, row_logits, sampling_policy, sampling_keys), (token_ids, logprobs) = jax.lax.scan(
         step, (views, logits[slots], sampling_policy, sampling_keys), token_positions
     )
-    pools = State(
-        PagedKVCachePool(layer.keys, layer.values)
-        if isinstance(layer, PagedKVCacheLayer)
-        else jax.tree.map(lambda full, row: full.at[slots].set(row), pool, layer)
-        for pool, layer in zip(state, views, strict=True)
-    )
+    pools = []
+    for pool, layer in zip(state, views, strict=True):
+        if isinstance(layer, QSAPagedState):
+            pools.append(
+                QSACachePool(PagedKVCachePool(layer.cache.keys, layer.cache.values), layer.index_keys, layer.positions)
+            )
+        elif isinstance(layer, PagedKVCacheLayer):
+            pools.append(PagedKVCachePool(layer.keys, layer.values))
+        else:
+            pools.append(jax.tree.map(lambda full, row: full.at[slots].set(row), pool, layer))
+    pools = State(pools)
     return pools, logits.at[slots].set(row_logits), token_ids, logprobs, sampling_keys, sampling_policy
 
 
 @eqx.filter_jit
 def _recurrent_row(state: State, row: Int[Array, ""]) -> tuple[StateLayerBase | None, ...]:
     return tuple(
-        None if isinstance(layer, StaticKVCacheLayer) else jax.tree.map(lambda array: array[row], layer)
+        None if isinstance(layer, (StaticKVCacheLayer, QSAState)) else jax.tree.map(lambda array: array[row], layer)
         for layer in state
     )
 
@@ -180,7 +195,10 @@ def _merge_prefill(
 ) -> tuple[State, Float[Array, "slots vocabulary"]]:
     layers = []
     for pool, prefill in zip(state, prefilled_state, strict=True):
-        if isinstance(pool, PagedKVCachePool):
+        if isinstance(pool, QSACachePool):
+            assert isinstance(prefill, QSAState)
+            layers.append(pool.write_pages(page_indices, prefill))
+        elif isinstance(pool, PagedKVCachePool):
             assert isinstance(prefill, StaticKVCacheLayer)
             start = int(prefill.has_sinks)
             end = start + page_indices.shape[1] * pool.page_size
@@ -242,8 +260,10 @@ class ContinuousBatchingEngine:
     def init(cls, model: LanguageModel, config: ContinuousBatchingConfig) -> "ContinuousBatchingEngine":
         if model.sharding_config.resolve_axis(LogicalAxis.BATCH) is not None:
             raise ValueError("Continuous batching does not support batch-sharded models.")
-        transformer = model.decoder.transformer
-        attention_mixers = [layer.mixer for layer in transformer.layers if isinstance(layer.mixer, Attention)]
+        primitives = leaves(model.decoder.program)
+        attention_mixers = [mixer for mixer in primitives if isinstance(mixer, Attention)]
+        sparse_mixers = [mixer for mixer in primitives if isinstance(mixer, QwenSparseAttention)]
+        attention_mixers.extend(mixer.attention for mixer in sparse_mixers)
         devices = list(model.sharding_config.mesh.devices.flat)
         if attention_mixers and (
             any(device.platform != "gpu" for device in devices)
@@ -252,8 +272,12 @@ class ContinuousBatchingEngine:
             raise ValueError("Paged batching requires causal GPU attention.")
 
         context_length = config.max_context_length
-        if transformer.ropes:
-            model_context = min(rope.config.max_sequence_length for rope in transformer.ropes)
+        rope_configs = (
+            *(mixer.config.rope_config for mixer in attention_mixers if mixer.config.rope_config is not None),
+            *(mixer.config.rope_config for mixer in sparse_mixers),
+        )
+        if rope_configs:
+            model_context = min(rope_config.max_sequence_length for rope_config in rope_configs)
             context_length = min(model_context, context_length or model_context)
         if context_length is None:
             raise ValueError("A model without a positional context limit requires max_context_length.")
@@ -262,20 +286,21 @@ class ContinuousBatchingEngine:
             # A sequence must fit in the pool on its own.
             context_length = min(context_length, total_pages * config.page_size)
 
-        state_dtype = DecoderForwardPassConfig.for_inference().embedding_forward_pass_config.activation_dtype
+        state_dtype = ModelForwardPassConfig.for_inference().embedding_forward_pass_config.activation_dtype
         state_shape = jax.eval_shape(lambda: model.decoder.init_static_state(1, 1, state_dtype))
-        page_bytes = config.page_size * sum(
-            leaf.size // leaf.shape[1] * leaf.dtype.itemsize
-            for layer in state_shape
-            if isinstance(layer, StaticKVCacheLayer)
-            for leaf in (layer.keys, layer.values)
-        )
-        recurrent_bytes = sum(
-            leaf.size * leaf.dtype.itemsize
-            for layer in state_shape
-            if not isinstance(layer, StaticKVCacheLayer)
-            for leaf in jax.tree.leaves(layer)
-        )
+        page_bytes = 0
+        recurrent_bytes = 0
+        for layer in state_shape:
+            if isinstance(layer, QSAState):
+                cache_leaves = (layer.cache.keys, layer.cache.values, layer.index_keys, layer.positions)
+            elif isinstance(layer, StaticKVCacheLayer):
+                cache_leaves = (layer.keys, layer.values)
+            else:
+                recurrent_bytes += sum(leaf.size * leaf.dtype.itemsize for leaf in jax.tree.leaves(layer))
+                continue
+            page_bytes += config.page_size * sum(
+                leaf.size // leaf.shape[1] * leaf.dtype.itemsize for leaf in cache_leaves
+            )
         vocab_size = model.decoder.vocab_size
         pages_per_slot = math.ceil(context_length / config.page_size)
         slot_count = config.slot_count
@@ -346,8 +371,10 @@ class ContinuousBatchingEngine:
 
         static_state = model.decoder.init_static_state(slot_count, 1, state_dtype)
         layers = []
-        for owner_index, static_layer in zip(transformer.kv_source_layer_indices, static_state, strict=True):
-            mixer = transformer.layers[owner_index].mixer
+        for mixer, static_layer in zip(state_owners(model.decoder.program), static_state, strict=True):
+            if isinstance(mixer, QwenSparseAttention):
+                layers.append(mixer.init_pool(total_pages, config.page_size, state_dtype))
+                continue
             if not isinstance(mixer, Attention):
                 layers.append(static_layer)
                 continue
@@ -550,7 +577,7 @@ class ContinuousBatchingEngine:
 
     def _prefix_state(self, batch: list[BatchingSequence], prefix_lengths: list[int], token_capacity: int) -> State:
         """Static prefill state whose rows start with each sequence's cached prefix, or blank rows without one."""
-        state_dtype = DecoderForwardPassConfig.for_inference().embedding_forward_pass_config.activation_dtype
+        state_dtype = ModelForwardPassConfig.for_inference().embedding_forward_pass_config.activation_dtype
         blank = self.model.decoder.init_static_state(len(batch), token_capacity, state_dtype)
         prefix_pages = math.ceil(max(prefix_lengths) / self.config.page_size)
         if prefix_pages == 0:
@@ -569,6 +596,10 @@ class ContinuousBatchingEngine:
         row_indices = jnp.asarray(cached_rows, dtype=jnp.int32)
         layers = []
         for layer_index, (pool, layer) in enumerate(zip(self._state, blank, strict=True)):
+            if isinstance(pool, QSACachePool):
+                assert isinstance(layer, QSAState)
+                layers.append(pool.read_pages(page_indices, layer, jnp.asarray(prefix_lengths, dtype=jnp.int32)))
+                continue
             if isinstance(pool, PagedKVCachePool):
                 assert isinstance(layer, StaticKVCacheLayer)
                 keys, values = pool.read_pages(page_indices)
