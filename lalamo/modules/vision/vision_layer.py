@@ -7,6 +7,7 @@ from jaxtyping import Array, Float
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
+from lalamo.modules.mlp import MLPForwardPassConfig, UngatedMLP, UngatedMLPConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.utils import call_vmapped
@@ -14,7 +15,6 @@ from lalamo.modules.utils import call_vmapped
 from .forward_pass_config import VisionForwardPassConfig
 from .image_grid import ImageGrid
 from .vision_attention import VisionAttention, VisionAttentionConfig
-from .vision_mlp import VisionMLP, VisionMLPConfig
 
 __all__ = [
     "VisionLayer",
@@ -45,7 +45,7 @@ class VisionLayerConfig(LalamoConfig):
     pre_attention_norm_config: NormalizationConfig
     attention_config: VisionAttentionConfig
     pre_mlp_norm_config: NormalizationConfig
-    mlp_config: VisionMLPConfig
+    mlp_config: UngatedMLPConfig
 
     def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> "VisionLayer":
         return VisionLayer(
@@ -54,7 +54,7 @@ class VisionLayerConfig(LalamoConfig):
             pre_attention_norm=self.pre_attention_norm_config.init(initializer, model_dim),
             attention=self.attention_config.init(initializer, model_dim),
             pre_mlp_norm=self.pre_mlp_norm_config.init(initializer, model_dim),
-            mlp=self.mlp_config.init(initializer, model_dim, hidden_dim, model_dim),
+            mlp=self.mlp_config.init(initializer, model_dim, hidden_dim),
         )
 
 
@@ -62,7 +62,7 @@ class VisionLayer(LalamoModule[VisionLayerConfig]):
     pre_attention_norm: Normalization
     attention: VisionAttention
     pre_mlp_norm: Normalization
-    mlp: VisionMLP
+    mlp: UngatedMLP
 
     @eqx.filter_jit
     def __call__(
@@ -88,7 +88,12 @@ class VisionLayer(LalamoModule[VisionLayerConfig]):
         mlp_inputs = inputs + attention
 
         pre_mlp_norm = call_vmapped(self.pre_mlp_norm, mlp_inputs)
-        mlp = self.mlp(pre_mlp_norm, forward_pass_config.matmul_config, keychain=mlp_keychain)
+        mlp = call_vmapped(
+            self.mlp.call_unbatched,
+            pre_mlp_norm,
+            forward_pass_config=MLPForwardPassConfig(matmul_config=forward_pass_config.matmul_config),
+            keychain=mlp_keychain,
+        )
         outputs = mlp_inputs + mlp
 
         if return_activation_trace:

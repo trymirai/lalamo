@@ -29,12 +29,7 @@ class BilinearTaps(NamedTuple):
 
 @dataclass(frozen=True)
 class InterpolatedPositionEmbeddingConfig(LalamoConfig):
-    """Learned absolute position embedding, stretched to any image size by bilinear interpolation.
-
-    The table is trained on a fixed ``side x side`` grid (48 x 48 for Qwen3.5). An image with an
-    ``h x w`` patch grid samples that table at ``h`` evenly spaced rows and ``w`` evenly spaced
-    columns, blending the four nearest entries.
-    """
+    """Learned absolute position table, bilinearly resampled to the image's patch grid."""
 
     num_positions: int
 
@@ -47,14 +42,7 @@ class InterpolatedPositionEmbeddingConfig(LalamoConfig):
         return math.isqrt(self.num_positions)
 
     def bilinear_taps(self, grid: ImageGrid, spatial_merge_size: int) -> BilinearTaps:
-        """Interpolation taps for one frame, in encoder (merge-block) patch order.
-
-        These depend only on the static grid, so they are computed with NumPy at trace time and
-        become constants in the compiled program. At run time only the gather and blend remain.
-        The arithmetic mirrors HF's ``fast_pos_embed_interpolate``: float32 ``linspace``,
-        truncation towards zero for the lower neighbour, and the upper neighbour clamped to the
-        table edge.
-        """
+        """Interpolation taps for one frame, in encoder patch order. Computed with NumPy at trace time."""
         last = self.side - 1
 
         def axis_taps(length: int) -> tuple[Int[np.ndarray, " n"], Int[np.ndarray, " n"], Float[np.ndarray, " n"]]:

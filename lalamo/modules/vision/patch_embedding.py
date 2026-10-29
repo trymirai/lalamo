@@ -17,14 +17,7 @@ __all__ = [
 
 @dataclass(frozen=True)
 class PatchEmbeddingConfig(LalamoConfig):
-    """Projects flattened pixel patches into the encoder width.
-
-    HF implements this as a ``Conv3d`` whose kernel equals its stride, applied to inputs that
-    the preprocessor has already cut into individual patches. A convolution that never overlaps
-    and only ever sees one window is just a matrix multiply, so we store it as a ``Linear`` over
-    the flattened ``(channels, temporal_patch, patch, patch)`` vector. This keeps the weights in
-    the standard ``WeightMatrix`` format, which means quantisation and export work unchanged.
-    """
+    """HF's non-overlapping ``Conv3d`` over pre-cut patches, which is a ``Linear`` over the flattened patch."""
 
     linear_config: LinearConfig
     in_channels: int

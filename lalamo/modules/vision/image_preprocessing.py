@@ -25,17 +25,7 @@ class PreprocessedImages(NamedTuple):
 
 @dataclass(frozen=True)
 class ImagePreprocessingConfig(LalamoConfig):
-    """Host-side image preprocessing, a NumPy/Pillow port of HF's ``Qwen2VLImageProcessor`` (PIL backend).
-
-    The steps are: convert to RGB, resize with bicubic filtering to the nearest size whose
-    sides are multiples of ``patch_size * spatial_merge_size`` (keeping the pixel count within
-    ``[min_pixels, max_pixels]``), scale to ``[0, 1]``, normalise per channel, repeat the still
-    image ``temporal_patch_size`` times along time, and cut the result into flattened patches.
-
-    This runs on the CPU before anything reaches the accelerator. It produces exactly what
-    ``VisionEncoder`` consumes, and it is also a precise spec of what an on-device runtime has
-    to reproduce.
-    """
+    """A NumPy/Pillow port of HF's ``Qwen2VLImageProcessor``: resize, normalise, and cut into patches."""
 
     patch_size: int
     temporal_patch_size: int

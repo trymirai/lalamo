@@ -10,11 +10,12 @@ from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfi
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionBlock, Qwen3_5VisionModel
 
 from lalamo.initializer import EmptyInitializer
-from lalamo.model_import.loaders.vision import load_qwen3_5_vision_encoder
 from lalamo.model_import.model_configs.huggingface.qwen3_5_vision import HFQwen35VisionConfig
 from lalamo.module import Keychain
 from lalamo.modules.vision import ImageGrid, VisionEncoder
 from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.sharding import ShardingConfig
+from lalamo.weight_matrix import CompressionImplementation
 from tests.helpers import make_test_sharding_config
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     "keychain",
     "lalamo_encoder",
     "random_patches",
+    "sharding_config",
     "tiny_hf_vision_model",
     "to_jax",
     "to_torch",
@@ -67,17 +69,30 @@ def tiny_hf_vision_model() -> Qwen3_5VisionModel:
 
 
 @cache
+def sharding_config() -> ShardingConfig:
+    # Vision encoders are never sharded, so they are replicated over the test mesh.
+    return ShardingConfig(mesh=make_test_sharding_config().mesh)
+
+
+@cache
 def lalamo_encoder() -> VisionEncoder:
     hf_model = tiny_hf_vision_model()
     weights_dict = {
         f"model.visual.{name}": jnp.asarray(tensor.detach().numpy()) for name, tensor in hf_model.state_dict().items()
     }
-    config = HFQwen35VisionConfig._converter.structure(  # noqa: SLF001
-        {**TINY_VISION_CONFIG.to_dict(), "model_type": "qwen3_5"},
+    foreign_config = HFQwen35VisionConfig._converter.structure(  # noqa: SLF001
+        {**TINY_VISION_CONFIG.to_dict(), "model_type": "qwen3_5", "deepstack_visual_indexes": []},
         HFQwen35VisionConfig,
-    ).to_vision_encoder_config()
-    template = config.init(EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config()))
-    return load_qwen3_5_vision_encoder(template, weights_dict, ParameterPath("model.visual"))
+    )
+    template = foreign_config.to_vision_encoder_config().init(
+        EmptyInitializer(default_dtype=jnp.float32, sharding_config=sharding_config()),
+    )
+    return foreign_config.load_weights(
+        template,
+        weights_dict,
+        ParameterPath("model.visual"),
+        implementation=CompressionImplementation.INFERENCE,
+    )
 
 
 def hf_block(index: int) -> Qwen3_5VisionBlock:
@@ -87,7 +102,7 @@ def hf_block(index: int) -> Qwen3_5VisionBlock:
 
 
 def keychain() -> Keychain:
-    return Keychain.init(0, sharding_config=make_test_sharding_config())
+    return Keychain.init(0, sharding_config=sharding_config())
 
 
 def random_patches(grids: tuple[ImageGrid, ...], seed: int = 0) -> Array:

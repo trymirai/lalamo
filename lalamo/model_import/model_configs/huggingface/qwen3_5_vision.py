@@ -1,12 +1,17 @@
 import json
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Literal, Self
 
 import cattrs
+from jaxtyping import Array
 
+from lalamo.model_import.loaders.vision import load_qwen3_5_vision_encoder
+from lalamo.model_import.model_configs.foreign_config import ForeignImageProcessorConfig, ForeignVisionEncoderConfig
 from lalamo.modules.activations import GELU
 from lalamo.modules.linear import LinearConfig
+from lalamo.modules.mlp import UngatedMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.vision import (
     ImagePreprocessingConfig,
@@ -14,11 +19,13 @@ from lalamo.modules.vision import (
     PatchEmbeddingConfig,
     PatchMergerConfig,
     VisionAttentionConfig,
+    VisionEncoder,
     VisionEncoderConfig,
     VisionLayerConfig,
-    VisionMLPConfig,
     VisionRoPEConfig,
 )
+from lalamo.utils.parameter_path import ParameterPath
+from lalamo.weight_matrix import CompressionImplementation
 
 __all__ = [
     "HFQwen35ImageProcessorConfig",
@@ -27,12 +34,8 @@ __all__ = [
 
 
 @dataclass(frozen=True)
-class HFQwen35VisionConfig:
-    """Schema of the ``vision_config`` block in a Qwen3.5 ``config.json``.
-
-    Dense and MoE checkpoints share the same tower and differ only in ``out_hidden_size``,
-    which matches the text model width (1024 for 0.8B, 5120 for 27B, 2048 for 35B-A3B).
-    """
+class HFQwen35VisionConfig(ForeignVisionEncoderConfig):
+    """The ``vision_config`` block of a Qwen3.5 ``config.json``."""
 
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
 
@@ -48,21 +51,29 @@ class HFQwen35VisionConfig:
     patch_size: int
     spatial_merge_size: int
     temporal_patch_size: int
-    deepstack_visual_indexes: list[int] = field(default_factory=list)
-    initializer_range: float = 0.02
+    deepstack_visual_indexes: tuple[int, ...]
 
     def __post_init__(self) -> None:
-        # Qwen3-VL feeds intermediate ViT layers into the decoder ("deepstack"). Qwen3.5 ships
-        # with this switched off; refuse loudly if a checkpoint ever turns it on.
+        # Qwen3-VL feeds intermediate ViT layers into the decoder ("deepstack"); Qwen3.5 has it switched off.
         if self.deepstack_visual_indexes:
             raise ValueError("Deepstack visual features are not supported.")
         if self.hidden_size % self.num_heads:
             raise ValueError("hidden_size must be divisible by num_heads.")
 
     @classmethod
-    def from_model_config_json(cls, json_path: Path | str) -> Self:
+    def from_json(cls, json_path: Path | str) -> Self:
         with Path(json_path).open() as config_file:
             return cls._converter.structure(json.load(config_file)["vision_config"], cls)
+
+    def load_weights(
+        self,
+        encoder: VisionEncoder,
+        weights_dict: Mapping[str, Array],
+        path: ParameterPath,
+        *,
+        implementation: CompressionImplementation,
+    ) -> VisionEncoder:
+        return load_qwen3_5_vision_encoder(encoder, weights_dict, path, implementation=implementation)
 
     def to_vision_encoder_config(self) -> VisionEncoderConfig:
         # HF hard-codes these instead of storing them in the config.
@@ -89,10 +100,11 @@ class HFQwen35VisionConfig:
                 has_biases=True,
             ),
             pre_mlp_norm_config=layer_norm_config,
-            mlp_config=VisionMLPConfig(
+            mlp_config=UngatedMLPConfig(
                 linear_config=linear_config,
                 activation=GELU(approximate=True),
-                has_biases=True,
+                has_up_biases=True,
+                has_down_biases=True,
             ),
         )
         return VisionEncoderConfig(
@@ -110,10 +122,11 @@ class HFQwen35VisionConfig:
             merger_config=PatchMergerConfig(
                 norm_config=layer_norm_config,
                 # Unlike the blocks, the merger uses the exact (erf) GELU: torch.nn.GELU().
-                mlp_config=VisionMLPConfig(
+                mlp_config=UngatedMLPConfig(
                     linear_config=linear_config,
                     activation=GELU(approximate=False),
-                    has_biases=True,
+                    has_up_biases=True,
+                    has_down_biases=True,
                 ),
             ),
             spatial_merge_size=self.spatial_merge_size,
@@ -130,12 +143,8 @@ class HFImageSizeLimits:
 
 
 @dataclass(frozen=True)
-class HFQwen35ImageProcessorConfig:
-    """Schema of ``preprocessor_config.json``.
-
-    The ``size`` keys are named after edges, but HF uses them as pixel-count limits
-    (``min_pixels`` and ``max_pixels``).
-    """
+class HFQwen35ImageProcessorConfig(ForeignImageProcessorConfig):
+    """``preprocessor_config.json``. Despite their names, the ``size`` keys are HF's min and max pixel counts."""
 
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
 

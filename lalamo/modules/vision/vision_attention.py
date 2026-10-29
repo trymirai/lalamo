@@ -24,6 +24,14 @@ __all__ = [
 ]
 
 
+def _is_cudnn_supported(queries: Float[Array, "tokens heads head_channels"]) -> bool:
+    device = jax.typeof(queries).sharding.mesh.abstract_device
+    platform = device.platform if device is not None else jax.default_backend()
+    _, _, head_dim = queries.shape
+    # 128 is the head size limit on pre-Hopper GPUs; Hopper and later allow 256.
+    return platform == "gpu" and queries.dtype in (jnp.float16, jnp.bfloat16) and head_dim % 8 == 0 and head_dim <= 128
+
+
 def _attend(
     queries: Float[Array, "dst_tokens heads head_channels"],
     keys: Float[Array, "src_tokens heads head_channels"],
@@ -33,10 +41,10 @@ def _attend(
     # Inputs share one dtype; "standard" promotion only matters for the internal float32 softmax.
     with jax.numpy_dtype_promotion("standard"):
         match implementation:
-            case VisionAttentionImplementation.XLA:
-                return jax.nn.dot_product_attention(queries, keys, values, implementation="xla")
             case VisionAttentionImplementation.CUDNN:
                 return jax.nn.dot_product_attention(queries, keys, values, implementation="cudnn")
+            case VisionAttentionImplementation.XLA:
+                return jax.nn.dot_product_attention(queries, keys, values, implementation="xla")
 
 
 def _bidirectional_attention(
@@ -45,17 +53,15 @@ def _bidirectional_attention(
     values: Float[Array, "tokens heads head_channels"],
     forward_pass_config: VisionForwardPassConfig,
 ) -> Float[Array, "tokens heads head_channels"]:
-    implementation = forward_pass_config.attention_implementation
-    chunk_size = forward_pass_config.attention_query_chunk_size
+    if forward_pass_config.attention_implementation == VisionAttentionImplementation.CUDNN and _is_cudnn_supported(
+        queries,
+    ):
+        return _attend(queries, keys, values, VisionAttentionImplementation.CUDNN)
+
+    # Exact attention, computed for a chunk of queries at a time: softmax runs over keys only, so query rows
+    # are independent. The last chunk is padded with dummy queries whose outputs are dropped.
     num_tokens, _, _ = queries.shape
-
-    # Flash attention is already memory efficient, and short sequences fit comfortably.
-    if implementation == VisionAttentionImplementation.CUDNN or chunk_size is None or num_tokens <= chunk_size:
-        return _attend(queries, keys, values, implementation)
-
-    # Softmax runs over keys only, so query rows are independent and can be processed in slices.
-    # Padding queries (never keys) keeps every slice the same shape, which lets lax.map compile
-    # a single attention kernel and reuse its buffers across slices.
+    chunk_size = min(forward_pass_config.attention_query_chunk_size, num_tokens)
     num_chunks = math.ceil(num_tokens / chunk_size)
     padded_queries = jnp.pad(queries, ((0, num_chunks * chunk_size - num_tokens), (0, 0), (0, 0)))
     query_chunks = rearrange(
@@ -63,7 +69,10 @@ def _bidirectional_attention(
         "(chunks chunk_tokens) heads head_channels -> chunks chunk_tokens heads head_channels",
         chunks=num_chunks,
     )
-    output_chunks = jax.lax.map(lambda chunk: _attend(chunk, keys, values, implementation), query_chunks)
+    output_chunks = jax.lax.map(
+        lambda chunk: _attend(chunk, keys, values, VisionAttentionImplementation.XLA),
+        query_chunks,
+    )
     outputs = rearrange(
         output_chunks,
         "chunks chunk_tokens heads head_channels -> (chunks chunk_tokens) heads head_channels",
@@ -73,15 +82,7 @@ def _bidirectional_attention(
 
 @dataclass(frozen=True)
 class VisionAttentionConfig(LalamoConfig):
-    """Bidirectional multi-head self-attention with 2D rotary embeddings.
-
-    Differences from the decoder attention: no causal mask, no KV cache, no grouped heads, and
-    attention never crosses an image boundary. HF builds one packed sequence for all images and
-    restricts attention with ``cu_seqlens``, with one segment per frame. Because frame sizes are
-    static here, the packed sequence is cut into those segments with plain slices. Each segment
-    gets its own small attention call instead of one big call with a block-diagonal mask, which
-    avoids building a ``tokens x tokens`` mask and wastes no FLOPs on masked-out blocks.
-    """
+    """Bidirectional self-attention with 2D RoPE. Each frame attends only to itself."""
 
     qkv_projection_config: LinearConfig
     out_projection_config: LinearConfig

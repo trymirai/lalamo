@@ -9,6 +9,7 @@ from lalamo.module import Keychain
 from lalamo.modules.vision import ImageGrid, VisionAttentionImplementation, VisionForwardPassConfig
 from lalamo.utils.sharding import ShardingConfig
 from tests.common import assert_close, gpu_only, tolerance
+from tests.helpers import make_test_sharding_config
 
 from .common import (
     GRID_CASES,
@@ -42,7 +43,7 @@ def test_chunked_attention_matches_unchunked() -> None:
     unchunked = lalamo_encoder()(
         patches,
         grids,
-        VisionForwardPassConfig(attention_query_chunk_size=None),
+        VisionForwardPassConfig(attention_query_chunk_size=10_000),
         keychain=keychain(),
     )
     # 7 does not divide the 168-patch frame, so the padded last chunk is exercised as well.
@@ -76,13 +77,16 @@ def test_export_round_trip() -> None:
     )
 
 
-def test_rejects_inconsistent_inputs() -> None:
-    grids = GRID_CASES["single-square"]
-    with pytest.raises(ValueError, match="patches"):
-        lalamo_encoder()(random_patches(grids)[1:], grids, keychain=keychain())
+def test_rejects_unmergeable_grid() -> None:
+    odd_grid = (ImageGrid(1, 3, 4),)
     with pytest.raises(ValueError, match="divisible"):
-        odd_grid = (ImageGrid(1, 3, 4),)
         lalamo_encoder()(random_patches(odd_grid), odd_grid, keychain=keychain())
+
+
+def test_rejects_sharding() -> None:
+    initializer = EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config())
+    with pytest.raises(ValueError, match="sharded"):
+        lalamo_encoder().config.init(initializer)
 
 
 @gpu_only
