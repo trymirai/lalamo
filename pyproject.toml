@@ -65,7 +65,7 @@ dev = [
     "torch>=2.8.0",
     "torchao>=0.7.0",
     "torchaudio>=2.8.0",
-    "transformers>=5.5",
+    "transformers>=5.20",
     "twine>=6.1.0",
     "types-pyyaml>=6.0.12.20260408",
     "types-requests>=2.33.0.20260408",
@@ -192,6 +192,7 @@ ignore = [
 ba = "ba"
 PARD = "PARD"
 pard = "pard"
+setp = "setp"
 
 [tool.typos.default.extend-identifiers]
 ba = "ba"

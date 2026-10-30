@@ -1,4 +1,6 @@
 import warnings
+from enum import Enum
+from functools import partial
 from typing import cast
 
 import jax
@@ -6,11 +8,25 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from lalamo.kernels.attention import pallas_decode_attention
+from lalamo.initializer import RandomInitializer
+from lalamo.kernels.attention import (
+    pallas_decode_attention,
+    pallas_sparse_attention,
+    pallas_top_k_blocks,
+    xla_sparse_attention,
+    xla_top_k_blocks,
+)
 from lalamo.kernels.deltanet import deltanet_recurrent_scan
 from lalamo.kernels.deltanet.xla import xla_recurrent_scan
 from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.kernels.mosaic import supports_mosaic_gpu
+from lalamo.module import Keychain
+from lalamo.modules.linear import LinearConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPassConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.token_mixers.sparse_attention import SparseAttentionConfig, SparseAttentionIndexerConfig
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 from tests.common import assert_close, gpu_only
 
@@ -104,6 +120,210 @@ def test_decode_attention_matches_reference(
         )(queries, keys, values, masks)
 
     assert_close(result=result, reference=reference, atol=2e-2, rtol=3e-2)
+
+
+@pytest.mark.parametrize(
+    ("batch_size", "num_queries", "num_heads", "num_groups", "head_dim", "capacity", "num_rows"),
+    [
+        pytest.param(2, 1, 24, 2, 256, 4_096, 2_052, id="qsa-decode"),
+        pytest.param(1, 64, 24, 2, 256, 4_096, 2_052, id="qsa-prefill"),
+        pytest.param(3, 5, 8, 1, 128, 1_000, 300, id="mqa-d128"),
+    ],
+)
+def test_sparse_attention_matches_xla(
+    batch_size: int,
+    num_queries: int,
+    num_heads: int,
+    num_groups: int,
+    head_dim: int,
+    capacity: int,
+    num_rows: int,
+) -> None:
+    sharding_config = ShardingConfig.replicated()
+    if not supports_mosaic_gpu(sharding_config.mesh, minimum_compute_capability=10):
+        pytest.skip("requires Blackwell Pallas support")
+
+    def random_bfloat16(seed: int, shape: tuple[int, ...]) -> jax.Array:
+        array = jax.random.normal(jax.random.key(seed), shape, dtype=jnp.float32).astype(jnp.bfloat16)
+        return jax.device_put(array, sharding_config.make_sharding((None,) * len(shape)))
+
+    queries = random_bfloat16(0, (batch_size, num_queries, num_heads, head_dim))
+    keys = random_bfloat16(1, (batch_size, capacity, num_groups, head_dim))
+    values = random_bfloat16(2, (batch_size, capacity, num_groups, head_dim))
+    row_keys = jax.random.split(jax.random.key(3), batch_size * num_queries)
+    unique_rows = jax.vmap(lambda key: jax.random.choice(key, capacity, (num_rows,), replace=False))(row_keys)
+    is_masked = jax.random.bernoulli(jax.random.key(4), 0.125, unique_rows.shape)
+    rows = jnp.where(is_masked, capacity, unique_rows).astype(jnp.int32).reshape(batch_size, num_queries, num_rows)
+    rows = jax.device_put(rows, sharding_config.make_sharding((None, None, None)))
+    attention_scale = jnp.asarray(head_dim**-0.5, dtype=jnp.float32)
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="Pallas sparse attention")
+        result = jax.jit(jax.vmap(pallas_sparse_attention, in_axes=(0, 0, 0, 0, None, None)))(
+            queries,
+            keys,
+            values,
+            rows,
+            attention_scale,
+            None,
+        )
+    reference = jax.vmap(xla_sparse_attention, in_axes=(0, 0, 0, 0, None, None))(
+        queries,
+        keys,
+        values,
+        rows,
+        attention_scale,
+        None,
+    )
+    assert_close(result=result, reference=reference, atol=2e-2, rtol=3e-2)
+
+
+class ScoreDistribution(Enum):
+    NORMAL = "normal"
+    QUANTIZED = "quantized"
+    ZEROS = "zeros"
+
+
+@pytest.mark.parametrize(
+    ("batch_size", "num_queries", "num_blocks", "k", "distribution"),
+    [
+        pytest.param(4, 1, 65_536, 512, ScoreDistribution.NORMAL, id="decode-two-stage"),
+        pytest.param(4, 1, 50_001, 512, ScoreDistribution.QUANTIZED, id="decode-ties-unaligned"),
+        pytest.param(1, 512, 8_192, 512, ScoreDistribution.NORMAL, id="prefill-single-stage"),
+        pytest.param(2, 300, 4_100, 512, ScoreDistribution.ZEROS, id="prefill-all-ties"),
+        pytest.param(4, 3, 20_000, 100, ScoreDistribution.QUANTIZED, id="small-k"),
+    ],
+)
+def test_top_k_blocks_matches_xla(
+    batch_size: int,
+    num_queries: int,
+    num_blocks: int,
+    k: int,
+    distribution: ScoreDistribution,
+) -> None:
+    sharding_config = ShardingConfig.replicated()
+    if not supports_mosaic_gpu(sharding_config.mesh, minimum_compute_capability=10):
+        pytest.skip("requires Blackwell Pallas support")
+    shape = (batch_size, num_queries, num_blocks)
+    match distribution:
+        case ScoreDistribution.NORMAL:
+            scores = jax.random.normal(jax.random.key(0), shape, dtype=jnp.float32)
+        case ScoreDistribution.QUANTIZED:
+            scores = jnp.floor(jax.random.uniform(jax.random.key(0), shape) * 8) / 4
+        case ScoreDistribution.ZEROS:
+            scores = jnp.zeros(shape, dtype=jnp.float32)
+    num_visible_blocks = jax.random.randint(jax.random.key(1), (batch_size * num_queries,), 0, num_blocks + 1)
+    num_visible_blocks = num_visible_blocks.at[:4].set(jnp.array([num_blocks, k, k + 1, 0]))
+    scores = jax.device_put(scores, sharding_config.make_sharding((None, None, None)))
+    num_visible_blocks = jax.device_put(
+        num_visible_blocks.reshape(batch_size, num_queries).astype(jnp.int32),
+        sharding_config.make_sharding((None, None)),
+    )
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="Pallas top-k")
+        result = jax.jit(jax.vmap(partial(pallas_top_k_blocks, k=k)))(scores, num_visible_blocks)
+    reference = jax.vmap(partial(xla_top_k_blocks, k=k))(scores, num_visible_blocks)
+    np.testing.assert_array_equal(np.asarray(result), np.asarray(reference))
+
+
+def test_sparse_attention_module_pallas_matches_xla() -> None:
+    sharding_config = ShardingConfig.replicated()
+    if not supports_mosaic_gpu(sharding_config.mesh, minimum_compute_capability=10):
+        pytest.skip("requires Blackwell Pallas support")
+    batch_size, prefill_length, model_dim = 2, 3_000, 512
+    norm_config = NormalizationConfig(
+        epsilon=1e-6,
+        scale_offset=1.0,
+        upcast_mode=UpcastMode.FULL_LAYER,
+        subtract_mean=False,
+    )
+    config = SparseAttentionConfig(
+        attention_config=AttentionConfig(
+            qkvg_projection_config=LinearConfig(),
+            out_projection_config=LinearConfig(),
+            query_norm_config=norm_config,
+            key_norm_config=norm_config,
+            num_heads=24,
+            num_groups=2,
+            head_dim=256,
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
+            logit_soft_cap=None,
+            has_sinks=False,
+            has_qkvg_biases=False,
+            has_out_biases=False,
+            has_gate=True,
+        ),
+        indexer_config=SparseAttentionIndexerConfig(
+            projection_config=LinearConfig(),
+            query_norm_config=norm_config,
+            key_norm_config=norm_config,
+            num_heads=4,
+            head_dim=128,
+            compression_ratio=4,
+            token_budget=2_048,
+        ),
+    )
+    module = config.init(
+        RandomInitializer(default_dtype=jnp.bfloat16, sharding_config=sharding_config, key=jax.random.key(0)),
+        model_dim=model_dim,
+    )
+    rope_config = UnscaledRoPEConfig(base=10_000_000.0, max_sequence_length=4_096, head_dim=64)
+    tree_parents = jnp.array([-1, 0, 0, 1, 1, 2, 3, 6, 7, 8, 9, 4], dtype=jnp.int32)
+    tree_depths = jnp.array([0, 1, 1, 2, 2, 2, 3, 4, 5, 6, 7, 3], dtype=jnp.int32)
+    (num_tree_nodes,) = tree_parents.shape
+    inputs = jax.random.normal(
+        jax.random.key(1),
+        (batch_size, prefill_length + 1 + num_tree_nodes, model_dim),
+    ).astype(jnp.bfloat16)
+    keychain = Keychain.init(0, sharding_config=sharding_config)
+
+    @partial(jax.jit, static_argnames="implementation")
+    def prefill_then_decode(
+        implementation_inputs: jax.Array,
+        implementation: AttentionImplementation,
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        forward_pass_config = MixerForwardPassConfig(attention_implementation=implementation)
+
+        def run_sequence(sequence: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
+            state = module.init_static_state(capacity=4_096, dtype=jnp.bfloat16)
+            prefill = module(
+                sequence[:prefill_length],
+                rope_config.compute_positional_embeddings(jnp.arange(prefill_length)),
+                state=state,
+                return_updated_state=True,
+                forward_pass_config=forward_pass_config,
+                keychain=keychain,
+            )
+            decode = module(
+                sequence[prefill_length : prefill_length + 1],
+                rope_config.compute_positional_embeddings(jnp.arange(prefill_length, prefill_length + 1)),
+                state=prefill.state,
+                forward_pass_config=forward_pass_config,
+                keychain=keychain,
+            )
+            tree = module(
+                sequence[prefill_length + 1 :],
+                rope_config.compute_positional_embeddings(prefill_length + tree_depths),
+                state=prefill.state,
+                forward_pass_config=forward_pass_config,
+                attention_parent_indices=tree_parents,
+                keychain=keychain,
+            )
+            return prefill.outputs, decode.outputs, tree.outputs
+
+        return jax.vmap(run_sequence)(implementation_inputs)
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="Pallas sparse attention")
+        warnings.filterwarnings("error", message="Pallas top-k")
+        pallas_prefill, pallas_decode, pallas_tree = prefill_then_decode(inputs, AttentionImplementation.PALLAS)
+    xla_prefill, xla_decode, xla_tree = prefill_then_decode(inputs, AttentionImplementation.XLA)
+    assert_close(result=pallas_prefill, reference=xla_prefill, atol=2e-2, rtol=3e-2)
+    assert_close(result=pallas_decode, reference=xla_decode, atol=2e-2, rtol=3e-2)
+    assert_close(result=pallas_tree, reference=xla_tree, atol=2e-2, rtol=3e-2)
 
 
 @pytest.mark.parametrize(
