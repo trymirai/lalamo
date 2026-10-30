@@ -9,7 +9,11 @@ import pytest
 
 from lalamo.compressed.hybrid import HybridMatrix
 from lalamo.compressed.incoherence import IncoherenceProcessingMode, KroneckerProcessor, kronecker_transform
-from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec, codebook_from_table
+from lalamo.compressed.qtip_gaussian import (
+    QtipGaussianMatrix,
+    QtipGaussianSpec,
+    codebook_table,
+)
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain
 from lalamo.weight_matrix import Layout
@@ -22,12 +26,11 @@ DATA = Path(__file__).parent / "data"
 
 def test_saved_tapes_decode_like_their_producers() -> None:
     # Four rows per tape, fitted and packed by the independent Torch producers for Qwen3.8 and Muse ("connected").
-    # Each producer decoded through its own table; only the connected v4 table is the computed production codebook.
+    # Each producer decoded through its own table; only the connected v4 table is the production codebook.
     config = make_test_sharding_config()
     with np.load(DATA / "qtip_gaussian_hyb036.npz") as hyb036, np.load(DATA / "qtip_gaussian_muse.npz") as muse:
         production = muse["v4_k2_connected_table"]
-        with pytest.raises(ValueError, match="scale \\* level"):
-            codebook_from_table(jnp.asarray(hyb036["table_v4"]))
+        np.testing.assert_allclose(production, codebook_table(4), atol=1e-6)
         for data, name, spec, table in (
             (hyb036, "v2_k2", QtipGaussianSpec(2, 4, 0), hyb036["table_v2"]),
             (hyb036, "v2_k3", QtipGaussianSpec(2, 6, 0), hyb036["table_v2"]),
@@ -44,12 +47,11 @@ def test_saved_tapes_decode_like_their_producers() -> None:
                 columns=data[f"{name}_signs"].shape[0],
                 codes=jnp.asarray(data[f"{name}_codes"]),
                 scales=jnp.asarray(data[f"{name}_scales"].astype(np.float32) * gains),
-                codebook=codebook_from_table(jnp.asarray(production[:, : spec.vector_width])),
             )
             states, scales = np.asarray(spec.states(leaf.codes, leaf.shape[1])), np.asarray(leaf.scales)[:, None]
             rotated = data[f"{name}_rotated"]
             np.testing.assert_allclose(table[states].reshape(leaf.shape) * scales, rotated, rtol=1e-6, atol=1e-9)
-            expected = production[states, : spec.vector_width].reshape(leaf.shape) * scales
+            expected = np.asarray(codebook_table(spec.vector_width))[states].reshape(leaf.shape) * scales
             np.testing.assert_allclose(leaf.decompress(), expected, rtol=1e-6, atol=1e-9, err_msg=name)
 
             rotation = KroneckerProcessor.of(

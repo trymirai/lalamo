@@ -4,25 +4,37 @@ from typing import Literal, Self
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.core import Tracer
 from jax.sharding import NamedSharding, PartitionSpec
-from jaxtyping import Array, DTypeLike, Float, Int, Int8, UInt8, UInt32
+from jaxtyping import Array, DTypeLike, Float, Int, Int8, Key, UInt8, UInt32
 
-from lalamo.initializer import EmptyInitializer
+from lalamo.initializer import RandomInitializer
 from lalamo.module import Keychain, field
+from lalamo.preconditioner import Preconditioner
+from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.sharding import ShardingConfig, lookup_sharded_indices, sharding_of, with_sharding
 from lalamo.weight_matrix import (
+    CompressionImplementation,
     EmbeddingMatrix,
     FullPrecisionMatrix,
     FullPrecisionSpec,
     Layout,
-    LoadOnlySpec,
     MatmulConfig,
+    WeightMatrixSpec,
 )
 
 # Every step's 16-bit state hashes to its levels; each tape block opens with its first state in 16 bits.
 STATE_BITS = 16
 # The codebook is [scale, offset of each column class], the class of a column being its index modulo four.
 COLUMN_CLASSES = 4
+# Every package shares one codebook per vector width.
+CODEBOOKS = {
+    width: np.array([float.fromhex(value) for value in values], dtype=np.float32)
+    for width, values in (
+        (2, ("0x1.ab07a2p-5", "-0x1.50b2eap-4", "-0x1.3e5a78p-4", "-0x1.50b2eap-4", "-0x1.3e5a78p-4")),
+        (4, ("0x1.aa4a8p-5", "-0x1.501deap-4", "-0x1.3dcd7ap-4", "-0x1.40137ap-4", "-0x1.4c2e6ap-4")),
+    )
+}
 
 
 def states_to_levels(states: UInt32[Array, "..."]) -> Int8[Array, "... 4"]:
@@ -38,22 +50,15 @@ def states_to_levels(states: UInt32[Array, "..."]) -> Int8[Array, "... 4"]:
     return jax.lax.bitcast_convert_type(packed, jnp.int8)
 
 
-def codebook_from_table(table: Float[Array, "states width"]) -> Float[Array, " codebook"]:
-    # Packages save every state's values; they must be scale * level + the offset of the column class.
-    width = table.shape[1]
-    values = np.asarray(table, dtype=np.float64)
-    levels = np.asarray(states_to_levels(jnp.arange(1 << STATE_BITS, dtype=jnp.uint32)), dtype=np.float64)[:, :width]
-    farthest = np.argmax(np.abs(levels[:, 0] - levels[0, 0]))
-    scale = (values[farthest, 0] - values[0, 0]) / (levels[farthest, 0] - levels[0, 0])
-    offsets = values[0] - scale * levels[0]
-    error = np.abs(scale * levels + offsets - values).max()
-    if not np.isfinite(error) or error > 1e-5:
-        raise ValueError(f"The trellis table is not scale * level + offset (error {error})")
-    return jnp.asarray([scale, *offsets[np.arange(COLUMN_CLASSES) % width]], dtype=jnp.float32)
+def codebook_table(vector_width: int) -> Float[Array, "states width"]:
+    # Packages save the codebook as every state's values: scale * level + the offset of the column class.
+    scale, *offsets = CODEBOOKS[vector_width]
+    levels = states_to_levels(jnp.arange(1 << STATE_BITS, dtype=jnp.uint32))[:, :vector_width]
+    return scale * levels.astype(jnp.float32) + jnp.asarray(offsets[:vector_width])
 
 
 @dataclass(frozen=True)
-class QtipGaussianSpec(LoadOnlySpec):
+class QtipGaussianSpec(WeightMatrixSpec):
     vector_width: Literal[2, 4]
     transition_bits: Literal[4, 6, 7, 8]
     restart_columns: Literal[0, 64, 128]
@@ -65,8 +70,12 @@ class QtipGaussianSpec(LoadOnlySpec):
         match self.vector_width, self.transition_bits, self.restart_columns:
             case (2, 4 | 6 | 8, 0) | (4, 8, 0) | (4, 6 | 7 | 8, 64 | 128):
                 return
-            case layout:
-                raise ValueError(f"Unsupported QTIP Gaussian layout {layout}")
+            case unsupported:
+                raise ValueError(f"Unsupported QTIP Gaussian layout {unsupported}")
+
+    @property
+    def codebook(self) -> Float[Array, " codebook"]:
+        return jnp.asarray(CODEBOOKS[self.vector_width])
 
     def code_bytes(self, columns: int) -> int:
         block_columns = self.restart_columns or columns
@@ -80,14 +89,11 @@ class QtipGaussianSpec(LoadOnlySpec):
             return (bits + 127) // 128 * 16
         return (bits + 7) // 8
 
-    def block_bits(self, columns: int) -> int:
-        return STATE_BITS + ((self.restart_columns or columns) // self.vector_width - 1) * self.transition_bits
-
     def states(self, codes: UInt8[Array, "*rows bytes"], columns: int) -> Array:
         # State g of an L-bit block is the little-endian 16-bit field at bit L - 16 - g * T.
         step = np.arange(columns // self.vector_width)
         steps_per_block = (self.restart_columns or columns) // self.vector_width
-        block_bits = self.block_bits(columns)
+        block_bits = STATE_BITS + (steps_per_block - 1) * self.transition_bits
         offset = (
             (step // steps_per_block + 1) * block_bits - STATE_BITS - step % steps_per_block * self.transition_bits
         )
@@ -97,16 +103,22 @@ class QtipGaussianSpec(LoadOnlySpec):
         shift = jnp.asarray(offset % 8, dtype=jnp.uint32)
         return (word >> shift) & 0xFFFF
 
-    def empty(
+    @supports_dummy_arrays()
+    def compress(
         self,
         weights: Float[Array, "out_channels in_channels"],
         *,
+        key: Key[Array, ""] | None = None,  # noqa: ARG002
+        preconditioner: Preconditioner | None = None,  # noqa: ARG002
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "QtipGaussianMatrix":
+        if not isinstance(weights, Tracer):
+            raise NotImplementedError("QTIP Gaussian matrices are loaded from saved parameters, not fitted")
         rows, columns = self.layout.weight_shape((), *weights.shape)
         row_axis, _ = self.layout.weight_partition(0, is_sharded=is_sharded)
-        initializer = EmptyInitializer(weights.dtype, sharding_config)
+        initializer = RandomInitializer(weights.dtype, sharding_config)
         return QtipGaussianMatrix(
             spec=self,
             sharding_config=sharding_config,
@@ -115,7 +127,6 @@ class QtipGaussianSpec(LoadOnlySpec):
             columns=columns,
             codes=initializer.zeros((rows, self.code_bytes(columns)), (row_axis, None), jnp.uint8),
             scales=initializer.zeros((rows,), (row_axis,), jnp.float32),
-            codebook=initializer.zeros((1 + COLUMN_CLASSES,), dtype=jnp.float32),
         )
 
 
@@ -124,15 +135,13 @@ class QtipGaussianMatrix(EmbeddingMatrix[QtipGaussianSpec]):
     columns: int = field(static=True)
     codes: UInt8[Array, "rows bytes"]
     scales: Float[Array, " rows"]
-    codebook: Float[Array, " codebook"] = field(trainable=False)
 
     def __check_init__(self) -> None:
         rows, columns = self.shape
         assert self.codes.shape == (rows, self.spec.code_bytes(columns))
         assert self.codes.dtype == jnp.uint8
         assert self.scales.shape == (rows,)
-        assert self.codebook.shape == (1 + COLUMN_CLASSES,)
-        assert self.scales.dtype == self.codebook.dtype == jnp.float32
+        assert self.scales.dtype == jnp.float32
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -148,8 +157,9 @@ class QtipGaussianMatrix(EmbeddingMatrix[QtipGaussianSpec]):
     def decode_rows(self, codes: UInt8[Array, "*rows bytes"], scales: Float[Array, "*rows"]) -> Array:
         levels = states_to_levels(self.spec.states(codes, self.columns))[..., : self.spec.vector_width]
         levels = levels.reshape(*codes.shape[:-1], self.columns).astype(jnp.float32)
-        offsets = self.codebook[1 + jnp.arange(self.columns) % COLUMN_CLASSES]
-        return ((self.codebook[0] * levels + offsets) * scales[..., None]).astype(self.dtype)
+        codebook = self.spec.codebook
+        offsets = codebook[1 + jnp.arange(self.columns) % COLUMN_CLASSES]
+        return ((codebook[0] * levels + offsets) * scales[..., None]).astype(self.dtype)
 
     def decompress(self) -> Array:
         return self.spec.layout.to_output_input(self.decode_rows(self.codes, self.scales))

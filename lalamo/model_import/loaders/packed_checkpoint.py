@@ -1,6 +1,5 @@
 import json
 from collections.abc import Iterable
-from dataclasses import replace
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -8,8 +7,9 @@ from typing import Any
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, DTypeLike, Float
+from jaxtyping import Array, DTypeLike
 
 from lalamo.compressed.hybrid import HybridMatrix
 from lalamo.compressed.incoherence import (
@@ -18,10 +18,17 @@ from lalamo.compressed.incoherence import (
     IncoherenceProcessor,
     KroneckerProcessor,
 )
-from lalamo.compressed.lattice import COLUMNS_PER_LADDER_INDEX, LADDER_INDEX_BITS, LatticeMatrix, LatticeSpec
+from lalamo.compressed.lattice import (
+    COLUMNS_PER_LADDER_INDEX,
+    D4_LADDER,
+    D4_TABLE,
+    LADDER_INDEX_BITS,
+    LatticeMatrix,
+    LatticeSpec,
+)
 from lalamo.compressed.mlx import MLXMatrix, MLXSpec
-from lalamo.compressed.output_stack import OutputStackMatrix, OutputStackPart, OutputStackSpec
-from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec, codebook_from_table
+from lalamo.compressed.output_stack import OutputStackMatrix, OutputStackSpec
+from lalamo.compressed.qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec, codebook_table
 from lalamo.compressed.utils.packing import unpack_uint8_to_uint
 from lalamo.exportable import ExportResults
 from lalamo.initializer import EmptyInitializer
@@ -38,16 +45,8 @@ from lalamo.weight_matrix import Layout, ShapeDtypeMatrix, WeightMatrix
 def merge_rows(top: WeightMatrix, bottom: WeightMatrix) -> WeightMatrix | None:
     if (top.spec, top.dtype) != (bottom.spec, bottom.dtype):
         return None
-    if isinstance(top, MLXMatrix):
+    if isinstance(top, MLXMatrix | QtipGaussianMatrix):
         return jax.tree.map(lambda *planes: jnp.concatenate(planes), top, bottom)
-    if (
-        isinstance(top, QtipGaussianMatrix)
-        and isinstance(bottom, QtipGaussianMatrix)
-        and jnp.array_equal(top.codebook, bottom.codebook)
-    ):
-        return replace(
-            top, codes=jnp.concatenate((top.codes, bottom.codes)), scales=jnp.concatenate((top.scales, bottom.scales))
-        )
     return None
 
 
@@ -100,8 +99,8 @@ def load_packed_checkpoint(template: LanguageModel, exported: ExportResults, dty
         return spec
 
     @cache
-    def codebook(table_name: str) -> Float[Array, " codebook"]:
-        return codebook_from_table(parameter(table_name))
+    def check_codebook(table_name: str, vector_width: int) -> None:
+        assert np.allclose(parameter(table_name), codebook_table(vector_width), atol=1e-6), f"Unexpected {table_name}"
 
     def fold_post_gains(path: ParameterPath, scale: Array, axes: Iterable[str]) -> Array:
         scale = scale.astype(jnp.float32)
@@ -121,8 +120,7 @@ def load_packed_checkpoint(template: LanguageModel, exported: ExportResults, dty
         assert parts
         if len(parts) == 1:
             return parts[0]
-        spec = OutputStackSpec(tuple(OutputStackPart(part.shape[0], part.spec) for part in parts))
-        return OutputStackMatrix(spec, sharding_config, parts[0].is_sharded, parts)
+        return OutputStackMatrix(OutputStackSpec(), sharding_config, parts[0].is_sharded, parts)
 
     def stack_projections(hybrids: Iterable[WeightMatrix]) -> WeightMatrix:
         # Neighbours under one saved rotation become one hybrid, in which neighbouring same-format leaves merge.
@@ -146,7 +144,7 @@ def load_packed_checkpoint(template: LanguageModel, exported: ExportResults, dty
         matrix: WeightMatrix
         match saved.pop("type"):
             case "FullPrecisionSpec":
-                matrix = target.load_exported(ExportResults(arrays, specs), prefix=path)
+                matrix = target.load_exported(exported, prefix=path)
                 consumed.add(path / "weights")
             case "QtipGaussianSpec":
                 table_name = saved.pop("table", f"qtip_shared.codebook_v{saved['vector_width']}")
@@ -170,8 +168,8 @@ def load_packed_checkpoint(template: LanguageModel, exported: ExportResults, dty
                     columns=columns,
                     codes=parameter(path / "codes"),
                     scales=row_scale,
-                    codebook=codebook(table_name),
                 )
+                check_codebook(table_name, leaf.spec.vector_width)
                 mode = IncoherenceProcessingMode.INPUT
                 if target.spec.layout == Layout.INPUT_OUTPUT:
                     mode = IncoherenceProcessingMode.OUTPUT
@@ -224,10 +222,8 @@ def load_packed_checkpoint(template: LanguageModel, exported: ExportResults, dty
                     row_scales=parameter(path / "row_scales"),
                     ladder_indices=parameter(path / "ladder_indices"),
                 )
-                for name in ("table", "ladder"):
-                    assert jnp.array_equal(parameter(path / name), getattr(lattice, name)), (
-                        f"Unexpected D4 {name} at {path}"
-                    )
+                assert np.array_equal(parameter(path / "table"), D4_TABLE), f"Unexpected D4 table at {path}"
+                assert np.array_equal(parameter(path / "ladder"), D4_LADDER), f"Unexpected D4 ladder at {path}"
                 if lattice.layout == Layout.INPUT_OUTPUT:
                     rotation = HadamardProcessor.of(None, parameter(path / "output_hadamard_factors"))
                 else:

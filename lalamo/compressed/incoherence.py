@@ -9,7 +9,6 @@ import jax.numpy as jnp
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, Float, Int, Key
 
-from lalamo.initializer import EmptyInitializer
 from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import field
 from lalamo.preconditioner import Preconditioner
@@ -26,9 +25,6 @@ __all__ = [
     "KroneckerSpec",
     "kronecker_transform",
 ]
-
-Weights = Float[Array, "*components out_channels in_channels"]
-Activations = Float[Array, "*batch channels"]
 
 
 class IncoherenceProcessingMode(StrEnum):
@@ -52,7 +48,9 @@ class IncoherenceProcessor(eqx.Module, Generic[SpecT_co]):  # noqa: UP046
     spec: SpecT_co = field(static=True)
 
     @abstractmethod
-    def process_weights(self, weights: Weights, sharding_config: ShardingConfig) -> Weights: ...
+    def process_weights(
+        self, weights: Float[Array, "*components out_channels in_channels"], sharding_config: ShardingConfig
+    ) -> Float[Array, "*components out_channels in_channels"]: ...
 
     @abstractmethod
     def process_preconditioner(
@@ -60,24 +58,34 @@ class IncoherenceProcessor(eqx.Module, Generic[SpecT_co]):  # noqa: UP046
     ) -> Preconditioner: ...
 
     @abstractmethod
-    def unprocess_input_axis(self, weights: Weights, sharding_config: ShardingConfig) -> Weights: ...
+    def unprocess_input_axis(
+        self, weights: Float[Array, "*components out_channels in_channels"], sharding_config: ShardingConfig
+    ) -> Float[Array, "*components out_channels in_channels"]: ...
 
     @abstractmethod
-    def unprocess_output_axis(self, weights: Weights, sharding_config: ShardingConfig) -> Weights: ...
+    def unprocess_output_axis(
+        self, weights: Float[Array, "*components out_channels in_channels"], sharding_config: ShardingConfig
+    ) -> Float[Array, "*components out_channels in_channels"]: ...
 
     @abstractmethod
-    def input_transform(self, vector: Activations, *, transposed: bool = False) -> Activations: ...
+    def input_transform(
+        self, vector: Float[Array, "*batch channels"], *, transposed: bool = False
+    ) -> Float[Array, "*batch channels"]: ...
 
     @abstractmethod
-    def output_transform(self, vector: Activations, *, transposed: bool = False) -> Activations: ...
+    def output_transform(
+        self, vector: Float[Array, "*batch channels"], *, transposed: bool = False
+    ) -> Float[Array, "*batch channels"]: ...
 
     @abstractmethod
-    def unprocess_embedding(self, rows: Activations) -> Activations: ...
+    def unprocess_embedding(self, rows: Float[Array, "*batch channels"]) -> Float[Array, "*batch channels"]: ...
 
     @abstractmethod
     def with_components(self, components: tuple[int, ...]) -> Self: ...
 
-    def unprocess_weights(self, weights: Weights, sharding_config: ShardingConfig) -> Weights:
+    def unprocess_weights(
+        self, weights: Float[Array, "*components out_channels in_channels"], sharding_config: ShardingConfig
+    ) -> Float[Array, "*components out_channels in_channels"]:
         return self.unprocess_input_axis(self.unprocess_output_axis(weights, sharding_config), sharding_config)
 
 
@@ -86,7 +94,9 @@ def _random_signs(channels: int, key: Key[Array, ""], sharding_config: ShardingC
     return jax.device_put(signs, sharding_config.make_sharding((None,)))
 
 
-def _hadamard_transform_output_axis(inputs: Weights, block_size: Literal[32, 64, 128]) -> Weights:
+def _hadamard_transform_output_axis(
+    inputs: Float[Array, "*components out_channels in_channels"], block_size: Literal[32, 64, 128]
+) -> Float[Array, "*components out_channels in_channels"]:
     return jnp.swapaxes(hadamard_transform(jnp.swapaxes(inputs, -1, -2), block_size), -1, -2)
 
 
@@ -134,7 +144,6 @@ class HadamardProcessor(IncoherenceProcessor[HadamardSpec]):
         cls,
         input_signs: Int[Array, " in_channels"] | None,
         output_signs: Int[Array, " out_channels"] | None,
-        block_size: Literal[32, 64, 128] = 32,
     ) -> Self:
         match input_signs is not None, output_signs is not None:
             case True, True:
@@ -145,9 +154,11 @@ class HadamardProcessor(IncoherenceProcessor[HadamardSpec]):
                 mode = IncoherenceProcessingMode.OUTPUT
             case _:
                 raise ValueError("A Hadamard processor needs input signs, output signs, or both.")
-        return cls(HadamardSpec(block_size, mode), input_signs, output_signs)
+        return cls(HadamardSpec(processing_mode=mode), input_signs, output_signs)
 
-    def process_weights(self, weights: Weights, sharding_config: ShardingConfig) -> Weights:
+    def process_weights(
+        self, weights: Float[Array, "*components out_channels in_channels"], sharding_config: ShardingConfig
+    ) -> Float[Array, "*components out_channels in_channels"]:
         input_sharding = sharding_of(weights)
         weights = jax.device_put(weights, sharding_config.resolve_sharding((None,) * weights.ndim))
         if self.input_signs is not None:
@@ -171,7 +182,9 @@ class HadamardProcessor(IncoherenceProcessor[HadamardSpec]):
             ),
         )
 
-    def unprocess_input_axis(self, weights: Weights, sharding_config: ShardingConfig) -> Weights:
+    def unprocess_input_axis(
+        self, weights: Float[Array, "*components out_channels in_channels"], sharding_config: ShardingConfig
+    ) -> Float[Array, "*components out_channels in_channels"]:
         if self.input_signs is None:
             return weights
         input_sharding = sharding_of(weights)
@@ -179,7 +192,9 @@ class HadamardProcessor(IncoherenceProcessor[HadamardSpec]):
         restored = hadamard_transform(weights, self.spec.block_size)
         return jax.device_put(restored * self.input_signs.astype(restored.dtype)[..., None, :], input_sharding)
 
-    def unprocess_output_axis(self, weights: Weights, sharding_config: ShardingConfig) -> Weights:
+    def unprocess_output_axis(
+        self, weights: Float[Array, "*components out_channels in_channels"], sharding_config: ShardingConfig
+    ) -> Float[Array, "*components out_channels in_channels"]:
         if self.output_signs is None:
             return weights
         input_sharding = sharding_of(weights)
@@ -187,20 +202,24 @@ class HadamardProcessor(IncoherenceProcessor[HadamardSpec]):
         restored = _hadamard_transform_output_axis(weights, self.spec.block_size)
         return jax.device_put(restored * self.output_signs.astype(restored.dtype)[..., None], input_sharding)
 
-    def input_transform(self, vector: Activations, *, transposed: bool = False) -> Activations:
+    def input_transform(
+        self, vector: Float[Array, "*batch channels"], *, transposed: bool = False
+    ) -> Float[Array, "*batch channels"]:
         signs = self.output_signs if transposed else self.input_signs
         if signs is None:
             return vector
         return hadamard_transform(vector * signs.astype(vector.dtype), self.spec.block_size)
 
-    def output_transform(self, vector: Activations, *, transposed: bool = False) -> Activations:
+    def output_transform(
+        self, vector: Float[Array, "*batch channels"], *, transposed: bool = False
+    ) -> Float[Array, "*batch channels"]:
         signs = self.input_signs if transposed else self.output_signs
         if signs is None:
             return vector
         transformed = hadamard_transform(vector, self.spec.block_size)
         return transformed * signs.astype(transformed.dtype)
 
-    def unprocess_embedding(self, rows: Activations) -> Activations:
+    def unprocess_embedding(self, rows: Float[Array, "*batch channels"]) -> Float[Array, "*batch channels"]:
         if self.input_signs is not None:
             raise ValueError("Hybrid embedding lookup is only supported when input RHT is disabled.")
         return self.output_transform(rows)
@@ -247,13 +266,14 @@ class KroneckerSpec(IncoherenceProcessorSpec):
         key: Key[Array, ""] | None,  # noqa: ARG002
         sharding_config: ShardingConfig,
     ) -> "KroneckerProcessor":
-        # The rotation is only ever loaded from saved parameters.
+        # Plain Hadamard blocks until saved signs and factors are loaded over them.
         channels = input_dim if self.processing_mode == IncoherenceProcessingMode.INPUT else output_dim
-        initializer = EmptyInitializer(jnp.float32, sharding_config)
         order = channels // (channels & -channels)
-        return KroneckerProcessor(
-            self, initializer.zeros((channels,), dtype=jnp.int32), initializer.zeros((order, order))
+        signs = jax.device_put(jnp.ones(channels, jnp.int32), sharding_config.make_sharding((None,)))
+        orthogonal_factor = jax.device_put(
+            jnp.eye(order, dtype=jnp.float32), sharding_config.make_sharding((None, None))
         )
+        return KroneckerProcessor(self, signs, orthogonal_factor)
 
 
 class KroneckerProcessor(IncoherenceProcessor[KroneckerSpec]):
@@ -274,37 +294,55 @@ class KroneckerProcessor(IncoherenceProcessor[KroneckerSpec]):
     def _is_input(self) -> bool:
         return self.spec.processing_mode == IncoherenceProcessingMode.INPUT
 
-    def _rotate(self, values: Activations) -> Activations:
+    def _rotate(self, values: Float[Array, "*batch channels"]) -> Float[Array, "*batch channels"]:
         signed = values.astype(jnp.float32) * self.signs.astype(jnp.float32)
         return kronecker_transform(signed, self.orthogonal_factor.T).astype(values.dtype)
 
-    def _unrotate(self, values: Activations) -> Activations:
+    def _unrotate(self, values: Float[Array, "*batch channels"]) -> Float[Array, "*batch channels"]:
         unrotated = kronecker_transform(values.astype(jnp.float32), self.orthogonal_factor)
         return (unrotated * self.signs.astype(jnp.float32)).astype(values.dtype)
 
-    def process_weights(self, weights: Weights, sharding_config: ShardingConfig) -> Weights:
-        raise NotImplementedError("Kronecker rotations are loaded from saved parameters, not fitted")
+    def process_weights(
+        self,
+        weights: Float[Array, "*components out_channels in_channels"],
+        sharding_config: ShardingConfig,  # noqa: ARG002
+    ) -> Float[Array, "*components out_channels in_channels"]:
+        if self._is_input:
+            return self._rotate(weights)
+        return jnp.swapaxes(self._rotate(jnp.swapaxes(weights, -1, -2)), -1, -2)
 
     def process_preconditioner(
         self, preconditioner: Preconditioner, sharding_config: ShardingConfig
     ) -> Preconditioner:
         raise NotImplementedError("Kronecker rotations are loaded from saved parameters, not fitted")
 
-    def unprocess_input_axis(self, weights: Weights, sharding_config: ShardingConfig) -> Weights:  # noqa: ARG002
+    def unprocess_input_axis(
+        self,
+        weights: Float[Array, "*components out_channels in_channels"],
+        sharding_config: ShardingConfig,  # noqa: ARG002
+    ) -> Float[Array, "*components out_channels in_channels"]:
         return self._unrotate(weights) if self._is_input else weights
 
-    def unprocess_output_axis(self, weights: Weights, sharding_config: ShardingConfig) -> Weights:  # noqa: ARG002
+    def unprocess_output_axis(
+        self,
+        weights: Float[Array, "*components out_channels in_channels"],
+        sharding_config: ShardingConfig,  # noqa: ARG002
+    ) -> Float[Array, "*components out_channels in_channels"]:
         if self._is_input:
             return weights
         return jnp.swapaxes(self._unrotate(jnp.swapaxes(weights, -1, -2)), -1, -2)
 
-    def input_transform(self, vector: Activations, *, transposed: bool = False) -> Activations:
+    def input_transform(
+        self, vector: Float[Array, "*batch channels"], *, transposed: bool = False
+    ) -> Float[Array, "*batch channels"]:
         return vector if self._is_input == transposed else self._rotate(vector)
 
-    def output_transform(self, vector: Activations, *, transposed: bool = False) -> Activations:
+    def output_transform(
+        self, vector: Float[Array, "*batch channels"], *, transposed: bool = False
+    ) -> Float[Array, "*batch channels"]:
         return vector if self._is_input != transposed else self._unrotate(vector)
 
-    def unprocess_embedding(self, rows: Activations) -> Activations:
+    def unprocess_embedding(self, rows: Float[Array, "*batch channels"]) -> Float[Array, "*batch channels"]:
         if self._is_input:
             raise ValueError("Hybrid embedding lookup rotates the output axis")
         return self._unrotate(rows)

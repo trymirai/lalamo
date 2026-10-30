@@ -15,24 +15,20 @@ from jaxtyping import Array, DTypeLike
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 
-from lalamo.compressed.hybrid import HybridSpec
+from lalamo.compressed.hybrid import HybridMatrix, HybridSpec
 from lalamo.compressed.incoherence import (
     HadamardProcessor,
     HadamardSpec,
     IncoherenceProcessingMode,
     KroneckerProcessor,
-    KroneckerSpec,
 )
 from lalamo.compressed.int import IntSpec
-from lalamo.compressed.lattice import LatticeSpec
+from lalamo.compressed.lattice import D4_LADDER, D4_TABLE
 from lalamo.compressed.mlx import MLXSpec
-from lalamo.compressed.output_stack import OutputStackMatrix, OutputStackPart, OutputStackSpec
+from lalamo.compressed.output_stack import OutputStackMatrix
 from lalamo.compressed.qtip_gaussian import (
-    STATE_BITS,
-    QtipGaussianMatrix,
     QtipGaussianSpec,
-    codebook_from_table,
-    states_to_levels,
+    codebook_table,
 )
 from lalamo.initializer import RandomInitializer
 from lalamo.model_import.loaders.packed_checkpoint import import_packed_checkpoint
@@ -46,7 +42,7 @@ from lalamo.safetensors import safe_write
 from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
-from lalamo.weight_matrix import Layout, WeightMatrix
+from lalamo.weight_matrix import WeightMatrix
 from tests.helpers import build_tiny_attention_decoder_config, make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
@@ -71,11 +67,7 @@ def assert_loaded_every_saved_tensor(
     model: LanguageModel, saved: Mapping[str, Array], folds: Mapping[str, tuple[str, ...]]
 ) -> None:
     # `folds` maps each trellis leaf's saved scales to the saved row gains its one loaded scale multiplies.
-    for leaf in jax.tree.leaves(model, is_leaf=lambda node: isinstance(node, QtipGaussianMatrix | KroneckerProcessor)):
-        if isinstance(leaf, QtipGaussianMatrix):
-            width = leaf.spec.vector_width
-            tables = [table for name, table in saved.items() if re.fullmatch(rf"qtip_shared\.\w+_v{width}", name)]
-            assert any(np.array_equal(leaf.codebook, codebook_from_table(table)) for table in tables)
+    for leaf in jax.tree.leaves(model, is_leaf=lambda node: isinstance(node, KroneckerProcessor)):
         if isinstance(leaf, KroneckerProcessor):
             np.testing.assert_array_equal(leaf.signs, saved[f"qtip_shared.signs_{len(leaf.signs)}"])
             np.testing.assert_array_equal(leaf.orthogonal_factor, saved[f"qtip_shared.q_{len(leaf.signs)}"])
@@ -226,10 +218,9 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     arrays[embedding + ".codes"] = packed_bytes((VOCABULARY, MODEL_DIM // 4))
     arrays[embedding + ".row_scales"] = uniform((VOCABULARY,), jnp.bfloat16)
     arrays[embedding + ".ladder_indices"] = packed_bytes((VOCABULARY, MODEL_DIM // 128))
-    lattice = LatticeSpec(Layout.INPUT_OUTPUT)
-    arrays[embedding + ".ladder"] = lattice.ladder
+    arrays[embedding + ".ladder"] = jnp.asarray(D4_LADDER)
     arrays[embedding + ".output_hadamard_factors"] = random_signs()
-    arrays[embedding + ".table"] = lattice.table
+    arrays[embedding + ".table"] = jnp.asarray(D4_TABLE)
     metadata[embedding + ".spec"] = {"type": "D4S4Spec", "layout": "input_output"}
     int4 = HybridSpec(IntSpec(4, 64, is_symmetric=True), None, HadamardSpec(32, IncoherenceProcessingMode.INPUT))
     readout_weights = jax.random.normal(jax.random.key(0), (VOCABULARY, MODEL_DIM), jnp.bfloat16)
@@ -241,11 +232,8 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
         arrays[f"qtip_shared.q_{columns}"] = jnp.asarray(
             np.linalg.qr(generator.normal(size=(order, order)))[0], jnp.float32
         )
-    # Package codebooks hold scale * level + the offset of each column class for every state.
-    levels = states_to_levels(jnp.arange(1 << STATE_BITS, dtype=jnp.uint32)).astype(jnp.float32)
-    offsets = jnp.asarray((0.31, -0.17, 0.08, 0.44))
     for width in (2, 4):
-        arrays[f"qtip_shared.codebook_v{width}"] = 0.05 * levels[:, :width] + offsets[:width]
+        arrays[f"qtip_shared.codebook_v{width}"] = codebook_table(width)
     # Older packages save attention as separate qkv and gate projections, beside a null pard_token.
     config: Any = model.config.to_json()
     config["decoder_config"]["pard_token"] = None
@@ -261,13 +249,14 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     matrices = weight_matrices(restored)
     sharding_config = make_test_sharding_config()
     # Same-format trellis neighbours merge under their shared Kronecker rotation; I4S4 parts of other signs do not.
-    kronecker = HybridSpec(OutputStackSpec((OutputStackPart(16, v4), OutputStackPart(8, v2))), None, KroneckerSpec())
     folded_i4s4 = HybridSpec(MLXSpec(4, 64), None, HadamardSpec(32, IncoherenceProcessingMode.INPUT))
     stack = matrices[qkvg]
     assert isinstance(stack, OutputStackMatrix)
-    assert stack.spec == OutputStackSpec(
-        (OutputStackPart(24, kronecker), OutputStackPart(4, folded_i4s4), OutputStackPart(4, folded_i4s4))
-    )
+    kronecker, *i4s4_parts = stack.parts
+    assert isinstance(kronecker, HybridMatrix) and isinstance(kronecker.quantized, OutputStackMatrix)
+    assert [part.spec for part in kronecker.quantized.parts] == [v4, v2]
+    assert [part.shape[0] for part in stack.parts] == [24, 4, 4]
+    assert [part.spec for part in i4s4_parts] == [folded_i4s4, folded_i4s4]
     for index, part in zip((3, 4), stack.parts[1:], strict=True):
         expected = saved_i4s4(arrays, f"{qkvg}.parts.{index}", ("row", "column"), sharding_config)
         np.testing.assert_array_equal(part.astype(jnp.float32).decompress(), expected)

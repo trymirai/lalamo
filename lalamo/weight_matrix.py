@@ -37,7 +37,6 @@ __all__ = [
     "FullPrecisionSpec",
     "GradientEstimator",
     "Layout",
-    "LoadOnlySpec",
     "MatmulConfig",
     "WeightMatrix",
     "WeightMatrixSpec",
@@ -104,42 +103,6 @@ class WeightMatrixSpec(RegistryABC):
         key: Key[Array, ""] | None = None,
         preconditioner: Preconditioner | None = None,
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-        sharding_config: ShardingConfig,
-        is_sharded: bool = True,
-    ) -> "WeightMatrix": ...
-
-    def empty(
-        self,
-        weights: Float[Array, "*components out_channels in_channels"],
-        *,
-        sharding_config: ShardingConfig,
-        is_sharded: bool = True,
-    ) -> "WeightMatrix":
-        # A matrix of dummy arrays shaped like `weights` (themselves dummies), to load saved parameters into.
-        return self.compress(weights, sharding_config=sharding_config, is_sharded=is_sharded)
-
-
-@dataclass(frozen=True)
-class LoadOnlySpec(WeightMatrixSpec):
-    """A format that is only loaded from saved parameters, never fitted."""
-
-    def compress(
-        self,
-        weights: Float[Array, "*components out_channels in_channels"],
-        *,
-        key: Key[Array, ""] | None = None,
-        preconditioner: Preconditioner | None = None,
-        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
-        sharding_config: ShardingConfig,
-        is_sharded: bool = True,
-    ) -> "WeightMatrix":
-        raise NotImplementedError(f"{type(self).__name__} is loaded from saved parameters, not fitted")
-
-    @abstractmethod
-    def empty(
-        self,
-        weights: Float[Array, "*components out_channels in_channels"],
-        *,
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "WeightMatrix": ...
@@ -585,7 +548,7 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
 
         saved_spec = exported_data.metadata[prefix / "spec"]
         loaded_spec = WeightMatrixSpec.from_json(saved_spec)
-        dummy_layer = loaded_spec.empty(
+        dummy_layer = loaded_spec.compress(
             self.decompress(),
             sharding_config=self.sharding_config,
             is_sharded=self.is_sharded,

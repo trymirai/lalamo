@@ -2,49 +2,46 @@ from dataclasses import dataclass, replace
 from typing import Self
 
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float
+from jax.core import Tracer
+from jaxtyping import Array, DTypeLike, Float, Key
 
-from lalamo.initializer import EmptyInitializer
+from lalamo.exportable import ExportResults
 from lalamo.module import Keychain
+from lalamo.preconditioner import Preconditioner
+from lalamo.utils.dummy_array import dummy_array, supports_dummy_arrays
+from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import (
+    CompressionImplementation,
     FullPrecisionMatrix,
     FullPrecisionSpec,
-    LoadOnlySpec,
     MatmulConfig,
+    ShapeDtypeSpec,
     WeightMatrix,
     WeightMatrixSpec,
 )
 
 
 @dataclass(frozen=True)
-class OutputStackPart:
-    out_channels: int
-    spec: WeightMatrixSpec
+class OutputStackSpec(WeightMatrixSpec):
+    # Each part saves its own spec, and the stack saves the row count of each part.
 
-
-@dataclass(frozen=True)
-class OutputStackSpec(LoadOnlySpec):
-    parts: tuple[OutputStackPart, ...]
-
-    def empty(
+    @supports_dummy_arrays()
+    def compress(
         self,
         weights: Float[Array, "out_channels in_channels"],
         *,
+        key: Key[Array, ""] | None = None,  # noqa: ARG002
+        preconditioner: Preconditioner | None = None,  # noqa: ARG002
+        implementation: CompressionImplementation = CompressionImplementation.INFERENCE,  # noqa: ARG002
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "OutputStackMatrix":
-        assert sum(part.out_channels for part in self.parts) == weights.shape[0]
-        initializer = EmptyInitializer(weights.dtype, sharding_config)
-        parts = tuple(
-            part.spec.empty(
-                initializer.zeros((part.out_channels, weights.shape[1])),
-                sharding_config=sharding_config,
-                is_sharded=is_sharded,
-            )
-            for part in self.parts
-        )
-        return OutputStackMatrix(spec=self, sharding_config=sharding_config, is_sharded=is_sharded, parts=parts)
+        # Only a placeholder of the whole shape is built; load_exported splits it into the saved parts.
+        if not isinstance(weights, Tracer):
+            raise NotImplementedError("Output stacks are loaded from saved parameters, not fitted")
+        placeholder = FullPrecisionSpec().compress(weights, sharding_config=sharding_config, is_sharded=is_sharded)
+        return OutputStackMatrix(self, sharding_config, is_sharded, (placeholder,))
 
 
 class OutputStackMatrix(WeightMatrix[OutputStackSpec]):
@@ -52,8 +49,29 @@ class OutputStackMatrix(WeightMatrix[OutputStackSpec]):
 
     def __check_init__(self) -> None:
         assert self.parts
-        assert tuple(OutputStackPart(part.shape[0], part.spec) for part in self.parts) == self.spec.parts
         assert all(part.shape[1] == self.parts[0].shape[1] and part.dtype == self.dtype for part in self.parts)
+
+    def export(self) -> ExportResults:
+        arrays, metadata = super().export()
+        part_rows = jnp.asarray([part.shape[0] for part in self.parts], dtype=jnp.int32)
+        return ExportResults({**arrays, "part_rows": part_rows}, metadata)
+
+    def load_exported(self, exported_data: ExportResults, *, prefix: ParameterPath | None = None) -> Self:
+        if prefix is None:
+            prefix = ParameterPath()
+        columns = self.shape[1]
+        sharding = self.sharding_config.resolve_sharding((None, None))
+        parts = tuple(
+            ShapeDtypeSpec()
+            .compress(
+                dummy_array((rows, columns), self.dtype, sharding),
+                sharding_config=self.sharding_config,
+                is_sharded=self.is_sharded,
+            )
+            .load_exported(exported_data, prefix=prefix / "parts" / index)
+            for index, rows in enumerate(exported_data.arrays[prefix / "part_rows"].tolist())
+        )
+        return replace(self, parts=parts)
 
     @property
     def shape(self) -> tuple[int, int]:
