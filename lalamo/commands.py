@@ -24,7 +24,13 @@ from lalamo.model_import.common import (
 from lalamo.model_import.loaders.dflash_loader import load_hf_dflash_draft_model
 from lalamo.model_import.loaders.weaver_loader import load_weaver
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
-from lalamo.models import SpeculatorModel, SpeculatorModelConfig
+from lalamo.model_import.vocabulary_order import (
+    file_vocabulary_counts,
+    frequency_order,
+    frequency_ordered,
+    training_mixture_vocabulary_counts,
+)
+from lalamo.models import LanguageModel, SpeculatorModel, SpeculatorModelConfig, VocabularyOrder
 from lalamo.modules import DFlashSpeculator, DFlashSpeculatorConfig
 from lalamo.utils.sharding import ShardingConfig
 
@@ -165,7 +171,12 @@ def convert(
         ],
         ConversionCallbacks,
     ] = ConversionCallbacks,
+    *,
+    vocabulary_order: VocabularyOrder = VocabularyOrder.ORIGINAL,
+    vocabulary_counts: Path | None = None,
 ) -> None:
+    if vocabulary_counts is not None and vocabulary_order != VocabularyOrder.FREQUENCY:
+        raise ValueError("Vocabulary counts only make sense with the frequency vocabulary order.")
     effective_dtype = dtype or DType.BFLOAT16
     callbacks = callbacks_type(
         model_spec,
@@ -195,8 +206,17 @@ def convert(
         dtype=jnp.dtype(effective_dtype.value),
         progress_callback=progress_callback,
     )
+    model = imported_model.model
+    if vocabulary_order == VocabularyOrder.FREQUENCY:
+        assert isinstance(model, LanguageModel), "Only language models have a vocabulary order"
+        tokenizer, vocab_size = model.token_codec.tokenizer, model.decoder.vocab_size
+        if vocabulary_counts is None:
+            counts = training_mixture_vocabulary_counts(tokenizer, vocab_size)
+        else:
+            counts = file_vocabulary_counts(vocabulary_counts, vocab_size)
+        model = frequency_ordered(model, frequency_order(counts, tokenizer))
     callbacks.saving_model()
-    imported_model.model.save(output_dir)
+    model.save(output_dir)
 
     callbacks.finished_saving_model()
 
