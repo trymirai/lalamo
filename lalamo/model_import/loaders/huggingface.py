@@ -1,5 +1,6 @@
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from itertools import count, takewhile
 from typing import Literal
 
 import equinox as eqx
@@ -15,13 +16,22 @@ from lalamo.modules.decoder import Decoder
 from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding
 from lalamo.modules.linear import Linear
 from lalamo.modules.mlp import DenseMLP, MixtureOfExperts, MLPBase
+from lalamo.modules.ngram_injection import NGramInjection, NGramInjectionConfig
 from lalamo.modules.normalization import Normalization
-from lalamo.modules.residual import GatedResidualConnection, GatedResidualHead, GatedStreamReader
+from lalamo.modules.residual import (
+    GatedResidualConnection,
+    GatedResidualHead,
+    GatedStreamReader,
+    ResidualConnectionBase,
+    ResidualHeadBase,
+)
+from lalamo.modules.stream_ops import StreamOpBase
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv
 from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
 from lalamo.modules.token_mixers.mamba import Mamba2, Mamba2Config
 from lalamo.modules.token_mixers.short_conv import ShortConv, ShortConvConfig
+from lalamo.modules.token_mixers.sparse_attention import SparseAttention, SparseAttentionConfig
 from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
@@ -783,6 +793,30 @@ def load_attention(
     )
 
 
+def load_sparse_attention(
+    module: SparseAttention,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> SparseAttention:
+    attention = load_attention(module.attention, weights_dict, path, implementation=implementation)
+    indexer_path = path / "indexer"
+    indexer_projection = load_linear(
+        module.indexer.projection,
+        weights_dict,
+        indexer_path / "index_qk_proj",
+        implementation=implementation,
+    )
+    indexer_query_norm = load_rmsnorm(module.indexer.query_norm, weights_dict, indexer_path / "q_layernorm")
+    indexer_key_norm = load_rmsnorm(module.indexer.key_norm, weights_dict, indexer_path / "k_layernorm")
+    return load_as_at(
+        lambda m: (m.attention, m.indexer.projection, m.indexer.query_norm, m.indexer.key_norm),
+        module,
+        (attention, indexer_projection, indexer_query_norm, indexer_key_norm),
+    )
+
+
 def load_gated_stream_reader(
     module: GatedStreamReader,
     weights_dict: Mapping[str, Array],
@@ -837,6 +871,81 @@ def load_gated_residual_head(
 ) -> GatedResidualHead:
     reader = load_gated_stream_reader(module.reader, weights_dict, path, implementation=implementation)
     return load_as_at(lambda m: (m.reader,), module, (reader,))
+
+
+def load_ngram_injection(
+    module: NGramInjection,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> NGramInjection:
+    (stream_dim,) = module.key_projection.output_dims
+    (model_dim,) = module.value_projection.output_dims
+    stream_count = stream_dim // model_dim
+
+    def load_stream_norm(norm: Normalization, norm_path: ParameterPath) -> Normalization:
+        scales = rearrange(
+            weights_dict[norm_path / "weight"],
+            "(streams channels) -> streams channels",
+            streams=stream_count,
+        )
+        return load_as_at(lambda m: (m.scales,), norm, (scales,))
+
+    embedding_path = path / "ple_embedding" / "ngram_embedding"
+    shard_paths = tuple(
+        takewhile(
+            lambda shard_path: shard_path in weights_dict,
+            (embedding_path / f"shard_{shard_index}" / "weight" for shard_index in count()),
+        ),
+    )
+    padded_table = (
+        jnp.concatenate([weights_dict[shard_path] for shard_path in shard_paths])
+        if shard_paths
+        else weights_dict[embedding_path / "weight"]
+    )
+    ngram_embedding = load_input_embedding_matrix(
+        module.ngram_embedding,
+        {embedding_path / "weight": padded_table[: module.config.hash_config.num_rows]},
+        embedding_path,
+        implementation=implementation,
+    )
+    key_projection = load_linear(module.key_projection, weights_dict, path / "key_proj", implementation=implementation)
+    value_projection = load_linear(
+        module.value_projection,
+        weights_dict,
+        path / "value_proj",
+        implementation=implementation,
+    )
+    conv_taps = rearrange(weights_dict[path / "conv1d" / "weight"], "channels 1 taps -> channels taps")
+    num_channels, num_taps = conv_taps.shape
+    dilation, misalignment = divmod(module.conv.kernel_size - 1, num_taps - 1)
+    if misalignment != 0:
+        raise ValueError(f"Cannot expand {num_taps} conv taps into a kernel of size {module.conv.kernel_size}.")
+    conv_weights = (
+        jnp.zeros((num_channels, module.conv.kernel_size), dtype=conv_taps.dtype).at[:, ::dilation].set(conv_taps)
+    )
+    return load_as_at(
+        lambda m: (
+            m.ngram_embedding,
+            m.key_projection,
+            m.value_projection,
+            m.key_norm,
+            m.query_norm,
+            m.conv_norm,
+            m.conv.weights,
+        ),
+        module,
+        (
+            ngram_embedding,
+            key_projection,
+            value_projection,
+            load_stream_norm(module.key_norm, path / "norm_key"),
+            load_stream_norm(module.query_norm, path / "norm_query"),
+            load_stream_norm(module.conv_norm, path / "norm_conv"),
+            conv_weights,
+        ),
+    )
 
 
 def _load_conv(
@@ -1069,7 +1178,14 @@ def load_transformer_layer(
 ) -> TransformerLayer:
     pre_attention_norm = load_optional_rmsnorm(module.mixer.pre_norm, weights_dict, mixer_path / pre_mixer_norm_key)
     mixer_body = module.mixer.body
-    if isinstance(mixer_body, Attention):
+    if isinstance(mixer_body, SparseAttention):
+        mixer = load_sparse_attention(
+            mixer_body,
+            weights_dict,
+            mixer_path / mixer_key,
+            implementation=implementation,
+        )
+    elif isinstance(mixer_body, Attention):
         mixer = load_attention(
             mixer_body,
             weights_dict,
@@ -1228,13 +1344,58 @@ def load_untied_embedding(
     )
 
 
+def load_residual_connection(
+    connection: ResidualConnectionBase,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> ResidualConnectionBase:
+    match connection:
+        case GatedResidualConnection():
+            return load_gated_residual_connection(connection, weights_dict, path, implementation=implementation)
+    return connection
+
+
+def load_residual_head(
+    head: ResidualHeadBase,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> ResidualHeadBase:
+    match head:
+        case GatedResidualHead():
+            return load_gated_residual_head(head, weights_dict, path, implementation=implementation)
+    return head
+
+
+def load_stream_op(
+    op: StreamOpBase,
+    weights_dict: Mapping[str, Array],
+    layer_path: ParameterPath,
+    stream_op_key: dict[type[object], str],
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> StreamOpBase:
+    match op:
+        case NGramInjection():
+            return load_ngram_injection(
+                op,
+                weights_dict,
+                layer_path / stream_op_key[NGramInjectionConfig],
+                implementation=implementation,
+            )
+    return op
+
+
 def _get_mixer_key(
     mixer_key: dict[type[object], str],
     layer: TransformerLayer,
 ) -> str:
     mixer_config = layer.config.mixer.body_config
     match mixer_config:
-        case AttentionConfig():
+        case AttentionConfig() | SparseAttentionConfig():
             return mixer_key[AttentionConfig]
         case DeltaNetConfig():
             return mixer_key[DeltaNetConfig]
@@ -1261,6 +1422,10 @@ class DecoderLoadLayout:
     alternating_layers: bool
     norm_key: str
     lm_head_path: ParameterPath
+    mixer_connection_key: str
+    mlp_connection_key: str
+    residual_head_key: str
+    stream_op_key: dict[type[object], str]
 
 
 def _decoder_load_layout(
@@ -1292,6 +1457,10 @@ def _decoder_load_layout(
         alternating_layers=False,
         norm_key="norm",
         lm_head_path=lm_head_path,
+        mixer_connection_key="attn_hyper_connection",
+        mlp_connection_key="mlp_hyper_connection",
+        residual_head_key="hyper_connection_mixer",
+        stream_op_key={NGramInjectionConfig: "ple"},
     )
 
     backbone_path = root_path / "backbone"
@@ -1343,6 +1512,43 @@ def resolve_decoder_load_layout(weights_dict: Mapping[str, Array]) -> DecoderLoa
     return _decoder_load_layout(weights_dict, root_path)
 
 
+def load_layer_stream_parts(
+    module: TransformerLayer,
+    weights_dict: Mapping[str, Array],
+    mixer_path: ParameterPath,
+    mlp_path: ParameterPath,
+    layout: DecoderLoadLayout,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> TransformerLayer:
+    return load_as_at(
+        lambda m: (m.prologue, m.mixer.connection, m.mlp.connection, m.epilogue),
+        module,
+        (
+            tuple(
+                load_stream_op(op, weights_dict, mixer_path, layout.stream_op_key, implementation=implementation)
+                for op in module.prologue
+            ),
+            load_residual_connection(
+                module.mixer.connection,
+                weights_dict,
+                mixer_path / layout.mixer_connection_key,
+                implementation=implementation,
+            ),
+            load_residual_connection(
+                module.mlp.connection,
+                weights_dict,
+                mlp_path / layout.mlp_connection_key,
+                implementation=implementation,
+            ),
+            tuple(
+                load_stream_op(op, weights_dict, mlp_path, layout.stream_op_key, implementation=implementation)
+                for op in module.epilogue
+            ),
+        ),
+    )
+
+
 def load_huggingface_decoder(
     module: Decoder,
     weights_dict: Mapping[str, Array],
@@ -1369,12 +1575,17 @@ def load_huggingface_decoder(
     else:
         raise TypeError(f"Unsupported embedding type: {type(module.embedding)}")
 
-    decoder_layers = tuple(
-        load_transformer_layer(
+    def load_layer(layer_index: int, layer: TransformerLayer) -> TransformerLayer:
+        mixer_index, mlp_index = (
+            (layer_index * 2, layer_index * 2 + 1) if layout.alternating_layers else (layer_index, layer_index)
+        )
+        mixer_path = layout.decoder_path / "layers" / mixer_index
+        mlp_path = layout.decoder_path / "layers" / mlp_index
+        loaded_layer = load_transformer_layer(
             layer,
             weights_dict,
-            layout.decoder_path / "layers" / ((i * 2) if layout.alternating_layers else i),
-            layout.decoder_path / "layers" / ((i * 2 + 1) if layout.alternating_layers else i),
+            mixer_path,
+            mlp_path,
             _get_mixer_key(layout.mixer_key, layer),
             layout.mlp_key,
             layout.pre_mixer_norm_key,
@@ -1385,15 +1596,29 @@ def load_huggingface_decoder(
             layout.permute_conv,
             implementation=implementation,
         )
-        for i, layer in enumerate(module.transformer.layers)
+        return load_layer_stream_parts(
+            loaded_layer,
+            weights_dict,
+            mixer_path,
+            mlp_path,
+            layout,
+            implementation=implementation,
+        )
+
+    decoder_layers = tuple(load_layer(i, layer) for i, layer in enumerate(module.transformer.layers))
+    residual_head = load_residual_head(
+        module.transformer.residual_head,
+        weights_dict,
+        layout.decoder_path / layout.residual_head_key,
+        implementation=implementation,
     )
     output_norm = load_optional_rmsnorm(
         module.transformer.output_norm, weights_dict, layout.decoder_path / layout.norm_key
     )
     return load_as_at(
-        lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm),
+        lambda m: (m.embedding, m.transformer.layers, m.transformer.residual_head, m.transformer.output_norm),
         module,
-        (embedding, decoder_layers, output_norm),
+        (embedding, decoder_layers, residual_head, output_norm),
     )
 
 

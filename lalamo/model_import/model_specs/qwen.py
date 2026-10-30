@@ -5,6 +5,7 @@ from frozendict import frozendict
 from lalamo.model_import.model_configs import (
     HFQwen2Config,
     HFQwen3Config,
+    HFQwen4ExpConfig,
     HFQwen35Config,
 )
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
@@ -567,6 +568,16 @@ QWEN38 = [
         size="27B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.8-27B"),
         config_type=HFQwen35Config,
+        response_format=QWEN_RESPONSE_FORMAT,
+        reasoning_config=QWEN38_REASONING_CONFIG,
+    ),
+    LanguageModelSpec(
+        vendor="Alibaba",
+        family="Qwen3.8",
+        name="Qwen3.8-Flash-Next",
+        size="180B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3.8-Flash-Next"),
+        config_type=HFQwen4ExpConfig,
         response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=QWEN38_REASONING_CONFIG,
     ),

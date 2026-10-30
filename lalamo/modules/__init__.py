@@ -1,6 +1,6 @@
 from lalamo.module import ForwardPassMode, Keychain, KeychainBroadcastMode, LalamoConfig, LalamoModule
 
-from .activations import GELU, Activation, Identity, SiLU
+from .activations import GELU, Activation, Identity, Sigmoid, SiLU
 from .classifier import (
     Classifier,
     ClassifierActivationTrace,
@@ -39,6 +39,12 @@ from .mlp import (
     RoutingFunction,
     SigmoidRouting,
     SoftmaxRouting,
+)
+from .ngram_injection import (
+    NGramHashConfig,
+    NGramInjection,
+    NGramInjectionConfig,
+    NGramInjectionState,
 )
 from .normalization import (
     Normalization,
@@ -109,7 +115,13 @@ from .token_mixers import (
     SeparableCausalConvConfig,
     ShortConv,
     ShortConvConfig,
+    SparseAttention,
+    SparseAttentionConfig,
+    SparseAttentionIndexer,
+    SparseAttentionIndexerConfig,
+    SparseAttentionStateLayer,
 )
+from .token_mixers.indexer_cache import DynamicIndexerCacheLayer, IndexerCacheLayer, StaticIndexerCacheLayer
 from .token_mixers.kv_cache import (
     DynamicKVCacheLayer,
     KVCacheLayer,
@@ -158,6 +170,7 @@ __all__ = [
     "DeltaNetConfig",
     "DenseMLP",
     "DenseMLPConfig",
+    "DynamicIndexerCacheLayer",
     "DynamicKVCacheLayer",
     "EmbeddingBase",
     "EmbeddingConfig",
@@ -168,6 +181,7 @@ __all__ = [
     "GatedResidualHead",
     "GatedStreamReader",
     "Identity",
+    "IndexerCacheLayer",
     "KVCacheLayer",
     "Keychain",
     "KeychainBroadcastMode",
@@ -185,6 +199,10 @@ __all__ = [
     "MixerForwardPassConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "NGramHashConfig",
+    "NGramInjection",
+    "NGramInjectionConfig",
+    "NGramInjectionState",
     "Normalization",
     "NormalizationConfig",
     "PLEModelConfig",
@@ -207,12 +225,19 @@ __all__ = [
     "ShortConv",
     "ShortConvConfig",
     "SiLU",
+    "Sigmoid",
     "SigmoidRouting",
     "SoftmaxRouting",
+    "SparseAttention",
+    "SparseAttentionConfig",
+    "SparseAttentionIndexer",
+    "SparseAttentionIndexerConfig",
+    "SparseAttentionStateLayer",
     "Speculator",
     "SpeculatorConfig",
     "State",
     "StateLayerBase",
+    "StaticIndexerCacheLayer",
     "StaticKVCacheLayer",
     "StreamOpBase",
     "StreamOpConfig",
