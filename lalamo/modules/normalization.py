@@ -50,15 +50,25 @@ class NormalizationConfig(LalamoConfig):
             biases=biases,
         )
 
+    def init_mixture(self, initializer: Initializer, mixture_size: int, input_dim: int) -> "Normalization":
+        scales = initializer.ones((mixture_size, input_dim), dtype=jnp.float32) if self.has_scale else None
+        biases = initializer.zeros((mixture_size, input_dim), dtype=jnp.float32) if self.has_biases else None
+        return Normalization(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            scales=scales,
+            biases=biases,
+        )
+
 
 class Normalization(LalamoModule[NormalizationConfig]):
-    scales: Float[Array, " channels"] | None
-    biases: Float[Array, " channels"] | None
+    scales: Float[Array, "*components channels"] | None
+    biases: Float[Array, "*components channels"] | None
 
     @property
     def input_dim(self) -> int:
         assert self.config.has_scale and self.scales is not None, "weightless normalization does not track input_dim"
-        (result,) = self.scales.shape
+        *_, result = self.scales.shape
         return result
 
     @eqx.filter_jit
