@@ -19,6 +19,15 @@ from lalamo.utils.sharding import ShardingConfig
 __all__ = ["DynamicIndexerCacheLayer", "IndexerCacheLayer", "StaticIndexerCacheLayer"]
 
 
+def compress_blocks(
+    grouped_keys: Float[Array, "blocks ratio head_channels"],
+    block_start_embeddings: PositionalEmbeddings,
+    key_norm: Normalization,
+) -> Float[Array, "blocks head_channels"]:
+    pooled_keys = jnp.mean(grouped_keys.astype(jnp.float32), axis=1).astype(grouped_keys.dtype)
+    return block_start_embeddings.apply(call_vmapped(key_norm, pooled_keys))
+
+
 class IndexerCacheLayer(StateLayerBase):
     compression_ratio: int = eqx.field(static=True)
     compressed_keys: Float[Array, "*batch blocks head_channels"]
@@ -54,6 +63,41 @@ class IndexerCacheLayer(StateLayerBase):
     @abstractmethod
     def compressed_keys_with_room_for(self, num_added_tokens: int) -> Float[Array, "blocks head_channels"]: ...
 
+    def histories(
+        self,
+        added_keys: Float[Array, "new_tokens head_channels"],
+        positional_embeddings: PositionalEmbeddings,
+    ) -> tuple[
+        Float[Array, "history_tokens head_channels"],
+        Float[Array, "history_tokens rope_channels"],
+        Float[Array, "history_tokens rope_channels"],
+    ]:
+        self.raise_if_batched()
+        rope_dim = positional_embeddings.head_dim
+        rotation_dtype = positional_embeddings.cosines.dtype
+        return (
+            jnp.concatenate([self.tail_keys, added_keys.astype(self.tail_keys.dtype)]),
+            jnp.concatenate([self.tail_cosines[:, :rope_dim].astype(rotation_dtype), positional_embeddings.cosines]),
+            jnp.concatenate([self.tail_sines[:, :rope_dim].astype(rotation_dtype), positional_embeddings.sines]),
+        )
+
+    def compressed_blocks_at(
+        self,
+        added_keys: Float[Array, "new_tokens head_channels"],
+        positional_embeddings: PositionalEmbeddings,
+        key_norm: Normalization,
+        block_positions: Int[Array, "blocks ratio"],
+    ) -> Float[Array, "blocks head_channels"]:
+        history_keys, history_cosines, history_sines = self.histories(added_keys, positional_embeddings)
+        first_history_position = self.num_tokens - (self.compression_ratio - 1)
+        block_tokens = block_positions - first_history_position
+        block_starts = block_tokens[:, 0]
+        return compress_blocks(
+            history_keys[block_tokens],
+            PositionalEmbeddings(cosines=history_cosines[block_starts], sines=history_sines[block_starts]),
+            key_norm,
+        )
+
     def extend(
         self,
         added_keys: Float[Array, "new_tokens head_channels"],
@@ -67,14 +111,9 @@ class IndexerCacheLayer(StateLayerBase):
             added_length = num_new_tokens
         ratio = self.compression_ratio
         rope_dim = positional_embeddings.head_dim
-        rotation_dtype = positional_embeddings.cosines.dtype
         tail_length = self.num_tokens % ratio
         num_touched_blocks = math.ceil((ratio - 1 + num_new_tokens) / ratio)
-        histories = (
-            jnp.concatenate([self.tail_keys, added_keys.astype(self.tail_keys.dtype)]),
-            jnp.concatenate([self.tail_cosines[:, :rope_dim].astype(rotation_dtype), positional_embeddings.cosines]),
-            jnp.concatenate([self.tail_sines[:, :rope_dim].astype(rotation_dtype), positional_embeddings.sines]),
-        )
+        histories = self.histories(added_keys, positional_embeddings)
         block_keys, block_cosines, block_sines = (
             dynamic_slice_in_dim(
                 jnp.pad(history, ((0, num_touched_blocks * ratio - num_new_tokens), (0, 0))),
@@ -83,15 +122,11 @@ class IndexerCacheLayer(StateLayerBase):
             )
             for history in histories
         )
-
-        grouped_keys = rearrange(
-            block_keys,
-            "(blocks ratio) head_channels -> blocks ratio head_channels",
-            ratio=ratio,
+        rotated_keys = compress_blocks(
+            rearrange(block_keys, "(blocks ratio) head_channels -> blocks ratio head_channels", ratio=ratio),
+            PositionalEmbeddings(cosines=block_cosines[::ratio], sines=block_sines[::ratio]),
+            key_norm,
         )
-        pooled_keys = jnp.mean(grouped_keys.astype(jnp.float32), axis=1).astype(grouped_keys.dtype)
-        block_start_embeddings = PositionalEmbeddings(cosines=block_cosines[::ratio], sines=block_sines[::ratio])
-        rotated_keys = block_start_embeddings.apply(call_vmapped(key_norm, pooled_keys))
 
         compressed_keys = self.compressed_keys_with_room_for(num_new_tokens)
         num_capacity_blocks, _ = compressed_keys.shape

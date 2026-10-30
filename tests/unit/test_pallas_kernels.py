@@ -271,17 +271,23 @@ def test_sparse_attention_module_pallas_matches_xla() -> None:
         model_dim=model_dim,
     )
     rope_config = UnscaledRoPEConfig(base=10_000_000.0, max_sequence_length=4_096, head_dim=64)
-    inputs = jax.random.normal(jax.random.key(1), (batch_size, prefill_length + 1, model_dim)).astype(jnp.bfloat16)
+    tree_parents = jnp.array([-1, 0, 0, 1, 1, 2, 3, 6, 7, 8, 9, 4], dtype=jnp.int32)
+    tree_depths = jnp.array([0, 1, 1, 2, 2, 2, 3, 4, 5, 6, 7, 3], dtype=jnp.int32)
+    (num_tree_nodes,) = tree_parents.shape
+    inputs = jax.random.normal(
+        jax.random.key(1),
+        (batch_size, prefill_length + 1 + num_tree_nodes, model_dim),
+    ).astype(jnp.bfloat16)
     keychain = Keychain.init(0, sharding_config=sharding_config)
 
     @partial(jax.jit, static_argnames="implementation")
     def prefill_then_decode(
         implementation_inputs: jax.Array,
         implementation: AttentionImplementation,
-    ) -> tuple[jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
         forward_pass_config = MixerForwardPassConfig(attention_implementation=implementation)
 
-        def run_sequence(sequence: jax.Array) -> tuple[jax.Array, jax.Array]:
+        def run_sequence(sequence: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
             state = module.init_static_state(capacity=4_096, dtype=jnp.bfloat16)
             prefill = module(
                 sequence[:prefill_length],
@@ -292,23 +298,32 @@ def test_sparse_attention_module_pallas_matches_xla() -> None:
                 keychain=keychain,
             )
             decode = module(
-                sequence[prefill_length:],
+                sequence[prefill_length : prefill_length + 1],
                 rope_config.compute_positional_embeddings(jnp.arange(prefill_length, prefill_length + 1)),
                 state=prefill.state,
                 forward_pass_config=forward_pass_config,
                 keychain=keychain,
             )
-            return prefill.outputs, decode.outputs
+            tree = module(
+                sequence[prefill_length + 1 :],
+                rope_config.compute_positional_embeddings(prefill_length + tree_depths),
+                state=prefill.state,
+                forward_pass_config=forward_pass_config,
+                attention_parent_indices=tree_parents,
+                keychain=keychain,
+            )
+            return prefill.outputs, decode.outputs, tree.outputs
 
         return jax.vmap(run_sequence)(implementation_inputs)
 
     with warnings.catch_warnings():
         warnings.filterwarnings("error", message="Pallas sparse attention")
         warnings.filterwarnings("error", message="Pallas top-k")
-        pallas_prefill, pallas_decode = prefill_then_decode(inputs, AttentionImplementation.PALLAS)
-    xla_prefill, xla_decode = prefill_then_decode(inputs, AttentionImplementation.XLA)
+        pallas_prefill, pallas_decode, pallas_tree = prefill_then_decode(inputs, AttentionImplementation.PALLAS)
+    xla_prefill, xla_decode, xla_tree = prefill_then_decode(inputs, AttentionImplementation.XLA)
     assert_close(result=pallas_prefill, reference=xla_prefill, atol=2e-2, rtol=3e-2)
     assert_close(result=pallas_decode, reference=xla_decode, atol=2e-2, rtol=3e-2)
+    assert_close(result=pallas_tree, reference=xla_tree, atol=2e-2, rtol=3e-2)
 
 
 @pytest.mark.parametrize(

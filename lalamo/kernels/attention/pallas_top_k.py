@@ -22,12 +22,13 @@ from lalamo.utils.sharding import sharding_of
 
 from .xla import xla_top_k_blocks
 
-__all__ = ["pallas_top_k_blocks"]
+__all__ = ["TOP_K_SCORE_ALIGNMENT", "pallas_top_k_blocks"]
 
 NUM_BINS = 2048
 NUM_WARPGROUPS = 4
 NUM_THREADS = 128 * NUM_WARPGROUPS
 EMPTY_SLOT = 2**31 - 1
+TOP_K_SCORE_ALIGNMENT = 4
 
 
 class StateSlot(IntEnum):
@@ -282,7 +283,7 @@ def make_selection(
 ) -> Callable[..., Any]:
     padded_k = math.ceil(k / 512) * 512
     share = padded_k // NUM_WARPGROUPS
-    tile_layout = plgpu.Layout.WG_STRIDED((tile,), vec_size=4)
+    tile_layout = plgpu.Layout.WG_STRIDED((tile,), vec_size=TOP_K_SCORE_ALIGNMENT)
     share_layout = plgpu.Layout.WG_STRIDED((share,), vec_size=share // 128)
     histogram_add = make_histogram_add(tile_layout)
     compact = make_compact(tile_layout, padded_k)
@@ -520,7 +521,7 @@ def make_pallas_top_k_blocks(
             return jax.vmap(xla_top_k, in_axes=(0, 0 if visible_batched else None))(scores, num_visible_blocks), True
         if not visible_batched:
             num_visible_blocks = jnp.broadcast_to(num_visible_blocks, (axis_size, num_queries))
-        aligned_blocks = math.ceil(num_blocks / 4) * 4
+        aligned_blocks = math.ceil(num_blocks / TOP_K_SCORE_ALIGNMENT) * TOP_K_SCORE_ALIGNMENT
         folded_scores = jnp.pad(
             scores.reshape(axis_size * num_queries, num_blocks),
             ((0, 0), (0, aligned_blocks - num_blocks)),

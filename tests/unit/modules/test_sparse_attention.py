@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import torch
-from jaxtyping import Array, Float
+from jaxtyping import Array, Bool, Float, Int
 from transformers.models.qwen4_exp.configuration_qwen4_exp import Qwen4ExpTextConfig
 from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpTextAttention, Qwen4ExpTextRotaryEmbedding
 
@@ -120,9 +120,25 @@ def make_hidden_states(num_tokens: int) -> Float[Array, "tokens channels"]:
     return jax.random.uniform(jax.random.key(1), (num_tokens, HIDDEN_SIZE), dtype=jnp.float32)
 
 
-def positional_embeddings(start: int, num_tokens: int) -> PositionalEmbeddings:
+def positional_embeddings(positions: Int[Array, " tokens"]) -> PositionalEmbeddings:
     rope_config = UnscaledRoPEConfig(base=ROPE_BASE, max_sequence_length=2 * SEQUENCE_LENGTH, head_dim=ROPE_DIM)
-    return rope_config.compute_positional_embeddings(jnp.arange(start, start + num_tokens))
+    return rope_config.compute_positional_embeddings(positions)
+
+
+def masked_hf_reference(
+    attention: Qwen4ExpTextAttention,
+    rotary: Qwen4ExpTextRotaryEmbedding,
+    hidden_states: Float[Array, "tokens channels"],
+    positions: Int[Array, " tokens"],
+    is_visible: Bool[Array, "tokens tokens"],
+) -> Float[Array, "tokens channels"]:
+    torch_hidden_states = torch.from_numpy(np.asarray(jax.device_get(hidden_states)))[None]
+    position_embeddings = rotary(torch_hidden_states, torch.from_numpy(np.asarray(positions))[None])
+    torch_is_visible = torch.from_numpy(np.asarray(is_visible))[None, None]
+    additive_mask = torch.zeros(torch_is_visible.shape).masked_fill(~torch_is_visible, torch.finfo(torch.float32).min)
+    with torch.no_grad():
+        outputs, _ = attention(torch_hidden_states, position_embeddings, additive_mask)
+    return torch_to_jax(outputs[0])
 
 
 def hf_reference(
@@ -131,13 +147,13 @@ def hf_reference(
     hidden_states: Float[Array, "tokens channels"],
 ) -> Float[Array, "tokens channels"]:
     num_tokens, _ = hidden_states.shape
-    torch_hidden_states = torch.from_numpy(np.asarray(jax.device_get(hidden_states)))[None]
-    position_embeddings = rotary(torch_hidden_states, torch.arange(num_tokens)[None])
-    is_visible = torch.ones(1, 1, num_tokens, num_tokens, dtype=torch.bool).tril()
-    causal_mask = torch.zeros(is_visible.shape).masked_fill(~is_visible, torch.finfo(torch.float32).min)
-    with torch.no_grad():
-        outputs, _ = attention(torch_hidden_states, position_embeddings, causal_mask)
-    return torch_to_jax(outputs[0])
+    return masked_hf_reference(
+        attention,
+        rotary,
+        hidden_states,
+        jnp.arange(num_tokens),
+        jnp.tril(jnp.ones((num_tokens, num_tokens), dtype=jnp.bool)),
+    )
 
 
 def run_in_chunks(
@@ -154,7 +170,7 @@ def run_in_chunks(
         padding = jnp.zeros((num_padding_tokens, HIDDEN_SIZE), dtype=hidden_states.dtype)
         result = module(
             jnp.concatenate([hidden_states[start : start + length], padding]),
-            positional_embeddings(start, length + num_padding_tokens),
+            positional_embeddings(jnp.arange(start, start + length + num_padding_tokens)),
             state=state,
             return_updated_state=True,
             length_without_padding=length,
@@ -227,13 +243,68 @@ def test_matches_dense_attention_only_within_token_budget() -> None:
     hidden_states = make_hidden_states(SEQUENCE_LENGTH)
     keychain = Keychain.init(0, sharding_config=make_test_sharding_config())
 
-    sparse_outputs = module(hidden_states, positional_embeddings(0, SEQUENCE_LENGTH), keychain=keychain).outputs
-    dense_outputs = module.attention(
-        hidden_states,
-        positional_embeddings(0, SEQUENCE_LENGTH),
-        keychain=keychain,
-    ).outputs
+    embeddings = positional_embeddings(jnp.arange(SEQUENCE_LENGTH))
+    sparse_outputs = module(hidden_states, embeddings, keychain=keychain).outputs
+    dense_outputs = module.attention(hidden_states, embeddings, keychain=keychain).outputs
 
     num_dense_tokens = TOKEN_BUDGET + COMPRESSION_RATIO - 1
     assert_close(result=sparse_outputs[:num_dense_tokens], reference=dense_outputs[:num_dense_tokens])
     assert not jnp.allclose(sparse_outputs[num_dense_tokens:], dense_outputs[num_dense_tokens:], atol=1e-3)
+
+
+TREE_PARENTS = (-1, 0, 0, 1, 1, 2, 3, 6, 7, 8, 9, 4, -1)
+
+
+def root_to_node_path(node: int) -> list[int]:
+    parent = TREE_PARENTS[node]
+    if parent < 0:
+        return [node]
+    return [*root_to_node_path(parent), node]
+
+
+@pytest.mark.parametrize("prefix_length", [0, 20, 21, 23])
+@pytest.mark.parametrize(
+    "implementation",
+    [AttentionImplementation.XLA, AttentionImplementation.STABLE_REDUCTION],
+)
+def test_tree_matches_hf(prefix_length: int, implementation: AttentionImplementation) -> None:
+    hf_attention, rotary = make_hf_attention()
+    module = make_lalamo_attention(hf_attention)
+    forward_pass_config = MixerForwardPassConfig(attention_implementation=implementation)
+    keychain = Keychain.init(0, sharding_config=make_test_sharding_config())
+    num_nodes = len(TREE_PARENTS)
+    paths = [root_to_node_path(node) for node in range(num_nodes)]
+    node_positions = prefix_length + jnp.array([len(path) - 1 for path in paths], dtype=jnp.int32)
+    hidden_states = make_hidden_states(prefix_length + num_nodes)
+
+    state = None
+    if prefix_length > 0:
+        state = module(
+            hidden_states[:prefix_length],
+            positional_embeddings(jnp.arange(prefix_length)),
+            state=module.init_static_state(capacity=SEQUENCE_LENGTH, dtype=jnp.float32),
+            return_updated_state=True,
+            forward_pass_config=forward_pass_config,
+            keychain=keychain,
+        ).state
+    tree_outputs = module(
+        hidden_states[prefix_length:],
+        positional_embeddings(node_positions),
+        state=state,
+        forward_pass_config=forward_pass_config,
+        attention_parent_indices=jnp.array(TREE_PARENTS, dtype=jnp.int32),
+        keychain=keychain,
+    ).outputs
+
+    is_visible = np.tril(np.ones((prefix_length + num_nodes, prefix_length + num_nodes), dtype=bool))
+    for node, path in enumerate(paths):
+        is_visible[prefix_length + node, prefix_length:] = False
+        is_visible[prefix_length + node, [prefix_length + ancestor for ancestor in path]] = True
+    reference = masked_hf_reference(
+        hf_attention,
+        rotary,
+        hidden_states,
+        jnp.concatenate([jnp.arange(prefix_length), node_positions]),
+        jnp.asarray(is_visible),
+    )
+    assert_close(result=tree_outputs, reference=reference[prefix_length:])
