@@ -42,7 +42,7 @@ from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
-from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, TTSModel
+from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, TTSModel, VocabularyOrder
 from lalamo.models.chat_codec import Message, UserMessage
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
@@ -412,19 +412,6 @@ def tts(
         console.print()
 
 
-VocabularyCountsOption = Annotated[
-    Path | None,
-    Option(
-        help=(
-            "JSON file of (token_id, count) pairs. Renumbers the vocabulary so the most frequent tokens get the"
-            " smallest ids, letting a speculator draft over any prefix of the readout. Pass the same file to the"
-            " target and its speculator."
-        ),
-        show_default="Keep the original token ids",
-    ),
-]
-
-
 @app.command(help="Import and export a model into the local Lalamo format.")
 def convert(
     model_repo: Annotated[
@@ -461,7 +448,22 @@ def convert(
             help="Overwrite existing model files.",
         ),
     ] = False,
-    vocabulary_counts: VocabularyCountsOption = None,
+    vocabulary_order: Annotated[
+        VocabularyOrder,
+        Option(
+            help=(
+                "'frequency' renumbers the vocabulary so the most frequent tokens get the smallest ids, letting a"
+                " speculator draft over any prefix of the readout."
+            ),
+        ),
+    ] = VocabularyOrder.ORIGINAL,
+    vocabulary_counts: Annotated[
+        Path | None,
+        Option(
+            help="JSON file of (token_id, count) pairs for the frequency order.",
+            show_default="Count tokens on a shard of trymirai/training-mixture",
+        ),
+    ] = None,
 ) -> None:
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
@@ -471,6 +473,7 @@ def convert(
         output_dir,
         dtype,
         partial(CliConversionCallbacks, overwrite=overwrite),
+        vocabulary_order=vocabulary_order,
         vocabulary_counts=vocabulary_counts,
     )
 
@@ -506,7 +509,6 @@ def speculator_convert(
         bool,
         Option(help="Overwrite existing model files."),
     ] = False,
-    vocabulary_counts: VocabularyCountsOption = None,
 ) -> None:
     if output_dir is None:
         speculator_name = PurePosixPath(dflash_repo_id).name + ("-TfM" if weaver is not None else "")
@@ -520,7 +522,7 @@ def speculator_convert(
         shutil.rmtree(output_dir)
 
     console.print(f"🚀 Converting speculator model from [cyan]{dflash_repo_id}[/cyan]...")
-    _convert_speculator(dflash_repo_id, output_dir, weaver, dtype, vocabulary_counts=vocabulary_counts)
+    _convert_speculator(dflash_repo_id, output_dir, weaver, dtype)
     console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
 
 

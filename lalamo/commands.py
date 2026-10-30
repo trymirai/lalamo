@@ -1,8 +1,7 @@
-import json
 import shutil
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -25,8 +24,13 @@ from lalamo.model_import.common import (
 from lalamo.model_import.loaders.dflash_loader import load_hf_dflash_draft_model
 from lalamo.model_import.loaders.weaver_loader import load_weaver
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
-from lalamo.model_import.vocabulary_order import VocabularyOrderedOrigin, frequency_order
-from lalamo.models import SpeculatorModel, SpeculatorModelConfig
+from lalamo.model_import.vocabulary_order import (
+    file_vocabulary_counts,
+    frequency_order,
+    frequency_ordered,
+    training_mixture_vocabulary_counts,
+)
+from lalamo.models import LanguageModel, SpeculatorModel, SpeculatorModelConfig, VocabularyOrder
 from lalamo.modules import DFlashSpeculator, DFlashSpeculatorConfig
 from lalamo.utils.sharding import ShardingConfig
 
@@ -168,13 +172,12 @@ def convert(
         ConversionCallbacks,
     ] = ConversionCallbacks,
     *,
+    vocabulary_order: VocabularyOrder = VocabularyOrder.ORIGINAL,
     vocabulary_counts: Path | None = None,
 ) -> None:
+    if vocabulary_counts is not None and vocabulary_order != VocabularyOrder.FREQUENCY:
+        raise ValueError("Vocabulary counts only make sense with the frequency vocabulary order.")
     effective_dtype = dtype or DType.BFLOAT16
-    if vocabulary_counts is not None:
-        config = json.loads(model_spec.origin.resolve_file(model_spec.configs.model_config).read_text())
-        order = frequency_order(vocabulary_counts, (config.get("text_config", {}) | config)["vocab_size"])
-        model_spec = replace(model_spec, origin=VocabularyOrderedOrigin(model_spec.origin, order))
     callbacks = callbacks_type(
         model_spec,
         output_dir,
@@ -203,8 +206,17 @@ def convert(
         dtype=jnp.dtype(effective_dtype.value),
         progress_callback=progress_callback,
     )
+    model = imported_model.model
+    if vocabulary_order == VocabularyOrder.FREQUENCY:
+        assert isinstance(model, LanguageModel), "Only language models have a vocabulary order"
+        tokenizer, vocab_size = model.token_codec.tokenizer, model.decoder.vocab_size
+        if vocabulary_counts is None:
+            counts = training_mixture_vocabulary_counts(tokenizer, vocab_size)
+        else:
+            counts = file_vocabulary_counts(vocabulary_counts, vocab_size)
+        model = frequency_ordered(model, frequency_order(counts, tokenizer))
     callbacks.saving_model()
-    imported_model.model.save(output_dir)
+    model.save(output_dir)
 
     callbacks.finished_saving_model()
 
@@ -214,8 +226,6 @@ def convert_speculator(
     output_dir: Path,
     weaver_repo_id: str | None = None,
     dtype: DType | None = None,
-    *,
-    vocabulary_counts: Path | None = None,
 ) -> None:
     sharding_config = ShardingConfig.replicated()
     effective_dtype = jnp.dtype((dtype or DType.BFLOAT16).value)
@@ -226,11 +236,6 @@ def convert_speculator(
         sharding_config=sharding_config,
         dtype=effective_dtype,
     )
-    if vocabulary_counts is not None:
-        # The draft has no vocabulary weights; only its mask token id follows the target's renumbering.
-        new_ids = frequency_order(vocabulary_counts, draft_model.config.vocab_size).argsort()
-        new_config = replace(draft_model.config, mask_token_id=int(new_ids[draft_model.config.mask_token_id]))
-        draft_model = replace(draft_model, config=new_config)
 
     weaver = None
     if weaver_repo_id is not None:

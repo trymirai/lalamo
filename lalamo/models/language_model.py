@@ -1,5 +1,6 @@
 from collections.abc import Iterable
 from dataclasses import dataclass, fields, replace
+from enum import StrEnum
 from typing import NamedTuple, Self
 
 import equinox as eqx
@@ -31,6 +32,7 @@ __all__ = [
     "GenerationResults",
     "LanguageModel",
     "LanguageModelConfig",
+    "VocabularyOrder",
 ]
 
 
@@ -116,10 +118,17 @@ class GenerationConfig:
         )
 
 
+class VocabularyOrder(StrEnum):
+    ORIGINAL = "original"
+    # Token ids are sorted by frequency, so any prefix of the vocabulary holds the most frequent tokens.
+    FREQUENCY = "frequency"
+
+
 @dataclass(frozen=True)
 class LanguageModelConfig(ModelConfig[ChatCodecConfig]):
     decoder_config: DecoderConfig
     generation_config: GenerationConfig
+    vocabulary_order: VocabularyOrder = VocabularyOrder.ORIGINAL
 
     def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "LanguageModel":
         decoder = self.decoder_config.init(initializer)

@@ -5,6 +5,7 @@ from typing import Self
 
 import equinox as eqx
 import jax.numpy as jnp
+import numpy as np
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int
 
@@ -13,6 +14,7 @@ from lalamo.module import Keychain, LalamoConfig, LalamoModule
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.weight_matrix import (
     EmbeddingMatrix,
+    FullPrecisionMatrix,
     GradientEstimator,
     MatmulConfig,
     WeightMatrix,
@@ -74,10 +76,28 @@ class EmbeddingForwardPassConfig:
         )
 
 
+def _reorder_vocabulary_axis[MatrixT: WeightMatrix](
+    matrix: MatrixT,
+    order: Int[Array, " vocabulary"],
+    vocabulary_axis: int,
+) -> MatrixT:
+    # Permuting a quantized matrix would requantize it, so only full precision vocabularies are reordered.
+    assert isinstance(matrix, FullPrecisionMatrix), f"Cannot reorder the vocabulary of a {type(matrix).__name__}"
+    # On the host: the vocabulary axis may be sharded, and a sharded gather needs an explicit output sharding.
+    weights = jnp.asarray(np.take(np.asarray(matrix.decompress()), np.asarray(order), axis=vocabulary_axis))
+    reordered = matrix.spec.compress(weights, sharding_config=matrix.sharding_config, is_sharded=matrix.is_sharded)
+    assert isinstance(reordered, type(matrix))
+    return reordered
+
+
 class EmbeddingBase[ConfigT: EmbeddingConfig](LalamoModule[ConfigT]):
     @property
     @abstractmethod
     def embedding_matrix(self) -> EmbeddingMatrix: ...
+
+    @abstractmethod
+    def reorder_vocabulary(self, order: Int[Array, " vocabulary"]) -> Self:
+        """Token `order[i]` becomes token `i`."""
 
     @property
     @abstractmethod
@@ -166,6 +186,10 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     def embedding_matrix(self) -> EmbeddingMatrix:
         return self.embedding
 
+    def reorder_vocabulary(self, order: Int[Array, " vocabulary"]) -> Self:
+        # The embedding matrix is (channels, vocabulary) in output-input terms: the vocabulary is its input axis.
+        return eqx.tree_at(lambda m: m.embedding, self, _reorder_vocabulary_axis(self.embedding, order, -1))
+
     @property
     def readout_matrix(self) -> WeightMatrix:
         return self.embedding
@@ -220,6 +244,17 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
     @property
     def embedding_matrix(self) -> EmbeddingMatrix:
         return self.input_embedding
+
+    def reorder_vocabulary(self, order: Int[Array, " vocabulary"]) -> Self:
+        # The readout is (vocabulary, channels): the vocabulary is its output axis.
+        return eqx.tree_at(
+            lambda m: (m.input_embedding, m.output_embedding),
+            self,
+            (
+                _reorder_vocabulary_axis(self.input_embedding, order, -1),
+                _reorder_vocabulary_axis(self.output_embedding, order, -2),
+            ),
+        )
 
     @property
     def readout_matrix(self) -> WeightMatrix:
