@@ -1,6 +1,6 @@
 from lalamo.module import ForwardPassMode, Keychain, KeychainBroadcastMode, LalamoConfig, LalamoModule
 
-from .activations import GELU, Activation, Identity, SiLU
+from .activations import GELU, Activation, Identity, Sigmoid, SiLU
 from .classifier import (
     Classifier,
     ClassifierActivationTrace,
@@ -39,6 +39,12 @@ from .mlp import (
     RoutingFunction,
     SigmoidRouting,
     SoftmaxRouting,
+)
+from .ngram_injection import (
+    NGramHashConfig,
+    NGramInjection,
+    NGramInjectionConfig,
+    NGramInjectionState,
 )
 from .normalization import (
     Normalization,
@@ -193,6 +199,10 @@ __all__ = [
     "MixerForwardPassConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "NGramHashConfig",
+    "NGramInjection",
+    "NGramInjectionConfig",
+    "NGramInjectionState",
     "Normalization",
     "NormalizationConfig",
     "PLEModelConfig",
@@ -215,6 +225,7 @@ __all__ = [
     "ShortConv",
     "ShortConvConfig",
     "SiLU",
+    "Sigmoid",
     "SigmoidRouting",
     "SoftmaxRouting",
     "SparseAttention",

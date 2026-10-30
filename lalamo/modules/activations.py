@@ -12,6 +12,7 @@ __all__ = [
     "Activation",
     "Identity",
     "SiLU",
+    "Sigmoid",
 ]
 
 
@@ -27,6 +28,12 @@ class SiLU(Activation):
 
     def __call__(self, x: Float[Array, "..."]) -> Float[Array, "..."]:
         return x * jax.nn.sigmoid(self.alpha * x)
+
+
+@dataclass(frozen=True)
+class Sigmoid(Activation):
+    def __call__(self, x: Float[Array, "..."]) -> Float[Array, "..."]:
+        return jax.nn.sigmoid(x)
 
 
 @dataclass(frozen=True)

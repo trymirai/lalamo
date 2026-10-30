@@ -18,6 +18,7 @@ from .qwen2 import HFQwen2Config
 from .qwen3 import HFQwen3Config
 from .qwen3_5 import HFQwen35Config
 from .qwen3_next import HFQwen3NextConfig
+from .qwen4_exp import HFQwen4ExpConfig
 from .smollm3 import HFSmolLM3Config
 from .weaver import HFWeaverConfig
 
@@ -42,6 +43,7 @@ __all__ = [
     "HFQwen2Config",
     "HFQwen3Config",
     "HFQwen3NextConfig",
+    "HFQwen4ExpConfig",
     "HFQwen35Config",
     "HFSmolLM3Config",
     "HFWeaverConfig",
