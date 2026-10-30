@@ -8,7 +8,6 @@ import jax
 import torch
 from jaxtyping import Array
 from torch import Tensor, nn
-from torch.nn.attention.flex_attention import BlockMask
 from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification
 from transformers.cache_utils import Cache
 from transformers.masking_utils import create_bidirectional_mask, create_bidirectional_sliding_window_mask
@@ -546,8 +545,6 @@ class ModernBertTracer(
             inputs_embeds=hidden_states,
             attention_mask=attention_mask,
         )
-        if isinstance(full_attention_mask, BlockMask) or isinstance(sliding_window_mask, BlockMask):
-            raise TypeError("The HF tracer expects dense attention masks; flex attention is not supported")
         return full_attention_mask, sliding_window_mask
 
     def match_layer(

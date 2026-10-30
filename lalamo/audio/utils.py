@@ -40,7 +40,7 @@ def play_mono_audio(audio: np.ndarray, samplerate: int, audio_chunk_size: int = 
 
 def dummy_char_level_tokenizer_config() -> str:
     chars = list(string.ascii_lowercase + string.ascii_uppercase + string.digits + string.punctuation + " ")
-    vocab: dict[str, int] = {char: idx for idx, char in enumerate(chars)}
+    vocab = {char: idx for idx, char in enumerate(chars)}
     vocab["[UNK]"] = len(vocab)
     vocab["[PAD]"] = len(vocab)
 
