@@ -24,7 +24,7 @@ from lalamo.inference.continuous_batching import (
 from lalamo.initializer import RandomInitializer
 from lalamo.models import GenerationConfig, LanguageModel
 from lalamo.models.chat_codec import THINKING_RESPONSE_FORMAT, AssistantMessage, ChatCodecConfig, UserMessage
-from lalamo.models.language_model import LanguageModelConfig
+from lalamo.models.language_model import _COMPILED_PROMPT_LENGTHS, LanguageModelConfig
 from lalamo.module import Keychain, ShardingConfig
 from lalamo.modules import DecoderForwardPassConfig
 from lalamo.modules.activations import SiLU
@@ -175,6 +175,36 @@ def test_streamed_text_matches_reply_when_utf8_spans_tokens(
             assert text == "é"
         else:
             assert text == "\ufffd"
+
+
+@pytest.mark.parametrize("tokens_per_dispatch", [1, 3, 16])
+def test_streamed_tokens_match_generated_tokens(recurrent_model: LanguageModel, tokens_per_dispatch: int) -> None:
+    keychain = Keychain.init(0, sharding_config=recurrent_model.sharding_config)
+    generation_config = GenerationConfig(temperature=1.0)
+    prompt = jnp.asarray([1, 2, 3], dtype=jnp.int32)
+    padded_prompt_length = next(length for length in _COMPILED_PROMPT_LENGTHS if length >= prompt.size)
+    with jax.set_mesh(recurrent_model.sharding_config.mesh):
+        generated = recurrent_model.generate_tokens(
+            jnp.pad(prompt, (0, padded_prompt_length - prompt.size))[None, :],
+            generation_config,
+            prompt_lengths_without_padding=jnp.asarray([prompt.size], dtype=jnp.int32),
+            max_output_length=7,
+            keychain=keychain,
+        )
+        token_ids = generated.token_ids[0].tolist()
+        streamed = recurrent_model.stream_tokens(
+            prompt, generation_config, 7, tokens_per_dispatch=tokens_per_dispatch, keychain=keychain
+        )
+        assert list(map(int, streamed)) == token_ids
+        stop_token = token_ids[3]
+        stopped = recurrent_model.stream_tokens(
+            prompt,
+            replace(generation_config, stop_token_ids=(stop_token,)),
+            7,
+            tokens_per_dispatch=tokens_per_dispatch,
+            keychain=keychain,
+        )
+        assert list(map(int, stopped)) == token_ids[: token_ids.index(stop_token) + 1]
 
 
 def test_requests_match_dense_generation_after_slot_and_prefix_reuse(recurrent_model: LanguageModel) -> None:
