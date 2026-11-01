@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -10,8 +11,11 @@ from lalamo.initializer import Initializer
 from lalamo.kernels.attention import (
     paged_decode_attention,
     pallas_decode_attention,
+    pallas_sparse_attention,
+    sparse_rows_mask,
     stable_reduction_attention,
     xla_attention,
+    xla_sparse_attention,
 )
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.linear import Linear, LinearConfig
@@ -33,6 +37,7 @@ __all__ = [
     "Attention",
     "AttentionConfig",
     "AttentionResult",
+    "SparseMask",
 ]
 
 
@@ -84,6 +89,44 @@ def _attention_kernel(
                 values,
                 bias=bias,
                 mask=mask,
+                scale=scale,
+                logit_soft_cap=logit_soft_cap,
+                tile_size=forward_pass_config.attention_tile_size,
+                accumulation_dtype=forward_pass_config.attention_accumulation_dtype,
+            )
+
+
+class SparseMask(NamedTuple):
+    positions: Int[Array, "dst_tokens selected_tokens"]
+
+    def rows(self, kv_cache: KVCacheLayer) -> Int[Array, "dst_tokens selected_tokens"]:
+        num_slots, _, _ = kv_cache.keys.shape
+        return jnp.where(self.positions >= 0, kv_cache.slots_for_positions(self.positions), num_slots)
+
+
+def sparse_attention_kernel(
+    queries: Float[Array, "dst_tokens heads head_channels"],
+    keys: Float[Array, "src_tokens groups head_channels"],
+    values: Float[Array, "src_tokens groups head_channels"],
+    *,
+    rows: Int[Array, "dst_tokens selected_tokens"],
+    scale: float | None,
+    logit_soft_cap: float | None,
+    forward_pass_config: MixerForwardPassConfig,
+) -> Float[Array, "dst_tokens heads head_channels"]:
+    num_src_tokens, _, _ = keys.shape
+    match forward_pass_config.attention_implementation:
+        case AttentionImplementation.PALLAS:
+            return pallas_sparse_attention(queries, keys, values, rows, scale, logit_soft_cap)
+        case AttentionImplementation.XLA:
+            return xla_sparse_attention(queries, keys, values, rows, scale, logit_soft_cap)
+        case AttentionImplementation.STABLE_REDUCTION:
+            return stable_reduction_attention(
+                queries,
+                keys,
+                values,
+                bias=None,
+                mask=sparse_rows_mask(rows, num_src_tokens),
                 scale=scale,
                 logit_soft_cap=logit_soft_cap,
                 tile_size=forward_pass_config.attention_tile_size,
@@ -293,7 +336,12 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         reuse_cache: bool = False,
         *,
         keychain: Keychain,
+        sparse_mask: SparseMask | None = None,
     ) -> AttentionResult:
+        if sparse_mask is not None and attention_parent_indices is not None:
+            raise ValueError("A sparse mask cannot be combined with tree attention.")
+        if sparse_mask is not None and self.sinks is not None:
+            raise ValueError("A sparse mask cannot be combined with attention sinks.")
         qkvg_keychain, out_keychain = keychain.split(2)
         assert reuse_cache == self.config.is_kv_sharing, "reuse_cache must match AttentionConfig.is_kv_sharing"
         queries, keys, values, gate = self._project_heads(
@@ -317,31 +365,42 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 updated_state = state.extend(keys, values, added_length=length_without_padding)
 
         queries = queries.astype(updated_state.keys.dtype)
-        if attention_parent_indices is not None:
-            mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices)
-        else:
-            mask = updated_state.attention_mask(
-                num_suffix_tokens,
-                self.config.is_causal,
-                length_without_padding,
-                self.config.sliding_window_size,
+        if sparse_mask is not None:
+            attention_output = sparse_attention_kernel(
+                queries,
+                updated_state.keys,
+                updated_state.values,
+                rows=sparse_mask.rows(updated_state),
+                scale=self.config.scale,
+                logit_soft_cap=self.config.logit_soft_cap,
+                forward_pass_config=forward_pass_config,
             )
-        if self.sinks is not None:
-            sink_bias = jnp.zeros((self.config.num_heads, *mask.shape), dtype=queries.dtype)
-            sink_bias = sink_bias.at[:, :, 0].set(self.sinks[:, None].astype(sink_bias.dtype))
         else:
-            sink_bias = None
+            if attention_parent_indices is not None:
+                mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices)
+            else:
+                mask = updated_state.attention_mask(
+                    num_suffix_tokens,
+                    self.config.is_causal,
+                    length_without_padding,
+                    self.config.sliding_window_size,
+                )
+            if self.sinks is not None:
+                sink_bias = jnp.zeros((self.config.num_heads, *mask.shape), dtype=queries.dtype)
+                sink_bias = sink_bias.at[:, :, 0].set(self.sinks[:, None].astype(sink_bias.dtype))
+            else:
+                sink_bias = None
 
-        attention_output = _attention_kernel(
-            queries,
-            updated_state.keys,
-            updated_state.values,
-            bias=sink_bias,
-            mask=mask,
-            scale=self.config.scale,
-            logit_soft_cap=self.config.logit_soft_cap,
-            forward_pass_config=forward_pass_config,
-        )
+            attention_output = _attention_kernel(
+                queries,
+                updated_state.keys,
+                updated_state.values,
+                bias=sink_bias,
+                mask=mask,
+                scale=self.config.scale,
+                logit_soft_cap=self.config.logit_soft_cap,
+                forward_pass_config=forward_pass_config,
+            )
         attention_output = rearrange(
             attention_output,
             "tokens heads head_channels -> tokens (heads head_channels)",

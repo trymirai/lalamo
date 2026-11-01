@@ -22,6 +22,7 @@ from lalamo.modules.token_mixers.convolutions import SeparableCausalConv
 from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
 from lalamo.modules.token_mixers.mamba import Mamba2, Mamba2Config
 from lalamo.modules.token_mixers.short_conv import ShortConv, ShortConvConfig
+from lalamo.modules.token_mixers.sparse_attention import SparseAttention, SparseAttentionConfig
 from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
@@ -783,6 +784,30 @@ def load_attention(
     )
 
 
+def load_sparse_attention(
+    module: SparseAttention,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> SparseAttention:
+    attention = load_attention(module.attention, weights_dict, path, implementation=implementation)
+    indexer_path = path / "indexer"
+    indexer_projection = load_linear(
+        module.indexer.projection,
+        weights_dict,
+        indexer_path / "index_qk_proj",
+        implementation=implementation,
+    )
+    indexer_query_norm = load_rmsnorm(module.indexer.query_norm, weights_dict, indexer_path / "q_layernorm")
+    indexer_key_norm = load_rmsnorm(module.indexer.key_norm, weights_dict, indexer_path / "k_layernorm")
+    return load_as_at(
+        lambda m: (m.attention, m.indexer.projection, m.indexer.query_norm, m.indexer.key_norm),
+        module,
+        (attention, indexer_projection, indexer_query_norm, indexer_key_norm),
+    )
+
+
 def load_gated_stream_reader(
     module: GatedStreamReader,
     weights_dict: Mapping[str, Array],
@@ -1069,7 +1094,14 @@ def load_transformer_layer(
 ) -> TransformerLayer:
     pre_attention_norm = load_optional_rmsnorm(module.mixer.pre_norm, weights_dict, mixer_path / pre_mixer_norm_key)
     mixer_body = module.mixer.body
-    if isinstance(mixer_body, Attention):
+    if isinstance(mixer_body, SparseAttention):
+        mixer = load_sparse_attention(
+            mixer_body,
+            weights_dict,
+            mixer_path / mixer_key,
+            implementation=implementation,
+        )
+    elif isinstance(mixer_body, Attention):
         mixer = load_attention(
             mixer_body,
             weights_dict,
@@ -1234,7 +1266,7 @@ def _get_mixer_key(
 ) -> str:
     mixer_config = layer.config.mixer.body_config
     match mixer_config:
-        case AttentionConfig():
+        case AttentionConfig() | SparseAttentionConfig():
             return mixer_key[AttentionConfig]
         case DeltaNetConfig():
             return mixer_key[DeltaNetConfig]

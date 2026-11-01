@@ -116,6 +116,9 @@ class KVCacheLayer(StateLayerBase):
     def current_prefix_length(self) -> Int[Array, ""] | int: ...
 
     @abstractmethod
+    def slots_for_positions(self, positions: Int[Array, "*positions"]) -> Int[Array, "*positions"]: ...
+
+    @abstractmethod
     def extend(
         self,
         added_keys: Float[Array, "new_tokens groups head_channels"],
@@ -189,6 +192,13 @@ class DynamicKVCacheLayer(KVCacheLayer):
     def current_prefix_length(self) -> int:
         self._raise_if_batched()
         return self.keys.shape[0]
+
+    def slots_for_positions(self, positions: Int[Array, "*positions"]) -> Int[Array, "*positions"]:
+        self._raise_if_batched()
+        if self.padding_mask is None:
+            return positions + int(self.has_sinks)
+        valid_slot_counts = jnp.cumsum(self.padding_mask.astype(jnp.int32))
+        return jnp.searchsorted(valid_slot_counts, positions + 1 + int(self.has_sinks)).astype(jnp.int32)
 
     @classmethod
     def init(
@@ -287,6 +297,10 @@ class StaticKVCacheLayer(KVCacheLayer):
     def current_prefix_length(self) -> Int[Array, ""]:
         self._raise_if_batched()
         return self.current_length
+
+    def slots_for_positions(self, positions: Int[Array, "*positions"]) -> Int[Array, "*positions"]:
+        self._raise_if_batched()
+        return positions + int(self.has_sinks)
 
     def attention_mask(
         self,
