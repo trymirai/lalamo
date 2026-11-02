@@ -14,8 +14,8 @@ from transformers.models.qwen4_exp.modeling_qwen4_exp import (
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.loaders.huggingface import load_huggingface_decoder
-from lalamo.model_import.model_configs import HFQwen4ExpConfig
-from lalamo.model_import.model_configs.huggingface.qwen4_exp import ngram_head_vocab_sizes, ngram_multipliers
+from lalamo.model_import.model_configs import HFQwen38FlashNextConfig
+from lalamo.model_import.model_configs.huggingface.qwen3_8_flash_next import ngram_head_vocab_sizes, ngram_multipliers
 from lalamo.model_import.origins import load_safetensors_weights
 from lalamo.module import Keychain
 from lalamo.modules import Decoder, DecoderForwardPassConfig
@@ -91,13 +91,13 @@ def hf_model() -> Qwen4ExpForConditionalGeneration:
 
 @pytest.fixture(scope="module")
 def checkpoint_path(hf_model: Qwen4ExpForConditionalGeneration, tmp_path_factory: pytest.TempPathFactory) -> Path:
-    path = tmp_path_factory.mktemp("qwen4_exp")
+    path = tmp_path_factory.mktemp("qwen3_8_flash_next")
     hf_model.save_pretrained(path)
     return path
 
 
 def load_decoder(checkpoint_path: Path, device: jax.Device) -> Decoder:
-    decoder_config = HFQwen4ExpConfig.from_json(checkpoint_path / "config.json").to_decoder_config({})
+    decoder_config = HFQwen38FlashNextConfig.from_json(checkpoint_path / "config.json").to_decoder_config({})
     decoder = decoder_config.init(
         EmptyInitializer(default_dtype=jnp.float32, sharding_config=ShardingConfig.replicated([device])),
     )

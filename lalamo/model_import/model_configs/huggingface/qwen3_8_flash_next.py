@@ -24,7 +24,7 @@ from lalamo.modules.transformer_layer import SublayerConfig, TransformerLayerCon
 
 from .common import HuggingFaceLMConfig
 
-__all__ = ["HFQwen4ExpConfig", "ngram_head_vocab_sizes", "ngram_multipliers"]
+__all__ = ["HFQwen38FlashNextConfig", "ngram_head_vocab_sizes", "ngram_multipliers"]
 
 UINT64_MASK = (1 << 64) - 1
 SPLITMIX_GAMMA = 0x9E3779B97F4A7C15
@@ -56,14 +56,14 @@ def ngram_head_vocab_sizes(ngram_vocab_size_base: int, num_heads: int, ple_layer
 
 
 @dataclass(frozen=True)
-class Qwen4ExpRopeParameters:
+class Qwen38FlashNextRopeParameters:
     rope_theta: float
     partial_rotary_factor: float
 
 
 @dataclass(frozen=True)
-class HFQwen4ExpConfig(HuggingFaceLMConfig):
-    model_type: Literal["qwen4_exp", "qwen4_exp_text"]
+class HFQwen38FlashNextConfig(HuggingFaceLMConfig):
+    model_type: Literal["qwen4_exp"]
     hidden_act: Literal["silu"]
     hidden_size: int
     num_hidden_layers: int
@@ -75,8 +75,8 @@ class HFQwen4ExpConfig(HuggingFaceLMConfig):
     rms_norm_eps: float
     tie_word_embeddings: Literal[False]
     vocab_size: int
-    eos_token_id: int | list[int]
-    rope_parameters: Qwen4ExpRopeParameters
+    eos_token_id: int
+    rope_parameters: Qwen38FlashNextRopeParameters
 
     layer_types: list[Literal["linear_attention", "full_attention", "indexed_attention"]]
     linear_conv_kernel_dim: int
@@ -84,7 +84,7 @@ class HFQwen4ExpConfig(HuggingFaceLMConfig):
     linear_value_head_dim: int
     linear_num_key_heads: int
     linear_num_value_heads: int
-    output_gate_type: Literal["silu", "sigmoid"]
+    output_gate_type: Literal["sigmoid"]
 
     num_experts: int
     num_experts_per_tok: int
@@ -126,14 +126,13 @@ class HFQwen4ExpConfig(HuggingFaceLMConfig):
         return cls._converter.structure({**text_config, **config}, cls)
 
     def ngram_injection_config(self, ple_layer_index: int, norm_config: NormalizationConfig) -> NGramInjectionConfig:
-        eos_token_id, *_ = (self.eos_token_id,) if isinstance(self.eos_token_id, int) else self.eos_token_id
         num_heads = (self.ngram_size - 1) * self.heads_per_ngram
         return NGramInjectionConfig(
             hash_config=NGramHashConfig(
                 token_vocab_size=self.vocab_size,
                 ngram_size=self.ngram_size,
                 heads_per_ngram=self.heads_per_ngram,
-                eos_token_id=eos_token_id,
+                eos_token_id=self.eos_token_id,
                 multipliers=ngram_multipliers(self.vocab_size, self.ngram_size, ple_layer_index, self.seed),
                 head_vocab_sizes=ngram_head_vocab_sizes(self.ngram_vocab_size_base, num_heads, ple_layer_index),
             ),
@@ -175,7 +174,7 @@ class HFQwen4ExpConfig(HuggingFaceLMConfig):
             head_dim=self.linear_key_head_dim,
             value_head_dim=self.linear_value_head_dim,
             kernel_size=self.linear_conv_kernel_dim,
-            output_gate=Sigmoid() if self.output_gate_type == "sigmoid" else SiLU(),
+            output_gate=Sigmoid(),
         )
         sparse_attention_config = SparseAttentionConfig(
             attention_config=AttentionConfig(
@@ -223,12 +222,11 @@ class HFQwen4ExpConfig(HuggingFaceLMConfig):
             expert_hidden_dim=self.moe_intermediate_size,
             gate_config=linear_config,
         )
-        ple_layer_ids = sorted(set(self.ple_layer_ids))
         layer_configs = tuple(
             TransformerLayerConfig(
                 prologue_configs=(
-                    (self.ngram_injection_config(ple_layer_ids.index(layer_index + 1), rmsnorm_config),)
-                    if layer_index + 1 in ple_layer_ids
+                    (self.ngram_injection_config(self.ple_layer_ids.index(layer_index + 1), rmsnorm_config),)
+                    if layer_index + 1 in self.ple_layer_ids
                     else ()
                 ),
                 mixer=SublayerConfig(
