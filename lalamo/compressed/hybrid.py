@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -33,6 +34,30 @@ class HybridSpec(WeightMatrixSpec):
     quantization_spec: WeightMatrixSpec
     adapter_spec: WeightMatrixSpec | None
     incoherence_spec: IncoherenceProcessorSpec | None = field(default_factory=HadamardSpec)
+
+    # uzu and pre-#364 models store a Hadamard rotation (or none) as two flat fields; only Kronecker stays nested.
+    @classmethod
+    def fields_to_json(cls, fields: dict[str, Any]) -> dict[str, Any]:
+        incoherence = fields.pop("incoherence_spec")
+        if incoherence is None:
+            return fields | {"incoherence_block_size": None, "incoherence_processing_mode": "input_output"}
+        if incoherence["type"] == HadamardSpec.__name__:
+            return fields | {
+                "incoherence_block_size": incoherence["block_size"],
+                "incoherence_processing_mode": incoherence["processing_mode"],
+            }
+        return fields | {"incoherence_spec": incoherence}
+
+    @classmethod
+    def fields_from_json(cls, fields: dict[str, Any]) -> dict[str, Any]:
+        if "incoherence_spec" in fields:
+            return fields
+        block_size = fields.pop("incoherence_block_size")
+        processing_mode = fields.pop("incoherence_processing_mode")
+        if block_size is None:
+            return fields | {"incoherence_spec": None}
+        hadamard = {"type": HadamardSpec.__name__, "block_size": block_size, "processing_mode": processing_mode}
+        return fields | {"incoherence_spec": hadamard}
 
     @supports_dummy_arrays()
     def compress(

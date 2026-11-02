@@ -45,6 +45,14 @@ class RegistryABC(ABC):
     def __descendants__(cls) -> tuple[type[Self], ...]:
         return tuple(cls.__registry_descendants__)
 
+    @classmethod
+    def fields_to_json(cls, fields: dict[str, Any]) -> dict[str, Any]:
+        return fields
+
+    @classmethod
+    def fields_from_json(cls, fields: dict[str, Any]) -> dict[str, Any]:
+        return fields
+
 
 RegistryABC.__registry_descendants__ = WeakSet()
 
@@ -168,9 +176,10 @@ def make_registry_abc_converter(*, forbid_extra_keys: bool = False) -> GenConver
         def unstructure_abc(obj: object) -> dict[str, Any] | None:
             if obj is None:
                 return None
+            assert isinstance(obj, RegistryABC)
             return {
                 "type": obj.__class__.__name__,
-                **converter.unstructure_attrs_asdict(obj),
+                **obj.fields_to_json(converter.unstructure_attrs_asdict(obj)),
             }
 
         return unstructure_abc
@@ -194,6 +203,7 @@ def make_registry_abc_converter(*, forbid_extra_keys: bool = False) -> GenConver
             new_config = dict(config)
             type_name = cast("str", new_config.pop("type"))
             target_type = _descendant_by_name(resolved_registry_abc, type_name)
+            new_config = target_type.fields_from_json(new_config)
             return converter.gen_structure_attrs_fromdict(target_type)(new_config, target_type)
 
         return structure_abc

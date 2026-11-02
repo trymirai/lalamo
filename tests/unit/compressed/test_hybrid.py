@@ -104,6 +104,18 @@ def test_hybrid_spec_roundtrips_json(incoherence_spec: HadamardSpec | KroneckerS
     assert restored == spec
 
 
+def test_hybrid_spec_saves_hadamard_as_flat_fields() -> None:
+    spec = HybridSpec(FullPrecisionSpec(), None, HadamardSpec(128, IncoherenceProcessingMode.INPUT))
+
+    assert spec.to_json() == {
+        "type": "HybridSpec",
+        "quantization_spec": {"type": "FullPrecisionSpec", "layout": "output_input"},
+        "adapter_spec": None,
+        "incoherence_block_size": 128,
+        "incoherence_processing_mode": "input",
+    }
+
+
 def test_hybrid_compress_requires_key_when_incoherence_is_enabled() -> None:
     spec = HybridSpec(
         quantization_spec=FullPrecisionSpec(),
