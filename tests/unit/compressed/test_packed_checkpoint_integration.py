@@ -5,7 +5,7 @@ from pathlib import Path
 import jax
 import pytest
 
-from lalamo.model_import.loaders.packed_checkpoint import import_packed_checkpoint
+from lalamo.model_import.loaders.packed_checkpoint import import_packed_checkpoint, native_parameter_name
 from lalamo.safetensors import safe_read
 from lalamo.utils.sharding import ShardingConfig
 from tests.unit.compressed.test_packed_checkpoint import assert_loaded_every_saved_tensor, saved_i4s4, weight_matrices
@@ -22,7 +22,8 @@ def test_packed_checkpoint_loads_every_saved_tensor() -> None:
     config = ShardingConfig.replicated(jax.devices()[:1])
     with jax.set_mesh(config.mesh), (directory / "model.safetensors").open("rb") as stream:
         model = import_packed_checkpoint(directory, config)
-        metadata, saved, _ = safe_read(stream)
+        metadata, legacy_saved, _ = safe_read(stream)
+        saved = {native_parameter_name(name): value for name, value in legacy_saved.items()}
         trellis_paths = [name.removesuffix(".gains") for name in saved if name.endswith(".gains")]
         folds = {
             f"{path}.scales": (
@@ -33,7 +34,10 @@ def test_packed_checkpoint_loads_every_saved_tensor() -> None:
             )
             for path in trellis_paths
         }
-        specs = {name.removesuffix(".spec"): json.loads(value) for name, value in (metadata or {}).items()}
+        specs = {
+            native_parameter_name(name).removesuffix(".spec"): json.loads(value)
+            for name, value in (metadata or {}).items()
+        }
         # (path, loaded path, first row, spec) of each saved leaf; a fused qkvg projection ends with the gate rows.
         leaves = [(path, path, 0, spec) for path, spec in specs.items()] + [
             (f"{path}.parts.{index}", path, sum(rows for rows, _ in spec["parts"][:index]), part)

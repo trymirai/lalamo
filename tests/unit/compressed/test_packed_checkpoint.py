@@ -119,6 +119,12 @@ def test_i4s4_reference_matches_torch_decoded_rows() -> None:
         np.testing.assert_allclose(reference, data["expected"], atol=2e-7, rtol=1e-6)
 
 
+def legacy_parameter_name(name: str) -> str:
+    # Packages name layer parts flat: `layers.0.mixer.body.x` is saved as `layers.0.mixer.x`.
+    name = re.sub(r"\.(mixer|mlp)\.body\.", r".\1.", name)
+    return re.sub(r"\.(mixer|mlp)\.(pre|post)_norm\.", r".\2_\1_norm.", name)
+
+
 def save_model(
     directory: Path, config: JSON, model: LanguageModel, arrays: Mapping[str, Array], metadata: Mapping[str, JSON]
 ) -> None:
@@ -126,15 +132,19 @@ def save_model(
     (directory / "config.json").write_text(json.dumps(config))
     model.token_codec.tokenizer.save(str(directory / "tokenizer.json"))
     with (directory / "model.safetensors").open("wb") as stream:
-        safe_write(stream, arrays, metadata={name: json.dumps(value) for name, value in metadata.items()})
+        safe_write(
+            stream,
+            {legacy_parameter_name(name): value for name, value in arrays.items()},
+            metadata={legacy_parameter_name(name): json.dumps(value) for name, value in metadata.items()},
+        )
 
 
 def tiny_untied_model() -> LanguageModel:
     decoder = build_tiny_attention_decoder_config((None, None))
     layer_configs = tuple(
-        replace(layer, mixer_config=replace(layer.mixer_config, has_gate=True))
+        replace(layer, mixer=replace(layer.mixer, body_config=replace(layer.mixer.body_config, has_gate=True)))
         for layer in decoder.transformer_config.layer_configs
-        if isinstance(layer.mixer_config, AttentionConfig)
+        if isinstance(layer.mixer.body_config, AttentionConfig)
     )
     config = LanguageModelConfig(
         token_codec_config=ChatCodecConfig(
@@ -159,8 +169,8 @@ def tiny_untied_model() -> LanguageModel:
 
 def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> None:
     first, second = "decoder.transformer.layers.0.", "decoder.transformer.layers.1."
-    qkvg, out = first + "mixer.qkvg_projection.weights", first + "mixer.out_projection.weights"
-    fused, up = second + "mixer.qkvg_projection.weights", second + "mlp.up_projection.weights"
+    qkvg, out = first + "mixer.body.qkvg_projection.weights", first + "mixer.body.out_projection.weights"
+    fused, up = second + "mixer.body.qkvg_projection.weights", second + "mlp.body.up_projection.weights"
     embedding, readout = "decoder.embedding.input_embedding", "decoder.embedding.output_embedding"
     model = tiny_untied_model()
     exported = model.export()
@@ -211,7 +221,7 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     metadata[qkvg + ".spec"] = {"type": "RowStackSpec", "parts": parts, "layout": "output_input"}
     metadata[out + ".spec"] = trellis(out, MODEL_DIM, 8, QtipGaussianSpec(2, 4, 0), is_staged=False)
     # The second layer saves its attention projection as a legacy qkv leaf and a gate leaf.
-    legacy = (second + "mixer.qkv_projection.weights", second + "mixer.gate_projection.weights")
+    legacy = (second + "mixer.body.qkv_projection.weights", second + "mixer.body.gate_projection.weights")
     shared_signs = random_signs()
     metadata |= {path + ".spec": i4s4(path, rows, shared_signs) for path, rows in zip(legacy, (24, 8), strict=True)}
     metadata[up + ".spec"] = trellis(up, 32, MODEL_DIM, v4, is_staged=False)
@@ -238,7 +248,7 @@ def test_packed_checkpoint_load_routes_every_saved_format(tmp_path: Path) -> Non
     config: Any = model.config.to_json()
     config["decoder_config"]["pard_token"] = None
     for layer in config["decoder_config"]["transformer_config"]["layer_configs"]:
-        mixer = layer["mixer_config"]
+        mixer = layer["mixer"]["body_config"]
         mixer["qkv_projection_config"] = mixer["gate_projection_config"] = mixer.pop("qkvg_projection_config")
         mixer["has_qkv_biases"] = mixer.pop("has_qkvg_biases")
         del mixer["has_gate"]

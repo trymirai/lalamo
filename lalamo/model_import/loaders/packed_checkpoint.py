@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Iterable
 from functools import cache
 from pathlib import Path
@@ -33,13 +34,19 @@ from lalamo.compressed.utils.packing import unpack_uint8_to_uint
 from lalamo.exportable import ExportResults
 from lalamo.initializer import EmptyInitializer
 from lalamo.model import BaseModelConfig
+from lalamo.models.chat_codec import THINKING_RESPONSE_FORMAT
 from lalamo.models.language_model import LanguageModel
+from lalamo.modules import AdditiveResidualConfig
 from lalamo.safetensors import safe_read
 from lalamo.utils.json import JSON
 from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.registry_abc import make_registry_abc_converter
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as
 from lalamo.weight_matrix import Layout, ShapeDtypeMatrix, WeightMatrix
+
+# Packages predate fields that now have defaults, so they are read without the check that every field is saved.
+PACKAGE_CONVERTER = make_registry_abc_converter(forbid_extra_keys=True)
 
 
 def merge_rows(top: WeightMatrix, bottom: WeightMatrix) -> WeightMatrix | None:
@@ -51,7 +58,8 @@ def merge_rows(top: WeightMatrix, bottom: WeightMatrix) -> WeightMatrix | None:
 
 
 def native_config(value: JSON) -> JSON:
-    # Older packages carry a null pard_token and save attention as separate qkv and gate projections.
+    # Older packages carry a null pard_token, save attention as separate qkv and gate projections, an output parser
+    # regex, and flat layer fields with no residual config.
     if isinstance(value, list):
         return [native_config(item) for item in value]
     if not isinstance(value, dict):
@@ -65,17 +73,45 @@ def native_config(value: JSON) -> JSON:
         has_biases = value.pop("has_qkv_biases")
         assert gate == qkv and not has_biases, "Legacy qkv and gate projections share one bias-free config"
         value |= {"qkvg_projection_config": qkv, "has_qkvg_biases": False, "has_gate": True}
+    if "output_parser_regex" in value:
+        # Package codecs either parse nothing or split Qwen thinking.
+        value.pop("end_of_thinking_tag", None)
+        value["response_format"] = None
+        if value.pop("output_parser_regex") is not None:
+            value["response_format"] = PACKAGE_CONVERTER.unstructure(THINKING_RESPONSE_FORMAT)
+    if "pre_mixer_norm_config" in value:
+        assert value.pop("ple_config", None) is None and not value.pop("has_post_layer_scalar", False)
+        value |= {
+            sublayer: {
+                "pre_norm_config": value.pop(f"pre_{sublayer}_norm_config"),
+                "conv_config": value.pop(f"{sublayer}_conv_config", None),
+                "body_config": value.pop(f"{sublayer}_config"),
+                "post_norm_config": value.pop(f"post_{sublayer}_norm_config"),
+            }
+            for sublayer in ("mixer", "mlp")
+        }
+    if "layer_configs" in value and "residual_config" not in value:
+        value["residual_config"] = {"type": AdditiveResidualConfig.__name__}
     return {name: native_config(item) for name, item in value.items()}
+
+
+def native_parameter_name(name: str) -> str:
+    # Older packages name layer parts flat: `layers.3.mixer.x` is now `layers.3.mixer.body.x`.
+    name = re.sub(r"(layers\.\d+)\.(mixer|mlp)\.", r"\1.\2.body.", name)
+    return re.sub(r"(layers\.\d+)\.(pre|post)_(mixer|mlp)_norm\.", r"\1.\3.\2_norm.", name)
 
 
 def import_packed_checkpoint(
     directory: Path | str, sharding_config: ShardingConfig, dtype: DTypeLike | None = None
 ) -> LanguageModel:
     directory = Path(directory)
-    config = BaseModelConfig.from_json(native_config(json.loads((directory / "config.json").read_text())))
+    config = PACKAGE_CONVERTER.structure(
+        native_config(json.loads((directory / "config.json").read_text())), BaseModelConfig
+    )
     with (directory / "model.safetensors").open("rb") as weights_file:
-        metadata, arrays, _ = safe_read(weights_file)
-        specs = {name: json.loads(value) for name, value in (metadata or {}).items()}
+        metadata, saved_arrays, _ = safe_read(weights_file)
+        arrays = {native_parameter_name(name): array for name, array in saved_arrays.items()}
+        specs = {native_parameter_name(name): json.loads(value) for name, value in (metadata or {}).items()}
         template = config.init_from_directory(directory, EmptyInitializer(dtype, sharding_config))
         assert isinstance(template, LanguageModel)
         return load_packed_checkpoint(template, ExportResults(arrays, specs), dtype)
@@ -158,8 +194,8 @@ def load_packed_checkpoint(template: LanguageModel, exported: ExportResults, dty
                 row_scale = fold_post_gains(path, row_scale, saved.pop("post_gain_axes", ()))
                 # A table keeps one tape row per vocabulary entry: in an embedding slot those rows are its inputs.
                 leaf = QtipGaussianMatrix(
-                    spec=QtipGaussianSpec.from_json(
-                        {"type": "QtipGaussianSpec", **saved, "layout": target.spec.layout}
+                    spec=PACKAGE_CONVERTER.structure(
+                        {"type": "QtipGaussianSpec", **saved, "layout": target.spec.layout}, QtipGaussianSpec
                     ),
                     sharding_config=sharding_config,
                     is_sharded=is_sharded,
@@ -213,7 +249,7 @@ def load_packed_checkpoint(template: LanguageModel, exported: ExportResults, dty
             case "D4S4Spec":
                 if saved.pop("post_gain_axes", ()):
                     raise ValueError(f"Lattice post-gains do not commute with the Hadamard rotation at {path}")
-                lattice = LatticeSpec.from_json({"type": "LatticeSpec", "kind": "d4", **saved})
+                lattice = PACKAGE_CONVERTER.structure({"type": "LatticeSpec", "kind": "d4", **saved}, LatticeSpec)
                 leaf = LatticeMatrix(
                     spec=lattice,
                     sharding_config=sharding_config,
