@@ -14,7 +14,7 @@ from lalamo.modules.rope import RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
 from lalamo.modules.speculators.dflash import DFlashDraftConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig, TransformerLayerConvConfig
+from lalamo.modules.transformer_layer import SublayerConfig, TransformerLayerConfig, TransformerLayerConvConfig
 
 __all__ = [
     "DFlashYarnRopeScalingConfig",
@@ -252,29 +252,33 @@ class HFDFlashConfig:
             conv_config = None
         layer_configs = tuple(
             TransformerLayerConfig(
-                pre_mixer_norm_config=norm_config,
-                mixer_conv_config=conv_config,
-                mixer_config=AttentionConfig(
-                    qkvg_projection_config=linear_config,
-                    out_projection_config=linear_config,
-                    query_norm_config=norm_config,
-                    key_norm_config=norm_config,
-                    num_heads=self.num_attention_heads,
-                    num_groups=self.num_key_value_heads,
-                    head_dim=self.head_dim,
-                    is_causal=(self.is_causal if self.is_causal is not None else sliding_window_size is not None),
-                    scale=self._attention_scale(),
-                    sliding_window_size=sliding_window_size,
-                    logit_soft_cap=None,
-                    has_sinks=False,
-                    has_qkvg_biases=self.attention_bias,
-                    has_out_biases=self.attention_bias,
+                mixer=SublayerConfig(
+                    pre_norm_config=norm_config,
+                    conv_config=conv_config,
+                    body_config=AttentionConfig(
+                        qkvg_projection_config=linear_config,
+                        out_projection_config=linear_config,
+                        query_norm_config=norm_config,
+                        key_norm_config=norm_config,
+                        num_heads=self.num_attention_heads,
+                        num_groups=self.num_key_value_heads,
+                        head_dim=self.head_dim,
+                        is_causal=(self.is_causal if self.is_causal is not None else sliding_window_size is not None),
+                        scale=self._attention_scale(),
+                        sliding_window_size=sliding_window_size,
+                        logit_soft_cap=None,
+                        has_sinks=False,
+                        has_qkvg_biases=self.attention_bias,
+                        has_out_biases=self.attention_bias,
+                    ),
+                    post_norm_config=None,
                 ),
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=norm_config,
-                mlp_conv_config=conv_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=None,
+                mlp=SublayerConfig(
+                    pre_norm_config=norm_config,
+                    conv_config=conv_config,
+                    body_config=mlp_config,
+                    post_norm_config=None,
+                ),
                 rope_config=rope_config,
             )
             for sliding_window_size in self._layer_sliding_window_sizes()

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Self
 
+from lalamo.modules import AdditiveResidualConfig, SublayerConfig
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
@@ -184,17 +185,14 @@ class HFQwen35Config(HuggingFaceLMConfig):
 
             layer_configs.append(
                 TransformerLayerConfig(
-                    pre_mixer_norm_config=rmsnorm_config,
-                    mixer_config=mixer_config,
-                    post_mixer_norm_config=None,
-                    pre_mlp_norm_config=rmsnorm_config,
-                    mlp_config=mlp_config,
-                    post_mlp_norm_config=None,
+                    mixer=SublayerConfig.pre_norm(rmsnorm_config, mixer_config),
+                    mlp=SublayerConfig.pre_norm(rmsnorm_config, mlp_config),
                     rope_config=rope_config if layer_type != "linear_attention" else None,
                 ),
             )
 
         transformer_config = TransformerConfig(
+            residual_config=AdditiveResidualConfig(),
             layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,

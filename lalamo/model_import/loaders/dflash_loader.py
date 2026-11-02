@@ -98,17 +98,17 @@ def load_dflash_draft_model(
     )
     layers = tuple(
         load_as_at(
-            lambda layer: (layer.mixer_conv, layer.mlp_conv),
+            lambda layer: (layer.mixer.conv, layer.mlp.conv),
             layer,
             (
                 load_dflash_sublayer_transform(
-                    layer.mixer_conv,
+                    layer.mixer.conv,
                     weights_dict,
                     path / "layers" / layer_index / "attention_conv",
                     implementation=implementation,
                 ),
                 load_dflash_sublayer_transform(
-                    layer.mlp_conv,
+                    layer.mlp.conv,
                     weights_dict,
                     path / "layers" / layer_index / "mlp_conv",
                     implementation=implementation,

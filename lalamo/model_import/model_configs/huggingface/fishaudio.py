@@ -13,6 +13,7 @@ from lalamo.model_import.loaders.fishaudio_loaders import (
 )
 from lalamo.model_import.model_configs import ForeignTTSConfig
 from lalamo.models import TTSConfig, TTSModel
+from lalamo.modules import AdditiveResidualConfig, SublayerConfig
 from lalamo.modules.activations import GELU, SiLU
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
@@ -106,16 +107,13 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
     )
 
     layer_config = TransformerLayerConfig(
-        pre_mixer_norm_config=norm_config_pre,
-        mixer_config=mixer_config,
-        post_mixer_norm_config=None,
-        pre_mlp_norm_config=norm_config_pre,
-        mlp_config=mlp_config,
-        post_mlp_norm_config=None,
+        mixer=SublayerConfig.pre_norm(norm_config_pre, mixer_config),
+        mlp=SublayerConfig.pre_norm(norm_config_pre, mlp_config),
         rope_config=rope_config,
     )
 
     return TransformerConfig(
+        residual_config=AdditiveResidualConfig(),
         layer_configs=(layer_config,) * config["n_layer"],
         output_norm_config=norm_config_pre,
         model_dim=input_dim,
@@ -312,16 +310,13 @@ class FishAudioConfig(ForeignTTSConfig):
         )
 
         layer_config = TransformerLayerConfig(
-            pre_mixer_norm_config=norm_config,
-            mixer_config=mixer_config,
-            post_mixer_norm_config=None,
-            pre_mlp_norm_config=norm_config,
-            mlp_config=mlp_config,
-            post_mlp_norm_config=None,
+            mixer=SublayerConfig.pre_norm(norm_config, mixer_config),
+            mlp=SublayerConfig.pre_norm(norm_config, mlp_config),
             rope_config=rope_config,
         )
 
         transformer_cfg = TransformerConfig(
+            residual_config=AdditiveResidualConfig(),
             layer_configs=(layer_config,) * n_layer,
             output_norm_config=norm_config,
             model_dim=dim,

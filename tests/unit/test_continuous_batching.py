@@ -59,7 +59,7 @@ def recurrent_model() -> LanguageModel:
         decoder,
         transformer_config=replace(
             decoder.transformer_config,
-            layer_configs=(replace(layer, mixer_config=mixer, rope_config=None),),
+            layer_configs=(replace(layer, mixer=replace(layer.mixer, body_config=mixer), rope_config=None),),
         ),
     )
     tokenizer = Tokenizer(

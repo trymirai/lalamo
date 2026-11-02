@@ -11,9 +11,11 @@ from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, SpeculatorState
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
+from lalamo.modules.residual import AdditiveResidualConfig
 from lalamo.modules.rope import PositionalEmbeddings, RoPE, RoPEConfig
 from lalamo.modules.speculator import Speculator, SpeculatorConfig
 from lalamo.modules.speculators.weaver import Weaver, WeaverConfig
+from lalamo.modules.token_mixer import TransformerLayerState
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.kv_cache import StaticKVCacheLayer
 from lalamo.modules.transformer_layer import TransformerForwardPassConfig, TransformerLayer, TransformerLayerConfig
@@ -27,14 +29,14 @@ __all__ = [
 
 
 def _layer_attention_config(layer_config: TransformerLayerConfig) -> AttentionConfig:
-    mixer_config = layer_config.mixer_config
+    mixer_config = layer_config.mixer.body_config
     if not isinstance(mixer_config, AttentionConfig):
         raise TypeError(f"DFlash draft layers must use attention mixers, got {type(mixer_config).__name__}.")
     return mixer_config
 
 
 def _layer_attention(layer: TransformerLayer) -> Attention:
-    mixer = layer.mixer
+    mixer = layer.mixer.body
     if not isinstance(mixer, Attention):
         raise TypeError(f"DFlash draft layers must use attention mixers, got {type(mixer).__name__}.")
     return mixer
@@ -76,7 +78,8 @@ class DFlashDraftConfig(LalamoConfig):
                 has_biases=False,
             ),
             layers=tuple(
-                layer_config.init(initializer, self.model_dim, self.hidden_dim) for layer_config in self.layer_configs
+                layer_config.init(initializer, AdditiveResidualConfig(), self.model_dim, self.hidden_dim)
+                for layer_config in self.layer_configs
             ),
             output_norm=self.output_norm_config.init(initializer, self.model_dim),
         )
@@ -292,7 +295,7 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
             layer_result = layer(
                 hidden_states,
                 positional_embeddings,
-                layer_state,
+                TransformerLayerState(mixer=layer_state, stream_ops=()),
                 forward_pass_config=forward_pass_config,
                 keychain=layer_keychain,
             )

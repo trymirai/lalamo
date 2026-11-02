@@ -2,6 +2,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
+from lalamo.modules import AdditiveResidualConfig, SublayerConfig
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
@@ -111,12 +112,12 @@ class HFLFM2MoeConfig(HuggingFaceLMConfig):
         )
         layer_configs = tuple(
             TransformerLayerConfig(
-                pre_mixer_norm_config=norm_config,
-                mixer_config={"conv": conv_config, "full_attention": attention_config}[layer_type],
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=norm_config,
-                mlp_config=dense_config if layer_index < self.num_dense_layers else moe_config,
-                post_mlp_norm_config=None,
+                mixer=SublayerConfig.pre_norm(
+                    norm_config, {"conv": conv_config, "full_attention": attention_config}[layer_type]
+                ),
+                mlp=SublayerConfig.pre_norm(
+                    norm_config, dense_config if layer_index < self.num_dense_layers else moe_config
+                ),
                 rope_config=rope_config if layer_type == "full_attention" else None,
             )
             for layer_index, layer_type in enumerate(self.layer_types)
@@ -124,6 +125,7 @@ class HFLFM2MoeConfig(HuggingFaceLMConfig):
         return DecoderConfig(
             embedding_config=TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None),
             transformer_config=TransformerConfig(
+                residual_config=AdditiveResidualConfig(),
                 layer_configs=layer_configs,
                 output_norm_config=norm_config,
                 model_dim=self.hidden_size,

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from lalamo.modules import AdditiveResidualConfig, SublayerConfig
 from lalamo.modules.activations import GELU
 from lalamo.modules.classifier import (
     ClassifierConfig,
@@ -147,17 +148,19 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             )
             layer_rope_config = global_rope_config if sliding_window_size is None else local_rope_config
             layer_config = TransformerLayerConfig(
-                pre_mixer_norm_config=pre_attn_config,
-                mixer_config=attention_config,
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=transformer_norm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=None,
+                mixer=SublayerConfig(
+                    pre_norm_config=pre_attn_config,
+                    conv_config=None,
+                    body_config=attention_config,
+                    post_norm_config=None,
+                ),
+                mlp=SublayerConfig.pre_norm(transformer_norm_config, mlp_config),
                 rope_config=layer_rope_config,
             )
             transformer_layer_configs.append(layer_config)
 
         transformer_config = TransformerConfig(
+            residual_config=AdditiveResidualConfig(),
             layer_configs=tuple(transformer_layer_configs),
             output_norm_config=transformer_norm_config,
             model_dim=self.hidden_size,

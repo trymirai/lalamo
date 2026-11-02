@@ -313,10 +313,10 @@ def test_load_muse_glimmer_checkpoint_reshapes_to_qwen_dflash(tmp_path: Path) ->
         assert np.array_equal(model.output_norm.scales, weights["norm.weight"])
 
         (layer,) = model.layers
-        assert isinstance(layer.mixer, Attention)
-        assert isinstance(layer.mlp, DenseMLP)
-        assert not layer.mixer.config.is_causal
-        assert layer.mixer.config.sliding_window_size == 32
+        assert isinstance(layer.mixer.body, Attention)
+        assert isinstance(layer.mlp.body, DenseMLP)
+        assert not layer.mixer.body.config.is_causal
+        assert layer.mixer.body.config.sliding_window_size == 32
         expected_qkv = np.concatenate(
             tuple(weights[f"layers.0.self_attn.{projection}_proj.weight"] for projection in ("q", "k", "v")),
             axis=0,
@@ -329,8 +329,8 @@ def test_load_muse_glimmer_checkpoint_reshapes_to_qwen_dflash(tmp_path: Path) ->
             tuple(weights[f"layers.0.self_attn.{projection}_proj.weight"] for projection in ("k", "v")),
             axis=0,
         )
-        assert np.array_equal(layer.mixer.qkvg_projection.weights.decompress(), expected_qkv)
-        assert np.array_equal(layer.mlp.up_projection.weights.decompress(), expected_up_gate)
+        assert np.array_equal(layer.mixer.body.qkvg_projection.weights.decompress(), expected_qkv)
+        assert np.array_equal(layer.mlp.body.up_projection.weights.decompress(), expected_up_gate)
         assert np.array_equal(model.state_kv_projection.weights.decompress(), expected_state_kv)
 
 
@@ -384,12 +384,17 @@ def _classifier_template() -> Classifier:
 def _classifier_weights(classifier: Classifier) -> Mapping[str, Array]:
     assert isinstance(classifier.embedding, TiedEmbedding)
     layer = classifier.transformer.layers[0]
-    assert isinstance(layer.mixer, Attention)
-    assert isinstance(layer.mlp, DenseMLP)
-    assert layer.pre_mlp_norm is not None
+    attention = layer.mixer.body
+    mlp = layer.mlp.body
+    pre_mlp_norm = layer.mlp.pre_norm
+    output_norm = classifier.transformer.output_norm
+    assert isinstance(attention, Attention)
+    assert isinstance(mlp, DenseMLP)
+    assert pre_mlp_norm is not None
+    assert output_norm is not None
     assert classifier.embedding_norm.scales is not None
-    assert layer.pre_mlp_norm.scales is not None
-    assert classifier.transformer.output_norm.scales is not None
+    assert pre_mlp_norm.scales is not None
+    assert output_norm.scales is not None
     assert classifier.prediction_head.norm.scales is not None
 
     base_path = ParameterPath()
@@ -403,19 +408,19 @@ def _classifier_weights(classifier: Classifier) -> Mapping[str, Array]:
         ),
         decoder_path / "embeddings" / "norm" / "weight": _classifier_tensor(classifier.embedding_norm.scales.shape),
         decoder_path / "layers" / 0 / "attn" / "Wqkv" / "weight": _classifier_tensor(
-            layer.mixer.qkvg_projection.weights.shape,
+            attention.qkvg_projection.weights.shape,
         ),
         decoder_path / "layers" / 0 / "attn" / "Wo" / "weight": _classifier_tensor(
-            layer.mixer.out_projection.weights.shape,
+            attention.out_projection.weights.shape,
         ),
-        decoder_path / "layers" / 0 / "mlp_norm" / "weight": _classifier_tensor(layer.pre_mlp_norm.scales.shape),
+        decoder_path / "layers" / 0 / "mlp_norm" / "weight": _classifier_tensor(pre_mlp_norm.scales.shape),
         decoder_path / "layers" / 0 / "mlp" / "Wi" / "weight": _classifier_tensor(
-            layer.mlp.up_projection.weights.shape,
+            mlp.up_projection.weights.shape,
         ),
         decoder_path / "layers" / 0 / "mlp" / "Wo" / "weight": _classifier_tensor(
-            layer.mlp.down_projection.weights.shape,
+            mlp.down_projection.weights.shape,
         ),
-        decoder_path / "final_norm" / "weight": _classifier_tensor(classifier.transformer.output_norm.scales.shape),
+        decoder_path / "final_norm" / "weight": _classifier_tensor(output_norm.scales.shape),
         head_path / "dense" / "weight": _classifier_tensor(classifier.prediction_head.dense.weights.shape),
         head_path / "norm" / "weight": _classifier_tensor(classifier.prediction_head.norm.scales.shape),
         classifier_path / "weight": _classifier_tensor(classifier.prediction_head.readout.weights.shape),
@@ -899,7 +904,7 @@ def test_load_dflash2_sublayer_transform(dtype: DTypeLike | None) -> None:
     }
 
     module = load_dflash_sublayer_transform(
-        layer.mixer_conv,
+        layer.mixer.conv,
         weights,
         ParameterPath("attention_conv"),
     )

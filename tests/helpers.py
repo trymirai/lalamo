@@ -12,6 +12,7 @@ from lalamo.initializer import RandomInitializer
 from lalamo.models import LanguageModel
 from lalamo.module import ForwardPassMode, Keychain
 from lalamo.modules import (
+    AdditiveResidualConfig,
     Decoder,
     DecoderConfig,
     DecoderForwardPassConfig,
@@ -19,6 +20,8 @@ from lalamo.modules import (
     Identity,
     LinearConfig,
     NormalizationConfig,
+    ResidualConfig,
+    SublayerConfig,
     TiedEmbeddingConfig,
     TransformerConfig,
     TransformerLayerConfig,
@@ -89,7 +92,11 @@ def make_sharding(logical_axes: tuple[LogicalAxis | None, ...]) -> NamedSharding
     return sharding_config.resolve_sharding(logical_axes)
 
 
-def build_tiny_attention_decoder_config(kv_source_layer_indices: tuple[int | None, ...]) -> DecoderConfig:
+def build_tiny_attention_decoder_config(
+    kv_source_layer_indices: tuple[int | None, ...],
+    *,
+    residual_config: ResidualConfig = AdditiveResidualConfig(),
+) -> DecoderConfig:
     model_dim = 8
     hidden_dim = 16
     vocab_size = 32
@@ -136,18 +143,15 @@ def build_tiny_attention_decoder_config(kv_source_layer_indices: tuple[int | Non
         )
         layer_configs.append(
             TransformerLayerConfig(
-                pre_mixer_norm_config=norm_config,
-                mixer_config=attention_config,
-                post_mixer_norm_config=None,
-                pre_mlp_norm_config=norm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=None,
+                mixer=SublayerConfig.pre_norm(norm_config, attention_config),
+                mlp=SublayerConfig.pre_norm(norm_config, mlp_config),
                 rope_config=rope_config,
                 kv_source_layer_index=kv_source,
             ),
         )
 
     transformer_config = TransformerConfig(
+        residual_config=residual_config,
         layer_configs=tuple(layer_configs),
         output_norm_config=norm_config,
         model_dim=model_dim,
@@ -163,8 +167,12 @@ def build_tiny_attention_decoder_config(kv_source_layer_indices: tuple[int | Non
     )
 
 
-def build_tiny_attention_decoder(kv_source_layer_indices: tuple[int | None, ...]) -> Decoder:
-    return build_tiny_attention_decoder_config(kv_source_layer_indices).init(
+def build_tiny_attention_decoder(
+    kv_source_layer_indices: tuple[int | None, ...],
+    *,
+    residual_config: ResidualConfig = AdditiveResidualConfig(),
+) -> Decoder:
+    return build_tiny_attention_decoder_config(kv_source_layer_indices, residual_config=residual_config).init(
         RandomInitializer(
             default_dtype=jnp.float32,
             sharding_config=ShardingConfig.replicated(jax.devices("cpu")[:8]),

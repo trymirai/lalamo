@@ -26,6 +26,7 @@ __all__ = [
     "TokenMixerBase",
     "TokenMixerConfig",
     "TokenMixerResult",
+    "TransformerLayerState",
 ]
 
 
@@ -33,15 +34,20 @@ class StateLayerBase(Exportable, eqx.Module):
     pass
 
 
+class TransformerLayerState(StateLayerBase):
+    mixer: StateLayerBase
+    stream_ops: tuple[StateLayerBase | None, ...]
+
+
 @register_pytree_node_class
-class State(tuple[StateLayerBase, ...]):
+class State(tuple[TransformerLayerState, ...]):
     __slots__ = ()
 
-    def tree_flatten(self) -> tuple[tuple[StateLayerBase, ...], None]:
+    def tree_flatten(self) -> tuple[tuple[TransformerLayerState, ...], None]:
         return (tuple(self), None)
 
     @classmethod
-    def tree_unflatten(cls, aux_data: None, children: tuple[StateLayerBase, ...]) -> Self:  # noqa: ARG003
+    def tree_unflatten(cls, aux_data: None, children: tuple[TransformerLayerState, ...]) -> Self:  # noqa: ARG003
         return cls(children)
 
 

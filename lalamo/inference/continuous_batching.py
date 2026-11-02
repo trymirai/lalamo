@@ -18,7 +18,7 @@ from lalamo.models import GenerationConfig, LanguageModel
 from lalamo.models.language_model import PrefillResults
 from lalamo.module import ForwardPassMode, Keychain, LogicalAxis
 from lalamo.modules import Decoder, DecoderForwardPassConfig, State
-from lalamo.modules.token_mixer import StateLayerBase
+from lalamo.modules.token_mixer import TransformerLayerState
 from lalamo.modules.token_mixers.attention import Attention
 from lalamo.modules.token_mixers.kv_cache import PagedKVCacheLayer, PagedKVCachePool, StaticKVCacheLayer
 from lalamo.modules.utils import call_vmapped
@@ -144,8 +144,11 @@ def _decode(
         return carry, (token_ids, logprobs)
 
     views = State(
-        PagedKVCacheLayer(layer.keys, layer.values, block_tables, lengths)
-        if isinstance(layer, PagedKVCachePool)
+        TransformerLayerState(
+            mixer=PagedKVCacheLayer(layer.mixer.keys, layer.mixer.values, block_tables, lengths),
+            stream_ops=jax.tree.map(lambda array: array[slots], layer.stream_ops),
+        )
+        if isinstance(layer.mixer, PagedKVCachePool)
         else jax.tree.map(lambda array: array[slots], layer)
         for layer in state
     )
@@ -153,8 +156,11 @@ def _decode(
         step, (views, logits[slots], sampling_policy, sampling_keys), token_positions
     )
     pools = State(
-        PagedKVCachePool(layer.keys, layer.values)
-        if isinstance(layer, PagedKVCacheLayer)
+        TransformerLayerState(
+            mixer=PagedKVCachePool(layer.mixer.keys, layer.mixer.values),
+            stream_ops=jax.tree.map(lambda full, row: full.at[slots].set(row), pool.stream_ops, layer.stream_ops),
+        )
+        if isinstance(layer.mixer, PagedKVCacheLayer)
         else jax.tree.map(lambda full, row: full.at[slots].set(row), pool, layer)
         for pool, layer in zip(state, views, strict=True)
     )
@@ -162,9 +168,9 @@ def _decode(
 
 
 @eqx.filter_jit
-def _recurrent_row(state: State, row: Int[Array, ""]) -> tuple[StateLayerBase | None, ...]:
+def _recurrent_row(state: State, row: Int[Array, ""]) -> tuple[TransformerLayerState | None, ...]:
     return tuple(
-        None if isinstance(layer, StaticKVCacheLayer) else jax.tree.map(lambda array: array[row], layer)
+        None if isinstance(layer.mixer, StaticKVCacheLayer) else jax.tree.map(lambda array: array[row], layer)
         for layer in state
     )
 
@@ -180,11 +186,24 @@ def _merge_prefill(
 ) -> tuple[State, Float[Array, "slots vocabulary"]]:
     layers = []
     for pool, prefill in zip(state, prefilled_state, strict=True):
-        if isinstance(pool, PagedKVCachePool):
-            assert isinstance(prefill, StaticKVCacheLayer)
-            start = int(prefill.has_sinks)
-            end = start + page_indices.shape[1] * pool.page_size
-            layers.append(pool.write_pages(page_indices, prefill.keys[:, start:end], prefill.values[:, start:end]))
+        if isinstance(pool.mixer, PagedKVCachePool):
+            assert isinstance(prefill.mixer, StaticKVCacheLayer)
+            start = int(prefill.mixer.has_sinks)
+            end = start + page_indices.shape[1] * pool.mixer.page_size
+            layers.append(
+                TransformerLayerState(
+                    mixer=pool.mixer.write_pages(
+                        page_indices,
+                        prefill.mixer.keys[:, start:end],
+                        prefill.mixer.values[:, start:end],
+                    ),
+                    stream_ops=jax.tree.map(
+                        lambda old, new: old.at[slots].set(new),
+                        pool.stream_ops,
+                        prefill.stream_ops,
+                    ),
+                ),
+            )
         else:
             layers.append(jax.tree.map(lambda old, new: old.at[slots].set(new), pool, prefill))
     return State(layers), logits.at[slots].set(prefilled_logits)
@@ -195,7 +214,7 @@ class CachedPrefix(NamedTuple):
 
     token_ids: tuple[int, ...]
     pages: list[int]
-    state_rows: tuple[StateLayerBase | None, ...]
+    state_rows: tuple[TransformerLayerState | None, ...]
 
 
 @dataclass(eq=False)
@@ -213,7 +232,7 @@ class BatchingSequence:
     slot: int | None = None
     cached_prefix: CachedPrefix | None = None
     head_length: int = 0
-    head_state_rows: tuple[StateLayerBase | None, ...] | None = None
+    head_state_rows: tuple[TransformerLayerState | None, ...] | None = None
 
     @property
     def length(self) -> int:
@@ -243,7 +262,9 @@ class ContinuousBatchingEngine:
         if model.sharding_config.resolve_axis(LogicalAxis.BATCH) is not None:
             raise ValueError("Continuous batching does not support batch-sharded models.")
         transformer = model.decoder.transformer
-        attention_mixers = [layer.mixer for layer in transformer.layers if isinstance(layer.mixer, Attention)]
+        attention_mixers = [
+            layer.mixer.body for layer in transformer.layers if isinstance(layer.mixer.body, Attention)
+        ]
         devices = list(model.sharding_config.mesh.devices.flat)
         if attention_mixers and (
             any(device.platform != "gpu" for device in devices)
@@ -347,17 +368,20 @@ class ContinuousBatchingEngine:
         static_state = model.decoder.init_static_state(slot_count, 1, state_dtype)
         layers = []
         for owner_index, static_layer in zip(transformer.kv_source_layer_indices, static_state, strict=True):
-            mixer = transformer.layers[owner_index].mixer
+            mixer = transformer.layers[owner_index].mixer.body
             if not isinstance(mixer, Attention):
                 layers.append(static_layer)
                 continue
             shape = (mixer.config.num_groups, total_pages + 1, config.page_size, mixer.config.head_dim)
             sharding = model.sharding_config.make_sharding((None,) * len(shape))
             layers.append(
-                PagedKVCachePool(
-                    jnp.zeros(shape, dtype=state_dtype, device=sharding),
-                    jnp.zeros(shape, dtype=state_dtype, device=sharding),
-                )
+                TransformerLayerState(
+                    mixer=PagedKVCachePool(
+                        jnp.zeros(shape, dtype=state_dtype, device=sharding),
+                        jnp.zeros(shape, dtype=state_dtype, device=sharding),
+                    ),
+                    stream_ops=static_layer.stream_ops,
+                ),
             )
         return cls(
             model=model,
@@ -569,18 +593,21 @@ class ContinuousBatchingEngine:
         row_indices = jnp.asarray(cached_rows, dtype=jnp.int32)
         layers = []
         for layer_index, (pool, layer) in enumerate(zip(self._state, blank, strict=True)):
-            if isinstance(pool, PagedKVCachePool):
-                assert isinstance(layer, StaticKVCacheLayer)
-                keys, values = pool.read_pages(page_indices)
-                start = int(layer.has_sinks)
+            if isinstance(pool.mixer, PagedKVCachePool):
+                assert isinstance(layer.mixer, StaticKVCacheLayer)
+                keys, values = pool.mixer.read_pages(page_indices)
+                start = int(layer.mixer.has_sinks)
                 end = start + prefix_pages * self.config.page_size
                 layers.append(
-                    replace(
-                        layer,
-                        keys=layer.keys.at[:, start:end].set(keys.astype(layer.keys.dtype)),
-                        values=layer.values.at[:, start:end].set(values.astype(layer.values.dtype)),
-                        current_length=jnp.asarray(prefix_lengths, dtype=jnp.int32) + start,
-                    )
+                    TransformerLayerState(
+                        mixer=replace(
+                            layer.mixer,
+                            keys=layer.mixer.keys.at[:, start:end].set(keys.astype(layer.mixer.keys.dtype)),
+                            values=layer.mixer.values.at[:, start:end].set(values.astype(layer.mixer.values.dtype)),
+                            current_length=jnp.asarray(prefix_lengths, dtype=jnp.int32) + start,
+                        ),
+                        stream_ops=layer.stream_ops,
+                    ),
                 )
                 continue
             layers.append(

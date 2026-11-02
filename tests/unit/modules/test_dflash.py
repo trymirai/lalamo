@@ -7,6 +7,7 @@ import pytest
 from lalamo.initializer import RandomInitializer
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.linear import LinearConfig
+from lalamo.modules.residual import AdditiveResidualConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from lalamo.modules.transformer_layer import TransformerLayerConvConfig
 from lalamo.weight_matrix import MatmulConfig
@@ -90,18 +91,20 @@ def test_sublayer_transform_preserves_suffix(mixer_conv_enabled: bool, mlp_conv_
         mixer_conv_config = conv_config
     if mlp_conv_enabled:
         mlp_conv_config = conv_config
+    layer_config = decoder.transformer.layers[0].config
     config = replace(
-        decoder.transformer.layers[0].config,
-        mixer_conv_config=mixer_conv_config,
-        mlp_conv_config=mlp_conv_config,
+        layer_config,
+        mixer=replace(layer_config.mixer, conv_config=mixer_conv_config),
+        mlp=replace(layer_config.mlp, conv_config=mlp_conv_config),
     )
     layer = config.init(
         RandomInitializer(jnp.float32, decoder.sharding_config, key=jax.random.key(0)),
+        residual_config=AdditiveResidualConfig(),
         model_dim=8,
         hidden_dim=16,
     )
-    assert (layer.mixer_conv is not None) == mixer_conv_enabled
-    assert (layer.mlp_conv is not None) == mlp_conv_enabled
+    assert (layer.mixer.conv is not None) == mixer_conv_enabled
+    assert (layer.mlp.conv is not None) == mlp_conv_enabled
     inputs = jnp.arange(2 * 4 * 8, dtype=jnp.float32).reshape(2, 4, 8) / 10
     keychain = Keychain.init(0, sharding_config=decoder.sharding_config)
 

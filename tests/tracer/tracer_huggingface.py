@@ -566,7 +566,7 @@ class ModernBertTracer(
         hf_pre_attention_norm = ref_layer.attn_norm
         hf_pre_mlp_norm = ref_layer.mlp_norm
 
-        layer_hidden_states = jax_to_torch(activation_trace.pre_mixer_norm).to(self.device)
+        layer_hidden_states = jax_to_torch(activation_trace.mixer.pre_norm).to(self.device)
         attention_mask, sliding_window = self._update_attention_mask(layer_hidden_states)
         layer_attention_mask = attention_mask if use_global_attention else sliding_window
 
@@ -574,7 +574,7 @@ class ModernBertTracer(
             assert isinstance(hf_pre_attention_norm, nn.LayerNorm)
             self.match_rmsnorm(
                 activation_trace.inputs,
-                activation_trace.pre_mixer_norm,
+                activation_trace.mixer.pre_norm,
                 hf_pre_attention_norm,
                 f"Layer {layer_index} Pre Attention RMSNorm",
             )
@@ -598,8 +598,8 @@ class ModernBertTracer(
         )
 
         self.match_attention_custom(
-            activation_trace.pre_mixer_norm,
-            activation_trace.mixer,
+            activation_trace.mixer.pre_norm,
+            activation_trace.mixer.body,
             ref_layer.attn,  # type: ignore[arg-type]
             layer_attention_mask,
             (ref_cosines, ref_sines),
@@ -607,15 +607,15 @@ class ModernBertTracer(
         )
 
         self.match_rmsnorm(
-            activation_trace.mlp_inputs,
-            activation_trace.pre_mlp_norm,
+            activation_trace.mlp.inputs,
+            activation_trace.mlp.pre_norm,
             hf_pre_mlp_norm,
             f"Layer {layer_index} Pre MLP RMSNorm",
         )
 
         self.match_mlp(
-            activation_trace.pre_mlp_norm,
-            activation_trace.mlp,
+            activation_trace.mlp.pre_norm,
+            activation_trace.mlp.body,
             ref_layer.mlp,  # type: ignore[arg-type]
             f"Layer {layer_index} MLP",
         )
