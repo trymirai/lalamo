@@ -24,7 +24,8 @@ from lalamo.model_import.common import (
 from lalamo.model_import.loaders.dflash_loader import load_hf_dflash_draft_model
 from lalamo.model_import.loaders.weaver_loader import load_weaver
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
-from lalamo.models import SpeculatorModel, SpeculatorModelConfig
+from lalamo.model_import.vocabulary_order import frequency_ordered
+from lalamo.models import LanguageModel, SpeculatorModel, SpeculatorModelConfig, VocabularyOrder
 from lalamo.modules import DFlashSpeculator, DFlashSpeculatorConfig
 from lalamo.utils.sharding import ShardingConfig
 
@@ -165,6 +166,8 @@ def convert(
         ],
         ConversionCallbacks,
     ] = ConversionCallbacks,
+    *,
+    vocabulary_order: VocabularyOrder = VocabularyOrder.ORIGINAL,
 ) -> None:
     effective_dtype = dtype or DType.BFLOAT16
     callbacks = callbacks_type(
@@ -195,8 +198,12 @@ def convert(
         dtype=jnp.dtype(effective_dtype.value),
         progress_callback=progress_callback,
     )
+    model = imported_model.model
+    if vocabulary_order == VocabularyOrder.FREQUENCY:
+        assert isinstance(model, LanguageModel), "Only language models have a vocabulary order"
+        model = frequency_ordered(model)
     callbacks.saving_model()
-    imported_model.model.save(output_dir)
+    model.save(output_dir)
 
     callbacks.finished_saving_model()
 
