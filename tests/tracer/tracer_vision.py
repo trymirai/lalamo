@@ -13,6 +13,7 @@ from PIL import Image, ImageDraw
 from safetensors import safe_open
 from transformers import AutoConfig
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
+from transformers.vision_utils import get_vision_interpolation_indices_and_weights, get_vision_position_ids
 
 from lalamo.model_import.common import import_vision_encoder
 from lalamo.model_import.origins import hf_resolve_weights
@@ -115,9 +116,19 @@ class ActivationMatcher:
 
 
 def _hf_rotary(model: Qwen3_5VisionModel, grid_thw: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    frequencies = model.rot_pos_emb(grid_thw)
-    angles = torch.cat((frequencies, frequencies), dim=-1)
-    return angles.cos(), angles.sin()
+    position_ids = get_vision_position_ids(grid_thw, model.spatial_merge_size)
+    return model.rotary_pos_emb(position_ids, position_ids)
+
+
+def _hf_position_embeddings(model: Qwen3_5VisionModel, grid_thw: torch.Tensor) -> torch.Tensor:
+    indices, weights = get_vision_interpolation_indices_and_weights(
+        grid_thw,
+        num_grid_per_side=model.num_grid_per_side,
+        mode=model.interpolation_mode,
+        align_corners=model.interpolation_align_corners,
+        spatial_merge_size=model.spatial_merge_size,
+    )
+    return (model.pos_embed(indices) * weights[:, :, None]).sum(1)
 
 
 def _match_activations(
@@ -139,7 +150,7 @@ def _match_activations(
     match(trace.positional_embeddings.cosines, cosines, "RoPE cosines")
     match(trace.positional_embeddings.sines, sines, "RoPE sines")
     match(trace.patch_embeddings, model.patch_embed(_to_torch(patches, dtype)), "Patch embedding")
-    match(trace.position_embeddings, model.fast_pos_embed_interpolate(grid_thw), "Position embedding")
+    match(trace.position_embeddings, _hf_position_embeddings(model, grid_thw), "Position embedding")
 
     for index, (block, layer_result) in enumerate(zip(model.blocks, trace.layer_results, strict=True)):
         layer_trace = layer_result.activation_trace

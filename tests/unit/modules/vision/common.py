@@ -8,6 +8,7 @@ import torch
 from jaxtyping import Array
 from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionBlock, Qwen3_5VisionModel
+from transformers.vision_utils import get_vision_interpolation_indices_and_weights, get_vision_position_ids
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.model_configs.huggingface.qwen3_5_vision import HFQwen35VisionConfig
@@ -23,6 +24,7 @@ __all__ = [
     "hf_block",
     "hf_cu_seqlens",
     "hf_grid_thw",
+    "hf_position_embeddings",
     "hf_rotary_embeddings",
     "keychain",
     "lalamo_encoder",
@@ -129,6 +131,18 @@ def hf_cu_seqlens(grids: tuple[ImageGrid, ...]) -> torch.Tensor:
 
 
 def hf_rotary_embeddings(grids: tuple[ImageGrid, ...]) -> tuple[torch.Tensor, torch.Tensor]:
-    frequencies = tiny_hf_vision_model().rot_pos_emb(hf_grid_thw(grids))
-    angles = torch.cat((frequencies, frequencies), dim=-1)
-    return angles.cos(), angles.sin()
+    model = tiny_hf_vision_model()
+    position_ids = get_vision_position_ids(hf_grid_thw(grids), model.spatial_merge_size)
+    return model.rotary_pos_emb(position_ids, position_ids)
+
+
+def hf_position_embeddings(grids: tuple[ImageGrid, ...]) -> torch.Tensor:
+    model = tiny_hf_vision_model()
+    indices, weights = get_vision_interpolation_indices_and_weights(
+        hf_grid_thw(grids),
+        num_grid_per_side=model.num_grid_per_side,
+        mode=model.interpolation_mode,
+        align_corners=model.interpolation_align_corners,
+        spatial_merge_size=model.spatial_merge_size,
+    )
+    return (model.pos_embed(indices) * weights[:, :, None]).sum(1)

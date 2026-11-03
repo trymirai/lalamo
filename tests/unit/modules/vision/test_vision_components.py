@@ -12,7 +12,7 @@ from .common import (
     GRID_CASES,
     hf_block,
     hf_cu_seqlens,
-    hf_grid_thw,
+    hf_position_embeddings,
     hf_rotary_embeddings,
     keychain,
     lalamo_encoder,
@@ -52,7 +52,7 @@ def test_rope(grids: tuple[ImageGrid, ...]) -> None:
 def test_position_embedding(grids: tuple[ImageGrid, ...]) -> None:
     encoder = lalamo_encoder()
     result = encoder.position_embedding(grids, encoder.config.spatial_merge_size)
-    reference = tiny_hf_vision_model().fast_pos_embed_interpolate(hf_grid_thw(grids))
+    reference = hf_position_embeddings(grids)
     _assert_matches(result, reference, "Position embedding")
 
 
