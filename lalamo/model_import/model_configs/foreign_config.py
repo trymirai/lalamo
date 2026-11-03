@@ -1,5 +1,5 @@
 import json
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +17,7 @@ from lalamo.models import (
     LanguageModelConfig,
     TTSConfig,
     TTSModelConfig,
+    VisionLanguageModelConfig,
 )
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.modules.classifier import ClassifierConfig
@@ -34,6 +35,7 @@ __all__ = [
     "ForeignLMConfig",
     "ForeignTTSConfig",
     "ForeignVisionEncoderConfig",
+    "ForeignVisionLanguageConfig",
 ]
 
 
@@ -98,6 +100,20 @@ class ForeignLMConfig(ForeignConfig[LanguageModelConfig], RegistryABC):
             decoder_config=self.to_decoder_config(metadata_dict),
             generation_config=generation_config,
         )
+
+
+class ForeignVisionLanguageConfig(ABC):
+    """Implemented by foreign LM configs whose decoder can take image embeddings from a vision encoder."""
+
+    @abstractmethod
+    def to_vision_language_config(
+        self,
+        metadata_dict: Mapping[str, str],
+        token_codec_config: ChatCodecConfig,
+        generation_config: GenerationConfig,
+        vision_encoder_config: VisionEncoderConfig,
+        image_preprocessing_config: ImagePreprocessingConfig,
+    ) -> VisionLanguageModelConfig: ...
 
 
 @dataclass(frozen=True)

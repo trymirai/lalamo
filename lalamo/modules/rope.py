@@ -85,21 +85,32 @@ class RoPEConfig(LalamoConfig, RegistryABC):
     def _attention_scaling_factor(self) -> float:
         return 1.0
 
+    @property
+    def num_position_axes(self) -> int:
+        """Positions per token this RoPE consumes: 1 for ordinary RoPE, more for multimodal variants."""
+        return 1
+
     def _scale_inverse_frequencies(
         self,
         inverse_frequencies: Float[Array, " rotary_pairs"],
     ) -> Float[Array, " rotary_pairs"]:
         return inverse_frequencies
 
-    def compute_positional_embeddings(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
+    def inverse_frequencies(self) -> Float[Array, " rotary_pairs"]:
         channel_indices = jnp.arange(0, self.head_dim, 2, dtype=jnp.int32)
         inverse_frequencies = 1.0 / (self.base ** (channel_indices.astype(jnp.float32) / self.head_dim))
-        inverse_frequencies = self._scale_inverse_frequencies(inverse_frequencies).astype(jnp.float32)
-        outer_inverse_frequencies = jnp.outer(timesteps.astype(jnp.float32), inverse_frequencies)
-        embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
+        return self._scale_inverse_frequencies(inverse_frequencies).astype(jnp.float32)
+
+    def embeddings_from_angles(self, angles: Float[Array, "tokens rotary_pairs"]) -> PositionalEmbeddings:
+        embeddings = jnp.concatenate((angles, angles), axis=-1)
         cosines = (jnp.cos(embeddings) * self._attention_scaling_factor).astype(jnp.float32)
         sines = (jnp.sin(embeddings) * self._attention_scaling_factor).astype(jnp.float32)
         return PositionalEmbeddings(cosines=cosines, sines=sines)
+
+    def compute_positional_embeddings(self, timesteps: Int[Array, " tokens *position_axes"]) -> PositionalEmbeddings:
+        if timesteps.ndim != 1:
+            raise ValueError(f"{type(self).__name__} takes one position per token, got shape {timesteps.shape}.")
+        return self.embeddings_from_angles(jnp.outer(timesteps.astype(jnp.float32), self.inverse_frequencies()))
 
     def init(self, initializer: Initializer) -> "RoPE":
         return RoPE(config=self, sharding_config=initializer.sharding_config)
@@ -107,7 +118,7 @@ class RoPEConfig(LalamoConfig, RegistryABC):
 
 class RoPE(LalamoModule[RoPEConfig]):
     @eqx.filter_jit
-    def __call__(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
+    def __call__(self, timesteps: Int[Array, " tokens *position_axes"]) -> PositionalEmbeddings:
         return self.config.compute_positional_embeddings(timesteps)
 
 
