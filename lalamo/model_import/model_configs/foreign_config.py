@@ -21,11 +21,20 @@ from lalamo.models import (
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.modules.classifier import ClassifierConfig
 from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.vision import ImagePreprocessingConfig, VisionEncoder, VisionEncoderConfig
+from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import CompressionImplementation
 
-__all__ = ["ForeignClassifierConfig", "ForeignConfig", "ForeignLMConfig", "ForeignTTSConfig"]
+__all__ = [
+    "ForeignClassifierConfig",
+    "ForeignConfig",
+    "ForeignImageProcessorConfig",
+    "ForeignLMConfig",
+    "ForeignTTSConfig",
+    "ForeignVisionEncoderConfig",
+]
 
 
 @dataclass(frozen=True)
@@ -103,3 +112,33 @@ class ForeignClassifierConfig(ForeignConfig[ClassifierModelConfig], RegistryABC)
 class ForeignTTSConfig(ForeignConfig[TTSModelConfig], RegistryABC):
     @abstractmethod
     def to_tts_config(self) -> TTSConfig: ...
+
+
+@dataclass(frozen=True)
+class ForeignVisionEncoderConfig(RegistryABC):
+    @classmethod
+    @abstractmethod
+    def from_json(cls, json_path: Path | str) -> Self: ...
+
+    @abstractmethod
+    def to_vision_encoder_config(self) -> VisionEncoderConfig: ...
+
+    @abstractmethod
+    def load_weights(
+        self,
+        encoder: VisionEncoder,
+        weights_dict: Mapping[str, Array],
+        path: ParameterPath,
+        *,
+        implementation: CompressionImplementation,
+    ) -> VisionEncoder: ...
+
+
+@dataclass(frozen=True)
+class ForeignImageProcessorConfig(RegistryABC):
+    @classmethod
+    @abstractmethod
+    def from_json(cls, json_path: Path | str) -> Self: ...
+
+    @abstractmethod
+    def to_image_preprocessing_config(self) -> ImagePreprocessingConfig: ...

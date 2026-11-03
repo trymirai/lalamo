@@ -17,6 +17,7 @@ from .phi3 import HFPhi3Config
 from .qwen2 import HFQwen2Config
 from .qwen3 import HFQwen3Config
 from .qwen3_5 import HFQwen35Config
+from .qwen3_5_vision import HFQwen35ImageProcessorConfig, HFQwen35VisionConfig
 from .qwen3_next import HFQwen3NextConfig
 from .smollm3 import HFSmolLM3Config
 from .weaver import HFWeaverConfig
@@ -43,6 +44,8 @@ __all__ = [
     "HFQwen3Config",
     "HFQwen3NextConfig",
     "HFQwen35Config",
+    "HFQwen35ImageProcessorConfig",
+    "HFQwen35VisionConfig",
     "HFSmolLM3Config",
     "HFWeaverConfig",
     "HuggingFaceLMConfig",

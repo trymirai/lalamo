@@ -39,6 +39,8 @@ from .mlp import (
     RoutingFunction,
     SigmoidRouting,
     SoftmaxRouting,
+    UngatedMLP,
+    UngatedMLPConfig,
 )
 from .normalization import (
     Normalization,
@@ -250,6 +252,8 @@ __all__ = [
     "TransformerLayerResult",
     "TransformerLayerState",
     "TransformerResult",
+    "UngatedMLP",
+    "UngatedMLPConfig",
     "UnscaledRoPEConfig",
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
