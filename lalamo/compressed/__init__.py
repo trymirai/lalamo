@@ -1,5 +1,6 @@
 from .hybrid import HybridMatrix, HybridSpec
 from .int import IntMatrix, IntMatrixForInference, IntMatrixForTraining, IntSpec
+from .lattice import LatticeMatrix, LatticeSpec
 from .lloyd_max import (
     LloydMaxMatrix,
     LloydMaxMatrixForInference,
@@ -15,6 +16,8 @@ from .microfloat import (
     MicrofloatSpec,
 )
 from .mlx import MLXMatrix, MLXMatrixForInference, MLXMatrixForTraining, MLXSpec
+from .output_stack import OutputStackMatrix, OutputStackSpec
+from .qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec
 from .quantized_spec import QuantizedSpec
 
 __all__ = [
@@ -24,6 +27,8 @@ __all__ = [
     "IntMatrixForInference",
     "IntMatrixForTraining",
     "IntSpec",
+    "LatticeMatrix",
+    "LatticeSpec",
     "LloydMaxMatrix",
     "LloydMaxMatrixForInference",
     "LloydMaxMatrixForTraining",
@@ -39,5 +44,9 @@ __all__ = [
     "MicrofloatMatrixForTraining",
     "MicrofloatScaleMode",
     "MicrofloatSpec",
+    "OutputStackMatrix",
+    "OutputStackSpec",
+    "QtipGaussianMatrix",
+    "QtipGaussianSpec",
     "QuantizedSpec",
 ]
