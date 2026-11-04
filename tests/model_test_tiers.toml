@@ -47,6 +47,7 @@ standard = [
   "microsoft/Phi-4-mini-instruct",
 ]
 extra = [
+  "Qwen/Qwen3.8-Flash-Next",
   "ibm-granite/granite-3.3-8b-instruct",
   "ibm-granite/granite-3.1-2b-instruct",
   "ibm-granite/granite-3.1-8b-instruct",

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import einops
 import equinox as eqx
@@ -10,6 +10,7 @@ from lalamo.initializer import Initializer
 from lalamo.kernels.deltanet import deltanet_recurrent_scan
 from lalamo.kernels.mosaic import supports_mosaic_gpu
 from lalamo.module import Keychain
+from lalamo.modules.activations import Activation, SiLU
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
@@ -56,6 +57,7 @@ class DeltaNetConfig(TokenMixerConfig):
     head_dim: int
     value_head_dim: int
     kernel_size: int
+    output_gate: Activation = field(default_factory=SiLU)
 
     def init(
         self,
@@ -371,7 +373,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
 
         def norm_gate(x: Float[Array, " channels"], gate: Float[Array, " channels"]) -> Float[Array, " channels"]:
             normed = self.norm(x)
-            return normed * jax.nn.silu(gate.astype(jnp.float32)).astype(x.dtype)
+            return normed * self.config.output_gate(gate.astype(jnp.float32)).astype(x.dtype)
 
         num_tokens, *_ = gate.shape
         gate = gate.reshape(num_tokens, self.config.num_heads, self.config.value_head_dim)

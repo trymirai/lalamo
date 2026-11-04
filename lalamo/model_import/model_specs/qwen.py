@@ -6,6 +6,7 @@ from lalamo.model_import.model_configs import (
     HFQwen2Config,
     HFQwen3Config,
     HFQwen35Config,
+    HFQwen38FlashNextConfig,
 )
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.model_specs.reasoning_configs import (
@@ -567,6 +568,16 @@ QWEN38 = [
         size="27B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.8-27B"),
         config_type=HFQwen35Config,
+        response_format=QWEN_RESPONSE_FORMAT,
+        reasoning_config=QWEN38_REASONING_CONFIG,
+    ),
+    LanguageModelSpec(
+        vendor="Alibaba",
+        family="Qwen3.8",
+        name="Qwen3.8-Flash-Next",
+        size="180B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3.8-Flash-Next"),
+        config_type=HFQwen38FlashNextConfig,
         response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=QWEN38_REASONING_CONFIG,
     ),

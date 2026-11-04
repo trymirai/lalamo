@@ -2,14 +2,16 @@ import jax
 import jax.numpy as jnp
 import torch
 from einops import rearrange
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, Int
 from transformers.models.qwen4_exp.configuration_qwen4_exp import Qwen4ExpTextConfig
+from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpTextNGramEmbedding
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.model_import.loaders.huggingface import (
     load_delta_net_attention,
     load_gated_residual_connection,
     load_mlp,
+    load_ngram_injection,
 )
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules import (
@@ -18,6 +20,8 @@ from lalamo.modules import (
     GatedResidualConfig,
     LinearConfig,
     MixtureOfExpertsConfig,
+    NGramHashConfig,
+    NGramInjectionConfig,
     NormalizationConfig,
     SiLU,
     SoftmaxRouting,
@@ -33,9 +37,12 @@ from lalamo.utils.torch_interop import torch_to_jax
 from tests.helpers import make_test_sharding_config
 
 __all__ = [
+    "EOS_TOKEN_ID",
     "HIDDEN_SIZE",
+    "PLE_EMBED_DIM",
     "STREAM_COUNT",
     "as_stream",
+    "as_token_ids",
     "float_weights",
     "load_decoder_layer",
     "make_gated_residual_config",
@@ -43,6 +50,7 @@ __all__ = [
     "make_hyper_input",
     "make_initializer",
     "make_keychain",
+    "make_ngram_injection_config",
     "merge_streams",
     "randomized",
 ]
@@ -50,9 +58,11 @@ __all__ = [
 HIDDEN_SIZE = 32
 STREAM_COUNT = 4
 EXPERT_HIDDEN_DIM = 16
+PLE_EMBED_DIM = 16
+EOS_TOKEN_ID = 3
 
 
-def make_hf_config() -> Qwen4ExpTextConfig:
+def make_hf_config(*, with_ple: bool = False) -> Qwen4ExpTextConfig:
     return Qwen4ExpTextConfig(
         hidden_size=HIDDEN_SIZE,
         hc_count=STREAM_COUNT,
@@ -70,6 +80,11 @@ def make_hf_config() -> Qwen4ExpTextConfig:
         shared_expert_intermediate_size=EXPERT_HIDDEN_DIM,
         rms_norm_eps=1e-6,
         vocab_size=128,
+        ple_layer_ids=[1] if with_ple else [],
+        ple_embed_dim=PLE_EMBED_DIM,
+        heads_per_ngram=2,
+        ngram_vocab_size_base=1000,
+        eos_token_id=EOS_TOKEN_ID,
     )
 
 
@@ -111,9 +126,28 @@ def make_gated_residual_config() -> GatedResidualConfig:
     )
 
 
-def make_hyper_input() -> torch.Tensor:
+def make_ngram_injection_config(hf_config: Qwen4ExpTextConfig, ple_layer_index: int) -> NGramInjectionConfig:
+    hf_embedding = Qwen4ExpTextNGramEmbedding(hf_config, PLE_EMBED_DIM, layer_idx=0, ple_layer_index=ple_layer_index)
+    return NGramInjectionConfig(
+        hash_config=NGramHashConfig(
+            token_vocab_size=hf_config.vocab_size,
+            ngram_size=hf_config.ngram_size,
+            heads_per_ngram=hf_config.heads_per_ngram,
+            eos_token_id=EOS_TOKEN_ID,
+            multipliers=tuple(hf_embedding.layer_multipliers.tolist()),
+            head_vocab_sizes=tuple(hf_embedding.head_vocab_sizes),
+        ),
+        linear_config=LinearConfig(),
+        norm_config=make_norm_config(),
+        conv_config=SeparableCausalConvConfig(has_biases=False),
+        embedding_dim=PLE_EMBED_DIM,
+        conv_kernel_size=(hf_config.ple_conv_kernel_size - 1) * hf_config.ngram_size + 1,
+    )
+
+
+def make_hyper_input(num_tokens: int = 8) -> torch.Tensor:
     torch.manual_seed(1)
-    return torch.randn(2, 8, STREAM_COUNT * HIDDEN_SIZE)
+    return torch.randn(2, num_tokens, STREAM_COUNT * HIDDEN_SIZE)
 
 
 def as_stream(hyper_input: torch.Tensor) -> Float[Array, "batch tokens streams channels"]:
@@ -127,13 +161,24 @@ def as_stream(hyper_input: torch.Tensor) -> Float[Array, "batch tokens streams c
     )
 
 
+def as_token_ids(token_ids: torch.Tensor) -> Int[Array, "batch tokens"]:
+    return jax.device_put(
+        jnp.asarray(token_ids.numpy(), dtype=jnp.int32),
+        make_test_sharding_config().resolve_sharding((LogicalAxis.BATCH, None)),
+    )
+
+
 def merge_streams(
     stream: Float[Array, "batch tokens streams channels"],
 ) -> Float[Array, "batch tokens streams_channels"]:
     return rearrange(stream, "batch tokens streams channels -> batch tokens (streams channels)")
 
 
-def load_decoder_layer(hf_config: Qwen4ExpTextConfig, weights: dict[str, Array]) -> TransformerLayer:
+def load_decoder_layer(
+    hf_config: Qwen4ExpTextConfig,
+    weights: dict[str, Array],
+    ngram_injection_config: NGramInjectionConfig | None = None,
+) -> TransformerLayer:
     linear_config = LinearConfig()
     delta_net_config = DeltaNetConfig(
         in_proj_config=linear_config,
@@ -171,7 +216,20 @@ def load_decoder_layer(hf_config: Qwen4ExpTextConfig, weights: dict[str, Array])
     )
     initializer = make_initializer()
     residual_config = make_gated_residual_config()
+    if ngram_injection_config is not None:
+        prologue_configs = (ngram_injection_config,)
+        prologue = (
+            load_ngram_injection(
+                ngram_injection_config.init(initializer, residual_config, HIDDEN_SIZE),
+                weights,
+                ParameterPath("ple"),
+            ),
+        )
+    else:
+        prologue_configs = ()
+        prologue = ()
     layer_config = TransformerLayerConfig(
+        prologue_configs=prologue_configs,
         mixer=SublayerConfig(
             pre_norm_config=None,
             conv_config=None,
@@ -186,9 +244,10 @@ def load_decoder_layer(hf_config: Qwen4ExpTextConfig, weights: dict[str, Array])
         ),
     )
     return load_as_at(
-        lambda m: (m.mixer.connection, m.mixer.body, m.mlp.connection, m.mlp.body),
+        lambda m: (m.prologue, m.mixer.connection, m.mixer.body, m.mlp.connection, m.mlp.body),
         layer_config.init(initializer, residual_config, HIDDEN_SIZE, EXPERT_HIDDEN_DIM),
         (
+            prologue,
             load_gated_residual_connection(
                 residual_config.init_connection(initializer, HIDDEN_SIZE),
                 weights,
