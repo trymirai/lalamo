@@ -7,9 +7,19 @@ import jax
 import pytest
 from jax import numpy as jnp
 from jax.experimental.checkify import checkify, div_checks, nan_checks, user_checks
-from jax.sharding import Mesh, NamedSharding, Sharding
+from jax.sharding import AxisType, Mesh, NamedSharding, Sharding
 
-__all__ = ["assert_close", "assert_close_arrays", "assert_named_sharding", "checkify_forward", "gpu_only", "tolerance"]
+from lalamo.utils.sharding import ShardingConfig
+
+__all__ = [
+    "assert_close",
+    "assert_close_arrays",
+    "assert_named_sharding",
+    "checkify_forward",
+    "gpu_only",
+    "tolerance",
+    "tracer_sharding_config",
+]
 
 DEFAULT_ATOL = 1e-3
 DEFAULT_RTOL = 3e-2
@@ -29,6 +39,15 @@ def tolerance(*, atol: float, rtol: float) -> Generator[None, None, None]:
     finally:
         _current_atol.reset(atol_token)
         _current_rtol.reset(rtol_token)
+
+
+def tracer_sharding_config() -> ShardingConfig:
+    devices = jax.devices()
+    first_device, *_ = devices
+    if first_device.platform == "cpu":
+        devices = devices[:1]
+    mesh = jax.make_mesh((len(devices),), ("replica",), axis_types=(AxisType.Auto,), devices=devices)
+    return ShardingConfig(mesh=mesh)
 
 
 def checkify_forward(module):  # noqa: ANN001, ANN201
