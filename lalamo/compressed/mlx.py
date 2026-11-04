@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Literal, NamedTuple, Self
 
+import jax
 import jax.numpy as jnp
 from jax.lax import stop_gradient
 from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
@@ -34,9 +35,10 @@ from .utils.grouping import (
     group_by_last_axis,
     min_max_within_groups,
     scale_from_min_max,
+    unsigned_qmax,
 )
 from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
-from .utils.rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
+from .utils.rounding import deterministic_round_to_unsigned_grid, lut_values_at, round_to_unsigned_grid
 from .utils.yaqa import yaqa_round_fixpoint
 
 __all__ = [
@@ -59,6 +61,8 @@ class MLXAffineParameters(NamedTuple):
         bits: int,
         group_size: int,
     ) -> Self:
+        if bits == 2 and group_size == weights.shape[-1]:
+            return _fit_symmetric_row_parameters(weights, bits)
         group_min_max = min_max_within_groups(group_by_last_axis(weights, group_size=group_size))
         scales = scale_from_min_max(group_min_max, bits=bits, dtype=weights.dtype)
         return cls(scales=scales, biases=group_min_max.min)
@@ -89,6 +93,34 @@ def _quantize(
     int_scale_weights = (weights - stop_gradient(expanded_biases)) / stop_gradient(expanded_scales)
 
     return round_fn(int_scale_weights) * expanded_scales + expanded_biases
+
+
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
+def _fit_symmetric_row_parameters(
+    weights: Float[Array, "*components rows cols"],
+    bits: int,
+) -> MLXAffineParameters:
+    zero_point = unsigned_qmax(bits) / 2
+    rms = jnp.sqrt(jnp.mean(jnp.square(weights.astype(jnp.float32)), axis=-1, keepdims=True)).astype(weights.dtype)
+
+    def scales_at(relative_scale: Float[Array, "..."]) -> Float[Array, "*components rows 1"]:
+        return jnp.maximum(relative_scale * rms, 1e-6)
+
+    def squared_error(relative_scale: Float[Array, ""]) -> Float[Array, "*components rows 1"]:
+        scales = scales_at(relative_scale)
+        dequantized = _quantize(
+            weights,
+            scales,
+            -zero_point * scales,
+            group_size=weights.shape[-1],
+            round_fn=partial(deterministic_round_to_unsigned_grid, bits=bits),
+        )
+        return jnp.sum(jnp.square((dequantized - weights).astype(jnp.float32)), axis=-1, keepdims=True)
+
+    relative_scales = jnp.linspace(0.6, 1.4, 9, dtype=weights.dtype)
+    best_relative_scales = lut_values_at(jnp.argmin(jax.vmap(squared_error)(relative_scales), axis=0), relative_scales)
+    best_scales = scales_at(best_relative_scales)
+    return MLXAffineParameters(scales=best_scales, biases=-zero_point * best_scales)
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
@@ -126,7 +158,7 @@ def _packed_weights_to_master_weights(
 
 @dataclass(frozen=True)
 class MLXSpec(QuantizedSpec):
-    bits: Literal[1, 4, 8]
+    bits: Literal[1, 2, 4, 8]
     group_size: int
     layout: Layout = Layout.OUTPUT_INPUT
 

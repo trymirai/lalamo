@@ -384,7 +384,7 @@ def _load_packed_mlx_matrix(
     # MLX HF layout: weight [rows, packed_cols], scales [rows, num_groups].
     packed_in = packed_weights.shape[-1]
     num_groups = scales.shape[-1]
-    for bits in (1, 4, 8):
+    for bits in (1, 2, 4, 8):
         if packed_in * (32 // bits) == expected_grouped_channels:
             break
     else:
