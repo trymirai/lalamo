@@ -19,6 +19,7 @@ from .mlx import MLXMatrix, MLXMatrixForInference, MLXMatrixForTraining, MLXSpec
 from .output_stack import OutputStackMatrix, OutputStackSpec
 from .qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec
 from .quantized_spec import QuantizedSpec
+from .u4m3z4 import U4M3Z4Matrix, U4M3Z4Spec
 
 __all__ = [
     "HybridMatrix",
@@ -49,4 +50,6 @@ __all__ = [
     "QtipGaussianMatrix",
     "QtipGaussianSpec",
     "QuantizedSpec",
+    "U4M3Z4Matrix",
+    "U4M3Z4Spec",
 ]
