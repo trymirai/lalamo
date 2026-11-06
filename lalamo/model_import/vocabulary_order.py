@@ -2,7 +2,6 @@ import json
 import warnings
 from dataclasses import replace
 
-import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import polars as pl
@@ -87,17 +86,19 @@ def reorder_matrix(matrix: WeightMatrix, order: np.ndarray, vocabulary_axis: int
 
 def reorder_embedding(embedding: EmbeddingBase, order: np.ndarray) -> EmbeddingBase:
     # Embeddings are (channels, vocabulary) in output-input terms; an untied readout is (vocabulary, channels).
+    config = replace(embedding.config, permute_indices=True)
+    index_permutation = jnp.asarray(order, dtype=jnp.int32)
     match embedding:
         case TiedEmbedding():
-            return eqx.tree_at(lambda m: m.embedding, embedding, reorder_matrix(embedding.embedding, order, -1))
+            matrix = reorder_matrix(embedding.embedding, order, -1)
+            return replace(embedding, config=config, embedding=matrix, index_permutation=index_permutation)
         case UntiedEmbedding():
-            return eqx.tree_at(
-                lambda m: (m.input_embedding, m.output_embedding),
+            return replace(
                 embedding,
-                (
-                    reorder_matrix(embedding.input_embedding, order, -1),
-                    reorder_matrix(embedding.output_embedding, order, -2),
-                ),
+                config=config,
+                input_embedding=reorder_matrix(embedding.input_embedding, order, -1),
+                output_embedding=reorder_matrix(embedding.output_embedding, order, -2),
+                index_permutation=index_permutation,
             )
         case unknown:
             raise ValueError(f"Cannot reorder the vocabulary of a {type(unknown).__name__}")
@@ -105,7 +106,7 @@ def reorder_embedding(embedding: EmbeddingBase, order: np.ndarray) -> EmbeddingB
 
 def frequency_ordered(model: LanguageModel) -> LanguageModel:
     """The same model with the most frequent tokens renumbered to the smallest ids."""
-    assert model.config.index_permutation is None
+    assert not model.config.decoder_config.embedding_config.permute_indices
     assert model.decoder.per_layer_embedding is None, "Per-layer embeddings have their own vocabulary"
     tokenizer = model.token_codec.tokenizer
     order = frequency_order(training_mixture_counts(tokenizer, model.decoder.vocab_size), tokenizer)
@@ -116,10 +117,12 @@ def frequency_ordered(model: LanguageModel) -> LanguageModel:
     if generation_config.banned_tokens is not None:
         banned_tokens = tuple(int(new_ids[i]) for i in generation_config.banned_tokens)
         generation_config = replace(generation_config, banned_tokens=banned_tokens)
-    config = replace(model.config, generation_config=generation_config, index_permutation=tuple(order.tolist()))
+    embedding = reorder_embedding(model.decoder.embedding, order)
+    decoder_config = replace(model.config.decoder_config, embedding_config=embedding.config)
+    config = replace(model.config, generation_config=generation_config, decoder_config=decoder_config)
     return replace(
         model,
         config=config,
         token_codec=config.token_codec_config.init(reorder_tokenizer(tokenizer, new_ids)),
-        decoder=replace(model.decoder, embedding=reorder_embedding(model.decoder.embedding, order)),
+        decoder=replace(model.decoder, config=decoder_config, embedding=embedding),
     )

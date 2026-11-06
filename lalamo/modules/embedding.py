@@ -36,6 +36,13 @@ class EmbeddingConfig(LalamoConfig, RegistryABC):
     input_scale: float | None
     logit_soft_cap: float | None
     logit_scale: float | None = None
+    # The embedding carries an index_permutation weight: new token id -> id in the source model.
+    permute_indices: bool = False
+
+    def index_permutation_template(
+        self, initializer: Initializer, vocab_size: int
+    ) -> Int[Array, " vocabulary"] | None:
+        return initializer.zeros((vocab_size,), dtype=jnp.int32) if self.permute_indices else None
 
     @abstractmethod
     def init(
@@ -156,11 +163,13 @@ class TiedEmbeddingConfig(EmbeddingConfig):
             config=self,
             sharding_config=initializer.sharding_config,
             embedding=embedding,
+            index_permutation=self.index_permutation_template(initializer, vocab_size),
         )
 
 
 class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     embedding: EmbeddingMatrix
+    index_permutation: Int[Array, " vocabulary"] | None
 
     @property
     def embedding_matrix(self) -> EmbeddingMatrix:
@@ -210,12 +219,14 @@ class UntiedEmbeddingConfig(EmbeddingConfig):
             sharding_config=initializer.sharding_config,
             input_embedding=input_embedding,
             output_embedding=output_embedding,
+            index_permutation=self.index_permutation_template(initializer, vocab_size),
         )
 
 
 class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
     input_embedding: EmbeddingMatrix
     output_embedding: WeightMatrix
+    index_permutation: Int[Array, " vocabulary"] | None
 
     @property
     def embedding_matrix(self) -> EmbeddingMatrix:

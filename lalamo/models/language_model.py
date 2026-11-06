@@ -127,8 +127,6 @@ class GenerationConfig:
 class LanguageModelConfig(ModelConfig[ChatCodecConfig]):
     decoder_config: DecoderConfig
     generation_config: GenerationConfig
-    # New token id -> id in the source model; None if the vocabulary keeps its source order.
-    index_permutation: tuple[int, ...] | None = None
 
     def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "LanguageModel":
         decoder = self.decoder_config.init(initializer)

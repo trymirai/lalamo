@@ -56,6 +56,12 @@ def test_reordered_embedding_computes_the_same_function(config: EmbeddingConfig)
     reordered = reorder_embedding(embedding, order)
     keychain = Keychain.init(0, sharding_config=sharding_config)
 
+    assert reordered.config.permute_indices
+    assert np.array_equal(reordered.index_permutation, order)
+    template = reordered.config.init(initializer, model_dim=model_dim, vocab_size=vocab_size)
+    restored = template.load_exported(reordered.export())
+    assert np.array_equal(restored.index_permutation, order)
+    assert config.init(initializer, model_dim=model_dim, vocab_size=vocab_size).index_permutation is None
     assert np.array_equal(
         reordered.embed(jnp.arange(vocab_size), keychain=keychain),
         embedding.embed(jnp.asarray(order), keychain=keychain),
