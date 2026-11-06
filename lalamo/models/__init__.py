@@ -1,5 +1,5 @@
 from .classifier import ClassifierModel, ClassifierModelConfig
-from .language_model import GenerationConfig, GenerationResults, LanguageModel, LanguageModelConfig, VocabularyOrder
+from .language_model import GenerationConfig, GenerationResults, LanguageModel, LanguageModelConfig
 from .speculator import SpeculatorModel, SpeculatorModelConfig
 from .tts_model import TTSConfig, TTSGenerationResult, TTSModel, TTSModelConfig
 
@@ -16,5 +16,4 @@ __all__ = [
     "TTSGenerationResult",
     "TTSModel",
     "TTSModelConfig",
-    "VocabularyOrder",
 ]

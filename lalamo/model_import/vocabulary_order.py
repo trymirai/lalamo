@@ -9,7 +9,7 @@ import polars as pl
 from huggingface_hub import hf_hub_download
 from tokenizers import Tokenizer
 
-from lalamo.models import LanguageModel, VocabularyOrder
+from lalamo.models import LanguageModel
 from lalamo.modules.embedding import EmbeddingBase, TiedEmbedding, UntiedEmbedding
 from lalamo.weight_matrix import FullPrecisionMatrix, WeightMatrix
 
@@ -105,7 +105,7 @@ def reorder_embedding(embedding: EmbeddingBase, order: np.ndarray) -> EmbeddingB
 
 def frequency_ordered(model: LanguageModel) -> LanguageModel:
     """The same model with the most frequent tokens renumbered to the smallest ids."""
-    assert model.config.vocabulary_order == VocabularyOrder.ORIGINAL
+    assert model.config.index_permutation is None
     assert model.decoder.per_layer_embedding is None, "Per-layer embeddings have their own vocabulary"
     tokenizer = model.token_codec.tokenizer
     order = frequency_order(training_mixture_counts(tokenizer, model.decoder.vocab_size), tokenizer)
@@ -116,7 +116,7 @@ def frequency_ordered(model: LanguageModel) -> LanguageModel:
     if generation_config.banned_tokens is not None:
         banned_tokens = tuple(int(new_ids[i]) for i in generation_config.banned_tokens)
         generation_config = replace(generation_config, banned_tokens=banned_tokens)
-    config = replace(model.config, generation_config=generation_config, vocabulary_order=VocabularyOrder.FREQUENCY)
+    config = replace(model.config, generation_config=generation_config, index_permutation=tuple(order.tolist()))
     return replace(
         model,
         config=config,

@@ -44,7 +44,7 @@ from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
-from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, TTSModel, VocabularyOrder
+from lalamo.models import ClassifierModel, GenerationConfig, LanguageModel, TTSModel
 from lalamo.models.chat_codec import Message, UserMessage
 from lalamo.models.tts_codec import TTSMessage
 from lalamo.module import Keychain
@@ -448,10 +448,10 @@ def convert(
             help="Overwrite existing model files.",
         ),
     ] = False,
-    vocabulary_order: Annotated[
-        VocabularyOrder,
-        Option(help="'frequency' gives the most frequent tokens the smallest ids."),
-    ] = VocabularyOrder.ORIGINAL,
+    frequency_ordered_vocabulary: Annotated[
+        bool,
+        Option(help="Give the most frequent tokens the smallest ids."),
+    ] = False,
 ) -> None:
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
@@ -461,7 +461,7 @@ def convert(
         output_dir,
         dtype,
         partial(CliConversionCallbacks, overwrite=overwrite),
-        vocabulary_order=vocabulary_order,
+        frequency_ordered_vocabulary=frequency_ordered_vocabulary,
     )
 
 
