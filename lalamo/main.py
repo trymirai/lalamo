@@ -448,6 +448,10 @@ def convert(
             help="Overwrite existing model files.",
         ),
     ] = False,
+    frequency_ordered_vocabulary: Annotated[
+        bool,
+        Option(help="Give the most frequent tokens the smallest ids."),
+    ] = False,
 ) -> None:
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
@@ -457,6 +461,7 @@ def convert(
         output_dir,
         dtype,
         partial(CliConversionCallbacks, overwrite=overwrite),
+        frequency_ordered_vocabulary=frequency_ordered_vocabulary,
     )
 
 
