@@ -169,7 +169,7 @@ class TiedEmbeddingConfig(EmbeddingConfig):
 
 class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     embedding: EmbeddingMatrix
-    index_permutation: Int[Array, " vocabulary"] | None
+    index_permutation: Int[Array, " vocabulary"] | None = None
 
     @property
     def embedding_matrix(self) -> EmbeddingMatrix:
@@ -226,7 +226,7 @@ class UntiedEmbeddingConfig(EmbeddingConfig):
 class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
     input_embedding: EmbeddingMatrix
     output_embedding: WeightMatrix
-    index_permutation: Int[Array, " vocabulary"] | None
+    index_permutation: Int[Array, " vocabulary"] | None = None
 
     @property
     def embedding_matrix(self) -> EmbeddingMatrix:
