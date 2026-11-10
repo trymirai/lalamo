@@ -6,10 +6,12 @@ import jax.numpy as jnp
 import pytest
 from jax.sharding import Mesh, Sharding
 
+from lalamo.compressed.hybrid import HybridSpec
+from lalamo.compressed.incoherence import HadamardSpec, IncoherenceProcessingMode
 from lalamo.compressed.mlx import MLXMatrixForInference, MLXMatrixForTraining, MLXSpec
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.weight_matrix import CompressionImplementation, Layout
-from tests.common import assert_close_arrays, assert_named_sharding
+from tests.common import assert_close, assert_close_arrays, assert_named_sharding
 from tests.helpers import make_sharding, make_test_sharding_config
 from tests.unit.compressed import test_common as compressed_common
 
@@ -145,3 +147,39 @@ def test_mlx_export_load_roundtrips_and_preserves_template_sharding(
     assert isinstance(restored, MLXMatrixForInference)
     assert isinstance(template, MLXMatrixForInference)
     assert restored.packed_weights.sharding == template.packed_weights.sharding
+
+
+def test_mlx_per_row_two_bit_fit_is_symmetric_and_beats_min_max() -> None:
+    rows, cols = 8, 512
+    weights = jax.random.normal(jax.random.key(0), (rows, cols), dtype=jnp.bfloat16)
+    weights = weights.at[:, :4].multiply(3)
+
+    compressed = MLXSpec(bits=2, group_size=cols).compress(weights, sharding_config=make_test_sharding_config())
+
+    assert isinstance(compressed, MLXMatrixForInference)
+    assert_close(
+        result=compressed.biases.astype(jnp.float32),
+        reference=-1.5 * compressed.scales.astype(jnp.float32),
+        rtol=2**-8,
+    )
+    min_max_scales, min_max_biases = _manual_mlx_affine_parameters(weights, bits=2, group_size=cols)
+    min_max_weights = _manual_mlx_dequantize(weights, min_max_scales, min_max_biases, bits=2, group_size=cols)
+
+    def mse(reconstruction: jax.Array) -> jax.Array:
+        return jnp.mean(jnp.square(reconstruction.astype(jnp.float32) - weights.astype(jnp.float32)))
+
+    assert mse(compressed.decompress()) < 0.45 * mse(min_max_weights)
+
+
+def test_hybrid_per_row_two_bit_mlx_exports_target_spec() -> None:
+    cols = 64
+    spec = HybridSpec(
+        quantization_spec=MLXSpec(bits=2, group_size=cols),
+        adapter_spec=None,
+        incoherence_spec=HadamardSpec(32, IncoherenceProcessingMode.INPUT_OUTPUT),
+    )
+    weights = jax.random.normal(jax.random.key(0), (32, cols), dtype=jnp.bfloat16)
+
+    exported = spec.compress(weights, key=jax.random.key(1), sharding_config=make_test_sharding_config()).export()
+
+    assert exported.metadata["spec"] == spec.to_json()

@@ -18,6 +18,7 @@ from tests.helpers import make_test_sharding_config
         IntSpec(bits=4, group_size=32),
         IntSpec(bits=8, group_size=32),
         IntSpec(bits=4, group_size=32, is_symmetric=True),
+        MLXSpec(bits=2, group_size=32),
         MLXSpec(bits=4, group_size=32),
         MLXSpec(bits=8, group_size=32),
         LloydMaxSpec(bits=3, group_size=32),
@@ -60,6 +61,7 @@ def test_microfloat_rate_matches_compressed_array_byte_count(
     [
         IntSpec(bits=4, group_size=32),
         IntSpec(bits=4, group_size=32, is_symmetric=True),
+        MLXSpec(bits=2, group_size=32),
         MLXSpec(bits=4, group_size=32),
         LloydMaxSpec(bits=4, group_size=32),
         LloydMaxSpec(bits=4, group_size=32, bias_bits=4),
