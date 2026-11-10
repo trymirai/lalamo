@@ -13,7 +13,7 @@ from lalamo.initializer import RandomInitializer
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dtype import dtype_to_str, str_to_dtype
-from lalamo.utils.dummy_array import supports_dummy_arrays
+from lalamo.utils.dummy_array import dummy_array, supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig, lookup_sharded_indices, sharding_of, with_sharding
 from lalamo.weight_matrix import (
@@ -141,7 +141,12 @@ class QtipGaussianMatrix(EmbeddingMatrix[QtipGaussianSpec]):
         assert isinstance(saved_dtype, str)
         dtype = str_to_dtype(saved_dtype)
         assert jnp.issubdtype(dtype, jnp.floating)
-        template = replace(self, codebook=exported_data.arrays[prefix / "codebook"])
+        template = replace(
+            self,
+            codebook=dummy_array(
+                exported_data.arrays[prefix / "codebook"].shape, self.codebook.dtype, sharding_of(self.codebook)
+            ),
+        )
         if self.scales.weak_type:
             template = replace(template, dtype_=dtype)
         return cast("Self", WeightMatrix.load_exported(template, exported_data, prefix=prefix))
@@ -164,7 +169,8 @@ class QtipGaussianMatrix(EmbeddingMatrix[QtipGaussianSpec]):
             levels = levels.reshape(*codes.shape[:-1], self.columns).astype(jnp.float32)
             values = self.codebook[0] * levels + self.codebook[1 + jnp.arange(self.columns) % 4]
         else:
-            values = self.codebook[states].reshape(*codes.shape[:-1], self.columns)
+            values = self.codebook.at[states].get(out_sharding=sharding_of(states))
+            values = values.reshape(*codes.shape[:-1], self.columns)
         return (values * scales[..., None].astype(jnp.float32)).astype(self.dtype)
 
     def decompress(self) -> Array:

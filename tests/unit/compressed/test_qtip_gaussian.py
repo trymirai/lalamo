@@ -1,4 +1,5 @@
 from dataclasses import replace
+from math import prod
 from pathlib import Path
 from typing import Literal
 
@@ -14,14 +15,60 @@ from lalamo.compressed.qtip_gaussian import (
     QtipGaussianMatrix,
     QtipGaussianSpec,
 )
+from lalamo.exportable import ExportResults
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain
+from lalamo.safetensors import safe_read, safe_write
+from lalamo.utils.sharding import LogicalAxis, ShardingConfig, sharding_of
 from lalamo.weight_matrix import Layout
 from tests.helpers import make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
 DATA = Path(__file__).parent / "data"
+
+
+@pytest.mark.parametrize("codebook_shape", [(5,), (1 << 16, 4)])
+def test_saved_codebooks_load_and_run_on_multiple_devices(codebook_shape: tuple[int, ...], tmp_path: Path) -> None:
+    config = ShardingConfig.fully_sharded_data_parallel(jax.devices("cpu"))
+    with jax.set_mesh(config.mesh):
+        source = QtipGaussianMatrix(
+            spec=QtipGaussianSpec(4, 8, 0),
+            sharding_config=config,
+            is_sharded=True,
+            dtype_=jnp.float32,
+            columns=128,
+            codes=jnp.asarray(np.random.default_rng(0).integers(256, size=(8, 33), dtype=np.uint8)),
+            scales=jnp.linspace(0.5, 1, 8),
+            codebook=jnp.sin(jnp.arange(prod(codebook_shape), dtype=jnp.float32)).reshape(codebook_shape),
+        )
+        reference = np.asarray(source.decompress())
+    exported = source.export()
+    path = tmp_path / "weights.safetensors"
+    with path.open("wb") as fd:
+        safe_write(fd, exported.arrays)
+    with jax.set_mesh(None), path.open("rb") as fd:
+        _, arrays, _ = safe_read(fd)
+        restored = (
+            EmptyInitializer(None, config)
+            .weight_matrix(8, 128)
+            .load_exported(ExportResults(arrays, exported.metadata))
+        )
+        assert isinstance(restored, QtipGaussianMatrix)
+        decoded = restored.decompress()
+        np.testing.assert_array_equal(decoded, reference)
+        assert sharding_of(decoded).spec[0] == config.resolve_axis(LogicalAxis.MATRIX)
+        keychain = Keychain.init(0, sharding_config=config)
+        vector = jax.device_put(np.linspace(-1, 1, 128, dtype=np.float32), config.make_sharding((None,)))
+        np.testing.assert_allclose(restored.dot(vector, keychain=keychain), reference @ np.asarray(vector), atol=1e-4)
+        tied = replace(restored, spec=replace(restored.spec, layout=Layout.INPUT_OUTPUT))
+        indices = jax.device_put(
+            np.arange(16, dtype=np.int32).reshape(8, 2) % 8,
+            config.resolve_sharding((LogicalAxis.BATCH, None)),
+        )
+        rows = jax.jit(lambda index: tied.lookup_embedding(index, keychain=keychain))(indices)
+        np.testing.assert_array_equal(rows, reference[np.asarray(indices)])
+        assert sharding_of(rows).spec[0] == config.resolve_axis(LogicalAxis.BATCH)
 
 
 @pytest.mark.parametrize("scale_dtype", [jnp.float32, jnp.bfloat16])

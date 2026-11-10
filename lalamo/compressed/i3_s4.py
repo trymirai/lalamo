@@ -91,7 +91,8 @@ class I3S4Matrix(WeightMatrix[I3S4Spec]):
     def decode_rows(self, codes: Array, row_scales: Array, ladder_indices: Array) -> Array:
         levels = 2 * unpack_uint8_to_uint(codes, 3).astype(jnp.float32) - 7
         groups = unpack_uint8_to_uint(ladder_indices, 4)
-        scales = row_scales.astype(jnp.float32)[..., None] * self.ladder[groups].astype(jnp.float32)
+        ladder = self.ladder.at[groups].get(out_sharding=sharding_of(groups))
+        scales = row_scales.astype(jnp.float32)[..., None] * ladder.astype(jnp.float32)
         # The producer's readout kernel rounds decoded weights before the dot product.
         return (levels.reshape(*scales.shape, 64) * scales[..., None]).reshape(levels.shape).astype(self.dtype)
 
