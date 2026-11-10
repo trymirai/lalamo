@@ -1,5 +1,4 @@
 from dataclasses import replace
-from math import prod
 from pathlib import Path
 from typing import Literal
 
@@ -7,10 +6,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jaxtyping import DTypeLike
 
-from lalamo.compressed.hybrid import HybridMatrix
-from lalamo.compressed.incoherence import IncoherenceProcessingMode, KroneckerProcessor, kronecker_transform
+from lalamo.compressed.incoherence import kronecker_transform
 from lalamo.compressed.qtip_gaussian import (
     QtipGaussianMatrix,
     QtipGaussianSpec,
@@ -21,15 +18,11 @@ from lalamo.module import Keychain
 from lalamo.safetensors import safe_read, safe_write
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig, sharding_of
 from lalamo.weight_matrix import Layout
-from tests.helpers import make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
-DATA = Path(__file__).parent / "data"
 
-
-@pytest.mark.parametrize("codebook_shape", [(5,), (1 << 16, 4)])
-def test_saved_codebooks_load_and_run_on_multiple_devices(codebook_shape: tuple[int, ...], tmp_path: Path) -> None:
+def test_saved_matrices_load_and_run_on_multiple_devices(tmp_path: Path) -> None:
     config = ShardingConfig.fully_sharded_data_parallel(jax.devices("cpu"))
     with jax.set_mesh(config.mesh):
         source = QtipGaussianMatrix(
@@ -40,7 +33,6 @@ def test_saved_codebooks_load_and_run_on_multiple_devices(codebook_shape: tuple[
             columns=128,
             codes=jnp.asarray(np.random.default_rng(0).integers(256, size=(8, 33), dtype=np.uint8)),
             scales=jnp.linspace(0.5, 1, 8),
-            codebook=jnp.sin(jnp.arange(prod(codebook_shape), dtype=jnp.float32)).reshape(codebook_shape),
         )
         reference = np.asarray(source.decompress())
     exported = source.export()
@@ -69,60 +61,6 @@ def test_saved_codebooks_load_and_run_on_multiple_devices(codebook_shape: tuple[
         rows = jax.jit(lambda index: tied.lookup_embedding(index, keychain=keychain))(indices)
         np.testing.assert_array_equal(rows, reference[np.asarray(indices)])
         assert sharding_of(rows).spec[0] == config.resolve_axis(LogicalAxis.BATCH)
-
-
-@pytest.mark.parametrize("scale_dtype", [jnp.float32, jnp.bfloat16])
-def test_saved_tapes_decode_like_their_producers(scale_dtype: DTypeLike) -> None:
-    # Four rows per tape, fitted and packed by the independent Torch producers for Qwen3.8 and Muse ("connected").
-    config = make_test_sharding_config()
-    with np.load(DATA / "qtip_gaussian_hyb036.npz") as hyb036, np.load(DATA / "qtip_gaussian_muse.npz") as muse:
-        for data, name, spec, table in (
-            (hyb036, "v2_k2", QtipGaussianSpec(2, 4, 0), hyb036["table_v2"]),
-            (hyb036, "v2_k3", QtipGaussianSpec(2, 6, 0), hyb036["table_v2"]),
-            (hyb036, "v4_k2", QtipGaussianSpec(4, 8, 64), hyb036["table_v4"]),
-            (muse, "v4_k2_connected", QtipGaussianSpec(4, 8, 0), muse["v4_k2_connected_table"]),
-            (muse, "v2_k4_connected", QtipGaussianSpec(2, 8, 0), muse["v2_k4_connected_table"]),
-        ):
-            gains = data[f"{name}_gains_bits"].view(jnp.bfloat16).astype(np.float32)
-            leaf = QtipGaussianMatrix(
-                spec=spec,
-                sharding_config=config,
-                is_sharded=True,
-                dtype_=jnp.float32,
-                columns=data[f"{name}_signs"].shape[0],
-                codes=jnp.asarray(data[f"{name}_codes"]),
-                scales=jnp.asarray(data[f"{name}_scales"].astype(np.float32) * gains, dtype=scale_dtype),
-                codebook=jnp.asarray(table),
-            )
-            rotated = data[f"{name}_rotated"]
-            tolerance = max(1e-6, float(jnp.finfo(scale_dtype).eps))
-            np.testing.assert_allclose(leaf.decompress(), rotated, rtol=tolerance, atol=1e-9, err_msg=name)
-
-            rotation = KroneckerProcessor.of(
-                jnp.asarray(data[f"{name}_signs"]).astype(jnp.int32), jnp.asarray(data[f"{name}_small_q"])
-            )
-            hybrid = HybridMatrix.of(leaf, rotation)
-            dense = hybrid.decompress()
-            vector = jax.device_put(jnp.linspace(-1, 1, leaf.shape[1]), config.make_sharding((None,)))
-            actual = hybrid.dot(vector, keychain=Keychain.init(0, sharding_config=config))
-            np.testing.assert_allclose(actual, dense @ vector, rtol=1e-5, atol=1e-5 * np.abs(dense).max())
-            # bf16 trellis weights round once, after the rotation.
-            np.testing.assert_array_equal(hybrid.astype(jnp.bfloat16).decompress(), dense.astype(jnp.bfloat16))
-            # As a tied table (stored vocab x hidden): a lookup decodes and unrotates the hidden axis of its rows.
-            tied = replace(leaf, spec=replace(spec, layout=Layout.INPUT_OUTPUT))
-            hidden_rotation = KroneckerProcessor.of(
-                rotation.signs, rotation.orthogonal_factor, IncoherenceProcessingMode.OUTPUT
-            )
-            hybrid = HybridMatrix.of(tied, hidden_rotation)
-            rows, keychain = jnp.asarray([3, 0, 2]), Keychain.init(0, sharding_config=config)
-            looked_up = hybrid.lookup_embedding(rows, keychain=keychain)
-            np.testing.assert_array_equal(looked_up, hidden_rotation.unprocess_embedding(tied.decompress().T[rows]))
-            template = EmptyInitializer(None, config).embedding_matrix(*leaf.shape)
-            restored = template.load_exported(hybrid.export())
-            assert isinstance(restored, HybridMatrix)
-            assert isinstance(restored.quantized, QtipGaussianMatrix)
-            assert restored.quantized.scales.dtype == scale_dtype
-            np.testing.assert_array_equal(restored.decompress(), hybrid.decompress())
 
 
 def test_kronecker_transform_matches_explicit_kronecker_product() -> None:

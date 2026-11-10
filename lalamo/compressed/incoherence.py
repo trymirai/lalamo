@@ -9,9 +9,11 @@ import jax.numpy as jnp
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, Float, Int, Key
 
+from lalamo.exportable import Exportable, ExportResults
 from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import field
 from lalamo.preconditioner import Preconditioner
+from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.utils.sharding import ShardingConfig, sharding_of
 
@@ -135,15 +137,45 @@ class HadamardSpec(IncoherenceProcessorSpec):
         return HadamardProcessor(self, input_signs, output_signs)
 
 
-class HadamardProcessor(IncoherenceProcessor[HadamardSpec]):
+class HadamardProcessor(Exportable, IncoherenceProcessor[HadamardSpec]):
     input_signs: Int[Array, "*components in_channels"] | None = field(trainable=False)
     output_signs: Int[Array, "*components out_channels"] | None = field(trainable=False)
+
+    def export(self) -> ExportResults:
+        arrays, metadata = super().export()
+        if self.input_signs is None:
+            return ExportResults(arrays, metadata)
+        first_row = self.input_signs.reshape(-1, self.input_signs.shape[-1])[0]
+        return ExportResults({**arrays, "input_signs": first_row}, metadata)
+
+    def load_exported(
+        self,
+        exported_data: ExportResults,
+        *,
+        prefix: ParameterPath | None = None,
+    ) -> Self:
+        if self.input_signs is None:
+            return super().load_exported(exported_data, prefix=prefix)
+        if prefix is None:
+            prefix = ParameterPath()
+        input_signs_path = prefix / "input_signs"
+        stored_row = exported_data.arrays[input_signs_path]
+        # Only a single stored row fits: a row per component would gain an extra axis.
+        arrays: dict[str, Array] = {
+            input_signs_path: jnp.broadcast_to(stored_row, (*self.input_signs.shape[:-1], *stored_row.shape)),
+        }
+        if self.output_signs is not None:
+            output_signs_path = prefix / "output_signs"
+            arrays[output_signs_path] = exported_data.arrays[output_signs_path]
+        return super().load_exported(ExportResults(arrays, exported_data.metadata), prefix=prefix)
 
     @classmethod
     def of(
         cls,
         input_signs: Int[Array, " in_channels"] | None,
         output_signs: Int[Array, " out_channels"] | None,
+        *,
+        block_size: Literal[32, 64, 128],
     ) -> Self:
         match input_signs is not None, output_signs is not None:
             case True, True:
@@ -154,7 +186,7 @@ class HadamardProcessor(IncoherenceProcessor[HadamardSpec]):
                 mode = IncoherenceProcessingMode.OUTPUT
             case _:
                 raise ValueError("A Hadamard processor needs input signs, output signs, or both.")
-        return cls(HadamardSpec(processing_mode=mode), input_signs, output_signs)
+        return cls(HadamardSpec(block_size=block_size, processing_mode=mode), input_signs, output_signs)
 
     def process_weights(
         self, weights: Float[Array, "*components out_channels in_channels"], sharding_config: ShardingConfig

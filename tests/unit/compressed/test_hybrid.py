@@ -20,6 +20,7 @@ from lalamo.compressed.qtip_gaussian import QtipGaussianSpec
 from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import Keychain
 from lalamo.preconditioner import Preconditioner
+from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 from lalamo.weight_matrix import (
     CompressionImplementation,
@@ -128,6 +129,31 @@ def test_hybrid_compress_without_incoherence_does_not_require_key() -> None:
     assert isinstance(matrix, HybridMatrix)
     assert matrix.incoherence_signs is None
     _assert_close(result=matrix.decompress(), reference=weights)
+
+
+def test_hybrid_restores_component_axes_of_stored_input_signs() -> None:
+    weights = jax.device_put(
+        jnp.stack([_weights(), _weights() + 1]),
+        make_test_sharding_config().resolve_sharding((None, None, None)),
+    )
+    spec = HybridSpec(quantization_spec=FullPrecisionSpec(), adapter_spec=None, incoherence_spec=HadamardSpec(32))
+    original = spec.compress(weights, key=jax.random.key(0), sharding_config=make_test_sharding_config())
+    template = spec.compress(
+        dummy_array(weights.shape, weights.dtype, make_sharding((None, None, None))),
+        key=jax.random.key(0),
+        sharding_config=make_test_sharding_config(),
+    )
+    exported = original.export()
+    assert exported.arrays["incoherence_signs.input_signs"].shape == (64,)
+    assert exported.arrays["incoherence_signs.output_signs"].shape == (2, 32)
+
+    restored = template.load_exported(exported)
+
+    assert isinstance(restored, HybridMatrix)
+    assert isinstance(restored.incoherence_signs, HadamardProcessor)
+    assert restored.incoherence_signs.input_signs is not None
+    assert restored.incoherence_signs.input_signs.shape == (2, 64)
+    _assert_close(result=restored.decompress(), reference=original.decompress())
 
 
 def test_hybrid_incoherence_decompress_restores_original_basis() -> None:

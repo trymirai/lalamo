@@ -1,5 +1,5 @@
 from dataclasses import dataclass, replace
-from typing import Self
+from typing import Literal, Self
 
 import jax
 import jax.numpy as jnp
@@ -28,6 +28,7 @@ from .utils.packing import unpack_uint8_to_uint
 
 @dataclass(frozen=True)
 class I3S4Spec(WeightMatrixSpec):
+    block_size: Literal[32, 64, 128]
     layout: Layout = Layout.OUTPUT_INPUT
 
     @supports_dummy_arrays()
@@ -98,7 +99,7 @@ class I3S4Matrix(WeightMatrix[I3S4Spec]):
 
     def decompress(self) -> Array:
         weights = self.decode_rows(self.codes, self.row_scales, self.ladder_indices)
-        return hadamard_transform(weights, 32) * self.input_hadamard_factors.astype(self.dtype)
+        return hadamard_transform(weights, self.spec.block_size) * self.input_hadamard_factors.astype(self.dtype)
 
     def to_full_precision(self) -> FullPrecisionMatrix:
         return FullPrecisionSpec().compress(
@@ -114,7 +115,7 @@ class I3S4Matrix(WeightMatrix[I3S4Spec]):
         transposed: bool = False,
     ) -> Array:
         assert not transposed, "I3S4 matrices are output projections"
-        vector = hadamard_transform(vector * self.input_hadamard_factors.astype(vector.dtype), 32)
+        vector = hadamard_transform(vector * self.input_hadamard_factors.astype(vector.dtype), self.spec.block_size)
         mesh = sharding_of(vector).mesh
         codes = with_sharding(self.codes, NamedSharding(mesh, PartitionSpec(None, None)))
         scales = with_sharding(self.row_scales, NamedSharding(mesh, PartitionSpec(None)))

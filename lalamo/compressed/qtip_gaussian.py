@@ -13,7 +13,7 @@ from lalamo.initializer import RandomInitializer
 from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dtype import dtype_to_str, str_to_dtype
-from lalamo.utils.dummy_array import dummy_array, supports_dummy_arrays
+from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig, lookup_sharded_indices, sharding_of, with_sharding
 from lalamo.weight_matrix import (
@@ -29,6 +29,16 @@ from lalamo.weight_matrix import (
 
 # Each tape block opens with its first 16-bit codebook state.
 STATE_BITS = 16
+# The codebook is [scale, offset of each column class], the class of a column being its index modulo four.
+COLUMN_CLASSES = 4
+# Every package shares one codebook per vector width.
+CODEBOOKS = {
+    width: np.array([float.fromhex(value) for value in values], dtype=np.float32)
+    for width, values in (
+        (2, ("0x1.ab07a2p-5", "-0x1.50b2eap-4", "-0x1.3e5a78p-4", "-0x1.50b2eap-4", "-0x1.3e5a78p-4")),
+        (4, ("0x1.aa4a8p-5", "-0x1.501deap-4", "-0x1.3dcd7ap-4", "-0x1.40137ap-4", "-0x1.4c2e6ap-4")),
+    )
+}
 
 
 def states_to_levels(states: Array) -> Array:
@@ -109,7 +119,6 @@ class QtipGaussianSpec(WeightMatrixSpec):
             columns=columns,
             codes=initializer.zeros((rows, self.code_bytes(columns)), (row_axis, None), jnp.uint8),
             scales=initializer.zeros((rows,), (row_axis,), jnp.float32),
-            codebook=initializer.zeros((5,), (None,), jnp.float32),
         )
 
 
@@ -118,7 +127,6 @@ class QtipGaussianMatrix(EmbeddingMatrix[QtipGaussianSpec]):
     columns: int = field(static=True)
     codes: UInt8[Array, "rows bytes"]
     scales: Float[Array, " rows"]
-    codebook: Float[Array, "..."]
 
     def __check_init__(self) -> None:
         rows, columns = self.shape
@@ -126,9 +134,6 @@ class QtipGaussianMatrix(EmbeddingMatrix[QtipGaussianSpec]):
         assert self.codes.dtype == jnp.uint8
         assert self.scales.shape == (rows,)
         assert jnp.issubdtype(self.scales.dtype, jnp.floating)
-        # Native producers save five coefficients; Muse supplies an explicit Gaussian table.
-        assert self.codebook.shape in ((5,), (1 << STATE_BITS, self.spec.vector_width))
-        assert self.codebook.dtype == jnp.float32
 
     def export(self) -> ExportResults:
         arrays, metadata = super().export()
@@ -141,14 +146,10 @@ class QtipGaussianMatrix(EmbeddingMatrix[QtipGaussianSpec]):
         assert isinstance(saved_dtype, str)
         dtype = str_to_dtype(saved_dtype)
         assert jnp.issubdtype(dtype, jnp.floating)
-        template = replace(
-            self,
-            codebook=dummy_array(
-                exported_data.arrays[prefix / "codebook"].shape, self.codebook.dtype, sharding_of(self.codebook)
-            ),
-        )
         if self.scales.weak_type:
-            template = replace(template, dtype_=dtype)
+            template = replace(self, dtype_=dtype)
+        else:
+            template = self
         return cast("Self", WeightMatrix.load_exported(template, exported_data, prefix=prefix))
 
     @property
@@ -163,14 +164,10 @@ class QtipGaussianMatrix(EmbeddingMatrix[QtipGaussianSpec]):
         return replace(self, dtype_=jnp.dtype(dtype))
 
     def decode_rows(self, codes: UInt8[Array, "*rows bytes"], scales: Float[Array, "*rows"]) -> Array:
-        states = self.spec.states(codes, self.columns)
-        if self.codebook.shape == (5,):
-            levels = states_to_levels(states)[..., : self.spec.vector_width]
-            levels = levels.reshape(*codes.shape[:-1], self.columns).astype(jnp.float32)
-            values = self.codebook[0] * levels + self.codebook[1 + jnp.arange(self.columns) % 4]
-        else:
-            values = self.codebook.at[states].get(out_sharding=sharding_of(states))
-            values = values.reshape(*codes.shape[:-1], self.columns)
+        levels = states_to_levels(self.spec.states(codes, self.columns))[..., : self.spec.vector_width]
+        levels = levels.reshape(*codes.shape[:-1], self.columns).astype(jnp.float32)
+        codebook = jnp.asarray(CODEBOOKS[self.spec.vector_width])
+        values = codebook[0] * levels + codebook[1 + jnp.arange(self.columns) % COLUMN_CLASSES]
         return (values * scales[..., None].astype(jnp.float32)).astype(self.dtype)
 
     def decompress(self) -> Array:
