@@ -144,6 +144,8 @@ class HadamardProcessor(IncoherenceProcessor[HadamardSpec]):
         cls,
         input_signs: Int[Array, " in_channels"] | None,
         output_signs: Int[Array, " out_channels"] | None,
+        *,
+        block_size: Literal[32, 64, 128] = 32,
     ) -> Self:
         match input_signs is not None, output_signs is not None:
             case True, True:
@@ -154,7 +156,7 @@ class HadamardProcessor(IncoherenceProcessor[HadamardSpec]):
                 mode = IncoherenceProcessingMode.OUTPUT
             case _:
                 raise ValueError("A Hadamard processor needs input signs, output signs, or both.")
-        return cls(HadamardSpec(processing_mode=mode), input_signs, output_signs)
+        return cls(HadamardSpec(block_size, mode), input_signs, output_signs)
 
     def process_weights(
         self, weights: Float[Array, "*components out_channels in_channels"], sharding_config: ShardingConfig
