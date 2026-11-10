@@ -25,11 +25,11 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
-__all__ = ["U4M3Z4Matrix", "U4M3Z4Spec"]
+__all__ = ["HAF4Matrix", "HAF4Spec"]
 
 
 @dataclass(frozen=True)
-class U4M3Z4Spec(WeightMatrixSpec):
+class HAF4Spec(WeightMatrixSpec):
     bits: Literal[4] = 4
     group_size: Literal[32, 64] = 64
     multiplier_bits: Literal[3] = 3
@@ -46,12 +46,12 @@ class U4M3Z4Spec(WeightMatrixSpec):
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
-    ) -> "U4M3Z4Matrix":
+    ) -> "HAF4Matrix":
         if implementation != CompressionImplementation.INFERENCE:
-            raise NotImplementedError("U4M3Z4 supports inference matrices only")
+            raise NotImplementedError("HAF4 supports inference matrices only")
         dtype = jnp.dtype(dtype)
         if not jnp.issubdtype(dtype, jnp.floating):
-            raise ValueError("U4M3Z4 compute dtype must be floating point")
+            raise ValueError("HAF4 compute dtype must be floating point")
         if packed_weights.ndim < 2:
             raise ValueError("packed_weights must have shape [..., rows, packed_cols]")
         *leading_dims, rows, packed_cols = packed_weights.shape
@@ -76,7 +76,7 @@ class U4M3Z4Spec(WeightMatrixSpec):
 
         weight_axes = self.layout.weight_partition(len(leading_dims), is_sharded=is_sharded)
         weight_sharding = sharding_config.resolve_sharding(weight_axes)
-        return U4M3Z4Matrix(
+        return HAF4Matrix(
             spec=self,
             sharding_config=sharding_config,
             is_sharded=is_sharded,
@@ -95,12 +95,12 @@ class U4M3Z4Spec(WeightMatrixSpec):
         implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
-    ) -> "U4M3Z4Matrix":
+    ) -> "HAF4Matrix":
         if implementation != CompressionImplementation.INFERENCE:
-            raise NotImplementedError("U4M3Z4 supports inference matrices only")
+            raise NotImplementedError("HAF4 supports inference matrices only")
         if not isinstance(weights, ShapeDtypeStruct):
             raise NotImplementedError(
-                "U4M3Z4 dense-weight quantization is not implemented; "
+                "HAF4 dense-weight quantization is not implemented; "
                 "construct an inference matrix with from_packed_parameters"
             )
         if weights.ndim < 2:
@@ -136,7 +136,7 @@ class U4M3Z4Spec(WeightMatrixSpec):
         return matrix
 
 
-class U4M3Z4Matrix(WeightMatrix[U4M3Z4Spec]):
+class HAF4Matrix(WeightMatrix[HAF4Spec]):
     packed_weights: UInt8[Array, "*components rows packed_cols"]
     base_scales: Float32[Array, "*components rows"]
     mz_plane: UInt8[Array, "*components rows groups"]
@@ -151,10 +151,10 @@ class U4M3Z4Matrix(WeightMatrix[U4M3Z4Spec]):
     def dtype(self) -> DTypeLike:
         return self.dtype_
 
-    def astype(self, dtype: DTypeLike) -> "U4M3Z4Matrix":
+    def astype(self, dtype: DTypeLike) -> "HAF4Matrix":
         dtype = jnp.dtype(dtype)
         if not jnp.issubdtype(dtype, jnp.floating):
-            raise ValueError("U4M3Z4 compute dtype must be floating point")
+            raise ValueError("HAF4 compute dtype must be floating point")
         return replace(self, dtype_=dtype)
 
     def to_full_precision(self) -> FullPrecisionMatrix:
@@ -208,7 +208,7 @@ class U4M3Z4Matrix(WeightMatrix[U4M3Z4Spec]):
         exported_data: ExportResults,
         *,
         prefix: ParameterPath | None = None,
-    ) -> "U4M3Z4Matrix":
+    ) -> "HAF4Matrix":
         if prefix is None:
             prefix = ParameterPath()
         loaded_spec = WeightMatrixSpec.from_json(exported_data.metadata[prefix / "spec"])
@@ -224,12 +224,12 @@ class U4M3Z4Matrix(WeightMatrix[U4M3Z4Spec]):
         )
         return load_as(self, matrix)
 
-    def switch_implementation(self, implementation: CompressionImplementation) -> "U4M3Z4Matrix":
+    def switch_implementation(self, implementation: CompressionImplementation) -> "HAF4Matrix":
         if implementation != CompressionImplementation.INFERENCE:
-            raise NotImplementedError("U4M3Z4 supports inference matrices only")
+            raise NotImplementedError("HAF4 supports inference matrices only")
         return self
 
-    def switch_sharding_config(self, sharding_config: ShardingConfig) -> "U4M3Z4Matrix":
+    def switch_sharding_config(self, sharding_config: ShardingConfig) -> "HAF4Matrix":
         if sharding_config == self.sharding_config:
             return self
         weight_axes = self.spec.layout.weight_partition(self.packed_weights.ndim - 2, is_sharded=self.is_sharded)

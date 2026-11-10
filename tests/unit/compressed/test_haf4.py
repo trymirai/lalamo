@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from lalamo.compressed import U4M3Z4Matrix, U4M3Z4Spec
+from lalamo.compressed import HAF4Matrix, HAF4Spec
 from lalamo.module import Keychain
 from lalamo.utils.dummy_array import dummy_array
 from lalamo.weight_matrix import ShapeDtypeSpec, WeightMatrixSpec
@@ -15,13 +15,13 @@ from tests.helpers import make_test_sharding_config
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
 
-def _matrix(group_size: Literal[32, 64], leading_dims: tuple[int, ...] = ()) -> U4M3Z4Matrix:
+def _matrix(group_size: Literal[32, 64], leading_dims: tuple[int, ...] = ()) -> HAF4Matrix:
     packed_weights = jnp.full((*leading_dims, 2, group_size), 0xF0, dtype=jnp.uint8)
     packed_weights = packed_weights.at[..., group_size // 2].set(0xF1)
     base_scales = (jnp.arange(prod((*leading_dims, 2)), dtype=jnp.float32) + 1).reshape((*leading_dims, 2)) / 10
     mz_plane = jnp.zeros((*leading_dims, 2, 2), dtype=jnp.uint8)
     mz_plane = mz_plane.at[..., 0, 0].set(0x7F).at[..., 0, 1].set(0x20)
-    return U4M3Z4Spec(group_size=group_size).from_packed_parameters(
+    return HAF4Spec(group_size=group_size).from_packed_parameters(
         packed_weights=packed_weights,
         base_scales=base_scales,
         mz_plane=mz_plane,

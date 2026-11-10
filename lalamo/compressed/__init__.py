@@ -1,3 +1,4 @@
+from .haf4 import HAF4Matrix, HAF4Spec
 from .hybrid import HybridMatrix, HybridSpec
 from .int import IntMatrix, IntMatrixForInference, IntMatrixForTraining, IntSpec
 from .lloyd_max import (
@@ -16,9 +17,10 @@ from .microfloat import (
 )
 from .mlx import MLXMatrix, MLXMatrixForInference, MLXMatrixForTraining, MLXSpec
 from .quantized_spec import QuantizedSpec
-from .u4m3z4 import U4M3Z4Matrix, U4M3Z4Spec
 
 __all__ = [
+    "HAF4Matrix",
+    "HAF4Spec",
     "HybridMatrix",
     "HybridSpec",
     "IntMatrix",
@@ -41,6 +43,4 @@ __all__ = [
     "MicrofloatScaleMode",
     "MicrofloatSpec",
     "QuantizedSpec",
-    "U4M3Z4Matrix",
-    "U4M3Z4Spec",
 ]
