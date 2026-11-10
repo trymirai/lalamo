@@ -139,6 +139,7 @@ def test_attention_mixed_batched_and_shared_inputs_match_reference(in_axes: tupl
             inputs.append(argument)
     actual = jax.jit(jax.vmap(pallas_decode_attention, in_axes=in_axes))(*inputs)
     expected = jax.jit(jax.vmap(xla_attention, in_axes=in_axes))(*inputs)
+    assert actual.dtype == expected.dtype
     np.testing.assert_allclose(actual, expected, atol=0.0002, rtol=0.0002)
 
 

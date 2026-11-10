@@ -1,9 +1,9 @@
 from abc import abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 
 from lalamo.initializer import Initializer
-from lalamo.module import LalamoConfig, LalamoModule
-from lalamo.utils.registry_abc import RegistryABC
+from lalamo.model import BaseModel, BaseModelConfig
 
 __all__ = [
     "Speculator",
@@ -12,10 +12,13 @@ __all__ = [
 
 
 @dataclass(frozen=True)
-class SpeculatorConfig(LalamoConfig, RegistryABC):
+class SpeculatorConfig(BaseModelConfig):
     @abstractmethod
     def init(self, initializer: Initializer) -> "Speculator": ...
 
+    def init_from_directory(self, directory: Path, initializer: Initializer) -> "Speculator":  # noqa: ARG002
+        return self.init(initializer)
 
-class Speculator[ConfigT: SpeculatorConfig](LalamoModule[ConfigT]):
+
+class Speculator[ConfigT: SpeculatorConfig](BaseModel[ConfigT]):
     pass

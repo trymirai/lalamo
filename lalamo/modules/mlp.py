@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from jax.lax import DotAlgorithmPreset
-from jax.sharding import NamedSharding, PartitionSpec
+from jax.sharding import NamedSharding
 from jaxtyping import Array, Bool, Float, Int, Key
 
 from lalamo.initializer import Initializer
@@ -509,7 +509,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             forward_pass_config=forward_pass_config.matmul_config,
         )
         # reshard keeps the vmapped token axis sharded, unlike device_put.
-        router_logits = jax.sharding.reshard(router_logits, PartitionSpec(None))
+        router_logits = jax.sharding.reshard(router_logits, self.sharding_config.make_sharding((None,)))
         return self.config.routing_function.call_unbatched(
             router_logits,
             biases=self.expert_bias,

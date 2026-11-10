@@ -501,8 +501,7 @@ def is_fast_attention_supported(
     *_, key_value_heads, key_head_dim = keys.shape
     *_, value_head_dim = values.shape
     return (
-        queries.dtype == keys.dtype == values.dtype
-        and queries.dtype in (jnp.float16, jnp.bfloat16, jnp.float32)
+        queries.dtype == keys.dtype == values.dtype == jnp.bfloat16
         and query_heads % key_value_heads == 0
         and query_head_dim == key_head_dim == value_head_dim
     )

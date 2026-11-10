@@ -543,6 +543,8 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
         *,
         prefix: ParameterPath | None = None,
     ) -> WeightMatrix:
+        from lalamo.utils.surgery import load_as  # noqa: PLC0415
+
         if prefix is None:
             prefix = ParameterPath()
 
@@ -560,7 +562,7 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
 
             dummy_layer = cast("WeightMatrix", jtu.tree_map(keep_weak, dummy_layer))
         result = dummy_layer.load_exported(exported_data, prefix=prefix)
-        return cast("Self", result)
+        return load_as(self, result)
 
     def to_full_precision(self) -> "FullPrecisionMatrix":
         raise TypeError("Can't cast dummy ShapeDtypeMatrix to FullPrecisionMatrix")

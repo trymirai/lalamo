@@ -1,6 +1,7 @@
 from dataclasses import dataclass, replace
 from typing import Self
 
+import jax
 import jax.numpy as jnp
 from jax.core import Tracer
 from jaxtyping import Array, DTypeLike, Float, Key
@@ -49,7 +50,9 @@ class OutputStackMatrix(WeightMatrix[OutputStackSpec]):
 
     def __check_init__(self) -> None:
         assert self.parts
-        assert all(part.shape[1] == self.parts[0].shape[1] and part.dtype == self.dtype for part in self.parts)
+        assert all(
+            part.shape[1] == self.parts[0].shape[1] and part.dtype == self.parts[0].dtype for part in self.parts
+        )
 
     def export(self) -> ExportResults:
         arrays, metadata = super().export()
@@ -59,17 +62,22 @@ class OutputStackMatrix(WeightMatrix[OutputStackSpec]):
     def load_exported(self, exported_data: ExportResults, *, prefix: ParameterPath | None = None) -> Self:
         if prefix is None:
             prefix = ParameterPath()
+        row_counts = exported_data.arrays[prefix / "part_rows"]
+        assert row_counts.ndim == 1 and row_counts.dtype == jnp.int32
+        rows = row_counts.tolist()
+        assert rows and all(row > 0 for row in rows) and sum(rows) == self.shape[0]
         columns = self.shape[1]
         sharding = self.sharding_config.resolve_sharding((None, None))
+        weak_type = all(leaf.weak_type for leaf in jax.tree.leaves(self))
         parts = tuple(
             ShapeDtypeSpec()
             .compress(
-                dummy_array((rows, columns), self.dtype, sharding),
+                dummy_array((row_count, columns), self.dtype, sharding, weak_type=weak_type),
                 sharding_config=self.sharding_config,
                 is_sharded=self.is_sharded,
             )
             .load_exported(exported_data, prefix=prefix / "parts" / index)
-            for index, rows in enumerate(exported_data.arrays[prefix / "part_rows"].tolist())
+            for index, row_count in enumerate(rows)
         )
         return replace(self, parts=parts)
 
