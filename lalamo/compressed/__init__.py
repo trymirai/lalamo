@@ -1,3 +1,5 @@
+from .codebook_trellis import CodebookTrellisMatrix, CodebookTrellisSpec
+from .direction import DirectionMatrix, DirectionSpec
 from .hybrid import HybridMatrix, HybridSpec
 from .i3_s4 import I3S4Matrix, I3S4Spec
 from .int import IntMatrix, IntMatrixForInference, IntMatrixForTraining, IntSpec
@@ -22,6 +24,10 @@ from .qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec
 from .quantized_spec import QuantizedSpec
 
 __all__ = [
+    "CodebookTrellisMatrix",
+    "CodebookTrellisSpec",
+    "DirectionMatrix",
+    "DirectionSpec",
     "HybridMatrix",
     "HybridSpec",
     "I3S4Matrix",
