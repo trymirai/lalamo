@@ -35,7 +35,7 @@ def test_decision_head_probabilities_and_model_reload(tmp_path: Path, is_causal:
         token_codec_config=ChatCodecConfig("", None, "system", "user", "assistant", None, None),
         decoder_config=replace(
             decoder,
-            transformer_config=replace(decoder.transformer_config, layer_configs=(layer,)),
+            transformer_config=replace(decoder.transformer_config, layer_configs=(layer, layer)),
             embedding_config=UntiedEmbeddingConfig(input_scale=None, logit_soft_cap=None),
         ),
         generation_config=GenerationConfig(),
@@ -49,24 +49,33 @@ def test_decision_head_probabilities_and_model_reload(tmp_path: Path, is_causal:
         assert model.decoder.embedding.readout_matrix.shape == (3, 8)
         tokens = jnp.array([1, 2, 3], dtype=jnp.int32)
         keychain = Keychain.init(0, sharding_config=sharding)
-        decoder = replace(model.decoder, transformer=replace(model.decoder.transformer, output_norm=None))
-        raw = decoder(
-            tokens[None],
-            jnp.arange(3, dtype=jnp.int32)[None],
-            keychain=keychain,
-            forward_pass_config=DecoderForwardPassConfig.for_inference(),
-            return_activation_trace=True,
-        ).activation_trace
-        assert raw is not None
-        hidden = np.asarray(raw.output_norm[0, -1], dtype=np.float32)
-        norm = model.decoder.transformer.output_norm
-        assert norm is not None
-        normalized = hidden / np.sqrt(np.mean(hidden**2) + norm.config.epsilon) * np.asarray(norm.scales)
-        weights = np.asarray(model.decoder.embedding.readout_matrix.decompress())
-        logits = (weights @ normalized)[:2]
-        expected = np.exp((logits - np.max(logits)) / 0.7)
-        expected /= expected.sum()
-        np.testing.assert_allclose(np.asarray(model.probabilities(tokens, 2, keychain=keychain)), expected, atol=1e-6)
+        # Compare unfused math strictly; BF16 fusion can change intermediate rounding.
+        with jax.disable_jit():
+            decoder = replace(model.decoder, transformer=replace(model.decoder.transformer, output_norm=None))
+            raw = decoder(
+                tokens[None],
+                jnp.arange(3, dtype=jnp.int32)[None],
+                keychain=keychain,
+                forward_pass_config=DecoderForwardPassConfig.for_inference(),
+                return_activation_trace=True,
+            ).activation_trace
+            assert raw is not None
+            hidden = np.asarray(raw.output_norm[0, -1], dtype=np.float32)
+            norm = model.decoder.transformer.output_norm
+            assert norm is not None
+            normalized = hidden / np.sqrt(np.mean(hidden**2) + norm.config.epsilon) * np.asarray(norm.scales)
+            weights = np.asarray(model.decoder.embedding.readout_matrix.decompress())
+            logits = (weights @ normalized)[:2]
+            expected = np.exp((logits - np.max(logits)) / 0.7)
+            expected /= expected.sum()
+            np.testing.assert_allclose(
+                np.asarray(model.probabilities(tokens, 2, keychain=keychain)), expected, atol=1e-6
+            )
+        np.testing.assert_allclose(
+            np.asarray(model.probabilities(tokens, 2, keychain=keychain)),
+            expected,
+            atol=float(jnp.finfo(jnp.bfloat16).eps),
+        )
         model.save(tmp_path)
         restored = Model.load(tmp_path, sharding)
         assert isinstance(restored, DecisionModel)
