@@ -1,4 +1,5 @@
 from .hybrid import HybridMatrix, HybridSpec
+from .i3_s4 import I3S4Matrix, I3S4Spec
 from .int import IntMatrix, IntMatrixForInference, IntMatrixForTraining, IntSpec
 from .lattice import LatticeMatrix, LatticeSpec
 from .lloyd_max import (
@@ -23,6 +24,8 @@ from .quantized_spec import QuantizedSpec
 __all__ = [
     "HybridMatrix",
     "HybridSpec",
+    "I3S4Matrix",
+    "I3S4Spec",
     "IntMatrix",
     "IntMatrixForInference",
     "IntMatrixForTraining",

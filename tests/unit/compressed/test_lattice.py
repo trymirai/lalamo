@@ -27,7 +27,7 @@ def saved_rows() -> tuple[HybridMatrix, np.ndarray]:
             row_scales=jnp.asarray(data["d4_row_scale_bits"].view(jnp.bfloat16)),
             ladder_indices=jnp.asarray(data["d4_ladder_indices"]),
         ).astype(jnp.float32)
-        rotation = HadamardProcessor.of(None, jnp.asarray(data["signs"]))
+        rotation = HadamardProcessor.of(None, jnp.asarray(data["signs"]), block_size=32)
         return HybridMatrix.of(leaf, rotation), data["d4_expected"].T
 
 

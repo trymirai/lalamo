@@ -364,7 +364,6 @@ def test_softmax_routing_call_unbatched_selects_top_k_and_normalizes_weights() -
 
 
 @pytest.mark.parametrize("mode", MOE_MODES)
-@pytest.mark.usefixtures("fake_mesh")
 def test_routed_moe_matches_direct_reference(mode: ForwardPassMode) -> None:
     module = _moe(num_active_routed_experts=2)
     sequence_length = _moe_sequence_length(mode)

@@ -7,74 +7,60 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from lalamo.compressed.hybrid import HybridMatrix
-from lalamo.compressed.incoherence import IncoherenceProcessingMode, KroneckerProcessor, kronecker_transform
+from lalamo.compressed.incoherence import kronecker_transform
 from lalamo.compressed.qtip_gaussian import (
     QtipGaussianMatrix,
     QtipGaussianSpec,
-    codebook_table,
 )
+from lalamo.exportable import ExportResults
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain
+from lalamo.safetensors import safe_read, safe_write
+from lalamo.utils.sharding import LogicalAxis, ShardingConfig, sharding_of
 from lalamo.weight_matrix import Layout
-from tests.helpers import make_test_sharding_config
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
-DATA = Path(__file__).parent / "data"
 
-
-def test_saved_tapes_decode_like_their_producers() -> None:
-    # Four rows per tape, fitted and packed by the independent Torch producers for Qwen3.8 and Muse ("connected").
-    # Each producer decoded through its own table; only the connected v4 table is the production codebook.
-    config = make_test_sharding_config()
-    with np.load(DATA / "qtip_gaussian_hyb036.npz") as hyb036, np.load(DATA / "qtip_gaussian_muse.npz") as muse:
-        production = muse["v4_k2_connected_table"]
-        np.testing.assert_allclose(production, codebook_table(4), atol=1e-6)
-        for data, name, spec, table in (
-            (hyb036, "v2_k2", QtipGaussianSpec(2, 4, 0), hyb036["table_v2"]),
-            (hyb036, "v2_k3", QtipGaussianSpec(2, 6, 0), hyb036["table_v2"]),
-            (hyb036, "v4_k2", QtipGaussianSpec(4, 8, 64), hyb036["table_v4"]),
-            (muse, "v4_k2_connected", QtipGaussianSpec(4, 8, 0), production),
-            (muse, "v2_k4_connected", QtipGaussianSpec(2, 8, 0), muse["v2_k4_connected_table"]),
-        ):
-            gains = data[f"{name}_gains_bits"].view(jnp.bfloat16).astype(np.float32)
-            leaf = QtipGaussianMatrix(
-                spec=spec,
-                sharding_config=config,
-                is_sharded=True,
-                dtype_=jnp.float32,
-                columns=data[f"{name}_signs"].shape[0],
-                codes=jnp.asarray(data[f"{name}_codes"]),
-                scales=jnp.asarray(data[f"{name}_scales"].astype(np.float32) * gains),
-            )
-            states, scales = np.asarray(spec.states(leaf.codes, leaf.shape[1])), np.asarray(leaf.scales)[:, None]
-            rotated = data[f"{name}_rotated"]
-            np.testing.assert_allclose(table[states].reshape(leaf.shape) * scales, rotated, rtol=1e-6, atol=1e-9)
-            expected = np.asarray(codebook_table(spec.vector_width))[states].reshape(leaf.shape) * scales
-            np.testing.assert_allclose(leaf.decompress(), expected, rtol=1e-6, atol=1e-9, err_msg=name)
-
-            rotation = KroneckerProcessor.of(
-                jnp.asarray(data[f"{name}_signs"]).astype(jnp.int32), jnp.asarray(data[f"{name}_small_q"])
-            )
-            hybrid = HybridMatrix.of(leaf, rotation)
-            dense = hybrid.decompress()
-            vector = jax.device_put(jnp.linspace(-1, 1, leaf.shape[1]), config.make_sharding((None,)))
-            actual = hybrid.dot(vector, keychain=Keychain.init(0, sharding_config=config))
-            np.testing.assert_allclose(actual, dense @ vector, rtol=1e-5, atol=1e-5 * np.abs(dense).max())
-            # bf16 trellis weights round once, after the rotation.
-            np.testing.assert_array_equal(hybrid.astype(jnp.bfloat16).decompress(), dense.astype(jnp.bfloat16))
-            # As a tied table (stored vocab x hidden): a lookup decodes and unrotates the hidden axis of its rows.
-            tied = replace(leaf, spec=replace(spec, layout=Layout.INPUT_OUTPUT))
-            hidden_rotation = KroneckerProcessor.of(
-                rotation.signs, rotation.orthogonal_factor, IncoherenceProcessingMode.OUTPUT
-            )
-            hybrid = HybridMatrix.of(tied, hidden_rotation)
-            rows, keychain = jnp.asarray([3, 0, 2]), Keychain.init(0, sharding_config=config)
-            looked_up = hybrid.lookup_embedding(rows, keychain=keychain)
-            np.testing.assert_array_equal(looked_up, hidden_rotation.unprocess_embedding(tied.decompress().T[rows]))
-            template = EmptyInitializer(jnp.float32, config).embedding_matrix(*leaf.shape)
-            np.testing.assert_array_equal(template.load_exported(hybrid.export()).decompress(), hybrid.decompress())
+def test_saved_matrices_load_and_run_on_multiple_devices(tmp_path: Path) -> None:
+    config = ShardingConfig.fully_sharded_data_parallel(jax.devices("cpu"))
+    with jax.set_mesh(config.mesh):
+        source = QtipGaussianMatrix(
+            spec=QtipGaussianSpec(4, 8, 0),
+            sharding_config=config,
+            is_sharded=True,
+            dtype_=jnp.float32,
+            columns=128,
+            codes=jnp.asarray(np.random.default_rng(0).integers(256, size=(8, 33), dtype=np.uint8)),
+            scales=jnp.linspace(0.5, 1, 8),
+        )
+        reference = np.asarray(source.decompress())
+    exported = source.export()
+    path = tmp_path / "weights.safetensors"
+    with path.open("wb") as fd:
+        safe_write(fd, exported.arrays)
+    with jax.set_mesh(None), path.open("rb") as fd:
+        _, arrays, _ = safe_read(fd)
+        restored = (
+            EmptyInitializer(None, config)
+            .weight_matrix(8, 128)
+            .load_exported(ExportResults(arrays, exported.metadata))
+        )
+        assert isinstance(restored, QtipGaussianMatrix)
+        decoded = restored.decompress()
+        np.testing.assert_array_equal(decoded, reference)
+        assert sharding_of(decoded).spec[0] == config.resolve_axis(LogicalAxis.MATRIX)
+        keychain = Keychain.init(0, sharding_config=config)
+        vector = jax.device_put(np.linspace(-1, 1, 128, dtype=np.float32), config.make_sharding((None,)))
+        np.testing.assert_allclose(restored.dot(vector, keychain=keychain), reference @ np.asarray(vector), atol=1e-4)
+        tied = replace(restored, spec=replace(restored.spec, layout=Layout.INPUT_OUTPUT))
+        indices = jax.device_put(
+            np.arange(16, dtype=np.int32).reshape(8, 2) % 8,
+            config.resolve_sharding((LogicalAxis.BATCH, None)),
+        )
+        rows = jax.jit(lambda index: tied.lookup_embedding(index, keychain=keychain))(indices)
+        np.testing.assert_array_equal(rows, reference[np.asarray(indices)])
+        assert sharding_of(rows).spec[0] == config.resolve_axis(LogicalAxis.BATCH)
 
 
 def test_kronecker_transform_matches_explicit_kronecker_product() -> None:

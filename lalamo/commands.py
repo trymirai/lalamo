@@ -25,7 +25,7 @@ from lalamo.model_import.loaders.dflash_loader import load_hf_dflash_draft_model
 from lalamo.model_import.loaders.weaver_loader import load_weaver
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.model_import.vocabulary_order import frequency_ordered
-from lalamo.models import LanguageModel, SpeculatorModel, SpeculatorModelConfig
+from lalamo.models import LanguageModel
 from lalamo.modules import DFlashSpeculator, DFlashSpeculatorConfig
 from lalamo.utils.sharding import ShardingConfig
 
@@ -242,9 +242,4 @@ def convert_speculator(
         draft_model=draft_model,
         weaver=weaver,
     )
-    model = SpeculatorModel(
-        config=SpeculatorModelConfig(speculator_config=speculator.config),
-        sharding_config=sharding_config,
-        speculator=speculator,
-    )
-    model.save(output_dir)
+    speculator.save(output_dir)

@@ -37,6 +37,9 @@ def _xla_hadamard_transform(
     inputs: Float[Array, "... channels"],
     block_size: Literal[32, 64, 128],
 ) -> Float[Array, "... channels"]:
+    dtype = inputs.dtype
+    if dtype in (jnp.bfloat16, jnp.float16):
+        inputs = inputs.astype(jnp.float32)
     *original_leading_dims, input_dim = inputs.shape
     result = jnp.reshape(inputs, (*original_leading_dims, input_dim // block_size, block_size))
 
@@ -56,7 +59,7 @@ def _xla_hadamard_transform(
         )
 
     normalization = jnp.sqrt(jnp.asarray(block_size, dtype=inputs.dtype))
-    return jnp.reshape(result / normalization, (*original_leading_dims, input_dim))
+    return jnp.reshape(result / normalization, (*original_leading_dims, input_dim)).astype(dtype)
 
 
 @cache

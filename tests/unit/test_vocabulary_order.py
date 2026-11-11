@@ -10,7 +10,7 @@ from tokenizers.processors import TemplateProcessing
 from lalamo.initializer import RandomInitializer
 from lalamo.model_import.vocabulary_order import frequency_order, reorder_embedding, reorder_tokenizer
 from lalamo.module import Keychain
-from lalamo.modules.embedding import EmbeddingConfig, TiedEmbeddingConfig, UntiedEmbeddingConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
 from tests.helpers import make_test_sharding_config
 
 
@@ -47,7 +47,7 @@ def test_reordered_tokenizer_encodes_to_renumbered_ids() -> None:
         UntiedEmbeddingConfig(input_scale=None, logit_soft_cap=None),
     ],
 )
-def test_reordered_embedding_computes_the_same_function(config: EmbeddingConfig) -> None:
+def test_reordered_embedding_computes_the_same_function(config: TiedEmbeddingConfig | UntiedEmbeddingConfig) -> None:
     vocab_size, model_dim = 8, 4
     sharding_config = make_test_sharding_config()
     initializer = RandomInitializer(default_dtype=jnp.float32, sharding_config=sharding_config, key=jax.random.key(0))
@@ -57,9 +57,11 @@ def test_reordered_embedding_computes_the_same_function(config: EmbeddingConfig)
     keychain = Keychain.init(0, sharding_config=sharding_config)
 
     assert reordered.config.permute_indices
+    assert reordered.index_permutation is not None
     assert np.array_equal(reordered.index_permutation, order)
     template = reordered.config.init(initializer, model_dim=model_dim, vocab_size=vocab_size)
     restored = template.load_exported(reordered.export())
+    assert restored.index_permutation is not None
     assert np.array_equal(restored.index_permutation, order)
     assert config.init(initializer, model_dim=model_dim, vocab_size=vocab_size).index_permutation is None
     assert np.array_equal(

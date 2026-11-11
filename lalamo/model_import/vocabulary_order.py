@@ -76,7 +76,7 @@ def reorder_tokenizer(tokenizer: Tokenizer, new_ids: np.ndarray) -> Tokenizer:
     return Tokenizer.from_str(json.dumps(content))
 
 
-def reorder_matrix(matrix: WeightMatrix, order: np.ndarray, vocabulary_axis: int) -> WeightMatrix:
+def reorder_matrix(matrix: WeightMatrix, order: np.ndarray, vocabulary_axis: int) -> FullPrecisionMatrix:
     # Permuting a quantized matrix would requantize it, so only full precision vocabularies are reordered.
     assert isinstance(matrix, FullPrecisionMatrix), f"Cannot reorder the vocabulary of a {type(matrix).__name__}"
     # On the host: the vocabulary axis may be sharded, and a sharded gather needs an explicit output sharding.
@@ -84,7 +84,7 @@ def reorder_matrix(matrix: WeightMatrix, order: np.ndarray, vocabulary_axis: int
     return matrix.spec.compress(weights, sharding_config=matrix.sharding_config, is_sharded=matrix.is_sharded)
 
 
-def reorder_embedding(embedding: EmbeddingBase, order: np.ndarray) -> EmbeddingBase:
+def reorder_embedding(embedding: EmbeddingBase, order: np.ndarray) -> TiedEmbedding | UntiedEmbedding:
     # Embeddings are (channels, vocabulary) in output-input terms; an untied readout is (vocabulary, channels).
     config = replace(embedding.config, permute_indices=True)
     index_permutation = jnp.asarray(order, dtype=jnp.int32)

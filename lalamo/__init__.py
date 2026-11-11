@@ -13,7 +13,7 @@ from lalamo.model_import.model_spec import (
     LanguageModelSpec,
     TTSModelSpec,
 )
-from lalamo.models import ClassifierModel, LanguageModel
+from lalamo.models import ClassifierModel, DecisionModel, LanguageModel
 from lalamo.models.chat_codec import (
     AssistantMessage,
     ChatCodec,
@@ -36,6 +36,7 @@ __all__ = [
     "ClassifierModel",
     "ClassifierModelSpec",
     "ConfigMap",
+    "DecisionModel",
     "FileSpec",
     "JSONFieldSpec",
     "LanguageModel",
