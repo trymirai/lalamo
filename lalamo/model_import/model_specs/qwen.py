@@ -543,6 +543,7 @@ QWEN36 = [
         config_type=HFQwen35Config,
         response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
+        configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
     ),
     LanguageModelSpec(
         vendor="Alibaba",
@@ -554,6 +555,7 @@ QWEN36 = [
         response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
+            chat_template=FileSpec("chat_template.jinja"),
             # The model card recommends 1.5, but generation_config.json omits presence_penalty.
             generation_params_overrides=GenerationConfig(presence_penalty=1.5),
         ),
@@ -570,6 +572,7 @@ QWEN38 = [
         config_type=HFQwen35Config,
         response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=QWEN38_REASONING_CONFIG,
+        configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
     ),
     LanguageModelSpec(
         vendor="Alibaba",
