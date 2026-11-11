@@ -1,3 +1,4 @@
+from .haf4 import HAF4Matrix, HAF4Spec
 from .hybrid import HybridMatrix, HybridSpec
 from .i3_s4 import I3S4Matrix, I3S4Spec
 from .int import IntMatrix, IntMatrixForInference, IntMatrixForTraining, IntSpec
@@ -22,6 +23,8 @@ from .qtip_gaussian import QtipGaussianMatrix, QtipGaussianSpec
 from .quantized_spec import QuantizedSpec
 
 __all__ = [
+    "HAF4Matrix",
+    "HAF4Spec",
     "HybridMatrix",
     "HybridSpec",
     "I3S4Matrix",
