@@ -11,7 +11,7 @@ validate the pipeline and to show where the recipe needs work, not to support cl
 - [5. Evaluation protocol](#5-evaluation-protocol)
 - [6. Logged training metrics](#6-logged-training-metrics)
 - [7. Results](#7-results)
-- [8. Limitations](#8-limitations)
+- [8. Action items](#8-action-items)
 - [9. Reproduction](#9-reproduction)
 
 ## 1. Summary
@@ -542,34 +542,54 @@ These are readings of the tables above. None was tested with a further experimen
 7. **Training did not converge.** The adapter norm grows by about 0.115 per step from step 20 to step 50
    without flattening, and the gradient norm at the end (about 0.10) is above its minimum (0.05 at step 17).
 
-## 8. Limitations
+## 8. Action items
 
-- **One run, one seed.** No repeat, no ablation, no baseline method (in particular no supervised fine-tuning
-  on teacher-written responses with the same budget).
-- **Small evaluation samples.** 200 and 300 questions give standard errors of 2.6–2.8 points. Because all
-  checkpoints share sampling keys, differences between checkpoints are not independent draws either.
-- **Token-budget confound.** The base student's score is limited by the response limit, not measured at its
-  capability. Its mean response length (5,862 on MATH-500) is censored by the 8,192-token limit. The run does
-  not show how the base student scores with a larger limit, so it does not separate "shorter" from "better".
-- **Different sampling settings.** Training samples at temperature 1 without truncation; the student is
-  evaluated at temperature 0.6 with top-k 20 and top-p 0.95; the teacher at temperature 1.0 with the same
-  truncation. The teacher's 86.5% is therefore not measured under the student's settings, and no evaluation
-  was run at the training temperature.
-- **String-match grading** on MATH-500 undercounts answers given in an equivalent form.
-- **Totals only.** Per-question outcomes and evaluation texts were not saved, so there is no paired comparison
-  between checkpoints and no direct measurement of forgetting.
-- **The teacher was not evaluated on MMLU-Pro.**
-- **The reverse-KL estimate is not a progress measure.** It is an average over the contexts the student
-  visits, and those change during training (section 3.3). Two reference values were not logged: the
-  teacher's entropy on its own samples, and the per-context reverse KL computed over the full vocabulary.
-- **Truncated rollouts.** Between 8% and 66% of training rollouts finish within 4,096 tokens, so early in
-  training nearly all of the loss falls on reasoning text and little on final replies.
-- **Different prompts for teacher and student.** The teacher is conditioned on a system message about
-  reasoning effort that the student does not see (section 4.2).
-- **Constant learning rate, no schedule**, and training was stopped while the adapters were still moving.
-- **Restarts.** The run consists of three process segments with small code differences (section 4.11).
-- **Base commit.** The run used lalamo at `f3d9f59c`. This pull request is rebased onto a later `main`; the
-  unit tests were re-run there, the experiment was not.
+Last updated: 2026-11-12. Items are ticked off, and their results added to section 7, as the work is done.
+
+**In progress**
+
+- [ ] Supervised baseline: fine-tune the student on responses the teacher wrote, with the same prompts, steps
+  and adapters as the pilot. The teacher's responses to the 3,200 prompts are being generated (cut at 4,096
+  tokens); training is queued behind that.
+- [ ] Reward-only run: 8 prompts × 8 rollouts per step, reward 1 for a correct boxed answer and 0 otherwise,
+  standardized among the rollouts of each prompt, no teacher. Queued.
+- [ ] On-policy distillation combined with that reward, with weights 1.0 and 0.2. Waiting for a second GPU.
+
+**Open: evaluation**
+
+- [ ] Evaluate the base student with a larger response limit, to separate "finishes sooner" from "answers
+  better". Its score in this run is set by the limit, and its mean response length is censored by it.
+- [ ] Save per-question outcomes and generated texts, then compare checkpoints on the same questions and
+  measure forgetting directly. Only totals were saved so far.
+- [ ] Evaluate teacher and student with the same sampling settings, and add an evaluation at the training
+  temperature (section 5).
+- [ ] Evaluate the teacher on MMLU-Pro.
+- [ ] Evaluate on all of MATH-500 and a larger MMLU-Pro sample, and repeat runs with more seeds. One accuracy
+  now has a standard error of 2.6–2.8 points.
+- [ ] Grade MATH-500 by mathematical equivalence instead of string match.
+
+**Open: training**
+
+- [ ] Add a learning-rate schedule and try a lower learning rate. The adapters were still moving at step 50
+  and the reverse-KL estimate rose after step 27.
+- [ ] Log two reference values: the teacher's entropy on its own samples, and the reverse KL computed over the
+  full vocabulary. The sampled-token estimate alone is not a progress measure, because the contexts it
+  averages over change during training (section 3.3).
+- [ ] Check whether the terse reasoning style of the late checkpoints is the teacher's, using the teacher
+  responses generated for the supervised baseline.
+- [ ] Credit assignment across tokens (section 3.3).
+- [ ] A baseline that does not depend on the sampled token (section 3.3).
+- [ ] Give teacher and student the same prompt, or measure what the teacher's extra system message changes
+  (section 4.2).
+- [ ] Reduce the memory of the backward pass, so that more than one rollout fits in a gradient micro-batch
+  (section 3.5).
+- [ ] Re-run the pilot on the current base commit. The run used lalamo at `f3d9f59c`, and this branch is
+  rebased onto a later `main`.
+
+**Done**
+
+- [x] Pilot run of on-policy distillation (sections 4–7).
+- [x] Supervised and reward-based training in `lalamo.distillation`, with unit tests.
 
 ## 9. Reproduction
 
