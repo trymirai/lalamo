@@ -32,14 +32,14 @@ All logarithms are natural, so every information quantity is in nats.
 
 | Symbol | Meaning |
 |---|---|
-| $`\mathcal{V}`$ | Token vocabulary, shared by both models: $`\lvert\mathcal{V}\rvert = 248{,}320`$ |
+| $`𝒱`$ | Token vocabulary, shared by both models: $`\lvert𝒱\rvert = 248{,}320`$ |
 | $`x`$ | A training problem (text) |
 | $`p^{\mathrm{S}}(x)`$, $`p^{\mathrm{T}}(x)`$ | Token sequences obtained by rendering $`x`$ with the student's and with the teacher's chat template. They differ (section 4.2) |
 | $`y = (y_1, \dots, y_L)`$ | A response: the tokens the student sampled after $`p^{\mathrm{S}}(x)`$, with $`L \le L_{\max} = 4096`$. It contains the reasoning, the final reply and, if it was reached, the stop token |
 | $`s_t = (p^{\mathrm{S}}(x),\, y_{<t})`$ | The student's context before response token $`t`$ |
 | $`\tilde{s}_t = (p^{\mathrm{T}}(x),\, y_{<t})`$ | The same context as the teacher sees it: the teacher's prompt followed by the same response prefix |
 | $`\theta`$ | The trained parameters: all low-rank adapter weights. $`\theta_{k-1}`$ is their value at the start of step $`k`$, and $`\theta_0`$ makes the student identical to the base model |
-| $`\pi_\theta(v \mid s)`$ | Student's next-token distribution over $`v \in \mathcal{V}`$: the softmax of its logits, with no temperature or truncation |
+| $`\pi_\theta(v \mid s)`$ | Student's next-token distribution over $`v \in 𝒱`$: the softmax of its logits, with no temperature or truncation |
 | $`\pi_{\mathrm{T}}(v \mid \tilde{s})`$ | Teacher's next-token distribution, defined the same way |
 | $`B`$, $`i`$ | Number of rollouts per step ($`B = 64`$) and the rollout index |
 | $`L_i`$, $`N`$ | Length of response $`i`$, and the number of response tokens in the step, $`N = \sum_{i=1}^{B} L_i`$ |
@@ -58,7 +58,7 @@ distribution to the teacher's:
 ```math
 \ell(\theta;\, s, \tilde{s})
 = D_{\mathrm{KL}}\bigl(\pi_\theta(\cdot \mid s) \,\big\Vert\, \pi_{\mathrm{T}}(\cdot \mid \tilde{s})\bigr)
-= \sum_{v \in \mathcal{V}} \pi_\theta(v \mid s)\,\bigl[\log \pi_\theta(v \mid s) - \log \pi_{\mathrm{T}}(v \mid \tilde{s})\bigr].
+= \sum_{v \in 𝒱} \pi_\theta(v \mid s)\,\bigl[\log\,\pi_\theta(v \mid s) - \log\,\pi_{\mathrm{T}}(v \mid \tilde{s})\bigr].
 \qquad (1)
 ```
 
@@ -67,22 +67,22 @@ sampled-token estimator possible. For any $`c`$ that does not depend on $`v`$,
 
 ```math
 \nabla_\theta\, \ell(\theta;\, s, \tilde{s})
-= \mathbb{E}_{v \sim \pi_\theta(\cdot \mid s)}
-\Bigl[\bigl(\log \pi_\theta(v \mid s) - \log \pi_{\mathrm{T}}(v \mid \tilde{s}) - c\bigr)\,
-\nabla_\theta \log \pi_\theta(v \mid s)\Bigr].
+= 𝔼_{v \sim \pi_\theta(\cdot \mid s)}
+\Bigl[\bigl(\log\,\pi_\theta(v \mid s) - \log\,\pi_{\mathrm{T}}(v \mid \tilde{s}) - c\bigr)\,
+\nabla_\theta \log\,\pi_\theta(v \mid s)\Bigr].
 \qquad (2)
 ```
 
 Derivation: differentiating (1) with the product rule gives
 
 ```math
-\sum_{v} \nabla_\theta \pi_\theta(v \mid s)\,\bigl[\log \pi_\theta(v \mid s) - \log \pi_{\mathrm{T}}(v \mid \tilde{s})\bigr]
-\;+\; \sum_{v} \pi_\theta(v \mid s)\, \nabla_\theta \log \pi_\theta(v \mid s).
+\sum_{v} \nabla_\theta \pi_\theta(v \mid s)\,\bigl[\log\,\pi_\theta(v \mid s) - \log\,\pi_{\mathrm{T}}(v \mid \tilde{s})\bigr]
+\;+\; \sum_{v} \pi_\theta(v \mid s)\, \nabla_\theta \log\,\pi_\theta(v \mid s).
 ```
 
 The second sum is $`\nabla_\theta \sum_v \pi_\theta(v \mid s) = 0`$. In the first,
-$`\nabla_\theta \pi_\theta = \pi_\theta \nabla_\theta \log \pi_\theta`$ turns the sum into the expectation. The
-constant drops out because $`\mathbb{E}_v[c\, \nabla_\theta \log \pi_\theta(v \mid s)] = c\, \nabla_\theta 1 = 0`$.
+$`\nabla_\theta \pi_\theta = \pi_\theta \nabla_\theta \log\,\pi_\theta`$ turns the sum into the expectation. The
+constant drops out because $`𝔼_v[c\, \nabla_\theta \log\,\pi_\theta(v \mid s)] = c\, \nabla_\theta 1 = 0`$.
 
 ### 3.2 Sampled-token estimator used in the run
 
@@ -90,7 +90,7 @@ In step $`k`$ the student with parameters $`\theta_{k-1}`$ samples $`B`$ respons
 response token $`y_{i,t}`$ is scored by both models, giving the log-probability gap
 
 ```math
-g_{i,t} = \log \pi_{\mathrm{T}}\bigl(y_{i,t} \mid \tilde{s}_{i,t}\bigr) - \log \pi_{\theta_{k-1}}\bigl(y_{i,t} \mid s_{i,t}\bigr).
+g_{i,t} = \log\,\pi_{\mathrm{T}}\bigl(y_{i,t} \mid \tilde{s}_{i,t}\bigr) - \log\,\pi_{\theta_{k-1}}\bigl(y_{i,t} \mid s_{i,t}\bigr).
 \qquad (3)
 ```
 
@@ -109,18 +109,18 @@ A_{i,t} = g_{i,t} - b.
 The loss of step $`k`$ is the policy-gradient surrogate
 
 ```math
-\mathcal{L}_k(\theta) = -\frac{1}{N} \sum_{i=1}^{B} \sum_{t=1}^{L_i}
-\mathrm{sg}\bigl[A_{i,t}\bigr]\, \log \pi_\theta\bigl(y_{i,t} \mid s_{i,t}\bigr),
+ℒ_k(\theta) = -\frac{1}{N} \sum_{i=1}^{B} \sum_{t=1}^{L_i}
+\mathrm{sg}\bigl[A_{i,t}\bigr]\, \log\,\pi_\theta\bigl(y_{i,t} \mid s_{i,t}\bigr),
 \qquad (6)
 ```
 
 and the step's gradient is
 
 ```math
-\hat{G}_k = \nabla_\theta \mathcal{L}_k(\theta)\Big|_{\theta = \theta_{k-1}}
+\hat{G}_k = \nabla_\theta ℒ_k(\theta)\Big|_{\theta = \theta_{k-1}}
 = \frac{1}{N} \sum_{i=1}^{B} \sum_{t=1}^{L_i}
-\bigl(\log \pi_{\theta_{k-1}}(y_{i,t} \mid s_{i,t}) - \log \pi_{\mathrm{T}}(y_{i,t} \mid \tilde{s}_{i,t}) + b\bigr)\,
-\nabla_\theta \log \pi_\theta(y_{i,t} \mid s_{i,t})\Big|_{\theta = \theta_{k-1}}.
+\bigl(\log\,\pi_{\theta_{k-1}}(y_{i,t} \mid s_{i,t}) - \log\,\pi_{\mathrm{T}}(y_{i,t} \mid \tilde{s}_{i,t}) + b\bigr)\,
+\nabla_\theta \log\,\pi_\theta(y_{i,t} \mid s_{i,t})\Big|_{\theta = \theta_{k-1}}.
 \qquad (7)
 ```
 
@@ -144,12 +144,12 @@ The approximation in (8) hides three things, listed from most to least important
 
 **(a) No credit for downstream effects.** The sequence-level reverse KL between the two models' response
 distributions decomposes, by the chain rule, into the expected sum of per-context terms,
-$`D_{\mathrm{KL}}\bigl(P_\theta(\cdot \mid x) \,\Vert\, P_{\mathrm{T}}(\cdot \mid x)\bigr) = \mathbb{E}_{y \sim P_\theta}\bigl[\sum_t \ell(\theta;\, s_t, \tilde{s}_t)\bigr]`$,
+$`D_{\mathrm{KL}}\bigl(P_\theta(\cdot \mid x) \,\Vert\, P_{\mathrm{T}}(\cdot \mid x)\bigr) = 𝔼_{y \sim P_\theta}\bigl[\sum_t \ell(\theta;\, s_t, \tilde{s}_t)\bigr]`$,
 and its gradient is
 
 ```math
 \nabla_\theta D_{\mathrm{KL}}\bigl(P_\theta(\cdot \mid x) \,\big\Vert\, P_{\mathrm{T}}(\cdot \mid x)\bigr)
-= \mathbb{E}_{y \sim P_\theta}\Bigl[\sum_{t=1}^{L} \nabla_\theta \log \pi_\theta(y_t \mid s_t)
+= 𝔼_{y \sim P_\theta}\Bigl[\sum_{t=1}^{L} \nabla_\theta \log\,\pi_\theta(y_t \mid s_t)
 \sum_{t'=t}^{L} \bigl(-g_{t'}\bigr)\Bigr].
 \qquad (9)
 ```
@@ -181,9 +181,9 @@ One 4,096-token rollout needs about 92 GB of working memory for the backward pas
 accumulated over micro-batches of one rollout. Micro-batch $`m`$ holds $`N_m`$ response tokens and contributes
 
 ```math
-\hat{G}_k = \sum_{m} \nabla_\theta \Bigl[\frac{N_m}{N}\, \mathcal{L}_{k,m}(\theta)\Bigr]_{\theta = \theta_{k-1}},
+\hat{G}_k = \sum_{m} \nabla_\theta \Bigl[\frac{N_m}{N}\, ℒ_{k,m}(\theta)\Bigr]_{\theta = \theta_{k-1}},
 \qquad
-\mathcal{L}_{k,m}(\theta) = -\frac{1}{N_m} \sum_{(i,t) \in m} \mathrm{sg}\bigl[A_{i,t}\bigr]\, \log \pi_\theta\bigl(y_{i,t} \mid s_{i,t}\bigr),
+ℒ_{k,m}(\theta) = -\frac{1}{N_m} \sum_{(i,t) \in m} \mathrm{sg}\bigl[A_{i,t}\bigr]\, \log\,\pi_\theta\bigl(y_{i,t} \mid s_{i,t}\bigr),
 \qquad (10)
 ```
 
@@ -269,14 +269,14 @@ conditioned on an instruction that the student never sees.
 ### 4.5 Adapters
 
 Every two-dimensional full-precision weight matrix of the student's transformer stack gets an adapter. With
-$`W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}`$ the frozen matrix and $`r = 64`$,
+$`W \in ℝ^{d_{\mathrm{out}} \times d_{\mathrm{in}}}`$ the frozen matrix and $`r = 64`$,
 
 ```math
-W' = W + U D, \qquad U \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad D \in \mathbb{R}^{r \times d_{\mathrm{in}}},
+W' = W + U D, \qquad U \in ℝ^{d_{\mathrm{out}} \times r}, \quad D \in ℝ^{r \times d_{\mathrm{in}}},
 \qquad (11)
 ```
 
-with no scaling factor. Initialization: $`U = 0`$ and $`D_{ab} \sim \mathcal{N}(0,\, 1/d_{\mathrm{in}})`$
+with no scaling factor. Initialization: $`U = 0`$ and $`D_{ab} \sim 𝒩(0,\, 1/d_{\mathrm{in}})`$
 independently, from `jax.random.key(0)` split once per matrix. Both $`U`$ and $`D`$ are trained, in float32.
 Because $`U = 0`$ at the start, the student with $`\theta_0`$ computes exactly what the base model computes.
 
@@ -315,9 +315,9 @@ One update per step on $`\hat{G}_k`$:
 
 1. Sample 64 responses from the student (section 4.4).
 2. Place the responses behind the teacher's prompts and compute
-   $`\log \pi_{\mathrm{T}}(y_{i,t} \mid \tilde{s}_{i,t})`$ for every response token, two rollouts at a time.
+   $`\log\,\pi_{\mathrm{T}}(y_{i,t} \mid \tilde{s}_{i,t})`$ for every response token, two rollouts at a time.
    Shift the values by the difference in prompt length so that they line up with the student's positions.
-3. Compute $`\log \pi_{\theta_{k-1}}(y_{i,t} \mid s_{i,t})`$ with the student, two rollouts at a time.
+3. Compute $`\log\,\pi_{\theta_{k-1}}(y_{i,t} \mid s_{i,t})`$ with the student, two rollouts at a time.
 4. Form gaps, baseline and advantages (equations 3–5) over the whole step.
 5. Accumulate the gradient (equation 10), one rollout at a time.
 6. Clip and apply one Adam update, giving $`\theta_k`$.
@@ -447,8 +447,8 @@ the student with parameters $`\theta_{k-1}`$.
 | Metric | Definition |
 |---|---|
 | Reverse KL | $`-\frac{1}{N} \sum_{i,t} g_{i,t}`$: sampled-token estimate of the token-averaged $`\ell`$ at the visited contexts |
-| Student entropy | $`-\frac{1}{N} \sum_{i,t} \log \pi_{\theta_{k-1}}(y_{i,t} \mid s_{i,t})`$: sampled-token estimate of the student's mean next-token entropy |
-| Teacher cross-entropy | $`-\frac{1}{N} \sum_{i,t} \log \pi_{\mathrm{T}}(y_{i,t} \mid \tilde{s}_{i,t})`$. Reverse KL = teacher cross-entropy − student entropy |
+| Student entropy | $`-\frac{1}{N} \sum_{i,t} \log\,\pi_{\theta_{k-1}}(y_{i,t} \mid s_{i,t})`$: sampled-token estimate of the student's mean next-token entropy |
+| Teacher cross-entropy | $`-\frac{1}{N} \sum_{i,t} \log\,\pi_{\mathrm{T}}(y_{i,t} \mid \tilde{s}_{i,t})`$. Reverse KL = teacher cross-entropy − student entropy |
 | Gradient norm | $`\lVert \hat{G}_k \rVert_2`$ over all adapter parameters, before clipping |
 | Adapter norm | $`\bigl(\sum \lVert U \rVert_F^2\bigr)^{1/2}`$ over all adapters, after the update. Zero at initialization |
 | Mean length | $`N / B`$ |
