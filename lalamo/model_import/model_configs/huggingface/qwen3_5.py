@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Self
 
+from lalamo.model_import.model_configs.foreign_config import ForeignVisionLanguageConfig
 from lalamo.modules import AdditiveResidualConfig, SublayerConfig
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
@@ -19,6 +20,7 @@ from lalamo.modules.transformer import TransformerConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
+from .qwen3_5_vision import HFQwen35VisionConfig
 
 __all__ = ["HFQwen35Config"]
 
@@ -30,7 +32,7 @@ class Qwen35RopeParameters:
 
 
 @dataclass(frozen=True)
-class HFQwen35Config(HuggingFaceLMConfig):
+class HFQwen35Config(HuggingFaceLMConfig, ForeignVisionLanguageConfig):
     model_type: Literal["qwen3_5", "qwen3_5_moe"]
     hidden_size: int
     num_hidden_layers: int
@@ -60,6 +62,11 @@ class HFQwen35Config(HuggingFaceLMConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
     eos_token_id: int | list[int] = field(default_factory=list)
     quantization: QuantizationConfigType | None = None
+    vision_config: HFQwen35VisionConfig | None = None
+
+    @property
+    def vision_encoder_config(self) -> HFQwen35VisionConfig | None:
+        return self.vision_config
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:

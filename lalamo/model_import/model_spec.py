@@ -6,10 +6,8 @@ from cattrs import GenConverter
 from lalamo.model_import.model_configs.foreign_config import (
     ForeignClassifierConfig,
     ForeignConfig,
-    ForeignImageProcessorConfig,
     ForeignLMConfig,
     ForeignTTSConfig,
-    ForeignVisionEncoderConfig,
 )
 from lalamo.model_import.origins import FileSpec, Origin
 from lalamo.models.chat_codec import ReasoningConfig, ResponseFormat
@@ -25,7 +23,6 @@ __all__ = [
     "LanguageModelSpec",
     "ModelSpec",
     "TTSModelSpec",
-    "VisionEncoderSpec",
 ]
 
 
@@ -44,17 +41,6 @@ class ConfigMap:
     generation_params_overrides: GenerationConfig | None = None
     chat_template: FileSpec | JSONFieldSpec | str | None = None
     system_prompt: FileSpec | str | None = None
-
-
-@dataclass(frozen=True)
-class VisionEncoderSpec:
-    """How to configure and load a vision encoder that ships inside a language model checkpoint."""
-
-    config_type: type[ForeignVisionEncoderConfig]
-    image_processor_config_type: type[ForeignImageProcessorConfig]
-    model_config: FileSpec
-    image_processor_config: FileSpec
-    weights_path: str
 
 
 @dataclass(frozen=True)
@@ -90,7 +76,6 @@ class LanguageModelSpec(ModelSpec[ForeignLMConfig]):
     user_role_name: str = "user"
     assistant_role_name: str = "assistant"
     grammar_start_tokens: tuple[str, ...] = ()
-    vision_encoder: VisionEncoderSpec | None = None
 
 
 @dataclass(frozen=True)

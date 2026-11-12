@@ -1,5 +1,5 @@
 import json
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,10 +30,10 @@ from lalamo.weight_matrix import CompressionImplementation
 __all__ = [
     "ForeignClassifierConfig",
     "ForeignConfig",
-    "ForeignImageProcessorConfig",
     "ForeignLMConfig",
     "ForeignTTSConfig",
     "ForeignVisionEncoderConfig",
+    "ForeignVisionLanguageConfig",
 ]
 
 
@@ -116,12 +116,14 @@ class ForeignTTSConfig(ForeignConfig[TTSModelConfig], RegistryABC):
 
 @dataclass(frozen=True)
 class ForeignVisionEncoderConfig(RegistryABC):
-    @classmethod
-    @abstractmethod
-    def from_json(cls, json_path: Path | str) -> Self: ...
+    image_processor_config_file: ClassVar[str]
+    weights_path: ClassVar[str]
 
     @abstractmethod
     def to_vision_encoder_config(self) -> VisionEncoderConfig: ...
+
+    @abstractmethod
+    def load_image_preprocessing_config(self, json_path: Path | str) -> ImagePreprocessingConfig: ...
 
     @abstractmethod
     def load_weights(
@@ -134,11 +136,7 @@ class ForeignVisionEncoderConfig(RegistryABC):
     ) -> VisionEncoder: ...
 
 
-@dataclass(frozen=True)
-class ForeignImageProcessorConfig(RegistryABC):
-    @classmethod
+class ForeignVisionLanguageConfig(ABC):
+    @property
     @abstractmethod
-    def from_json(cls, json_path: Path | str) -> Self: ...
-
-    @abstractmethod
-    def to_image_preprocessing_config(self) -> ImagePreprocessingConfig: ...
+    def vision_encoder_config(self) -> ForeignVisionEncoderConfig | None: ...

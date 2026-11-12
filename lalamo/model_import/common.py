@@ -34,7 +34,7 @@ from lalamo.weight_matrix import CompressionImplementation
 
 from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config, merge_token_ids
 from .huggingface_tokenizer_config import HFTokenizerConfig
-from .model_configs.foreign_config import ForeignConfig, ForeignLMConfig
+from .model_configs.foreign_config import ForeignConfig, ForeignLMConfig, ForeignVisionLanguageConfig
 from .model_spec import ClassifierModelSpec, FileSpec, JSONFieldSpec, LanguageModelSpec, ModelSpec, TTSModelSpec
 from .origins import (
     DownloadingFileEvent,
@@ -485,27 +485,24 @@ def import_vision_encoder(
     progress_callback: Callable[[StatusEvent], None] | None = None,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> ImportedVisionEncoder:
-    if not isinstance(model_spec, LanguageModelSpec) or model_spec.vision_encoder is None:
+    foreign_config = _load_foreign_config(model_spec, progress_callback)
+    if not isinstance(foreign_config, ForeignVisionLanguageConfig) or foreign_config.vision_encoder_config is None:
         raise ValueError(f"{model_spec.name} has no vision encoder.")
-    vision_spec = model_spec.vision_encoder
+    vision_config = foreign_config.vision_encoder_config
 
-    foreign_config = vision_spec.config_type.from_json(
-        model_spec.origin.resolve_file(vision_spec.model_config, progress_callback),
+    preprocessing_config = vision_config.load_image_preprocessing_config(
+        model_spec.origin.resolve_file(FileSpec(vision_config.image_processor_config_file), progress_callback),
     )
-    preprocessing_config = vision_spec.image_processor_config_type.from_json(
-        model_spec.origin.resolve_file(vision_spec.image_processor_config, progress_callback),
-    ).to_image_preprocessing_config()
-    encoder_config = foreign_config.to_vision_encoder_config()
-    if preprocessing_config.spatial_merge_size != encoder_config.spatial_merge_size:
-        raise ValueError("Preprocessor and vision tower disagree on the spatial merge size.")
-    if preprocessing_config.patch_size != encoder_config.patch_embedding_config.patch_size:
-        raise ValueError("Preprocessor and vision tower disagree on the patch size.")
+    encoder_config = vision_config.to_vision_encoder_config()
 
     with _load_checkpoint(model_spec, progress_callback) as checkpoint:
-        encoder = foreign_config.load_weights(
+        weights_prefix = f"{vision_config.weights_path}."
+        if not any(name.startswith(weights_prefix) for name in checkpoint.weights):
+            raise ValueError(f"{model_spec.name} declares a vision encoder, but its checkpoint has no vision weights.")
+        encoder = vision_config.load_weights(
             encoder_config.init(EmptyInitializer(default_dtype=dtype, sharding_config=sharding_config)),
             checkpoint.weights,
-            ParameterPath(vision_spec.weights_path),
+            ParameterPath(vision_config.weights_path),
             implementation=implementation,
         )
     return ImportedVisionEncoder(encoder=encoder, preprocessing_config=preprocessing_config)

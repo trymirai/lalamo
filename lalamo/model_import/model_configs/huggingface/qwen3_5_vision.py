@@ -8,7 +8,7 @@ import cattrs
 from jaxtyping import Array
 
 from lalamo.model_import.loaders.vision import load_qwen3_5_vision_encoder
-from lalamo.model_import.model_configs.foreign_config import ForeignImageProcessorConfig, ForeignVisionEncoderConfig
+from lalamo.model_import.model_configs.foreign_config import ForeignVisionEncoderConfig
 from lalamo.modules.activations import GELU
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import UngatedMLPConfig
@@ -27,17 +27,15 @@ from lalamo.modules.vision import (
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.weight_matrix import CompressionImplementation
 
-__all__ = [
-    "HFQwen35ImageProcessorConfig",
-    "HFQwen35VisionConfig",
-]
+__all__ = ["HFQwen35VisionConfig"]
 
 
 @dataclass(frozen=True)
 class HFQwen35VisionConfig(ForeignVisionEncoderConfig):
     """The ``vision_config`` block of a Qwen3.5 ``config.json``."""
 
-    _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
+    image_processor_config_file: ClassVar[str] = "preprocessor_config.json"
+    weights_path: ClassVar[str] = "model.visual"
 
     model_type: Literal["qwen3_5", "qwen3_5_moe"]
     depth: int
@@ -60,10 +58,13 @@ class HFQwen35VisionConfig(ForeignVisionEncoderConfig):
         if self.hidden_size % self.num_heads:
             raise ValueError("hidden_size must be divisible by num_heads.")
 
-    @classmethod
-    def from_json(cls, json_path: Path | str) -> Self:
-        with Path(json_path).open() as config_file:
-            return cls._converter.structure(json.load(config_file)["vision_config"], cls)
+    def load_image_preprocessing_config(self, json_path: Path | str) -> ImagePreprocessingConfig:
+        preprocessing_config = HFQwen35ImageProcessorConfig.from_json(json_path).to_image_preprocessing_config()
+        if preprocessing_config.spatial_merge_size != self.spatial_merge_size:
+            raise ValueError("Preprocessor and vision tower disagree on the spatial merge size.")
+        if preprocessing_config.patch_size != self.patch_size:
+            raise ValueError("Preprocessor and vision tower disagree on the patch size.")
+        return preprocessing_config
 
     def load_weights(
         self,
@@ -143,7 +144,7 @@ class HFImageSizeLimits:
 
 
 @dataclass(frozen=True)
-class HFQwen35ImageProcessorConfig(ForeignImageProcessorConfig):
+class HFQwen35ImageProcessorConfig:
     """``preprocessor_config.json``. Despite their names, the ``size`` keys are HF's min and max pixel counts."""
 
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()

@@ -1,6 +1,7 @@
 from functools import cache
 from itertools import accumulate
 
+import cattrs
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -82,7 +83,7 @@ def lalamo_encoder() -> VisionEncoder:
     weights_dict = {
         f"model.visual.{name}": jnp.asarray(tensor.detach().numpy()) for name, tensor in hf_model.state_dict().items()
     }
-    foreign_config = HFQwen35VisionConfig._converter.structure(  # noqa: SLF001
+    foreign_config = cattrs.structure(
         {**TINY_VISION_CONFIG.to_dict(), "model_type": "qwen3_5", "deepstack_visual_indexes": []},
         HFQwen35VisionConfig,
     )
