@@ -43,8 +43,8 @@ All logarithms are natural, so every information quantity is in nats.
 | $`\pi_{\mathrm{T}}(v \mid \tilde{s})`$ | Teacher's next-token distribution, defined the same way |
 | $`B`$, $`i`$ | Number of rollouts per step ($`B = 64`$) and the rollout index |
 | $`L_i`$, $`N`$ | Length of response $`i`$, and the number of response tokens in the step, $`N = \sum_{i=1}^{B} L_i`$ |
-| $`g_{i,t}`$ | Log-probability gap of a sampled token, teacher minus student (equation 3) |
-| $`b`$, $`A_{i,t}`$ | Baseline and advantage (equations 4 and 5) |
+| $`g_{i,t}`$ | Log-probability gap of a sampled token, teacher minus student (equation 2) |
+| $`b`$, $`A_{i,t}`$ | Baseline and advantage (equations 3 and 4) |
 | $`\mathrm{sg}[\cdot]`$ | Stop-gradient: the argument is treated as a constant when differentiating |
 | $`K`$, $`k`$ | Number of optimizer steps ($`K = 50`$) and the step index, $`k = 1, \dots, K`$ |
 
@@ -62,28 +62,6 @@ distribution to the teacher's:
 \qquad (1)
 ```
 
-Its gradient can be written as an expectation over a token sampled from the student, which is what makes a
-sampled-token estimator possible. For any $`c`$ that does not depend on $`v`$,
-
-```math
-\nabla_\theta\, \ell(\theta;\, s, \tilde{s})
-= 𝔼_{v \sim \pi_\theta(\cdot \mid s)}
-\Bigl[\bigl(\log\,\pi_\theta(v \mid s) - \log\,\pi_{\mathrm{T}}(v \mid \tilde{s}) - c\bigr)\,
-\nabla_\theta \log\,\pi_\theta(v \mid s)\Bigr].
-\qquad (2)
-```
-
-Derivation: differentiating (1) with the product rule gives
-
-```math
-\sum_{v} \nabla_\theta \pi_\theta(v \mid s)\,\bigl[\log\,\pi_\theta(v \mid s) - \log\,\pi_{\mathrm{T}}(v \mid \tilde{s})\bigr]
-\;+\; \sum_{v} \pi_\theta(v \mid s)\, \nabla_\theta \log\,\pi_\theta(v \mid s).
-```
-
-The second sum is $`\nabla_\theta \sum_v \pi_\theta(v \mid s) = 0`$. In the first,
-$`\nabla_\theta \pi_\theta = \pi_\theta \nabla_\theta \log\,\pi_\theta`$ turns the sum into the expectation. The
-constant drops out because $`𝔼_v[c\, \nabla_\theta \log\,\pi_\theta(v \mid s)] = c\, \nabla_\theta 1 = 0`$.
-
 ### 3.2 Sampled-token estimator used in the run
 
 In step $`k`$ the student with parameters $`\theta_{k-1}`$ samples $`B`$ responses, one per problem. Every
@@ -91,84 +69,50 @@ response token $`y_{i,t}`$ is scored by both models, giving the log-probability 
 
 ```math
 g_{i,t} = \log\,\pi_{\mathrm{T}}\bigl(y_{i,t} \mid \tilde{s}_{i,t}\bigr) - \log\,\pi_{\theta_{k-1}}\bigl(y_{i,t} \mid s_{i,t}\bigr).
-\qquad (3)
+\qquad (2)
 ```
 
 The baseline is the mean gap over all response tokens of the step, and the advantage is the centred gap:
 
 ```math
 b = \frac{1}{N} \sum_{i=1}^{B} \sum_{t=1}^{L_i} g_{i,t},
-\qquad (4)
+\qquad (3)
 ```
 
 ```math
 A_{i,t} = g_{i,t} - b.
-\qquad (5)
+\qquad (4)
 ```
 
 The loss of step $`k`$ is the policy-gradient surrogate
 
 ```math
 ℒ_k(\theta) = -\frac{1}{N} \sum_{i=1}^{B} \sum_{t=1}^{L_i}
-\mathrm{sg}\bigl[A_{i,t}\bigr]\, \log\,\pi_\theta\bigl(y_{i,t} \mid s_{i,t}\bigr),
-\qquad (6)
+\mathrm{sg}\bigl[A_{i,t}\bigr]\, \log\,\pi_\theta\bigl(y_{i,t} \mid s_{i,t}\bigr).
+\qquad (5)
 ```
 
-and the step's gradient is
+The step's gradient $`\hat{G}_k`$ is the gradient of (5) with respect to $`\theta`$ at $`\theta_{k-1}`$. It is a
+sampled-token estimate of the gradient of (1), averaged over the response tokens of the step, at the contexts
+the student visited. Only the sampled token of each context is used; the sum over the vocabulary in (1) is
+never formed. `tests/unit/test_on_policy_distillation.py` checks on a tiny model that the expectation of the
+estimator equals the exact gradient of (1), and that the gradient is zero when teacher and student are the same
+model.
 
-```math
-\hat{G}_k = \nabla_\theta ℒ_k(\theta)\Big|_{\theta = \theta_{k-1}}
-= \frac{1}{N} \sum_{i=1}^{B} \sum_{t=1}^{L_i}
-\bigl(\log\,\pi_{\theta_{k-1}}(y_{i,t} \mid s_{i,t}) - \log\,\pi_{\mathrm{T}}(y_{i,t} \mid \tilde{s}_{i,t}) + b\bigr)\,
-\nabla_\theta \log\,\pi_\theta(y_{i,t} \mid s_{i,t})\Big|_{\theta = \theta_{k-1}}.
-\qquad (7)
-```
+### 3.3 What the estimator leaves out
 
-Each summand of (7) is the integrand of (2) with $`c = -b`$, evaluated at the sampled token. So, taking the
-contexts as given, $`\hat{G}_k`$ estimates the token-averaged gradient of the per-context reverse KL at the
-contexts the student visited:
-
-```math
-\hat{G}_k \;\approx\; \frac{1}{N} \sum_{i=1}^{B} \sum_{t=1}^{L_i}
-\nabla_\theta\, \ell\bigl(\theta;\, s_{i,t}, \tilde{s}_{i,t}\bigr)\Big|_{\theta = \theta_{k-1}}.
-\qquad (8)
-```
-
-Only one token per context is used (the sampled one); the sum over the vocabulary in (1) is never formed.
-`tests/unit/test_on_policy_distillation.py` checks on a tiny model that the expectation of the estimator equals
-the exact gradient of (1), and that the gradient is zero when teacher and student are the same model.
-
-### 3.3 What the estimator is not
-
-The approximation in (8) hides three things, listed from most to least important.
-
-**(a) No credit for downstream effects.** The sequence-level reverse KL between the two models' response
-distributions decomposes, by the chain rule, into the expected sum of per-context terms,
-$`D_{\mathrm{KL}}\bigl(P_\theta(\cdot \mid x) \,\Vert\, P_{\mathrm{T}}(\cdot \mid x)\bigr) = 𝔼_{y \sim P_\theta}\bigl[\sum_t \ell(\theta;\, s_t, \tilde{s}_t)\bigr]`$,
-and its gradient is
-
-```math
-\nabla_\theta D_{\mathrm{KL}}\bigl(P_\theta(\cdot \mid x) \,\big\Vert\, P_{\mathrm{T}}(\cdot \mid x)\bigr)
-= 𝔼_{y \sim P_\theta}\Bigl[\sum_{t=1}^{L} \nabla_\theta \log\,\pi_\theta(y_t \mid s_t)
-\sum_{t'=t}^{L} \bigl(-g_{t'}\bigr)\Bigr].
-\qquad (9)
-```
-
-Here $`g_{t'}`$ is the gap of equation (3) for the token at position $`t'`$, evaluated at the current $`\theta`$.
-The estimator (7) keeps only the $`t' = t`$ term of the inner sum. A token is therefore pushed up or down
-according to how the teacher rates that token alone, not according to where it leads the rest of the response.
-Equivalently, the distribution of visited contexts is treated as fixed. Nothing in the loss stops the student
-from moving to contexts where the per-context divergence is larger.
-
-**(b) The baseline is computed from the same batch.** $`b`$ contains the token's own gap and the gaps of later
-tokens of the same rollout, which depend on that token. It is therefore not exactly independent of the sampled
-token, as (2) requires. The dependent tokens carry weight $`1/N`$ each, at most
-$`L_i / N \approx 1/B \approx 1.6\%`$ in total. This bias was not corrected.
-
-**(c) Token-mean normalisation.** The loss is divided by $`N`$, which depends on the sampled lengths, so long
-rollouts contribute more tokens and each token weighs the same. The loss is not a mean over rollouts.
-
-Responses that reach $`L_{\max}`$ are cut off; no term accounts for what would have followed.
+- **Credit assignment across tokens.** A token is pushed up or down according to how the teacher rates that
+  token alone. The gaps of the tokens that follow it do not enter its advantage, so where a token leads the
+  rest of the response has no effect on its update. The contexts the student visits are treated as fixed, and
+  nothing in the loss stops the student from moving to contexts where (1) is larger.
+- **An independent baseline.** $`b`$ is computed from the same batch. It contains the token's own gap and the
+  gaps of later tokens of the same rollout, so it is not strictly independent of the sampled token. The
+  affected share of the baseline is at most $`L_i / N \approx 1/B \approx 1.6\%`$ per token. This bias was not
+  corrected.
+- **Per-rollout weighting.** The loss is divided by $`N`$, so every token weighs the same and long rollouts
+  contribute more. It is not a mean over rollouts.
+- **Truncated responses.** Responses that reach $`L_{\max}`$ are cut off; no term accounts for what would have
+  followed.
 
 ### 3.4 Not in the loss
 
@@ -177,18 +121,19 @@ the student to its initial weights, no entropy bonus other than the one implicit
 
 ### 3.5 Accumulation over micro-batches
 
-One 4,096-token rollout needs about 92 GB of working memory for the backward pass, so the gradient of (6) is
+One 4,096-token rollout needs about 92 GB of working memory for the backward pass, so the gradient of (5) is
 accumulated over micro-batches of one rollout. Micro-batch $`m`$ holds $`N_m`$ response tokens and contributes
+the gradient of its own token-mean loss, weighted by its share of the step's tokens:
 
 ```math
 \hat{G}_k = \sum_{m} \nabla_\theta \Bigl[\frac{N_m}{N}\, ℒ_{k,m}(\theta)\Bigr]_{\theta = \theta_{k-1}},
 \qquad
-ℒ_{k,m}(\theta) = -\frac{1}{N_m} \sum_{(i,t) \in m} \mathrm{sg}\bigl[A_{i,t}\bigr]\, \log\,\pi_\theta\bigl(y_{i,t} \mid s_{i,t}\bigr),
-\qquad (10)
+ℒ_{k,m}(\theta) = -\frac{1}{N_m} \sum_{(i,t) \in m} \mathrm{sg}\bigl[A_{i,t}\bigr]\, \log\,\pi_\theta\bigl(y_{i,t} \mid s_{i,t}\bigr).
+\qquad (6)
 ```
 
-which equals (7) exactly. The advantages are computed once for the whole step, before any gradient, so $`b`$ is
-the mean over all 64 rollouts and not over a micro-batch. There is exactly one optimizer update per step.
+The advantages are computed once for the whole step, before any gradient, so $`b`$ is the mean over all 64
+rollouts and not over a micro-batch. There is exactly one optimizer update per step.
 
 ## 4. Setup
 
@@ -273,7 +218,7 @@ $`W \in ℝ^{d_{\mathrm{out}} \times d_{\mathrm{in}}}`$ the frozen matrix and $`
 
 ```math
 W' = W + U D, \qquad U \in ℝ^{d_{\mathrm{out}} \times r}, \quad D \in ℝ^{r \times d_{\mathrm{in}}},
-\qquad (11)
+\qquad (7)
 ```
 
 with no scaling factor. Initialization: $`U = 0`$ and $`D_{ab} \sim 𝒩(0,\, 1/d_{\mathrm{in}})`$
@@ -304,8 +249,8 @@ One update per step on $`\hat{G}_k`$:
 
 - Base weights are bfloat16 and stay frozen; adapters, optimizer state, losses and gradients are float32.
 - Logits are cast to float32 before the log-softmax over the full vocabulary.
-- The log-probabilities in (3), for both models, come from lalamo's inference forward pass
-  (`DecoderForwardPassConfig.for_inference()`), as does sampling. The gradient in (7) is taken through the
+- The log-probabilities in (2), for both models, come from lalamo's inference forward pass
+  (`DecoderForwardPassConfig.for_inference()`), as does sampling. The gradient of (5) is taken through the
   training forward pass (`DecoderForwardPassConfig.for_training()`), which uses a different attention kernel.
   The two passes compute the same function up to floating-point differences.
 - The gradient is compiled under JAX's standard dtype promotion instead of lalamo's strict setting, because the
@@ -318,8 +263,8 @@ One update per step on $`\hat{G}_k`$:
    $`\log\,\pi_{\mathrm{T}}(y_{i,t} \mid \tilde{s}_{i,t})`$ for every response token, two rollouts at a time.
    Shift the values by the difference in prompt length so that they line up with the student's positions.
 3. Compute $`\log\,\pi_{\theta_{k-1}}(y_{i,t} \mid s_{i,t})`$ with the student, two rollouts at a time.
-4. Form gaps, baseline and advantages (equations 3–5) over the whole step.
-5. Accumulate the gradient (equation 10), one rollout at a time.
+4. Form gaps, baseline and advantages (equations 2–4) over the whole step.
+5. Accumulate the gradient (equation 6), one rollout at a time.
 6. Clip and apply one Adam update, giving $`\theta_k`$.
 7. Append the step's metrics to `metrics.jsonl`. After steps 5, 10, …, 50, save a checkpoint (adapters,
    optimizer state, step count).
@@ -337,7 +282,7 @@ All values are the defaults of the script and were written to the run's `config.
 | Adapter rank $`r`$ | 64 |
 | Learning rate | $`10^{-4}`$ |
 | Gradient clip norm | 1.0 |
-| Advantage baseline | batch mean (equation 4) |
+| Advantage baseline | batch mean (equation 3) |
 | Seed | 0 |
 | Gradient micro-batch | 1 rollout |
 | Student scoring micro-batch | 2 rollouts |
@@ -615,7 +560,7 @@ These are readings of the tables above. None was tested with a further experimen
   between checkpoints and no direct measurement of forgetting.
 - **The teacher was not evaluated on MMLU-Pro.**
 - **The reverse-KL estimate is not a progress measure.** It is an average over the contexts the student
-  visits, and those change during training (section 3.3, a). Two reference values were not logged: the
+  visits, and those change during training (section 3.3). Two reference values were not logged: the
   teacher's entropy on its own samples, and the per-context reverse KL computed over the full vocabulary.
 - **Truncated rollouts.** Between 8% and 66% of training rollouts finish within 4,096 tokens, so early in
   training nearly all of the loss falls on reasoning text and little on final replies.
