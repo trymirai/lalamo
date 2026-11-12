@@ -45,7 +45,7 @@ All logarithms are natural, so every information quantity is in nats.
 | $`L_i`$, $`N`$ | Length of response $`i`$, and the number of response tokens in the step, $`N = \sum_{i=1}^{B} L_i`$ |
 | $`g_{i,t}`$ | Log-probability gap of a sampled token, teacher minus student (equation 3) |
 | $`b`$, $`A_{i,t}`$ | Baseline and advantage (equations 4 and 5) |
-| $`\operatorname{sg}[\cdot]`$ | Stop-gradient: the argument is treated as a constant when differentiating |
+| $`\mathrm{sg}[\cdot]`$ | Stop-gradient: the argument is treated as a constant when differentiating |
 | $`K`$, $`k`$ | Number of optimizer steps ($`K = 50`$) and the step index, $`k = 1, \dots, K`$ |
 
 ## 3. Loss
@@ -59,7 +59,7 @@ distribution to the teacher's:
 \ell(\theta;\, s, \tilde{s})
 = D_{\mathrm{KL}}\bigl(\pi_\theta(\cdot \mid s) \,\big\Vert\, \pi_{\mathrm{T}}(\cdot \mid \tilde{s})\bigr)
 = \sum_{v \in \mathcal{V}} \pi_\theta(v \mid s)\,\bigl[\log \pi_\theta(v \mid s) - \log \pi_{\mathrm{T}}(v \mid \tilde{s})\bigr].
-\tag{1}
+\qquad (1)
 ```
 
 Its gradient can be written as an expectation over a token sampled from the student, which is what makes a
@@ -70,7 +70,7 @@ sampled-token estimator possible. For any $`c`$ that does not depend on $`v`$,
 = \mathbb{E}_{v \sim \pi_\theta(\cdot \mid s)}
 \Bigl[\bigl(\log \pi_\theta(v \mid s) - \log \pi_{\mathrm{T}}(v \mid \tilde{s}) - c\bigr)\,
 \nabla_\theta \log \pi_\theta(v \mid s)\Bigr].
-\tag{2}
+\qquad (2)
 ```
 
 Derivation: differentiating (1) with the product rule gives
@@ -91,27 +91,27 @@ response token $`y_{i,t}`$ is scored by both models, giving the log-probability 
 
 ```math
 g_{i,t} = \log \pi_{\mathrm{T}}\bigl(y_{i,t} \mid \tilde{s}_{i,t}\bigr) - \log \pi_{\theta_{k-1}}\bigl(y_{i,t} \mid s_{i,t}\bigr).
-\tag{3}
+\qquad (3)
 ```
 
 The baseline is the mean gap over all response tokens of the step, and the advantage is the centred gap:
 
 ```math
 b = \frac{1}{N} \sum_{i=1}^{B} \sum_{t=1}^{L_i} g_{i,t},
-\tag{4}
+\qquad (4)
 ```
 
 ```math
 A_{i,t} = g_{i,t} - b.
-\tag{5}
+\qquad (5)
 ```
 
 The loss of step $`k`$ is the policy-gradient surrogate
 
 ```math
 \mathcal{L}_k(\theta) = -\frac{1}{N} \sum_{i=1}^{B} \sum_{t=1}^{L_i}
-\operatorname{sg}\bigl[A_{i,t}\bigr]\, \log \pi_\theta\bigl(y_{i,t} \mid s_{i,t}\bigr),
-\tag{6}
+\mathrm{sg}\bigl[A_{i,t}\bigr]\, \log \pi_\theta\bigl(y_{i,t} \mid s_{i,t}\bigr),
+\qquad (6)
 ```
 
 and the step's gradient is
@@ -121,7 +121,7 @@ and the step's gradient is
 = \frac{1}{N} \sum_{i=1}^{B} \sum_{t=1}^{L_i}
 \bigl(\log \pi_{\theta_{k-1}}(y_{i,t} \mid s_{i,t}) - \log \pi_{\mathrm{T}}(y_{i,t} \mid \tilde{s}_{i,t}) + b\bigr)\,
 \nabla_\theta \log \pi_\theta(y_{i,t} \mid s_{i,t})\Big|_{\theta = \theta_{k-1}}.
-\tag{7}
+\qquad (7)
 ```
 
 Each summand of (7) is the integrand of (2) with $`c = -b`$, evaluated at the sampled token. So, taking the
@@ -131,7 +131,7 @@ contexts the student visited:
 ```math
 \hat{G}_k \;\approx\; \frac{1}{N} \sum_{i=1}^{B} \sum_{t=1}^{L_i}
 \nabla_\theta\, \ell\bigl(\theta;\, s_{i,t}, \tilde{s}_{i,t}\bigr)\Big|_{\theta = \theta_{k-1}}.
-\tag{8}
+\qquad (8)
 ```
 
 Only one token per context is used (the sampled one); the sum over the vocabulary in (1) is never formed.
@@ -151,7 +151,7 @@ and its gradient is
 \nabla_\theta D_{\mathrm{KL}}\bigl(P_\theta(\cdot \mid x) \,\big\Vert\, P_{\mathrm{T}}(\cdot \mid x)\bigr)
 = \mathbb{E}_{y \sim P_\theta}\Bigl[\sum_{t=1}^{L} \nabla_\theta \log \pi_\theta(y_t \mid s_t)
 \sum_{t'=t}^{L} \bigl(-g_{t'}\bigr)\Bigr].
-\tag{9}
+\qquad (9)
 ```
 
 Here $`g_{t'}`$ is the gap of equation (3) for the token at position $`t'`$, evaluated at the current $`\theta`$.
@@ -183,8 +183,8 @@ accumulated over micro-batches of one rollout. Micro-batch $`m`$ holds $`N_m`$ r
 ```math
 \hat{G}_k = \sum_{m} \nabla_\theta \Bigl[\frac{N_m}{N}\, \mathcal{L}_{k,m}(\theta)\Bigr]_{\theta = \theta_{k-1}},
 \qquad
-\mathcal{L}_{k,m}(\theta) = -\frac{1}{N_m} \sum_{(i,t) \in m} \operatorname{sg}\bigl[A_{i,t}\bigr]\, \log \pi_\theta\bigl(y_{i,t} \mid s_{i,t}\bigr),
-\tag{10}
+\mathcal{L}_{k,m}(\theta) = -\frac{1}{N_m} \sum_{(i,t) \in m} \mathrm{sg}\bigl[A_{i,t}\bigr]\, \log \pi_\theta\bigl(y_{i,t} \mid s_{i,t}\bigr),
+\qquad (10)
 ```
 
 which equals (7) exactly. The advantages are computed once for the whole step, before any gradient, so $`b`$ is
@@ -273,7 +273,7 @@ $`W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}`$ the frozen matrix
 
 ```math
 W' = W + U D, \qquad U \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad D \in \mathbb{R}^{r \times d_{\mathrm{in}}},
-\tag{11}
+\qquad (11)
 ```
 
 with no scaling factor. Initialization: $`U = 0`$ and $`D_{ab} \sim \mathcal{N}(0,\, 1/d_{\mathrm{in}})`$
