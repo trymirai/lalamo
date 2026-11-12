@@ -17,6 +17,7 @@ from lalamo.models import (
     LanguageModelConfig,
     TTSConfig,
     TTSModelConfig,
+    VisionLanguageModelConfig,
 )
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.modules.classifier import ClassifierConfig
@@ -140,3 +141,12 @@ class ForeignVisionLanguageConfig(ABC):
     @property
     @abstractmethod
     def vision_encoder_config(self) -> ForeignVisionEncoderConfig | None: ...
+
+    @abstractmethod
+    def to_vision_language_config(
+        self,
+        metadata_dict: Mapping[str, str],
+        token_codec_config: ChatCodecConfig,
+        generation_config: GenerationConfig,
+        image_preprocessing_config: ImagePreprocessingConfig,
+    ) -> VisionLanguageModelConfig: ...
