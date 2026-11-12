@@ -1,7 +1,11 @@
-"""Pilot of on-policy distillation: a large teacher is distilled into a smaller student on math problems.
+"""Pilot of distilling a large teacher into a smaller student on math problems.
 
-Accuracy on MATH-500 (the distilled skill) and on MMLU-Pro (a check against forgetting) is measured before and
-after training. Everything the run produces is written to the output directory, and restarting the script with
+The method is chosen with `--method`: on-policy distillation (the student is corrected on what it samples itself),
+a supervised baseline (the student is fine-tuned on responses the teacher wrote), training on a reward for correct
+answers, or on-policy distillation combined with that reward.
+
+Accuracy on MATH-500 (the distilled skill) and on MMLU-Pro (a check against forgetting) is measured before, during
+and after training. Everything the run produces is written to the output directory, and restarting the script with
 the same output directory resumes the run.
 """
 
@@ -15,6 +19,7 @@ import string
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Protocol
 
@@ -29,15 +34,26 @@ from huggingface_hub import hf_hub_download
 
 from lalamo.distillation import AdvantageBaseline, sample_responses
 from lalamo.distillation.runner import (
-    DistillationConfig,
     ExecutionConfig,
+    OnPolicyConfig,
     PromptPair,
     StepReport,
-    run_on_policy_distillation,
+    SupervisedConfig,
+    SupervisedExample,
+    SupervisedStepReport,
+    run_on_policy_training,
+    run_supervised_fine_tuning,
 )
 from lalamo.model_import.common import import_model
 from lalamo.models import GenerationConfig
 from lalamo.module import Keychain, ShardingConfig
+
+
+class Method(StrEnum):
+    ON_POLICY_DISTILLATION = "on-policy-distillation"
+    SUPERVISED = "supervised"
+    REWARD = "reward"
+    DISTILLATION_AND_REWARD = "distillation-and-reward"
 
 
 @dataclass(frozen=True)
@@ -51,6 +67,22 @@ class MultipleChoiceQuestion:
     question: str
     options: tuple[str, ...]
     answer: str
+
+
+@dataclass(frozen=True)
+class TrainingPrompt:
+    problem: MathProblem
+    pair: PromptPair
+
+
+@dataclass(frozen=True)
+class TeacherResponse:
+    """A training prompt with the response the teacher sampled for it."""
+
+    index: int
+    problem: MathProblem
+    pair: PromptPair
+    response: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -156,24 +188,39 @@ def render(model: LanguageModel, prompt: str) -> tuple[int, ...]:
     return tuple(codec.encode_text(codec.render_request([UserMessage(content=prompt)])))
 
 
-def select_prompt_pairs(
+def select_training_prompts(
     student: LanguageModel,
     teacher: LanguageModel,
     problems: Sequence[MathProblem],
-    num_pairs: int,
+    num_prompts: int,
     max_prompt_length: int,
     seed: int,
-) -> list[PromptPair]:
+) -> list[TrainingPrompt]:
     shuffled = random.Random(seed).sample(problems, len(problems))
-    pairs = (
-        PromptPair(student=render(student, math_prompt(problem)), teacher=render(teacher, math_prompt(problem)))
+    prompts = (
+        TrainingPrompt(
+            problem=problem,
+            pair=PromptPair(
+                student=render(student, math_prompt(problem)),
+                teacher=render(teacher, math_prompt(problem)),
+            ),
+        )
         for problem in shuffled
     )
-    fitting_pairs = (pair for pair in pairs if max(len(pair.student), len(pair.teacher)) <= max_prompt_length)
-    selected = [pair for _, pair in zip(range(num_pairs), fitting_pairs, strict=False)]
-    if len(selected) < num_pairs:
-        raise ValueError(f"Only {len(selected)} of the {num_pairs} required training prompts are available.")
+    fitting_prompts = (
+        prompt for prompt in prompts if max(len(prompt.pair.student), len(prompt.pair.teacher)) <= max_prompt_length
+    )
+    selected = [prompt for _, prompt in zip(range(num_prompts), fitting_prompts, strict=False)]
+    if len(selected) < num_prompts:
+        raise ValueError(f"Only {len(selected)} of the {num_prompts} required training prompts are available.")
     return selected
+
+
+def training_problems_without_evaluation_overlap() -> list[MathProblem]:
+    return without_evaluation_overlap(
+        load_math_problems("agentica-org/DeepScaleR-Preview-Dataset", "deepscaler.json"),
+        load_math_problems("HuggingFaceH4/MATH-500", "test.jsonl"),
+    )
 
 
 def final_reply(response: str) -> str | None:
@@ -182,6 +229,11 @@ def final_reply(response: str) -> str | None:
     if not reasoning_end:
         return None
     return reply
+
+
+def response_text(model: LanguageModel, response: Sequence[int]) -> str:
+    stop_token_ids = frozenset(model.config.generation_config.stop_token_ids)
+    return model.token_codec.decode_tokens([token_id for token_id in response if token_id not in stop_token_ids])
 
 
 def last_boxed_content(text: str) -> str | None:
@@ -234,6 +286,38 @@ def math_answer(reply: str) -> str | None:
     return normalize_math_answer(boxed)
 
 
+def math_reward(model: LanguageModel, problem: MathProblem, response: Sequence[int]) -> float:
+    """1 if the final reply boxes the reference answer, else 0. A response cut off while reasoning scores 0."""
+    reply = final_reply(response_text(model, response))
+    if reply is None:
+        return 0.0
+    return float(math_answer(reply) == normalize_math_answer(problem.answer))
+
+
+def save_teacher_responses(directory: Path, batch_index: int, responses: Sequence[TeacherResponse]) -> None:
+    """A batch file appears only once it is complete, so an interrupted generation redoes the unfinished batch."""
+    path = teacher_responses_path(directory, batch_index)
+    unfinished_path = path.with_suffix(".unfinished")
+    unfinished_path.write_text("".join(json.dumps(cattrs.unstructure(response)) + "\n" for response in responses))
+    unfinished_path.replace(path)
+
+
+def teacher_responses_path(directory: Path, batch_index: int) -> Path:
+    return directory / f"batch_{batch_index:05d}.jsonl"
+
+
+def load_teacher_responses(directory: Path | str) -> list[TeacherResponse]:
+    rows = [
+        json.loads(line)
+        for path in sorted(Path(directory).glob("batch_*.jsonl"))
+        for line in path.read_text().splitlines()
+    ]
+    responses = cattrs.structure(rows, list[TeacherResponse])
+    if [response.index for response in responses] != list(range(len(responses))):
+        raise ValueError(f"The teacher responses in {directory} are not a complete run of batches.")
+    return responses
+
+
 def multiple_choice_answer(reply: str) -> str | None:
     letters = re.findall(r"Answer:\s*\(?([A-J])\)?", reply)
     if not letters:
@@ -255,7 +339,6 @@ def evaluate(
     start = time.monotonic()
     token_prompts = [render(model, prompt) for prompt in prompts]
     prompt_capacity = max(len(prompt) for prompt in token_prompts)
-    stop_token_ids = frozenset(model.config.generation_config.stop_token_ids)
     responses: list[tuple[int, ...]] = []
     for batch_index, batch_start in enumerate(range(0, len(token_prompts), batch_size)):
         batch = token_prompts[batch_start : batch_start + batch_size]
@@ -272,11 +355,7 @@ def evaluate(
         )
         responses.extend(sampled[: len(batch)])
 
-    texts = [
-        model.token_codec.decode_tokens([token_id for token_id in response if token_id not in stop_token_ids])
-        for response in responses
-    ]
-    replies = [final_reply(text) for text in texts]
+    replies = [final_reply(response_text(model, response)) for response in responses]
     answers = [None if reply is None else extract_answer(reply) for reply in replies]
     num_correct = sum(answer == reference for answer, reference in zip(answers, reference_answers, strict=True))
     return EvaluationResult(
@@ -360,10 +439,10 @@ def start_wandb_run(
 
 def wandb_step_metrics(
     report: StepReport,
-    distillation_config: DistillationConfig,
+    config: OnPolicyConfig,
     reasoning_end_token_id: int | None,
 ) -> dict[str, Any]:
-    """Everything charted for one training step: its scalar metrics and how the per-token gaps are distributed."""
+    """Everything charted for one on-policy step: its scalar metrics and how the per-token gaps are distributed."""
     import wandb  # noqa: PLC0415
 
     metrics = report.metrics
@@ -374,13 +453,6 @@ def wandb_step_metrics(
         + metrics.student_scoring_seconds
         + metrics.gradient_seconds
     )
-    position_range_length = math.ceil(distillation_config.max_response_length / len(metrics.reverse_kl_by_position))
-    position_range_starts = [index * position_range_length for index in range(len(metrics.reverse_kl_by_position))]
-    reverse_kl_by_position = {
-        f"reverse_kl_by_position/tokens_{start:05d}_to_{start + position_range_length:05d}": value
-        for start, value in zip(position_range_starts, metrics.reverse_kl_by_position, strict=True)
-        if value is not None
-    }
     reasoning_finished = {}
     if reasoning_end_token_id is not None:
         reasoning_finished = {
@@ -389,61 +461,125 @@ def wandb_step_metrics(
             )
             / len(report.responses)
         }
+    # Only a run with a teacher has log-probability gaps to chart.
+    gap_charts: dict[str, Any] = {}
+    if (
+        report.log_prob_gaps is not None
+        and metrics.log_prob_gap_quantiles is not None
+        and metrics.response_reverse_kl_quantiles is not None
+        and metrics.reverse_kl_by_position is not None
+    ):
+        position_range_length = math.ceil(config.max_response_length / len(metrics.reverse_kl_by_position))
+        gap_charts = {
+            **{
+                f"log_prob_gap/{name}": value
+                for name, value in zip(
+                    ("p01", "p10", "p50", "p90", "p99"), metrics.log_prob_gap_quantiles, strict=True
+                )
+            },
+            "log_prob_gap/strong_disagreement_fraction": metrics.strong_disagreement_fraction,
+            # Clipped so that a few extreme tokens do not flatten the histogram.
+            "log_prob_gap/histogram": wandb.Histogram(
+                np.clip(np.concatenate(report.log_prob_gaps), -10.0, 5.0).tolist(),
+                num_bins=64,
+            ),
+            **{
+                f"rollout_reverse_kl/{name}": value
+                for name, value in zip(("min", "median", "max"), metrics.response_reverse_kl_quantiles, strict=True)
+            },
+            **{
+                f"reverse_kl_by_position/tokens_{start:05d}_to_{start + position_range_length:05d}": value
+                for start, value in zip(
+                    range(0, config.max_response_length, position_range_length),
+                    metrics.reverse_kl_by_position,
+                    strict=True,
+                )
+                if value is not None
+            },
+        }
     return {
         **{f"train/{name}": value for name, value in scalars.items() if name != "step"},
         **reasoning_finished,
-        "train/learning_rate": distillation_config.learning_rate,
-        "train/gradient_was_clipped": float(metrics.gradient_norm > distillation_config.gradient_clip_norm),
+        "train/learning_rate": config.learning_rate,
+        "train/gradient_was_clipped": float(metrics.gradient_norm > config.gradient_clip_norm),
         "train/step_seconds": step_seconds,
         "train/response_tokens_per_second": metrics.num_response_tokens / step_seconds,
-        **{
-            f"log_prob_gap/{name}": value
-            for name, value in zip(("p01", "p10", "p50", "p90", "p99"), metrics.log_prob_gap_quantiles, strict=True)
-        },
-        "log_prob_gap/strong_disagreement_fraction": metrics.strong_disagreement_fraction,
-        # Clipped so that a few extreme tokens do not flatten the histogram.
-        "log_prob_gap/histogram": wandb.Histogram(
-            np.clip(np.concatenate(report.log_prob_gaps), -10.0, 5.0).tolist(),
-            num_bins=64,
-        ),
-        **{
-            f"rollout_reverse_kl/{name}": value
-            for name, value in zip(("min", "median", "max"), metrics.response_reverse_kl_quantiles, strict=True)
-        },
-        **reverse_kl_by_position,
+        **gap_charts,
+    }
+
+
+def wandb_supervised_step_metrics(report: SupervisedStepReport, config: SupervisedConfig) -> dict[str, Any]:
+    metrics = report.metrics
+    scalars = {name: value for name, value in asdict(metrics).items() if isinstance(value, int | float)}
+    step_seconds = metrics.student_scoring_seconds + metrics.gradient_seconds
+    return {
+        **{f"train/{name}": value for name, value in scalars.items() if name != "step"},
+        "train/learning_rate": config.learning_rate,
+        "train/gradient_was_clipped": float(metrics.gradient_norm > config.gradient_clip_norm),
+        "train/step_seconds": step_seconds,
+        "train/response_tokens_per_second": metrics.num_response_tokens / step_seconds,
     }
 
 
 def wandb_rollout_table(report: StepReport, num_rollouts: int, num_shown_characters: int) -> object:
-    """A few rollouts of the step as text, with the reverse KL of each, to read what the student is producing."""
+    """A few rollouts of the step as text, to read what the student is producing.
+
+    The reverse KL of a rollout is empty in a run without a teacher, and its reward in a run without rewards.
+    """
     import wandb  # noqa: PLC0415
 
     codec = report.student.token_codec
     stop_token_ids = frozenset(report.student.config.generation_config.stop_token_ids)
+    num_shown = min(num_rollouts, len(report.responses))
+    reverse_kls = (
+        [None] * num_shown
+        if report.log_prob_gaps is None
+        else [-float(gaps.mean()) for gaps in report.log_prob_gaps[:num_shown]]
+    )
+    rewards = [None] * num_shown if report.rewards is None else list(report.rewards[:num_shown])
     rows = [
         [
             codec.decode_tokens(list(pair.student)),
-            response_text[:num_shown_characters],
-            response_text[-num_shown_characters:],
+            text[:num_shown_characters],
+            text[-num_shown_characters:],
             len(response),
             response[-1] in stop_token_ids,
-            -float(gaps.mean()),
+            reverse_kl,
+            reward,
         ]
-        for pair, response, gaps in zip(report.prompt_pairs, report.responses, report.log_prob_gaps, strict=True)
-        for response_text in [codec.decode_tokens(list(response))]
-    ][:num_rollouts]
+        for pair, response, reverse_kl, reward in zip(
+            report.prompt_pairs[:num_shown],
+            report.responses[:num_shown],
+            reverse_kls,
+            rewards,
+            strict=True,
+        )
+        for text in [codec.decode_tokens(list(response))]
+    ]
     return wandb.Table(
-        columns=["prompt", "response_start", "response_end", "response_tokens", "finished", "reverse_kl"],
+        columns=["prompt", "response_start", "response_end", "response_tokens", "finished", "reverse_kl", "reward"],
         data=rows,
     )
 
 
 def main(
     output_directory: Annotated[Path, typer.Option(help="Where metrics, checkpoints and results are written.")],
+    method: Method = Method.ON_POLICY_DISTILLATION,
+    teacher_responses: Annotated[
+        Path | None,
+        typer.Option(
+            help="Directory written by generate_teacher_responses.py. The supervised method trains on its responses. "
+            "Every method takes its training prompts from it when it is given, so a method that does not use the "
+            "teacher does not have to load it to render prompts.",
+        ),
+    ] = None,
     student_repo: str = "Qwen/Qwen3.5-9B",
     teacher_repo: str = "Qwen/Qwen3.8-27B",
     num_steps: int = 50,
     prompts_per_step: int = 64,
+    rollouts_per_prompt: int = 1,
+    distillation_weight: float = 1.0,
+    reward_weight: float = 1.0,
     max_response_length: int = 4096,
     max_prompt_length: int = 384,
     adapter_rank: int = 64,
@@ -470,16 +606,32 @@ def main(
     seed: int = 0,
 ) -> None:
     output_directory.mkdir(parents=True, exist_ok=True)
-    distillation_config = DistillationConfig(
-        num_steps=num_steps,
-        prompts_per_step=prompts_per_step,
-        max_response_length=max_response_length,
-        adapter_rank=adapter_rank,
-        learning_rate=learning_rate,
-        gradient_clip_norm=gradient_clip_norm,
-        baseline=AdvantageBaseline.BATCH_MEAN,
-        seed=seed,
-    )
+    uses_teacher = method in (Method.ON_POLICY_DISTILLATION, Method.DISTILLATION_AND_REWARD)
+    uses_reward = method in (Method.REWARD, Method.DISTILLATION_AND_REWARD)
+    training_config: OnPolicyConfig | SupervisedConfig
+    if method is Method.SUPERVISED:
+        training_config = SupervisedConfig(
+            num_steps=num_steps,
+            examples_per_step=prompts_per_step,
+            adapter_rank=adapter_rank,
+            learning_rate=learning_rate,
+            gradient_clip_norm=gradient_clip_norm,
+            seed=seed,
+        )
+    else:
+        training_config = OnPolicyConfig(
+            num_steps=num_steps,
+            prompts_per_step=prompts_per_step,
+            max_response_length=max_response_length,
+            adapter_rank=adapter_rank,
+            learning_rate=learning_rate,
+            gradient_clip_norm=gradient_clip_norm,
+            baseline=AdvantageBaseline.BATCH_MEAN,
+            seed=seed,
+            rollouts_per_prompt=rollouts_per_prompt,
+            distillation_weight=distillation_weight if uses_teacher else 0.0,
+            reward_weight=reward_weight if uses_reward else 0.0,
+        )
     execution_config = ExecutionConfig(
         gradient_micro_batch_size=gradient_micro_batch_size,
         student_scoring_micro_batch_size=student_scoring_micro_batch_size,
@@ -496,11 +648,14 @@ def main(
         seed=seed,
     )
     run_config: dict[str, object] = {
+        "method": method.value,
         "student": student_repo,
         "teacher": teacher_repo,
+        "teacher_responses": None if teacher_responses is None else str(teacher_responses),
         "max_prompt_length": max_prompt_length,
+        "max_response_length": max_response_length,
         "evaluate_every_steps": evaluate_every_steps,
-        "distillation": asdict(distillation_config),
+        "training": asdict(training_config),
         "execution": asdict(execution_config),
         "evaluation": asdict(evaluation_config),
     }
@@ -518,7 +673,7 @@ def main(
     student_device, *_ = jax.devices()
     *_, teacher_device = jax.devices()
     student = load_model(student_repo, student_device)
-    teacher = load_model(teacher_repo, teacher_device)
+    teacher = load_model(teacher_repo, teacher_device) if uses_teacher else None
     reasoning_end_token_ids = student.token_codec.encode_text("</think>")
     reasoning_end_token_id = reasoning_end_token_ids[0] if len(reasoning_end_token_ids) == 1 else None
 
@@ -528,19 +683,34 @@ def main(
         math=tuple(random.Random(seed).sample(math_evaluation_pool, num_math_problems)),
         multiple_choice=tuple(random.Random(seed).sample(multiple_choice_pool, num_multiple_choice_questions)),
     )
-    training_problems = without_evaluation_overlap(
-        load_math_problems("agentica-org/DeepScaleR-Preview-Dataset", "deepscaler.json"),
-        math_evaluation_pool,
-    )
-    prompt_pairs = select_prompt_pairs(
-        student,
-        teacher,
-        training_problems,
-        num_steps * prompts_per_step,
-        max_prompt_length,
-        seed,
-    )
-    log(f"{len(training_problems)} training problems after removing overlap with MATH-500; using {len(prompt_pairs)}")
+
+    num_training_prompts = num_steps * prompts_per_step
+    stored_responses = None
+    if teacher_responses is not None:
+        stored_responses = load_teacher_responses(teacher_responses)
+        if len(stored_responses) < num_training_prompts:
+            raise ValueError(
+                f"The run needs {num_training_prompts} prompts, but {teacher_responses} holds {len(stored_responses)}."
+            )
+        stored_responses = stored_responses[:num_training_prompts]
+        training_prompts = [TrainingPrompt(problem=stored.problem, pair=stored.pair) for stored in stored_responses]
+        log(f"using the first {len(training_prompts)} training prompts stored in {teacher_responses}")
+    elif teacher is not None:
+        training_problems = training_problems_without_evaluation_overlap()
+        training_prompts = select_training_prompts(
+            student,
+            teacher,
+            training_problems,
+            num_training_prompts,
+            max_prompt_length,
+            seed,
+        )
+        log(
+            f"{len(training_problems)} training problems after removing overlap with MATH-500; "
+            f"using {len(training_prompts)}"
+        )
+    else:
+        raise ValueError(f"The {method.value} method does not load the teacher, so it needs --teacher-responses.")
 
     results_path = output_directory / "results.json"
     results: dict[str, dict[str, float | int]] = json.loads(results_path.read_text()) if results_path.exists() else {}
@@ -575,19 +745,30 @@ def main(
             lambda: evaluate_multiple_choice(model, evaluations, evaluation_config, student_evaluation_batch_size),
         )
 
-    if evaluate_teacher:
+    def evaluate_if_due(model: LanguageModel, num_completed_steps: int) -> None:
+        if num_completed_steps % evaluate_every_steps == 0 and num_completed_steps < num_steps:
+            evaluate_student(model, num_completed_steps)
+
+    if teacher is not None and evaluate_teacher:
+        evaluated_teacher = teacher
         record(
             "teacher_math",
             0,
-            lambda: evaluate_math(teacher, evaluations, evaluation_config, teacher_evaluation_batch_size),
+            lambda: evaluate_math(evaluated_teacher, evaluations, evaluation_config, teacher_evaluation_batch_size),
         )
     evaluate_student(student, 0)
 
-    def report_step(report: StepReport) -> None:
+    def report_on_policy_step(report: StepReport) -> None:
         metrics = report.metrics
         num_completed_steps = metrics.step + 1
+        reverse_kl = "" if metrics.reverse_kl is None else f"reverse KL {metrics.reverse_kl:.4f}, "
+        mean_reward = (
+            ""
+            if metrics.mean_reward is None
+            else f"mean reward {metrics.mean_reward:.3f}, informative groups {metrics.informative_group_fraction}, "
+        )
         log(
-            f"step {num_completed_steps}/{num_steps}: reverse KL {metrics.reverse_kl:.4f}, "
+            f"step {num_completed_steps}/{num_steps}: {reverse_kl}{mean_reward}"
             f"gradient norm {metrics.gradient_norm:.3f}, adapter norm {metrics.adapter_norm:.3f}, "
             f"mean length {metrics.mean_response_length:.0f}, finished {metrics.finished_fraction:.2f}, "
             f"seconds sampling/teacher/student/gradients {metrics.sampling_seconds:.0f}/"
@@ -595,26 +776,60 @@ def main(
             f"{metrics.gradient_seconds:.0f}, peak GB student/teacher "
             f"{metrics.student_peak_memory_gigabytes}/{metrics.teacher_peak_memory_gigabytes}"
         )
-        if wandb_run is not None:
+        if wandb_run is not None and isinstance(training_config, OnPolicyConfig):
             wandb_run.log(
-                wandb_step_metrics(report, distillation_config, reasoning_end_token_id),
+                wandb_step_metrics(report, training_config, reasoning_end_token_id),
                 step=num_completed_steps,
             )
             if num_completed_steps % rollout_table_every_steps == 0 or num_completed_steps == 1:
                 wandb_run.log({"rollouts/samples": wandb_rollout_table(report, 8, 2000)}, step=num_completed_steps)
-        if num_completed_steps % evaluate_every_steps == 0 and num_completed_steps < num_steps:
-            evaluate_student(report.student, num_completed_steps)
+        evaluate_if_due(report.student, num_completed_steps)
 
-    distilled_student = run_on_policy_distillation(
-        student,
-        teacher,
-        prompt_pairs,
-        distillation_config,
-        execution_config,
-        output_directory,
-        report_step,
-    )
-    evaluate_student(distilled_student, num_steps)
+    def report_supervised_step(report: SupervisedStepReport) -> None:
+        metrics = report.metrics
+        num_completed_steps = metrics.step + 1
+        log(
+            f"step {num_completed_steps}/{num_steps}: cross-entropy {metrics.cross_entropy:.4f}, "
+            f"gradient norm {metrics.gradient_norm:.3f}, adapter norm {metrics.adapter_norm:.3f}, "
+            f"mean length {metrics.mean_response_length:.0f}, finished {metrics.finished_fraction:.2f}, "
+            f"seconds student/gradients {metrics.student_scoring_seconds:.0f}/{metrics.gradient_seconds:.0f}, "
+            f"peak GB student {metrics.student_peak_memory_gigabytes}"
+        )
+        if wandb_run is not None and isinstance(training_config, SupervisedConfig):
+            wandb_run.log(wandb_supervised_step_metrics(report, training_config), step=num_completed_steps)
+        evaluate_if_due(report.student, num_completed_steps)
+
+    if isinstance(training_config, SupervisedConfig):
+        if stored_responses is None:
+            raise ValueError("The supervised method trains on teacher responses, so it needs --teacher-responses.")
+        trained_student = run_supervised_fine_tuning(
+            student,
+            [
+                SupervisedExample(prompt=stored.pair.student, response=stored.response[:max_response_length])
+                for stored in stored_responses
+            ],
+            training_config,
+            execution_config,
+            output_directory,
+            report_supervised_step,
+        )
+    else:
+        reward_model = student
+
+        def reward(prompt_index: int, response: Sequence[int]) -> float:
+            return math_reward(reward_model, training_prompts[prompt_index].problem, response)
+
+        trained_student = run_on_policy_training(
+            student,
+            teacher,
+            [prompt.pair for prompt in training_prompts],
+            reward if uses_reward else None,
+            training_config,
+            execution_config,
+            output_directory,
+            report_on_policy_step,
+        )
+    evaluate_student(trained_student, num_steps)
     if wandb_run is not None:
         wandb_run.finish()
 

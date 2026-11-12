@@ -14,6 +14,7 @@ from lalamo.distillation import (
     Rollouts,
     apply_gradients,
     distillation_advantages,
+    group_normalized_rewards,
     init_optimizer_state,
     inject_low_rank_adapters,
     on_policy_distillation_loss,
@@ -223,3 +224,14 @@ def test_optimizer_steps_lower_reverse_kl() -> None:
         student, optimizer_state = apply_gradients(student, optimizer_state, gradients, optimizer)
 
     assert reverse_kl(student, teacher) < reverse_kl(initial_student, teacher)
+
+
+def test_group_normalized_rewards_standardize_within_each_prompt() -> None:
+    rewards = jnp.asarray([1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 2.0], dtype=jnp.float32)
+    mixed_group, uniform_group, skewed_group = jnp.split(group_normalized_rewards(rewards, group_size=4), 3)
+
+    assert_close(result=mixed_group, reference=jnp.asarray([1.0, -1.0, -1.0, 1.0]))
+    assert jnp.all(uniform_group == 0)
+    assert_close(result=jnp.mean(skewed_group), reference=jnp.zeros(()), atol=1e-6)
+    assert_close(result=jnp.std(skewed_group), reference=jnp.ones(()))
+    assert jnp.argmax(skewed_group) == 3
