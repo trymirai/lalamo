@@ -1,5 +1,5 @@
 from dataclasses import dataclass, replace
-from itertools import accumulate
+from itertools import accumulate, pairwise
 from typing import Self
 
 import jax.numpy as jnp
@@ -49,14 +49,14 @@ class OutputStackSpec(WeightMatrixSpec):
             raise NotImplementedError("Output stacks are loaded from saved parameters, not fitted")
         if sum(part.rows for part in self.parts) != weights.shape[0]:
             raise ValueError("Output-stack part rows must sum to the output dimension")
-        starts = accumulate((part.rows for part in self.parts), initial=0)
+        boundaries = pairwise(accumulate((part.rows for part in self.parts), initial=0))
         parts = tuple(
             part.spec.compress(
-                weights[start : start + part.rows],
+                weights[start:end],
                 sharding_config=sharding_config,
                 is_sharded=is_sharded,
             )
-            for start, part in zip(starts, self.parts, strict=False)
+            for (start, end), part in zip(boundaries, self.parts, strict=True)
         )
         return OutputStackMatrix(self, sharding_config, is_sharded, parts)
 
