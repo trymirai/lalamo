@@ -22,12 +22,6 @@ from lalamo.weight_matrix import (
 )
 
 
-def _stored_layout(spec: WeightMatrixSpec) -> Layout:
-    # A hybrid stores its quantized matrix's layout.
-    inner = getattr(spec, "quantization_spec", spec)
-    return getattr(inner, "layout", Layout.OUTPUT_INPUT)
-
-
 @dataclass(frozen=True)
 class OutputStackPart:
     rows: int
@@ -41,14 +35,12 @@ class OutputStackSpec(WeightMatrixSpec):
     def __post_init__(self) -> None:
         if not self.parts or any(part.rows <= 0 for part in self.parts):
             raise ValueError("Output stacks require parts with positive row counts")
-        if len({_stored_layout(part.spec) for part in self.parts}) != 1:
-            raise ValueError("Output stacks require parts of one layout")
 
     @property
     def layout(self) -> Layout:
         # Parts stack along their first stored axis: the output rows of a projection or, when they are stored
         # input-output, the vocabulary rows of an embedding table.
-        return _stored_layout(self.parts[0].spec)
+        return getattr(self.parts[0].spec, "layout", Layout.OUTPUT_INPUT)
 
     @supports_dummy_arrays()
     def compress(
@@ -115,6 +107,8 @@ class OutputStackMatrix(EmbeddingMatrix[OutputStackSpec]):
         dtype: DTypeLike | None = None,
         forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, "*batch out_channels"]:
+        if self.spec.layout != Layout.INPUT_OUTPUT:
+            raise ValueError("Embedding lookup requires input-output layout")
         row_index = jnp.asarray(row_index)
         result = None
         boundaries = pairwise(accumulate((part.shape[0] for part in self.parts), initial=0))
