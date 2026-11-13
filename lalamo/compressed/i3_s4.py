@@ -1,14 +1,13 @@
 from dataclasses import dataclass, replace
-from typing import Literal, Self
+from typing import Self
 
 import jax
 import jax.numpy as jnp
 from jax.core import Tracer
 from jax.sharding import NamedSharding, PartitionSpec
-from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
+from jaxtyping import Array, DTypeLike, Float, Key, UInt8
 
 from lalamo.initializer import RandomInitializer
-from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import Keychain
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
@@ -28,7 +27,6 @@ from .utils.packing import unpack_uint8_to_uint
 
 @dataclass(frozen=True)
 class I3S4Spec(WeightMatrixSpec):
-    block_size: Literal[32, 64, 128]
     layout: Layout = Layout.OUTPUT_INPUT
 
     @supports_dummy_arrays()
@@ -46,6 +44,7 @@ class I3S4Spec(WeightMatrixSpec):
             raise NotImplementedError("I3S4 matrices are loaded from saved parameters, not fitted")
         assert self.layout == Layout.OUTPUT_INPUT
         rows, columns = weights.shape
+        assert columns % 128 == 0, f"I3S4 packs 128-column groups, got {columns} input columns"
         row_axis, _ = self.layout.weight_partition(0, is_sharded=is_sharded)
         initializer = RandomInitializer(weights.dtype, sharding_config)
         return I3S4Matrix(
@@ -56,7 +55,6 @@ class I3S4Spec(WeightMatrixSpec):
             initializer.zeros((rows,), (row_axis,)),
             initializer.zeros((rows, columns // 128), (row_axis, None), jnp.uint8),
             initializer.zeros((16,), (None,), jnp.float16),
-            initializer.zeros((columns,), (None,), jnp.int32),
         )
 
 
@@ -65,7 +63,6 @@ class I3S4Matrix(WeightMatrix[I3S4Spec]):
     row_scales: Float[Array, " rows"]
     ladder_indices: UInt8[Array, "rows groups"]
     ladder: Float[Array, "16"]
-    input_hadamard_factors: Int[Array, " columns"]
 
     def __check_init__(self) -> None:
         rows, columns = self.shape
@@ -76,11 +73,11 @@ class I3S4Matrix(WeightMatrix[I3S4Spec]):
         assert self.row_scales.shape == (rows,) and jnp.issubdtype(self.row_scales.dtype, jnp.floating)
         assert self.ladder_indices.shape == (rows, columns // 128)
         assert self.ladder.shape == (16,) and self.ladder.dtype == jnp.float16
-        assert self.input_hadamard_factors.dtype == jnp.int32
 
     @property
     def shape(self) -> tuple[int, int]:
-        return self.codes.shape[0], self.input_hadamard_factors.shape[0]
+        rows, code_bytes = self.codes.shape
+        return rows, code_bytes * 8 // 3
 
     @property
     def dtype(self) -> DTypeLike:
@@ -98,8 +95,7 @@ class I3S4Matrix(WeightMatrix[I3S4Spec]):
         return (levels.reshape(*scales.shape, 64) * scales[..., None]).reshape(levels.shape).astype(self.dtype)
 
     def decompress(self) -> Array:
-        weights = self.decode_rows(self.codes, self.row_scales, self.ladder_indices)
-        return hadamard_transform(weights, self.spec.block_size) * self.input_hadamard_factors.astype(self.dtype)
+        return self.decode_rows(self.codes, self.row_scales, self.ladder_indices)
 
     def to_full_precision(self) -> FullPrecisionMatrix:
         return FullPrecisionSpec().compress(
@@ -115,7 +111,6 @@ class I3S4Matrix(WeightMatrix[I3S4Spec]):
         transposed: bool = False,
     ) -> Array:
         assert not transposed, "I3S4 matrices are output projections"
-        vector = hadamard_transform(vector * self.input_hadamard_factors.astype(vector.dtype), self.spec.block_size)
         mesh = sharding_of(vector).mesh
         codes = with_sharding(self.codes, NamedSharding(mesh, PartitionSpec(None, None)))
         scales = with_sharding(self.row_scales, NamedSharding(mesh, PartitionSpec(None)))
