@@ -1,31 +1,38 @@
 from dataclasses import dataclass, replace
+from itertools import accumulate
 from typing import Self
 
-import jax
 import jax.numpy as jnp
 from jax.core import Tracer
 from jaxtyping import Array, DTypeLike, Float, Key
 
-from lalamo.exportable import ExportResults
 from lalamo.module import Keychain
 from lalamo.preconditioner import Preconditioner
-from lalamo.utils.dummy_array import dummy_array, supports_dummy_arrays
-from lalamo.utils.parameter_path import ParameterPath
+from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
     FullPrecisionSpec,
     MatmulConfig,
-    ShapeDtypeSpec,
     WeightMatrix,
     WeightMatrixSpec,
 )
 
 
 @dataclass(frozen=True)
+class OutputStackPart:
+    rows: int
+    spec: WeightMatrixSpec
+
+
+@dataclass(frozen=True)
 class OutputStackSpec(WeightMatrixSpec):
-    # Each part saves its own spec, and the stack saves the row count of each part.
+    parts: tuple[OutputStackPart, ...]
+
+    def __post_init__(self) -> None:
+        if not self.parts or any(part.rows <= 0 for part in self.parts):
+            raise ValueError("Output stacks require parts with positive row counts")
 
     @supports_dummy_arrays()
     def compress(
@@ -38,48 +45,30 @@ class OutputStackSpec(WeightMatrixSpec):
         sharding_config: ShardingConfig,
         is_sharded: bool = True,
     ) -> "OutputStackMatrix":
-        # Only a placeholder of the whole shape is built; load_exported splits it into the saved parts.
         if not isinstance(weights, Tracer):
             raise NotImplementedError("Output stacks are loaded from saved parameters, not fitted")
-        placeholder = FullPrecisionSpec().compress(weights, sharding_config=sharding_config, is_sharded=is_sharded)
-        return OutputStackMatrix(self, sharding_config, is_sharded, (placeholder,))
+        if sum(part.rows for part in self.parts) != weights.shape[0]:
+            raise ValueError("Output-stack part rows must sum to the output dimension")
+        starts = accumulate((part.rows for part in self.parts), initial=0)
+        parts = tuple(
+            part.spec.compress(
+                weights[start : start + part.rows],
+                sharding_config=sharding_config,
+                is_sharded=is_sharded,
+            )
+            for start, part in zip(starts, self.parts, strict=False)
+        )
+        return OutputStackMatrix(self, sharding_config, is_sharded, parts)
 
 
 class OutputStackMatrix(WeightMatrix[OutputStackSpec]):
     parts: tuple[WeightMatrix, ...]
 
     def __check_init__(self) -> None:
-        assert self.parts
+        assert tuple(OutputStackPart(part.shape[0], part.spec) for part in self.parts) == self.spec.parts
         assert all(
             part.shape[1] == self.parts[0].shape[1] and part.dtype == self.parts[0].dtype for part in self.parts
         )
-
-    def export(self) -> ExportResults:
-        arrays, metadata = super().export()
-        part_rows = jnp.asarray([part.shape[0] for part in self.parts], dtype=jnp.int32)
-        return ExportResults({**arrays, "part_rows": part_rows}, metadata)
-
-    def load_exported(self, exported_data: ExportResults, *, prefix: ParameterPath | None = None) -> Self:
-        if prefix is None:
-            prefix = ParameterPath()
-        row_counts = exported_data.arrays[prefix / "part_rows"]
-        assert row_counts.ndim == 1 and row_counts.dtype == jnp.int32
-        rows = row_counts.tolist()
-        assert rows and all(row > 0 for row in rows) and sum(rows) == self.shape[0]
-        columns = self.shape[1]
-        sharding = self.sharding_config.resolve_sharding((None, None))
-        weak_type = all(leaf.weak_type for leaf in jax.tree.leaves(self))
-        parts = tuple(
-            ShapeDtypeSpec()
-            .compress(
-                dummy_array((row_count, columns), self.dtype, sharding, weak_type=weak_type),
-                sharding_config=self.sharding_config,
-                is_sharded=self.is_sharded,
-            )
-            .load_exported(exported_data, prefix=prefix / "parts" / index)
-            for index, row_count in enumerate(rows)
-        )
-        return replace(self, parts=parts)
 
     @property
     def shape(self) -> tuple[int, int]:

@@ -29,16 +29,13 @@ from lalamo.weight_matrix import (
 
 # Each tape block opens with its first 16-bit codebook state.
 STATE_BITS = 16
-# The codebook is [scale, offset of each column class], the class of a column being its index modulo four.
 COLUMN_CLASSES = 4
-# Every package shares one codebook per vector width.
-CODEBOOKS = {
-    width: np.array([float.fromhex(value) for value in values], dtype=np.float32)
-    for width, values in (
-        (2, ("0x1.ab07a2p-5", "-0x1.50b2eap-4", "-0x1.3e5a78p-4", "-0x1.50b2eap-4", "-0x1.3e5a78p-4")),
-        (4, ("0x1.aa4a8p-5", "-0x1.501deap-4", "-0x1.3dcd7ap-4", "-0x1.40137ap-4", "-0x1.4c2e6ap-4")),
-    )
-}
+
+
+@dataclass(frozen=True)
+class TrellisCodebook:
+    scale: float
+    offsets: tuple[float, float, float, float]
 
 
 def states_to_levels(states: Array) -> Array:
@@ -58,6 +55,7 @@ class QtipGaussianSpec(WeightMatrixSpec):
     vector_width: Literal[2, 4]
     transition_bits: Literal[4, 6, 7, 8]
     restart_columns: Literal[0, 64, 128]
+    codebook: TrellisCodebook
     layout: Layout = Layout.OUTPUT_INPUT
     # 2: each block's bits reversed, least significant first.
     tape: Literal[2] = 2
@@ -166,8 +164,9 @@ class QtipGaussianMatrix(EmbeddingMatrix[QtipGaussianSpec]):
     def decode_rows(self, codes: UInt8[Array, "*rows bytes"], scales: Float[Array, "*rows"]) -> Array:
         levels = states_to_levels(self.spec.states(codes, self.columns))[..., : self.spec.vector_width]
         levels = levels.reshape(*codes.shape[:-1], self.columns).astype(jnp.float32)
-        codebook = jnp.asarray(CODEBOOKS[self.spec.vector_width])
-        values = codebook[0] * levels + codebook[1 + jnp.arange(self.columns) % COLUMN_CLASSES]
+        codebook = self.spec.codebook
+        offsets = jnp.asarray(codebook.offsets, dtype=jnp.float32)
+        values = jnp.float32(codebook.scale) * levels + offsets[jnp.arange(self.columns) % COLUMN_CLASSES]
         return (values * scales[..., None].astype(jnp.float32)).astype(self.dtype)
 
     def decompress(self) -> Array:

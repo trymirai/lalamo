@@ -26,6 +26,8 @@ def saved_rows() -> tuple[HybridMatrix, np.ndarray]:
             codes=jnp.asarray(data["d4_codes"]),
             row_scales=jnp.asarray(data["d4_row_scale_bits"].view(jnp.bfloat16)),
             ladder_indices=jnp.asarray(data["d4_ladder_indices"]),
+            ladder=jnp.asarray(data["d4_ladder"]),
+            table=jnp.asarray(data["d4_table"]),
         ).astype(jnp.float32)
         rotation = HadamardProcessor.of(None, jnp.asarray(data["signs"]), block_size=32)
         return HybridMatrix.of(leaf, rotation), data["d4_expected"].T
@@ -34,6 +36,7 @@ def saved_rows() -> tuple[HybridMatrix, np.ndarray]:
 def test_lattice_matches_torch_rows_and_exports_native_spec() -> None:
     matrix, expected = saved_rows()
     np.testing.assert_allclose(matrix.decompress(), expected, atol=2e-7, rtol=1e-6)
+    assert {"quantized.ladder", "quantized.table"} <= matrix.export().arrays.keys()
     # Uzu's LatticeSpec requires kind even though D4 is its only supported variant.
     assert matrix.export().metadata["quantized.spec"] == {
         "type": "LatticeSpec",

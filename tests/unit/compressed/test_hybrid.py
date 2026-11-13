@@ -16,7 +16,7 @@ from lalamo.compressed.incoherence import (
 from lalamo.compressed.lattice import LatticeSpec
 from lalamo.compressed.low_rank import LowRankSpec
 from lalamo.compressed.mlx import MLXSpec
-from lalamo.compressed.qtip_gaussian import QtipGaussianSpec
+from lalamo.compressed.qtip_gaussian import QtipGaussianSpec, TrellisCodebook
 from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import Keychain
 from lalamo.preconditioner import Preconditioner
@@ -440,9 +440,11 @@ def test_hybrid_embedding_lookup_rounds_once_like_decompress() -> None:
 @pytest.mark.parametrize(
     "spec",
     [
-        QtipGaussianSpec(vector_width=4, transition_bits=8, restart_columns=0),
+        QtipGaussianSpec(
+            vector_width=4, transition_bits=8, restart_columns=0, codebook=TrellisCodebook(1.0, (0.0, 0.0, 0.0, 0.0))
+        ),
         LatticeSpec(Layout.OUTPUT_INPUT),
-        HybridSpec(QtipGaussianSpec(4, 8, 0), None, KroneckerSpec()),
+        HybridSpec(QtipGaussianSpec(4, 8, 0, TrellisCodebook(1.0, (0.0, 0.0, 0.0, 0.0))), None, KroneckerSpec()),
     ],
 )
 def test_load_only_specs_refuse_to_fit(spec: WeightMatrixSpec) -> None:
