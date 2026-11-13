@@ -8,9 +8,11 @@ import numpy as np
 import pytest
 
 from lalamo.compressed.incoherence import kronecker_transform
+from lalamo.compressed.output_stack import OutputStackMatrix, OutputStackPart, OutputStackSpec
 from lalamo.compressed.qtip_gaussian import (
     QtipGaussianMatrix,
     QtipGaussianSpec,
+    TrellisCodebook,
 )
 from lalamo.exportable import ExportResults
 from lalamo.initializer import EmptyInitializer
@@ -21,17 +23,21 @@ from lalamo.weight_matrix import Layout
 
 pytestmark = pytest.mark.usefixtures("fake_mesh")
 
+CODEBOOK = TrellisCodebook(1.0, (0.0, 0.0, 0.0, 0.0))
 
-def test_saved_matrices_load_and_run_on_multiple_devices(tmp_path: Path) -> None:
+
+@pytest.mark.parametrize("vector_width", [2, 4])
+def test_saved_matrices_load_and_run_on_multiple_devices(tmp_path: Path, vector_width: Literal[2, 4]) -> None:
     config = ShardingConfig.fully_sharded_data_parallel(jax.devices("cpu"))
     with jax.set_mesh(config.mesh):
+        spec = QtipGaussianSpec(vector_width, 8, 0, TrellisCodebook(0.125, (0.25, -0.5, 0.75, -1.0)))
         source = QtipGaussianMatrix(
-            spec=QtipGaussianSpec(4, 8, 0),
+            spec=spec,
             sharding_config=config,
             is_sharded=True,
             dtype_=jnp.float32,
             columns=128,
-            codes=jnp.asarray(np.random.default_rng(0).integers(256, size=(8, 33), dtype=np.uint8)),
+            codes=jnp.asarray(np.random.default_rng(0).integers(256, size=(8, spec.code_bytes(128)), dtype=np.uint8)),
             scales=jnp.linspace(0.5, 1, 8),
         )
         reference = np.asarray(source.decompress())
@@ -47,6 +53,7 @@ def test_saved_matrices_load_and_run_on_multiple_devices(tmp_path: Path) -> None
             .load_exported(ExportResults(arrays, exported.metadata))
         )
         assert isinstance(restored, QtipGaussianMatrix)
+        assert restored.spec == spec
         decoded = restored.decompress()
         np.testing.assert_array_equal(decoded, reference)
         assert sharding_of(decoded).spec[0] == config.resolve_axis(LogicalAxis.MATRIX)
@@ -62,6 +69,14 @@ def test_saved_matrices_load_and_run_on_multiple_devices(tmp_path: Path) -> None
         np.testing.assert_array_equal(rows, reference[np.asarray(indices)])
         assert sharding_of(rows).spec[0] == config.resolve_axis(LogicalAxis.BATCH)
 
+        parts = (restored, replace(restored, scales=-restored.scales))
+        stack_spec = OutputStackSpec(tuple(OutputStackPart(part.shape[0], part.spec) for part in parts))
+        stack = OutputStackMatrix(spec=stack_spec, sharding_config=config, is_sharded=True, parts=parts)
+        exported = stack.export()
+        assert "part_rows" not in exported.arrays
+        restored_stack = EmptyInitializer(None, config).weight_matrix(16, 128).load_exported(exported)
+        np.testing.assert_array_equal(restored_stack.decompress(), np.concatenate((reference, -reference)))
+
 
 def test_kronecker_transform_matches_explicit_kronecker_product() -> None:
     values = np.arange(96, dtype=np.float32).reshape(4, 24) / 17
@@ -76,16 +91,16 @@ def test_kronecker_transform_matches_explicit_kronecker_product() -> None:
 @pytest.mark.parametrize(
     ("spec", "row_bytes"),
     [
-        (QtipGaussianSpec(2, 4, 0), 34),
-        (QtipGaussianSpec(2, 6, 0), 50),
-        (QtipGaussianSpec(2, 8, 0), 65),
-        (QtipGaussianSpec(4, 8, 0), 33),
-        (QtipGaussianSpec(4, 6, 64), 32),
-        (QtipGaussianSpec(4, 7, 64), 32),
-        (QtipGaussianSpec(4, 8, 64), 48),
-        (QtipGaussianSpec(4, 6, 128), 64),
-        (QtipGaussianSpec(4, 7, 128), 64),
-        (QtipGaussianSpec(4, 8, 128), 80),
+        (QtipGaussianSpec(2, 4, 0, CODEBOOK), 34),
+        (QtipGaussianSpec(2, 6, 0, CODEBOOK), 50),
+        (QtipGaussianSpec(2, 8, 0, CODEBOOK), 65),
+        (QtipGaussianSpec(4, 8, 0, CODEBOOK), 33),
+        (QtipGaussianSpec(4, 6, 64, CODEBOOK), 32),
+        (QtipGaussianSpec(4, 7, 64, CODEBOOK), 32),
+        (QtipGaussianSpec(4, 8, 64, CODEBOOK), 48),
+        (QtipGaussianSpec(4, 6, 128, CODEBOOK), 64),
+        (QtipGaussianSpec(4, 7, 128, CODEBOOK), 64),
+        (QtipGaussianSpec(4, 8, 128, CODEBOOK), 80),
     ],
 )
 def test_tape_blocks_are_back_to_back_reversed_states(spec: QtipGaussianSpec, row_bytes: int) -> None:
@@ -115,4 +130,4 @@ def test_unsupported_tape_layouts_fail(
     layout: tuple[Literal[2, 4], Literal[4, 6, 7, 8], Literal[0, 64, 128]],
 ) -> None:
     with pytest.raises(ValueError, match="Unsupported QTIP Gaussian layout"):
-        QtipGaussianSpec(*layout)
+        QtipGaussianSpec(*layout, codebook=CODEBOOK)

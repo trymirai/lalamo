@@ -2,13 +2,12 @@ from dataclasses import dataclass, replace
 from typing import Literal, Self
 
 import jax.numpy as jnp
-import numpy as np
 from jax.core import Tracer
 from jax.sharding import PartitionSpec
-from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
+from jaxtyping import Array, DTypeLike, Float, Int, Int8, Key, UInt8
 
 from lalamo.initializer import RandomInitializer
-from lalamo.module import Keychain
+from lalamo.module import Keychain, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.precision import use_dot_algorithm_preset
@@ -32,22 +31,6 @@ COLUMNS_PER_LADDER_BYTE = 128
 # Each code byte picks one row of four int8 values from the saved D4 table.
 VECTOR_WIDTH = 4
 CODE_BITS = 8
-# The D4 code table, one hex digit per coordinate (offset by 3); the ladder is fp16(2^((k - 11) / 2)).
-D4_TABLE_DIGITS = (
-    "3333423351332433342343235223252335134413531322533243414314432343334242425142244234324332523225323522"
-    "4422532262223252451254122352335142511111245134414341524125413531443153312235322545215421232533244224"
-    "5124242434144314521425143144044413442244323441341434233433444244514424443434433452342534352444245324"
-    "6224325445145414235433534253111324533443434352432543353344335333623336234523542363233362022211226422"
-    "3452435212122112354244425342624236324532543263323335423511312435342543251221212131114451131122113245"
-    "4541544123453311421151112411344543451241214131314435133122313221412114212321336402241124642434544354"
-    "1214211435444444534462443634453454346334733302331133643330230323122321233113445313132213364345435443"
-    "6343330202421142644230320332123221323122042213222222321241121412231233224222512224223412431252122512"
-    "3142044213422242323241321432233233314231513124313421432152212521351144115311225132414141144123413304"
-    "0244114464443034033412342134312404241324222432144114141423143313421351132413304303431243214331330433"
-    "133322333223412314232323"
-)
-D4_TABLE = (np.array([int(digit, 16) for digit in D4_TABLE_DIGITS], np.int8) - 3).reshape(1 << CODE_BITS, VECTOR_WIDTH)
-D4_LADDER = np.exp2((np.arange(1 << LADDER_INDEX_BITS, dtype=np.float32) - 11) / 2).astype(np.float16)
 
 
 @dataclass(frozen=True)
@@ -83,6 +66,8 @@ class LatticeSpec(WeightMatrixSpec):
             codes=initializer.zeros((rows, self.code_bytes(columns)), (row_axis, None), jnp.uint8),
             row_scales=initializer.zeros((rows,), (row_axis,)),
             ladder_indices=initializer.zeros((rows, columns // COLUMNS_PER_LADDER_BYTE), (row_axis, None), jnp.uint8),
+            ladder=initializer.zeros((1 << LADDER_INDEX_BITS,), (None,), jnp.float16),
+            table=initializer.zeros((1 << CODE_BITS, VECTOR_WIDTH), (None, None), jnp.int8),
         )
 
 
@@ -90,6 +75,8 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
     codes: UInt8[Array, "rows bytes"]
     row_scales: Float[Array, " rows"]
     ladder_indices: UInt8[Array, "rows groups"]
+    ladder: Float[Array, "16"] = field(trainable=False)
+    table: Int8[Array, "256 4"] = field(trainable=False)
 
     def __check_init__(self) -> None:
         rows, columns = self.shape
@@ -97,6 +84,8 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
         assert self.ladder_indices.shape == (rows, columns // COLUMNS_PER_LADDER_BYTE)
         assert self.row_scales.shape == (rows,)
         assert self.codes.dtype == self.ladder_indices.dtype == jnp.uint8
+        assert self.ladder.shape == (1 << LADDER_INDEX_BITS,) and self.ladder.dtype == jnp.float16
+        assert self.table.shape == (1 << CODE_BITS, VECTOR_WIDTH) and self.table.dtype == jnp.int8
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -112,12 +101,12 @@ class LatticeMatrix(EmbeddingMatrix[LatticeSpec]):
     def decode_rows(self, codes: Array, row_scales: Array, ladder_indices: Array) -> Array:
         columns = self.shape[1]
         row_axes = tuple(sharding_of(codes).spec)[: codes.ndim - 1]
-        values = jnp.asarray(D4_TABLE).at[codes].get(out_sharding=PartitionSpec(*row_axes, None, None))
+        values = self.table.at[codes].get(out_sharding=PartitionSpec(*row_axes, None, None))
         values = values.reshape(*codes.shape[:-1], columns).astype(jnp.float32)
         groups = unpack_uint8_to_uint(
             ladder_indices, LADDER_INDEX_BITS, unpacked_last_axis_dim=columns // COLUMNS_PER_LADDER_INDEX
         )
-        ladder = jnp.asarray(D4_LADDER).at[groups].get(out_sharding=PartitionSpec(*row_axes, None))
+        ladder = self.ladder.at[groups].get(out_sharding=PartitionSpec(*row_axes, None))
         scales = row_scales.astype(jnp.float32)[..., None] * ladder.astype(jnp.float32)
         grouped = values.reshape(*scales.shape, COLUMNS_PER_LADDER_INDEX)
         return (grouped * scales[..., None]).reshape(values.shape)
