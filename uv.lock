@@ -2162,6 +2162,9 @@ cpu = [
 cuda = [
     { name = "jax", extra = ["cuda"] },
 ]
+distillation = [
+    { name = "wandb" },
+]
 fishaudio = [
     { name = "blobfile" },
     { name = "tiktoken" },
@@ -2248,9 +2251,10 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'fishaudio'", specifier = ">=5.5.0" },
     { name = "typer", specifier = ">=0.15.1,<0.26" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.44.0" },
+    { name = "wandb", marker = "extra == 'distillation'", specifier = ">=0.25.0" },
     { name = "xxhash", specifier = ">=3.5.0" },
 ]
-provides-extras = ["cpu", "cuda", "tpu", "pyaudio", "fishaudio", "server"]
+provides-extras = ["cpu", "cuda", "tpu", "pyaudio", "fishaudio", "server", "distillation"]
 
 [package.metadata.requires-dev]
 dev = [
