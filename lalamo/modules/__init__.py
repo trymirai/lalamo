@@ -42,6 +42,7 @@ from .mlp import (
     UngatedMLP,
     UngatedMLPConfig,
 )
+from .mrope import MRoPEConfig, MRoPELayout, PositionAxis
 from .ngram_injection import (
     NGramHashConfig,
     NGramInjection,
@@ -196,6 +197,8 @@ __all__ = [
     "MLPBase",
     "MLPConfig",
     "MLPForwardPassConfig",
+    "MRoPEConfig",
+    "MRoPELayout",
     "Mamba2",
     "Mamba2Config",
     "MixerForwardPassConfig",
@@ -211,6 +214,7 @@ __all__ = [
     "PerLayerEmbedding",
     "PerLayerEmbeddingInjection",
     "PerLayerEmbeddingInjectionConfig",
+    "PositionAxis",
     "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
     "ResidualConfig",

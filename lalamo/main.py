@@ -452,6 +452,10 @@ def convert(
         bool,
         Option(help="Give the most frequent tokens the smallest ids."),
     ] = False,
+    include_vision: Annotated[
+        bool,
+        Option(help="Also convert the vision tower, producing a vision-language model (multimodal checkpoints only)."),
+    ] = False,
 ) -> None:
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
@@ -462,6 +466,7 @@ def convert(
         dtype,
         partial(CliConversionCallbacks, overwrite=overwrite),
         frequency_ordered_vocabulary=frequency_ordered_vocabulary,
+        include_vision=include_vision,
     )
 
 

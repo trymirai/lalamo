@@ -1,16 +1,19 @@
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, Self
 
 from lalamo.model_import.model_configs.foreign_config import ForeignVisionLanguageConfig
+from lalamo.models import GenerationConfig, VisionLanguageModelConfig
+from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.modules import AdditiveResidualConfig, SublayerConfig
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, SoftmaxRouting
+from lalamo.modules.mrope import MRoPEConfig, MRoPELayout
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
@@ -18,6 +21,7 @@ from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.token_mixers.deltanet import DeltaNetConfig
 from lalamo.modules.transformer import TransformerConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.modules.vision import ImagePreprocessingConfig
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 from .qwen3_5_vision import HFQwen35VisionConfig
@@ -29,6 +33,8 @@ __all__ = ["HFQwen35Config"]
 class Qwen35RopeParameters:
     rope_theta: float
     partial_rotary_factor: float
+    mrope_section: tuple[int, int, int] | None = None
+    mrope_interleaved: bool = False
 
 
 @dataclass(frozen=True)
@@ -63,10 +69,53 @@ class HFQwen35Config(HuggingFaceLMConfig, ForeignVisionLanguageConfig):
     eos_token_id: int | list[int] = field(default_factory=list)
     quantization: QuantizationConfigType | None = None
     vision_config: HFQwen35VisionConfig | None = None
+    image_token_id: int | None = None
 
     @property
     def vision_encoder_config(self) -> HFQwen35VisionConfig | None:
         return self.vision_config
+
+    def to_vision_language_config(
+        self,
+        metadata_dict: Mapping[str, str],
+        token_codec_config: ChatCodecConfig,
+        generation_config: GenerationConfig,
+        image_preprocessing_config: ImagePreprocessingConfig,
+    ) -> VisionLanguageModelConfig:
+        if self.vision_config is None or self.image_token_id is None:
+            raise ValueError("This Qwen3.5 checkpoint has no vision tower.")
+        mrope_section = self.rope_parameters.mrope_section
+        if mrope_section is None or not self.rope_parameters.mrope_interleaved:
+            raise ValueError("Qwen3.5 vision requires interleaved M-RoPE parameters in the config.")
+
+        decoder_config = self.to_decoder_config(metadata_dict)
+        # M-RoPE equals plain RoPE on text positions, so only the rope configs change and the weights are identical.
+        layer_configs = tuple(
+            replace(
+                layer_config,
+                rope_config=MRoPEConfig(
+                    base=layer_config.rope_config.base,
+                    max_sequence_length=layer_config.rope_config.max_sequence_length,
+                    head_dim=layer_config.rope_config.head_dim,
+                    sections=mrope_section,
+                    layout=MRoPELayout.INTERLEAVED,
+                ),
+            )
+            if layer_config.rope_config is not None
+            else layer_config
+            for layer_config in decoder_config.transformer_config.layer_configs
+        )
+        return VisionLanguageModelConfig(
+            token_codec_config=token_codec_config,
+            decoder_config=replace(
+                decoder_config,
+                transformer_config=replace(decoder_config.transformer_config, layer_configs=layer_configs),
+            ),
+            generation_config=generation_config,
+            vision_encoder_config=self.vision_config.to_vision_encoder_config(),
+            image_preprocessing_config=image_preprocessing_config,
+            image_token_id=self.image_token_id,
+        )
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
