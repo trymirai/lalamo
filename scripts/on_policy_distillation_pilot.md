@@ -1,8 +1,9 @@
 # On-policy distillation pilot: Qwen3.8-27B → Qwen3.5-9B
 
-This documents one run of `scripts/on_policy_distillation_pilot.py`: what was trained, on what, with which loss,
-how it was evaluated, and what came out. It is a pilot (one run, one seed, small evaluation samples), meant to
-validate the pipeline and to show where the recipe needs work, not to support claims about the method.
+This documents the pilot run of `scripts/on_policy_distillation_pilot.py`: what was trained, on what, with which
+loss, how it was evaluated, and what came out. Section 8 adds three follow-up runs with other training signals.
+Every run is a single run with one seed and small evaluation samples. They are meant to validate the pipeline and
+to show where the recipe needs work, not to support claims about a method.
 
 - [1. Summary](#1-summary)
 - [2. Notation](#2-notation)
@@ -11,8 +12,9 @@ validate the pipeline and to show where the recipe needs work, not to support cl
 - [5. Evaluation protocol](#5-evaluation-protocol)
 - [6. Logged training metrics](#6-logged-training-metrics)
 - [7. Results](#7-results)
-- [8. Action items](#8-action-items)
-- [9. Reproduction](#9-reproduction)
+- [8. Follow-up runs](#8-follow-up-runs)
+- [9. Action items](#9-action-items)
+- [10. Reproduction](#10-reproduction)
 
 ## 1. Summary
 
@@ -25,6 +27,7 @@ validate the pipeline and to show where the recipe needs work, not to support cl
 | Training data | 3,200 math problems from DeepScaleR-Preview, each used once (50 steps × 64 rollouts, up to 4,096 response tokens each; 10,031,161 response tokens in total) |
 | Evaluation | MATH-500 (200 problems, the distilled skill) and MMLU-Pro (300 questions, never trained on) |
 | Result | MATH-500 49.0% → 80.0% (teacher 86.5%), MMLU-Pro 31.7% → 70.3%. Most of the gain is the student finishing inside the token budget. Evaluation accuracy is flat from step 10; the reverse-KL estimate falls until step 14 and then doubles between steps 28 and 34 |
+| Follow-up runs (section 8) | Same budget, other signals; MATH-500 / MMLU-Pro at step 50: supervised fine-tuning on teacher-written responses 78.5% / 67.3%; reward for correct answers only 67.5% / 76.0%, after 83.5% / 76.7% at step 10; distillation combined with that reward 82.0% / 65.0% |
 
 ## 2. Notation
 
@@ -542,56 +545,247 @@ These are readings of the tables above. None was tested with a further experimen
 7. **Training did not converge.** The adapter norm grows by about 0.115 per step from step 20 to step 50
    without flattening, and the gradient norm at the end (about 0.10) is above its minimum (0.05 at step 17).
 
-## 8. Action items
+## 8. Follow-up runs
 
-Last updated: 2026-11-12. Items are ticked off, and their results added to section 7, as the work is done.
+Three further runs use the same student, adapters, optimizer, step count, training prompts and evaluation
+protocol as the pilot (sections 4 and 5). Each changes only where the training signal comes from. Like the
+pilot, each is a single run with one seed.
 
-**In progress**
+### 8.1 What each run changes
 
-- [ ] Supervised baseline: fine-tune the student on responses the teacher wrote, with the same prompts, steps
-  and adapters as the pilot. The teacher's responses to the 3,200 prompts are being generated (cut at 4,096
-  tokens); training is queued behind that.
-- [ ] Reward-only run: 8 prompts × 8 rollouts per step, reward 1 for a correct boxed answer and 0 otherwise,
-  standardized among the rollouts of each prompt, no teacher. Queued.
-- [ ] On-policy distillation combined with that reward, with weights 1.0 and 0.2. Waiting for a second GPU.
+| Run | Responses trained on | Signal | Teacher during training | Per step |
+|---|---|---|---|---|
+| Pilot (sections 3–7) | Sampled by the student | Log-probability gap to the teacher | Scores the student's tokens | 64 prompts × 1 rollout |
+| Supervised baseline | Written by the teacher beforehand | Cross-entropy on the teacher's tokens | Not used | 64 prompts × 1 teacher response |
+| Reward only | Sampled by the student | Correctness of the final answer | Not used | 8 prompts × 8 rollouts |
+| Distillation + reward | Sampled by the student | Both, with weights 1.0 and 0.2 | Scores the student's tokens | 8 prompts × 8 rollouts |
+
+### 8.2 Losses
+
+**Supervised baseline.** Let $`y^{\mathrm{T}}_i`$ be the teacher's response to problem $`x_i`$ and $`s'_{i,t} = (p^{\mathrm{S}}(x_i),\, y^{\mathrm{T}}_{i,<t})`$ the student's prompt followed by the teacher's response prefix. The loss of step $`k`$ is the cross-entropy on the teacher's tokens, averaged over the $`N`$ response tokens of the step:
+
+```math
+ℒ^{\mathrm{sup}}_k(\theta) = -\frac{1}{N} \sum_{i=1}^{B} \sum_{t=1}^{L_i} \log\,\pi_\theta\bigl(y^{\mathrm{T}}_{i,t} \mid s'_{i,t}\bigr).
+\qquad (8)
+```
+
+It is computed as the loss (5) with every advantage set to 1.
+
+**Reward.** A step samples $`G = 8`$ rollouts for each of 8 prompts. Rollout $`j`$ of prompt $`i`$ earns $`r_{i,j} = 1`$ if its final reply contains a `\boxed{}` answer equal to the reference answer of the problem under the string normalisation of section 5, and $`r_{i,j} = 0`$ otherwise. A rollout cut off while reasoning earns 0. Rewards are standardized among the rollouts of the same prompt, with $`m_i`$ and $`\sigma_i`$ the mean and the population standard deviation of $`r_{i,1}, \dots, r_{i,G}`$:
+
+```math
+\hat{r}_{i,j} = \frac{r_{i,j} - m_i}{\sigma_i} \quad \text{if } \sigma_i > 0, \qquad \hat{r}_{i,j} = 0 \quad \text{otherwise}.
+\qquad (9)
+```
+
+A prompt whose rollouts all earned the same reward therefore contributes nothing to the step. Every response token of a rollout gets the standardized reward of the rollout, and the advantage of token $`t`$ of rollout $`(i,j)`$ is
+
+```math
+A_{i,j,t} = \alpha\,\bigl(g_{i,j,t} - b\bigr) + \beta\,\hat{r}_{i,j},
+\qquad (10)
+```
+
+used in the loss (5). The reward-only run has $`\alpha = 0`$ and $`\beta = 1`$, and does not load the teacher. The distillation + reward run has $`\alpha = 1.0`$ and $`\beta = 0.2`$, with $`g`$ and $`b`$ as in equations (2) and (3) over the 64 rollouts of the step.
+
+### 8.3 Setup differences from the pilot
+
+- **Code.** The runs used this branch at commit `587b8b7f`, which is based on lalamo `main` at `1edce60e`. The
+  pilot used `f3d9f59c`.
+- **Evaluations before training.** The evaluations of the untrained student and of the teacher were not
+  repeated. Their numbers are the pilot's.
+- **Teacher responses** (supervised baseline). `scripts/generate_teacher_responses.py` sampled one response
+  per training prompt from the teacher behind its own prompt (section 4.2), with the teacher's default
+  sampling settings (temperature 1.0, top-k 20, top-p 0.95), in batches of 48 with the sampling key of batch
+  $`j`$ derived from the integer $`j`$, cut off at 4,096 tokens. Of the
+  3,200 responses, 1,927 (60.2%) end with a stop token and 1,371 (42.8%) are correct by the reward rule above;
+  their mean length is 2,392 tokens. All of them were used for training, including the cut-off and the
+  incorrect ones. Step $`k`$ trains on the responses to the prompts that the pilot used in step $`k`$:
+  7,655,782 response tokens in total.
+- **Prompts of the reward runs.** Step $`k`$ uses prompts $`8(k-1)+1, \dots, 8k`$ of the same selection, so the
+  two runs see the first 400 of the pilot's 3,200 prompts. The 64 rollouts of a step are sampled in one batch
+  as in section 4.4.
+- **Gradient clipping.** The gradient norm exceeded 1.0 once, in step 1 of the supervised run (1.256), where
+  it was clipped.
+- **Hardware.** The student's GPU was shared with another job during all three runs, so step times are not
+  comparable with the pilot's. The reward-only run ran out of memory twice (during steps 25 and 30) and
+  resumed from the checkpoints of steps 20 and 25.
+
+### 8.4 Evaluations
+
+MATH-500, 200 problems: accuracy, with the answered fraction in parentheses. The teacher scores 86.5% (92.5%).
+
+| Step | Pilot | Supervised | Reward only | Distillation + reward |
+|---:|---:|---:|---:|---:|
+| 0 | 49.0% (51.0%) | 49.0% (51.0%) | 49.0% (51.0%) | 49.0% (51.0%) |
+| 10 | 77.5% (84.5%) | 78.5% (87.0%) | 83.5% (93.5%) | 78.0% (84.0%) |
+| 20 | 74.5% (80.0%) | 75.5% (81.5%) | 75.0% (88.5%) | 61.5% (67.0%) |
+| 30 | 81.5% (87.0%) | 75.5% (84.0%) | 65.5% (95.5%) | 78.5% (85.0%) |
+| 40 | 75.0% (82.0%) | 79.0% (86.0%) | 65.5% (97.5%) | 70.0% (76.5%) |
+| 50 | 80.0% (87.0%) | 78.5% (86.5%) | 67.5% (98.5%) | 82.0% (87.5%) |
+
+MMLU-Pro, 300 questions: accuracy, with the answered fraction in parentheses.
+
+| Step | Pilot | Supervised | Reward only | Distillation + reward |
+|---:|---:|---:|---:|---:|
+| 0 | 31.7% (34.0%) | 31.7% (34.0%) | 31.7% (34.0%) | 31.7% (34.0%) |
+| 10 | 64.0% (71.7%) | 56.7% (61.3%) | 76.7% (88.3%) | 67.3% (76.0%) |
+| 20 | 68.7% (78.3%) | 61.0% (66.3%) | 74.7% (91.0%) | 57.0% (64.0%) |
+| 30 | 71.7% (83.7%) | 61.3% (64.3%) | 71.7% (95.7%) | 72.7% (83.7%) |
+| 40 | 68.7% (75.0%) | 66.0% (71.0%) | 70.3% (100.0%) | 58.7% (63.0%) |
+| 50 | 70.3% (77.0%) | 67.3% (72.0%) | 76.0% (97.3%) | 65.0% (68.7%) |
+
+Mean response length in tokens (the teacher's is 1,622 on MATH-500):
+
+| Step | MATH-500: Pilot | Supervised | Reward only | Distillation + reward | MMLU-Pro: Pilot | Supervised | Reward only | Distillation + reward |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 5,862 | 5,862 | 5,862 | 5,862 | 3,390 | 3,390 | 3,390 | 3,390 |
+| 10 | 3,254 | 1,986 | 2,227 | 3,373 | 2,433 | 2,463 | 1,790 | 2,299 |
+| 20 | 2,787 | 2,177 | 1,729 | 3,505 | 2,015 | 2,061 | 1,238 | 2,243 |
+| 30 | 2,298 | 2,141 | 1,163 | 2,459 | 1,493 | 2,011 | 962 | 1,571 |
+| 40 | 2,259 | 1,970 | 1,177 | 2,825 | 1,663 | 1,867 | 960 | 2,143 |
+| 50 | 1,862 | 1,885 | 1,393 | 1,880 | 1,532 | 1,746 | 1,234 | 1,935 |
+
+Accuracy among answered questions at step 50:
+
+| Run | MATH-500 | MMLU-Pro |
+|---|---:|---:|
+| Student before training | 96.1% | 93.1% |
+| Pilot | 92.0% | 91.3% |
+| Supervised | 90.8% | 93.5% |
+| Reward only | 68.5% | 78.1% |
+| Distillation + reward | 93.7% | 94.7% |
+
+One accuracy has a standard error of about 2.8 points on MATH-500 and 2.6 on MMLU-Pro, so the difference
+between two runs has one of about 4 points.
+
+### 8.5 Training metrics
+
+Supervised baseline. "Finished" is the fraction of the step's teacher responses that end with a stop token.
+
+| Step | Cross-entropy | Gradient norm | Adapter norm | Response tokens | Mean length | Finished |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1.1544 | 1.256 | 0.95 | 141,051 | 2204 | 0.62 |
+| 5 | 0.8508 | 0.350 | 2.88 | 159,557 | 2493 | 0.59 |
+| 10 | 0.8220 | 0.177 | 4.33 | 164,123 | 2564 | 0.56 |
+| 15 | 0.7900 | 0.136 | 5.43 | 169,411 | 2647 | 0.53 |
+| 20 | 0.7428 | 0.117 | 6.25 | 141,391 | 2209 | 0.62 |
+| 25 | 0.7328 | 0.114 | 6.91 | 146,937 | 2296 | 0.64 |
+| 30 | 0.7378 | 0.105 | 7.45 | 151,621 | 2369 | 0.62 |
+| 35 | 0.7374 | 0.106 | 7.90 | 180,302 | 2817 | 0.48 |
+| 40 | 0.6797 | 0.106 | 8.27 | 149,561 | 2337 | 0.61 |
+| 45 | 0.7364 | 0.095 | 8.61 | 155,895 | 2436 | 0.58 |
+| 50 | 0.6690 | 0.100 | 8.92 | 140,756 | 2199 | 0.66 |
+
+Reward only. "Mean reward" is the fraction of the step's 64 rollouts with a correct answer, and "informative
+prompts" counts the prompts whose rollouts did not all earn the same reward.
+
+| Step | Student entropy | Mean reward | Informative prompts | Gradient norm | Adapter norm | Mean length | Finished |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 0.3502 | 0.031 | 1/8 | 0.014 | 0.90 | 4079 | 0.03 |
+| 5 | 0.3130 | 0.344 | 3/8 | 0.028 | 2.35 | 3621 | 0.36 |
+| 10 | 0.2679 | 0.344 | 3/8 | 0.030 | 3.42 | 3321 | 0.47 |
+| 15 | 0.3147 | 0.375 | 2/8 | 0.038 | 4.22 | 2365 | 0.64 |
+| 20 | 0.3159 | 0.484 | 5/8 | 0.054 | 4.88 | 2327 | 0.72 |
+| 25 | 0.4163 | 0.094 | 3/8 | 0.041 | 5.44 | 2070 | 0.88 |
+| 30 | 0.3689 | 0.266 | 4/8 | 0.073 | 5.98 | 929 | 1.00 |
+| 35 | 0.3280 | 0.328 | 2/8 | 0.048 | 6.49 | 1178 | 1.00 |
+| 40 | 0.3447 | 0.219 | 3/8 | 0.050 | 7.01 | 1677 | 1.00 |
+| 45 | 0.3699 | 0.219 | 4/8 | 0.065 | 7.46 | 1566 | 0.98 |
+| 50 | 0.2519 | 0.500 | 5/8 | 0.063 | 7.87 | 1489 | 1.00 |
+
+Distillation + reward.
+
+| Step | Reverse KL | Student entropy | Mean reward | Informative prompts | Gradient norm | Adapter norm | Mean length | Finished |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 0.0968 | 0.3502 | 0.031 | 1/8 | 0.171 | 0.94 | 4079 | 0.03 |
+| 5 | 0.0768 | 0.2561 | 0.219 | 3/8 | 0.105 | 2.48 | 3866 | 0.22 |
+| 10 | 0.0668 | 0.2553 | 0.141 | 1/8 | 0.073 | 3.57 | 3592 | 0.23 |
+| 15 | 0.0626 | 0.2799 | 0.203 | 2/8 | 0.078 | 4.39 | 2781 | 0.45 |
+| 20 | 0.0789 | 0.4588 | 0.094 | 2/8 | 0.065 | 5.02 | 3592 | 0.27 |
+| 25 | 0.0795 | 0.4857 | 0.141 | 3/8 | 0.062 | 5.54 | 3906 | 0.16 |
+| 30 | 0.1196 | 0.6436 | 0.297 | 4/8 | 0.103 | 5.99 | 2548 | 0.64 |
+| 35 | 0.1486 | 0.7925 | 0.438 | 1/8 | 0.136 | 6.47 | 2419 | 0.56 |
+| 40 | 0.1537 | 0.8002 | 0.203 | 3/8 | 0.111 | 7.03 | 3451 | 0.31 |
+| 45 | 0.1709 | 0.6853 | 0.172 | 4/8 | 0.169 | 7.60 | 2817 | 0.44 |
+| 50 | 0.1941 | 0.8308 | 0.531 | 2/8 | 0.212 | 8.19 | 2342 | 0.69 |
+
+### 8.6 Observations
+
+These are readings of the tables above. None was tested with a further experiment. A difference of less than
+about 8 points between two runs is within two standard errors.
+
+1. **The supervised baseline matches the pilot on MATH-500.** The two differ by at most 6 points at any
+   evaluation and by 1.5 points at step 50. On MMLU-Pro the pilot is ahead at every evaluation, by 2.7 to 10.4
+   points (3.0 at step 50). The supervised student reaches the teacher's response length sooner (1,986
+   tokens on MATH-500 at step 10, against 3,254).
+2. **The supervised baseline did this on imperfect data:** 40% of the teacher responses it trained on were cut
+   off and 57% were not graded correct.
+3. **Reward only is best early and then trades accuracy for answering.** At step 10 it has the highest
+   accuracy of any run at any evaluation on both benchmarks (83.5% and 76.7%). Afterwards it answers almost
+   every question (98.5% and 97.3% at step 50) with shorter responses, while accuracy among answered MATH-500
+   questions falls from 89.3% at step 10 to 68.5% at step 50. In training, at least 97% of the rollouts of
+   every step finish from step 28 on, at a mean length of 929–1,811 tokens against a limit of 4,096.
+4. **The training reward does not rise after the first steps.** Averaged over ten steps, the mean reward of
+   the reward-only run is 0.31, 0.42, 0.36, 0.29 and 0.32. A step sees only 8 prompts, on average 3.3 of them
+   informative, so a single step's reward mostly reflects which prompts it drew.
+5. **Distillation + reward is the least stable run.** Its MATH-500 accuracy moves between 61.5% and 82.0%
+   from one evaluation to the next, and its MMLU-Pro accuracy between 57.0% and 72.7%. Its reverse-KL estimate
+   falls to 0.058 at step 13 and rises to 0.194 at step 50, above the pilot's 0.157. Each of its steps scores
+   8 distinct prompts where the pilot's scores 64.
+
+## 9. Action items
+
+Last updated: 2026-11-13. Items are ticked off, and their results added to sections 7 and 8, as the work is
+done.
 
 **Open: evaluation**
 
+- [ ] Evaluate on all of MATH-500 and a larger MMLU-Pro sample, and repeat the four runs with more seeds. One
+  accuracy now has a standard error of 2.6–2.8 points, which is too coarse to rank the runs.
+- [ ] Save per-question outcomes and generated texts, then compare runs and checkpoints on the same questions
+  and measure forgetting directly. Only totals were saved so far.
 - [ ] Evaluate the base student with a larger response limit, to separate "finishes sooner" from "answers
-  better". Its score in this run is set by the limit, and its mean response length is censored by it.
-- [ ] Save per-question outcomes and generated texts, then compare checkpoints on the same questions and
-  measure forgetting directly. Only totals were saved so far.
+  better". Its score in these runs is set by the limit, and its mean response length is censored by it.
 - [ ] Evaluate teacher and student with the same sampling settings, and add an evaluation at the training
   temperature (section 5).
 - [ ] Evaluate the teacher on MMLU-Pro.
-- [ ] Evaluate on all of MATH-500 and a larger MMLU-Pro sample, and repeat runs with more seeds. One accuracy
-  now has a standard error of 2.6–2.8 points.
-- [ ] Grade MATH-500 by mathematical equivalence instead of string match.
+- [ ] Grade MATH-500, and the training reward, by mathematical equivalence instead of string match.
 
 **Open: training**
 
-- [ ] Add a learning-rate schedule and try a lower learning rate. The adapters were still moving at step 50
-  and the reverse-KL estimate rose after step 27.
+- [ ] Supervised baseline on the finished and correct teacher responses only. The first baseline trained on
+  all of them, of which 40% were cut off and 57% not graded correct (section 8.3).
+- [ ] Reward runs with more prompts per step. With 8 prompts, about 3 carry a signal in a step (section 8.6).
+- [ ] A reward that does not pay for brevity alone. The reward-only run kept shortening its responses after
+  accuracy had peaked at step 10 (section 8.6); options are a higher response limit in training or stopping on
+  an evaluation.
+- [ ] Find out why distillation + reward is unstable, and try other weights than 1.0 and 0.2 (section 8.6).
+- [ ] Add a learning-rate schedule and try a lower learning rate. The adapters were still moving at step 50 in
+  every run, and the reverse-KL estimate rose late in both runs that have one.
 - [ ] Log two reference values: the teacher's entropy on its own samples, and the reverse KL computed over the
   full vocabulary. The sampled-token estimate alone is not a progress measure, because the contexts it
   averages over change during training (section 3.3).
-- [ ] Check whether the terse reasoning style of the late checkpoints is the teacher's, using the teacher
-  responses generated for the supervised baseline.
+- [ ] Check whether the terse reasoning style of the pilot's late checkpoints is the teacher's, using the
+  teacher responses generated for the supervised baseline.
 - [ ] Credit assignment across tokens (section 3.3).
 - [ ] A baseline that does not depend on the sampled token (section 3.3).
 - [ ] Give teacher and student the same prompt, or measure what the teacher's extra system message changes
   (section 4.2).
 - [ ] Reduce the memory of the backward pass, so that more than one rollout fits in a gradient micro-batch
   (section 3.5).
-- [ ] Re-run the pilot on the current base commit. The run used lalamo at `f3d9f59c`, and this branch is
-  rebased onto a later `main`.
+- [ ] Re-run the pilot on the current base commit. It used lalamo at `f3d9f59c`; the follow-up runs used a
+  later `main` (section 8.3).
 
 **Done**
 
 - [x] Pilot run of on-policy distillation (sections 4–7).
 - [x] Supervised and reward-based training in `lalamo.distillation`, with unit tests.
+- [x] Supervised baseline on teacher-written responses at the pilot's budget (section 8): level with the pilot
+  on MATH-500, behind it on MMLU-Pro.
+- [x] Reward-only run (section 8): best of all runs at step 10, then lower accuracy as it answered faster.
+- [x] On-policy distillation combined with the reward (section 8): unstable from one evaluation to the next.
 
-## 9. Reproduction
+## 10. Reproduction
 
 From the repository root, in an environment with lalamo's CUDA dependencies, on a machine where the first and
 the last visible GPU can each hold one of the models (about 122 GB and 94 GB at peak during training with the
@@ -609,3 +803,27 @@ with the same output directory resumes from the latest checkpoint.
 
 Seeds are fixed, but bit-identical results across hardware, library versions or allocator settings were not
 tested.
+
+The follow-up runs of section 8 first need the teacher's responses, which take one GPU that can hold the
+teacher:
+
+```sh
+python -m scripts.generate_teacher_responses --output-directory <responses>
+```
+
+Each follow-up run is then the pilot command with a method. The supervised and the reward-only run need only
+the student's GPU:
+
+```sh
+python scripts/on_policy_distillation_pilot.py --output-directory <directory> \
+    --method supervised --teacher-responses <responses>
+python scripts/on_policy_distillation_pilot.py --output-directory <directory> \
+    --method reward --teacher-responses <responses> --prompts-per-step 8 --rollouts-per-prompt 8
+python scripts/on_policy_distillation_pilot.py --output-directory <directory> \
+    --method distillation-and-reward --teacher-responses <responses> --prompts-per-step 8 --rollouts-per-prompt 8 \
+    --distillation-weight 1.0 --reward-weight 0.2
+```
+
+With `--teacher-responses`, a run takes its training prompts from that directory. The follow-up runs also
+started from a `results.json` holding the pilot's evaluations of the untrained student and of the teacher, which
+the script then does not repeat.
