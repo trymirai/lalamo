@@ -5,6 +5,7 @@ from typing import Self
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 from einops import rearrange
 from jax.lax import DotAlgorithmPreset
 from jaxtyping import Array, DTypeLike, Float, Int
@@ -163,6 +164,7 @@ class DecoderConfig(LalamoConfig):
     vocab_size: int
     ple_model_config: PLEModelConfig | None = None
     embedding_norm_config: NormalizationConfig | None = None
+    permute_indices: bool = False
 
     def init(self, initializer: Initializer) -> "Decoder":
         embedding = self.embedding_config.init(
@@ -197,6 +199,10 @@ class DecoderConfig(LalamoConfig):
         else:
             per_layer_embedding = None
 
+        token_id_to_original_token_id = None
+        if self.permute_indices:
+            token_id_to_original_token_id = initializer.zeros((self.vocab_size,), dtype=jnp.int32)
+
         return Decoder(
             config=self,
             sharding_config=initializer.sharding_config,
@@ -204,6 +210,7 @@ class DecoderConfig(LalamoConfig):
             embedding_norm=embedding_norm,
             transformer=transformer,
             per_layer_embedding=per_layer_embedding,
+            token_id_to_original_token_id=token_id_to_original_token_id,
         )
 
 
@@ -212,6 +219,8 @@ class Decoder(LalamoModule[DecoderConfig]):
     embedding_norm: Normalization | None
     transformer: Transformer
     per_layer_embedding: PerLayerEmbedding | None
+    # Current token id -> id in the source model's vocabulary.
+    token_id_to_original_token_id: Int[Array, " vocabulary"] | None = None
 
     @property
     def vocab_size(self) -> int:
@@ -285,6 +294,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             attention_parent_indices=attention_parent_indices,
             return_suffix_tokens=return_suffix_tokens,
             token_ids=token_ids,
+            token_id_to_original_token_id=self.token_id_to_original_token_id,
             keychain=transformer_keychain,
         )
 

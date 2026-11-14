@@ -24,12 +24,15 @@ def _tokenizer() -> Tokenizer:
     return tokenizer
 
 
-def test_reordered_tokenizer_encodes_to_renumbered_ids() -> None:
+@pytest.mark.parametrize("pad_token", [None, "<eos>", "a"])
+def test_reordered_tokenizer_encodes_to_renumbered_ids(pad_token: str | None) -> None:
     tokenizer = _tokenizer()  # 7 tokens; the 8th row is padding
-    order = frequency_order(np.array([0, 3, 0, 0, 7, 7, 1, 9]), tokenizer)
+    if pad_token is not None:
+        tokenizer.enable_padding(length=12, pad_id=tokenizer.token_to_id(pad_token), pad_token=pad_token)
+    token_id_to_original_token_id = frequency_order(np.array([0, 3, 0, 0, 7, 7, 1, 9]), tokenizer)
     # <eos> (id 6) is an added token, then tokens by count with ties in id order; padding id 7 stays despite its count.
-    assert order.tolist() == [6, 4, 5, 1, 0, 2, 3, 7]
-    new_ids = np.argsort(order)
+    assert token_id_to_original_token_id.tolist() == [6, 4, 5, 1, 0, 2, 3, 7]
+    new_ids = np.argsort(token_id_to_original_token_id)
     reordered = reorder_tokenizer(tokenizer, new_ids)
     text = "abc id ab<eos>"
     original_ids = tokenizer.encode(text).ids
@@ -52,24 +55,16 @@ def test_reordered_embedding_computes_the_same_function(config: TiedEmbeddingCon
     sharding_config = make_test_sharding_config()
     initializer = RandomInitializer(default_dtype=jnp.float32, sharding_config=sharding_config, key=jax.random.key(0))
     embedding = config.init(initializer, model_dim=model_dim, vocab_size=vocab_size)
-    order = np.array([6, 4, 5, 1, 0, 2, 3, 7])
-    reordered = reorder_embedding(embedding, order)
+    token_id_to_original_token_id = np.array([6, 4, 5, 1, 0, 2, 3, 7])
+    reordered = reorder_embedding(embedding, token_id_to_original_token_id)
     keychain = Keychain.init(0, sharding_config=sharding_config)
 
-    assert reordered.config.permute_indices
-    assert reordered.index_permutation is not None
-    assert np.array_equal(reordered.index_permutation, order)
-    template = reordered.config.init(initializer, model_dim=model_dim, vocab_size=vocab_size)
-    restored = template.load_exported(reordered.export())
-    assert restored.index_permutation is not None
-    assert np.array_equal(restored.index_permutation, order)
-    assert config.init(initializer, model_dim=model_dim, vocab_size=vocab_size).index_permutation is None
     assert np.array_equal(
         reordered.embed(jnp.arange(vocab_size), keychain=keychain),
-        embedding.embed(jnp.asarray(order), keychain=keychain),
+        embedding.embed(jnp.asarray(token_id_to_original_token_id), keychain=keychain),
     )
     hidden = jnp.arange(model_dim, dtype=jnp.float32)
     assert np.array_equal(
         reordered.readout(hidden, keychain=keychain),
-        np.asarray(embedding.readout(hidden, keychain=keychain))[order],
+        np.asarray(embedding.readout(hidden, keychain=keychain))[token_id_to_original_token_id],
     )

@@ -1,11 +1,17 @@
 from itertools import accumulate, pairwise
 from pathlib import Path
+from unittest.mock import patch
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 import torch
 from jaxtyping import Array, Float, Int
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
+from tokenizers.pre_tokenizers import Whitespace
+from tokenizers.processors import TemplateProcessing
 from transformers.models.qwen4_exp.configuration_qwen4_exp import Qwen4ExpConfig, Qwen4ExpTextConfig
 from transformers.models.qwen4_exp.modeling_qwen4_exp import (
     Qwen4ExpForConditionalGeneration,
@@ -17,8 +23,12 @@ from lalamo.model_import.loaders.huggingface import load_huggingface_decoder
 from lalamo.model_import.model_configs import HFQwen38FlashNextConfig
 from lalamo.model_import.model_configs.huggingface.qwen3_8_flash_next import ngram_head_vocab_sizes, ngram_multipliers
 from lalamo.model_import.origins import load_safetensors_weights
+from lalamo.model_import.vocabulary_order import frequency_ordered
+from lalamo.models import GenerationConfig, LanguageModel, LanguageModelConfig
+from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.module import Keychain
 from lalamo.modules import Decoder, DecoderForwardPassConfig
+from lalamo.modules.ngram_injection import NGramInjectionConfig
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.torch_interop import torch_to_jax
 from tests.common import assert_close
@@ -182,3 +192,99 @@ def test_chunked_decoding_matches_hf(
                 chunk_logits.append(result.logits)
 
     assert_close(result=jnp.concatenate(chunk_logits, axis=1), reference=hf_logits(hf_model, token_ids))
+
+
+def test_reordered_vocabulary_preserves_eos_and_ngram_lookups(
+    hf_model: Qwen4ExpForConditionalGeneration,
+    checkpoint_path: Path,
+    tmp_path: Path,
+) -> None:
+    device, *_ = jax.devices("cpu")
+    decoder = load_decoder(checkpoint_path, device)
+    pieces = ["<bos>", "<pad>", "<unk>", "<eos>", "<sep>", "<cls>", "<mask>"]
+    pieces += [f"t{index:03d}" for index in range(len(pieces), decoder.vocab_size)]
+    tokenizer = Tokenizer(WordLevel(dict(zip(pieces, range(decoder.vocab_size), strict=True)), unk_token=pieces[2]))
+    tokenizer.pre_tokenizer = Whitespace()
+    tokenizer.add_special_tokens(pieces[:7])
+    tokenizer.enable_padding(pad_id=1, pad_token=pieces[1])
+    tokenizer.post_processor = TemplateProcessing(
+        single=f"{pieces[0]} $A {pieces[EOS_TOKEN_ID]}",
+        special_tokens=[(pieces[0], 0), (pieces[EOS_TOKEN_ID], EOS_TOKEN_ID)],
+    )
+    codec_config = ChatCodecConfig(
+        "{{ bos_token }} {{ eos_token }}", None, "system", "user", "assistant", pieces[EOS_TOKEN_ID], pieces[0]
+    )
+    config = LanguageModelConfig(
+        codec_config, decoder.config, GenerationConfig(stop_token_ids=(EOS_TOKEN_ID, 2), banned_tokens=(4,))
+    )
+    original = LanguageModel(
+        config=config,
+        sharding_config=decoder.sharding_config,
+        token_codec=codec_config.init(tokenizer),
+        decoder=decoder,
+    )
+    counts = np.arange(decoder.vocab_size)
+    counts[EOS_TOKEN_ID] = decoder.vocab_size
+    with patch("lalamo.model_import.vocabulary_order.training_mixture_counts", return_value=counts):
+        reordered = frequency_ordered(original)
+    reordered.save(tmp_path)
+    token_ids = make_token_ids()
+    batch_size, num_tokens = token_ids.shape
+    reference = hf_logits(hf_model, token_ids)
+    for model in (reordered, LanguageModel.load(tmp_path, decoder.sharding_config), reordered.astype(jnp.float32)):
+        token_id_to_original_token_id = model.decoder.token_id_to_original_token_id
+        assert token_id_to_original_token_id is not None
+        new_ids = np.argsort(np.asarray(token_id_to_original_token_id))
+        for old_id, piece in enumerate(pieces[:7]):
+            new_id = int(new_ids[old_id])
+            assert model.token_codec.encode_text(piece) == [new_id]
+            assert model.token_codec.decode_tokens([new_id]) == piece
+        bos_id, pad_id, unk_id, eos_id, sep_id, *_ = new_ids[:7].tolist()
+        assert eos_id == 0
+        assert model.token_codec.encode_text(model.token_codec.render_request(())) == [bos_id, eos_id]
+        assert model.token_codec.encode_text("missing") == [unk_id]
+        assert model.token_codec.tokenizer.encode(pieces[4]).ids == [bos_id, sep_id, eos_id]
+        padded, _ = model.token_codec.tokenizer.encode_batch(
+            [pieces[0], f"{pieces[0]} {pieces[4]}"], add_special_tokens=False
+        )
+        assert padded.ids == [bos_id, pad_id]
+        assert model.config.generation_config.stop_token_ids == (eos_id, unk_id)
+        assert model.config.generation_config.banned_tokens == (sep_id,)
+        assert model.config.generation_config.trim_stop_tokens([1, eos_id, 1]) == [1]
+        assert model.config.decoder_config == model.decoder.config
+        assert model.decoder.config.transformer_config == model.decoder.transformer.config
+        for layer, layer_config in zip(
+            model.decoder.transformer.layers, model.decoder.transformer.config.layer_configs, strict=True
+        ):
+            assert layer.config == layer_config
+            for op, op_config in zip(
+                (*layer.prologue, *layer.epilogue),
+                (*layer_config.prologue_configs, *layer_config.epilogue_configs),
+                strict=True,
+            ):
+                assert op.config == op_config
+                if isinstance(op_config, NGramInjectionConfig):
+                    assert op_config.hash_config.eos_token_id == eos_id
+        reordered_ids = jnp.asarray(
+            [
+                model.token_codec.encode_text(" ".join(pieces[token_id] for token_id in row))
+                for row in token_ids.tolist()
+            ]
+        )
+        state = model.decoder.init_static_state(batch_size, num_tokens, jnp.float32)
+        chunk_logits = []
+        with jax.set_mesh(model.sharding_config.mesh):
+            for start, end in pairwise(accumulate(CHUNK_LENGTHS, initial=0)):
+                result = model.decoder(
+                    reordered_ids[:, start:end],
+                    token_positions_for(token_ids)[:, start:end],
+                    state=state,
+                    return_updated_state=True,
+                    forward_pass_config=DecoderForwardPassConfig.for_tracer_tests(),
+                    keychain=Keychain.init(0, sharding_config=model.sharding_config),
+                )
+                state = result.updated_state
+                chunk_logits.append(result.logits)
+        assert_close(
+            result=jnp.concatenate(chunk_logits, axis=1), reference=reference[..., token_id_to_original_token_id]
+        )

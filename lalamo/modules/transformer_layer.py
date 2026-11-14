@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from typing import Self
 
@@ -351,7 +351,8 @@ def gather_suffix_stream[StreamT](
 
     token_ids = gather(context.token_ids) if context.token_ids is not None else None
     per_layer_input = gather(context.per_layer_input) if context.per_layer_input is not None else None
-    return jax.tree.map(gather, stream), StreamOpContext(
+    return jax.tree.map(gather, stream), replace(
+        context,
         token_ids=token_ids,
         per_layer_input=per_layer_input,
         lengths_without_padding=None,
@@ -391,6 +392,7 @@ class TransformerLayer[StreamT](LalamoModule[TransformerLayerConfig]):
         return_suffix_tokens: int | None = None,
         token_ids: Int[Array, "batch suffix_tokens"] | None = None,
         *,
+        token_id_to_original_token_id: Int[Array, " vocabulary"] | None = None,
         keychain: Keychain,
     ) -> TransformerLayerResult[StreamT]:
         if return_suffix_tokens is not None and return_activation_trace:
@@ -421,6 +423,7 @@ class TransformerLayer[StreamT](LalamoModule[TransformerLayerConfig]):
             token_ids=token_ids,
             per_layer_input=per_layer_input,
             lengths_without_padding=lengths_without_padding,
+            token_id_to_original_token_id=token_id_to_original_token_id,
         )
 
         prologue_streams = []
