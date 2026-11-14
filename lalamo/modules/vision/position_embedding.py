@@ -1,13 +1,15 @@
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import NamedTuple
+from functools import partial
 
 import equinox as eqx
+import jax
 import numpy as np
-from einops import einsum
+from einops import rearrange
 from jax import numpy as jnp
-from jaxtyping import Array, Float, Int
+from jax.scipy.ndimage import map_coordinates
+from jaxtyping import Array, Float
 
 from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
@@ -20,13 +22,6 @@ __all__ = [
 ]
 
 
-class BilinearTaps(NamedTuple):
-    """Four table rows per patch and their blend weights, ordered top-left, top-right, bottom-left, bottom-right."""
-
-    indices: Int[np.ndarray, "corners patches"]
-    weights: Float[np.ndarray, "corners patches"]
-
-
 @dataclass(frozen=True)
 class InterpolatedPositionEmbeddingConfig(LalamoConfig):
     """Learned absolute position table, bilinearly resampled to the image's patch grid."""
@@ -36,40 +31,6 @@ class InterpolatedPositionEmbeddingConfig(LalamoConfig):
     def __post_init__(self) -> None:
         if math.isqrt(self.num_positions) ** 2 != self.num_positions:
             raise ValueError(f"num_positions must be a perfect square, got {self.num_positions}.")
-
-    @property
-    def side(self) -> int:
-        return math.isqrt(self.num_positions)
-
-    def bilinear_taps(self, grid: ImageGrid, spatial_merge_size: int) -> BilinearTaps:
-        """Interpolation taps for one frame, in encoder patch order. Computed with NumPy at trace time."""
-        last = self.side - 1
-
-        def axis_taps(length: int) -> tuple[Int[np.ndarray, " n"], Int[np.ndarray, " n"], Float[np.ndarray, " n"]]:
-            positions = np.linspace(0, last, length, dtype=np.float32)
-            lower = positions.astype(np.int64)
-            upper = np.minimum(lower + 1, last)
-            return lower, upper, positions - lower.astype(np.float32)
-
-        row_lower, row_upper, row_fraction = axis_taps(grid.height_in_patches)
-        col_lower, col_upper, col_fraction = axis_taps(grid.width_in_patches)
-
-        rows, cols = grid.patch_coordinates(spatial_merge_size)
-        top, bottom, down = row_lower[rows], row_upper[rows], row_fraction[rows]
-        left, right, across = col_lower[cols], col_upper[cols], col_fraction[cols]
-        up, back = 1 - down, 1 - across
-
-        return BilinearTaps(
-            indices=np.stack(
-                [
-                    top * self.side + left,
-                    top * self.side + right,
-                    bottom * self.side + left,
-                    bottom * self.side + right,
-                ],
-            ),
-            weights=np.stack([up * back, up * across, down * back, down * across]),
-        )
 
     def init(self, initializer: Initializer, model_dim: int) -> "InterpolatedPositionEmbedding":
         return InterpolatedPositionEmbedding(
@@ -84,15 +45,20 @@ class InterpolatedPositionEmbedding(LalamoModule[InterpolatedPositionEmbeddingCo
 
     @eqx.filter_jit
     def __call__(self, grids: Sequence[ImageGrid], spatial_merge_size: int) -> Float[Array, "patches channels"]:
+        side = math.isqrt(self.config.num_positions)
+        # HF blends in float32 before rounding back to the table dtype.
+        table = rearrange(self.table.astype(jnp.float32), "(row col) channels -> row col channels", row=side, col=side)
         per_grid = []
         for grid in grids:
-            taps = self.config.bilinear_taps(grid, spatial_merge_size)
-            corners = self.table[taps.indices]
-            # HF's interpolation weights promote the blend to float32 before output rounding.
-            blended = einsum(
-                corners.astype(jnp.float32),
-                jnp.asarray(taps.weights),
-                "corners patches channels, corners patches -> patches channels",
-            ).astype(self.table.dtype)
+            rows, cols = grid.patch_coordinates(spatial_merge_size)
+            coordinates = (
+                np.linspace(0, side - 1, grid.height_in_patches, dtype=np.float32)[rows],
+                np.linspace(0, side - 1, grid.width_in_patches, dtype=np.float32)[cols],
+            )
+            blended = jax.vmap(
+                partial(map_coordinates, coordinates=coordinates, order=1, mode="nearest"),
+                in_axes=2,
+                out_axes=1,
+            )(table).astype(self.table.dtype)
             per_grid.append(jnp.tile(blended, (grid.num_frames, 1)))
         return jnp.concatenate(per_grid, axis=0)

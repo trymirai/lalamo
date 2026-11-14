@@ -30,10 +30,11 @@ class VisionRoPEConfig(LalamoConfig, RegistryABC):
         grids: Sequence[ImageGrid],
         spatial_merge_size: int,
     ) -> PositionalEmbeddings:
-        per_grid_coordinates = [(grid.patch_coordinates(spatial_merge_size), grid.num_frames) for grid in grids]
         # Frames of a clip share the spatial layout, so their coordinates simply repeat.
-        rows = np.concatenate([np.tile(coordinates.rows, frames) for coordinates, frames in per_grid_coordinates])
-        cols = np.concatenate([np.tile(coordinates.cols, frames) for coordinates, frames in per_grid_coordinates])
+        rows, cols = np.concatenate(
+            [np.tile(grid.patch_coordinates(spatial_merge_size), (1, grid.num_frames)) for grid in grids],
+            axis=1,
+        )
 
         axis_dim = self.head_dim // 2
         # Keep the frequencies in float32, matching HF's inv_freq buffer.
