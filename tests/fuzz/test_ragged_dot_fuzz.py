@@ -90,8 +90,7 @@ def test_ragged_dot_matches_grouped_matmul(shape: RaggedDotShape, seed: int, dty
 
 
 @pytest.mark.parametrize("dtype", [jnp.bfloat16, jnp.float32])
-@pytest.mark.parametrize("output_dtype", [None, jnp.float32])
-def test_ragged_dot_gradients_match_grouped_matmul(dtype: DTypeLike, output_dtype: DTypeLike | None) -> None:
+def test_ragged_dot_gradients_match_grouped_matmul(dtype: DTypeLike) -> None:
     sharding_config = ShardingConfig.replicated()
     vectors = jax.device_put(
         (jnp.arange(5 * 4, dtype=jnp.float32).reshape(5, 4) / 10).astype(dtype),
@@ -112,15 +111,12 @@ def test_ragged_dot_gradients_match_grouped_matmul(dtype: DTypeLike, output_dtyp
             current_weights,
             group_sizes,
             precision=DotAlgorithmPreset.DEFAULT,
-            output_dtype=output_dtype,
         )
         return jnp.square(outputs).sum()
 
     def reference_loss(current_vectors: jax.Array, current_weights: jax.Array) -> jax.Array:
         expert_indices = jnp.array([0, 0, 2, 2, 2], dtype=jnp.int32)
-        outputs = jnp.einsum(
-            "tio,ti->to", current_weights[expert_indices], current_vectors, preferred_element_type=output_dtype
-        )
+        outputs = jnp.einsum("tio,ti->to", current_weights[expert_indices], current_vectors)
         return jnp.square(outputs).sum()
 
     vector_grad, weight_grad = jax.grad(ragged_loss, argnums=(0, 1))(vectors, expert_weights)

@@ -12,12 +12,12 @@ from lalamo.initializer import RandomInitializer
 from lalamo.module import Keychain
 from lalamo.modules.vision import ImagePreprocessingConfig, Vision, VisionConfig
 from lalamo.utils.sharding import ShardingConfig
-from tests.unit.modules.vision.common import lalamo_encoder
+from tests.unit.modules.vision.common import TINY_ENCODER_CONFIG
 
 
 def _vision_config() -> VisionConfig:
     return VisionConfig(
-        encoder_config=lalamo_encoder().config,
+        encoder_config=TINY_ENCODER_CONFIG,
         preprocessing_config=ImagePreprocessingConfig(
             min_pixels=256,
             max_pixels=4096,

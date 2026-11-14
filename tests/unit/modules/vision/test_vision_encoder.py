@@ -1,16 +1,12 @@
-from typing import Literal
+from itertools import accumulate, pairwise
 
-import jax
 import jax.numpy as jnp
 import pytest
 import torch
 
-from lalamo.exportable import Exportable
 from lalamo.initializer import EmptyInitializer
-from lalamo.module import Keychain
-from lalamo.modules.vision import ImageGrid, VisionForwardPassConfig
-from lalamo.utils.sharding import ShardingConfig
-from tests.common import assert_close, gpu_only, tolerance
+from lalamo.modules.vision import ImageGrid
+from tests.common import assert_close, tolerance
 from tests.helpers import make_test_sharding_config
 
 from .common import (
@@ -38,33 +34,23 @@ def test_encoder_matches_huggingface(grids: tuple[ImageGrid, ...]) -> None:
         assert_close(result=result.outputs, reference=to_jax(reference), operation_name="Encoder output")
 
 
-def test_chunked_attention_matches_unchunked() -> None:
-    grids = GRID_CASES["larger-than-table"]
+@pytest.mark.parametrize("grids", [pytest.param(GRID_CASES[name], id=name) for name in ("two-images", "video-clip")])
+def test_frames_are_encoded_independently(grids: tuple[ImageGrid, ...]) -> None:
     patches = random_patches(grids)
-    unchunked = lalamo_encoder()(
-        patches,
-        grids,
-        VisionForwardPassConfig(attention_query_chunk_size=10_000),
-        keychain=keychain(),
+    together = lalamo_encoder()(patches, grids, keychain=keychain()).outputs
+    frame_grids = tuple(
+        ImageGrid(1, grid.height_in_patches, grid.width_in_patches) for grid in grids for _ in range(grid.num_frames)
     )
-    # 7 does not divide the 168-patch frame, so the padded last chunk is exercised as well.
-    chunked = lalamo_encoder()(
-        patches,
-        grids,
-        VisionForwardPassConfig(attention_query_chunk_size=7),
-        keychain=keychain(),
+    frame_bounds = accumulate((grid.num_patches for grid in frame_grids), initial=0)
+    independently = jnp.concatenate(
+        [
+            lalamo_encoder()(patches[start:end], (grid,), keychain=keychain()).outputs
+            for (start, end), grid in zip(pairwise(frame_bounds), frame_grids, strict=True)
+        ],
+        axis=0,
     )
     with tolerance(atol=1e-5, rtol=1e-5):
-        assert_close(result=chunked.outputs, reference=unchunked.outputs, operation_name="Chunked attention")
-
-
-def test_images_are_encoded_independently() -> None:
-    first, second = GRID_CASES["two-images"]
-    patches = random_patches((first, second))
-    together = lalamo_encoder()(patches, (first, second), keychain=keychain()).outputs
-    alone = lalamo_encoder()(patches[: first.num_patches], (first,), keychain=keychain()).outputs
-    with tolerance(atol=1e-5, rtol=1e-5):
-        assert_close(result=together[: alone.shape[0]], reference=alone, operation_name="First image")
+        assert_close(result=together, reference=independently, operation_name="Independent frames")
 
 
 def test_rejects_unmergeable_grid() -> None:
@@ -77,27 +63,3 @@ def test_rejects_sharding() -> None:
     initializer = EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config())
     with pytest.raises(ValueError, match="sharded"):
         lalamo_encoder().config.init(initializer)
-
-
-@gpu_only
-def test_cudnn_attention_matches_xla() -> None:
-    gpu_sharding = ShardingConfig.replicated(jax.devices("gpu")[:1])
-    cpu_encoder = lalamo_encoder()
-    template = cpu_encoder.config.init(EmptyInitializer(default_dtype=jnp.bfloat16, sharding_config=gpu_sharding))
-    encoder = template.load_exported(Exportable.export(cpu_encoder))
-    grids = GRID_CASES["two-images"]
-    patches = jax.device_put(random_patches(grids), gpu_sharding.make_sharding((None, None)))
-    gpu_keychain = Keychain.init(0, sharding_config=gpu_sharding)
-
-    def encode(implementation: Literal["cudnn", "xla"]) -> jax.Array:
-        config = VisionForwardPassConfig(attention_implementation=implementation)
-        return encoder(patches, grids, config, keychain=gpu_keychain).outputs
-
-    # Both run in bfloat16; the tolerance covers bfloat16 rounding, not algorithmic differences.
-    with tolerance(atol=5e-2, rtol=5e-2):
-        assert_close(
-            result=encode("cudnn"),
-            reference=encode("xla"),
-            operation_name="cuDNN vs XLA attention",
-            fraction_of_allowed_violations=0.01,
-        )

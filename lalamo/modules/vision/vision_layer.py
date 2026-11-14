@@ -1,7 +1,9 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import accumulate, pairwise
 
 import equinox as eqx
+from jax import numpy as jnp
 from jaxtyping import Array, Float
 
 from lalamo.exportable import Exportable
@@ -10,12 +12,11 @@ from lalamo.module import Keychain, LalamoConfig, LalamoModule
 from lalamo.modules.mlp import UngatedMLP, UngatedMLPConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
+from lalamo.modules.token_mixer import MixerForwardPassConfig
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.utils import call_vmapped
 
-from .forward_pass_config import VisionForwardPassConfig
 from .image_grid import ImageGrid
-from .vision_attention import vision_attention
 
 __all__ = [
     "VisionLayer",
@@ -93,7 +94,7 @@ class VisionLayer(LalamoModule[VisionLayerConfig]):
         inputs: Float[Array, "tokens channels"],
         positional_embeddings: PositionalEmbeddings,
         grids: Sequence[ImageGrid],
-        forward_pass_config: VisionForwardPassConfig = VisionForwardPassConfig(),
+        forward_pass_config: MixerForwardPassConfig,
         *,
         return_activation_trace: bool = False,
         keychain: Keychain,
@@ -101,13 +102,27 @@ class VisionLayer(LalamoModule[VisionLayerConfig]):
         attention_keychain, mlp_keychain = keychain.split()
 
         pre_attention_norm = call_vmapped(self.pre_attention_norm, inputs)
-        attention = vision_attention(
-            self.attention,
-            pre_attention_norm,
-            positional_embeddings,
-            grids,
-            forward_pass_config,
-            keychain=attention_keychain,
+        frame_bounds = tuple(
+            accumulate((grid.patches_per_frame for grid in grids for _ in range(grid.num_frames)), initial=0),
+        )
+        attention = jnp.concatenate(
+            [
+                self.attention(
+                    pre_attention_norm[start:end],
+                    PositionalEmbeddings(
+                        cosines=positional_embeddings.cosines[start:end],
+                        sines=positional_embeddings.sines[start:end],
+                    ),
+                    forward_pass_config=forward_pass_config,
+                    keychain=frame_keychain,
+                ).outputs
+                for (start, end), frame_keychain in zip(
+                    pairwise(frame_bounds),
+                    attention_keychain.split(len(frame_bounds) - 1),
+                    strict=True,
+                )
+            ],
+            axis=0,
         )
         mlp_inputs = inputs + attention
 

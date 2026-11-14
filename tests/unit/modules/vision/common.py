@@ -22,6 +22,7 @@ from tests.helpers import make_test_sharding_config
 
 __all__ = [
     "GRID_CASES",
+    "TINY_ENCODER_CONFIG",
     "hf_block",
     "hf_cu_seqlens",
     "hf_grid_thw",
@@ -50,6 +51,10 @@ TINY_VISION_CONFIG = Qwen3_5VisionConfig(
     out_hidden_size=96,
     num_position_embeddings=64,
 )
+TINY_ENCODER_CONFIG = cattrs.structure(
+    {**TINY_VISION_CONFIG.to_dict(), "model_type": "qwen3_5", "deepstack_visual_indexes": []},
+    HFQwen35VisionConfig,
+).to_vision_encoder_config()
 
 GRID_CASES = {
     "single-square": (ImageGrid(1, 4, 4),),
@@ -83,11 +88,7 @@ def lalamo_encoder() -> VisionEncoder:
     weights_dict = {
         f"model.visual.{name}": jnp.asarray(tensor.detach().numpy()) for name, tensor in hf_model.state_dict().items()
     }
-    foreign_config = cattrs.structure(
-        {**TINY_VISION_CONFIG.to_dict(), "model_type": "qwen3_5", "deepstack_visual_indexes": []},
-        HFQwen35VisionConfig,
-    )
-    template = foreign_config.to_vision_encoder_config().init(
+    template = TINY_ENCODER_CONFIG.init(
         EmptyInitializer(default_dtype=jnp.float32, sharding_config=sharding_config()),
     )
     return load_qwen3_5_vision_encoder(

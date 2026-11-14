@@ -42,10 +42,7 @@ class GELU(Activation):
     approximate: bool = True
 
     def __call__(self, x: Float[Array, "..."]) -> Float[Array, "..."]:
-        dtype = x.dtype
-        if dtype in (jnp.float16, jnp.bfloat16):
-            x = x.astype(jnp.float32)
-        return jax.nn.gelu(x, approximate=self.approximate).astype(dtype)
+        return jax.nn.gelu(x.astype(jnp.float32), approximate=self.approximate).astype(x.dtype)
 
 
 @dataclass(frozen=True)

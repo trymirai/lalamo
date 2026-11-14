@@ -11,9 +11,9 @@ from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.mlp import UngatedMLP, UngatedMLPConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
+from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPassConfig
 from lalamo.modules.utils import call_vmapped
 
-from .forward_pass_config import VisionForwardPassConfig
 from .image_grid import ImageGrid
 from .position_embedding import InterpolatedPositionEmbedding, InterpolatedPositionEmbeddingConfig
 from .vision_layer import VisionLayer, VisionLayerConfig, VisionLayerResult
@@ -100,7 +100,9 @@ class VisionEncoder(LalamoModule[VisionEncoderConfig]):
         self,
         patches: Float[Array, "patches patch_channels"],
         grids: tuple[ImageGrid, ...],
-        forward_pass_config: VisionForwardPassConfig = VisionForwardPassConfig(),
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(
+            attention_implementation=AttentionImplementation.XLA,
+        ),
         *,
         return_activation_trace: bool = False,
         keychain: Keychain,
@@ -120,7 +122,9 @@ class VisionEncoder(LalamoModule[VisionEncoderConfig]):
             keychain=embedding_keychain,
         )
         position_embeddings = self.position_embedding(grids, merge_size).astype(patch_embeddings.dtype)
-        positional_embeddings = self.config.rope_config.compute_positional_embeddings(grids, merge_size)
+        positional_embeddings = self.config.rope_config.compute_positional_embeddings(grids, merge_size).astype(
+            forward_pass_config.rope_dtype,
+        )
 
         hidden_states = patch_embeddings + position_embeddings
         layer_results = []

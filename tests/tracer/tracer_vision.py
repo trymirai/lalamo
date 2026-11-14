@@ -16,7 +16,9 @@ from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
 from lalamo.model_import.loaders.vision import load_hf_vision
 from lalamo.model_import.origins import HuggingFaceOrigin, hf_resolve_weights
 from lalamo.module import Keychain
-from lalamo.modules.vision import ImageGrid, VisionEncoderResult, VisionForwardPassConfig
+from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPassConfig
+from lalamo.modules.vision import ImageGrid, VisionEncoderResult
+from lalamo.weight_matrix import MatmulConfig
 from tests.common import assert_close
 from tests.tracer.tracer import (
     FRACTION_OF_ALLOWED_VIOLATIONS,
@@ -168,7 +170,10 @@ def run_vision_tracer(spec: VisionModelTestSpec) -> None:
     result = imported.encoder(
         patches,
         preprocessed.grids,
-        VisionForwardPassConfig.for_tracer_tests(),
+        MixerForwardPassConfig(
+            attention_implementation=AttentionImplementation.XLA,
+            matmul_config=MatmulConfig.for_tracer_tests(),
+        ),
         return_activation_trace=True,
         keychain=Keychain.init(0, sharding_config=sharding_config),
     )

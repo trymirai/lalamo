@@ -7,10 +7,10 @@ from transformers.models.qwen2_vl.image_processing_pil_qwen2_vl import Qwen2VLIm
 
 from lalamo.modules.vision import ImageGrid, ImagePreprocessingConfig
 
-from .common import lalamo_encoder
+from .common import TINY_ENCODER_CONFIG
 
 ENCODER_CONFIG = replace(
-    lalamo_encoder().config,
+    TINY_ENCODER_CONFIG,
     patch_size=16,
 )
 CONFIG = ImagePreprocessingConfig(

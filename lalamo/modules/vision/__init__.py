@@ -1,4 +1,3 @@
-from .forward_pass_config import VisionForwardPassConfig
 from .image_grid import ImageGrid
 from .image_preprocessing import ImagePreprocessingConfig, PreprocessedImages
 from .position_embedding import InterpolatedPositionEmbedding, InterpolatedPositionEmbeddingConfig
@@ -19,7 +18,6 @@ __all__ = [
     "VisionEncoderActivationTrace",
     "VisionEncoderConfig",
     "VisionEncoderResult",
-    "VisionForwardPassConfig",
     "VisionLayer",
     "VisionLayerActivationTrace",
     "VisionLayerConfig",
