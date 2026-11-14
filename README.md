@@ -52,13 +52,7 @@ ModelSpec(
 
 ## Vision
 
-Qwen3.5-format checkpoints (Qwen3.5, Qwen3.6, Qwen3.8) ship a vision tower. Conversion is text-only by default; `--include-vision` also exports the tower:
-
-```bash
-uv run lalamo convert Qwen/Qwen3.5-0.8B --include-vision
-```
-
-The text weights keep the names of a text-only export, and the tower is added under `vision_encoder.*`. The config also records the image preprocessing settings, the image placeholder token, and the decoder's M-RoPE layout. lalamo itself does not generate from images yet.
+Standalone vision blocks are imported with `load_hf_vision` from `lalamo.model_import.loaders.vision` and saved with `Vision.save`. Each block contains `config.json` for the encoder and image preprocessing specification, and `model.safetensors` for its tensors. Load a block with `Vision.load(directory, sharding_config)` from `lalamo.modules.vision`.
 
 ## Optional Features
 

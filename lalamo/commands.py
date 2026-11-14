@@ -168,10 +168,7 @@ def convert(
     ] = ConversionCallbacks,
     *,
     frequency_ordered_vocabulary: bool = False,
-    include_vision: bool = False,
 ) -> None:
-    if frequency_ordered_vocabulary and include_vision:
-        raise ValueError("Reordering the vocabulary would invalidate the image token id of a vision model.")
     effective_dtype = dtype or DType.BFLOAT16
     callbacks = callbacks_type(
         model_spec,
@@ -200,7 +197,6 @@ def convert(
         sharding_config=ShardingConfig.replicated(),
         dtype=jnp.dtype(effective_dtype.value),
         progress_callback=progress_callback,
-        include_vision=include_vision,
     )
     model = imported_model.model
     if frequency_ordered_vocabulary:

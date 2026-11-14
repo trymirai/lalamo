@@ -6,6 +6,7 @@ from jax import numpy as jnp
 
 from lalamo.module import LalamoConfig
 from lalamo.modules.rope import PositionalEmbeddings
+from lalamo.utils.registry_abc import RegistryABC
 
 from .image_grid import ImageGrid
 
@@ -13,7 +14,7 @@ __all__ = ["VisionRoPEConfig"]
 
 
 @dataclass(frozen=True)
-class VisionRoPEConfig(LalamoConfig):
+class VisionRoPEConfig(LalamoConfig, RegistryABC):
     """2D RoPE: the first half of each head rotates with the patch row, the second half with the column."""
 
     base: float
@@ -35,7 +36,7 @@ class VisionRoPEConfig(LalamoConfig):
         cols = np.concatenate([np.tile(coordinates.cols, frames) for coordinates, frames in per_grid_coordinates])
 
         axis_dim = self.head_dim // 2
-        # Computed in float32 on purpose, mirroring HF's float32 inv_freq buffer bit for bit.
+        # Keep the frequencies in float32, matching HF's inv_freq buffer.
         inverse_frequencies = 1.0 / (self.base ** (jnp.arange(0, axis_dim, 2, dtype=jnp.float32) / axis_dim))
         frequencies = jnp.concatenate(
             [

@@ -2,7 +2,6 @@ from .classifier import ClassifierModel, ClassifierModelConfig
 from .decision import DecisionConfig, DecisionModel, DecisionModelConfig
 from .language_model import GenerationConfig, GenerationResults, LanguageModel, LanguageModelConfig
 from .tts_model import TTSConfig, TTSGenerationResult, TTSModel, TTSModelConfig
-from .vision_language_model import VisionLanguageModel, VisionLanguageModelConfig
 
 __all__ = [
     "ClassifierModel",
@@ -18,6 +17,4 @@ __all__ = [
     "TTSGenerationResult",
     "TTSModel",
     "TTSModelConfig",
-    "VisionLanguageModel",
-    "VisionLanguageModelConfig",
 ]

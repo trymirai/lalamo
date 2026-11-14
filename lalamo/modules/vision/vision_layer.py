@@ -7,14 +7,15 @@ from jaxtyping import Array, Float
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
-from lalamo.modules.mlp import MLPForwardPassConfig, UngatedMLP, UngatedMLPConfig
+from lalamo.modules.mlp import UngatedMLP, UngatedMLPConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
+from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.utils import call_vmapped
 
 from .forward_pass_config import VisionForwardPassConfig
 from .image_grid import ImageGrid
-from .vision_attention import VisionAttention, VisionAttentionConfig
+from .vision_attention import vision_attention
 
 __all__ = [
     "VisionLayer",
@@ -43,9 +44,31 @@ class VisionLayerConfig(LalamoConfig):
     """Pre-norm transformer block: ``x + attn(norm(x))``, then ``x + mlp(norm(x))``."""
 
     pre_attention_norm_config: NormalizationConfig
-    attention_config: VisionAttentionConfig
+    attention_config: AttentionConfig
     pre_mlp_norm_config: NormalizationConfig
     mlp_config: UngatedMLPConfig
+
+    def __post_init__(self) -> None:
+        config = self.attention_config
+        if (
+            config.is_causal
+            or config.num_groups != config.num_heads
+            or config.has_gate
+            or config.has_sinks
+            or config.normalize_values
+            or config.is_kv_sharing
+            or any(
+                value is not None
+                for value in (
+                    config.query_norm_config,
+                    config.key_norm_config,
+                    config.scale,
+                    config.sliding_window_size,
+                    config.logit_soft_cap,
+                )
+            )
+        ):
+            raise ValueError("Vision requires plain bidirectional multi-head attention.")
 
     def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> "VisionLayer":
         return VisionLayer(
@@ -54,13 +77,13 @@ class VisionLayerConfig(LalamoConfig):
             pre_attention_norm=self.pre_attention_norm_config.init(initializer, model_dim),
             attention=self.attention_config.init(initializer, model_dim),
             pre_mlp_norm=self.pre_mlp_norm_config.init(initializer, model_dim),
-            mlp=self.mlp_config.init(initializer, model_dim, hidden_dim),
+            mlp=self.mlp_config.init(initializer, model_dim, hidden_dim, model_dim),
         )
 
 
 class VisionLayer(LalamoModule[VisionLayerConfig]):
     pre_attention_norm: Normalization
-    attention: VisionAttention
+    attention: Attention
     pre_mlp_norm: Normalization
     mlp: UngatedMLP
 
@@ -78,7 +101,8 @@ class VisionLayer(LalamoModule[VisionLayerConfig]):
         attention_keychain, mlp_keychain = keychain.split()
 
         pre_attention_norm = call_vmapped(self.pre_attention_norm, inputs)
-        attention = self.attention(
+        attention = vision_attention(
+            self.attention,
             pre_attention_norm,
             positional_embeddings,
             grids,
@@ -89,9 +113,9 @@ class VisionLayer(LalamoModule[VisionLayerConfig]):
 
         pre_mlp_norm = call_vmapped(self.pre_mlp_norm, mlp_inputs)
         mlp = call_vmapped(
-            self.mlp.call_unbatched,
+            self.mlp,
             pre_mlp_norm,
-            forward_pass_config=MLPForwardPassConfig(matmul_config=forward_pass_config.matmul_config),
+            forward_pass_config=forward_pass_config.matmul_config,
             keychain=mlp_keychain,
         )
         outputs = mlp_inputs + mlp

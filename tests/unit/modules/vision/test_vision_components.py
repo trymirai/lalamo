@@ -6,6 +6,7 @@ from jaxtyping import Array
 
 from lalamo.modules.utils import call_vmapped
 from lalamo.modules.vision import ImageGrid
+from lalamo.modules.vision.vision_attention import vision_attention
 from tests.common import assert_close, tolerance
 
 from .common import (
@@ -43,7 +44,7 @@ def _hidden_states(grids: tuple[ImageGrid, ...]) -> Array:
 def test_rope(grids: tuple[ImageGrid, ...]) -> None:
     encoder = lalamo_encoder()
     embeddings = encoder.config.rope_config.compute_positional_embeddings(grids, encoder.config.spatial_merge_size)
-    reference_cosines, reference_sines = hf_rotary_embeddings(grids)
+    reference_cosines, reference_sines = hf_rotary_embeddings(tiny_hf_vision_model(), grids)
     _assert_matches(embeddings.cosines, reference_cosines, "RoPE cosines")
     _assert_matches(embeddings.sines, reference_sines, "RoPE sines")
 
@@ -52,15 +53,20 @@ def test_rope(grids: tuple[ImageGrid, ...]) -> None:
 def test_position_embedding(grids: tuple[ImageGrid, ...]) -> None:
     encoder = lalamo_encoder()
     result = encoder.position_embedding(grids, encoder.config.spatial_merge_size)
-    reference = hf_position_embeddings(grids)
+    reference = hf_position_embeddings(tiny_hf_vision_model(), grids)
     _assert_matches(result, reference, "Position embedding")
 
 
 def test_patch_embedding() -> None:
     grids = GRID_CASES["two-images"]
     patches = random_patches(grids)
-    result = lalamo_encoder().patch_embedding(patches, keychain=keychain())
-    _assert_matches(result, tiny_hf_vision_model().patch_embed(to_torch(patches)), "Patch embedding")
+    result = lalamo_encoder()(patches, grids, return_activation_trace=True, keychain=keychain())
+    assert result.activation_trace is not None
+    _assert_matches(
+        result.activation_trace.patch_embeddings,
+        tiny_hf_vision_model().patch_embed(to_torch(patches)),
+        "Patch embedding",
+    )
 
 
 @pytest.mark.parametrize("grids", GRID_PARAMS)
@@ -69,13 +75,13 @@ def test_attention(grids: tuple[ImageGrid, ...]) -> None:
     hidden_states = _hidden_states(grids)
     embeddings = encoder.config.rope_config.compute_positional_embeddings(grids, encoder.config.spatial_merge_size)
     first_layer, *_ = encoder.layers
-    result = first_layer.attention(hidden_states, embeddings, grids, keychain=keychain())
+    result = vision_attention(first_layer.attention, hidden_states, embeddings, grids, keychain=keychain())
 
     first_block = hf_block(0)
     reference = first_block.attn(
         to_torch(hidden_states),
         cu_seqlens=hf_cu_seqlens(grids),
-        position_embeddings=hf_rotary_embeddings(grids),
+        position_embeddings=hf_rotary_embeddings(tiny_hf_vision_model(), grids),
     )
     _assert_matches(result, reference, "Attention")
 
@@ -84,7 +90,7 @@ def test_mlp() -> None:
     hidden_states = _hidden_states(GRID_CASES["single-wide"])
     first_layer, *_ = lalamo_encoder().layers
     first_block = hf_block(0)
-    result = call_vmapped(first_layer.mlp.call_unbatched, hidden_states, keychain=keychain())
+    result = call_vmapped(first_layer.mlp, hidden_states, keychain=keychain())
     _assert_matches(result, first_block.mlp(to_torch(hidden_states)), "MLP")
 
 
@@ -105,13 +111,15 @@ def test_layer(grids: tuple[ImageGrid, ...]) -> None:
     reference = hf_block(1)(
         to_torch(hidden_states),
         cu_seqlens=hf_cu_seqlens(grids),
-        position_embeddings=hf_rotary_embeddings(grids),
+        position_embeddings=hf_rotary_embeddings(tiny_hf_vision_model(), grids),
     )
     _assert_matches(result.outputs, reference, "Layer")
 
 
 def test_merger() -> None:
     encoder = lalamo_encoder()
-    hidden_states = _hidden_states(GRID_CASES["two-images"])
-    result = encoder.merger(hidden_states, encoder.config.spatial_merge_size, keychain=keychain())
-    _assert_matches(result, tiny_hf_vision_model().merger(to_torch(hidden_states)), "Patch merger")
+    grids = GRID_CASES["two-images"]
+    result = encoder(random_patches(grids), grids, return_activation_trace=True, keychain=keychain())
+    assert result.activation_trace is not None
+    *_, last_layer = result.activation_trace.layer_results
+    _assert_matches(result.outputs, tiny_hf_vision_model().merger(to_torch(last_layer.outputs)), "Patch merger")

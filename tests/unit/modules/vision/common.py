@@ -12,12 +12,12 @@ from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionBlock, Qwe
 from transformers.vision_utils import get_vision_interpolation_indices_and_weights, get_vision_position_ids
 
 from lalamo.initializer import EmptyInitializer
+from lalamo.model_import.loaders.vision import load_qwen3_5_vision_encoder
 from lalamo.model_import.model_configs.huggingface.qwen3_5_vision import HFQwen35VisionConfig
 from lalamo.module import Keychain
 from lalamo.modules.vision import ImageGrid, VisionEncoder
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
-from lalamo.weight_matrix import CompressionImplementation
 from tests.helpers import make_test_sharding_config
 
 __all__ = [
@@ -90,11 +90,10 @@ def lalamo_encoder() -> VisionEncoder:
     template = foreign_config.to_vision_encoder_config().init(
         EmptyInitializer(default_dtype=jnp.float32, sharding_config=sharding_config()),
     )
-    return foreign_config.load_weights(
+    return load_qwen3_5_vision_encoder(
         template,
         weights_dict,
         ParameterPath("model.visual"),
-        implementation=CompressionImplementation.INFERENCE,
     )
 
 
@@ -109,17 +108,17 @@ def keychain() -> Keychain:
 
 
 def random_patches(grids: tuple[ImageGrid, ...], seed: int = 0) -> Array:
-    patch_dim = lalamo_encoder().config.patch_embedding_config.patch_dim
+    patch_dim = lalamo_encoder().patch_embedding.input_dim
     num_patches = sum(grid.num_patches for grid in grids)
     return jax.random.normal(jax.random.key(seed), (num_patches, patch_dim), dtype=jnp.float32)
 
 
 def to_torch(array: Array) -> torch.Tensor:
-    return torch.from_numpy(np.asarray(jax.device_get(array)).copy())
+    return torch.from_numpy(np.asarray(jax.device_get(array.astype(jnp.float32))).copy())
 
 
 def to_jax(tensor: torch.Tensor) -> Array:
-    return jnp.asarray(tensor.detach().numpy())
+    return jnp.asarray(tensor.detach().float().numpy())
 
 
 def hf_grid_thw(grids: tuple[ImageGrid, ...]) -> torch.Tensor:
@@ -131,14 +130,15 @@ def hf_cu_seqlens(grids: tuple[ImageGrid, ...]) -> torch.Tensor:
     return torch.tensor(list(accumulate(frame_lengths, initial=0)), dtype=torch.int32)
 
 
-def hf_rotary_embeddings(grids: tuple[ImageGrid, ...]) -> tuple[torch.Tensor, torch.Tensor]:
-    model = tiny_hf_vision_model()
+def hf_rotary_embeddings(
+    model: Qwen3_5VisionModel,
+    grids: tuple[ImageGrid, ...],
+) -> tuple[torch.Tensor, torch.Tensor]:
     position_ids = get_vision_position_ids(hf_grid_thw(grids), model.spatial_merge_size)
     return model.rotary_pos_emb(position_ids, position_ids)
 
 
-def hf_position_embeddings(grids: tuple[ImageGrid, ...]) -> torch.Tensor:
-    model = tiny_hf_vision_model()
+def hf_position_embeddings(model: Qwen3_5VisionModel, grids: tuple[ImageGrid, ...]) -> torch.Tensor:
     indices, weights = get_vision_interpolation_indices_and_weights(
         hf_grid_thw(grids),
         num_grid_per_side=model.num_grid_per_side,

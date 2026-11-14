@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from PIL import Image
@@ -5,10 +7,13 @@ from transformers.models.qwen2_vl.image_processing_pil_qwen2_vl import Qwen2VLIm
 
 from lalamo.modules.vision import ImageGrid, ImagePreprocessingConfig
 
-CONFIG = ImagePreprocessingConfig(
+from .common import lalamo_encoder
+
+ENCODER_CONFIG = replace(
+    lalamo_encoder().config,
     patch_size=16,
-    temporal_patch_size=2,
-    spatial_merge_size=2,
+)
+CONFIG = ImagePreprocessingConfig(
     min_pixels=65_536,
     max_pixels=1_048_576,
     image_mean=(0.5, 0.5, 0.5),
@@ -19,9 +24,9 @@ CONFIG = ImagePreprocessingConfig(
 def _hf_processor() -> Qwen2VLImageProcessorPil:
     return Qwen2VLImageProcessorPil(
         size={"shortest_edge": CONFIG.min_pixels, "longest_edge": CONFIG.max_pixels},
-        patch_size=CONFIG.patch_size,
-        temporal_patch_size=CONFIG.temporal_patch_size,
-        merge_size=CONFIG.spatial_merge_size,
+        patch_size=ENCODER_CONFIG.patch_size,
+        temporal_patch_size=ENCODER_CONFIG.temporal_patch_size,
+        merge_size=ENCODER_CONFIG.spatial_merge_size,
         image_mean=list(CONFIG.image_mean),
         image_std=list(CONFIG.image_std),
     )
@@ -47,18 +52,13 @@ def test_matches_huggingface(case: tuple[int, int, str]) -> None:
     width, height, mode = case
     images = [_random_image(width, height, mode, seed=0), _random_image(height, width, mode, seed=1)]
 
-    result = CONFIG.preprocess(images)
+    result = CONFIG.preprocess(images, ENCODER_CONFIG)
     reference = _hf_processor()(images=images, return_tensors="np")
 
     assert result.grids == tuple(ImageGrid(*row) for row in reference["image_grid_thw"].tolist())
     np.testing.assert_allclose(result.patches, reference["pixel_values"], atol=1e-6, rtol=0)
 
 
-def test_grid_prediction_matches_preprocessing() -> None:
-    image = _random_image(777, 333, "RGB", seed=2)
-    assert CONFIG.grid_for(image.height, image.width) == CONFIG.preprocess([image]).grids[0]
-
-
 def test_rejects_extreme_aspect_ratio() -> None:
     with pytest.raises(ValueError, match="Aspect ratio"):
-        CONFIG.target_size(10, 2010)
+        CONFIG.preprocess([Image.new("RGB", (2010, 10))], ENCODER_CONFIG)

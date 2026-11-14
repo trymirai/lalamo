@@ -1,27 +1,18 @@
 from dataclasses import dataclass, field
-from enum import StrEnum
-from typing import Self
-
-from jax.lax import DotAlgorithmPreset
+from typing import Literal, Self
 
 from lalamo.weight_matrix import MatmulConfig
 
 __all__ = [
-    "VisionAttentionImplementation",
     "VisionForwardPassConfig",
 ]
-
-
-class VisionAttentionImplementation(StrEnum):
-    # Used whenever cuDNN supports the inputs (GPU, float16/bfloat16); XLA otherwise.
-    CUDNN = "cudnn"
-    XLA = "xla"
 
 
 @dataclass(frozen=True)
 class VisionForwardPassConfig:
     matmul_config: MatmulConfig = field(default_factory=MatmulConfig)
-    attention_implementation: VisionAttentionImplementation = VisionAttentionImplementation.CUDNN
+    # cuDNN is used where supported; other inputs use XLA.
+    attention_implementation: Literal["cudnn", "xla"] = "cudnn"
     # XLA attention processes this many queries at a time, which bounds the size of the logits tensor.
     attention_query_chunk_size: int = 512
 
@@ -32,7 +23,3 @@ class VisionForwardPassConfig:
     @classmethod
     def for_tracer_tests(cls) -> Self:
         return cls(matmul_config=MatmulConfig.for_tracer_tests())
-
-    @classmethod
-    def for_inference(cls, precision: DotAlgorithmPreset = DotAlgorithmPreset.DEFAULT) -> Self:
-        return cls(matmul_config=MatmulConfig.for_inference(precision))

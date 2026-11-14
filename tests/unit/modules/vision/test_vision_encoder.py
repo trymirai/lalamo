@@ -1,3 +1,5 @@
+from typing import Literal
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -6,7 +8,7 @@ import torch
 from lalamo.exportable import Exportable
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain
-from lalamo.modules.vision import ImageGrid, VisionAttentionImplementation, VisionForwardPassConfig
+from lalamo.modules.vision import ImageGrid, VisionForwardPassConfig
 from lalamo.utils.sharding import ShardingConfig
 from tests.common import assert_close, gpu_only, tolerance
 from tests.helpers import make_test_sharding_config
@@ -32,7 +34,6 @@ def test_encoder_matches_huggingface(grids: tuple[ImageGrid, ...]) -> None:
     with torch.no_grad():
         reference = tiny_hf_vision_model()(to_torch(patches), grid_thw=hf_grid_thw(grids)).pooler_output
 
-    assert result.outputs.shape == (lalamo_encoder().config.num_output_tokens(grids), 96)
     with tolerance(atol=1e-4, rtol=1e-4):
         assert_close(result=result.outputs, reference=to_jax(reference), operation_name="Encoder output")
 
@@ -66,17 +67,6 @@ def test_images_are_encoded_independently() -> None:
         assert_close(result=together[: alone.shape[0]], reference=alone, operation_name="First image")
 
 
-def test_export_round_trip() -> None:
-    grids = GRID_CASES["single-wide"]
-    patches = random_patches(grids)
-    encoder = lalamo_encoder()
-    restored = encoder.load_exported(Exportable.export(encoder))
-    assert_close(
-        result=restored(patches, grids, keychain=keychain()).outputs,
-        reference=encoder(patches, grids, keychain=keychain()).outputs,
-    )
-
-
 def test_rejects_unmergeable_grid() -> None:
     odd_grid = (ImageGrid(1, 3, 4),)
     with pytest.raises(ValueError, match="divisible"):
@@ -99,15 +89,15 @@ def test_cudnn_attention_matches_xla() -> None:
     patches = jax.device_put(random_patches(grids), gpu_sharding.make_sharding((None, None)))
     gpu_keychain = Keychain.init(0, sharding_config=gpu_sharding)
 
-    def encode(implementation: VisionAttentionImplementation) -> jax.Array:
+    def encode(implementation: Literal["cudnn", "xla"]) -> jax.Array:
         config = VisionForwardPassConfig(attention_implementation=implementation)
         return encoder(patches, grids, config, keychain=gpu_keychain).outputs
 
     # Both run in bfloat16; the tolerance covers bfloat16 rounding, not algorithmic differences.
     with tolerance(atol=5e-2, rtol=5e-2):
         assert_close(
-            result=encode(VisionAttentionImplementation.CUDNN),
-            reference=encode(VisionAttentionImplementation.XLA),
+            result=encode("cudnn"),
+            reference=encode("xla"),
             operation_name="cuDNN vs XLA attention",
             fraction_of_allowed_violations=0.01,
         )

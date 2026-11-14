@@ -289,6 +289,8 @@ class Layout(StrEnum):
         self: "Literal[Layout.OUTPUT_INPUT]",
         weights: Float[Array, "out_channels in_channels"],
         vector: Float[Array, " in_channels"],
+        *,
+        output_dtype: DTypeLike | None = None,
     ) -> Float[Array, " out_channels"]: ...
 
     @overload
@@ -296,6 +298,8 @@ class Layout(StrEnum):
         self: "Literal[Layout.INPUT_OUTPUT]",
         weights: Float[Array, "in_channels out_channels"],
         vector: Float[Array, " in_channels"],
+        *,
+        output_dtype: DTypeLike | None = None,
     ) -> Float[Array, " out_channels"]: ...
 
     @overload
@@ -303,12 +307,16 @@ class Layout(StrEnum):
         self: "Layout",
         weights: Float[Array, "rows cols"],
         vector: Float[Array, " source_channels"],
+        *,
+        output_dtype: DTypeLike | None = None,
     ) -> Float[Array, " target_channels"]: ...
 
     def matmul(
         self,
         weights: Float[Array, "rows cols"],
         vector: Float[Array, " source_channels"],
+        *,
+        output_dtype: DTypeLike | None = None,
     ) -> Float[Array, " target_channels"]:
         out_sharding = sharding_of(vector)
         if self == Layout.INPUT_OUTPUT:
@@ -316,12 +324,14 @@ class Layout(StrEnum):
                 vector,
                 weights,
                 dimension_numbers=(((0,), (0,)), ((), ())),
+                preferred_element_type=output_dtype,
                 out_sharding=out_sharding,
             )
         return dot_general(
             vector,
             weights,
             dimension_numbers=(((0,), (1,)), ((), ())),
+            preferred_element_type=output_dtype,
             out_sharding=out_sharding,
         )
 
@@ -407,6 +417,7 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: Literal[False] = False,
+        output_dtype: DTypeLike | None = None,
     ) -> Float[Array, " out_channels"]: ...
 
     @overload
@@ -417,6 +428,7 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: Literal[True],
+        output_dtype: DTypeLike | None = None,
     ) -> Float[Array, " in_channels"]: ...
 
     def dot(
@@ -426,6 +438,7 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
         transposed: bool = False,
+        output_dtype: DTypeLike | None = None,
     ) -> Float[Array, " target_channels"]:
         self._raise_if_batched()
         weights = self.weights.astype(vector.dtype)
@@ -433,7 +446,7 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         if transposed:
             layout = layout.transpose()
         with use_dot_algorithm_preset(forward_pass_config.precision):
-            return layout.matmul(weights, vector)
+            return layout.matmul(weights, vector, output_dtype=output_dtype)
 
     def ragged_dot(
         self,
@@ -441,6 +454,7 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         group_sizes: Int[Array, " experts"],
         *,
         forward_pass_config: MatmulConfig = MatmulConfig(),
+        output_dtype: DTypeLike | None = None,
     ) -> Float[Array, "tokens output_channels"]:
         if self.ndim != 3:
             raise ValueError("FullPrecisionMatrix.ragged_dot() requires exactly one mixture axis.")
@@ -455,6 +469,7 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
             expert_weights,
             group_sizes,
             precision=forward_pass_config.precision,
+            output_dtype=output_dtype,
         )
 
 

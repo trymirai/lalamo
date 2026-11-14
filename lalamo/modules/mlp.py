@@ -194,16 +194,13 @@ class DenseMLPConfig(MLPConfig):
 
 
 @dataclass(frozen=True)
-class UngatedMLPConfig(MLPConfig):
+class UngatedMLPConfig(LalamoConfig):
     linear_config: LinearConfig
     activation: Activation
     has_up_biases: bool
     has_down_biases: bool
 
-    def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> "UngatedMLP":
-        return self.init_projection(initializer, model_dim, hidden_dim, model_dim)
-
-    def init_projection(
+    def init(
         self,
         initializer: Initializer,
         input_dim: int,
@@ -228,40 +225,15 @@ class UngatedMLPConfig(MLPConfig):
         )
 
 
-class UngatedMLP(MLPBase[UngatedMLPConfig]):
+class UngatedMLP(LalamoModule[UngatedMLPConfig]):
     up_projection: Linear
     down_projection: Linear
-
-    @property
-    def model_dim(self) -> int:
-        return self.up_projection.input_dim
-
-    @property
-    def hidden_dim(self) -> int:
-        return self.down_projection.input_dim
 
     @eqx.filter_jit
     def __call__(
         self,
-        inputs: Float[Array, "batch suffix_tokens channels"],
-        lengths_without_padding: Int[Array, " batch"] | None = None,  # noqa: ARG002
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
-        *,
-        keychain: Keychain,
-    ) -> Float[Array, "batch suffix_tokens channels"]:
-        return call_vmapped_twice(
-            self.call_unbatched,
-            inputs,
-            forward_pass_config=forward_pass_config,
-            keychain=keychain,
-            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
-        )
-
-    @eqx.filter_jit
-    def call_unbatched(
-        self,
         inputs: Float[Array, " in_channels"],
-        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),
+        forward_pass_config: MatmulConfig = MatmulConfig(),
         *,
         keychain: Keychain,
     ) -> Float[Array, " out_channels"]:
@@ -269,12 +241,12 @@ class UngatedMLP(MLPBase[UngatedMLPConfig]):
         (up_proj,) = self.up_projection(
             inputs,
             keychain=up_keychain,
-            forward_pass_config=forward_pass_config.matmul_config,
+            forward_pass_config=forward_pass_config,
         )
         (result,) = self.down_projection(
             self.config.activation(up_proj),
             keychain=down_keychain,
-            forward_pass_config=forward_pass_config.matmul_config,
+            forward_pass_config=forward_pass_config,
         )
         return result
 

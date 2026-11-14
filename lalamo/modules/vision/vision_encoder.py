@@ -1,18 +1,20 @@
-from collections.abc import Sequence
 from dataclasses import dataclass
 
 import equinox as eqx
+from einops import rearrange
 from jaxtyping import Array, Float
 
 from lalamo.exportable import Exportable
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule
+from lalamo.modules.linear import Linear, LinearConfig
+from lalamo.modules.mlp import UngatedMLP, UngatedMLPConfig
+from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
+from lalamo.modules.utils import call_vmapped
 
 from .forward_pass_config import VisionForwardPassConfig
 from .image_grid import ImageGrid
-from .patch_embedding import PatchEmbedding, PatchEmbeddingConfig
-from .patch_merger import PatchMerger, PatchMergerConfig
 from .position_embedding import InterpolatedPositionEmbedding, InterpolatedPositionEmbeddingConfig
 from .vision_layer import VisionLayer, VisionLayerConfig, VisionLayerResult
 from .vision_rope import VisionRoPEConfig
@@ -39,13 +41,17 @@ class VisionEncoderResult(Exportable, eqx.Module):
 
 @dataclass(frozen=True)
 class VisionEncoderConfig(LalamoConfig):
-    """Patch embedding, ViT blocks with 2D RoPE, and a patch merger producing language model embeddings."""
+    """Patch embedding, ViT blocks with 2D RoPE, and a patch merger producing output embeddings."""
 
-    patch_embedding_config: PatchEmbeddingConfig
+    patch_embedding_config: LinearConfig
     position_embedding_config: InterpolatedPositionEmbeddingConfig
     rope_config: VisionRoPEConfig
     layer_configs: tuple[VisionLayerConfig, ...]
-    merger_config: PatchMergerConfig
+    merger_norm_config: NormalizationConfig
+    merger_mlp_config: UngatedMLPConfig
+    in_channels: int
+    temporal_patch_size: int
+    patch_size: int
     spatial_merge_size: int
     model_dim: int
     hidden_dim: int
@@ -60,29 +66,34 @@ class VisionEncoderConfig(LalamoConfig):
         if mismatched_layers:
             raise ValueError(f"Attention head_dim differs from RoPE head_dim in layers {mismatched_layers}.")
 
-    def num_output_tokens(self, grids: Sequence[ImageGrid]) -> int:
-        return sum(grid.num_merged_tokens(self.spatial_merge_size) for grid in grids)
-
     def init(self, initializer: Initializer) -> "VisionEncoder":
         if initializer.sharding_config.logical_to_physical:
             raise ValueError("Vision encoders cannot be sharded; use a replicated ShardingConfig.")
+        merged_dim = self.model_dim * self.spatial_merge_size**2
         return VisionEncoder(
             config=self,
             sharding_config=initializer.sharding_config,
-            patch_embedding=self.patch_embedding_config.init(initializer, self.model_dim),
+            patch_embedding=self.patch_embedding_config.init(
+                initializer,
+                self.in_channels * self.temporal_patch_size * self.patch_size**2,
+                (self.model_dim,),
+                has_biases=True,
+            ),
             position_embedding=self.position_embedding_config.init(initializer, self.model_dim),
             layers=tuple(
                 layer_config.init(initializer, self.model_dim, self.hidden_dim) for layer_config in self.layer_configs
             ),
-            merger=self.merger_config.init(initializer, self.model_dim, self.output_dim, self.spatial_merge_size),
+            merger_norm=self.merger_norm_config.init(initializer, self.model_dim),
+            merger_mlp=self.merger_mlp_config.init(initializer, merged_dim, merged_dim, self.output_dim),
         )
 
 
 class VisionEncoder(LalamoModule[VisionEncoderConfig]):
-    patch_embedding: PatchEmbedding
+    patch_embedding: Linear
     position_embedding: InterpolatedPositionEmbedding
     layers: tuple[VisionLayer, ...]
-    merger: PatchMerger
+    merger_norm: Normalization
+    merger_mlp: UngatedMLP
 
     @eqx.filter_jit
     def __call__(
@@ -101,9 +112,11 @@ class VisionEncoder(LalamoModule[VisionEncoderConfig]):
         merge_size = self.config.spatial_merge_size
         embedding_keychain, merger_keychain, *layer_keychains = keychain.split(len(self.layers) + 2)
 
-        patch_embeddings = self.patch_embedding(
-            patches,
-            forward_pass_config.matmul_config,
+        # Pixels arrive as float32; HF casts them to the projection's weight dtype first.
+        (patch_embeddings,) = call_vmapped(
+            self.patch_embedding,
+            patches.astype(self.patch_embedding.weights.dtype),
+            forward_pass_config=forward_pass_config.matmul_config,
             keychain=embedding_keychain,
         )
         position_embeddings = self.position_embedding(grids, merge_size).astype(patch_embeddings.dtype)
@@ -123,10 +136,16 @@ class VisionEncoder(LalamoModule[VisionEncoderConfig]):
             hidden_states = layer_result.outputs
             layer_results.append(layer_result)
 
-        outputs = self.merger(
-            hidden_states,
-            merge_size,
-            forward_pass_config.matmul_config,
+        # Patches from each merge block are contiguous in the preprocessor's output.
+        merged = rearrange(
+            call_vmapped(self.merger_norm, hidden_states),
+            "(merged_tokens block) channels -> merged_tokens (block channels)",
+            block=merge_size**2,
+        )
+        outputs = call_vmapped(
+            self.merger_mlp,
+            merged,
+            forward_pass_config=forward_pass_config.matmul_config,
             keychain=merger_keychain,
         )
 

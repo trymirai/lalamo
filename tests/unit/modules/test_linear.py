@@ -6,14 +6,14 @@ import jax.numpy as jnp
 import pytest
 from jax.lax import DotAlgorithmPreset
 from jax.sharding import Mesh, NamedSharding, Sharding
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.module import Keychain, LogicalAxis
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.utils import call_vmapped
 from lalamo.utils.dummy_array import dummy_array
-from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, MatmulConfig, ShapeDtypeMatrix
+from lalamo.weight_matrix import FullPrecisionMatrix, FullPrecisionSpec, Layout, MatmulConfig, ShapeDtypeMatrix
 from tests.common import assert_close
 from tests.helpers import make_sharding, make_test_sharding_config
 
@@ -25,6 +25,72 @@ MATMUL_PRECISIONS = [
     pytest.param(DotAlgorithmPreset.DEFAULT, id="default"),
     pytest.param(DotAlgorithmPreset.F32_F32_F32, id="f32"),
 ]
+
+
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16])
+@pytest.mark.parametrize("layout", [Layout.INPUT_OUTPUT, Layout.OUTPUT_INPUT])
+@pytest.mark.parametrize("compiled", [True, False])
+@pytest.mark.parametrize("precision", MATMUL_PRECISIONS)
+def test_low_precision_linear_rounds_after_adding_bias(
+    fake_mesh: Mesh,  # noqa: ARG001
+    dtype: DTypeLike,
+    layout: Layout,
+    compiled: bool,
+    precision: DotAlgorithmPreset,
+) -> None:
+    epsilon = float(jnp.finfo(dtype).eps)
+    value = 32 * (1 + epsilon)
+    weights = jnp.zeros((4, 4), dtype=dtype).at[0, 0].set(value)
+    biases = jnp.zeros(4, dtype=dtype).at[0].set(-1024 * (1 + 2 * epsilon))
+    sharding = make_test_sharding_config()
+    linear = Linear(
+        config=LinearConfig(),
+        sharding_config=sharding,
+        weights=FullPrecisionSpec(layout=layout).compress(weights, sharding_config=sharding),
+        biases=biases,
+        output_dims=(2, 2),
+    )
+    inputs = _sharded_input(jnp.array([value, 0, 0, 0], dtype=dtype))
+    # Rounding the dot first makes it cancel the bias exactly, losing epsilon squared.
+    expected = jnp.array([1024 * epsilon**2, 0, 0, 0], dtype=dtype)
+    with jax.disable_jit(not compiled):
+        result = linear(
+            inputs,
+            keychain=Keychain.init(0, sharding_config=sharding),
+            forward_pass_config=MatmulConfig(precision=precision),
+        )
+    assert jnp.array_equal(jnp.concatenate(result), expected)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16])
+@pytest.mark.parametrize("precision", MATMUL_PRECISIONS)
+def test_low_precision_ragged_linear_rounds_after_adding_bias(
+    fake_mesh: Mesh,  # noqa: ARG001
+    dtype: DTypeLike,
+    precision: DotAlgorithmPreset,
+) -> None:
+    epsilon = float(jnp.finfo(dtype).eps)
+    value = 32 * (1 + epsilon)
+    weights = jnp.full((2, 1, 1), value, dtype=dtype)
+    biases = jnp.full((2, 1), -1024 * (1 + 2 * epsilon), dtype=dtype)
+    sharding = make_test_sharding_config()
+    linear = Linear(
+        config=LinearConfig(),
+        sharding_config=sharding,
+        weights=FullPrecisionSpec().compress(weights, sharding_config=sharding, is_sharded=False),
+        biases=biases,
+        output_dims=(1,),
+    )
+    inputs = jax.device_put(jnp.full((2, 1), value, dtype=dtype), make_sharding((None, None)))
+    indices = jax.device_put(jnp.arange(2, dtype=jnp.int32), make_sharding((None,)))
+    sizes = jax.device_put(jnp.ones(2, dtype=jnp.int32), make_sharding((None,)))
+    (result,) = eqx.filter_jit(linear.call_ragged)(
+        inputs,
+        indices,
+        sizes,
+        forward_pass_config=MatmulConfig(precision=precision),
+    )
+    assert jnp.array_equal(result, jnp.full((2, 1), 1024 * epsilon**2, dtype=dtype))
 
 
 def _weights(*leading_dims: int) -> jax.Array:

@@ -82,19 +82,13 @@ class InterpolatedPositionEmbeddingConfig(LalamoConfig):
 class InterpolatedPositionEmbedding(LalamoModule[InterpolatedPositionEmbeddingConfig]):
     table: Float[Array, "positions channels"]
 
-    @property
-    def model_dim(self) -> int:
-        _, result = self.table.shape
-        return result
-
     @eqx.filter_jit
     def __call__(self, grids: Sequence[ImageGrid], spatial_merge_size: int) -> Float[Array, "patches channels"]:
         per_grid = []
         for grid in grids:
             taps = self.config.bilinear_taps(grid, spatial_merge_size)
             corners = self.table[taps.indices]
-            # Blend in float32 even for low-precision tables. HF blends in the table dtype,
-            # which only costs accuracy; the difference is far below bfloat16 resolution.
+            # HF's interpolation weights promote the blend to float32 before output rounding.
             blended = einsum(
                 corners.astype(jnp.float32),
                 jnp.asarray(taps.weights),

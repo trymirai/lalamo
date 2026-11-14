@@ -1,5 +1,5 @@
 import json
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,25 +17,15 @@ from lalamo.models import (
     LanguageModelConfig,
     TTSConfig,
     TTSModelConfig,
-    VisionLanguageModelConfig,
 )
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.modules.classifier import ClassifierConfig
 from lalamo.modules.decoder import DecoderConfig
-from lalamo.modules.vision import ImagePreprocessingConfig, VisionEncoder, VisionEncoderConfig
-from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import CompressionImplementation
 
-__all__ = [
-    "ForeignClassifierConfig",
-    "ForeignConfig",
-    "ForeignLMConfig",
-    "ForeignTTSConfig",
-    "ForeignVisionEncoderConfig",
-    "ForeignVisionLanguageConfig",
-]
+__all__ = ["ForeignClassifierConfig", "ForeignConfig", "ForeignLMConfig", "ForeignTTSConfig"]
 
 
 @dataclass(frozen=True)
@@ -113,40 +103,3 @@ class ForeignClassifierConfig(ForeignConfig[ClassifierModelConfig], RegistryABC)
 class ForeignTTSConfig(ForeignConfig[TTSModelConfig], RegistryABC):
     @abstractmethod
     def to_tts_config(self) -> TTSConfig: ...
-
-
-@dataclass(frozen=True)
-class ForeignVisionEncoderConfig(RegistryABC):
-    image_processor_config_file: ClassVar[str]
-    weights_path: ClassVar[str]
-
-    @abstractmethod
-    def to_vision_encoder_config(self) -> VisionEncoderConfig: ...
-
-    @abstractmethod
-    def load_image_preprocessing_config(self, json_path: Path | str) -> ImagePreprocessingConfig: ...
-
-    @abstractmethod
-    def load_weights(
-        self,
-        encoder: VisionEncoder,
-        weights_dict: Mapping[str, Array],
-        path: ParameterPath,
-        *,
-        implementation: CompressionImplementation,
-    ) -> VisionEncoder: ...
-
-
-class ForeignVisionLanguageConfig(ABC):
-    @property
-    @abstractmethod
-    def vision_encoder_config(self) -> ForeignVisionEncoderConfig | None: ...
-
-    @abstractmethod
-    def to_vision_language_config(
-        self,
-        metadata_dict: Mapping[str, str],
-        token_codec_config: ChatCodecConfig,
-        generation_config: GenerationConfig,
-        image_preprocessing_config: ImagePreprocessingConfig,
-    ) -> VisionLanguageModelConfig: ...
