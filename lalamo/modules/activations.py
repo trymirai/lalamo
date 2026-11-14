@@ -2,6 +2,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 
 import jax
+import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from lalamo.module import LalamoConfig
@@ -41,7 +42,10 @@ class GELU(Activation):
     approximate: bool = True
 
     def __call__(self, x: Float[Array, "..."]) -> Float[Array, "..."]:
-        return jax.nn.gelu(x, approximate=self.approximate)
+        dtype = x.dtype
+        if dtype in (jnp.float16, jnp.bfloat16):
+            x = x.astype(jnp.float32)
+        return jax.nn.gelu(x, approximate=self.approximate).astype(dtype)
 
 
 @dataclass(frozen=True)

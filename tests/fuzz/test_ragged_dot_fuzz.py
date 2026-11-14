@@ -6,6 +6,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from jax.lax import DotAlgorithmPreset
+from jaxtyping import DTypeLike
 
 from lalamo.kernels.ragged_dot import ragged_dot
 from lalamo.utils.sharding import ShardingConfig
@@ -88,14 +89,16 @@ def test_ragged_dot_matches_grouped_matmul(shape: RaggedDotShape, seed: int, dty
     assert result.sharding == vectors.sharding
 
 
-def test_ragged_dot_gradients_match_grouped_matmul() -> None:
+@pytest.mark.parametrize("dtype", [jnp.bfloat16, jnp.float32])
+@pytest.mark.parametrize("output_dtype", [None, jnp.float32])
+def test_ragged_dot_gradients_match_grouped_matmul(dtype: DTypeLike, output_dtype: DTypeLike | None) -> None:
     sharding_config = ShardingConfig.replicated()
     vectors = jax.device_put(
-        jnp.arange(5 * 4, dtype=jnp.float32).reshape(5, 4) / 10,
+        (jnp.arange(5 * 4, dtype=jnp.float32).reshape(5, 4) / 10).astype(dtype),
         sharding_config.make_sharding((None, None)),
     )
     expert_weights = jax.device_put(
-        jnp.arange(3 * 4 * 3, dtype=jnp.float32).reshape(3, 4, 3) / 20,
+        (jnp.arange(3 * 4 * 3, dtype=jnp.float32).reshape(3, 4, 3) / 20).astype(dtype),
         sharding_config.make_sharding((None, None, None)),
     )
     group_sizes = jax.device_put(
@@ -109,12 +112,15 @@ def test_ragged_dot_gradients_match_grouped_matmul() -> None:
             current_weights,
             group_sizes,
             precision=DotAlgorithmPreset.DEFAULT,
+            output_dtype=output_dtype,
         )
         return jnp.square(outputs).sum()
 
     def reference_loss(current_vectors: jax.Array, current_weights: jax.Array) -> jax.Array:
         expert_indices = jnp.array([0, 0, 2, 2, 2], dtype=jnp.int32)
-        outputs = jnp.einsum("tio,ti->to", current_weights[expert_indices], current_vectors)
+        outputs = jnp.einsum(
+            "tio,ti->to", current_weights[expert_indices], current_vectors, preferred_element_type=output_dtype
+        )
         return jnp.square(outputs).sum()
 
     vector_grad, weight_grad = jax.grad(ragged_loss, argnums=(0, 1))(vectors, expert_weights)

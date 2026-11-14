@@ -3,7 +3,7 @@ from itertools import accumulate
 
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, field
@@ -101,6 +101,22 @@ class Linear(LalamoModule[LinearConfig]):
     def get_split_points(output_dims: tuple[int, ...]) -> tuple[int, ...]:
         return tuple(accumulate(output_dims[:-1]))
 
+    def _dot_output_dtype(self, input_dtype: DTypeLike) -> DTypeLike | None:
+        if self.biases is not None and input_dtype in (jnp.float16, jnp.bfloat16):
+            return jnp.float32
+        return None
+
+    def _add_bias(
+        self,
+        result: Float[Array, "*batch out_channels"],
+        biases: Float[Array, "*batch out_channels"],
+        input_dtype: DTypeLike,
+    ) -> Float[Array, "*batch out_channels"]:
+        if isinstance(self.weights, FullPrecisionMatrix):
+            # Round parameters to the input dtype, but round the affine output only after adding bias.
+            return (result + biases.astype(input_dtype).astype(result.dtype)).astype(input_dtype)
+        return result + biases.astype(result.dtype)
+
     @eqx.filter_jit
     def __call__(
         self,
@@ -109,9 +125,17 @@ class Linear(LalamoModule[LinearConfig]):
         keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> tuple[Float[Array, " out_channels"], ...]:
-        result = self.weights.dot(inputs, keychain=keychain, forward_pass_config=forward_pass_config)
+        if isinstance(self.weights, FullPrecisionMatrix):
+            result = self.weights.dot(
+                inputs,
+                keychain=keychain,
+                forward_pass_config=forward_pass_config,
+                output_dtype=self._dot_output_dtype(inputs.dtype),
+            )
+        else:
+            result = self.weights.dot(inputs, keychain=keychain, forward_pass_config=forward_pass_config)
         if self.biases is not None:
-            result = result + self.biases.astype(result.dtype)
+            result = self._add_bias(result, self.biases, inputs.dtype)
         return tuple(jnp.split(result, self.get_split_points(self.output_dims)))
 
     def call_ragged(
@@ -129,7 +153,8 @@ class Linear(LalamoModule[LinearConfig]):
             inputs,
             group_sizes,
             forward_pass_config=forward_pass_config,
+            output_dtype=self._dot_output_dtype(inputs.dtype),
         )
         if self.biases is not None:
-            result = result + self.biases.astype(result.dtype)[expert_indices]
+            result = self._add_bias(result, self.biases[expert_indices], inputs.dtype)
         return tuple(jnp.split(result, self.get_split_points(self.output_dims), axis=-1))

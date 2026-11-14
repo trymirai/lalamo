@@ -44,6 +44,8 @@ __all__ = [
     "RoutingFunction",
     "SigmoidRouting",
     "SoftmaxRouting",
+    "UngatedMLP",
+    "UngatedMLPConfig",
 ]
 
 
@@ -189,6 +191,64 @@ class DenseMLPConfig(MLPConfig):
                 is_sharded=is_sharded,
             ),
         )
+
+
+@dataclass(frozen=True)
+class UngatedMLPConfig(LalamoConfig):
+    linear_config: LinearConfig
+    activation: Activation
+    has_up_biases: bool
+    has_down_biases: bool
+
+    def init(
+        self,
+        initializer: Initializer,
+        input_dim: int,
+        hidden_dim: int,
+        output_dim: int,
+    ) -> "UngatedMLP":
+        return UngatedMLP(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            up_projection=self.linear_config.init(
+                initializer,
+                input_dim,
+                (hidden_dim,),
+                has_biases=self.has_up_biases,
+            ),
+            down_projection=self.linear_config.init(
+                initializer,
+                hidden_dim,
+                (output_dim,),
+                has_biases=self.has_down_biases,
+            ),
+        )
+
+
+class UngatedMLP(LalamoModule[UngatedMLPConfig]):
+    up_projection: Linear
+    down_projection: Linear
+
+    @eqx.filter_jit
+    def __call__(
+        self,
+        inputs: Float[Array, " in_channels"],
+        forward_pass_config: MatmulConfig = MatmulConfig(),
+        *,
+        keychain: Keychain,
+    ) -> Float[Array, " out_channels"]:
+        up_keychain, down_keychain = keychain.split()
+        (up_proj,) = self.up_projection(
+            inputs,
+            keychain=up_keychain,
+            forward_pass_config=forward_pass_config,
+        )
+        (result,) = self.down_projection(
+            self.config.activation(up_proj),
+            keychain=down_keychain,
+            forward_pass_config=forward_pass_config,
+        )
+        return result
 
 
 class DenseMLP(MLPBase[DenseMLPConfig]):
