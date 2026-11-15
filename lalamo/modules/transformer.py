@@ -117,7 +117,6 @@ class Transformer[StreamT](LalamoModule[TransformerConfig]):
         return_suffix_tokens: int | None = None,
         token_ids: Int[Array, "batch suffix_tokens"] | None = None,
         *,
-        token_id_to_original_token_id: Int[Array, " vocabulary"] | None = None,
         keychain: Keychain,
     ) -> TransformerResult:
         if inner_features.ndim != 3:
@@ -247,7 +246,6 @@ class Transformer[StreamT](LalamoModule[TransformerConfig]):
                 attention_parent_indices=attention_parent_indices,
                 return_suffix_tokens=return_suffix_tokens if layer_index == last_state_owner_index else None,
                 token_ids=layer_token_ids,
-                token_id_to_original_token_id=token_id_to_original_token_id,
                 keychain=layer_keychain,
             )
 

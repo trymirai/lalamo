@@ -105,12 +105,7 @@ class NGramHashConfig(LalamoConfig):
     def max_product_bits(self, multiplier: int) -> int:
         return ((self.token_vocab_size - 1) * multiplier).bit_length()
 
-    def ngram_ids(
-        self,
-        tokens: Int[Array, " tokens"],
-        *,
-        token_id_to_original_token_id: Int[Array, " vocabulary"] | None = None,
-    ) -> Int[Array, "tokens heads"]:
+    def ngram_ids(self, tokens: Int[Array, " tokens"]) -> Int[Array, "tokens heads"]:
         (num_tokens,) = tokens.shape
         limb_bits = 32 - (self.token_vocab_size - 1).bit_length()
         num_limbs = math.ceil(max(map(self.max_product_bits, self.multipliers)) / limb_bits)
@@ -131,9 +126,6 @@ class NGramHashConfig(LalamoConfig):
                 tokens[jnp.maximum(source_positions, 0)],
                 self.eos_token_id,
             )
-            # EOS checks use current ids; learned hash products use source-model ids.
-            if token_id_to_original_token_id is not None:
-                shifted_tokens = token_id_to_original_token_id[shifted_tokens]
             product_limbs.append(multiply_limbs(shifted_tokens.astype(jnp.uint32), multiplier, limb_bits, num_limbs))
         _, *mixed_limbs_per_order = accumulate(product_limbs, jnp.bitwise_xor)
 
@@ -255,10 +247,7 @@ class NGramInjection(
                 length_without_padding,
                 num_context_tokens,
             )
-            hashes = hash_config.ngram_ids(
-                tokens_with_history, token_id_to_original_token_id=context.token_id_to_original_token_id
-            )
-            return hashes[num_context_tokens:], updated_token_history_row
+            return hash_config.ngram_ids(tokens_with_history)[num_context_tokens:], updated_token_history_row
 
         ngram_ids, updated_token_history = call_vmapped(
             hash_row,

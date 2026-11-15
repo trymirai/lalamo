@@ -11,8 +11,7 @@ from tokenizers import Tokenizer
 from lalamo.models import LanguageModel
 from lalamo.modules.embedding import EmbeddingBase, TiedEmbedding, UntiedEmbedding
 from lalamo.modules.ngram_injection import NGramInjection
-from lalamo.modules.transformer_layer import TransformerLayer
-from lalamo.utils.surgery import map_nodes_of_type
+from lalamo.utils.surgery import select_nodes_of_type
 from lalamo.weight_matrix import FullPrecisionMatrix, WeightMatrix
 
 __all__ = ["frequency_ordered"]
@@ -40,8 +39,8 @@ def frequency_order(counts: np.ndarray, tokenizer: Tokenizer) -> np.ndarray:
     assert num_tokens <= len(counts), f"The tokenizer has {num_tokens} tokens, the model only {len(counts)}"
     is_added = np.zeros(num_tokens, dtype=bool)
     is_added[list(tokenizer.get_added_tokens_decoder())] = True
-    token_id_to_original_token_id = np.lexsort((np.arange(num_tokens), -counts[:num_tokens], ~is_added))
-    return np.concatenate([token_id_to_original_token_id, np.arange(num_tokens, len(counts))])
+    token_order = np.lexsort((np.arange(num_tokens), -counts[:num_tokens], ~is_added))
+    return np.concatenate([token_order, np.arange(num_tokens, len(counts))])
 
 
 def reorder_post_processor(post_processor: dict | None, new_ids: np.ndarray) -> dict | None:
@@ -83,84 +82,55 @@ def reorder_tokenizer(tokenizer: Tokenizer, new_ids: np.ndarray) -> Tokenizer:
     return Tokenizer.from_str(json.dumps(content))
 
 
-def reorder_matrix(
-    matrix: WeightMatrix, token_id_to_original_token_id: np.ndarray, vocabulary_axis: int
-) -> FullPrecisionMatrix:
+def reorder_matrix(matrix: WeightMatrix, order: np.ndarray, vocabulary_axis: int) -> FullPrecisionMatrix:
     # Permuting a quantized matrix would requantize it, so only full precision vocabularies are reordered.
     assert isinstance(matrix, FullPrecisionMatrix), f"Cannot reorder the vocabulary of a {type(matrix).__name__}"
     # On the host: the vocabulary axis may be sharded, and a sharded gather needs an explicit output sharding.
-    weights = jnp.asarray(
-        np.take(np.asarray(matrix.decompress()), token_id_to_original_token_id, axis=vocabulary_axis)
-    )
+    weights = jnp.asarray(np.take(np.asarray(matrix.decompress()), order, axis=vocabulary_axis))
     return matrix.spec.compress(weights, sharding_config=matrix.sharding_config, is_sharded=matrix.is_sharded)
 
 
-def reorder_embedding(
-    embedding: EmbeddingBase, token_id_to_original_token_id: np.ndarray
-) -> TiedEmbedding | UntiedEmbedding:
+def reorder_embedding(embedding: EmbeddingBase, order: np.ndarray) -> TiedEmbedding | UntiedEmbedding:
     # Embeddings are (channels, vocabulary) in output-input terms; an untied readout is (vocabulary, channels).
+    config = replace(embedding.config, permute_indices=True)
+    index_permutation = jnp.asarray(order, dtype=jnp.int32)
     match embedding:
         case TiedEmbedding():
-            return replace(embedding, embedding=reorder_matrix(embedding.embedding, token_id_to_original_token_id, -1))
+            matrix = reorder_matrix(embedding.embedding, order, -1)
+            return replace(embedding, config=config, embedding=matrix, index_permutation=index_permutation)
         case UntiedEmbedding():
             return replace(
                 embedding,
-                input_embedding=reorder_matrix(embedding.input_embedding, token_id_to_original_token_id, -1),
-                output_embedding=reorder_matrix(embedding.output_embedding, token_id_to_original_token_id, -2),
+                config=config,
+                input_embedding=reorder_matrix(embedding.input_embedding, order, -1),
+                output_embedding=reorder_matrix(embedding.output_embedding, order, -2),
+                index_permutation=index_permutation,
             )
         case unknown:
             raise ValueError(f"Cannot reorder the vocabulary of a {type(unknown).__name__}")
 
 
-def reorder_layer[StreamT](layer: TransformerLayer[StreamT], new_ids: np.ndarray) -> TransformerLayer[StreamT]:
-    def reorder_ngram(module: NGramInjection) -> NGramInjection:
-        hash_config = replace(
-            module.config.hash_config, eos_token_id=int(new_ids[module.config.hash_config.eos_token_id])
-        )
-        return replace(module, config=replace(module.config, hash_config=hash_config))
-
-    layer = map_nodes_of_type(NGramInjection, reorder_ngram, layer)
-    config = replace(
-        layer.config,
-        prologue_configs=tuple(op.config for op in layer.prologue),
-        epilogue_configs=tuple(op.config for op in layer.epilogue),
-    )
-    return replace(layer, config=config)
-
-
 def frequency_ordered(model: LanguageModel) -> LanguageModel:
     """The same model with the most frequent tokens renumbered to the smallest ids."""
-    decoder = model.decoder
-    assert decoder.token_id_to_original_token_id is None
-    assert decoder.per_layer_embedding is None, "Per-layer embeddings have their own vocabulary"
+    assert not model.config.decoder_config.embedding_config.permute_indices
+    assert model.decoder.per_layer_embedding is None, "Per-layer embeddings have their own vocabulary"
+    if select_nodes_of_type(NGramInjection, model.decoder):
+        raise ValueError("Frequency-ordered vocabularies are not supported for models with n-gram injection")
     tokenizer = model.token_codec.tokenizer
-    counts = training_mixture_counts(tokenizer, decoder.vocab_size)
-    token_id_to_original_token_id = frequency_order(counts, tokenizer)
-    new_ids = np.argsort(token_id_to_original_token_id)
+    order = frequency_order(training_mixture_counts(tokenizer, model.decoder.vocab_size), tokenizer)
+    new_ids = np.argsort(order)
     generation_config = model.config.generation_config
     stop_token_ids = tuple(int(new_ids[i]) for i in generation_config.stop_token_ids)
     generation_config = replace(generation_config, stop_token_ids=stop_token_ids)
     if generation_config.banned_tokens is not None:
         banned_tokens = tuple(int(new_ids[i]) for i in generation_config.banned_tokens)
         generation_config = replace(generation_config, banned_tokens=banned_tokens)
-    transformer = decoder.transformer
-    layers = tuple(reorder_layer(layer, new_ids) for layer in transformer.layers)
-    transformer = replace(
-        transformer,
-        config=replace(transformer.config, layer_configs=tuple(layer.config for layer in layers)),
-        layers=layers,
-    )
-    decoder = replace(
-        decoder,
-        config=replace(decoder.config, transformer_config=transformer.config, permute_indices=True),
-        embedding=reorder_embedding(decoder.embedding, token_id_to_original_token_id),
-        transformer=transformer,
-        token_id_to_original_token_id=jnp.asarray(token_id_to_original_token_id, dtype=jnp.int32),
-    )
-    config = replace(model.config, generation_config=generation_config, decoder_config=decoder.config)
+    embedding = reorder_embedding(model.decoder.embedding, order)
+    decoder_config = replace(model.config.decoder_config, embedding_config=embedding.config)
+    config = replace(model.config, generation_config=generation_config, decoder_config=decoder_config)
     return replace(
         model,
         config=config,
         token_codec=config.token_codec_config.init(reorder_tokenizer(tokenizer, new_ids)),
-        decoder=decoder,
+        decoder=replace(model.decoder, config=decoder_config, embedding=embedding),
     )

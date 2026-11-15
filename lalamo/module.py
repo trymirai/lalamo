@@ -12,7 +12,6 @@ import jax.tree_util as jtu
 from cattrs import GenConverter
 from jaxtyping import Array, DTypeLike, Key
 
-from lalamo.utils.dtype import cast_if_float
 from lalamo.utils.dummy_array import supports_dummy_arrays
 from lalamo.utils.json import JSON
 from lalamo.utils.registry_abc import make_registry_abc_converter
@@ -59,8 +58,6 @@ def _cast_dtype(
 ) -> "Array | WeightMatrix | None":
     if value is None:
         return None
-    if isinstance(value, Array):
-        return cast_if_float(value, dtype)
     return value.astype(dtype)
 
 

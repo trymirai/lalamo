@@ -1,4 +1,3 @@
-from dataclasses import replace
 from itertools import accumulate, pairwise
 
 import jax
@@ -50,8 +49,7 @@ def make_token_ids(eos_token_id: int) -> torch.Tensor:
     return token_ids
 
 
-@pytest.mark.parametrize("permuted", [False, True])
-def test_ngram_ids_match_hf(permuted: bool) -> None:
+def test_ngram_ids_match_hf() -> None:
     hf_config = make_hf_config(with_ple=True)
     hf_embedding = Qwen4ExpTextNGramEmbedding(hf_config, PLE_EMBED_DIM, layer_idx=0, ple_layer_index=1)
     hash_config = make_ngram_injection_config(hf_config, ple_layer_index=1).hash_config
@@ -68,19 +66,8 @@ def test_ngram_ids_match_hf(permuted: bool) -> None:
     )[..., 0]
 
     token_history = jnp.full((2, num_context_tokens), hash_config.eos_token_id, dtype=jnp.int32)
-    tokens = jnp.concatenate([token_history, jnp.asarray(token_ids.numpy(), dtype=jnp.int32)], axis=1)
-    token_id_to_original_token_id = None
-    if permuted:
-        token_id_to_original_token_id = jnp.asarray(
-            np.random.default_rng(0).permutation(hash_config.token_vocab_size), dtype=jnp.int32
-        )
-        new_ids = np.argsort(np.asarray(token_id_to_original_token_id))
-        tokens = jnp.asarray(new_ids, dtype=jnp.int32)[tokens]
-        hash_config = replace(hash_config, eos_token_id=int(new_ids[hash_config.eos_token_id]))
-    result = jax.vmap(
-        lambda row: hash_config.ngram_ids(row, token_id_to_original_token_id=token_id_to_original_token_id)
-    )(
-        tokens,
+    result = jax.vmap(hash_config.ngram_ids)(
+        jnp.concatenate([token_history, jnp.asarray(token_ids.numpy(), dtype=jnp.int32)], axis=1),
     )
 
     np.testing.assert_array_equal(np.asarray(result[:, num_context_tokens:]), reference.numpy().astype(np.int64))

@@ -30,7 +30,6 @@ class StreamOpContext(eqx.Module):
     token_ids: Int[Array, "batch suffix_tokens"] | None
     per_layer_input: Float[Array, "batch suffix_tokens ple_dim"] | None
     lengths_without_padding: Int[Array, " batch"] | None
-    token_id_to_original_token_id: Int[Array, " vocabulary"] | None = None
 
 
 @dataclass(frozen=True)
