@@ -24,8 +24,11 @@ def _tokenizer() -> Tokenizer:
     return tokenizer
 
 
-def test_reordered_tokenizer_encodes_to_renumbered_ids() -> None:
+@pytest.mark.parametrize("pad_token", [None, "<eos>", "a"])
+def test_reordered_tokenizer_encodes_to_renumbered_ids(pad_token: str | None) -> None:
     tokenizer = _tokenizer()  # 7 tokens; the 8th row is padding
+    if pad_token is not None:
+        tokenizer.enable_padding(length=12, pad_id=tokenizer.token_to_id(pad_token), pad_token=pad_token)
     order = frequency_order(np.array([0, 3, 0, 0, 7, 7, 1, 9]), tokenizer)
     # <eos> (id 6) is an added token, then tokens by count with ties in id order; padding id 7 stays despite its count.
     assert order.tolist() == [6, 4, 5, 1, 0, 2, 3, 7]

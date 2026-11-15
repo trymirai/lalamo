@@ -10,6 +10,8 @@ from tokenizers import Tokenizer
 
 from lalamo.models import LanguageModel
 from lalamo.modules.embedding import EmbeddingBase, TiedEmbedding, UntiedEmbedding
+from lalamo.modules.ngram_injection import NGramInjection
+from lalamo.utils.surgery import select_nodes_of_type
 from lalamo.weight_matrix import FullPrecisionMatrix, WeightMatrix
 
 __all__ = ["frequency_ordered"]
@@ -68,10 +70,14 @@ def reorder_tokenizer(tokenizer: Tokenizer, new_ids: np.ndarray) -> Tokenizer:
     # `tokenizers` numbers added tokens after the model vocabulary unless the vocabulary lists them.
     vocab = {piece: int(new_ids[i]) for piece, i in model["vocab"].items()}
     vocab |= {token["content"]: token["id"] for token in added_tokens}
+    padding = content["padding"]
+    if padding is not None:
+        padding = {**padding, "pad_id": int(new_ids[padding["pad_id"]])}
     content |= {
         "model": {**model, "vocab": vocab},
         "added_tokens": added_tokens,
         "post_processor": reorder_post_processor(content["post_processor"], new_ids),
+        "padding": padding,
     }
     return Tokenizer.from_str(json.dumps(content))
 
@@ -108,6 +114,8 @@ def frequency_ordered(model: LanguageModel) -> LanguageModel:
     """The same model with the most frequent tokens renumbered to the smallest ids."""
     assert not model.config.decoder_config.embedding_config.permute_indices
     assert model.decoder.per_layer_embedding is None, "Per-layer embeddings have their own vocabulary"
+    if select_nodes_of_type(NGramInjection, model.decoder):
+        raise ValueError("Frequency-ordered vocabularies are not supported for models with n-gram injection")
     tokenizer = model.token_codec.tokenizer
     order = frequency_order(training_mixture_counts(tokenizer, model.decoder.vocab_size), tokenizer)
     new_ids = np.argsort(order)
