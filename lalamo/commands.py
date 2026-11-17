@@ -21,6 +21,7 @@ from lalamo.model_import.common import (
     StatusEvent,
     import_model,
 )
+from lalamo.model_import.loaders.confidence_head_loader import load_confidence_head
 from lalamo.model_import.loaders.dflash_loader import load_hf_dflash_draft_model
 from lalamo.model_import.loaders.weaver_loader import load_weaver
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
@@ -213,6 +214,8 @@ def convert_speculator(
     output_dir: Path,
     weaver_repo_id: str | None = None,
     dtype: DType | None = None,
+    *,
+    confidence_head_repo_id: str | None = None,
 ) -> None:
     sharding_config = ShardingConfig.replicated()
     effective_dtype = jnp.dtype((dtype or DType.BFLOAT16).value)
@@ -233,15 +236,29 @@ def convert_speculator(
             raise ValueError(f"Expected exactly one .pth checkpoint in '{weaver_repo_id}', found: {found}.")
         weaver = load_weaver(checkpoints[0], sharding_config, dtype=effective_dtype)
 
+    confidence_head = None
+    confidence_head_config = None
+    if confidence_head_repo_id is not None:
+        head_dir = Path(
+            snapshot_download(confidence_head_repo_id, allow_patterns=["config.json", "model.safetensors"]),
+        )
+        confidence_head = load_confidence_head(
+            head_dir,
+            target_model_dim=draft_model.config.model_dim,
+            sharding_config=sharding_config,
+            dtype=effective_dtype,
+        )
+        confidence_head_config = confidence_head.config
+
     speculator = DFlashSpeculator(
         config=DFlashSpeculatorConfig(
             draft_config=draft_model.config,
             weaver_config=weaver.config if weaver is not None else None,
-            confidence_head_config=None,
+            confidence_head_config=confidence_head_config,
         ),
         sharding_config=sharding_config,
         draft_model=draft_model,
         weaver=weaver,
-        confidence_head=None,
+        confidence_head=confidence_head,
     )
     speculator.save(output_dir)

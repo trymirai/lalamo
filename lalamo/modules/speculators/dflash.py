@@ -21,6 +21,7 @@ from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.kv_cache import StaticKVCacheLayer
 from lalamo.modules.transformer_layer import TransformerForwardPassConfig, TransformerLayer, TransformerLayerConfig
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
+from lalamo.utils.json import JSON
 
 __all__ = [
     "DFlashDraftConfig",
@@ -313,7 +314,14 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
 class DFlashSpeculatorConfig(SpeculatorConfig):
     draft_config: DFlashDraftConfig
     weaver_config: WeaverConfig | None
-    confidence_head_config: ConfidenceHeadConfig | None
+    confidence_head_config: ConfidenceHeadConfig | None = None
+
+    def to_json(self) -> JSON:
+        config = super().to_json()
+        assert isinstance(config, dict)
+        if self.confidence_head_config is None:
+            return {name: value for name, value in config.items() if name != "confidence_head_config"}
+        return config
 
     def __post_init__(self) -> None:
         if self.weaver_config is None:

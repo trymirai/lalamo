@@ -68,7 +68,11 @@ speculator_app = Typer(
     pretty_exceptions_show_locals=False,
     no_args_is_help=True,
 )
-app.add_typer(speculator_app, name="speculator", help="Convert DFlash and Weaver speculator models.")
+app.add_typer(
+    speculator_app,
+    name="speculator",
+    help="Convert DFlash drafts with optional Weaver and confidence heads.",
+)
 
 
 class ModelParser(ParamType):
@@ -465,7 +469,7 @@ def convert(
     )
 
 
-@speculator_app.command("convert", help="Import a speculator (DFlash draft, optionally with a Weaver).")
+@speculator_app.command("convert", help="Import a DFlash draft with an optional Weaver and confidence head.")
 def speculator_convert(
     dflash_repo_id: Annotated[
         str,
@@ -480,6 +484,10 @@ def speculator_convert(
             help="Hugging Face repository ID of a Weaver checkpoint to bundle into the same speculator.",
             show_default="No weaver, DFlash draft only",
         ),
+    ] = None,
+    confidence_head: Annotated[
+        str | None,
+        Option(help="Hugging Face repository ID of a standalone confidence-head checkpoint to bundle."),
     ] = None,
     dtype: Annotated[
         DType | None,
@@ -499,6 +507,8 @@ def speculator_convert(
 ) -> None:
     if output_dir is None:
         speculator_name = PurePosixPath(dflash_repo_id).name + ("-TfM" if weaver is not None else "")
+        if confidence_head is not None:
+            speculator_name += "-confidence-head"
         output_dir = DEFAULT_OUTPUT_DIR / speculator_name
 
     if output_dir.exists():
@@ -509,7 +519,7 @@ def speculator_convert(
         shutil.rmtree(output_dir)
 
     console.print(f"🚀 Converting speculator model from [cyan]{dflash_repo_id}[/cyan]...")
-    _convert_speculator(dflash_repo_id, output_dir, weaver, dtype)
+    _convert_speculator(dflash_repo_id, output_dir, weaver, dtype, confidence_head_repo_id=confidence_head)
     console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
 
 

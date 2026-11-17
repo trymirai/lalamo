@@ -7,13 +7,20 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from typer.testing import CliRunner
 
+from lalamo import commands
 from lalamo.initializer import RandomInitializer
+from lalamo.main import app
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.speculator import Speculator
 from lalamo.modules.speculators.confidence_head import ConfidenceHeadConfig, ConfidenceHeadTreeAttentionConfig
-from lalamo.modules.speculators.dflash import DFlashDraftConfig, DFlashSpeculatorConfig
+from lalamo.modules.speculators.dflash import (
+    DFlashDraftConfig,
+    DFlashSpeculator,
+    DFlashSpeculatorConfig,
+)
 from lalamo.safetensors import safe_write
 from lalamo.utils.sharding import ShardingConfig
 from tests.helpers import build_tiny_attention_decoder_config
@@ -85,6 +92,11 @@ def test_speculator_roundtrip_preserves_confidence_head(
         RandomInitializer(jnp.bfloat16, ShardingConfig.replicated(), key=jax.random.key(0)),
     )
     model.save(tmp_path)
+    if confidence_head_config is None:
+        config_path = tmp_path / "config.json"
+        config = json.loads(config_path.read_text())
+        config.pop("confidence_head_config", None)
+        config_path.write_text(json.dumps(config))
     restored = Speculator.load(tmp_path, model.sharding_config)
     expected, actual = model.export(), restored.export()
     assert restored.config == model.config
@@ -126,3 +138,42 @@ def test_speculator_rejects_malformed_confidence_head(
         safe_write(weights_file, arrays, {name: json.dumps(value) for name, value in metadata.items()})
     with pytest.raises((ValueError, AssertionError, KeyError)):
         Speculator.load(tmp_path, speculator.sharding_config)
+
+
+@pytest.mark.parametrize("head_repo_id", [None, "test/head"])
+def test_speculator_convert_preserves_confidence_head(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    speculator_config: DFlashSpeculatorConfig,
+    head_repo_id: str | None,
+) -> None:
+    source = jax.tree.map(
+        jnp.ones_like,
+        speculator_config.init(
+            RandomInitializer(jnp.bfloat16, ShardingConfig.replicated(), key=jax.random.key(0)),
+        ),
+    )
+    monkeypatch.setattr(commands, "snapshot_download", lambda repo_id, **_: str(tmp_path / repo_id))
+    monkeypatch.setattr(commands, "load_hf_dflash_draft_model", lambda *_args, **_kwargs: source.draft_model)
+    monkeypatch.setattr(commands, "load_confidence_head", lambda *_args, **_kwargs: source.confidence_head)
+    monkeypatch.setattr("lalamo.main.DEFAULT_OUTPUT_DIR", tmp_path / "models")
+    arguments = ["speculator", "convert", "test/draft"]
+    output_name = "draft"
+    if head_repo_id is not None:
+        arguments.extend(("--confidence-head", head_repo_id))
+        output_name += "-confidence-head"
+    result = CliRunner().invoke(app, arguments)
+    assert result.exit_code == 0, result.output
+    restored = DFlashSpeculator.load(tmp_path / "models" / output_name, source.sharding_config)
+    if head_repo_id is None:
+        assert restored.confidence_head is None
+        assert restored.config.confidence_head_config is None
+        return
+    assert restored.confidence_head is not None
+    assert source.confidence_head is not None
+    assert restored.config.confidence_head_config == source.confidence_head.config
+    expected, actual = source.confidence_head.export(), restored.confidence_head.export()
+    assert actual.metadata == expected.metadata
+    assert actual.arrays.keys() == expected.arrays.keys()
+    for name, array in expected.arrays.items():
+        np.testing.assert_array_equal(actual.arrays[name], array, strict=True)
