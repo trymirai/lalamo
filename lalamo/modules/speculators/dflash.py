@@ -319,9 +319,7 @@ class DFlashSpeculatorConfig(SpeculatorConfig):
     def to_json(self) -> JSON:
         config = super().to_json()
         assert isinstance(config, dict)
-        if self.confidence_head_config is None:
-            return {name: value for name, value in config.items() if name != "confidence_head_config"}
-        return config
+        return {name: value for name, value in config.items() if name != "confidence_head_config" or value is not None}
 
     def __post_init__(self) -> None:
         if self.weaver_config is None:

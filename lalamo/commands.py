@@ -239,11 +239,8 @@ def convert_speculator(
     confidence_head = None
     confidence_head_config = None
     if confidence_head_repo_id is not None:
-        head_dir = Path(
-            snapshot_download(confidence_head_repo_id, allow_patterns=["config.json", "model.safetensors"]),
-        )
         confidence_head = load_confidence_head(
-            head_dir,
+            snapshot_download(confidence_head_repo_id, allow_patterns=["config.json", "model.safetensors"]),
             target_model_dim=draft_model.config.model_dim,
             sharding_config=sharding_config,
             dtype=effective_dtype,

@@ -1,6 +1,6 @@
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import prod
 from pathlib import Path
 
@@ -12,11 +12,14 @@ import pytest
 from jaxtyping import Array, DTypeLike
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
+from typer.testing import CliRunner
 
+from lalamo import commands
 from lalamo.compressed.int import IntMatrixForInference, IntMatrixForTraining, IntSpec
 from lalamo.compressed.microfloat import MicrofloatMatrixForInference
 from lalamo.compressed.mlx import MLXMatrixForInference, MLXMatrixForTraining
-from lalamo.initializer import EmptyInitializer, Initializer
+from lalamo.initializer import EmptyInitializer, Initializer, RandomInitializer
+from lalamo.main import app
 from lalamo.model import Model, ModelConfig
 from lalamo.model_import.loaders.dflash_loader import load_dflash_sublayer_transform, load_hf_dflash_draft_model
 from lalamo.model_import.loaders.huggingface import (
@@ -45,6 +48,8 @@ from lalamo.modules.mlp import (
     SoftmaxRouting,
 )
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.speculators.confidence_head import ConfidenceHeadConfig, ConfidenceHeadTreeAttentionConfig
+from lalamo.modules.speculators.dflash import DFlashSpeculator
 from lalamo.modules.token_mixers.attention import Attention
 from lalamo.safetensors import safe_write
 from lalamo.utils.dummy_array import dummy_array
@@ -75,6 +80,22 @@ CLASSIFIER_NUM_LABELS = 2
 DFLASH_MODEL_DIM = 8
 DFLASH_HIDDEN_DIM = 16
 DFLASH_HEAD_DIM = 4
+
+CONFIDENCE_HEAD_CONFIG = ConfidenceHeadConfig(
+    model_dim=4,
+    pool_hidden_dim=2,
+    edge_hidden_dim=8,
+    logit_cap=50.0,
+    max_depth=3,
+    norm_config=NormalizationConfig(
+        epsilon=1e-5,
+        scale_offset=None,
+        upcast_mode=UpcastMode.FULL_LAYER,
+        subtract_mean=True,
+        has_biases=True,
+    ),
+    tree_attention_config=ConfidenceHeadTreeAttentionConfig(model_dim=8, num_layers=1, num_heads=2, hidden_dim=16),
+)
 
 
 def _dflash_hf_config(*, dflash2: bool) -> dict[str, object]:
@@ -279,7 +300,14 @@ def _muse_glimmer_dflash_weights() -> dict[str, Array]:
     }
 
 
-def test_load_muse_glimmer_checkpoint_reshapes_to_qwen_dflash(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "head_config",
+    [None, replace(CONFIDENCE_HEAD_CONFIG, tree_attention_config=None), CONFIDENCE_HEAD_CONFIG],
+    ids=["none", "pool", "tree"],
+)
+def test_convert_muse_glimmer_speculator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, head_config: ConfidenceHeadConfig | None
+) -> None:
     config_path = tmp_path / "config.json"
     with config_path.open("w") as config_file:
         json.dump(_muse_glimmer_dflash_config(), config_file)
@@ -296,6 +324,34 @@ def test_load_muse_glimmer_checkpoint_reshapes_to_qwen_dflash(tmp_path: Path) ->
             sharding_config=sharding_config,
             dtype=jnp.bfloat16,
         )
+
+        head = None
+        if head_config is not None:
+            head = head_config.init(
+                RandomInitializer(jnp.bfloat16, sharding_config, key=jax.random.key(0)),
+                DFLASH_MODEL_DIM,
+            )
+            head = jax.tree.map(lambda array: _dflash_tensor(array.shape, 1).astype(array.dtype), head)
+        monkeypatch.setattr(commands, "snapshot_download", lambda *_args, **_kwargs: str(tmp_path))
+        monkeypatch.setattr(commands, "load_confidence_head", lambda *_args, **_kwargs: head)
+        output_dir = tmp_path / "converted"
+        arguments = ["speculator", "convert", "test/draft", "--output-dir", str(output_dir)]
+        if head is not None:
+            arguments.extend(("--confidence-head", "test/head"))
+        result = CliRunner().invoke(app, arguments)
+        assert result.exit_code == 0, result.output
+        restored = DFlashSpeculator.load(output_dir, sharding_config)
+        assert restored.config.confidence_head_config == head_config
+        if head is None:
+            assert "confidence_head_config" not in json.loads((output_dir / "config.json").read_text())
+            assert restored.confidence_head is None
+        else:
+            assert restored.confidence_head is not None
+            expected, actual = head.export(), restored.confidence_head.export()
+            assert actual.metadata == expected.metadata
+            assert actual.arrays.keys() == expected.arrays.keys()
+            for name, array in expected.arrays.items():
+                np.testing.assert_array_equal(actual.arrays[name], array, strict=True)
 
         assert reshaped_config.model_type == "qwen3"
         assert reshaped_config.architectures == ("DFlashDraftModel",)

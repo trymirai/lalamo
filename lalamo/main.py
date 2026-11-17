@@ -68,11 +68,7 @@ speculator_app = Typer(
     pretty_exceptions_show_locals=False,
     no_args_is_help=True,
 )
-app.add_typer(
-    speculator_app,
-    name="speculator",
-    help="Convert DFlash drafts with optional Weaver and confidence heads.",
-)
+app.add_typer(speculator_app, name="speculator", help="Convert DFlash and Weaver speculator models.")
 
 
 class ModelParser(ParamType):

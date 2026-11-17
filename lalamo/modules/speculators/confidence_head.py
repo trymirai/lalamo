@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import partial
 from math import isfinite
 from typing import NamedTuple, Self
 
@@ -16,10 +17,6 @@ __all__ = [
 ]
 
 
-def _init_biased_linear(initializer: Initializer, input_dim: int, output_dim: int) -> Linear:
-    return LinearConfig().init(initializer, input_dim, (output_dim,), has_biases=True)
-
-
 @dataclass(frozen=True)
 class ConfidenceHeadTreeAttentionConfig(LalamoConfig):
     model_dim: int
@@ -33,37 +30,7 @@ class ConfidenceHeadTreeAttentionConfig(LalamoConfig):
         if self.model_dim % self.num_heads:
             raise ValueError("Confidence-head tree model_dim must be divisible by num_heads")
 
-    def init(
-        self,
-        initializer: Initializer,
-        *,
-        head_model_dim: int,
-        max_depth: int,
-        norm_config: NormalizationConfig,
-    ) -> "ConfidenceHeadTree":
-        return ConfidenceHeadTree(
-            node_in=_init_biased_linear(initializer, head_model_dim, self.model_dim),
-            child_in=_init_biased_linear(initializer, head_model_dim + 4, self.model_dim),
-            depth_embedding=initializer.zeros((max_depth + 1, self.model_dim)),
-            relation_bias=initializer.zeros((self.num_heads, 6)),
-            layers=tuple(
-                ConfidenceHeadTreeLayer(
-                    attention_norm=norm_config.init(initializer, self.model_dim),
-                    qkv=_init_biased_linear(initializer, self.model_dim, 3 * self.model_dim),
-                    out=_init_biased_linear(initializer, self.model_dim, self.model_dim),
-                    mlp_norm=norm_config.init(initializer, self.model_dim),
-                    up=_init_biased_linear(initializer, self.model_dim, self.hidden_dim),
-                    down=_init_biased_linear(initializer, self.hidden_dim, self.model_dim),
-                )
-                for _ in range(self.num_layers)
-            ),
-            final_norm=norm_config.init(initializer, self.model_dim),
-            couple_node=_init_biased_linear(initializer, self.model_dim, head_model_dim),
-            couple_child=_init_biased_linear(initializer, self.model_dim, head_model_dim),
-        )
 
-
-# These named groups preserve Uzu's checkpoint paths; its fused kernels read the affine tensors without spec metadata.
 class ConfidenceHeadAffine(NamedTuple):
     weights: Float[Array, "out_channels in_channels"]
     biases: Float[Array, " out_channels"]
@@ -133,22 +100,38 @@ class ConfidenceHeadConfig(LalamoConfig):
             raise ValueError("Confidence-head logit_cap must be finite and positive")
 
     def init(self, initializer: Initializer, target_model_dim: int) -> "ConfidenceHead":
+        linear = partial(LinearConfig().init, initializer, has_biases=True)
         tree = None
-        if self.tree_attention_config is not None:
-            tree = self.tree_attention_config.init(
-                initializer,
-                head_model_dim=self.model_dim,
-                max_depth=self.max_depth,
-                norm_config=self.norm_config,
+        tree_config = self.tree_attention_config
+        if tree_config is not None:
+            tree = ConfidenceHeadTree(
+                node_in=linear(self.model_dim, (tree_config.model_dim,)),
+                child_in=linear(self.model_dim + 4, (tree_config.model_dim,)),
+                depth_embedding=initializer.zeros((self.max_depth + 1, tree_config.model_dim)),
+                relation_bias=initializer.zeros((tree_config.num_heads, 6)),
+                layers=tuple(
+                    ConfidenceHeadTreeLayer(
+                        attention_norm=self.norm_config.init(initializer, tree_config.model_dim),
+                        qkv=linear(tree_config.model_dim, (3 * tree_config.model_dim,)),
+                        out=linear(tree_config.model_dim, (tree_config.model_dim,)),
+                        mlp_norm=self.norm_config.init(initializer, tree_config.model_dim),
+                        up=linear(tree_config.model_dim, (tree_config.hidden_dim,)),
+                        down=linear(tree_config.hidden_dim, (tree_config.model_dim,)),
+                    )
+                    for _ in range(tree_config.num_layers)
+                ),
+                final_norm=self.norm_config.init(initializer, tree_config.model_dim),
+                couple_node=linear(tree_config.model_dim, (self.model_dim,)),
+                couple_child=linear(tree_config.model_dim, (self.model_dim,)),
             )
         edge_input_dim = 3 * self.model_dim + 4
         return ConfidenceHead(
             config=self,
             sharding_config=initializer.sharding_config,
             draft_norm=self.norm_config.init(initializer, target_model_dim),
-            draft_projection=_init_biased_linear(initializer, target_model_dim, self.model_dim),
+            draft_projection=linear(target_model_dim, (self.model_dim,)),
             token_norm=self.norm_config.init(initializer, target_model_dim),
-            token_projection=_init_biased_linear(initializer, target_model_dim, self.model_dim),
+            token_projection=linear(target_model_dim, (self.model_dim,)),
             pool_set=ConfidenceHeadPool(
                 entry=ConfidenceHeadAffine.init(initializer, 3, self.pool_hidden_dim),
                 hidden=ConfidenceHeadAffine.init(initializer, self.pool_hidden_dim, self.pool_hidden_dim),

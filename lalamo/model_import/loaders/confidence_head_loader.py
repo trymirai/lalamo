@@ -1,7 +1,6 @@
 import json
 from pathlib import Path
 
-import equinox as eqx
 import jax.numpy as jnp
 from jaxtyping import DTypeLike
 
@@ -26,15 +25,9 @@ def load_confidence_head(
         source = json.load(config_file)
     if source["format"] != 2:
         raise ValueError("Confidence-head checkpoint must use format 2")
-    if source["target_width"] != target_model_dim:
-        raise ValueError(
-            f"Confidence-head target width {source['target_width']} does not match draft model_dim {target_model_dim}",
-        )
     tree_attention_config = None
     if source["attention"] is not None:
         attention = source["attention"]
-        if attention["relations"] != 6:
-            raise ValueError("Confidence-head tree attention must use six relations")
         tree_attention_config = {
             "model_dim": attention["width"],
             "num_layers": attention["layers"],
@@ -92,16 +85,11 @@ def load_confidence_head(
     for path in ("edge.input_norm", "edge.block_norm", "edge.final_norm"):
         arrays[path] = jnp.stack((arrays.pop(f"{path}.scales"), arrays.pop(f"{path}.biases")))
 
-    # Uzu packs the edge correction with the two node readouts; the source's last readout is unused.
     for suffix in ("weights", "biases"):
         (edge_readout,) = arrays.pop(f"edge.output.{suffix}")
-        alpha, beta, unused = arrays.pop(f"output.{suffix}")
-        if bool(jnp.any(unused != 0)):
-            raise ValueError("Confidence-head unused output row must be zero")
+        alpha, beta, third = arrays.pop(f"output.{suffix}")
+        if bool(jnp.any(third != 0)):
+            raise ValueError("Confidence-head third node readout must be zero")
         arrays[f"edge.readout.{suffix}"] = jnp.stack((edge_readout, alpha, beta))
 
-    head = template.load_exported(ExportResults(arrays, metadata))
-    expected = eqx.filter_eval_shape(lambda model: model.export(), head)
-    if arrays.keys() != expected.arrays.keys() or metadata.keys() != expected.metadata.keys():
-        raise ValueError("Confidence-head checkpoint tensors or metadata do not match the model")
-    return head
+    return template.load_exported(ExportResults(arrays, metadata))
