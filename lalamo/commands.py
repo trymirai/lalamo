@@ -237,9 +237,11 @@ def convert_speculator(
         config=DFlashSpeculatorConfig(
             draft_config=draft_model.config,
             weaver_config=weaver.config if weaver is not None else None,
+            confidence_head_config=None,
         ),
         sharding_config=sharding_config,
         draft_model=draft_model,
         weaver=weaver,
+        confidence_head=None,
     )
     speculator.save(output_dir)

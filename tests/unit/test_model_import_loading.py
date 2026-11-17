@@ -399,6 +399,7 @@ def _classifier_weights(classifier: Classifier) -> Mapping[str, Array]:
 
     base_path = ParameterPath()
     decoder_path = base_path / "model"
+    layer_path = decoder_path / ("layers", 0)
     head_path = base_path / "head"
     classifier_path = base_path / "classifier"
 
@@ -407,17 +408,17 @@ def _classifier_weights(classifier: Classifier) -> Mapping[str, Array]:
             (CLASSIFIER_VOCAB_SIZE, CLASSIFIER_HIDDEN_SIZE),
         ),
         decoder_path / "embeddings" / "norm" / "weight": _classifier_tensor(classifier.embedding_norm.scales.shape),
-        decoder_path / "layers" / 0 / "attn" / "Wqkv" / "weight": _classifier_tensor(
+        layer_path / "attn" / "Wqkv" / "weight": _classifier_tensor(
             attention.qkvg_projection.weights.shape,
         ),
-        decoder_path / "layers" / 0 / "attn" / "Wo" / "weight": _classifier_tensor(
+        layer_path / "attn" / "Wo" / "weight": _classifier_tensor(
             attention.out_projection.weights.shape,
         ),
-        decoder_path / "layers" / 0 / "mlp_norm" / "weight": _classifier_tensor(pre_mlp_norm.scales.shape),
-        decoder_path / "layers" / 0 / "mlp" / "Wi" / "weight": _classifier_tensor(
+        layer_path / "mlp_norm" / "weight": _classifier_tensor(pre_mlp_norm.scales.shape),
+        layer_path / "mlp" / "Wi" / "weight": _classifier_tensor(
             mlp.up_projection.weights.shape,
         ),
-        decoder_path / "layers" / 0 / "mlp" / "Wo" / "weight": _classifier_tensor(
+        layer_path / "mlp" / "Wo" / "weight": _classifier_tensor(
             mlp.down_projection.weights.shape,
         ),
         decoder_path / "final_norm" / "weight": _classifier_tensor(output_norm.scales.shape),

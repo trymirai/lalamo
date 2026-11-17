@@ -13,7 +13,7 @@ def _get_extra_padding_for_conv1d(length: int, kernel_size: int, stride: int, pa
     """Calculate extra padding needed to ensure output length is correct."""
     n_frames = (length - kernel_size + padding_total) / stride + 1
     ideal_length = (math.ceil(n_frames) - 1) * stride + (kernel_size - padding_total)
-    return int(ideal_length - length)
+    return ideal_length - length
 
 
 @dataclass(frozen=True)

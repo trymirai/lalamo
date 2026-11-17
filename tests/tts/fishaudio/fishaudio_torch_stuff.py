@@ -130,7 +130,8 @@ class ConfigMapping:
         config: BaseModelArgs,
     ) -> tuple[TransformerConfig, LinearConfig]:
         rope_config = UnscaledRoPEConfig(
-            base=float(config.rope_base),
+            # Fish annotates this as float but supplies integer defaults and uncoerced JSON values.
+            base=float(config.rope_base),  # pyrefly: ignore[unnecessary-type-conversion]
             max_sequence_length=config.max_seq_len,
             head_dim=config.head_dim,
         )

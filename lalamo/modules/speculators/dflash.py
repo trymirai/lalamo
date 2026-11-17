@@ -14,6 +14,7 @@ from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.residual import AdditiveResidualConfig
 from lalamo.modules.rope import PositionalEmbeddings, RoPE, RoPEConfig
 from lalamo.modules.speculator import Speculator, SpeculatorConfig
+from lalamo.modules.speculators.confidence_head import ConfidenceHead, ConfidenceHeadConfig
 from lalamo.modules.speculators.weaver import Weaver, WeaverConfig
 from lalamo.modules.token_mixer import TransformerLayerState
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
@@ -312,6 +313,7 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
 class DFlashSpeculatorConfig(SpeculatorConfig):
     draft_config: DFlashDraftConfig
     weaver_config: WeaverConfig | None
+    confidence_head_config: ConfidenceHeadConfig | None
 
     def __post_init__(self) -> None:
         if self.weaver_config is None:
@@ -328,14 +330,23 @@ class DFlashSpeculatorConfig(SpeculatorConfig):
             )
 
     def init(self, initializer: Initializer) -> "DFlashSpeculator":
+        draft_model = self.draft_config.init(initializer)
+        weaver = None
+        if self.weaver_config is not None:
+            weaver = self.weaver_config.init(initializer)
+        confidence_head = None
+        if self.confidence_head_config is not None:
+            confidence_head = self.confidence_head_config.init(initializer, self.draft_config.model_dim)
         return DFlashSpeculator(
             config=self,
             sharding_config=initializer.sharding_config,
-            draft_model=self.draft_config.init(initializer),
-            weaver=self.weaver_config.init(initializer) if self.weaver_config is not None else None,
+            draft_model=draft_model,
+            weaver=weaver,
+            confidence_head=confidence_head,
         )
 
 
 class DFlashSpeculator(Speculator[DFlashSpeculatorConfig]):
     draft_model: DFlashDraftModel
     weaver: Weaver | None
+    confidence_head: ConfidenceHead | None
