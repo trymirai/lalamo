@@ -50,6 +50,10 @@ ModelSpec(
 )
 ```
 
+## Vision
+
+Standalone vision blocks are imported with `load_hf_vision` from `lalamo.model_import.loaders.vision` and saved with `Vision.save`. Each block contains `config.json` for the encoder and image preprocessing specification, and `model.safetensors` for its tensors. Load a block with `Vision.load(directory, sharding_config)` from `lalamo.modules.vision`.
+
 ## Optional Features
 
 ### PyAudio
