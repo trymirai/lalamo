@@ -176,7 +176,7 @@ class MLXSpec(QuantizedSpec):
 
     @property
     def rate(self) -> float:
-        return float(self.bits + 64 / self.group_size)
+        return self.bits + 64 / self.group_size
 
     @property
     def distortion(self) -> float:

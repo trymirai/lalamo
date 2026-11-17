@@ -262,7 +262,7 @@ class IntSpec(QuantizedSpec):
             zero_point_bits = 0
         else:
             zero_point_bits = self.bits
-        return float(self.bits + (32 + zero_point_bits) / self.group_size)
+        return self.bits + (32 + zero_point_bits) / self.group_size
 
     @property
     def distortion(self) -> float:

@@ -4,7 +4,7 @@ import secrets
 import threading
 import time
 import traceback
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import Annotated, Any, Literal
@@ -182,7 +182,7 @@ def create_app(
             traceback.print_exception(error)
 
     @asynccontextmanager
-    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         stop_event.clear()
         worker = threading.Thread(target=run_engine, name="lalamo-continuous", daemon=True)
         worker.start()
