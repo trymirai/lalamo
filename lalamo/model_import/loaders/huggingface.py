@@ -723,7 +723,6 @@ def _reorder_gated_attention_weights(
         )
 
     q_proj_prefix = f"{q_proj_path}."
-    kv_proj_prefixes = (f"{path / 'k_proj'}.", f"{path / 'v_proj'}.")
     # g_proj exists only in this normalized mapping so the generic linear loader can fuse Q/K/V/G.
     gate_path = path / "g_proj"
     reordered_weights: dict[str, Array] = {}
@@ -735,7 +734,7 @@ def _reorder_gated_attention_weights(
             q_part, gate_part = _split_q_gate_tensor(tensor, num_heads, head_dim)
             reordered_weights[key] = q_part
             reordered_weights[gate_path / suffix] = gate_part
-        elif key.startswith(kv_proj_prefixes):
+        else:
             reordered_weights[key] = weights_dict[key]
     return reordered_weights
 
@@ -748,6 +747,8 @@ def load_attention(
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> Attention:
     projection_sublayers = ["q_proj"] if module.config.is_kv_sharing else ["q_proj", "k_proj", "v_proj"]
+    if module.qkvg_projection.num_outputs > len(projection_sublayers) + int(module.config.has_gate):
+        projection_sublayers.append("indexer.index_qk_proj")
     projection_weights = weights_dict
     if module.config.has_gate:
         if (path / "gate_proj" / "weight") in weights_dict or (path / "gate_proj" / "qweight") in weights_dict:
@@ -802,18 +803,12 @@ def load_sparse_attention(
 ) -> SparseAttention:
     attention = load_attention(module.attention, weights_dict, path, implementation=implementation)
     indexer_path = path / "indexer"
-    indexer_projection = load_linear(
-        module.indexer.projection,
-        weights_dict,
-        indexer_path / "index_qk_proj",
-        implementation=implementation,
-    )
     indexer_query_norm = load_rmsnorm(module.indexer.query_norm, weights_dict, indexer_path / "q_layernorm")
     indexer_key_norm = load_rmsnorm(module.indexer.key_norm, weights_dict, indexer_path / "k_layernorm")
     return load_as_at(
-        lambda m: (m.attention, m.indexer.projection, m.indexer.query_norm, m.indexer.key_norm),
+        lambda m: (m.attention, m.indexer.query_norm, m.indexer.key_norm),
         module,
-        (attention, indexer_projection, indexer_query_norm, indexer_key_norm),
+        (attention, indexer_query_norm, indexer_key_norm),
     )
 
 
