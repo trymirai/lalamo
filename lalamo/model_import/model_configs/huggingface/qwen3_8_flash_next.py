@@ -195,7 +195,6 @@ class HFQwen38FlashNextConfig(HuggingFaceLMConfig):
                 has_gate=True,
             ),
             indexer_config=SparseAttentionIndexerConfig(
-                projection_config=linear_config,
                 query_norm_config=rmsnorm_config,
                 key_norm_config=rmsnorm_config,
                 num_heads=self.indexer_n_heads,

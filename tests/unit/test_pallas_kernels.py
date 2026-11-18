@@ -257,7 +257,6 @@ def test_sparse_attention_module_pallas_matches_xla() -> None:
             has_gate=True,
         ),
         indexer_config=SparseAttentionIndexerConfig(
-            projection_config=LinearConfig(),
             query_norm_config=norm_config,
             key_norm_config=norm_config,
             num_heads=4,

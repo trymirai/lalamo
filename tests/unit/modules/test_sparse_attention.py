@@ -99,7 +99,6 @@ def make_lalamo_attention(hf_attention: Qwen4ExpTextAttention) -> SparseAttentio
             has_gate=True,
         ),
         indexer_config=SparseAttentionIndexerConfig(
-            projection_config=LinearConfig(),
             query_norm_config=norm_config,
             key_norm_config=norm_config,
             num_heads=INDEXER_HEADS,
