@@ -1,7 +1,7 @@
 from .image_grid import ImageGrid
 from .image_preprocessing import ImagePreprocessingConfig, PreprocessedImages
 from .position_embedding import InterpolatedPositionEmbedding, InterpolatedPositionEmbeddingConfig
-from .vision import Vision, VisionConfig
+from .vision import MRopeConfig, Vision, VisionConfig
 from .vision_encoder import VisionEncoder, VisionEncoderActivationTrace, VisionEncoderConfig, VisionEncoderResult
 from .vision_layer import VisionLayer, VisionLayerActivationTrace, VisionLayerConfig, VisionLayerResult
 from .vision_rope import VisionRoPEConfig
@@ -11,6 +11,7 @@ __all__ = [
     "ImagePreprocessingConfig",
     "InterpolatedPositionEmbedding",
     "InterpolatedPositionEmbeddingConfig",
+    "MRopeConfig",
     "PreprocessedImages",
     "Vision",
     "VisionConfig",

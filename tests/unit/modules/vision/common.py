@@ -52,7 +52,12 @@ TINY_VISION_CONFIG = Qwen3_5VisionConfig(
     num_position_embeddings=64,
 )
 TINY_ENCODER_CONFIG = cattrs.structure(
-    {**TINY_VISION_CONFIG.to_dict(), "model_type": "qwen3_5", "deepstack_visual_indexes": []},
+    {
+        **TINY_VISION_CONFIG.to_dict(),
+        "model_type": "qwen3_5",
+        "deepstack_visual_indexes": [],
+        "mrope_config": {"sections": [2, 1, 1], "interleaved": True},
+    },
     HFQwen35VisionConfig,
 ).to_vision_encoder_config()
 

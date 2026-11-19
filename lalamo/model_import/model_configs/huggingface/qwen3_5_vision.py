@@ -13,6 +13,7 @@ from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.vision import (
     ImagePreprocessingConfig,
     InterpolatedPositionEmbeddingConfig,
+    MRopeConfig,
     VisionEncoderConfig,
     VisionLayerConfig,
     VisionRoPEConfig,
@@ -23,7 +24,7 @@ __all__ = ["HFQwen35ImageProcessorConfig", "HFQwen35VisionConfig"]
 
 @dataclass(frozen=True)
 class HFQwen35VisionConfig:
-    """The ``vision_config`` block of a Qwen3.5 ``config.json``."""
+    """The vision encoder and multimodal RoPE settings of a Qwen3.5 checkpoint."""
 
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
 
@@ -40,6 +41,7 @@ class HFQwen35VisionConfig:
     spatial_merge_size: int
     temporal_patch_size: int
     deepstack_visual_indexes: tuple[int, ...]
+    mrope_config: MRopeConfig
 
     def __post_init__(self) -> None:
         # Qwen3-VL feeds intermediate ViT layers into the decoder ("deepstack"); Qwen3.5 has it switched off.
@@ -51,10 +53,27 @@ class HFQwen35VisionConfig:
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
         with Path(json_path).open() as config_file:
-            vision_config = json.load(config_file).get("vision_config")
+            config = json.load(config_file)
+        vision_config = config.get("vision_config")
         if vision_config is None:
             raise ValueError("The checkpoint has no vision encoder configuration.")
-        return cls._converter.structure(vision_config, cls)
+        text_config = config.get("text_config") or {}
+        rope_parameters = config.get("rope_parameters", text_config.get("rope_parameters")) or {}
+        missing_fields = {"mrope_section", "mrope_interleaved"} - rope_parameters.keys()
+        if missing_fields:
+            raise ValueError(f"Missing Qwen3.5 MRoPE fields in rope_parameters: {', '.join(sorted(missing_fields))}.")
+        if not isinstance(rope_parameters["mrope_interleaved"], bool):
+            raise TypeError("Qwen3.5 rope_parameters.mrope_interleaved must be a boolean.")
+        return cls._converter.structure(
+            {
+                **vision_config,
+                "mrope_config": {
+                    "sections": rope_parameters["mrope_section"],
+                    "interleaved": rope_parameters["mrope_interleaved"],
+                },
+            },
+            cls,
+        )
 
     def to_vision_encoder_config(self) -> VisionEncoderConfig:
         # HF's LayerNorm epsilon and default axial RoPE base.
