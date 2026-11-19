@@ -31,6 +31,7 @@ __all__ = [
     "LinearScalingRoPEConfig",
     "LlamaRoPEConfig",
     "LongRoPEConfig",
+    "MultimodalRoPEConfig",
     "PositionalEmbeddings",
     "RoPE",
     "RoPEConfig",
@@ -113,6 +114,16 @@ class RoPE(LalamoModule[RoPEConfig]):
 
 class UnscaledRoPEConfig(RoPEConfig):
     pass
+
+
+@dataclass(frozen=True, kw_only=True)
+class MultimodalRoPEConfig(RoPEConfig):
+    # Qwen's interleaved time/height/width layout. With 1D positions, all axes coincide.
+    sections: tuple[int, int, int]
+
+    def __post_init__(self) -> None:
+        if min(self.sections) < 0 or 2 * sum(self.sections) != self.head_dim:
+            raise ValueError("Multimodal RoPE sections must partition the rotary frequency pairs.")
 
 
 @dataclass(frozen=True, kw_only=True)

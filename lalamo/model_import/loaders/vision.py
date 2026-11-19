@@ -113,8 +113,9 @@ def load_qwen3_5_vision_encoder(
 
 
 def load_hf_vision(origin: Origin, *, sharding_config: ShardingConfig, dtype: DTypeLike | None = None) -> Vision:
-    hf_vision_config = HFQwen35VisionConfig.from_json(origin.resolve_file(FileSpec("config.json")))
-    encoder_config = hf_vision_config.to_vision_encoder_config()
+    encoder_config = HFQwen35VisionConfig.from_json(
+        origin.resolve_file(FileSpec("config.json")),
+    ).to_vision_encoder_config()
     preprocessing = HFQwen35ImageProcessorConfig.from_json(
         origin.resolve_file(FileSpec("preprocessor_config.json")),
     ).to_image_preprocessing_config(encoder_config)
@@ -131,11 +132,7 @@ def load_hf_vision(origin: Origin, *, sharding_config: ShardingConfig, dtype: DT
             ParameterPath("model.visual"),
         )
     return Vision(
-        config=VisionConfig(
-            encoder_config=encoder_config,
-            preprocessing_config=preprocessing,
-            mrope_config=hf_vision_config.mrope_config,
-        ),
+        config=VisionConfig(encoder_config=encoder_config, preprocessing_config=preprocessing),
         sharding_config=sharding_config,
         encoder=encoder,
     )
