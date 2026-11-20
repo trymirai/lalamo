@@ -34,6 +34,16 @@ def test_standard_load_runs_masked_last_token_decisions(tmp_path: Path) -> None:
     tokenizer = Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]"))
     original = config.init(tokenizer, RandomInitializer(jnp.float32, sharding, key=jax.random.key(1)))
     original.save(tmp_path)
+    devices = jax.devices("cpu")[:8]
+    for partitioned in (
+        ShardingConfig.tensor_parallel(devices),
+        ShardingConfig.fully_sharded_data_parallel(devices),
+    ):
+        partitioned_model = Model.load(tmp_path, partitioned)
+        assert isinstance(partitioned_model, DecisionModel)
+        head = partitioned_model.decoder.embedding.readout_matrix.to_full_precision().weights
+        assert head.sharding.is_fully_replicated
+        np.testing.assert_array_equal(head, original.decoder.embedding.readout_matrix.to_full_precision().weights)
     loaded = Model.load(tmp_path, sharding)
     assert isinstance(loaded, DecisionModel)
     token_ids = jnp.array([1, 4, 2], dtype=jnp.int32)

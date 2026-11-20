@@ -42,6 +42,7 @@ class DecisionModelConfig(ModelConfig[ChatCodecConfig]):
                 output_embedding=initializer.weight_matrix(
                     len(self.decision.codes),
                     self.decoder_config.transformer_config.model_dim,
+                    is_sharded=False,
                 ),
             ),
         )
