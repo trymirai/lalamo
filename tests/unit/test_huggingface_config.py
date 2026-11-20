@@ -105,4 +105,4 @@ def test_qwen35_export_requires_interleaved_mrope(tmp_path: Path, interleaved: b
     assert linear_layer.rope_config is None
     rope_config = attention_layer.rope_config
     assert isinstance(rope_config, MultimodalRoPEConfig)
-    assert rope_config.sections == (11, 11, 10)
+    assert rope_config.frequency_pairs_per_axis == (11, 11, 10)

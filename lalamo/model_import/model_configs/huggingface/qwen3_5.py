@@ -94,7 +94,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
             base=self.rope_parameters.rope_theta,
             max_sequence_length=self.max_position_embeddings,
             head_dim=int(self.head_dim * self.rope_parameters.partial_rotary_factor),
-            sections=self.rope_parameters.mrope_section,
+            frequency_pairs_per_axis=self.rope_parameters.mrope_section,
         )
 
         # Qwen3.5 RMSNorm computes (1 + weight) * norm(x). HF stores raw weights,

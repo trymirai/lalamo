@@ -119,11 +119,13 @@ class UnscaledRoPEConfig(RoPEConfig):
 @dataclass(frozen=True, kw_only=True)
 class MultimodalRoPEConfig(RoPEConfig):
     # Qwen's interleaved time/height/width layout. With 1D positions, all axes coincide.
-    sections: tuple[int, int, int]
+    frequency_pairs_per_axis: tuple[int, int, int]
 
     def __post_init__(self) -> None:
-        if min(self.sections) < 0 or 2 * sum(self.sections) != self.head_dim:
-            raise ValueError("Multimodal RoPE sections must partition the rotary frequency pairs.")
+        if min(self.frequency_pairs_per_axis) < 0 or 2 * sum(self.frequency_pairs_per_axis) != self.head_dim:
+            raise ValueError(
+                "Multimodal RoPE frequency pair counts must be nonnegative and sum to half the head dimension."
+            )
 
 
 @dataclass(frozen=True, kw_only=True)
