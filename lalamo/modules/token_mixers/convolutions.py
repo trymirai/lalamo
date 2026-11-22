@@ -14,6 +14,8 @@ from lalamo.initializer import Initializer
 from lalamo.module import LalamoConfig, LalamoModule
 
 __all__ = [
+    "CausalConv",
+    "CausalConvConfig",
     "CausalConvResult",
     "ConvPrecision",
     "SeparableCausalConv",
@@ -24,6 +26,86 @@ __all__ = [
 class CausalConvResult(NamedTuple):
     outputs: Float[Array, "*batch suffix_tokens channels"]
     state: Float[Array, "*batch tokens channels"] | None = None
+
+
+@dataclass(frozen=True)
+class CausalConvConfig(LalamoConfig):
+    """Stateful depthwise causal convolution computed in float32.
+
+    `weights[:, kernel_size - 1]` weights the current token. With `num_dynamic_groups`, every token adds its own
+    taps, shared by contiguous channel groups. The identity adds the input before the output scale.
+    """
+
+    kernel_size: int
+    num_dynamic_groups: int | None
+    has_identity: bool
+    output_scale: float | None
+
+    def init(self, initializer: Initializer, input_dim: int) -> "CausalConv":
+        if self.num_dynamic_groups is not None and input_dim % self.num_dynamic_groups != 0:
+            raise ValueError(f"{self.num_dynamic_groups} dynamic groups must divide {input_dim} channels.")
+        scale = 1 / math.sqrt(self.kernel_size)
+        weights = initializer.normal(scale, (input_dim, self.kernel_size), dtype=jnp.float32)
+        return CausalConv(config=self, sharding_config=initializer.sharding_config, weights=weights)
+
+
+class CausalConv(LalamoModule[CausalConvConfig]):
+    weights: Float[Array, "channels kernel"]
+
+    @property
+    def input_dim(self) -> int:
+        input_dim, _ = self.weights.shape
+        return input_dim
+
+    @property
+    def kernel_size(self) -> int:
+        _, kernel_size = self.weights.shape
+        return kernel_size
+
+    def init_static_state(self) -> Float[Array, "kernel_minus_one channels"]:
+        return jnp.zeros((self.kernel_size - 1, self.input_dim), dtype=jnp.float32)
+
+    @eqx.filter_jit
+    def __call__(
+        self,
+        inputs: Float[Array, "suffix_tokens channels"],
+        state: Float[Array, "kernel_minus_one channels"] | None = None,
+        return_updated_state: bool = False,
+        length_without_padding: Int[Array, ""] | int | None = None,
+        *,
+        coefficient_deltas: Float[Array, "suffix_tokens kernel groups"] | None = None,
+    ) -> CausalConvResult:
+        if (coefficient_deltas is None) != (self.config.num_dynamic_groups is None):
+            raise ValueError("Coefficient deltas must be passed exactly when the convolution has dynamic groups.")
+        num_suffix_tokens, input_dim = inputs.shape
+        upcasted_inputs = inputs.astype(jnp.float32)
+        if state is None:
+            state = self.init_static_state()
+        inputs_with_history = _causal_conv_context(state.astype(jnp.float32), upcasted_inputs)
+        windows = _causal_conv_windows(inputs_with_history, self.kernel_size)
+        weights = self.weights.astype(jnp.float32)[None]
+        if coefficient_deltas is not None:
+            weights = weights + repeat(
+                coefficient_deltas.astype(jnp.float32),
+                "suffix_tokens kernel groups -> suffix_tokens (groups group_size) kernel",
+                group_size=input_dim // coefficient_deltas.shape[-1],
+            )
+        outputs = jnp.sum(windows * weights, axis=-1)
+        if self.config.has_identity:
+            outputs = outputs + upcasted_inputs
+        if self.config.output_scale is not None:
+            outputs = outputs * self.config.output_scale
+
+        if return_updated_state:
+            if length_without_padding is None:
+                length_without_padding = num_suffix_tokens
+            length_without_padding = jnp.clip(
+                jnp.asarray(length_without_padding, dtype=jnp.int32), 0, num_suffix_tokens
+            )
+            updated_state = _updated_causal_conv_state(inputs_with_history, upcasted_inputs, length_without_padding)
+        else:
+            updated_state = None
+        return CausalConvResult(outputs.astype(inputs.dtype), updated_state)
 
 
 @dataclass(frozen=True)

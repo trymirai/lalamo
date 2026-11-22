@@ -116,6 +116,17 @@ class KVCacheLayer(StateLayerBase):
     def current_prefix_length(self) -> Int[Array, ""] | int: ...
 
     @abstractmethod
+    def token_positions(
+        self,
+        suffix_length: int,
+        suffix_length_without_padding: Int[Array, ""] | int | None = None,
+    ) -> tuple[Int[Array, " suffix_tokens"], Int[Array, " tokens"]]:
+        """Sequence positions of the suffix queries and of every cache slot, as `attention_mask` places them.
+
+        The sink slot and unused slots have negative positions.
+        """
+
+    @abstractmethod
     def slots_for_positions(self, positions: Int[Array, "*positions"]) -> Int[Array, "*positions"]: ...
 
     @abstractmethod
@@ -192,6 +203,27 @@ class DynamicKVCacheLayer(KVCacheLayer):
     def current_prefix_length(self) -> int:
         self._raise_if_batched()
         return self.keys.shape[0]
+
+    def token_positions(
+        self,
+        suffix_length: int,
+        suffix_length_without_padding: Int[Array, ""] | int | None = None,
+    ) -> tuple[Int[Array, " suffix_tokens"], Int[Array, " tokens"]]:
+        self._raise_if_batched()
+        num_tokens, _, _ = self.keys.shape
+        if suffix_length_without_padding is None:
+            suffix_length_without_padding = suffix_length
+        sink_offset = int(self.has_sinks)
+        if self.padding_mask is None:
+            query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
+            query_positions = num_tokens + query_offsets
+            key_positions = jnp.arange(num_tokens, dtype=jnp.int32)
+        else:
+            key_positions = jnp.cumsum(self.padding_mask.astype(jnp.int32)) - 1
+            query_physical_indices = num_tokens - suffix_length + jnp.arange(suffix_length, dtype=jnp.int32)
+            query_positions = key_positions[query_physical_indices]
+            key_positions = jnp.where(self.padding_mask, key_positions, -1 - sink_offset)
+        return query_positions - sink_offset, key_positions - sink_offset
 
     def slots_for_positions(self, positions: Int[Array, "*positions"]) -> Int[Array, "*positions"]:
         self._raise_if_batched()
@@ -297,6 +329,21 @@ class StaticKVCacheLayer(KVCacheLayer):
     def current_prefix_length(self) -> Int[Array, ""]:
         self._raise_if_batched()
         return self.current_length
+
+    def token_positions(
+        self,
+        suffix_length: int,
+        suffix_length_without_padding: Int[Array, ""] | int | None = None,
+    ) -> tuple[Int[Array, " suffix_tokens"], Int[Array, " tokens"]]:
+        self._raise_if_batched()
+        if suffix_length_without_padding is None:
+            suffix_length_without_padding = suffix_length
+        sink_offset = int(self.has_sinks)
+        query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
+        query_positions = self.current_length + query_offsets
+        slot_indices = jnp.arange(self.capacity, dtype=jnp.int32)
+        key_positions = jnp.where(slot_indices < self.current_length, slot_indices, -1 - sink_offset)
+        return query_positions - sink_offset, key_positions - sink_offset
 
     def slots_for_positions(self, positions: Int[Array, "*positions"]) -> Int[Array, "*positions"]:
         self._raise_if_batched()

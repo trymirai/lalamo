@@ -14,6 +14,7 @@ __all__ = [
     "Identity",
     "SiLU",
     "Sigmoid",
+    "SoftCappedSiLU",
 ]
 
 
@@ -29,6 +30,18 @@ class SiLU(Activation):
 
     def __call__(self, x: Float[Array, "..."]) -> Float[Array, "..."]:
         return x * jax.nn.sigmoid(self.alpha * x)
+
+
+@dataclass(frozen=True)
+class SoftCappedSiLU(Activation):
+    """SiLU whose linear factor is soft-capped while the sigmoid sees the raw input."""
+
+    soft_cap: float
+
+    def __call__(self, x: Float[Array, "..."]) -> Float[Array, "..."]:
+        upcasted = x.astype(jnp.float32)
+        capped = jnp.tanh(upcasted / self.soft_cap) * self.soft_cap
+        return (capped * jax.nn.sigmoid(upcasted)).astype(x.dtype)
 
 
 @dataclass(frozen=True)

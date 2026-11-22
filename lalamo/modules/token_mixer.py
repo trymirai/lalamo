@@ -37,6 +37,9 @@ class StateLayerBase(Exportable, eqx.Module):
 class TransformerLayerState(StateLayerBase):
     mixer: StateLayerBase
     stream_ops: tuple[StateLayerBase | None, ...]
+    # The last inputs of the stateful convolutions on the sublayer outputs.
+    mixer_output_conv: Float[Array, "*batch kernel_minus_one channels"] | None = None
+    mlp_output_conv: Float[Array, "*batch kernel_minus_one channels"] | None = None
 
 
 @register_pytree_node_class

@@ -19,7 +19,13 @@ from lalamo.weight_matrix import GradientEstimator, MatmulConfig
 from .linear import Linear, LinearConfig
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
-from .residual import ResidualConfig, ResidualConnectionBase
+from .residual import (
+    ConnectionContext,
+    ResidualConfig,
+    ResidualConnectionBase,
+    SublayerRole,
+    normalize_streams,
+)
 from .rope import PositionalEmbeddings, RoPEConfig
 from .stream_ops import StreamOpBase, StreamOpConfig, StreamOpContext
 from .token_mixer import (
@@ -31,7 +37,7 @@ from .token_mixer import (
     TransformerLayerState,
 )
 from .token_mixers.attention import Attention, AttentionConfig
-from .token_mixers.convolutions import SeparableCausalConv, SeparableCausalConvConfig
+from .token_mixers.convolutions import CausalConv, CausalConvConfig, SeparableCausalConv, SeparableCausalConvConfig
 from .token_mixers.kv_cache import PagedKVCacheLayer
 from .token_mixers.sparse_attention import SparseAttentionConfig
 from .utils import call_vmapped, call_vmapped_twice, gather_suffix_tokens
@@ -166,8 +172,8 @@ class TransformerLayerConv(LalamoModule[TransformerLayerConvConfig]):
 
 
 class SublayerActivationTrace(Exportable, eqx.Module):
-    inputs: Float[Array, "batch suffix_tokens channels"]
-    pre_norm: Float[Array, "batch suffix_tokens channels"]
+    inputs: Float[Array, "batch suffix_tokens channels"] | Float[Array, "batch suffix_tokens inputs channels"]
+    pre_norm: Float[Array, "batch suffix_tokens channels"] | Float[Array, "batch suffix_tokens inputs channels"]
     body: Float[Array, "batch suffix_tokens channels"]
     post_norm: Float[Array, "batch suffix_tokens channels"] | None
 
@@ -178,6 +184,24 @@ class SublayerConfig[BodyConfigT](LalamoConfig):
     conv_config: TransformerLayerConvConfig | None
     body_config: BodyConfigT
     post_norm_config: NormalizationConfig | None
+    # The body takes this many inputs, e.g. separate query, key and value inputs. They share one read of the
+    # residual stream and one pre-norm unless `separate_input_norms` is set.
+    num_inputs: int = 1
+    separate_input_norms: bool = False
+    # A stateful convolution on the body outputs, before the post-norm.
+    output_conv_config: CausalConvConfig | None = None
+
+    def __post_init__(self) -> None:
+        if self.num_inputs < 1:
+            raise ValueError(f"A sublayer needs at least one input, got {self.num_inputs}.")
+        if self.separate_input_norms and (self.num_inputs == 1 or self.pre_norm_config is None):
+            raise ValueError("Separate input norms need several inputs and a pre-norm.")
+        if self.num_inputs > 1 and self.conv_config is not None:
+            raise ValueError("The sublayer conv supports a single input.")
+
+    @property
+    def num_reads(self) -> int:
+        return self.num_inputs if self.separate_input_norms else 1
 
     @classmethod
     def pre_norm(cls, norm_config: NormalizationConfig, body_config: BodyConfigT) -> Self:
@@ -204,9 +228,17 @@ class SublayerConfig[BodyConfigT](LalamoConfig):
         body: BodyT,
         connection: ResidualConnectionBase[ResidualConfig, StreamT],
     ) -> "Sublayer[BodyT, StreamT]":
-        pre_norm = self.pre_norm_config.init(initializer, model_dim) if self.pre_norm_config is not None else None
+        if self.pre_norm_config is None:
+            pre_norm = None
+        elif self.separate_input_norms:
+            pre_norm = self.pre_norm_config.init_mixture(initializer, self.num_inputs, model_dim)
+        else:
+            pre_norm = self.pre_norm_config.init(initializer, model_dim)
         conv = self.conv_config.init(initializer, model_dim) if self.conv_config is not None else None
         post_norm = self.post_norm_config.init(initializer, model_dim) if self.post_norm_config is not None else None
+        output_conv = (
+            self.output_conv_config.init(initializer, model_dim) if self.output_conv_config is not None else None
+        )
         return Sublayer(
             config=self,
             sharding_config=initializer.sharding_config,
@@ -215,6 +247,7 @@ class SublayerConfig[BodyConfigT](LalamoConfig):
             conv=conv,
             body=body,
             post_norm=post_norm,
+            output_conv=output_conv,
         )
 
 
@@ -224,23 +257,76 @@ class Sublayer[BodyT: LalamoModule, StreamT](LalamoModule[SublayerConfig]):
     conv: TransformerLayerConv | None
     body: BodyT
     post_norm: Normalization | None
+    output_conv: CausalConv | None = None
+
+    def _normalize_inputs(
+        self,
+        inputs: Float[Array, "batch suffix_tokens channels"] | Float[Array, "batch suffix_tokens inputs channels"],
+    ) -> Float[Array, "batch suffix_tokens channels"] | Float[Array, "batch suffix_tokens inputs channels"]:
+        if self.pre_norm is None:
+            return inputs
+        if self.config.num_inputs == 1:
+            return call_vmapped_twice(self.pre_norm, inputs)
+        if self.config.separate_input_norms:
+            return normalize_streams(self.pre_norm, inputs)
+        return eqx.filter_vmap(call_vmapped_twice, in_axes=(None, 2), out_axes=2)(self.pre_norm, inputs)
+
+    def _convolve_outputs(
+        self,
+        outputs: Float[Array, "batch suffix_tokens channels"],
+        state: Float[Array, "batch kernel_minus_one channels"] | None,
+        return_updated_state: bool,
+        lengths_without_padding: Int[Array, " batch"] | None,
+    ) -> tuple[Float[Array, "batch suffix_tokens channels"], Float[Array, "batch kernel_minus_one channels"] | None]:
+        assert self.output_conv is not None
+        output_conv = self.output_conv
+
+        def convolve(
+            token_outputs: Float[Array, "suffix_tokens channels"],
+            token_state: Float[Array, "kernel_minus_one channels"] | None,
+            length_without_padding: Int[Array, ""] | None,
+        ) -> tuple[Float[Array, "suffix_tokens channels"], Float[Array, "kernel_minus_one channels"] | None]:
+            result = output_conv(
+                token_outputs,
+                token_state,
+                return_updated_state=return_updated_state,
+                length_without_padding=length_without_padding,
+            )
+            return result.outputs, result.state
+
+        return call_vmapped(
+            convolve,
+            outputs,
+            state,
+            lengths_without_padding,
+            added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
+        )
 
     def __call__[AuxT](
         self,
         stream: StreamT,
         call_body: Callable[
-            [Float[Array, "batch suffix_tokens channels"], Keychain],
+            [
+                Float[Array, "batch suffix_tokens channels"] | Float[Array, "batch suffix_tokens inputs channels"],
+                Keychain,
+            ],
             tuple[Float[Array, "batch suffix_tokens channels"], AuxT],
         ],
         matmul_config: MatmulConfig,
         *,
         keychain: Keychain,
-    ) -> tuple[StreamT, SublayerActivationTrace, AuxT]:
+        output_conv_state: Float[Array, "batch kernel_minus_one channels"] | None = None,
+        return_updated_output_conv_state: bool = False,
+        lengths_without_padding: Int[Array, " batch"] | None = None,
+    ) -> tuple[StreamT, SublayerActivationTrace, AuxT, Float[Array, "batch kernel_minus_one channels"] | None]:
         def apply(
-            inputs: Float[Array, "batch suffix_tokens channels"],
+            inputs: Float[Array, "batch suffix_tokens channels"] | Float[Array, "batch suffix_tokens inputs channels"],
             sublayer_keychain: Keychain,
-        ) -> tuple[Float[Array, "batch suffix_tokens channels"], tuple[SublayerActivationTrace, AuxT]]:
-            normalized_inputs = call_vmapped_twice(self.pre_norm, inputs) if self.pre_norm is not None else inputs
+        ) -> tuple[
+            Float[Array, "batch suffix_tokens channels"],
+            tuple[SublayerActivationTrace, AuxT, Float[Array, "batch kernel_minus_one channels"] | None],
+        ]:
+            normalized_inputs = self._normalize_inputs(inputs)
 
             if self.conv is not None:
                 conv_keychain, body_keychain = sublayer_keychain.split()
@@ -254,6 +340,16 @@ class Sublayer[BodyT: LalamoModule, StreamT](LalamoModule[SublayerConfig]):
             else:
                 body_outputs, aux = call_body(normalized_inputs, sublayer_keychain)
 
+            if self.output_conv is not None:
+                body_outputs, updated_output_conv_state = self._convolve_outputs(
+                    body_outputs,
+                    output_conv_state,
+                    return_updated_output_conv_state,
+                    lengths_without_padding,
+                )
+            else:
+                updated_output_conv_state = None
+
             normalized_outputs = (
                 call_vmapped_twice(self.post_norm, body_outputs) if self.post_norm is not None else None
             )
@@ -265,10 +361,12 @@ class Sublayer[BodyT: LalamoModule, StreamT](LalamoModule[SublayerConfig]):
                 body=body_outputs,
                 post_norm=normalized_outputs,
             )
-            return update, (activation_trace, aux)
+            return update, (activation_trace, aux, updated_output_conv_state)
 
-        updated_stream, (activation_trace, aux) = self.connection(stream, apply, matmul_config, keychain=keychain)
-        return updated_stream, activation_trace, aux
+        updated_stream, (activation_trace, aux, updated_output_conv_state) = self.connection(
+            stream, apply, matmul_config, keychain=keychain
+        )
+        return updated_stream, activation_trace, aux, updated_output_conv_state
 
 
 class TransformerLayerActivationTrace[StreamT](Exportable, eqx.Module):
@@ -311,7 +409,19 @@ class TransformerLayerConfig(LalamoConfig):
         residual_config: ResidualConfig,
         model_dim: int,
         hidden_dim: int,
+        *,
+        layer_index: int = 0,
+        is_looped: bool = False,
     ) -> "TransformerLayer":
+        def connection_context(sublayer: SublayerConfig, role: SublayerRole) -> ConnectionContext:
+            return ConnectionContext(
+                layer_index=layer_index,
+                role=role,
+                num_inputs=sublayer.num_inputs,
+                num_reads=sublayer.num_reads,
+                is_looped=is_looped,
+            )
+
         prologue = tuple(
             op_config.init(initializer, residual_config, model_dim) for op_config in self.prologue_configs
         )
@@ -319,13 +429,17 @@ class TransformerLayerConfig(LalamoConfig):
             initializer,
             model_dim,
             body=self.mixer.body_config.init(initializer, model_dim=model_dim),
-            connection=residual_config.init_connection(initializer, model_dim),
+            connection=residual_config.init_connection(
+                initializer, model_dim, connection_context(self.mixer, SublayerRole.MIXER)
+            ),
         )
         mlp = self.mlp.init(
             initializer,
             model_dim,
             body=self.mlp.body_config.init(initializer, model_dim, hidden_dim),
-            connection=residual_config.init_connection(initializer, model_dim),
+            connection=residual_config.init_connection(
+                initializer, model_dim, connection_context(self.mlp, SublayerRole.MLP)
+            ),
         )
         epilogue = tuple(
             op_config.init(initializer, residual_config, model_dim) for op_config in self.epilogue_configs
@@ -367,7 +481,7 @@ class TransformerLayer[StreamT](LalamoModule[TransformerLayerConfig]):
     @property
     def suffix_gather_stage(self) -> int:
         stage_token_locality = (
-            self.config.mlp.conv_config is None,
+            self.config.mlp.conv_config is None and self.config.mlp.output_conv_config is None,
             *(op_config.is_token_local for op_config in self.config.epilogue_configs),
         )
         return next(
@@ -432,7 +546,7 @@ class TransformerLayer[StreamT](LalamoModule[TransformerLayerConfig]):
 
         def call_mixer(
             mixer_inputs: tuple[
-                Float[Array, "suffix_tokens channels"],
+                Float[Array, "suffix_tokens channels"] | Float[Array, "suffix_tokens inputs channels"],
                 PositionalEmbeddings | None,
                 StateLayerBase | None,
                 Int[Array, ""] | None,
@@ -457,7 +571,8 @@ class TransformerLayer[StreamT](LalamoModule[TransformerLayerConfig]):
             )
 
         def call_mixer_body(
-            mixer_inputs: Float[Array, "batch suffix_tokens channels"],
+            mixer_inputs: Float[Array, "batch suffix_tokens channels"]
+            | Float[Array, "batch suffix_tokens inputs channels"],
             body_keychain: Keychain,
         ) -> tuple[Float[Array, "batch suffix_tokens channels"], StateLayerBase | None]:
             if isinstance(mixer_state, PagedKVCacheLayer):
@@ -483,11 +598,15 @@ class TransformerLayer[StreamT](LalamoModule[TransformerLayerConfig]):
                 added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),
             )
 
-        stream, mixer_trace, updated_mixer_state = self.mixer(
+        returns_conv_states = return_updated_state or return_activation_trace
+        stream, mixer_trace, updated_mixer_state, updated_mixer_output_conv_state = self.mixer(
             stream,
             call_mixer_body,
             forward_pass_config.mixer_forward_pass_config.matmul_config,
             keychain=mixer_keychain,
+            output_conv_state=state.mixer_output_conv if state is not None else None,
+            return_updated_output_conv_state=returns_conv_states,
+            lengths_without_padding=lengths_without_padding,
         )
 
         suffix_gather_stage = self.suffix_gather_stage
@@ -506,11 +625,14 @@ class TransformerLayer[StreamT](LalamoModule[TransformerLayerConfig]):
             )
             return mlp_outputs, None
 
-        stream, mlp_trace, _ = self.mlp(
+        stream, mlp_trace, _, updated_mlp_output_conv_state = self.mlp(
             stream,
             call_mlp_body,
             forward_pass_config.mlp_forward_pass_config.matmul_config,
             keychain=mlp_keychain,
+            output_conv_state=state.mlp_output_conv if state is not None else None,
+            return_updated_output_conv_state=returns_conv_states,
+            lengths_without_padding=context.lengths_without_padding,
         )
 
         epilogue_streams = []
@@ -530,6 +652,8 @@ class TransformerLayer[StreamT](LalamoModule[TransformerLayerConfig]):
             updated_state = TransformerLayerState(
                 mixer=updated_mixer_state,
                 stream_ops=(*updated_prologue_states, *updated_epilogue_states),
+                mixer_output_conv=updated_mixer_output_conv_state,
+                mlp_output_conv=updated_mlp_output_conv_state,
             )
         else:
             updated_state = None
@@ -557,6 +681,10 @@ class TransformerLayer[StreamT](LalamoModule[TransformerLayerConfig]):
         layer_state = TransformerLayerState(
             mixer=self.mixer.body.init_static_state(capacity, dtype),
             stream_ops=tuple(op.init_static_state(capacity, dtype) for op in (*self.prologue, *self.epilogue)),
+            mixer_output_conv=(
+                self.mixer.output_conv.init_static_state() if self.mixer.output_conv is not None else None
+            ),
+            mlp_output_conv=self.mlp.output_conv.init_static_state() if self.mlp.output_conv is not None else None,
         )
         return jax.tree.map(
             lambda array: jax.device_put(

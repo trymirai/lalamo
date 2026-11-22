@@ -23,7 +23,9 @@ from lalamo.model_import.common import (
 )
 from lalamo.model_import.loaders.confidence_head_loader import load_confidence_head
 from lalamo.model_import.loaders.dflash_loader import load_hf_dflash_draft_model
+from lalamo.model_import.loaders.dspark_loader import DSPARK_WEIGHTS_FILE, load_hf_dspark
 from lalamo.model_import.loaders.weaver_loader import load_weaver
+from lalamo.model_import.model_configs.huggingface.dspark import HFDSparkConfig
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.model_import.vocabulary_order import frequency_ordered
 from lalamo.models import LanguageModel
@@ -219,6 +221,16 @@ def convert_speculator(
 ) -> None:
     sharding_config = ShardingConfig.replicated()
     effective_dtype = jnp.dtype((dtype or DType.BFLOAT16).value)
+
+    config_path = Path(snapshot_download(dflash_repo_id, allow_patterns=["config.json"])) / "config.json"
+    if HFDSparkConfig.has_dspark(config_path):
+        if weaver_repo_id is not None or confidence_head_repo_id is not None:
+            raise ValueError(
+                "A DSpark draft proposes through its own Markov head: it takes no Weaver or confidence head."
+            )
+        dspark_path = Path(snapshot_download(dflash_repo_id, allow_patterns=["config.json", DSPARK_WEIGHTS_FILE]))
+        load_hf_dspark(dspark_path, sharding_config=sharding_config, dtype=effective_dtype).save(output_dir)
+        return
 
     dflash_path = Path(snapshot_download(dflash_repo_id, allow_patterns=["config.json", "*.safetensors"]))
     draft_model = load_hf_dflash_draft_model(

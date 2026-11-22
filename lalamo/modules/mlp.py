@@ -30,7 +30,7 @@ from lalamo.weight_matrix import FullPrecisionMatrix, GradientEstimator, MatmulC
 
 from .activations import Activation
 from .linear import Linear, LinearConfig
-from .utils import call_vmapped, call_vmapped_twice
+from .utils import apply_soft_capping, call_vmapped, call_vmapped_twice
 
 __all__ = [
     "DenseMLP",
@@ -143,6 +143,7 @@ class DenseMLPConfig(MLPConfig):
     has_down_biases: bool
     gate_clipping: tuple[float | None, float | None] | None
     up_clipping: tuple[float | None, float | None] | None
+    up_soft_cap: float | None = None
 
     def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> "DenseMLP":
         return DenseMLP(
@@ -293,6 +294,8 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
             gate = jnp.clip(gate, *self.config.gate_clipping)
         if self.config.up_clipping is not None:
             up_proj = jnp.clip(up_proj, *self.config.up_clipping)
+        if self.config.up_soft_cap is not None:
+            up_proj = apply_soft_capping(up_proj.astype(jnp.float32), self.config.up_soft_cap).astype(up_proj.dtype)
         return up_proj * self.config.activation(gate)
 
     @eqx.filter_jit
@@ -406,6 +409,7 @@ class RoutingBias(StrEnum):
 @dataclass(frozen=True)
 class SigmoidRouting(RoutingFunction):
     bias_mode: RoutingBias | None = None
+    routed_scaling_factor: float = 1.0
 
     def init_biases(self, initializer: Initializer, num_experts: int) -> Float[Array, " experts"] | None:
         if self.bias_mode is None:
@@ -431,7 +435,7 @@ class SigmoidRouting(RoutingFunction):
                 scores = biased_scores
         _, active_indices = jax.lax.top_k(gating_scores, num_active)
         active_weights = scores[active_indices]
-        active_weights = active_weights / (active_weights.sum() + 1e-6)
+        active_weights = active_weights / (active_weights.sum() + 1e-6) * self.routed_scaling_factor
         return RoutingMap(
             active_expert_indices=active_indices,
             active_expert_weights=active_weights.astype(logits.dtype),
@@ -451,6 +455,7 @@ class MixtureOfExpertsConfig(MLPConfig):
     num_shared_experts: int
     expert_hidden_dim: int
     gate_config: LinearConfig | None = None
+    has_float32_router: bool = False
 
     @property
     def mixture_size(self) -> int:
@@ -463,6 +468,7 @@ class MixtureOfExpertsConfig(MLPConfig):
             (self.num_routed_experts,),
             has_biases=self.router_has_biases,
             is_sharded=False,
+            dtype=jnp.float32 if self.has_float32_router else None,
         )
         routed_experts = self.expert_config.init_mixture(
             initializer,

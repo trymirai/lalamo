@@ -5,6 +5,16 @@ from .dflash import (
     DFlashSpeculator,
     DFlashSpeculatorConfig,
 )
+from .dspark import (
+    DSparkLayer,
+    DSparkLayerConfig,
+    DSparkSpeculator,
+    DSparkSpeculatorConfig,
+    MarkovHead,
+    MarkovHeadConfig,
+    TapMix,
+    TapMixConfig,
+)
 from .weaver import (
     Weaver,
     WeaverBlock,
@@ -18,6 +28,14 @@ __all__ = [
     "DFlashDraftState",
     "DFlashSpeculator",
     "DFlashSpeculatorConfig",
+    "DSparkLayer",
+    "DSparkLayerConfig",
+    "DSparkSpeculator",
+    "DSparkSpeculatorConfig",
+    "MarkovHead",
+    "MarkovHeadConfig",
+    "TapMix",
+    "TapMixConfig",
     "Weaver",
     "WeaverBlock",
     "WeaverConfig",

@@ -119,6 +119,7 @@ extra = [
   "Qwen/Qwen3-32B-MLX-8bit",
   "trymirai/health-related-router",
   "meta-models/Muse-Glimmer-30B",
+  "mlx-community/Inkling-2-Mini-4bit",
 ]
 
 [coherence]

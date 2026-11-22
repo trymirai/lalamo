@@ -465,12 +465,15 @@ def convert(
     )
 
 
-@speculator_app.command("convert", help="Import a DFlash draft with an optional Weaver and confidence head.")
+@speculator_app.command(
+    "convert",
+    help="Import a DFlash draft with an optional Weaver and confidence head, or the DSpark draft a target bundles.",
+)
 def speculator_convert(
     dflash_repo_id: Annotated[
         str,
         Argument(
-            help="Hugging Face repository ID of the DFlash draft model.",
+            help="Hugging Face repository ID of the DFlash draft model, or of a target bundling a DSpark draft.",
             metavar="DFLASH_REPO_ID",
         ),
     ],
