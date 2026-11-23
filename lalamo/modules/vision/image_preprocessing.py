@@ -55,7 +55,12 @@ class ImagePreprocessingConfig(LalamoConfig):
                 grow = math.sqrt(self.min_pixels / (height * width))
                 target_height = math.ceil(height * grow / factor) * factor
                 target_width = math.ceil(width * grow / factor) * factor
-            resized = image.convert("RGB").resize((target_width, target_height), resample=Image.Resampling.BICUBIC)
+            if "A" in image.getbands() or image.info.get("transparency") is not None:
+                white = Image.new("RGBA", image.size, (255, 255, 255, 255))
+                rgb_image = Image.alpha_composite(white, image.convert("RGBA")).convert("RGB")
+            else:
+                rgb_image = image.convert("RGB")
+            resized = rgb_image.resize((target_width, target_height), resample=Image.Resampling.BICUBIC)
             # HF rescales in float64, downcasts, and then normalizes in float32.
             pixels = (np.asarray(resized, dtype=np.float64) * (1 / 255)).astype(np.float32)
             patches.append(

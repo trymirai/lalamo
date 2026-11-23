@@ -274,6 +274,8 @@ class ContinuousBatchingEngine:
             or any(not mixer.config.is_causal for mixer in attention_mixers)
         ):
             raise ValueError("Paged batching requires causal GPU attention.")
+        if any(not mixer.config.supports_paged_decode for mixer in attention_mixers):
+            raise ValueError("Paged batching supports neither stacked attention projections nor log scaling.")
 
         context_length = config.max_context_length
         if transformer.ropes:
@@ -373,8 +375,8 @@ class ContinuousBatchingEngine:
 
         static_state = model.decoder.init_static_state(slot_count, 1, state_dtype)
         layers = []
-        for owner_index, static_layer in zip(transformer.kv_source_layer_indices, static_state, strict=True):
-            mixer = transformer.layers[owner_index].mixer.body
+        for owner_step, static_layer in zip(transformer.config.state_owner_steps, static_state, strict=True):
+            mixer = transformer.layers[transformer.config.step_layer_indices[owner_step]].mixer.body
             if not isinstance(mixer, Attention):
                 layers.append(static_layer)
                 continue

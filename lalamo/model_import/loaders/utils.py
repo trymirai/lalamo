@@ -2,12 +2,18 @@
 # Based on OpenAI's reference implementation logic for GPT-OSS MXFP4 weights.
 # Converts packed FP4 blocks plus per-row scales into dense weights in the target dtype.
 
+from collections.abc import Mapping
+
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike
+from einops import rearrange
+from jaxtyping import Array, DTypeLike, Float
+
+from lalamo.utils.parameter_path import ParameterPath
 
 __all__ = [
     "decode_mxfp4",
     "deinterleave_pairwise_columns",
+    "dequantize_experts",
 ]
 
 
@@ -90,3 +96,43 @@ def deinterleave_pairwise_columns(
             return matrix[..., 1::2], matrix[..., 0::2]
         case _:
             raise ValueError("Parameter 'first' must be either 'even' or 'odd'")
+
+
+def dequantize_experts(
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    experts_per_chunk: int = 8,
+) -> Float[Array, "experts rows columns"]:
+    weights = weights_dict[path]
+    scale_path = ParameterPath(f"{path}_scale")
+    amax_path = ParameterPath(f"{path}_amax")
+    if amax_path in weights_dict:
+        e2m1_values = jnp.asarray(_MXFP4_LUT_VALUES, dtype=jnp.float32)
+        block_scales = weights_dict[scale_path]
+        denominator_path = ParameterPath(f"{path}_outer_scale_denominator")
+        expert_factors = weights_dict[amax_path].astype(jnp.float32) / weights_dict[denominator_path].astype(
+            jnp.float32
+        )
+
+        def dequantize_chunk(start: int) -> Float[Array, "chunk rows columns"]:
+            codes = weights[start : start + experts_per_chunk].astype(jnp.int32)
+            values = rearrange(
+                jnp.stack([e2m1_values[codes & 0xF], e2m1_values[codes >> 4]], axis=-1),
+                "experts rows (groups bytes) nibbles -> experts rows groups (bytes nibbles)",
+                bytes=8,
+            )
+            scales = block_scales[start : start + experts_per_chunk].astype(jnp.float32)[..., None]
+            factors = expert_factors[start : start + experts_per_chunk, None, None, None]
+            return rearrange(values * scales * factors, "experts rows groups values -> experts rows (groups values)")
+
+        num_experts, _, _ = weights.shape
+        return jnp.concatenate([dequantize_chunk(start) for start in range(0, num_experts, experts_per_chunk)])
+    if weights.dtype == jnp.float8_e4m3fn:
+        values = rearrange(
+            weights.astype(jnp.float32),
+            "experts rows (groups values) -> experts rows groups values",
+            values=32,
+        )
+        scales = jnp.exp2(weights_dict[scale_path].astype(jnp.float32) - 127)[..., None]
+        return rearrange(values * scales, "experts rows groups values -> experts rows (groups values)")
+    return weights.astype(jnp.float32)

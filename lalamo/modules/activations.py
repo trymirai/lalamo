@@ -8,12 +8,15 @@ from jaxtyping import Array, Float
 from lalamo.module import LalamoConfig
 from lalamo.utils.registry_abc import RegistryABC
 
+from .utils import apply_soft_capping
+
 __all__ = [
     "GELU",
     "Activation",
     "Identity",
     "SiLU",
     "Sigmoid",
+    "SoftCappedSiLU",
 ]
 
 
@@ -29,6 +32,15 @@ class SiLU(Activation):
 
     def __call__(self, x: Float[Array, "..."]) -> Float[Array, "..."]:
         return x * jax.nn.sigmoid(self.alpha * x)
+
+
+@dataclass(frozen=True)
+class SoftCappedSiLU(Activation):
+    soft_cap: float
+
+    def __call__(self, x: Float[Array, "..."]) -> Float[Array, "..."]:
+        upcast_x = x.astype(jnp.float32)
+        return (apply_soft_capping(upcast_x, self.soft_cap) * jax.nn.sigmoid(upcast_x)).astype(x.dtype)
 
 
 @dataclass(frozen=True)

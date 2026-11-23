@@ -96,6 +96,7 @@ def build_tiny_attention_decoder_config(
     kv_source_layer_indices: tuple[int | None, ...],
     *,
     residual_config: ResidualConfig = AdditiveResidualConfig(),
+    layer_order: tuple[int, ...] | None = None,
 ) -> DecoderConfig:
     model_dim = 8
     hidden_dim = 16
@@ -156,6 +157,7 @@ def build_tiny_attention_decoder_config(
         output_norm_config=norm_config,
         model_dim=model_dim,
         hidden_dim=hidden_dim,
+        layer_order=layer_order,
     )
     return DecoderConfig(
         embedding_config=TiedEmbeddingConfig(

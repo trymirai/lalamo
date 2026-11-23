@@ -163,7 +163,7 @@ class Mamba2Config(TokenMixerConfig):
         )
 
 
-class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
+class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer, Float[Array, "suffix_tokens channels"]]):
     in_projection: Linear
     conv: SeparableCausalConv
     out_projection: Linear

@@ -105,7 +105,7 @@ class DeltaNetConfig(TokenMixerConfig):
         )
 
 
-class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
+class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer, Float[Array, "suffix_tokens channels"]]):
     in_proj: Linear
     conv: SeparableCausalConv
     out_proj: Linear

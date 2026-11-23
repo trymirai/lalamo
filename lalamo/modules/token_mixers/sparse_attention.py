@@ -278,7 +278,9 @@ class SparseAttentionStateLayer(StateLayerBase):
     indexer_cache: IndexerCacheLayer
 
 
-class SparseAttention(TokenMixerBase[SparseAttentionConfig, SparseAttentionStateLayer]):
+class SparseAttention(
+    TokenMixerBase[SparseAttentionConfig, SparseAttentionStateLayer, Float[Array, "suffix_tokens channels"]],
+):
     attention: Attention
     indexer: SparseAttentionIndexer
 

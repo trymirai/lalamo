@@ -86,7 +86,7 @@ class ShortConvConfig(TokenMixerConfig):
         )
 
 
-class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
+class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer, Float[Array, "suffix_tokens channels"]]):
     in_projection: Linear
     conv: SeparableCausalConv
     out_projection: Linear
