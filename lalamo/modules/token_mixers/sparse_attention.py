@@ -278,7 +278,9 @@ class SparseAttentionStateLayer(StateLayerBase):
     indexer_cache: IndexerCacheLayer
 
 
-class SparseAttention(TokenMixerBase[SparseAttentionConfig, SparseAttentionStateLayer]):
+class SparseAttention(
+    TokenMixerBase[SparseAttentionConfig, SparseAttentionStateLayer, Float[Array, "suffix_tokens channels"]],
+):
     attention: Attention
     indexer: SparseAttentionIndexer
 
@@ -300,6 +302,7 @@ class SparseAttention(TokenMixerBase[SparseAttentionConfig, SparseAttentionState
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
         reuse_cache: bool = False,
+        token_positions: Int[Array, " suffix_tokens"] | None = None,  # noqa: ARG002
         *,
         keychain: Keychain,
     ) -> TokenMixerResult[SparseAttentionStateLayer]:

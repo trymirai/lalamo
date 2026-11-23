@@ -2282,7 +2282,7 @@ dev = [
     { name = "torch", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchao", specifier = ">=0.7.0" },
     { name = "torchaudio", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "transformers", specifier = ">=5.20" },
+    { name = "transformers", specifier = ">=5.24" },
     { name = "twine", specifier = ">=6.1.0" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20260408" },
     { name = "types-requests", specifier = ">=2.33.0.20260408" },
@@ -5573,7 +5573,7 @@ wheels = [
 
 [[package]]
 name = "transformers"
-version = "5.20.2"
+version = "5.24.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "huggingface-hub" },
@@ -5586,9 +5586,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8c/4e/3cd6f08cc84ee612d40f3cdb1649475e7c997f2d5cbd95ade8780708af62/transformers-5.20.2.tar.gz", hash = "sha256:080871e061546d720be57f5846fce426f46b44d61574907cc7404c2cba49d180", size = 10225379, upload-time = "2026-10-19T17:46:03.092Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ee/3b/1680200d94d5e567443223dce26f9c6c26c6366ce5232981923c6c01e9d6/transformers-5.24.0.tar.gz", hash = "sha256:906cb8c3cb2123575e263962586a4d21a979ce97feeb95fe6aaf66fe6ae88bf3", size = 10751687, upload-time = "2026-11-21T12:24:32.616Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/96/b6/724faefed06913dd3e42e0476fe2c42448675c42f687a12bf810aa098005/transformers-5.20.2-py3-none-any.whl", hash = "sha256:7ae75dbc1fb3922aff1b6c97b9e5479d6cf26fd86a8866bfb71324190479f807", size = 12844921, upload-time = "2026-10-19T17:45:59.293Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/6c/0a5b01b84e605e811f25d091262f199894c0839dcd7f2a289254cf7a16a7/transformers-5.24.0-py3-none-any.whl", hash = "sha256:ff5ebedf9359f94bb63772b6380eba6e7104d010cbbb2cb82c788817ea7486f6", size = 13549890, upload-time = "2026-11-21T12:24:29.434Z" },
 ]
 
 [[package]]

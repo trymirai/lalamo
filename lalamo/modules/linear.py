@@ -3,7 +3,7 @@ from itertools import accumulate
 
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, field
@@ -32,12 +32,13 @@ class LinearConfig(LalamoConfig):
         has_biases: bool,
         *,
         is_sharded: bool = True,
+        dtype: DTypeLike | None = None,
     ) -> "Linear":
         total_output_dim = sum(output_dims)
         return Linear(
             config=self,
             sharding_config=initializer.sharding_config,
-            weights=initializer.weight_matrix(total_output_dim, input_dim, is_sharded=is_sharded),
+            weights=initializer.weight_matrix(total_output_dim, input_dim, dtype=dtype, is_sharded=is_sharded),
             biases=initializer.zeros((total_output_dim,)) if has_biases else None,
             output_dims=output_dims,
         )

@@ -31,7 +31,7 @@ from tests.unit.modules.qwen4_exp import (
 def test_connection_matches_hf() -> None:
     hf_connection = randomized(Qwen4ExpTextGatedResidual(make_hf_config()))
     connection = load_gated_residual_connection(
-        make_gated_residual_config().init_connection(make_initializer(), HIDDEN_SIZE),
+        make_gated_residual_config().init_connection(make_initializer(), HIDDEN_SIZE, None),
         float_weights(hf_connection),
         ParameterPath(),
     )

@@ -105,7 +105,7 @@ class DeltaNetConfig(TokenMixerConfig):
         )
 
 
-class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
+class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer, Float[Array, "suffix_tokens channels"]]):
     in_proj: Linear
     conv: SeparableCausalConv
     out_proj: Linear
@@ -292,6 +292,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
         reuse_cache: bool = False,
+        token_positions: Int[Array, " suffix_tokens"] | None = None,  # noqa: ARG002
         *,
         keychain: Keychain,
     ) -> TokenMixerResult[SSMStateLayer]:

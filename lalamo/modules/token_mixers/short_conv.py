@@ -86,7 +86,7 @@ class ShortConvConfig(TokenMixerConfig):
         )
 
 
-class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
+class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer, Float[Array, "suffix_tokens channels"]]):
     in_projection: Linear
     conv: SeparableCausalConv
     out_projection: Linear
@@ -110,6 +110,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
         reuse_cache: bool = False,
+        token_positions: Int[Array, " suffix_tokens"] | None = None,  # noqa: ARG002
         *,
         keychain: Keychain,
     ) -> TokenMixerResult[ShortConvStateLayer]:

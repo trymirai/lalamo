@@ -21,6 +21,7 @@ __all__ = [
     "AttentionImplementation",
     "MixerForwardPassConfig",
     "PositionalEmbeddingSelector",
+    "QKVInputs",
     "State",
     "StateLayerBase",
     "TokenMixerBase",
@@ -34,9 +35,18 @@ class StateLayerBase(Exportable, eqx.Module):
     pass
 
 
+class QKVInputs(eqx.Module):
+    query: Float[Array, "*batch suffix_tokens channels"]
+    key: Float[Array, "*batch suffix_tokens channels"] | None
+    value: Float[Array, "*batch suffix_tokens channels"] | None
+
+
 class TransformerLayerState(StateLayerBase):
     mixer: StateLayerBase
     stream_ops: tuple[StateLayerBase | None, ...]
+    output_convs: tuple[
+        Float[Array, "*batch tokens channels"] | None, Float[Array, "*batch tokens channels"] | None
+    ] = (None, None)
 
 
 @register_pytree_node_class
@@ -115,7 +125,7 @@ class TokenMixerConfig(LalamoConfig, RegistryABC):
     ) -> "TokenMixerBase": ...
 
 
-class TokenMixerBase[ConfigT: TokenMixerConfig, StateLayerT: StateLayerBase](LalamoModule[ConfigT]):
+class TokenMixerBase[ConfigT: TokenMixerConfig, StateLayerT: StateLayerBase, InputT](LalamoModule[ConfigT]):
     @property
     @abstractmethod
     def model_dim(self) -> int: ...
@@ -127,7 +137,7 @@ class TokenMixerBase[ConfigT: TokenMixerConfig, StateLayerT: StateLayerBase](Lal
     @abstractmethod
     def __call__(
         self,
-        inputs: Float[Array, "suffix_tokens channels"],
+        inputs: InputT,
         positional_embeddings: PositionalEmbeddings | None,
         state: StateLayerT | None = None,
         return_updated_state: bool = False,
@@ -135,6 +145,7 @@ class TokenMixerBase[ConfigT: TokenMixerConfig, StateLayerT: StateLayerBase](Lal
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
         reuse_cache: bool = False,
+        token_positions: Int[Array, " suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
     ) -> TokenMixerResult[StateLayerT]: ...

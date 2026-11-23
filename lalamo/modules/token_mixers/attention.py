@@ -38,6 +38,7 @@ __all__ = [
     "AttentionConfig",
     "AttentionResult",
     "SparseMask",
+    "attention_kernel",
 ]
 
 
@@ -50,7 +51,7 @@ def _rms_normalize(
     return (upcasted_inputs * jax.lax.rsqrt(variance + eps)).astype(inputs.dtype)
 
 
-def _attention_kernel(
+def attention_kernel(
     queries: Float[Array, "dst_tokens heads head_channels"],
     keys: Float[Array, "src_tokens groups head_channels"],
     values: Float[Array, "src_tokens groups head_channels"],
@@ -234,7 +235,7 @@ def _init_attention(
     )
 
 
-class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
+class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suffix_tokens channels"]]):
     qkvg_projection: Linear
     out_projection: Linear
 
@@ -350,6 +351,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
         reuse_cache: bool = False,
+        token_positions: Int[Array, " suffix_tokens"] | None = None,  # noqa: ARG002
         *,
         keychain: Keychain,
         sparse_mask: SparseMask | None = None,
@@ -437,7 +439,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             else:
                 sink_bias = None
 
-            attention_output = _attention_kernel(
+            attention_output = attention_kernel(
                 queries,
                 updated_state.keys,
                 updated_state.values,
