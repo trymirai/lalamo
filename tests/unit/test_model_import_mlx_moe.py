@@ -96,7 +96,14 @@ def _materialize(matrix: WeightMatrix, expert: int) -> np.ndarray:
     the very helper the decode path uses, which pins the result to a replicated layout -- that also
     means this reads the matrix exactly the way the model will.
     """
-    per_expert = jax.tree_util.tree_map(partial(_take_moe_expert_leaf, index=jnp.asarray(expert)), matrix)
+    per_expert = jax.tree_util.tree_map(
+        partial(
+            _take_moe_expert_leaf,
+            index=jnp.asarray(expert),
+            sharding_config=make_test_sharding_config(),
+        ),
+        matrix,
+    )
     basis = jnp.eye(per_expert.shape[-1], dtype=jnp.bfloat16)
     keychain = Keychain.init(0, sharding_config=make_test_sharding_config())
     columns = jax.vmap(lambda row: per_expert.dot(row, keychain=keychain))(basis)
@@ -293,13 +300,13 @@ def test_a_loaded_mlx_moe_runs_and_agrees_between_the_decode_and_prefill_paths()
         inputs,
         forward_pass_config=MLPForwardPassConfig(mode=ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(1, sharding_config=make_test_sharding_config()),
-    ).outputs
+    )
     prefilled = loaded(
         inputs,
         lengths_without_padding=lengths,
         forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
         keychain=Keychain.init(1, sharding_config=make_test_sharding_config()),
-    ).outputs
+    )
 
     assert jnp.all(jnp.isfinite(jax.device_get(decoded)))
     np.testing.assert_allclose(

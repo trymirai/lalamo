@@ -72,7 +72,7 @@ def load_torch_weights(path: Path, *, weights_only: bool = True) -> Generator[We
 @contextmanager
 def load_safetensors_weights(path: Path) -> Generator[WeightShard]:
     with path.open("rb") as fd:
-        metadata, weights = safe_read(fd)
+        metadata, weights, _ = safe_read(fd)
         yield weights, metadata or {}
 
 

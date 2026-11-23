@@ -129,8 +129,8 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
 
 @pytest.mark.parametrize("decoder", [(None, 0)], indirect=True, ids=["shared_kv"])
 def test_kv_sharing_layer_projects_queries_only(decoder: Decoder) -> None:
-    owner = decoder.transformer.layers[0].mixer
-    shared = decoder.transformer.layers[1].mixer
+    owner = decoder.transformer.layers[0].mixer.body
+    shared = decoder.transformer.layers[1].mixer.body
     assert isinstance(owner, Attention)
     assert isinstance(shared, Attention)
     assert owner.qkvg_projection.output_dims == (8, 8, 8)

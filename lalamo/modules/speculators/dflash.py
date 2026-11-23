@@ -11,14 +11,17 @@ from lalamo.initializer import Initializer
 from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, SpeculatorState
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
+from lalamo.modules.residual import AdditiveResidualConfig
 from lalamo.modules.rope import PositionalEmbeddings, RoPE, RoPEConfig
 from lalamo.modules.speculator import Speculator, SpeculatorConfig
+from lalamo.modules.speculators.confidence_head import ConfidenceHead, ConfidenceHeadConfig
 from lalamo.modules.speculators.weaver import Weaver, WeaverConfig
 from lalamo.modules.token_mixer import TransformerLayerState
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.kv_cache import StaticKVCacheLayer
 from lalamo.modules.transformer_layer import TransformerForwardPassConfig, TransformerLayer, TransformerLayerConfig
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
+from lalamo.utils.json import JSON
 
 __all__ = [
     "DFlashDraftConfig",
@@ -28,14 +31,14 @@ __all__ = [
 
 
 def _layer_attention_config(layer_config: TransformerLayerConfig) -> AttentionConfig:
-    mixer_config = layer_config.mixer_config
+    mixer_config = layer_config.mixer.body_config
     if not isinstance(mixer_config, AttentionConfig):
         raise TypeError(f"DFlash draft layers must use attention mixers, got {type(mixer_config).__name__}.")
     return mixer_config
 
 
 def _layer_attention(layer: TransformerLayer) -> Attention:
-    mixer = layer.mixer
+    mixer = layer.mixer.body
     if not isinstance(mixer, Attention):
         raise TypeError(f"DFlash draft layers must use attention mixers, got {type(mixer).__name__}.")
     return mixer
@@ -77,7 +80,8 @@ class DFlashDraftConfig(LalamoConfig):
                 has_biases=False,
             ),
             layers=tuple(
-                layer_config.init(initializer, self.model_dim, self.hidden_dim) for layer_config in self.layer_configs
+                layer_config.init(initializer, AdditiveResidualConfig(), self.model_dim, self.hidden_dim)
+                for layer_config in self.layer_configs
             ),
             output_norm=self.output_norm_config.init(initializer, self.model_dim),
         )
@@ -290,12 +294,10 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
 
         hidden_states = noise_embeddings
         for layer, layer_state, layer_keychain in zip(self.layers, state.layer_states, layer_keychains, strict=True):
-            # The draft keeps bare KV caches; a transformer layer expects its composite state (mixer plus
-            # routing), and the draft's dense MLPs carry no routing state.
             layer_result = layer(
                 hidden_states,
                 positional_embeddings,
-                TransformerLayerState(mixer=layer_state, routing=None),
+                TransformerLayerState(mixer=layer_state, stream_ops=()),
                 forward_pass_config=forward_pass_config,
                 keychain=layer_keychain,
             )
@@ -312,6 +314,12 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
 class DFlashSpeculatorConfig(SpeculatorConfig):
     draft_config: DFlashDraftConfig
     weaver_config: WeaverConfig | None
+    confidence_head_config: ConfidenceHeadConfig | None = None
+
+    def to_json(self) -> JSON:
+        config = super().to_json()
+        assert isinstance(config, dict)
+        return {name: value for name, value in config.items() if name != "confidence_head_config" or value is not None}
 
     def __post_init__(self) -> None:
         if self.weaver_config is None:
@@ -328,14 +336,23 @@ class DFlashSpeculatorConfig(SpeculatorConfig):
             )
 
     def init(self, initializer: Initializer) -> "DFlashSpeculator":
+        draft_model = self.draft_config.init(initializer)
+        weaver = None
+        if self.weaver_config is not None:
+            weaver = self.weaver_config.init(initializer)
+        confidence_head = None
+        if self.confidence_head_config is not None:
+            confidence_head = self.confidence_head_config.init(initializer, self.draft_config.model_dim)
         return DFlashSpeculator(
             config=self,
             sharding_config=initializer.sharding_config,
-            draft_model=self.draft_config.init(initializer),
-            weaver=self.weaver_config.init(initializer) if self.weaver_config is not None else None,
+            draft_model=draft_model,
+            weaver=weaver,
+            confidence_head=confidence_head,
         )
 
 
 class DFlashSpeculator(Speculator[DFlashSpeculatorConfig]):
     draft_model: DFlashDraftModel
     weaver: Weaver | None
+    confidence_head: ConfidenceHead | None

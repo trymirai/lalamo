@@ -364,7 +364,6 @@ def test_softmax_routing_call_unbatched_selects_top_k_and_normalizes_weights() -
 
 
 @pytest.mark.parametrize("mode", MOE_MODES)
-@pytest.mark.usefixtures("fake_mesh")
 def test_routed_moe_matches_direct_reference(mode: ForwardPassMode) -> None:
     module = _moe(num_active_routed_experts=2)
     sequence_length = _moe_sequence_length(mode)
@@ -381,13 +380,20 @@ def test_routed_moe_matches_direct_reference(mode: ForwardPassMode) -> None:
         inputs,
         forward_pass_config=MLPForwardPassConfig(mode=mode, moe_chunk_size_ratio=0.5),
         keychain=Keychain.init(7, sharding_config=make_test_sharding_config()),
-    ).outputs
+    )
 
     _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
 
 
-def test_moe_config_splits_sharded_routed_and_replicated_shared_experts(fake_mesh: Mesh) -> None:
-    template = _moe(num_shared_experts=1, use_shared_gate=True)
+@pytest.mark.parametrize("mode", MOE_MODES)
+@pytest.mark.parametrize("num_shared_experts,use_shared_gate", [(1, True), (2, False)])
+@pytest.mark.usefixtures("fake_mesh")
+def test_sharded_routed_and_replicated_shared_experts_match_reference(
+    mode: ForwardPassMode,
+    num_shared_experts: int,
+    use_shared_gate: bool,
+) -> None:
+    template = _moe(num_shared_experts=num_shared_experts, use_shared_gate=use_shared_gate)
     module = template.config.init(
         RandomInitializer(
             default_dtype=jnp.float32,
@@ -399,25 +405,40 @@ def test_moe_config_splits_sharded_routed_and_replicated_shared_experts(fake_mes
     )
 
     assert module.shared_experts is not None
-    routed_weights = module.routed_experts.up_projection.weights
-    shared_weights = module.shared_experts.up_projection.weights
-    assert isinstance(routed_weights, FullPrecisionMatrix)
-    assert isinstance(shared_weights, FullPrecisionMatrix)
-    assert routed_weights.weights.sharding == make_sharding(
-        (LogicalAxis.MIXTURE, None, None),
+    for routed_projection, shared_projection in (
+        (module.routed_experts.up_projection, module.shared_experts.up_projection),
+        (module.routed_experts.down_projection, module.shared_experts.down_projection),
+    ):
+        routed_weights = routed_projection.weights
+        shared_weights = shared_projection.weights
+        assert isinstance(routed_weights, FullPrecisionMatrix)
+        assert isinstance(shared_weights, FullPrecisionMatrix)
+        assert routed_weights.weights.sharding == make_sharding((LogicalAxis.MIXTURE, None, None))
+        assert shared_weights.weights.sharding == make_sharding((None, None, None))
+
+    sequence_length = _moe_sequence_length(mode)
+    inputs = _sharded_tokens(
+        jnp.arange(2 * sequence_length * MODEL_DIM, dtype=jnp.float32).reshape(2, sequence_length, MODEL_DIM) / 10,
     )
-    assert shared_weights.weights.sharding == make_sharding((None, None, None))
-    assert module.gate is not None
-    gate_weights = module.gate.weights
-    assert isinstance(gate_weights, FullPrecisionMatrix)
-    assert gate_weights.weights.sharding == make_sharding((None, None))
-    _assert_named_sharding(routed_weights.weights.sharding, fake_mesh)
+    lengths = _sharded_lengths(jnp.array([sequence_length, 1], dtype=jnp.int32))
+    result = module(
+        inputs,
+        lengths_without_padding=lengths,
+        forward_pass_config=MLPForwardPassConfig(mode=mode),
+        keychain=Keychain.init(21, sharding_config=make_test_sharding_config()),
+    )
+    _assert_close(result=result, reference=_routed_moe_reference(module, inputs, lengths_without_padding=lengths))
 
 
 @pytest.mark.parametrize("mode", MOE_MODES)
+@pytest.mark.parametrize("num_shared_experts", [0, 1])
 @pytest.mark.usefixtures("fake_mesh")
-def test_full_precision_routed_moe_preserves_input_dtype(mode: ForwardPassMode) -> None:
-    module = _moe(num_active_routed_experts=2)
+def test_full_precision_moe_preserves_input_dtype(mode: ForwardPassMode, num_shared_experts: int) -> None:
+    module = _moe(
+        num_active_routed_experts=2,
+        num_shared_experts=num_shared_experts,
+        use_shared_gate=num_shared_experts > 0,
+    )
     sequence_length = _moe_sequence_length(mode)
     inputs = _sharded_tokens(
         jnp.arange(2 * sequence_length * MODEL_DIM, dtype=jnp.bfloat16).reshape(
@@ -432,7 +453,7 @@ def test_full_precision_routed_moe_preserves_input_dtype(mode: ForwardPassMode) 
         inputs,
         forward_pass_config=MLPForwardPassConfig(mode=mode),
         keychain=Keychain.init(8, sharding_config=make_test_sharding_config()),
-    ).outputs
+    )
 
     assert result.dtype == inputs.dtype
 
@@ -451,7 +472,7 @@ def test_full_precision_moe_prefill_with_gated_shared_experts_and_padding_matche
         lengths_without_padding=lengths_without_padding,
         forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.0),
         keychain=Keychain.init(9, sharding_config=make_test_sharding_config()),
-    ).outputs
+    )
 
     _assert_close(
         result=result,
@@ -475,7 +496,7 @@ def test_full_precision_moe_training_gradients_match_dense_reference() -> None:
             lengths_without_padding=lengths_without_padding,
             forward_pass_config=MLPForwardPassConfig.for_training(),
             keychain=Keychain.init(10, sharding_config=make_test_sharding_config()),
-        ).outputs
+        )
         return jnp.square(outputs).sum()
 
     def reference_loss(module_and_inputs: tuple[MixtureOfExperts, Array]) -> Array:
@@ -517,7 +538,7 @@ def test_gated_shared_quantized_moe_decode_matches_reference() -> None:
         inputs,
         forward_pass_config=MLPForwardPassConfig(mode=ForwardPassMode.SINGLE_TOKEN),
         keychain=Keychain.init(10, sharding_config=make_test_sharding_config()),
-    ).outputs
+    )
 
     _assert_close(result=result, reference=_routed_moe_reference(module, inputs))
 
@@ -536,7 +557,7 @@ def test_quantized_moe_prefill_keeps_chunked_fallback() -> None:
         lengths_without_padding=lengths_without_padding,
         forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
         keychain=Keychain.init(11, sharding_config=make_test_sharding_config()),
-    ).outputs
+    )
 
     _assert_close(
         result=result,
@@ -558,7 +579,7 @@ def test_expert_sharded_full_precision_moe_prefill_keeps_chunked_fallback() -> N
         lengths_without_padding=lengths_without_padding,
         forward_pass_config=MLPForwardPassConfig(moe_chunk_size_ratio=0.5),
         keychain=Keychain.init(12, sharding_config=make_test_sharding_config()),
-    ).outputs
+    )
 
     _assert_close(
         result=result,

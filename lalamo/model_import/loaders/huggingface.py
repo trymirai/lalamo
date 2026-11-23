@@ -1,5 +1,6 @@
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from itertools import count, takewhile
 from typing import Literal
 
 import equinox as eqx
@@ -15,12 +16,22 @@ from lalamo.modules.decoder import Decoder
 from lalamo.modules.embedding import TiedEmbedding, UntiedEmbedding
 from lalamo.modules.linear import Linear
 from lalamo.modules.mlp import DenseMLP, MixtureOfExperts, MLPBase
+from lalamo.modules.ngram_injection import NGramInjection, NGramInjectionConfig
 from lalamo.modules.normalization import Normalization
+from lalamo.modules.residual import (
+    GatedResidualConnection,
+    GatedResidualHead,
+    GatedStreamReader,
+    ResidualConnectionBase,
+    ResidualHeadBase,
+)
+from lalamo.modules.stream_ops import StreamOpBase
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv
 from lalamo.modules.token_mixers.deltanet import DeltaNet, DeltaNetConfig
 from lalamo.modules.token_mixers.mamba import Mamba2, Mamba2Config
 from lalamo.modules.token_mixers.short_conv import ShortConv, ShortConvConfig
+from lalamo.modules.token_mixers.sparse_attention import SparseAttention, SparseAttentionConfig
 from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
@@ -29,7 +40,7 @@ from lalamo.weight_matrix import CompressionImplementation, EmbeddingMatrix, Lay
 
 from .common import load_full_precision
 
-__all__ = ["load_huggingface_decoder", "load_linear", "load_rmsnorm"]
+__all__ = ["load_huggingface_decoder", "load_linear", "load_optional_rmsnorm", "load_rmsnorm"]
 
 
 AWQ_UINT4_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
@@ -198,12 +209,7 @@ def _fuse_mlx_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
-    *,
-    axis: int = 0,
 ) -> tuple[Array, Array, Array]:
-    # MLX stores `weight [rows, packed_cols]` and `scales [rows, num_groups]`, so fusing along the
-    # output axis leaves both the packing and the grouping untouched. That axis is 0 for a plain
-    # matrix, but stacked experts put the expert axis first, and there the output axis is -2.
     if sublayers_to_fuse is None:
         return (
             weights_dict[path / "weight"],
@@ -211,9 +217,9 @@ def _fuse_mlx_weights(
             weights_dict[path / "scales"],
         )
     return (
-        jnp.concatenate([weights_dict[path / layer_name / "weight"] for layer_name in sublayers_to_fuse], axis=axis),
-        jnp.concatenate([weights_dict[path / layer_name / "biases"] for layer_name in sublayers_to_fuse], axis=axis),
-        jnp.concatenate([weights_dict[path / layer_name / "scales"] for layer_name in sublayers_to_fuse], axis=axis),
+        jnp.concatenate([weights_dict[path / layer_name / "weight"] for layer_name in sublayers_to_fuse], axis=0),
+        jnp.concatenate([weights_dict[path / layer_name / "biases"] for layer_name in sublayers_to_fuse], axis=0),
+        jnp.concatenate([weights_dict[path / layer_name / "scales"] for layer_name in sublayers_to_fuse], axis=0),
     )
 
 
@@ -380,7 +386,7 @@ def _load_packed_mlx_matrix(
     # MLX HF layout: weight [rows, packed_cols], scales [rows, num_groups].
     packed_in = packed_weights.shape[-1]
     num_groups = scales.shape[-1]
-    for bits in (1, 4, 8):
+    for bits in (1, 2, 4, 8):
         if packed_in * (32 // bits) == expected_grouped_channels:
             break
     else:
@@ -396,7 +402,11 @@ def _load_packed_mlx_matrix(
     scale_values = jax.device_put(scales.astype(template.dtype), weight_sharding)
     bias_values = jax.device_put(deq_biases.astype(template.dtype), weight_sharding)
 
-    spec = MLXSpec(bits=bits, group_size=group_size, layout=layout)
+    spec = MLXSpec(
+        bits=bits,
+        group_size=group_size,
+        layout=layout,
+    )
     return spec.from_packed_parameters(
         packed_weights=pack_uint_to_uint8(weight_values, bits, sharding_config=sharding_config),
         scales=scale_values,
@@ -463,7 +473,15 @@ def load_mlp(
         )
 
     if isinstance(module, MixtureOfExperts):
-        return load_moe(module, weights_dict, path, implementation=implementation)
+        return load_moe(
+            module,
+            weights_dict,
+            path,
+            up_proj_key,
+            gate_proj_key,
+            down_proj_key,
+            implementation=implementation,
+        )
 
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
@@ -472,6 +490,9 @@ def load_moe(
     module: MixtureOfExperts,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
+    up_proj_key: str = "up_proj",
+    gate_proj_key: str = "gate_proj",
+    down_proj_key: str = "down_proj",
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> MixtureOfExperts:
@@ -522,18 +543,18 @@ def load_moe(
         def stack(name: str) -> Array:
             return jnp.stack([weights_dict[expert_path / name] for expert_path in expert_paths], axis=0)
 
-        gate_up_weights = jnp.concatenate([stack("up_proj.weight"), stack("gate_proj.weight")], axis=1)
+        gate_up_weights = jnp.concatenate([stack(f"{up_proj_key}.weight"), stack(f"{gate_proj_key}.weight")], axis=1)
         gate_up_biases = (
-            jnp.concatenate([stack("up_proj.bias"), stack("gate_proj.bias")], axis=1)
+            jnp.concatenate([stack(f"{up_proj_key}.bias"), stack(f"{gate_proj_key}.bias")], axis=1)
             if template.up_projection.has_biases
             else None
         )
-        down_biases = stack("down_proj.bias") if template.down_projection.has_biases else None
+        down_biases = stack(f"{down_proj_key}.bias") if template.down_projection.has_biases else None
         return load_dense_experts(
             template,
             gate_up_weights,
             gate_up_biases,
-            stack("down_proj.weight"),
+            stack(f"{down_proj_key}.weight"),
             down_biases,
         )
 
@@ -696,10 +717,14 @@ def load_moe(
             raise KeyError("Could not find shared expert gate weights in HF checkpoint.")
         gate = load_linear(module.gate, weights_dict, gate_path, implementation=implementation)
 
+    expert_bias = None
+    if module.expert_bias is not None:
+        expert_bias = weights_dict[path / "expert_bias"]
+
     return load_as_at(
-        lambda m: (m.router, m.routed_experts, m.shared_experts, m.gate),
+        lambda m: (m.router, m.routed_experts, m.shared_experts, m.gate, m.expert_bias),
         module,
-        (router, routed_experts, shared_experts, gate),
+        (router, routed_experts, shared_experts, gate, expert_bias),
     )
 
 
@@ -713,7 +738,7 @@ def load_rmsnorm(
     return load_as_at(lambda m: (m.scales,), module, (scales,))
 
 
-def _load_optional_rmsnorm(
+def load_optional_rmsnorm(
     module: Normalization | None,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
@@ -764,7 +789,6 @@ def _reorder_gated_attention_weights(
         )
 
     q_proj_prefix = f"{q_proj_path}."
-    kv_proj_prefixes = (f"{path / 'k_proj'}.", f"{path / 'v_proj'}.")
     # g_proj exists only in this normalized mapping so the generic linear loader can fuse Q/K/V/G.
     gate_path = path / "g_proj"
     reordered_weights: dict[str, Array] = {}
@@ -776,7 +800,7 @@ def _reorder_gated_attention_weights(
             q_part, gate_part = _split_q_gate_tensor(tensor, num_heads, head_dim)
             reordered_weights[key] = q_part
             reordered_weights[gate_path / suffix] = gate_part
-        elif key.startswith(kv_proj_prefixes):
+        else:
             reordered_weights[key] = weights_dict[key]
     return reordered_weights
 
@@ -789,6 +813,8 @@ def load_attention(
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> Attention:
     projection_sublayers = ["q_proj"] if module.config.is_kv_sharing else ["q_proj", "k_proj", "v_proj"]
+    if module.qkvg_projection.num_outputs > len(projection_sublayers) + int(module.config.has_gate):
+        projection_sublayers.append("indexer.index_qk_proj")
     projection_weights = weights_dict
     if module.config.has_gate:
         if (path / "gate_proj" / "weight") in weights_dict or (path / "gate_proj" / "qweight") in weights_dict:
@@ -831,6 +857,155 @@ def load_attention(
         ),
         module,
         (qkvg_projection, out_projection, query_norm, key_norm, sinks),
+    )
+
+
+def load_sparse_attention(
+    module: SparseAttention,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> SparseAttention:
+    attention = load_attention(module.attention, weights_dict, path, implementation=implementation)
+    indexer_path = path / "indexer"
+    indexer_query_norm = load_rmsnorm(module.indexer.query_norm, weights_dict, indexer_path / "q_layernorm")
+    indexer_key_norm = load_rmsnorm(module.indexer.key_norm, weights_dict, indexer_path / "k_layernorm")
+    return load_as_at(
+        lambda m: (m.attention, m.indexer.query_norm, m.indexer.key_norm),
+        module,
+        (attention, indexer_query_norm, indexer_key_norm),
+    )
+
+
+def load_gated_stream_reader(
+    module: GatedStreamReader,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> GatedStreamReader:
+    scales = rearrange(
+        weights_dict[path / "hc_norm" / "weight"],
+        "(streams channels) -> streams channels",
+        streams=module.config.stream_count,
+    )
+    down_projection = load_linear(
+        module.down_projection,
+        weights_dict,
+        path / "input_mix_weight_down",
+        implementation=implementation,
+    )
+    up_projection = load_linear(
+        module.up_projection,
+        weights_dict,
+        path / "input_mix_weight_up",
+        implementation=implementation,
+    )
+    return load_as_at(
+        lambda m: (m.norm.scales, m.down_projection, m.up_projection),
+        module,
+        (scales, down_projection, up_projection),
+    )
+
+
+def load_gated_residual_connection(
+    module: GatedResidualConnection,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> GatedResidualConnection:
+    reader = load_gated_stream_reader(module.reader, weights_dict, path, implementation=implementation)
+    injection = load_linear(
+        module.injection, weights_dict, path / "block_inject_weight", implementation=implementation
+    )
+    return load_as_at(lambda m: (m.reader, m.injection), module, (reader, injection))
+
+
+def load_gated_residual_head(
+    module: GatedResidualHead,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> GatedResidualHead:
+    reader = load_gated_stream_reader(module.reader, weights_dict, path, implementation=implementation)
+    return load_as_at(lambda m: (m.reader,), module, (reader,))
+
+
+def load_ngram_injection(
+    module: NGramInjection,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> NGramInjection:
+    (stream_dim,) = module.key_projection.output_dims
+    (model_dim,) = module.value_projection.output_dims
+    stream_count = stream_dim // model_dim
+
+    def load_stream_norm(norm: Normalization, norm_path: ParameterPath) -> Normalization:
+        scales = rearrange(
+            weights_dict[norm_path / "weight"],
+            "(streams channels) -> streams channels",
+            streams=stream_count,
+        )
+        return load_as_at(lambda m: (m.scales,), norm, (scales,))
+
+    embedding_path = path / "ple_embedding" / "ngram_embedding"
+    shard_paths = tuple(
+        takewhile(
+            lambda shard_path: shard_path in weights_dict,
+            (embedding_path / f"shard_{shard_index}" / "weight" for shard_index in count()),
+        ),
+    )
+    padded_table = (
+        jnp.concatenate([weights_dict[shard_path] for shard_path in shard_paths])
+        if shard_paths
+        else weights_dict[embedding_path / "weight"]
+    )
+    ngram_embedding = load_input_embedding_matrix(
+        module.ngram_embedding,
+        {embedding_path / "weight": padded_table[: module.config.hash_config.num_rows]},
+        embedding_path,
+        implementation=implementation,
+    )
+    key_projection = load_linear(module.key_projection, weights_dict, path / "key_proj", implementation=implementation)
+    value_projection = load_linear(
+        module.value_projection,
+        weights_dict,
+        path / "value_proj",
+        implementation=implementation,
+    )
+    conv_taps = rearrange(weights_dict[path / "conv1d" / "weight"], "channels 1 taps -> channels taps")
+    num_channels, num_taps = conv_taps.shape
+    dilation, misalignment = divmod(module.conv.kernel_size - 1, num_taps - 1)
+    if misalignment != 0:
+        raise ValueError(f"Cannot expand {num_taps} conv taps into a kernel of size {module.conv.kernel_size}.")
+    conv_weights = (
+        jnp.zeros((num_channels, module.conv.kernel_size), dtype=conv_taps.dtype).at[:, ::dilation].set(conv_taps)
+    )
+    return load_as_at(
+        lambda m: (
+            m.ngram_embedding,
+            m.key_projection,
+            m.value_projection,
+            m.key_norm,
+            m.query_norm,
+            m.conv_norm,
+            m.conv.weights,
+        ),
+        module,
+        (
+            ngram_embedding,
+            key_projection,
+            value_projection,
+            load_stream_norm(module.key_norm, path / "norm_key"),
+            load_stream_norm(module.query_norm, path / "norm_query"),
+            load_stream_norm(module.conv_norm, path / "norm_conv"),
+            conv_weights,
+        ),
     )
 
 
@@ -1062,54 +1237,60 @@ def load_transformer_layer(
     *,
     implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
 ) -> TransformerLayer:
-    pre_attention_norm = _load_optional_rmsnorm(module.pre_mixer_norm, weights_dict, mixer_path / pre_mixer_norm_key)
-    # Load mixer (attention or mamba)
-    if isinstance(module.mixer, Attention):
+    pre_attention_norm = load_optional_rmsnorm(module.mixer.pre_norm, weights_dict, mixer_path / pre_mixer_norm_key)
+    mixer_body = module.mixer.body
+    if isinstance(mixer_body, SparseAttention):
+        mixer = load_sparse_attention(
+            mixer_body,
+            weights_dict,
+            mixer_path / mixer_key,
+            implementation=implementation,
+        )
+    elif isinstance(mixer_body, Attention):
         mixer = load_attention(
-            module.mixer,
+            mixer_body,
             weights_dict,
             mixer_path / mixer_key,
             implementation=implementation,
         )
-    elif isinstance(module.mixer, DeltaNet):
+    elif isinstance(mixer_body, DeltaNet):
         mixer = load_delta_net_attention(
-            module.mixer,
+            mixer_body,
             weights_dict,
             mixer_path / mixer_key,
             permute_conv,
             implementation=implementation,
         )
-    elif isinstance(module.mixer, Mamba2):
+    elif isinstance(mixer_body, Mamba2):
         mixer = load_mamba2(
-            module.mixer,
+            mixer_body,
             weights_dict,
             mixer_path / mixer_key,
             permute_conv,
             implementation=implementation,
         )
-    elif isinstance(module.mixer, ShortConv):
+    elif isinstance(mixer_body, ShortConv):
         mixer = load_short_conv(
-            module.mixer,
+            mixer_body,
             weights_dict,
             mixer_path / mixer_key,
             permute_conv,
             implementation=implementation,
         )
     else:
-        mixer = module.mixer
+        mixer = mixer_body
 
-    assert isinstance(module.pre_mlp_norm, Normalization)
-    if module.post_mixer_norm is not None:
+    if module.mixer.post_norm is not None:
         post_attention_norm = load_rmsnorm(
-            module.post_mixer_norm, weights_dict, mixer_path / "post_attention_layernorm"
+            module.mixer.post_norm, weights_dict, mixer_path / "post_attention_layernorm"
         )
-        pre_mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, mlp_path / "pre_feedforward_layernorm")
+        pre_mlp_norm = load_optional_rmsnorm(module.mlp.pre_norm, weights_dict, mlp_path / "pre_feedforward_layernorm")
     else:
         post_attention_norm = None
-        pre_mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, mlp_path / pre_mlp_norm_key)
+        pre_mlp_norm = load_optional_rmsnorm(module.mlp.pre_norm, weights_dict, mlp_path / pre_mlp_norm_key)
 
     mlp = load_mlp(
-        module.mlp,
+        module.mlp.body,
         weights_dict,
         mlp_path / mlp_key,
         up_proj_key,
@@ -1118,16 +1299,16 @@ def load_transformer_layer(
         implementation=implementation,
     )
 
-    post_mlp_norm = _load_optional_rmsnorm(module.post_mlp_norm, weights_dict, mlp_path / "post_feedforward_layernorm")
+    post_mlp_norm = load_optional_rmsnorm(module.mlp.post_norm, weights_dict, mlp_path / "post_feedforward_layernorm")
 
     return load_as_at(
         lambda m: (
-            m.pre_mixer_norm,
-            m.mixer,
-            m.post_mixer_norm,
-            m.pre_mlp_norm,
-            m.mlp,
-            m.post_mlp_norm,
+            m.mixer.pre_norm,
+            m.mixer.body,
+            m.mixer.post_norm,
+            m.mlp.pre_norm,
+            m.mlp.body,
+            m.mlp.post_norm,
         ),
         module,
         (
@@ -1141,7 +1322,7 @@ def load_transformer_layer(
     )
 
 
-def _load_weight_matrix(
+def _load_output_embedding_matrix(
     matrix: WeightMatrix,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
@@ -1211,7 +1392,7 @@ def load_untied_embedding(
         embedding_path,
         implementation=implementation,
     )
-    output_emb = _load_weight_matrix(
+    output_emb = _load_output_embedding_matrix(
         module.output_embedding,
         weights_dict,
         lm_head_path,
@@ -1224,13 +1405,58 @@ def load_untied_embedding(
     )
 
 
+def load_residual_connection(
+    connection: ResidualConnectionBase,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> ResidualConnectionBase:
+    match connection:
+        case GatedResidualConnection():
+            return load_gated_residual_connection(connection, weights_dict, path, implementation=implementation)
+    return connection
+
+
+def load_residual_head(
+    head: ResidualHeadBase,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> ResidualHeadBase:
+    match head:
+        case GatedResidualHead():
+            return load_gated_residual_head(head, weights_dict, path, implementation=implementation)
+    return head
+
+
+def load_stream_op(
+    op: StreamOpBase,
+    weights_dict: Mapping[str, Array],
+    layer_path: ParameterPath,
+    stream_op_key: dict[type[object], str],
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> StreamOpBase:
+    match op:
+        case NGramInjection():
+            return load_ngram_injection(
+                op,
+                weights_dict,
+                layer_path / stream_op_key[NGramInjectionConfig],
+                implementation=implementation,
+            )
+    return op
+
+
 def _get_mixer_key(
     mixer_key: dict[type[object], str],
     layer: TransformerLayer,
 ) -> str:
-    mixer_config = layer.config.mixer_config
+    mixer_config = layer.config.mixer.body_config
     match mixer_config:
-        case AttentionConfig():
+        case AttentionConfig() | SparseAttentionConfig():
             return mixer_key[AttentionConfig]
         case DeltaNetConfig():
             return mixer_key[DeltaNetConfig]
@@ -1257,6 +1483,10 @@ class DecoderLoadLayout:
     alternating_layers: bool
     norm_key: str
     lm_head_path: ParameterPath
+    mixer_connection_key: str
+    mlp_connection_key: str
+    residual_head_key: str
+    stream_op_key: dict[type[object], str]
 
 
 def _decoder_load_layout(
@@ -1288,6 +1518,10 @@ def _decoder_load_layout(
         alternating_layers=False,
         norm_key="norm",
         lm_head_path=lm_head_path,
+        mixer_connection_key="attn_hyper_connection",
+        mlp_connection_key="mlp_hyper_connection",
+        residual_head_key="hyper_connection_mixer",
+        stream_op_key={NGramInjectionConfig: "ple"},
     )
 
     backbone_path = root_path / "backbone"
@@ -1339,6 +1573,43 @@ def resolve_decoder_load_layout(weights_dict: Mapping[str, Array]) -> DecoderLoa
     return _decoder_load_layout(weights_dict, root_path)
 
 
+def load_layer_stream_parts(
+    module: TransformerLayer,
+    weights_dict: Mapping[str, Array],
+    mixer_path: ParameterPath,
+    mlp_path: ParameterPath,
+    layout: DecoderLoadLayout,
+    *,
+    implementation: CompressionImplementation = CompressionImplementation.INFERENCE,
+) -> TransformerLayer:
+    return load_as_at(
+        lambda m: (m.prologue, m.mixer.connection, m.mlp.connection, m.epilogue),
+        module,
+        (
+            tuple(
+                load_stream_op(op, weights_dict, mixer_path, layout.stream_op_key, implementation=implementation)
+                for op in module.prologue
+            ),
+            load_residual_connection(
+                module.mixer.connection,
+                weights_dict,
+                mixer_path / layout.mixer_connection_key,
+                implementation=implementation,
+            ),
+            load_residual_connection(
+                module.mlp.connection,
+                weights_dict,
+                mlp_path / layout.mlp_connection_key,
+                implementation=implementation,
+            ),
+            tuple(
+                load_stream_op(op, weights_dict, mlp_path, layout.stream_op_key, implementation=implementation)
+                for op in module.epilogue
+            ),
+        ),
+    )
+
+
 def load_huggingface_decoder(
     module: Decoder,
     weights_dict: Mapping[str, Array],
@@ -1365,12 +1636,17 @@ def load_huggingface_decoder(
     else:
         raise TypeError(f"Unsupported embedding type: {type(module.embedding)}")
 
-    decoder_layers = tuple(
-        load_transformer_layer(
+    def load_layer(layer_index: int, layer: TransformerLayer) -> TransformerLayer:
+        mixer_index, mlp_index = (
+            (layer_index * 2, layer_index * 2 + 1) if layout.alternating_layers else (layer_index, layer_index)
+        )
+        mixer_path = layout.decoder_path / "layers" / mixer_index
+        mlp_path = layout.decoder_path / "layers" / mlp_index
+        loaded_layer = load_transformer_layer(
             layer,
             weights_dict,
-            layout.decoder_path / "layers" / ((i * 2) if layout.alternating_layers else i),
-            layout.decoder_path / "layers" / ((i * 2 + 1) if layout.alternating_layers else i),
+            mixer_path,
+            mlp_path,
             _get_mixer_key(layout.mixer_key, layer),
             layout.mlp_key,
             layout.pre_mixer_norm_key,
@@ -1381,13 +1657,29 @@ def load_huggingface_decoder(
             layout.permute_conv,
             implementation=implementation,
         )
-        for i, layer in enumerate(module.transformer.layers)
+        return load_layer_stream_parts(
+            loaded_layer,
+            weights_dict,
+            mixer_path,
+            mlp_path,
+            layout,
+            implementation=implementation,
+        )
+
+    decoder_layers = tuple(load_layer(i, layer) for i, layer in enumerate(module.transformer.layers))
+    residual_head = load_residual_head(
+        module.transformer.residual_head,
+        weights_dict,
+        layout.decoder_path / layout.residual_head_key,
+        implementation=implementation,
     )
-    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, layout.decoder_path / layout.norm_key)
+    output_norm = load_optional_rmsnorm(
+        module.transformer.output_norm, weights_dict, layout.decoder_path / layout.norm_key
+    )
     return load_as_at(
-        lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm),
+        lambda m: (m.embedding, m.transformer.layers, m.transformer.residual_head, m.transformer.output_norm),
         module,
-        (embedding, decoder_layers, output_norm),
+        (embedding, decoder_layers, residual_head, output_norm),
     )
 
 
@@ -1426,8 +1718,8 @@ def load_huggingface_classifier(
         )
         out_projection = load_linear(module.out_projection, weights_dict, path / "Wo", implementation=implementation)
 
-        query_norm = _load_optional_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
-        key_norm = _load_optional_rmsnorm(module.key_norm, weights_dict, path / "k_norm")
+        query_norm = load_optional_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
+        key_norm = load_optional_rmsnorm(module.key_norm, weights_dict, path / "k_norm")
 
         return load_as_at(
             lambda m: (m.qkvg_projection, m.out_projection, m.query_norm, m.key_norm),
@@ -1460,28 +1752,27 @@ def load_huggingface_classifier(
         weights_dict: Mapping[str, Array],
         path: ParameterPath,
     ) -> TransformerLayer:
-        pre_attention_norm = _load_optional_rmsnorm(module.pre_mixer_norm, weights_dict, path / "attn_norm")
+        pre_attention_norm = load_optional_rmsnorm(module.mixer.pre_norm, weights_dict, path / "attn_norm")
 
-        assert isinstance(module.mixer, Attention)
-        attention = load_attention_local(module.mixer, weights_dict, path / "attn")
-        assert isinstance(module.pre_mlp_norm, Normalization)
-        if module.post_mixer_norm is not None:
-            post_attention_norm = load_rmsnorm(module.post_mixer_norm, weights_dict, path / "post_attention_layernorm")
-            pre_mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, path / "pre_feedforward_layernorm")
+        assert isinstance(module.mixer.body, Attention)
+        attention = load_attention_local(module.mixer.body, weights_dict, path / "attn")
+        if module.mixer.post_norm is not None:
+            post_attention_norm = load_rmsnorm(module.mixer.post_norm, weights_dict, path / "post_attention_layernorm")
+            pre_mlp_norm = load_optional_rmsnorm(module.mlp.pre_norm, weights_dict, path / "pre_feedforward_layernorm")
         else:
             post_attention_norm = None
-            pre_mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, path / "mlp_norm")
+            pre_mlp_norm = load_optional_rmsnorm(module.mlp.pre_norm, weights_dict, path / "mlp_norm")
 
-        mlp = load_mlp_local(module.mlp, weights_dict, path / "mlp")
-        post_mlp_norm = _load_optional_rmsnorm(module.post_mlp_norm, weights_dict, path / "post_feedforward_layernorm")
+        mlp = load_mlp_local(module.mlp.body, weights_dict, path / "mlp")
+        post_mlp_norm = load_optional_rmsnorm(module.mlp.post_norm, weights_dict, path / "post_feedforward_layernorm")
         return load_as_at(
             lambda m: (
-                m.pre_mixer_norm,
-                m.mixer,
-                m.post_mixer_norm,
-                m.pre_mlp_norm,
-                m.mlp,
-                m.post_mlp_norm,
+                m.mixer.pre_norm,
+                m.mixer.body,
+                m.mixer.post_norm,
+                m.mlp.pre_norm,
+                m.mlp.body,
+                m.mlp.post_norm,
             ),
             module,
             (
@@ -1506,7 +1797,7 @@ def load_huggingface_classifier(
         load_transformer_layer_local(layer, weights_dict, decoder_path / "layers" / i)
         for i, layer in enumerate(module.transformer.layers)
     )
-    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / "final_norm")
+    output_norm = load_optional_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / "final_norm")
     head_dense = load_linear(
         module.prediction_head.dense,
         weights_dict,

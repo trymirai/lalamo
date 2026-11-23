@@ -4,13 +4,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Self
 
+from lalamo.modules import AdditiveResidualConfig, SublayerConfig
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig, UntiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, SoftmaxRouting
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.rope import MultimodalRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.token_mixers.deltanet import DeltaNetConfig
@@ -26,6 +27,8 @@ __all__ = ["HFQwen35Config"]
 class Qwen35RopeParameters:
     rope_theta: float
     partial_rotary_factor: float
+    mrope_section: tuple[int, int, int]
+    mrope_interleaved: Literal[True]
 
 
 @dataclass(frozen=True)
@@ -87,10 +90,11 @@ class HFQwen35Config(HuggingFaceLMConfig):
             )
         is_mlx = isinstance(self.quantization, MLXQuantizationConfig)
 
-        rope_config = UnscaledRoPEConfig(
+        rope_config = MultimodalRoPEConfig(
             base=self.rope_parameters.rope_theta,
             max_sequence_length=self.max_position_embeddings,
             head_dim=int(self.head_dim * self.rope_parameters.partial_rotary_factor),
+            frequency_pairs_per_axis=self.rope_parameters.mrope_section,
         )
 
         # Qwen3.5 RMSNorm computes (1 + weight) * norm(x). HF stores raw weights,
@@ -184,17 +188,14 @@ class HFQwen35Config(HuggingFaceLMConfig):
 
             layer_configs.append(
                 TransformerLayerConfig(
-                    pre_mixer_norm_config=rmsnorm_config,
-                    mixer_config=mixer_config,
-                    post_mixer_norm_config=None,
-                    pre_mlp_norm_config=rmsnorm_config,
-                    mlp_config=mlp_config,
-                    post_mlp_norm_config=None,
+                    mixer=SublayerConfig.pre_norm(rmsnorm_config, mixer_config),
+                    mlp=SublayerConfig.pre_norm(rmsnorm_config, mlp_config),
                     rope_config=rope_config if layer_type != "linear_attention" else None,
                 ),
             )
 
         transformer_config = TransformerConfig(
+            residual_config=AdditiveResidualConfig(),
             layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,

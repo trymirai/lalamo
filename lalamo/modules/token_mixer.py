@@ -35,22 +35,21 @@ class StateLayerBase(Exportable, eqx.Module):
 
 
 class TransformerLayerState(StateLayerBase):
-    """The state one transformer layer carries across calls: its token mixer's (KV cache or recurrent
-    state) and, for a mixture of experts under a stateful routing intervention, the routing state."""
-
     mixer: StateLayerBase
-    routing: StateLayerBase | None
+    stream_ops: tuple[StateLayerBase | None, ...]
+    # The state of a stateful routing intervention on the layer's mixture of experts (None without one).
+    routing: StateLayerBase | None = None
 
 
 @register_pytree_node_class
-class State(tuple[StateLayerBase, ...]):
+class State(tuple[TransformerLayerState, ...]):
     __slots__ = ()
 
-    def tree_flatten(self) -> tuple[tuple[StateLayerBase, ...], None]:
+    def tree_flatten(self) -> tuple[tuple[TransformerLayerState, ...], None]:
         return (tuple(self), None)
 
     @classmethod
-    def tree_unflatten(cls, aux_data: None, children: tuple[StateLayerBase, ...]) -> Self:  # noqa: ARG003
+    def tree_unflatten(cls, aux_data: None, children: tuple[TransformerLayerState, ...]) -> Self:  # noqa: ARG003
         return cls(children)
 
 

@@ -96,6 +96,7 @@ class DecoderResult(Exportable, eqx.Module):
     logits: Float[Array, "batch suffix_tokens vocabulary"]
     updated_state: State | None = None
     activation_trace: DecoderActivationTrace | None = None
+    # One entry per executed layer, None for a layer without a mixture of experts.
     routing_traces: tuple[MoERoutingTrace | None, ...] | None = None
 
 
@@ -243,11 +244,11 @@ class Decoder(LalamoModule[DecoderConfig]):
         state: State | None = None,
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
-        return_routing_traces: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
+        return_routing_traces: bool = False,
         generation_mask: Bool[Array, "batch suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
@@ -303,12 +304,13 @@ class Decoder(LalamoModule[DecoderConfig]):
             return_updated_state=return_updated_state,
             return_layer_results=return_activation_trace,
             return_positional_embeddings=return_activation_trace,
-            return_routing_traces=return_routing_traces,
             lengths_without_padding=lengths_without_padding,
             forward_pass_config=forward_pass_config.transformer_forward_pass_config,
             per_layer_inputs=per_layer_inputs,
             attention_parent_indices=attention_parent_indices,
             return_suffix_tokens=return_suffix_tokens,
+            token_ids=token_ids,
+            return_routing_traces=return_routing_traces,
             generation_mask=generation_mask,
             keychain=transformer_keychain,
         )
@@ -322,11 +324,11 @@ class Decoder(LalamoModule[DecoderConfig]):
         state: State | None = None,
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
-        return_routing_traces: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
+        return_routing_traces: bool = False,
         generation_mask: Bool[Array, "batch suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
@@ -337,11 +339,11 @@ class Decoder(LalamoModule[DecoderConfig]):
             state=state,
             return_updated_state=return_updated_state,
             return_activation_trace=return_activation_trace,
-            return_routing_traces=return_routing_traces,
             lengths_without_padding=lengths_without_padding,
             forward_pass_config=forward_pass_config,
             attention_parent_indices=attention_parent_indices,
             return_suffix_tokens=return_suffix_tokens,
+            return_routing_traces=return_routing_traces,
             generation_mask=generation_mask,
             keychain=keychain,
         )

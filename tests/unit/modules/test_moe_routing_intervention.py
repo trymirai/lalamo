@@ -58,9 +58,12 @@ class CountingIntervention(RoutingIntervention):
         state: StateLayerBase | None,
         routing_function: RoutingFunction,
         num_active: int,
+        biases: Float[Array, " experts"] | None = None,
     ) -> tuple[RoutingMap, StateLayerBase | None]:
         assert isinstance(state, CountState)
-        return routing_function(router_logits, num_active), CountState(count=state.count + active.astype(jnp.int32))
+        return routing_function(router_logits, biases, num_active=num_active), CountState(
+            count=state.count + active.astype(jnp.int32)
+        )
 
 
 class SeenState(StateLayerBase):
@@ -85,9 +88,10 @@ class SwitchIntervention(RoutingIntervention):
         state: StateLayerBase | None,
         routing_function: RoutingFunction,
         num_active: int,
+        biases: Float[Array, " experts"] | None = None,
     ) -> tuple[RoutingMap, StateLayerBase | None]:
         assert isinstance(state, SeenState)
-        base = routing_function(router_logits, num_active)
+        base = routing_function(router_logits, biases, num_active=num_active)
         switched = state.seen | active
         batch_size = router_logits.shape[0]
         fixed_indices = jnp.broadcast_to(
@@ -156,8 +160,8 @@ def test_identity_intervention_leaves_outputs_and_routing_bit_exact(
     module = _with(base, IdentityRoutingIntervention(phases=phases))
     inputs = _inputs(batch=2, tokens=6 if mode == ForwardPassMode.MULTI_TOKEN else 1)
 
-    reference = base(inputs, forward_pass_config=_config(mode), keychain=_keychain())
-    result = module(inputs, forward_pass_config=_config(mode), keychain=_keychain())
+    reference = base.call_with_routing(inputs, forward_pass_config=_config(mode), keychain=_keychain())
+    result = module.call_with_routing(inputs, forward_pass_config=_config(mode), keychain=_keychain())
 
     assert reference.routing_trace is not None and result.routing_trace is not None
     np.testing.assert_array_equal(_get(result.outputs), _get(reference.outputs))
@@ -185,8 +189,10 @@ def test_generation_mask_defaults_to_the_kernel_mode(mode: ForwardPassMode) -> N
     inputs = _inputs(batch=2, tokens=tokens)
     state = _batched_state(module, batch=2)
 
-    default = module(inputs, forward_pass_config=_config(mode), routing_state=state, keychain=_keychain())
-    overridden = module(
+    default = module.call_with_routing(
+        inputs, forward_pass_config=_config(mode), routing_state=state, keychain=_keychain()
+    )
+    overridden = module.call_with_routing(
         inputs,
         forward_pass_config=_config(mode),
         generation_mask=jnp.full((2, tokens), mode == ForwardPassMode.MULTI_TOKEN),
@@ -208,9 +214,11 @@ def test_context_only_rule_ignores_generated_tokens() -> None:
     # token as generated must not fire, whatever the kernel path.
     module = _with(_moe(), SwitchIntervention(phases=(RoutingPhase.CONTEXT,)))
     inputs = _inputs(batch=2, tokens=4)
-    reference = _moe()(inputs, forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN), keychain=_keychain())
+    reference = _moe().call_with_routing(
+        inputs, forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN), keychain=_keychain()
+    )
 
-    result = module(
+    result = module.call_with_routing(
         inputs,
         forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN),
         generation_mask=jnp.ones((2, 4), dtype=jnp.bool_),
@@ -236,7 +244,7 @@ def test_counting_state_advances_once_per_active_valid_token() -> None:
     inputs = _inputs(batch=2, tokens=6)
     lengths = jnp.asarray([6, 3], dtype=jnp.int32)
 
-    result = module(
+    result = module.call_with_routing(
         inputs,
         lengths_without_padding=lengths,
         forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN),
@@ -257,7 +265,7 @@ def test_state_carried_across_prefill_chunks_and_decode_steps_matches_one_pass()
     module = _with(_moe(), CountingIntervention(phases=(RoutingPhase.GENERATION,)))
     inputs = _inputs(batch=2, tokens=6)
     mask = _mask(2, 6, active_from=1)
-    one_pass = module(
+    one_pass = module.call_with_routing(
         inputs,
         forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN),
         generation_mask=mask,
@@ -267,7 +275,7 @@ def test_state_carried_across_prefill_chunks_and_decode_steps_matches_one_pass()
 
     chunked_state = _batched_state(module, batch=2)
     for start, end in ((0, 2), (2, 6)):
-        chunked_state = module(
+        chunked_state = module.call_with_routing(
             inputs[:, start:end],
             forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN),
             generation_mask=mask[:, start:end],
@@ -277,7 +285,7 @@ def test_state_carried_across_prefill_chunks_and_decode_steps_matches_one_pass()
 
     stepped_state = _batched_state(module, batch=2)
     for position in range(6):
-        stepped_state = module(
+        stepped_state = module.call_with_routing(
             inputs[:, position : position + 1],
             forward_pass_config=_config(ForwardPassMode.SINGLE_TOKEN),
             generation_mask=mask[:, position : position + 1],
@@ -298,10 +306,12 @@ def test_switch_rule_fires_on_the_first_active_token_and_stays_causal() -> None:
     # of the scan: routing up to position q must not depend on tokens after q.
     module = _with(_moe(), SwitchIntervention(phases=(RoutingPhase.GENERATION,)))
     inputs = _inputs(batch=2, tokens=6)
-    reference = _moe()(inputs, forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN), keychain=_keychain())
+    reference = _moe().call_with_routing(
+        inputs, forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN), keychain=_keychain()
+    )
     active_from = 3
 
-    result = module(
+    result = module.call_with_routing(
         inputs,
         forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN),
         generation_mask=_mask(2, 6, active_from=active_from),
@@ -318,7 +328,7 @@ def test_switch_rule_fires_on_the_first_active_token_and_stays_causal() -> None:
     )
 
     altered_inputs = inputs.at[:, active_from + 1 :].set(_inputs(batch=2, tokens=6, seed=99)[:, active_from + 1 :])
-    altered = module(
+    altered = module.call_with_routing(
         altered_inputs,
         forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN),
         generation_mask=_mask(2, 6, active_from=active_from),
@@ -341,7 +351,7 @@ def test_prefill_and_decode_route_a_stateful_rule_identically(replicated_experts
     inputs = _inputs(batch=2, tokens=6)
     mask = jnp.asarray([[False, False, True, False, False, False], [False, False, False, False, True, False]])
 
-    prefill = module(
+    prefill = module.call_with_routing(
         inputs,
         forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN),
         generation_mask=mask,
@@ -352,7 +362,7 @@ def test_prefill_and_decode_route_a_stateful_rule_identically(replicated_experts
     state = _batched_state(module, batch=2)
     stepped_indices = []
     for position in range(6):
-        step = module(
+        step = module.call_with_routing(
             inputs[:, position : position + 1],
             forward_pass_config=_config(ForwardPassMode.SINGLE_TOKEN),
             generation_mask=mask[:, position : position + 1],
@@ -387,7 +397,7 @@ def test_dispatch_uses_the_intervened_routing_the_trace_reports(
     tokens = 4 if mode == ForwardPassMode.MULTI_TOKEN else 1
     inputs = _inputs(batch=2, tokens=tokens)
 
-    result = module(
+    result = module.call_with_routing(
         inputs,
         forward_pass_config=_config(mode),
         routing_state=_batched_state(module, batch=2),
@@ -416,7 +426,7 @@ def test_stateful_rule_refuses_to_run_without_its_state() -> None:
     # memoryless; the module demands the state instead.
     module = _with(_moe(), CountingIntervention(phases=(RoutingPhase.GENERATION,)))
     with pytest.raises(ValueError, match="routing state"):
-        module(
+        module.call_with_routing(
             _inputs(batch=2, tokens=1), forward_pass_config=_config(ForwardPassMode.SINGLE_TOKEN), keychain=_keychain()
         )
 
@@ -460,7 +470,9 @@ def test_intervention_round_trips_through_json_with_a_stable_digest() -> None:
 @pytest.mark.usefixtures("fake_mesh")
 def test_transformer_layer_state_is_a_composite_of_mixer_and_routing_state() -> None:
     # The per-layer state gains a routing slot next to the mixer's; the batch axis is added to both.
-    layer_state = TransformerLayerState(mixer=CountState(count=jnp.zeros((3,), jnp.int32)), routing=None)
+    layer_state = TransformerLayerState(
+        mixer=CountState(count=jnp.zeros((3,), jnp.int32)), stream_ops=(), routing=None
+    )
     assert layer_state.routing is None
     leaves = jax.tree.leaves(layer_state)
     assert len(leaves) == 1 and leaves[0].shape == (3,)

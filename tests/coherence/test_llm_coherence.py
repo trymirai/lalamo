@@ -29,7 +29,7 @@ def _generate_single(
 ) -> str:
     message = model.reply(
         [UserMessage(prompt)],
-        generation_config=GenerationConfig(temperature=0.0),
+        generation_config=model.config.generation_config.override_with(GenerationConfig(temperature=0.0)),
         max_output_length=max_tokens,
         keychain=Keychain.init(0, sharding_config=model.sharding_config),
     )

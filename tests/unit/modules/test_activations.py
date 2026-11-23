@@ -3,14 +3,44 @@ from collections.abc import Callable
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
+import torch
 from jax.sharding import Mesh
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 
 from lalamo.module import LogicalAxis
 from lalamo.modules.activations import GELU, Activation, Identity, SiLU
 from tests.common import assert_close_arrays, assert_named_sharding
 from tests.helpers import make_sharding
+
+
+@pytest.mark.parametrize("approximate", [True, False])
+@pytest.mark.parametrize(
+    ("jax_dtype", "torch_dtype"),
+    [(jnp.float16, torch.float16), (jnp.bfloat16, torch.bfloat16)],
+)
+def test_low_precision_gelu_matches_torch(
+    approximate: bool,
+    jax_dtype: DTypeLike,
+    torch_dtype: torch.dtype,
+) -> None:
+    inputs = jnp.linspace(-8, 8, 4096, dtype=jnp.float32).astype(jax_dtype)
+    reference = torch.nn.functional.gelu(
+        torch.from_numpy(np.asarray(inputs).astype(np.float32)).to(torch_dtype),
+        approximate="tanh" if approximate else "none",
+    )
+    result = np.asarray(eqx.filter_jit(GELU(approximate=approximate))(inputs)).astype(np.float32)
+    reference = reference.float().numpy()
+    relative_error = np.linalg.norm(result - reference) / np.linalg.norm(reference)
+    assert relative_error < 1e-5
+    # Float32 library rounding can land on opposite sides of a low-precision midpoint.
+    np.testing.assert_allclose(
+        result,
+        reference,
+        atol=1e-6,
+        rtol=float(jnp.finfo(jax_dtype).eps),
+    )
 
 
 def _sharded_input(values: Array) -> Array:

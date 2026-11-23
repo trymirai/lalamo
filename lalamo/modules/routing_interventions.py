@@ -106,6 +106,7 @@ class CacheConditionalRouting(RoutingIntervention):
         state: StateLayerBase | None,
         routing_function: RoutingFunction,
         num_active: int,
+        biases: Float[Array, " experts"] | None = None,
     ) -> tuple[RoutingMap, StateLayerBase | None]:
         if not isinstance(state, ExpertCacheState):
             raise TypeError(f"CacheConditionalRouting needs an ExpertCacheState, got {type(state).__name__}")
@@ -122,7 +123,7 @@ class CacheConditionalRouting(RoutingIntervention):
                 " the rule would degrade to the base routing"
             )
         batch_size, num_experts = router_logits.shape
-        base = routing_function(router_logits, num_active)
+        base = routing_function(router_logits, biases, num_active=num_active)
 
         logits = router_logits.astype(jnp.float32)
         token_range = logits.max(axis=-1) - logits.min(axis=-1)

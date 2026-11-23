@@ -24,17 +24,8 @@ class ExampleBaseTokenCodecConfig(TokenCodecConfig):
 
 @dataclass(frozen=True)
 class ExampleTokenCodecConfig(ExampleBaseTokenCodecConfig):
-    def init(self, tokenizer: Tokenizer) -> "ExampleTokenCodec":
-        return ExampleTokenCodec(config=self, tokenizer=tokenizer)
-
-
-@dataclass(frozen=True)
-class ExampleTokenCodec(TokenCodec[list[int], list[int], ExampleTokenCodecConfig]):
-    def encode_request(self, request: list[int]) -> list[int]:
-        return request
-
-    def decode_response(self, response: list[int]) -> list[int]:
-        return response
+    def init(self, tokenizer: Tokenizer) -> TokenCodec["ExampleTokenCodecConfig"]:
+        return TokenCodec(config=self, tokenizer=tokenizer)
 
 
 @dataclass(frozen=True)
@@ -44,7 +35,6 @@ class ExampleBaseModelConfig(ModelConfig[ExampleBaseTokenCodecConfig]):
 
 @dataclass(frozen=True)
 class ExampleModelConfig(ExampleBaseModelConfig):
-    token_codec_config: ExampleBaseTokenCodecConfig
     width: int
 
     def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "ExampleModel":
@@ -60,7 +50,7 @@ class ExampleModelConfig(ExampleBaseModelConfig):
         )
 
 
-class ExampleModel(Model[ExampleTokenCodecConfig, ExampleModelConfig, ExampleTokenCodec]):
+class ExampleModel(Model[ExampleModelConfig, TokenCodec[ExampleTokenCodecConfig]]):
     dense_weight: Array
     sharded_weight: Array
 

@@ -66,19 +66,22 @@ class SFTensorInfo:
         return self._converter.unstructure(self)
 
 
-def safe_read(fd: BufferedReader) -> tuple[dict[str, str] | None, LazyDict[str, Array]]:
+def safe_read(
+    fd: BufferedReader,
+) -> tuple[dict[str, str] | None, LazyDict[str, Array], LazyDict[str, SFTensorInfo]]:
     header_size = struct.unpack("<Q", fd.read(8))[0]
     header: dict[str, dict[str, Any]] = json.loads(fd.read(header_size))
     metadata: dict[str, str] | None = header.pop("__metadata__", None)
     data_offset = fd.tell()
+    tensor_infos = LazyDict(set(header), lambda name: SFTensorInfo.from_dict(header[name]))
 
     def _load_tensor(key: str) -> Array:
-        info = SFTensorInfo.from_dict(header[key])
+        info = tensor_infos[key]
         fd.seek(data_offset + info.start)
         return jnp.asarray(np.fromfile(fd, info.dtype, info.size // info.dtype.itemsize)).reshape(info.shape)
 
-    lazy_tensors = LazyDict(set(header.keys()), _load_tensor)
-    return (metadata, lazy_tensors)
+    lazy_tensors = LazyDict(tensor_infos.stored_keys, _load_tensor)
+    return metadata, lazy_tensors, tensor_infos
 
 
 def safe_write(

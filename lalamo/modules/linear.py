@@ -120,7 +120,6 @@ class Linear(LalamoModule[LinearConfig]):
         expert_indices: Int[Array, " tokens"],
         group_sizes: Int[Array, " experts"],
         *,
-        keychain: Keychain,
         forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> tuple[Float[Array, "tokens out_channels"], ...]:
         if not isinstance(self.weights, FullPrecisionMatrix):
@@ -129,7 +128,6 @@ class Linear(LalamoModule[LinearConfig]):
         result = self.weights.ragged_dot(
             inputs,
             group_sizes,
-            keychain=keychain,
             forward_pass_config=forward_pass_config,
         )
         if self.biases is not None:

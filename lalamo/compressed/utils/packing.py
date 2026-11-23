@@ -9,6 +9,7 @@ from lalamo.utils.sharding import ShardingConfig, sharding_of, with_sharding
 
 __all__ = [
     "pack_uint_to_uint8",
+    "packed_last_axis_dim",
     "unpack_uint8_to_uint",
 ]
 

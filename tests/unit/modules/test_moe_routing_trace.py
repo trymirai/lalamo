@@ -144,7 +144,9 @@ def test_routing_trace_matches_independent_router_reference() -> None:
     module = _moe()
     inputs = _trace_inputs(batch=2, tokens=5)
 
-    trace = module(inputs, keychain=Keychain.init(7, sharding_config=make_test_sharding_config())).routing_trace
+    trace = module.call_with_routing(
+        inputs, keychain=Keychain.init(7, sharding_config=make_test_sharding_config())
+    ).routing_trace
 
     assert trace is not None
     reference_logits = _reference_router_logits(module, inputs)
@@ -170,7 +172,7 @@ def test_routing_trace_indices_cover_experts_used_by_dispatch(mode: ForwardPassM
     inputs = _trace_inputs(batch=2, tokens=4 if mode == ForwardPassMode.MULTI_TOKEN else 1)
     keychain = Keychain.init(7, sharding_config=make_test_sharding_config())
 
-    result = module(
+    result = module.call_with_routing(
         inputs,
         forward_pass_config=MLPForwardPassConfig(mode=mode, moe_chunk_size_ratio=0.5),
         keychain=keychain,
@@ -209,7 +211,9 @@ def test_routing_trace_shared_gate_matches_sigmoid_reference() -> None:
     module = _moe(num_shared_experts=2, with_gate=True)
     inputs = _trace_inputs(batch=2, tokens=3)
 
-    trace = module(inputs, keychain=Keychain.init(7, sharding_config=make_test_sharding_config())).routing_trace
+    trace = module.call_with_routing(
+        inputs, keychain=Keychain.init(7, sharding_config=make_test_sharding_config())
+    ).routing_trace
 
     assert trace is not None
     assert trace.shared_expert_gate is not None
@@ -242,7 +246,9 @@ def test_dense_mlp_routing_trace_is_none() -> None:
         down_projection=_linear(_rng_array((MODEL_DIM, HIDDEN_DIM), seed=6), None, (MODEL_DIM,)),
     )
     inputs = _trace_inputs(batch=2, tokens=2)
-    trace = module(inputs, keychain=Keychain.init(7, sharding_config=make_test_sharding_config())).routing_trace
+    trace = module.call_with_routing(
+        inputs, keychain=Keychain.init(7, sharding_config=make_test_sharding_config())
+    ).routing_trace
     assert trace is None
 
 
@@ -260,12 +266,12 @@ def test_moe_accepts_per_sequence_keychain(mode: ForwardPassMode, replicated_exp
     inputs = _trace_inputs(batch=2, tokens=tokens)
     config = MLPForwardPassConfig(mode=mode, moe_chunk_size_ratio=0.5)
 
-    scalar_out = module(
+    scalar_out = module.call_with_routing(
         inputs,
         forward_pass_config=config,
         keychain=Keychain.init(7, sharding_config=make_test_sharding_config()),
     ).outputs
-    batched_out = module(
+    batched_out = module.call_with_routing(
         inputs,
         forward_pass_config=config,
         keychain=Keychain.init(7, shape=(2,), sharding_config=make_test_sharding_config()),

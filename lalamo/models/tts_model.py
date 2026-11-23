@@ -56,8 +56,7 @@ class TTSGenerationResult:
     audio_params: AudioRenderingSettings
 
 
-class TTSModel(Model[TTSCodecConfig, TTSModelConfig, TTSCodec]):
-    token_codec: TTSCodec
+class TTSModel(Model[TTSModelConfig, TTSCodec]):
     text_decoder: TTSTextDecoder
     audio_decoder: TTSAudioDecoder
     vocoder: Vocoder
@@ -94,8 +93,9 @@ class TTSModel(Model[TTSCodecConfig, TTSModelConfig, TTSCodec]):
         forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),
     ) -> TTSGenerationResult:
         text_keychain, audio_keychain = keychain.split()
+        prompt = self.token_codec.render_request(messages)
         text_tokens: Int[Array, "batch tokens"] = jnp.asarray(
-            self.token_codec.encode_request(messages),
+            self.token_codec.encode_text(prompt),
             dtype=jnp.int32,
         )[None, :]
         semantic_tokens = self.decode_utterance(

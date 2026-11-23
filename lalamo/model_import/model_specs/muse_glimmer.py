@@ -3,16 +3,30 @@ from frozendict import frozendict
 from lalamo.model_import.model_configs import HFMuseGlimmerConfig
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.origins import HuggingFaceOrigin
-from lalamo.models.chat_codec import ReasoningConfig, ReasoningEffort
+from lalamo.models.chat_codec import (
+    ReasoningConfig,
+    ReasoningEffort,
+    ResponseFormat,
+    TaggedToolCalls,
+)
 from lalamo.models.language_model import GenerationConfig
 
 __all__ = ["MUSE_GLIMMER_MODELS"]
 
-MUSE_GLIMMER_OUTPUT_PARSER_REGEX = (
-    r"(?s)\s*(?:to=self<\|message\|>(?P<chain_of_thought>.*?)"
-    r"<\|eom\|><\|start\|>assistant )?to=user<\|message\|>"
-    r"(?P<response>.*?)(?:<\|eot\|>|<\|end_of_text\|>)\Z"
+
+MUSE_RESPONSE_FORMAT = ResponseFormat(
+    turn_pattern=(
+        r"\s*to=(?:self<\|message\|>(?P<chain_of_thought>.*?)"
+        r"|user<\|message\|>(?P<response>.*?)|[^\s<]+<\|message\|>(?P<tool_calls>.*?))"
+        r"(?:<\|eom\|><\|start\|>assistant|<\|eot\|>|<\|end_of_text\|>|\Z)"
+    ),
+    tool_calls=TaggedToolCalls(
+        tags=("<atem:function_calls>", "</atem:function_calls>"),
+        function_pattern=r'<atem:invoke name="([^"]+)">(.*?)</atem:invoke>',
+        parameter_pattern=r'<atem:parameter name="([^"]+)">(.*?)</atem:parameter>',
+    ),
 )
+
 
 MUSE_GLIMMER_MODELS = [
     LanguageModelSpec(
@@ -30,8 +44,7 @@ MUSE_GLIMMER_MODELS = [
                 top_p=0.95,
             ),
         ),
-        output_parser_regex=MUSE_GLIMMER_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag="<|eom|><|start|>assistant to=user<|message|>",
+        response_format=MUSE_RESPONSE_FORMAT,
         reasoning_config=ReasoningConfig(
             default_reasoning_effort=ReasoningEffort.HIGH,
             field_name="reasoning_strength",

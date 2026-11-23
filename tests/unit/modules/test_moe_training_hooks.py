@@ -85,7 +85,7 @@ def test_detached_scan_selects_like_the_lru_reference_and_dispatches_softmax_wei
     module = _with(_moe(), RULE)  # active on both phases: every token is boosted
     batch, tokens = 2, 10
     inputs = _inputs(batch=batch, tokens=tokens, seed=21)
-    result = module(
+    result = module.call_with_routing(
         inputs,
         forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN),
         routing_state=_batched_state(module, batch),
@@ -128,7 +128,7 @@ def test_effective_logits_are_the_boosted_field_the_selection_was_taken_over() -
     batch, tokens = 2, 9
     inputs = _inputs(batch=batch, tokens=tokens, seed=22)
     mask = _mask(batch, tokens, active_from=4)
-    trace = module(
+    trace = module.call_with_routing(
         inputs,
         forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN),
         generation_mask=mask,
@@ -161,7 +161,7 @@ def test_router_inputs_in_the_trace_reproduce_the_router_logits() -> None:
     # router (a frozen reference) applied to the same inputs is comparable with them.
     module = _with(_moe(), RULE)
     inputs = _inputs(batch=2, tokens=5, seed=23)
-    trace = module(
+    trace = module.call_with_routing(
         inputs,
         forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN),
         routing_state=_batched_state(module, 2),
@@ -193,7 +193,7 @@ def test_router_gradient_equals_the_fixed_selection_reference_and_needs_no_rever
 
     def module_loss(weights: Array) -> Array:
         rebuilt = eqx.tree_at(lambda m: m.router.weights.weights, module, weights)
-        outputs = rebuilt(
+        outputs = rebuilt.call_with_routing(
             inputs,
             forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN),
             routing_state=routing_state,
@@ -201,7 +201,7 @@ def test_router_gradient_equals_the_fixed_selection_reference_and_needs_no_rever
         ).outputs
         return (outputs * probe).sum()
 
-    trace = module(
+    trace = module.call_with_routing(
         inputs,
         forward_pass_config=_config(ForwardPassMode.MULTI_TOKEN),
         routing_state=routing_state,
@@ -237,7 +237,9 @@ def test_router_gradient_equals_the_fixed_selection_reference_and_needs_no_rever
     def plain_loss(weights: Array) -> Array:
         rebuilt = eqx.tree_at(lambda m: m.router.weights.weights, plain_module, weights)
         config = _config(ForwardPassMode.MULTI_TOKEN)
-        return (rebuilt(inputs, forward_pass_config=config, keychain=_keychain()).outputs * probe).sum()
+        return (
+            rebuilt.call_with_routing(inputs, forward_pass_config=config, keychain=_keychain()).outputs * probe
+        ).sum()
 
     with_rule = str(jax.make_jaxpr(jax.grad(module_loss))(router_weights))
     without_rule = str(jax.make_jaxpr(jax.grad(plain_loss))(router_weights))
@@ -289,7 +291,7 @@ def test_expert_chunk_remat_leaves_the_moe_forward_bit_exact() -> None:
     plain = MLPForwardPassConfig(mode=ForwardPassMode.MULTI_TOKEN, moe_chunk_size_ratio=0.5)
     remat = replace(plain, remat_expert_chunks=True)
     outputs = [
-        module(
+        module.call_with_routing(
             inputs, forward_pass_config=config, routing_state=_batched_state(module, 2), keychain=_keychain()
         ).outputs
         for config in (plain, remat)
@@ -307,7 +309,9 @@ def test_unrolling_the_routing_scan_changes_no_bit(unroll: int) -> None:
     inputs = _inputs(batch=2, tokens=10, seed=26)
     plain = MLPForwardPassConfig(mode=ForwardPassMode.MULTI_TOKEN, moe_chunk_size_ratio=0.5)
     results = [
-        module(inputs, forward_pass_config=config, routing_state=_batched_state(module, 2), keychain=_keychain())
+        module.call_with_routing(
+            inputs, forward_pass_config=config, routing_state=_batched_state(module, 2), keychain=_keychain()
+        )
         for config in (plain, replace(plain, routing_scan_unroll=unroll))
     ]
     reference, unrolled = results
@@ -339,7 +343,7 @@ def test_saving_the_scan_outputs_spares_the_backward_a_second_scan() -> None:
     def loss_under(policy: object) -> "jax.Array":
         def loss(weights: Array) -> Array:
             rebuilt = eqx.filter_checkpoint(
-                eqx.tree_at(lambda m: m.router.weights.weights, module, weights), policy=policy
+                eqx.tree_at(lambda m: m.router.weights.weights, module, weights).call_with_routing, policy=policy
             )
             outputs = rebuilt(
                 inputs, forward_pass_config=config, routing_state=routing_state, keychain=_keychain()

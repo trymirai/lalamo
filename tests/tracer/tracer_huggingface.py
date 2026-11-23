@@ -8,6 +8,7 @@ import jax
 import torch
 from jaxtyping import Array
 from torch import Tensor, nn
+from torch.nn.attention.flex_attention import BlockMask
 from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification
 from transformers.cache_utils import Cache
 from transformers.masking_utils import create_bidirectional_mask, create_bidirectional_sliding_window_mask
@@ -545,6 +546,8 @@ class ModernBertTracer(
             inputs_embeds=hidden_states,
             attention_mask=attention_mask,
         )
+        if isinstance(full_attention_mask, BlockMask) or isinstance(sliding_window_mask, BlockMask):
+            raise TypeError("The HF tracer expects dense attention masks; flex attention is not supported")
         return full_attention_mask, sliding_window_mask
 
     def match_layer(
@@ -563,7 +566,7 @@ class ModernBertTracer(
         hf_pre_attention_norm = ref_layer.attn_norm
         hf_pre_mlp_norm = ref_layer.mlp_norm
 
-        layer_hidden_states = jax_to_torch(activation_trace.pre_mixer_norm).to(self.device)
+        layer_hidden_states = jax_to_torch(activation_trace.mixer.pre_norm).to(self.device)
         attention_mask, sliding_window = self._update_attention_mask(layer_hidden_states)
         layer_attention_mask = attention_mask if use_global_attention else sliding_window
 
@@ -571,7 +574,7 @@ class ModernBertTracer(
             assert isinstance(hf_pre_attention_norm, nn.LayerNorm)
             self.match_rmsnorm(
                 activation_trace.inputs,
-                activation_trace.pre_mixer_norm,
+                activation_trace.mixer.pre_norm,
                 hf_pre_attention_norm,
                 f"Layer {layer_index} Pre Attention RMSNorm",
             )
@@ -595,8 +598,8 @@ class ModernBertTracer(
         )
 
         self.match_attention_custom(
-            activation_trace.pre_mixer_norm,
-            activation_trace.mixer,
+            activation_trace.mixer.pre_norm,
+            activation_trace.mixer.body,
             ref_layer.attn,  # type: ignore[arg-type]
             layer_attention_mask,
             (ref_cosines, ref_sines),
@@ -604,15 +607,15 @@ class ModernBertTracer(
         )
 
         self.match_rmsnorm(
-            activation_trace.mlp_inputs,
-            activation_trace.pre_mlp_norm,
+            activation_trace.mlp.inputs,
+            activation_trace.mlp.pre_norm,
             hf_pre_mlp_norm,
             f"Layer {layer_index} Pre MLP RMSNorm",
         )
 
         self.match_mlp(
-            activation_trace.pre_mlp_norm,
-            activation_trace.mlp,
+            activation_trace.mlp.pre_norm,
+            activation_trace.mlp.body,
             ref_layer.mlp,  # type: ignore[arg-type]
             f"Layer {layer_index} MLP",
         )

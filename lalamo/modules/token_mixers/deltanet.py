@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import einops
 import equinox as eqx
@@ -8,7 +8,9 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.initializer import Initializer
 from lalamo.kernels.deltanet import deltanet_recurrent_scan
+from lalamo.kernels.mosaic import supports_mosaic_gpu
 from lalamo.module import Keychain
+from lalamo.modules.activations import Activation, SiLU
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
@@ -55,6 +57,7 @@ class DeltaNetConfig(TokenMixerConfig):
     head_dim: int
     value_head_dim: int
     kernel_size: int
+    output_gate: Activation = field(default_factory=SiLU)
 
     def init(
         self,
@@ -169,6 +172,10 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         remainder = num_tokens % chunk_size
         has_short_tail = 0 < remainder < min_tail_size_to_chunk
         num_chunked_tokens = num_tokens - remainder if has_short_tail else num_tokens
+
+        # Short Mosaic scans keep the state in registers and avoid the chunked triangular solves.
+        if min_tail_size_to_chunk > 0 and num_tokens <= 512 and supports_mosaic_gpu(self.sharding_config.mesh, 9):
+            num_chunked_tokens = 0
 
         tail_queries = queries[num_chunked_tokens:]
         tail_keys = keys[num_chunked_tokens:]
@@ -310,11 +317,7 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         beta = jax.nn.sigmoid(beta_logits.astype(jnp.float32))
 
         if state is None:
-            state = SSMStateLayer.init(
-                self.config.kernel_size,
-                self.conv_dim,
-                (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
-            )
+            state = self.init_static_state(num_tokens, inputs.dtype)
         conv_output, updated_conv_state = self.conv(
             mixed_qkv,
             length_without_padding,
@@ -354,21 +357,23 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         length_without_padding = jnp.asarray(length_without_padding, dtype=jnp.int32)
         length_without_padding = jnp.clip(length_without_padding, 0, num_tokens)
 
-        core_attn_out, final_state = self._chunked_scan(
-            query,
-            key,
-            value,
-            decay_factor,
-            beta,
-            state.ssm_state,
-            length_without_padding,
-            forward_pass_config,
-        )
+        # Reduced precision can round the fp32 state even for fully masked chunks.
+        with jax.default_matmul_precision("highest"):
+            core_attn_out, final_state = self._chunked_scan(
+                query,
+                key,
+                value,
+                decay_factor,
+                beta,
+                state.ssm_state,
+                length_without_padding,
+                forward_pass_config,
+            )
         core_attn_out = core_attn_out.astype(mixed_qkv.dtype)
 
         def norm_gate(x: Float[Array, " channels"], gate: Float[Array, " channels"]) -> Float[Array, " channels"]:
             normed = self.norm(x)
-            return normed * jax.nn.silu(gate.astype(jnp.float32)).astype(x.dtype)
+            return normed * self.config.output_gate(gate.astype(jnp.float32)).astype(x.dtype)
 
         num_tokens, *_ = gate.shape
         gate = gate.reshape(num_tokens, self.config.num_heads, self.config.value_head_dim)
@@ -391,8 +396,12 @@ class DeltaNet(TokenMixerBase[DeltaNetConfig, SSMStateLayer]):
         return TokenMixerResult(outputs.astype(inputs.dtype), updated_state)
 
     def init_static_state(self, capacity: int, dtype: DTypeLike) -> SSMStateLayer:  # noqa: ARG002
-        return SSMStateLayer.init(
+        state = SSMStateLayer.init(
             self.config.kernel_size,
             self.conv_dim,
             (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
+        )
+        return jax.tree.map(
+            lambda array: jax.device_put(array, self.sharding_config.make_sharding((None,) * array.ndim)),
+            state,
         )

@@ -2,6 +2,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 
 import jax
+import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from lalamo.module import LalamoConfig
@@ -12,6 +13,7 @@ __all__ = [
     "Activation",
     "Identity",
     "SiLU",
+    "Sigmoid",
 ]
 
 
@@ -30,11 +32,17 @@ class SiLU(Activation):
 
 
 @dataclass(frozen=True)
+class Sigmoid(Activation):
+    def __call__(self, x: Float[Array, "..."]) -> Float[Array, "..."]:
+        return jax.nn.sigmoid(x)
+
+
+@dataclass(frozen=True)
 class GELU(Activation):
     approximate: bool = True
 
     def __call__(self, x: Float[Array, "..."]) -> Float[Array, "..."]:
-        return jax.nn.gelu(x, approximate=self.approximate)
+        return jax.nn.gelu(x.astype(jnp.float32), approximate=self.approximate).astype(x.dtype)
 
 
 @dataclass(frozen=True)

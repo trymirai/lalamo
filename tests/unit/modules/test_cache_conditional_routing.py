@@ -123,8 +123,8 @@ def test_zero_bias_reproduces_the_base_routing_bit_exact(mode: ForwardPassMode) 
     config = MLPForwardPassConfig(mode=mode, moe_chunk_size_ratio=0.5)
     keychain = Keychain.init(7, sharding_config=make_test_sharding_config())
 
-    reference = base(inputs, forward_pass_config=config, keychain=keychain)
-    result = module(
+    reference = base.call_with_routing(inputs, forward_pass_config=config, keychain=keychain)
+    result = module.call_with_routing(
         inputs,
         forward_pass_config=config,
         routing_state=_state(module.config.routing_intervention, 2),
@@ -261,7 +261,7 @@ def test_prefill_and_decode_route_identically_through_the_moe(replicated_experts
     inputs = jax.device_put(_rng_array((2, 6, MODEL_DIM), seed=5), make_sharding((LogicalAxis.BATCH, None, None)))
     keychain = Keychain.init(7, sharding_config=make_test_sharding_config())
 
-    prefill = module(
+    prefill = module.call_with_routing(
         inputs,
         forward_pass_config=MLPForwardPassConfig(mode=ForwardPassMode.MULTI_TOKEN, moe_chunk_size_ratio=0.5),
         routing_state=_state(intervention, 2),
@@ -270,7 +270,7 @@ def test_prefill_and_decode_route_identically_through_the_moe(replicated_experts
     state = _state(intervention, 2)
     stepped = []
     for position in range(6):
-        step = module(
+        step = module.call_with_routing(
             inputs[:, position : position + 1],
             forward_pass_config=MLPForwardPassConfig(mode=ForwardPassMode.SINGLE_TOKEN),
             routing_state=state,
@@ -298,7 +298,7 @@ def test_weights_keep_the_dtype_of_the_router_logits(dtype: jnp.dtype) -> None:
     routing, _ = intervention.route(
         logits, jnp.ones((1,), dtype=jnp.bool_), _state(intervention, 1), SoftmaxRouting(), NUM_ACTIVE
     )
-    base = SoftmaxRouting()(logits, NUM_ACTIVE)
+    base = SoftmaxRouting()(logits, num_active=NUM_ACTIVE)
 
     assert routing.active_expert_weights.dtype == logits.dtype
     np.testing.assert_array_equal(np.asarray(routing.active_expert_weights), np.asarray(base.active_expert_weights))
@@ -318,7 +318,7 @@ def test_a_bfloat16_mixture_keeps_its_dtype_through_the_intervention() -> None:
         _rng_array((2, 4, MODEL_DIM), seed=11).astype(jnp.bfloat16), make_sharding((LogicalAxis.BATCH, None, None))
     )
 
-    result = module(
+    result = module.call_with_routing(
         inputs,
         forward_pass_config=MLPForwardPassConfig(mode=ForwardPassMode.MULTI_TOKEN, moe_chunk_size_ratio=0.5),
         routing_state=_state(module.config.routing_intervention, 2),

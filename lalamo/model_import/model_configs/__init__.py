@@ -8,6 +8,7 @@ from .huggingface import (
     HFGPTOssConfig,
     HFGraniteConfig,
     HFLFM2Config,
+    HFLFM2MoeConfig,
     HFLlamaConfig,
     HFLlambaConfig,
     HFMistralConfig,
@@ -17,6 +18,7 @@ from .huggingface import (
     HFQwen3Config,
     HFQwen3NextConfig,
     HFQwen35Config,
+    HFQwen38FlashNextConfig,
     HFSmolLM3Config,
 )
 
@@ -33,6 +35,7 @@ __all__ = [
     "HFGemma4Config",
     "HFGraniteConfig",
     "HFLFM2Config",
+    "HFLFM2MoeConfig",
     "HFLlamaConfig",
     "HFLlambaConfig",
     "HFMistralConfig",
@@ -42,5 +45,6 @@ __all__ = [
     "HFQwen3Config",
     "HFQwen3NextConfig",
     "HFQwen35Config",
+    "HFQwen38FlashNextConfig",
     "HFSmolLM3Config",
 ]

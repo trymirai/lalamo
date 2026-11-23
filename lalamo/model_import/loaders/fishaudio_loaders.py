@@ -44,7 +44,7 @@ from lalamo.utils.sharding import sharding_of, with_sharding
 from lalamo.utils.surgery import load_as_at
 
 from .common import load_full_precision
-from .huggingface import load_rmsnorm, load_tied_embedding
+from .huggingface import load_optional_rmsnorm, load_rmsnorm, load_tied_embedding
 from .nanocodec_loaders import (
     load_causal_conv1d,
     load_causal_transpose_conv1d,
@@ -275,41 +275,28 @@ def load_transformer_block(
         weights_dict: Mapping[str, Array],
         path: ParameterPath,
     ) -> TransformerLayer:
-        if module.pre_mixer_norm is not None:
-            assert isinstance(module.pre_mixer_norm, Normalization)
-            pre_mixer_norm = load_rmsnorm(
-                module.pre_mixer_norm,
-                weights_dict,
-                path / "attention_norm",
-            )
-        else:
-            pre_mixer_norm = None
+        pre_mixer_norm = load_optional_rmsnorm(module.mixer.pre_norm, weights_dict, path / "attention_norm")
 
         layer_scale_path = path / "attention_layer_scale" / "gamma"
         layer_scale_weights = weights_dict.get(layer_scale_path, None)
         post_mixer_norm = None
 
-        assert isinstance(module.mixer, Attention)
+        assert isinstance(module.mixer.body, Attention)
         attention = load_attention_local(
-            attn_module=module.mixer,
+            attn_module=module.mixer.body,
             weights_dict=weights_dict,
             path=path / "attention",
             scaling_to_fuse=layer_scale_weights,
         )
 
-        assert isinstance(module.pre_mlp_norm, Normalization)
-        pre_mlp_norm = load_rmsnorm(
-            module.pre_mlp_norm,
-            weights_dict,
-            path / "ffn_norm",
-        )
+        pre_mlp_norm = load_optional_rmsnorm(module.mlp.pre_norm, weights_dict, path / "ffn_norm")
 
         layer_scale_path = path / "ffn_layer_scale" / "gamma"
         layer_scale_weights = weights_dict.get(layer_scale_path, None)
         post_mlp_norm = None
 
         mlp = load_mlp(
-            module=module.mlp,
+            module=module.mlp.body,
             weights_dict=weights_dict,
             path=path / "feed_forward",
             up_proj_key="w3",
@@ -320,12 +307,12 @@ def load_transformer_block(
 
         return load_as_at(
             lambda m: (
-                m.pre_mixer_norm,
-                m.mixer,
-                m.post_mixer_norm,
-                m.pre_mlp_norm,
-                m.mlp,
-                m.post_mlp_norm,
+                m.mixer.pre_norm,
+                m.mixer.body,
+                m.mixer.post_norm,
+                m.mlp.pre_norm,
+                m.mlp.body,
+                m.mlp.post_norm,
             ),
             module,
             (
@@ -347,7 +334,7 @@ def load_transformer_block(
         load_transformer_layer_local(layer, weights_dict, base_path / layers_name / i)
         for i, layer in enumerate(module.layers)
     )
-    output_norm = load_rmsnorm(module.output_norm, weights_dict, base_path / norm_name)
+    output_norm = load_optional_rmsnorm(module.output_norm, weights_dict, base_path / norm_name)
 
     return load_as_at(
         lambda m: (

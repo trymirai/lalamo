@@ -3,6 +3,13 @@ from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .deltanet import DeltaNet, DeltaNetConfig
 from .mamba import Mamba2, Mamba2Config
 from .short_conv import ShortConv, ShortConvConfig
+from .sparse_attention import (
+    SparseAttention,
+    SparseAttentionConfig,
+    SparseAttentionIndexer,
+    SparseAttentionIndexerConfig,
+    SparseAttentionStateLayer,
+)
 
 __all__ = [
     "Attention",
@@ -15,4 +22,9 @@ __all__ = [
     "SeparableCausalConvConfig",
     "ShortConv",
     "ShortConvConfig",
+    "SparseAttention",
+    "SparseAttentionConfig",
+    "SparseAttentionIndexer",
+    "SparseAttentionIndexerConfig",
+    "SparseAttentionStateLayer",
 ]

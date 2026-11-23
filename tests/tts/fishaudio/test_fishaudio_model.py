@@ -63,7 +63,9 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
 
     sampling_policy = SamplingPolicy.init(temperature=0.0)
 
-    tokenized_text = jnp.array(pytorch_tts_generator.token_codec.encode_request([tts_message]))[None, :]
+    tokenized_text = jnp.array(
+        pytorch_tts_generator.token_codec.encode_text(pytorch_tts_generator.token_codec.render_request([tts_message]))
+    )[None, :]
     n_tokens = tokenized_text.shape[-1]
     input_pos = jnp.arange(n_tokens)[None, :]
 

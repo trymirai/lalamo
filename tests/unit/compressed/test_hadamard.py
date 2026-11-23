@@ -3,7 +3,7 @@ from typing import Literal
 import jax
 import jax.numpy as jnp
 import pytest
-from jaxtyping import TypeCheckError
+from jaxtyping import DTypeLike, TypeCheckError
 
 from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.utils.sharding import LogicalAxis
@@ -29,12 +29,11 @@ def _sylvester_hadamard_matrix(block_size: int) -> jax.Array:
 
 def _dense_hadamard_transform(inputs: jax.Array, block_size: int) -> jax.Array:
     (input_dim,) = inputs.shape
-    transform_matrix = _sylvester_hadamard_matrix(block_size).astype(inputs.dtype)
-    transform_matrix = transform_matrix / jnp.sqrt(jnp.asarray(block_size, dtype=inputs.dtype))
-    blocks = jnp.reshape(inputs, (input_dim // block_size, block_size))
+    transform_matrix = _sylvester_hadamard_matrix(block_size)
+    blocks = jnp.reshape(inputs.astype(jnp.float32), (input_dim // block_size, block_size))
     with jax.default_matmul_precision("float32"):
         transformed_blocks = jax.vmap(lambda block: transform_matrix @ block)(blocks)
-    return jnp.reshape(transformed_blocks, (input_dim,))
+    return jnp.reshape(transformed_blocks / jnp.sqrt(jnp.float32(block_size)), (input_dim,)).astype(inputs.dtype)
 
 
 def _assert_close(result: jax.Array, reference: jax.Array) -> None:
@@ -59,15 +58,14 @@ def test_hadamard_transform_is_its_own_inverse() -> None:
     _assert_close(result=result, reference=inputs)
 
 
-def test_hadamard_transform_preserves_bfloat16_dtype() -> None:
-    inputs = _replicated(jnp.arange(64, dtype=jnp.bfloat16))
+@pytest.mark.parametrize("dtype", [jnp.bfloat16, jnp.float16])
+def test_hadamard_transform_accumulates_in_float32(dtype: DTypeLike) -> None:
+    inputs = _replicated(((jnp.arange(64) * 17 % 29 - 14) / 7).astype(dtype))
 
     result = hadamard_transform(inputs, block_size=32)
 
     assert result.dtype == inputs.dtype
-    _assert_close(
-        result=result.astype(jnp.float32), reference=_dense_hadamard_transform(inputs, 32).astype(jnp.float32)
-    )
+    assert jnp.array_equal(result, _dense_hadamard_transform(inputs, 32))
 
 
 @pytest.mark.parametrize("block_size", [0, 8, 16, 256])

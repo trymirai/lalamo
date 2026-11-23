@@ -15,6 +15,7 @@ from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.models.tts_codec import TTSCodec, TTSCodecConfig
 from lalamo.models.tts_model import TTSConfig, TTSModel, TTSModelConfig
+from lalamo.modules import AdditiveResidualConfig, SublayerConfig
 from lalamo.modules.activations import SiLU
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoderConfig
 from lalamo.modules.audio.fishaudio.fishaudio_consts import IM_END_TOKEN
@@ -129,7 +130,7 @@ class ConfigMapping:
         config: BaseModelArgs,
     ) -> tuple[TransformerConfig, LinearConfig]:
         rope_config = UnscaledRoPEConfig(
-            base=float(config.rope_base),
+            base=float(config.rope_base),  # pyrefly: ignore[unnecessary-type-conversion]
             max_sequence_length=config.max_seq_len,
             head_dim=config.head_dim,
         )
@@ -169,16 +170,13 @@ class ConfigMapping:
         )
 
         layer_config = TransformerLayerConfig(
-            pre_mixer_norm_config=norm_config,
-            mixer_config=mixer_config,
-            post_mixer_norm_config=None,
-            pre_mlp_norm_config=norm_config,
-            mlp_config=mlp_config,
-            post_mlp_norm_config=None,
+            mixer=SublayerConfig.pre_norm(norm_config, mixer_config),
+            mlp=SublayerConfig.pre_norm(norm_config, mlp_config),
             rope_config=rope_config,
         )
 
         transformer_cfg = TransformerConfig(
+            residual_config=AdditiveResidualConfig(),
             layer_configs=(layer_config,) * config.n_layer,
             output_norm_config=norm_config,
             model_dim=config.dim,

@@ -2,6 +2,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
+from lalamo.modules import AdditiveResidualConfig, SublayerConfig
 from lalamo.modules.activations import GELU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
@@ -150,17 +151,14 @@ class HFGemma3TextConfigRaw:
             # local layers use local_rope_config
             rope_config = global_rope_config if sliding_window_size is None else local_rope_config
             transformer_layer_config = TransformerLayerConfig(
-                pre_mixer_norm_config=rms_norm_config,
-                mixer_config=attention_config,
-                post_mixer_norm_config=rms_norm_config,
-                pre_mlp_norm_config=rms_norm_config,
-                mlp_config=mlp_config,
-                post_mlp_norm_config=rms_norm_config,
+                mixer=SublayerConfig.sandwich_norm(rms_norm_config, attention_config, rms_norm_config),
+                mlp=SublayerConfig.sandwich_norm(rms_norm_config, mlp_config, rms_norm_config),
                 rope_config=rope_config,
             )
             layer_configs.append(transformer_layer_config)
 
         transformer_config = TransformerConfig(
+            residual_config=AdditiveResidualConfig(),
             layer_configs=tuple(layer_configs),
             output_norm_config=rms_norm_config,
             model_dim=self.hidden_size,

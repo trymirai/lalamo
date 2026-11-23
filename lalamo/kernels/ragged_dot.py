@@ -34,6 +34,6 @@ def _ragged_dot_jvp(
     vectors, expert_weights, group_sizes = primals
     vector_tangent, weight_tangent, _ = tangents
     result = ragged_dot(vectors, expert_weights, group_sizes, precision)
-    tangent = ragged_dot(vector_tangent, expert_weights, group_sizes, precision)
-    tangent += ragged_dot(vectors, weight_tangent, group_sizes, precision)
-    return result, tangent
+    vector_term = ragged_dot(vector_tangent, expert_weights, group_sizes, precision)
+    weight_term = ragged_dot(vectors, weight_tangent, group_sizes, precision)
+    return result, vector_term + weight_term

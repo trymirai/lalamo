@@ -20,7 +20,7 @@ from tests.unit.modules.test_moe_routing_trace import MODEL_DIM, _moe, _trace_in
 
 
 def _run(module, inputs, *, lengths=None, mode=ForwardPassMode.MULTI_TOKEN):  # noqa: ANN001, ANN202
-    return module(
+    return module.call_with_routing(
         inputs,
         lengths_without_padding=lengths,
         forward_pass_config=MLPForwardPassConfig(mode=mode, moe_chunk_size_ratio=0.5),
@@ -91,7 +91,7 @@ def test_a_token_receives_exactly_its_own_k_contributions() -> None:
     module = _moe(replicated_experts=True)
     inputs = _trace_inputs(batch=2, tokens=4)
 
-    result = module(
+    result = module.call_with_routing(
         inputs,
         forward_pass_config=MLPForwardPassConfig(mode=ForwardPassMode.MULTI_TOKEN, moe_chunk_size_ratio=0.5),
         keychain=Keychain.init(7, sharding_config=make_test_sharding_config()),

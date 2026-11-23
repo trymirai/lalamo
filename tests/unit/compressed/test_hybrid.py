@@ -6,16 +6,27 @@ import jax.numpy as jnp
 import pytest
 from jaxtyping import Array, Float, Int, Key
 
-from lalamo.compressed.hybrid import HybridMatrix, HybridSpec, IncoherenceProcessingMode
+from lalamo.compressed.hybrid import HybridMatrix, HybridSpec
+from lalamo.compressed.incoherence import (
+    HadamardProcessor,
+    HadamardSpec,
+    IncoherenceProcessingMode,
+    KroneckerSpec,
+)
+from lalamo.compressed.lattice import LatticeSpec
 from lalamo.compressed.low_rank import LowRankSpec
+from lalamo.compressed.mlx import MLXSpec
+from lalamo.compressed.qtip_gaussian import QtipGaussianSpec, TrellisCodebook
 from lalamo.kernels.hadamard import hadamard_transform
 from lalamo.module import Keychain
 from lalamo.preconditioner import Preconditioner
+from lalamo.utils.dummy_array import dummy_array
 from lalamo.utils.sharding import LogicalAxis, ShardingConfig
 from lalamo.weight_matrix import (
     CompressionImplementation,
     FullPrecisionMatrix,
     FullPrecisionSpec,
+    Layout,
     WeightMatrixSpec,
 )
 from tests.common import assert_close
@@ -78,12 +89,15 @@ class _PreconditionerRecordingSpec(WeightMatrixSpec):
         )
 
 
-def test_hybrid_spec_roundtrips_json() -> None:
+@pytest.mark.parametrize(
+    "incoherence_spec",
+    [HadamardSpec(32, IncoherenceProcessingMode.INPUT), HadamardSpec(64), KroneckerSpec(), None],
+)
+def test_hybrid_spec_roundtrips_json(incoherence_spec: HadamardSpec | KroneckerSpec | None) -> None:
     spec = HybridSpec(
         quantization_spec=FullPrecisionSpec(),
         adapter_spec=LowRankSpec(rank=2),
-        incoherence_block_size=32,
-        incoherence_processing_mode=IncoherenceProcessingMode.INPUT,
+        incoherence_spec=incoherence_spec,
     )
 
     restored = WeightMatrixSpec.from_json(spec.to_json())
@@ -95,7 +109,7 @@ def test_hybrid_compress_requires_key_when_incoherence_is_enabled() -> None:
     spec = HybridSpec(
         quantization_spec=FullPrecisionSpec(),
         adapter_spec=None,
-        incoherence_block_size=32,
+        incoherence_spec=HadamardSpec(32),
     )
 
     with pytest.raises(ValueError, match="random incoherence signs"):
@@ -107,7 +121,7 @@ def test_hybrid_compress_without_incoherence_does_not_require_key() -> None:
     spec = HybridSpec(
         quantization_spec=FullPrecisionSpec(),
         adapter_spec=None,
-        incoherence_block_size=None,
+        incoherence_spec=None,
     )
 
     matrix = spec.compress(weights, sharding_config=make_test_sharding_config())
@@ -117,18 +131,43 @@ def test_hybrid_compress_without_incoherence_does_not_require_key() -> None:
     _assert_close(result=matrix.decompress(), reference=weights)
 
 
+def test_hybrid_restores_component_axes_of_stored_input_signs() -> None:
+    weights = jax.device_put(
+        jnp.stack([_weights(), _weights() + 1]),
+        make_test_sharding_config().resolve_sharding((None, None, None)),
+    )
+    spec = HybridSpec(quantization_spec=FullPrecisionSpec(), adapter_spec=None, incoherence_spec=HadamardSpec(32))
+    original = spec.compress(weights, key=jax.random.key(0), sharding_config=make_test_sharding_config())
+    template = spec.compress(
+        dummy_array(weights.shape, weights.dtype, make_sharding((None, None, None))),
+        key=jax.random.key(0),
+        sharding_config=make_test_sharding_config(),
+    )
+    exported = original.export()
+    assert exported.arrays["incoherence_signs.input_signs"].shape == (64,)
+    assert exported.arrays["incoherence_signs.output_signs"].shape == (2, 32)
+
+    restored = template.load_exported(exported)
+
+    assert isinstance(restored, HybridMatrix)
+    assert isinstance(restored.incoherence_signs, HadamardProcessor)
+    assert restored.incoherence_signs.input_signs is not None
+    assert restored.incoherence_signs.input_signs.shape == (2, 64)
+    _assert_close(result=restored.decompress(), reference=original.decompress())
+
+
 def test_hybrid_incoherence_decompress_restores_original_basis() -> None:
     weights = _weights()
     spec = HybridSpec(
         quantization_spec=FullPrecisionSpec(),
         adapter_spec=None,
-        incoherence_block_size=32,
+        incoherence_spec=HadamardSpec(32),
     )
 
     matrix = spec.compress(weights, key=jax.random.key(0), sharding_config=make_test_sharding_config())
 
     assert isinstance(matrix, HybridMatrix)
-    assert matrix.incoherence_signs is not None
+    assert isinstance(matrix.incoherence_signs, HadamardProcessor)
     input_signs = matrix.incoherence_signs.input_signs
     output_signs = matrix.incoherence_signs.output_signs
     assert input_signs is not None
@@ -143,12 +182,11 @@ def test_hybrid_input_incoherence_leaves_output_basis_unprocessed() -> None:
     matrix = HybridSpec(
         quantization_spec=FullPrecisionSpec(),
         adapter_spec=None,
-        incoherence_block_size=32,
-        incoherence_processing_mode=IncoherenceProcessingMode.INPUT,
+        incoherence_spec=HadamardSpec(32, IncoherenceProcessingMode.INPUT),
     ).compress(weights, key=jax.random.key(1), sharding_config=make_test_sharding_config())
     vector = _replicated_vector((jnp.arange(64, dtype=jnp.float32) - 3) / 7)
 
-    assert matrix.incoherence_signs is not None
+    assert isinstance(matrix.incoherence_signs, HadamardProcessor)
     input_signs = matrix.incoherence_signs.input_signs
     assert input_signs is not None
     assert matrix.incoherence_signs.output_signs is None
@@ -168,12 +206,11 @@ def test_hybrid_output_incoherence_leaves_input_basis_unprocessed() -> None:
     matrix = HybridSpec(
         quantization_spec=FullPrecisionSpec(),
         adapter_spec=None,
-        incoherence_block_size=32,
-        incoherence_processing_mode=IncoherenceProcessingMode.OUTPUT,
+        incoherence_spec=HadamardSpec(32, IncoherenceProcessingMode.OUTPUT),
     ).compress(weights, key=jax.random.key(2), sharding_config=make_test_sharding_config())
     vector = _replicated_vector((jnp.arange(64, dtype=jnp.float32) - 3) / 7)
 
-    assert matrix.incoherence_signs is not None
+    assert isinstance(matrix.incoherence_signs, HadamardProcessor)
     output_signs = matrix.incoherence_signs.output_signs
     assert matrix.incoherence_signs.input_signs is None
     assert output_signs is not None
@@ -193,8 +230,7 @@ def test_hybrid_incoherence_gathers_channel_sharded_weights() -> None:
     spec = HybridSpec(
         quantization_spec=FullPrecisionSpec(),
         adapter_spec=None,
-        incoherence_block_size=32,
-        incoherence_processing_mode=IncoherenceProcessingMode.OUTPUT,
+        incoherence_spec=HadamardSpec(32, IncoherenceProcessingMode.OUTPUT),
     )
 
     matrix = spec.compress(weights, key=jax.random.key(2), sharding_config=make_test_sharding_config())
@@ -207,7 +243,7 @@ def test_hybrid_incoherence_dot_matches_original_weights() -> None:
     matrix = HybridSpec(
         quantization_spec=FullPrecisionSpec(),
         adapter_spec=None,
-        incoherence_block_size=32,
+        incoherence_spec=HadamardSpec(32),
     ).compress(weights, key=jax.random.key(1), sharding_config=make_test_sharding_config())
     vector = _replicated_vector((jnp.arange(64, dtype=jnp.float32) - 3) / 7)
 
@@ -221,7 +257,7 @@ def test_hybrid_transposed_dot_matches_original_weights() -> None:
     matrix = HybridSpec(
         quantization_spec=FullPrecisionSpec(),
         adapter_spec=None,
-        incoherence_block_size=32,
+        incoherence_spec=HadamardSpec(32),
     ).compress(weights, key=jax.random.key(2), sharding_config=make_test_sharding_config())
     vector = _replicated_vector((jnp.arange(32, dtype=jnp.float32) + 5) / 11)
 
@@ -237,7 +273,7 @@ def test_hybrid_transposed_dot_rejects_adapters() -> None:
     matrix = HybridSpec(
         quantization_spec=LowRankSpec(rank=1),
         adapter_spec=FullPrecisionSpec(),
-        incoherence_block_size=32,
+        incoherence_spec=HadamardSpec(32),
     ).compress(weights, key=jax.random.key(2), sharding_config=make_test_sharding_config())
     vector = _replicated_vector((jnp.arange(32, dtype=jnp.float32) + 5) / 11)
 
@@ -250,21 +286,19 @@ def test_hybrid_adapter_compresses_residual_with_original_input_and_transformed_
     matrix = HybridSpec(
         quantization_spec=LowRankSpec(rank=1),
         adapter_spec=FullPrecisionSpec(),
-        incoherence_block_size=32,
+        incoherence_spec=HadamardSpec(32),
     ).compress(weights, key=jax.random.key(3), sharding_config=make_test_sharding_config())
 
-    assert matrix.incoherence_signs is not None
+    assert isinstance(matrix.incoherence_signs, HadamardProcessor)
     assert matrix.adapter is not None
     transformed_weights = matrix.incoherence_signs.process_weights(
         weights,
-        block_size=32,
-        sharding_config=make_test_sharding_config(),
+        make_test_sharding_config(),
     )
     transformed_residual = transformed_weights - matrix.quantized.decompress()
-    expected_adapter = matrix.incoherence_signs.unprocess_weight_input_axis(
+    expected_adapter = matrix.incoherence_signs.unprocess_input_axis(
         transformed_residual,
-        block_size=32,
-        sharding_config=make_test_sharding_config(),
+        make_test_sharding_config(),
     )
 
     _assert_close(result=matrix.adapter.decompress(), reference=expected_adapter)
@@ -276,7 +310,7 @@ def test_hybrid_adapter_dot_matches_original_weights() -> None:
     matrix = HybridSpec(
         quantization_spec=LowRankSpec(rank=1),
         adapter_spec=FullPrecisionSpec(),
-        incoherence_block_size=32,
+        incoherence_spec=HadamardSpec(32),
     ).compress(weights, key=jax.random.key(4), sharding_config=make_test_sharding_config())
     vector = _replicated_vector((jnp.arange(64, dtype=jnp.float32) - 13) / 17)
 
@@ -292,7 +326,7 @@ def test_hybrid_compress_reuses_preconditioner_for_quantization_and_adapter() ->
     spec = HybridSpec(
         quantization_spec=_PreconditionerRecordingSpec(quantization_calls),
         adapter_spec=_PreconditionerRecordingSpec(adapter_calls),
-        incoherence_block_size=None,
+        incoherence_spec=None,
     )
 
     spec.compress(_weights(), preconditioner=preconditioner, sharding_config=make_test_sharding_config())
@@ -312,14 +346,14 @@ def test_hybrid_incoherence_adapts_preconditioner_to_adapter_basis() -> None:
     spec = HybridSpec(
         quantization_spec=_PreconditionerRecordingSpec(quantization_calls),
         adapter_spec=_PreconditionerRecordingSpec(adapter_calls),
-        incoherence_block_size=32,
+        incoherence_spec=HadamardSpec(32),
     )
 
     matrix = spec.compress(
         _weights(), key=jax.random.key(6), preconditioner=preconditioner, sharding_config=make_test_sharding_config()
     )
 
-    assert matrix.incoherence_signs is not None
+    assert isinstance(matrix.incoherence_signs, HadamardProcessor)
     assert len(quantization_calls) == 1
     assert len(adapter_calls) == 1
     quantization_preconditioner = quantization_calls[0]
@@ -361,15 +395,14 @@ def test_hybrid_input_incoherence_keeps_output_preconditioner_basis() -> None:
     spec = HybridSpec(
         quantization_spec=_PreconditionerRecordingSpec(quantization_calls),
         adapter_spec=None,
-        incoherence_block_size=32,
-        incoherence_processing_mode=IncoherenceProcessingMode.INPUT,
+        incoherence_spec=HadamardSpec(32, IncoherenceProcessingMode.INPUT),
     )
 
     matrix = spec.compress(
         _weights(), key=jax.random.key(7), preconditioner=preconditioner, sharding_config=make_test_sharding_config()
     )
 
-    assert matrix.incoherence_signs is not None
+    assert isinstance(matrix.incoherence_signs, HadamardProcessor)
     input_signs = matrix.incoherence_signs.input_signs
     assert input_signs is not None
     assert matrix.incoherence_signs.output_signs is None
@@ -385,3 +418,35 @@ def test_hybrid_input_incoherence_keeps_output_preconditioner_basis() -> None:
         reference=_process_preconditioner_block(input_block, input_signs),
     )
     _assert_close(result=quantization_output_block, reference=output_block)
+
+
+def test_hybrid_embedding_lookup_rounds_once_like_decompress() -> None:
+    config = make_test_sharding_config()
+    spec = HybridSpec(
+        quantization_spec=MLXSpec(bits=4, group_size=32, layout=Layout.INPUT_OUTPUT),
+        adapter_spec=None,
+        incoherence_spec=HadamardSpec(32, IncoherenceProcessingMode.OUTPUT),
+    )
+    matrix = spec.compress(_weights(64, 64).astype(jnp.bfloat16), key=jax.random.key(0), sharding_config=config)
+    keychain = Keychain.init(0, sharding_config=config)
+    dense = matrix.decompress()
+
+    for index in (0, 5, 63):
+        row = matrix.lookup_embedding(index, keychain=keychain)
+        assert row.dtype == jnp.bfloat16
+        assert jnp.array_equal(row, dense[:, index])
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        QtipGaussianSpec(
+            vector_width=4, transition_bits=8, restart_columns=0, codebook=TrellisCodebook(1.0, (0.0, 0.0, 0.0, 0.0))
+        ),
+        LatticeSpec(Layout.OUTPUT_INPUT),
+        HybridSpec(QtipGaussianSpec(4, 8, 0, TrellisCodebook(1.0, (0.0, 0.0, 0.0, 0.0))), None, KroneckerSpec()),
+    ],
+)
+def test_load_only_specs_refuse_to_fit(spec: WeightMatrixSpec) -> None:
+    with pytest.raises(NotImplementedError, match="not fitted"):
+        spec.compress(_weights(), key=jax.random.key(0), sharding_config=make_test_sharding_config())

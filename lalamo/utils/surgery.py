@@ -3,6 +3,7 @@ from typing import overload
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jax.tree_util as jtu
 from jax import Array, ShapeDtypeStruct
 from jaxtyping import DTypeLike, PyTree
@@ -40,6 +41,9 @@ def _check_array_compatible(
 ) -> DTypeLike:
     if template_leaf.shape != value_leaf.shape:
         raise ValueError(f"Expected array to have shape {template_leaf.shape}, got {value_leaf.shape}")
+    assert template_leaf.dtype == value_leaf.dtype or (
+        jnp.issubdtype(template_leaf.dtype, jnp.floating) and jnp.issubdtype(value_leaf.dtype, jnp.floating)
+    ), f"Expected dtype {template_leaf.dtype}, got {value_leaf.dtype}"
     if template_leaf.weak_type:
         return value_leaf.dtype
     return template_leaf.dtype

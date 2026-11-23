@@ -7,6 +7,7 @@ from .gemma4 import HFGemma4Config
 from .gpt_oss import HFGPTOssConfig
 from .granite import HFGraniteConfig
 from .lfm2 import HFLFM2Config
+from .lfm2_moe import HFLFM2MoeConfig
 from .llama import HFLlamaConfig
 from .llamba import HFLlambaConfig
 from .mistral import HFMistralConfig
@@ -16,6 +17,7 @@ from .phi3 import HFPhi3Config
 from .qwen2 import HFQwen2Config
 from .qwen3 import HFQwen3Config
 from .qwen3_5 import HFQwen35Config
+from .qwen3_8_flash_next import HFQwen38FlashNextConfig
 from .qwen3_next import HFQwen3NextConfig
 from .smollm3 import HFSmolLM3Config
 from .weaver import HFWeaverConfig
@@ -32,6 +34,7 @@ __all__ = [
     "HFGemma4Config",
     "HFGraniteConfig",
     "HFLFM2Config",
+    "HFLFM2MoeConfig",
     "HFLlamaConfig",
     "HFLlambaConfig",
     "HFMistralConfig",
@@ -41,6 +44,7 @@ __all__ = [
     "HFQwen3Config",
     "HFQwen3NextConfig",
     "HFQwen35Config",
+    "HFQwen38FlashNextConfig",
     "HFSmolLM3Config",
     "HFWeaverConfig",
     "HuggingFaceLMConfig",

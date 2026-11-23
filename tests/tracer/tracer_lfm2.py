@@ -58,21 +58,16 @@ class LFM2DecoderTracer(
         hidden_states: Tensor,
         position_embeddings: tuple[Tensor, Tensor] | None,
     ) -> Tensor:
-        attention_mask = _build_hf_attention_mask(hidden_states, attention)  # type: ignore[arg-type]
-
         if isinstance(attention, Lfm2Attention):
             assert position_embeddings is not None
 
             attention_output, _ = attention.forward(
                 hidden_states=hidden_states,
                 position_embeddings=position_embeddings,
-                attention_mask=attention_mask,
+                attention_mask=_build_hf_attention_mask(hidden_states, attention),  # type: ignore[arg-type]
             )
         else:
-            attention_output = attention.forward(
-                hidden_states=hidden_states,
-                attention_mask=attention_mask,
-            )
+            attention_output = attention.forward(hidden_states=hidden_states)
 
         return attention_output
 

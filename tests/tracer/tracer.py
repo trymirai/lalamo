@@ -276,7 +276,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         ref_pre_attention_norm = self.layer_pre_attention_norm(ref_layer)
         self.match_rmsnorm(
             activation_trace.inputs,
-            activation_trace.pre_mixer_norm,
+            activation_trace.mixer.pre_norm,
             ref_pre_attention_norm,
             f"Layer {layer_index} Pre Attention RMSNorm",
         )
@@ -290,8 +290,8 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         else:
             position_embeddings = None
         self.match_attention(
-            activation_trace.pre_mixer_norm,
-            activation_trace.mixer,
+            activation_trace.mixer.pre_norm,
+            activation_trace.mixer.body,
             ref_attention,
             position_embeddings,
             f"Layer {layer_index} Attention",
@@ -299,36 +299,36 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
         ref_post_attention_norm = self.layer_post_attention_norm(ref_layer)
         if ref_post_attention_norm is not None:
-            assert activation_trace.post_mixer_norm is not None
+            assert activation_trace.mixer.post_norm is not None
             self.match_rmsnorm(
-                activation_trace.mixer,
-                activation_trace.post_mixer_norm,
+                activation_trace.mixer.body,
+                activation_trace.mixer.post_norm,
                 ref_post_attention_norm,
                 f"Layer {layer_index} Post Attention RMSNorm",
             )
 
         ref_pre_mlp_norm = self.layer_pre_mlp_norm(ref_layer)
         self.match_rmsnorm(
-            activation_trace.mlp_inputs,
-            activation_trace.pre_mlp_norm,
+            activation_trace.mlp.inputs,
+            activation_trace.mlp.pre_norm,
             ref_pre_mlp_norm,
             f"Layer {layer_index} Pre MLP RMSNorm",
         )
 
         ref_mlp = self.layer_mlp(ref_layer)
         self.match_mlp(
-            activation_trace.pre_mlp_norm,
-            activation_trace.mlp,
+            activation_trace.mlp.pre_norm,
+            activation_trace.mlp.body,
             ref_mlp,
             f"Layer {layer_index} MLP",
         )
 
         ref_post_mlp_norm = self.layer_post_mlp_norm(ref_layer)
         if ref_post_mlp_norm is not None:
-            assert activation_trace.post_mlp_norm is not None
+            assert activation_trace.mlp.post_norm is not None
             self.match_rmsnorm(
-                activation_trace.mlp,
-                activation_trace.post_mlp_norm,
+                activation_trace.mlp.body,
+                activation_trace.mlp.post_norm,
                 ref_post_mlp_norm,
                 f"Layer {layer_index} Post MLP RMSNorm",
             )

@@ -4,11 +4,22 @@ from lalamo.model_import.model_configs import (
     HFGemma4Config,
 )
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
-from lalamo.model_import.model_specs.output_parser_regexes import GEMMA4_OUTPUT_PARSER_REGEX
 from lalamo.model_import.model_specs.reasoning_configs import BOOLEAN_REASONING_DEFAULT_OFF_CONFIG
 from lalamo.model_import.origins import HuggingFaceOrigin
+from lalamo.models.chat_codec import ResponseFormat
 
 __all__ = ["GEMMA_MODELS"]
+
+
+GEMMA4_RESPONSE_FORMAT = ResponseFormat(
+    reasoning_pattern=(
+        r"(?:<\|channel>thought\n(?P<chain_of_thought>.*?)(?:<channel\|>|\Z))?"
+        r"(?P<response>(?:(?!<turn\|>)(?!<\|tool_response>).)+)?"
+        r"(?:<turn\|>|<\|tool_response>)?\Z"
+    ),
+    prefixes=("<|channel>thought\n",),
+)
+
 
 GEMMA4_BASE_CHAT_TEMPLATE = "{{ bos_token or '' }}{% for message in messages %}{{ message.content }}{% endfor %}"
 
@@ -126,8 +137,7 @@ GEMMA4 = [
         configs=ConfigMap(
             chat_template=FileSpec("chat_template.jinja"),
         ),
-        output_parser_regex=GEMMA4_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag="<channel|>",
+        response_format=GEMMA4_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
     ),
     LanguageModelSpec(
@@ -149,8 +159,7 @@ GEMMA4 = [
         configs=ConfigMap(
             chat_template=FileSpec("chat_template.jinja"),
         ),
-        output_parser_regex=GEMMA4_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag="<channel|>",
+        response_format=GEMMA4_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
     ),
 ]

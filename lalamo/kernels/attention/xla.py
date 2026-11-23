@@ -3,7 +3,7 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 from einops import einsum, rearrange
-from jaxtyping import Array, Bool, Float
+from jaxtyping import Array, Bool, Float, Int
 
 
 def xla_attention(
@@ -73,3 +73,40 @@ def xla_attention(
             )
 
     return jnp.where(has_values[:, None, None], result, 0).astype(original_dtype)
+
+
+def sparse_rows_mask(
+    rows: Int[Array, "dst_tokens rows"],
+    num_src_tokens: int,
+) -> Bool[Array, "dst_tokens src_tokens"]:
+    num_dst_tokens, _ = rows.shape
+    return (
+        jnp.zeros((num_dst_tokens, num_src_tokens), dtype=jnp.bool)
+        .at[jnp.arange(num_dst_tokens)[:, None], rows]
+        .set(True, mode="drop")
+    )
+
+
+def xla_top_k_blocks(
+    scores: Float[Array, "queries blocks"],
+    num_visible_blocks: Int[Array, " queries"],
+    k: int,
+) -> Int[Array, "queries k"]:
+    _, num_blocks = scores.shape
+    is_visible = jnp.arange(num_blocks, dtype=jnp.int32)[None, :] < num_visible_blocks[:, None]
+    top_scores, top_blocks = jax.lax.top_k(jnp.where(is_visible, scores, -jnp.inf), k)
+    ascending_blocks = jnp.sort(jnp.where(jnp.isfinite(top_scores), top_blocks, num_blocks), axis=-1)
+    return jnp.where(ascending_blocks < num_blocks, ascending_blocks, -1)
+
+
+def xla_sparse_attention(
+    queries: Float[Array, "dst_tokens heads head_dim"],
+    keys: Float[Array, "src_tokens key_value_heads head_dim"],
+    values: Float[Array, "src_tokens key_value_heads head_dim"],
+    rows: Int[Array, "dst_tokens rows"],
+    scale: float | Float[Array, ""] | None,
+    logit_soft_cap: float | Float[Array, ""] | None,
+) -> Float[Array, "dst_tokens heads head_dim"]:
+    num_src_tokens, _, _ = keys.shape
+    mask = sparse_rows_mask(rows, num_src_tokens)
+    return xla_attention(queries, keys, values, None, mask, scale, logit_soft_cap)

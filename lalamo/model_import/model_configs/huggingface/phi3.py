@@ -5,6 +5,7 @@ from typing import Literal
 from jaxtyping import Array
 
 from lalamo.model import Model
+from lalamo.modules import AdditiveResidualConfig, SublayerConfig
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
@@ -113,16 +114,13 @@ class HFPhi3Config(HuggingFaceLMConfig):
             )
             layer_configs.append(
                 TransformerLayerConfig(
-                    pre_mixer_norm_config=rmsnorm_config,
-                    mixer_config=attention_config,
-                    post_mixer_norm_config=None,
-                    pre_mlp_norm_config=rmsnorm_config,
-                    mlp_config=mlp_config,
-                    post_mlp_norm_config=None,
+                    mixer=SublayerConfig.pre_norm(rmsnorm_config, attention_config),
+                    mlp=SublayerConfig.pre_norm(rmsnorm_config, mlp_config),
                     rope_config=rope_config,
                 )
             )
         transformer_config = TransformerConfig(
+            residual_config=AdditiveResidualConfig(),
             layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,

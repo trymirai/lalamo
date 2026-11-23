@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Literal, NamedTuple, Self
 
+import jax
 import jax.numpy as jnp
 from jax.lax import stop_gradient
 from jaxtyping import Array, DTypeLike, Float, Int, Key, UInt8
@@ -26,6 +27,7 @@ from lalamo.weight_matrix import (
     WeightMatrixSpec,
 )
 
+from . import quant_params
 from .quantized_spec import QuantizedSpec
 from .utils.gaussian_order_statistics import standard_normal_range_squared
 from .utils.grouping import (
@@ -33,9 +35,10 @@ from .utils.grouping import (
     group_by_last_axis,
     min_max_within_groups,
     scale_from_min_max,
+    unsigned_qmax,
 )
 from .utils.packing import pack_uint_to_uint8, unpack_uint8_to_uint
-from .utils.rounding import deterministic_round_to_unsigned_grid, round_to_unsigned_grid
+from .utils.rounding import deterministic_round_to_unsigned_grid, lut_values_at, round_to_unsigned_grid
 from .utils.yaqa import yaqa_round_fixpoint
 
 __all__ = [
@@ -58,6 +61,8 @@ class MLXAffineParameters(NamedTuple):
         bits: int,
         group_size: int,
     ) -> Self:
+        if bits == 2 and group_size == weights.shape[-1]:
+            return _fit_symmetric_row_parameters(weights, bits)
         group_min_max = min_max_within_groups(group_by_last_axis(weights, group_size=group_size))
         scales = scale_from_min_max(group_min_max, bits=bits, dtype=weights.dtype)
         return cls(scales=scales, biases=group_min_max.min)
@@ -88,6 +93,34 @@ def _quantize(
     int_scale_weights = (weights - stop_gradient(expanded_biases)) / stop_gradient(expanded_scales)
 
     return round_fn(int_scale_weights) * expanded_scales + expanded_biases
+
+
+@supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
+def _fit_symmetric_row_parameters(
+    weights: Float[Array, "*components rows cols"],
+    bits: int,
+) -> MLXAffineParameters:
+    zero_point = unsigned_qmax(bits) / 2
+    rms = jnp.sqrt(jnp.mean(jnp.square(weights.astype(jnp.float32)), axis=-1, keepdims=True)).astype(weights.dtype)
+
+    def scales_at(relative_scale: Float[Array, "..."]) -> Float[Array, "*components rows 1"]:
+        return jnp.maximum(relative_scale * rms, 1e-6)
+
+    def squared_error(relative_scale: Float[Array, ""]) -> Float[Array, "*components rows 1"]:
+        scales = scales_at(relative_scale)
+        dequantized = _quantize(
+            weights,
+            scales,
+            -zero_point * scales,
+            group_size=weights.shape[-1],
+            round_fn=partial(deterministic_round_to_unsigned_grid, bits=bits),
+        )
+        return jnp.sum(jnp.square((dequantized - weights).astype(jnp.float32)), axis=-1, keepdims=True)
+
+    relative_scales = jnp.linspace(0.6, 1.4, 9, dtype=weights.dtype)
+    best_relative_scales = lut_values_at(jnp.argmin(jax.vmap(squared_error)(relative_scales), axis=0), relative_scales)
+    best_scales = scales_at(best_relative_scales)
+    return MLXAffineParameters(scales=best_scales, biases=-zero_point * best_scales)
 
 
 @supports_dummy_arrays(out_sharding_rule=preserve_first_input_sharding)
@@ -125,7 +158,7 @@ def _packed_weights_to_master_weights(
 
 @dataclass(frozen=True)
 class MLXSpec(QuantizedSpec):
-    bits: Literal[1, 4, 8]
+    bits: Literal[1, 2, 4, 8]
     group_size: int
     layout: Layout = Layout.OUTPUT_INPUT
 
@@ -143,7 +176,7 @@ class MLXSpec(QuantizedSpec):
 
     @property
     def rate(self) -> float:
-        return float(self.bits + 64 / self.group_size)
+        return self.bits + 64 / self.group_size
 
     @property
     def distortion(self) -> float:
@@ -258,11 +291,25 @@ class MLXMatrix(EmbeddingMatrix[MLXSpec]):
     def _packed_quantized_weights(self) -> UInt8[Array, "*components rows packed_cols"]: ...
 
     def export(self) -> ExportResults:
+        columns, groups = self.scales.shape[-2:]
+        params_shape = (columns, groups)
         return ExportResults(
             arrays={
                 "weights": self._packed_quantized_weights,
-                "scales": self.scales,
-                "biases": self.biases,
+                "scales": quant_params.for_export(
+                    self.scales,
+                    shape=params_shape,
+                    layout=self.spec.layout,
+                    bits=self.scales.dtype.itemsize * 8,
+                    sharding_config=self.sharding_config,
+                ),
+                "biases": quant_params.for_export(
+                    self.biases,
+                    shape=params_shape,
+                    layout=self.spec.layout,
+                    bits=self.biases.dtype.itemsize * 8,
+                    sharding_config=self.sharding_config,
+                ),
             },
             metadata={"spec": self.spec.to_json()},
         )
@@ -274,6 +321,46 @@ class MLXMatrix(EmbeddingMatrix[MLXSpec]):
         *,
         prefix: ParameterPath | None = None,
     ) -> "MLXMatrix": ...
+
+    def _load_exported(
+        self,
+        exported_data: ExportResults,
+        implementation: CompressionImplementation,
+        prefix: ParameterPath | None,
+    ) -> "MLXMatrix":
+        if prefix is None:
+            prefix = ParameterPath()
+        loaded_spec = WeightMatrixSpec.from_json(exported_data.metadata[prefix / "spec"])
+        if loaded_spec != self.spec:
+            raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
+
+        packed_weights = load_as(self._packed_quantized_weights, exported_data.arrays[prefix / "weights"])
+        columns, groups = self.scales.shape[-2:]
+        params_shape = (columns, groups)
+        scales = quant_params.from_export(
+            exported_data.arrays[prefix / "scales"],
+            like=self.scales,
+            shape=params_shape,
+            layout=self.spec.layout,
+            bits=self.scales.dtype.itemsize * 8,
+            sharding_config=self.sharding_config,
+        )
+        biases = quant_params.from_export(
+            exported_data.arrays[prefix / "biases"],
+            like=self.biases,
+            shape=params_shape,
+            layout=self.spec.layout,
+            bits=self.biases.dtype.itemsize * 8,
+            sharding_config=self.sharding_config,
+        )
+        return self.spec.from_packed_parameters(
+            packed_weights=packed_weights,
+            scales=scales,
+            biases=biases,
+            implementation=implementation,
+            sharding_config=self.sharding_config,
+            is_sharded=self.is_sharded,
+        )
 
     @abstractmethod
     def switch_implementation(self, implementation: CompressionImplementation) -> "MLXMatrix": ...
@@ -388,32 +475,10 @@ class MLXMatrixForTraining(MLXMatrix):
         *,
         prefix: ParameterPath | None = None,
     ) -> MLXMatrix:
-        if prefix is None:
-            prefix = ParameterPath()
-        saved_spec = exported_data.metadata[prefix / "spec"]
-        loaded_spec = WeightMatrixSpec.from_json(saved_spec)
-        if loaded_spec != self.spec:
-            raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
-
-        packed_weights = load_as(
-            self._packed_quantized_weights,
-            exported_data.arrays[prefix / "weights"],
-        )
-        scales = load_as(
-            self.scales,
-            exported_data.arrays[prefix / "scales"],
-        )
-        biases = load_as(
-            self.biases,
-            exported_data.arrays[prefix / "biases"],
-        )
-        return self.spec.from_packed_parameters(
-            packed_weights=packed_weights,
-            scales=scales,
-            biases=biases,
-            implementation=CompressionImplementation.TRAINING,
-            sharding_config=self.sharding_config,
-            is_sharded=self.is_sharded,
+        return self._load_exported(
+            exported_data,
+            CompressionImplementation.TRAINING,
+            prefix,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> MLXMatrix:
@@ -463,32 +528,10 @@ class MLXMatrixForInference(MLXMatrix):
         *,
         prefix: ParameterPath | None = None,
     ) -> MLXMatrix:
-        if prefix is None:
-            prefix = ParameterPath()
-        saved_spec = exported_data.metadata[prefix / "spec"]
-        loaded_spec = WeightMatrixSpec.from_json(saved_spec)
-        if loaded_spec != self.spec:
-            raise ValueError(f"WeightMatrix spec mismatch: expected {self.spec}, got {loaded_spec}")
-
-        packed_weights = load_as(
-            self.packed_weights,
-            exported_data.arrays[prefix / "weights"],
-        )
-        scales = load_as(
-            self.scales,
-            exported_data.arrays[prefix / "scales"],
-        )
-        biases = load_as(
-            self.biases,
-            exported_data.arrays[prefix / "biases"],
-        )
-        return MLXMatrixForInference(
-            spec=self.spec,
-            sharding_config=self.sharding_config,
-            is_sharded=self.is_sharded,
-            packed_weights=packed_weights,
-            scales=scales,
-            biases=biases,
+        return self._load_exported(
+            exported_data,
+            CompressionImplementation.INFERENCE,
+            prefix,
         )
 
     def switch_implementation(self, implementation: CompressionImplementation) -> MLXMatrix:

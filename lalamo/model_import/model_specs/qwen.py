@@ -1,26 +1,39 @@
+from dataclasses import replace
+
 from frozendict import frozendict
 
 from lalamo.model_import.model_configs import (
     HFQwen2Config,
     HFQwen3Config,
     HFQwen35Config,
+    HFQwen38FlashNextConfig,
 )
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
-from lalamo.model_import.model_specs.output_parser_regexes import OPTIONAL_THINKING_OUTPUT_PARSER_REGEX
 from lalamo.model_import.model_specs.reasoning_configs import (
     BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
     BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
 )
 from lalamo.model_import.origins import HuggingFaceOrigin
-from lalamo.models.chat_codec import ReasoningConfig, ReasoningEffort
+from lalamo.models.chat_codec import THINKING_RESPONSE_FORMAT, ReasoningConfig, ReasoningEffort, TaggedToolCalls
 from lalamo.models.language_model import GenerationConfig
 
 __all__ = ["QWEN_MODELS"]
 
-QWEN_END_OF_THINKING_TAG = "\n</think>"
 
-# The MLX build of this model carries neither a tokenizer pair nor a generation config of its own.
+# The MLX builds of this model take the tokenizer, the chat template and the sampling parameters from
+# the source repo: they ship no generation_config.json, and sharing the rest keeps the prompt identical
+# to the unquantized model's.
 QWEN36_A3B_REPO = "Qwen/Qwen3.6-35B-A3B"
+
+QWEN_RESPONSE_FORMAT = replace(
+    THINKING_RESPONSE_FORMAT,
+    tool_calls=TaggedToolCalls(
+        tags=("<tool_call>", "</tool_call>"),
+        function_pattern=r"<function=([^>\n]+)>(.*?)</function>",
+        parameter_pattern=r"<parameter=([^>\n]+)>\n?(.*?)\n?</parameter>",
+    ),
+)
+
 
 QWEN38_REASONING_CONFIG = ReasoningConfig(
     default_reasoning_effort=ReasoningEffort.XHIGH,
@@ -48,8 +61,7 @@ def _qwen3_mlx_model_spec(
         size=size,
         origin=HuggingFaceOrigin(repo=f"Qwen/{name}"),
         config_type=HFQwen3Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=THINKING_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", base_repo),
@@ -119,8 +131,7 @@ QWEN3 = [
         size="0.6B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3-0.6B"),
         config_type=HFQwen3Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=THINKING_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
     _qwen3_mlx_model_spec(
@@ -140,8 +151,7 @@ QWEN3 = [
         size="1.7B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3-1.7B"),
         config_type=HFQwen3Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=THINKING_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
     _qwen3_mlx_model_spec(
@@ -161,8 +171,7 @@ QWEN3 = [
         size="4B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3-4B"),
         config_type=HFQwen3Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=THINKING_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
     LanguageModelSpec(
@@ -190,8 +199,7 @@ QWEN3 = [
         size="4B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3-4B-Thinking-2507"),
         config_type=HFQwen3Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=THINKING_RESPONSE_FORMAT,
     ),
     LanguageModelSpec(
         vendor="Alibaba",
@@ -200,8 +208,7 @@ QWEN3 = [
         size="8B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3-8B"),
         config_type=HFQwen3Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=THINKING_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
     _qwen3_mlx_model_spec(
@@ -221,8 +228,7 @@ QWEN3 = [
         size="14B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3-14B"),
         config_type=HFQwen3Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=THINKING_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
     _qwen3_mlx_model_spec(
@@ -242,8 +248,7 @@ QWEN3 = [
         size="32B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3-32B"),
         config_type=HFQwen3Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=THINKING_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
     _qwen3_mlx_model_spec(
@@ -267,8 +272,7 @@ QWEN35 = [
         size="0.8B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-0.8B"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
@@ -287,8 +291,7 @@ QWEN35 = [
         size="0.8B",
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-0.8B-MLX-4bit"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-0.8B"),
@@ -309,8 +312,7 @@ QWEN35 = [
         size="0.8B",
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-0.8B-MLX-8bit"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-0.8B"),
@@ -331,8 +333,7 @@ QWEN35 = [
         size="2B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-2B"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
@@ -350,8 +351,7 @@ QWEN35 = [
         size="2B",
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-2B-MLX-4bit"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-2B"),
@@ -372,8 +372,7 @@ QWEN35 = [
         size="2B",
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-2B-MLX-8bit"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_OFF_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-2B"),
@@ -393,8 +392,7 @@ QWEN35 = [
         size="4B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-4B"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
@@ -412,8 +410,7 @@ QWEN35 = [
         size="4B",
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-4B-MLX-4bit"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-4B"),
@@ -433,8 +430,7 @@ QWEN35 = [
         size="4B",
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-4B-MLX-8bit"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-4B"),
@@ -454,8 +450,7 @@ QWEN35 = [
         size="9B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-9B"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
@@ -468,8 +463,7 @@ QWEN35 = [
         size="9B",
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-9B-MLX-4bit"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-9B"),
@@ -484,8 +478,7 @@ QWEN35 = [
         size="9B",
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-9B-MLX-8bit"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-9B"),
@@ -500,8 +493,7 @@ QWEN35 = [
         size="27B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-27B"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
     LanguageModelSpec(
@@ -511,8 +503,7 @@ QWEN35 = [
         size="27B",
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-27B-4bit"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-27B"),
@@ -527,8 +518,7 @@ QWEN35 = [
         size="27B",
         origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-27B-8bit"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-27B"),
@@ -543,8 +533,7 @@ QWEN35 = [
         size="35B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-35B-A3B"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
     ),
 ]
@@ -557,9 +546,9 @@ QWEN36 = [
         size="27B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.6-27B"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
+        configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
     ),
     LanguageModelSpec(
         vendor="Alibaba",
@@ -568,10 +557,10 @@ QWEN36 = [
         size="35B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.6-35B-A3B"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
+            chat_template=FileSpec("chat_template.jinja"),
             # The model card recommends 1.5, but generation_config.json omits presence_penalty.
             generation_params_overrides=GenerationConfig(presence_penalty=1.5),
         ),
@@ -581,19 +570,17 @@ QWEN36 = [
         family="Qwen3.6",
         name="Qwen3.6-35B-A3B-UD-MLX-4bit",
         size="35B",
-        origin=HuggingFaceOrigin(repo="unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"),
         # Same config type as the unquantized model: it already handles `qwen3_5_moe`, and it reads
         # the `quantization` section to drop the RMSNorm offset MLX bakes into the weights.
+        origin=HuggingFaceOrigin(repo="unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
-            # The MLX repo ships no generation_config.json at all, so sampling parameters -- and with
-            # them the deployed sampler -- have to come from the source repo.
             tokenizer=FileSpec("tokenizer.json", QWEN36_A3B_REPO),
             tokenizer_config=FileSpec("tokenizer_config.json", QWEN36_A3B_REPO),
             generation_config=FileSpec("generation_config.json", QWEN36_A3B_REPO),
+            chat_template=FileSpec("chat_template.jinja", QWEN36_A3B_REPO),
             generation_params_overrides=GenerationConfig(presence_penalty=1.5),
         ),
     ),
@@ -608,15 +595,13 @@ QWEN36 = [
         # the cost of loading a quantized checkpoint at all.
         origin=HuggingFaceOrigin(repo="unsloth/Qwen3.6-35B-A3B-MLX-8bit"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=BOOLEAN_REASONING_DEFAULT_ON_CONFIG,
         configs=ConfigMap(
-            # This repo keeps the chat template in a separate chat_template.jinja and ships no
-            # sampling parameters, so both come from the source repo, as for the 4-bit build.
             tokenizer=FileSpec("tokenizer.json", QWEN36_A3B_REPO),
             tokenizer_config=FileSpec("tokenizer_config.json", QWEN36_A3B_REPO),
             generation_config=FileSpec("generation_config.json", QWEN36_A3B_REPO),
+            chat_template=FileSpec("chat_template.jinja", QWEN36_A3B_REPO),
             generation_params_overrides=GenerationConfig(presence_penalty=1.5),
         ),
     ),
@@ -630,8 +615,18 @@ QWEN38 = [
         size="27B",
         origin=HuggingFaceOrigin(repo="Qwen/Qwen3.8-27B"),
         config_type=HFQwen35Config,
-        output_parser_regex=OPTIONAL_THINKING_OUTPUT_PARSER_REGEX,
-        end_of_thinking_tag=QWEN_END_OF_THINKING_TAG,
+        response_format=QWEN_RESPONSE_FORMAT,
+        reasoning_config=QWEN38_REASONING_CONFIG,
+        configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
+    ),
+    LanguageModelSpec(
+        vendor="Alibaba",
+        family="Qwen3.8",
+        name="Qwen3.8-Flash-Next",
+        size="180B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3.8-Flash-Next"),
+        config_type=HFQwen38FlashNextConfig,
+        response_format=QWEN_RESPONSE_FORMAT,
         reasoning_config=QWEN38_REASONING_CONFIG,
     ),
 ]

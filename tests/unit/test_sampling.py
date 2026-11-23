@@ -92,6 +92,15 @@ def test_top_k_keeps_exactly_k_tokens_at_cutoff_ties() -> None:
     assert result[0].item() == 5.0
 
 
+def test_batched_top_p_normalizes_after_row_specific_top_k() -> None:
+    policy = SamplingPolicy.init_batch(top_k=(2, 0, 8), top_p=(0.65, 0.5, 1.0))
+    logits = jnp.log(jnp.array([[0.6, 0.3, 0.1]] * 3))
+    result = jax.jit(jax.vmap(lambda row, values: row.process_logits(values)))(policy, logits)
+    expected = logits.at[:2, 1:].set(-jnp.inf)
+
+    _assert_array(result, expected)
+
+
 def test_token_counts_ignore_out_of_vocab_tokens_and_update_generated_tokens() -> None:
     policy = _with_counts(SamplingPolicy.init(repetition_penalty=2.0), (1, -1, 9, 2), 4, 4)
     updated_policy = policy.with_next_token_count(jnp.array(2, dtype=jnp.int32))

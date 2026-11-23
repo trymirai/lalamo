@@ -21,10 +21,12 @@ from lalamo.model_import.common import (
     StatusEvent,
     import_model,
 )
+from lalamo.model_import.loaders.confidence_head_loader import load_confidence_head
 from lalamo.model_import.loaders.dflash_loader import load_hf_dflash_draft_model
 from lalamo.model_import.loaders.weaver_loader import load_weaver
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
-from lalamo.models import SpeculatorModel, SpeculatorModelConfig
+from lalamo.model_import.vocabulary_order import frequency_ordered
+from lalamo.models import LanguageModel
 from lalamo.modules import DFlashSpeculator, DFlashSpeculatorConfig
 from lalamo.utils.sharding import ShardingConfig
 
@@ -90,32 +92,27 @@ def pull(
     callbacks.started()
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
+        temp_path = Path(temp_dir).resolve()
 
         for file_spec in model_spec.files:
             callbacks.downloading(file_spec)
 
-            # Security: validate filename to prevent path traversal attacks
-            safe_name = Path(file_spec.name).name
-            if not safe_name or safe_name != file_spec.name:
-                raise RuntimeError(
-                    f"Invalid filename from registry: {file_spec.name!r}. "
-                    f"Filenames must not contain path separators or traversal sequences.",
-                )
-
-            file_path = temp_path / safe_name
+            file_path = (temp_path / file_spec.name).resolve()
+            if not file_path.is_relative_to(temp_path):
+                raise RuntimeError(f"Invalid filename from registry: {file_spec.name!r}.")
+            file_path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 _download_file(file_spec.url, file_path)
             except requests.RequestException as e:
-                raise RuntimeError(f"Failed to download {safe_name}: {e}") from e
+                raise RuntimeError(f"Failed to download {file_spec.name}: {e}") from e
 
             callbacks.finished_downloading(file_spec)
 
         output_dir.mkdir(parents=True, exist_ok=True)
         for file_spec in model_spec.files:
-            safe_name = Path(file_spec.name).name
-            src = temp_path / safe_name
-            dst = output_dir / safe_name
+            src = (temp_path / file_spec.name).resolve()
+            dst = output_dir / src.relative_to(temp_path)
+            dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(src), str(dst))
 
     callbacks.finished()
@@ -170,6 +167,8 @@ def convert(
         ],
         ConversionCallbacks,
     ] = ConversionCallbacks,
+    *,
+    frequency_ordered_vocabulary: bool = False,
 ) -> None:
     effective_dtype = dtype or DType.BFLOAT16
     callbacks = callbacks_type(
@@ -200,8 +199,12 @@ def convert(
         dtype=jnp.dtype(effective_dtype.value),
         progress_callback=progress_callback,
     )
+    model = imported_model.model
+    if frequency_ordered_vocabulary:
+        assert isinstance(model, LanguageModel), "Only language models have a vocabulary order"
+        model = frequency_ordered(model)
     callbacks.saving_model()
-    imported_model.model.save(output_dir)
+    model.save(output_dir)
 
     callbacks.finished_saving_model()
 
@@ -211,6 +214,8 @@ def convert_speculator(
     output_dir: Path,
     weaver_repo_id: str | None = None,
     dtype: DType | None = None,
+    *,
+    confidence_head_repo_id: str | None = None,
 ) -> None:
     sharding_config = ShardingConfig.replicated()
     effective_dtype = jnp.dtype((dtype or DType.BFLOAT16).value)
@@ -231,18 +236,26 @@ def convert_speculator(
             raise ValueError(f"Expected exactly one .pth checkpoint in '{weaver_repo_id}', found: {found}.")
         weaver = load_weaver(checkpoints[0], sharding_config, dtype=effective_dtype)
 
+    confidence_head = None
+    confidence_head_config = None
+    if confidence_head_repo_id is not None:
+        confidence_head = load_confidence_head(
+            snapshot_download(confidence_head_repo_id, allow_patterns=["config.json", "model.safetensors"]),
+            target_model_dim=draft_model.config.model_dim,
+            sharding_config=sharding_config,
+            dtype=effective_dtype,
+        )
+        confidence_head_config = confidence_head.config
+
     speculator = DFlashSpeculator(
         config=DFlashSpeculatorConfig(
             draft_config=draft_model.config,
             weaver_config=weaver.config if weaver is not None else None,
+            confidence_head_config=confidence_head_config,
         ),
         sharding_config=sharding_config,
         draft_model=draft_model,
         weaver=weaver,
+        confidence_head=confidence_head,
     )
-    model = SpeculatorModel(
-        config=SpeculatorModelConfig(speculator_config=speculator.config),
-        sharding_config=sharding_config,
-        speculator=speculator,
-    )
-    model.save(output_dir)
+    speculator.save(output_dir)

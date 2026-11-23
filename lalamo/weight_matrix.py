@@ -15,7 +15,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.exportable import Exportable, ExportResults
 from lalamo.kernels.ragged_dot import ragged_dot as ragged_dot_kernel
-from lalamo.module import Keychain, ParameterNorm, field
+from lalamo.module import Keychain, ParameterNorm, _require_config_fields, field
 from lalamo.preconditioner import Preconditioner
 from lalamo.utils.dummy_array import dummy_array, supports_dummy_arrays
 from lalamo.utils.json import JSON
@@ -83,11 +83,13 @@ class MatmulConfig:
 
 @dataclass(frozen=True)
 class WeightMatrixSpec(RegistryABC):
-    _converter: ClassVar[GenConverter] = make_registry_abc_converter()
+    _converter: ClassVar[GenConverter] = make_registry_abc_converter(forbid_extra_keys=True)
 
     @classmethod
     def from_json(cls, json_object: JSON) -> Self:
-        return cls._converter.structure(json_object, cls)
+        spec = cls._converter.structure(json_object, cls)
+        _require_config_fields(json_object, spec.to_json(), "spec")
+        return spec
 
     def to_json(self) -> JSON:
         return self._converter.unstructure(self)
@@ -317,9 +319,9 @@ class Layout(StrEnum):
                 out_sharding=out_sharding,
             )
         return dot_general(
-            weights,
             vector,
-            dimension_numbers=(((1,), (0,)), ((), ())),
+            weights,
+            dimension_numbers=(((0,), (1,)), ((), ())),
             out_sharding=out_sharding,
         )
 
@@ -438,7 +440,6 @@ class FullPrecisionMatrix(EmbeddingMatrix[FullPrecisionSpec]):
         vectors: Float[Array, "tokens input_channels"],
         group_sizes: Int[Array, " experts"],
         *,
-        keychain: Keychain,  # noqa: ARG002
         forward_pass_config: MatmulConfig = MatmulConfig(),
     ) -> Float[Array, "tokens output_channels"]:
         if self.ndim != 3:
@@ -558,8 +559,7 @@ class ShapeDtypeMatrix(EmbeddingMatrix[ShapeDtypeSpec]):
                 return dummy_array(leaf.shape, leaf.dtype, sharding_of(leaf), weak_type=True)
 
             dummy_layer = cast("WeightMatrix", jtu.tree_map(keep_weak, dummy_layer))
-        result = dummy_layer.load_exported(exported_data, prefix=prefix)
-        return cast("Self", result)
+        return dummy_layer.load_exported(exported_data, prefix=prefix)
 
     def to_full_precision(self) -> "FullPrecisionMatrix":
         raise TypeError("Can't cast dummy ShapeDtypeMatrix to FullPrecisionMatrix")
