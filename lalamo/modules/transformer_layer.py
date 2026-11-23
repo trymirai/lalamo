@@ -349,7 +349,11 @@ class TransformerLayerConfig(LalamoConfig):
         has_stateful_parts = any(
             op_config.is_stateful for op_config in (*self.prologue_configs, *self.epilogue_configs)
         ) or any(sublayer.output_conv_config is not None for sublayer in (self.mixer, self.mlp))
-        if has_stateful_parts and isinstance(self.mixer.body_config, AttentionConfig | SparseAttentionConfig):
+        mixer_config = self.mixer.body_config
+        is_paged = isinstance(mixer_config, SparseAttentionConfig) or (
+            isinstance(mixer_config, AttentionConfig) and mixer_config.supports_paged_decode
+        )
+        if has_stateful_parts and is_paged:
             raise ValueError("Paged attention mixers support neither stateful stream ops nor output convolutions.")
 
     def init(

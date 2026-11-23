@@ -1,5 +1,5 @@
 from abc import abstractmethod
-from typing import Self
+from typing import NamedTuple, Self
 
 import equinox as eqx
 import jax
@@ -10,7 +10,14 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int
 from lalamo.modules.token_mixer import StateLayerBase
 from lalamo.utils.sharding import ShardingConfig
 
-__all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "PagedKVCacheLayer", "PagedKVCachePool", "StaticKVCacheLayer"]
+__all__ = [
+    "DynamicKVCacheLayer",
+    "KVCacheLayer",
+    "KeyValueConvState",
+    "PagedKVCacheLayer",
+    "PagedKVCachePool",
+    "StaticKVCacheLayer",
+]
 
 
 @eqx.filter_jit
@@ -64,10 +71,16 @@ def build_tree_attention_mask(
     return mask
 
 
+class KeyValueConvState(NamedTuple):
+    keys: Float[Array, "*batch tail_tokens channels"]
+    values: Float[Array, "*batch tail_tokens channels"]
+
+
 class KVCacheLayer(StateLayerBase):
     has_sinks: bool = eqx.field(static=True)
     keys: Float[Array, "*batch tokens groups head_channels"]
     values: Float[Array, "*batch tokens groups head_channels"]
+    conv_states: KeyValueConvState | None = eqx.field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.keys.ndim not in (3, 4):

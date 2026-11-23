@@ -271,6 +271,8 @@ class ContinuousBatchingEngine:
             or any(not mixer.config.is_causal for mixer in attention_mixers)
         ):
             raise ValueError("Paged batching requires causal GPU attention.")
+        if any(not mixer.config.supports_paged_decode for mixer in attention_mixers):
+            raise ValueError("Paged batching supports neither stacked attention projections nor log scaling.")
 
         context_length = config.max_context_length
         if transformer.ropes:

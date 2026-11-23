@@ -25,9 +25,9 @@ from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, RoutingBi
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.token_mixers.attention import (
     AttentionConfig,
-    ConvolvedAttentionConfig,
-    KeyValueLayout,
+    KeyValueConvConfig,
     LogScalingConfig,
+    ProjectionLayout,
     RelativeBiasConfig,
     SinkSource,
     aligned_rows,
@@ -146,44 +146,41 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
         else:
             read_mode = QKVReadMode.SEPARATE
         head_dim = self.swa_head_dim if is_sliding else self.head_dim
-        attention_config = ConvolvedAttentionConfig(
-            attention_config=AttentionConfig(
-                qkvg_projection_config=linear_config,
-                out_projection_config=linear_config,
-                query_norm_config=None,
-                key_norm_config=None,
-                num_heads=self.swa_num_attention_heads if is_sliding else self.num_attention_heads,
-                num_groups=self.swa_num_key_value_heads if is_sliding else self.num_key_value_heads,
-                head_dim=head_dim,
-                is_causal=True,
-                scale=1.0,
-                sliding_window_size=self.sliding_window_size if is_sliding else None,
-                logit_soft_cap=None,
-                has_sinks=True,
-                has_qkvg_biases=self.q_bias,
-                has_out_biases=self.o_bias,
-                has_gate=True,
-                normalize_values=self.use_value_norm_no_gamma,
-                sink_source=SinkSource.PROJECTED,
-                relative_bias_config=RelativeBiasConfig(
-                    num_channels=self.d_rel,
-                    extent=self.sliding_window_size if is_sliding else self.rel_extent,
-                    clip_threshold=self.rel_l2_clip_threshold,
-                ),
-                query_clip_threshold=self.qk_l2_clip_threshold * head_dim**-0.5,
-                key_clip_threshold=self.qk_l2_clip_threshold,
-                log_scaling_config=(
-                    None
-                    if is_sliding
-                    else LogScalingConfig(alpha=self.log_scaling_alpha, position_floor=self.log_scaling_n_floor)
-                ),
+        attention_config = AttentionConfig(
+            qkvg_projection_config=linear_config,
+            out_projection_config=linear_config,
+            query_norm_config=None,
+            key_norm_config=None,
+            num_heads=self.swa_num_attention_heads if is_sliding else self.num_attention_heads,
+            num_groups=self.swa_num_key_value_heads if is_sliding else self.num_key_value_heads,
+            head_dim=head_dim,
+            is_causal=True,
+            scale=1.0,
+            sliding_window_size=self.sliding_window_size if is_sliding else None,
+            logit_soft_cap=None,
+            has_sinks=True,
+            has_qkvg_biases=self.q_bias,
+            has_out_biases=self.o_bias,
+            has_gate=True,
+            normalize_values=self.use_value_norm_no_gamma,
+            sink_source=SinkSource.PROJECTED,
+            relative_bias_config=RelativeBiasConfig(
+                num_channels=self.d_rel,
+                extent=self.sliding_window_size if is_sliding else self.rel_extent,
+                clip_threshold=self.rel_l2_clip_threshold,
             ),
-            conv_config=conv_config,
-            key_value_layout=KeyValueLayout.STACKED_WITH_QUERY
-            if is_sliding
-            else KeyValueLayout.GROUPED_WITH_CONV_TAPS,
-            conv_kernel_size=self.sconv_kernel_size,
+            query_clip_threshold=self.qk_l2_clip_threshold * head_dim**-0.5,
+            key_clip_threshold=self.qk_l2_clip_threshold,
+            log_scaling_config=(
+                None
+                if is_sliding
+                else LogScalingConfig(alpha=self.log_scaling_alpha, position_floor=self.log_scaling_n_floor)
+            ),
+            projection_layout=(
+                ProjectionLayout.STACKED_QUERY_FIRST if is_sliding else ProjectionLayout.GROUPED_WITH_CONV_TAPS
+            ),
             row_alignment=ROW_ALIGNMENT,
+            key_value_conv_config=KeyValueConvConfig(conv_config=conv_config, kernel_size=self.sconv_kernel_size),
         )
         output_conv_config = OutputConvConfig(conv_config=conv_config, kernel_size=self.sconv_kernel_size)
         moe_config = MixtureOfExpertsConfig(
