@@ -172,7 +172,7 @@ class OutputConvConfig(LalamoConfig):
     kernel_size: int
 
     def init(self, initializer: Initializer, model_dim: int) -> SeparableCausalConv:
-        return self.conv_config.init(initializer, model_dim, self.kernel_size, dtype=jnp.float32)
+        return self.conv_config.init(initializer, model_dim, self.kernel_size)
 
 
 class SublayerActivationTrace[InputT](Exportable, eqx.Module):
@@ -350,7 +350,7 @@ class TransformerLayerConfig(LalamoConfig):
             op_config.is_stateful for op_config in (*self.prologue_configs, *self.epilogue_configs)
         ) or any(sublayer.output_conv_config is not None for sublayer in (self.mixer, self.mlp))
         if has_stateful_parts and isinstance(self.mixer.body_config, AttentionConfig | SparseAttentionConfig):
-            raise ValueError("Stateful stream ops and output convolutions require a mixer without a KV cache.")
+            raise ValueError("Paged attention mixers support neither stateful stream ops nor output convolutions.")
 
     def init(
         self,
@@ -437,7 +437,6 @@ class TransformerLayer[StreamT, MixerInputT](LalamoModule[TransformerLayerConfig
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
         return_suffix_tokens: int | None = None,
         token_ids: Int[Array, "batch suffix_tokens"] | None = None,
-        token_positions: Int[Array, "batch suffix_tokens"] | None = None,
         *,
         keychain: Keychain,
     ) -> TransformerLayerResult[StreamT, MixerInputT]:
@@ -490,19 +489,13 @@ class TransformerLayer[StreamT, MixerInputT](LalamoModule[TransformerLayerConfig
                 StateLayerBase | None,
                 Int[Array, ""] | None,
                 Int[Array, " suffix_tokens"] | None,
-                Int[Array, " suffix_tokens"] | None,
             ],
             *,
             keychain: Keychain,
         ) -> tuple[Float[Array, "suffix_tokens channels"], StateLayerBase | None]:
-            (
-                mixer_input,
-                positional_embedding,
-                single_mixer_state,
-                length_without_padding,
-                parent_indices,
-                row_token_positions,
-            ) = mixer_inputs
+            mixer_input, positional_embedding, single_mixer_state, length_without_padding, parent_indices = (
+                mixer_inputs
+            )
             return self.mixer.body(
                 mixer_input,
                 positional_embedding,
@@ -512,7 +505,6 @@ class TransformerLayer[StreamT, MixerInputT](LalamoModule[TransformerLayerConfig
                 forward_pass_config=forward_pass_config.mixer_forward_pass_config,
                 attention_parent_indices=parent_indices,
                 reuse_cache=self.config.kv_source_layer_index is not None,
-                token_positions=row_token_positions,
                 keychain=keychain,
             )
 
@@ -540,7 +532,6 @@ class TransformerLayer[StreamT, MixerInputT](LalamoModule[TransformerLayerConfig
                     mixer_state,
                     lengths_without_padding,
                     attention_parent_indices,
-                    token_positions,
                 ),
                 keychain=body_keychain,
                 added_sharding_axis=self.sharding_config.resolve_axis(LogicalAxis.BATCH),

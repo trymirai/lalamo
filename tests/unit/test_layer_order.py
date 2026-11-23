@@ -69,6 +69,7 @@ def test_repeated_layers_match_unrolled_copies() -> None:
     [
         ((None, None), (0, 0), "every one of the 2 layers"),
         ((None, None), (0, 2, 1), "every one of the 2 layers"),
+        ((None, None), (1, 0), "already applied layers"),
         ((None, 0), (0, 1, 1), "KV-sharing"),
     ],
 )

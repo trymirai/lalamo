@@ -23,13 +23,16 @@ from lalamo.modules.embedding import UntiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig, MixtureOfExpertsConfig, RoutingBias, SigmoidRouting
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
-from lalamo.modules.token_mixers.inkling_attention import (
-    InklingAttentionConfig,
+from lalamo.modules.token_mixers.attention import (
+    AttentionConfig,
+    ConvolvedAttentionConfig,
     KeyValueLayout,
     LogScalingConfig,
+    RelativeBiasConfig,
+    SinkSource,
     aligned_rows,
 )
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.transformer import TransformerConfig
 from lalamo.modules.transformer_layer import OutputConvConfig, SublayerConfig, TransformerLayerConfig
 from lalamo.weight_matrix import CompressionImplementation
@@ -93,6 +96,8 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
     use_gate_bias: Literal[True]
 
     def __post_init__(self) -> None:
+        if self.rms_norm_eps != 1e-6:
+            raise ValueError(f"The value norm of lalamo attention uses epsilon 1e-6, got {self.rms_norm_eps}.")
         block_size = self.n_layers_per_attn_res_block
         if self.loop_config.core_start % block_size != 0 or self.loop_config.core_end % block_size != 0:
             raise ValueError(
@@ -126,10 +131,6 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
             has_scale=False,
         )
 
-    @property
-    def padded_vocab_size(self) -> int:
-        return aligned_rows(self.unpadded_vocab_size, ROW_ALIGNMENT)
-
     def layer_config(self, layer_index: int) -> TransformerLayerConfig:
         linear_config = LinearConfig()
         conv_config = SeparableCausalConvConfig(has_biases=False)
@@ -145,30 +146,44 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
         else:
             read_mode = QKVReadMode.SEPARATE
         head_dim = self.swa_head_dim if is_sliding else self.head_dim
-        attention_config = InklingAttentionConfig(
-            projection_config=linear_config,
-            norm_config=self.norm_config,
-            conv_config=conv_config,
-            log_scaling_config=(
-                None
-                if is_sliding
-                else LogScalingConfig(alpha=self.log_scaling_alpha, position_floor=self.log_scaling_n_floor)
+        attention_config = ConvolvedAttentionConfig(
+            attention_config=AttentionConfig(
+                qkvg_projection_config=linear_config,
+                out_projection_config=linear_config,
+                query_norm_config=None,
+                key_norm_config=None,
+                num_heads=self.swa_num_attention_heads if is_sliding else self.num_attention_heads,
+                num_groups=self.swa_num_key_value_heads if is_sliding else self.num_key_value_heads,
+                head_dim=head_dim,
+                is_causal=True,
+                scale=1.0,
+                sliding_window_size=self.sliding_window_size if is_sliding else None,
+                logit_soft_cap=None,
+                has_sinks=True,
+                has_qkvg_biases=self.q_bias,
+                has_out_biases=self.o_bias,
+                has_gate=True,
+                normalize_values=self.use_value_norm_no_gamma,
+                sink_source=SinkSource.PROJECTED,
+                relative_bias_config=RelativeBiasConfig(
+                    num_channels=self.d_rel,
+                    extent=self.sliding_window_size if is_sliding else self.rel_extent,
+                    clip_threshold=self.rel_l2_clip_threshold,
+                ),
+                query_clip_threshold=self.qk_l2_clip_threshold * head_dim**-0.5,
+                key_clip_threshold=self.qk_l2_clip_threshold,
+                log_scaling_config=(
+                    None
+                    if is_sliding
+                    else LogScalingConfig(alpha=self.log_scaling_alpha, position_floor=self.log_scaling_n_floor)
+                ),
             ),
+            conv_config=conv_config,
             key_value_layout=KeyValueLayout.STACKED_WITH_QUERY
             if is_sliding
             else KeyValueLayout.GROUPED_WITH_CONV_TAPS,
-            num_heads=self.swa_num_attention_heads if is_sliding else self.num_attention_heads,
-            num_groups=self.swa_num_key_value_heads if is_sliding else self.num_key_value_heads,
-            head_dim=head_dim,
-            relative_dim=self.d_rel,
-            relative_extent=self.sliding_window_size if is_sliding else self.rel_extent,
             conv_kernel_size=self.sconv_kernel_size,
             row_alignment=ROW_ALIGNMENT,
-            sliding_window_size=self.sliding_window_size if is_sliding else None,
-            attention_scale=1.0,
-            query_clip_threshold=self.qk_l2_clip_threshold * head_dim**-0.5,
-            key_clip_threshold=self.qk_l2_clip_threshold,
-            relative_clip_threshold=self.rel_l2_clip_threshold,
         )
         output_conv_config = OutputConvConfig(conv_config=conv_config, kernel_size=self.sconv_kernel_size)
         moe_config = MixtureOfExpertsConfig(
@@ -191,7 +206,7 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
         )
         return TransformerLayerConfig(
             mixer=SublayerConfig(
-                pre_norm_config=None,
+                pre_norm_config=self.norm_config,
                 conv_config=None,
                 body_config=attention_config,
                 post_norm_config=None,
@@ -226,7 +241,7 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
                 hidden_dim=self.intermediate_size,
                 layer_order=self.layer_order,
             ),
-            vocab_size=self.padded_vocab_size,
+            vocab_size=aligned_rows(self.unpadded_vocab_size, ROW_ALIGNMENT),
         )
 
     def _load_weights(

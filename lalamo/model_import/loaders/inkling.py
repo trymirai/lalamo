@@ -17,8 +17,8 @@ from lalamo.modules.decoder import Decoder
 from lalamo.modules.embedding import UntiedEmbedding
 from lalamo.modules.linear import Linear
 from lalamo.modules.mlp import MixtureOfExperts
+from lalamo.modules.token_mixers.attention import ConvolvedAttention, KeyValueLayout
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConv
-from lalamo.modules.token_mixers.inkling_attention import InklingAttention, KeyValueLayout
 from lalamo.modules.transformer_layer import TransformerLayer
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.surgery import load_as_at
@@ -80,11 +80,12 @@ def oldest_first_dynamic_taps(
 
 
 def load_inkling_attention(
-    attention: InklingAttention,
+    attention: ConvolvedAttention,
     weights_dict: Mapping[str, Array],
     layer_path: ParameterPath,
-) -> InklingAttention:
+) -> ConvolvedAttention:
     config = attention.config
+    head_dim = config.attention_config.head_dim
     attention_path = layer_path / "attn"
     norm_names = (
         ("attn_norm",) * 3
@@ -102,7 +103,7 @@ def load_inkling_attention(
     query_parts = tuple(
         matrix * query_gamma
         for matrix in (
-            f32(weights_dict, attention_path / "wq_du" / "weight") * query_scales[:, None] * config.head_dim**-0.5,
+            f32(weights_dict, attention_path / "wq_du" / "weight") * query_scales[:, None] * head_dim**-0.5,
             f32(weights_dict, attention_path / "gate_attn" / "weight"),
             f32(weights_dict, attention_path / "wr_du" / "weight") * relative_scales[:, None],
             f32(weights_dict, attention_path / "attn_sink_proj" / "weight"),
@@ -137,18 +138,21 @@ def load_inkling_attention(
                 attention.value_conv,
                 f32(weights_dict, attention_path / "v_sconv" / "static_w"),
             )
+    qkvg_projection, *key_value_projections = projections
     return load_as_at(
         lambda module: (
-            module.projections,
-            module.out_projection,
-            module.relative_profiles,
+            module.attention.qkvg_projection,
+            module.key_value_projections,
+            module.attention.out_projection,
+            module.attention.relative_profiles,
             module.key_conv,
             module.value_conv,
         ),
         attention,
         (
-            projections,
-            load_linear_matrix(attention.out_projection, weights_dict[attention_path / "wo_ud" / "weight"]),
+            qkvg_projection,
+            tuple(key_value_projections),
+            load_linear_matrix(attention.attention.out_projection, weights_dict[attention_path / "wo_ud" / "weight"]),
             weights_dict[attention_path / "rel_logits_proj" / "proj"],
             key_conv,
             value_conv,
@@ -257,7 +261,7 @@ def load_inkling_layer(
     mlp_connection = layer.mlp.connection
     attention = layer.mixer.body
     moe = layer.mlp.body
-    if not isinstance(mixer_connection, BlockAttnResQKVConnection) or not isinstance(attention, InklingAttention):
+    if not isinstance(mixer_connection, BlockAttnResQKVConnection) or not isinstance(attention, ConvolvedAttention):
         raise TypeError(f"Layer {layer_index} is not an Inkling attention sublayer.")
     if not isinstance(mlp_connection, BlockAttnResConnection) or not isinstance(moe, MixtureOfExperts):
         raise TypeError(f"Layer {layer_index} is not an Inkling mixture-of-experts sublayer.")

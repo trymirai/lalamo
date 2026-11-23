@@ -343,18 +343,14 @@ class BlockAttnResQKVConnection(ResidualConnectionBase[BlockAttnResConfig, Block
                 raise ValueError(f"Expected one or three attention inputs, got {len(reads)}.")
         update, aux = sublayer(inputs, sublayer_keychain)
         if self.read_config.starts_block:
-            updated_stream = BlockAttnResStream(
-                blocks=stream.sources,
-                partial=update.astype(stream.partial.dtype),
-                previous_pass=stream.previous_pass,
-            )
+            blocks, partial = stream.sources, update
         else:
-            updated_stream = BlockAttnResStream(
-                blocks=stream.blocks,
-                partial=(stream.partial.astype(jnp.float32) + update.astype(jnp.float32)).astype(stream.partial.dtype),
-                previous_pass=stream.previous_pass,
-            )
-        return updated_stream, aux
+            blocks, partial = stream.blocks, stream.partial.astype(jnp.float32) + update.astype(jnp.float32)
+        return BlockAttnResStream(
+            blocks=blocks,
+            partial=partial.astype(stream.partial.dtype),
+            previous_pass=stream.previous_pass,
+        ), aux
 
 
 class BlockAttnResHead(ResidualHeadBase[BlockAttnResConfig, BlockAttnResStream]):
@@ -379,9 +375,9 @@ class BlockAttnResHead(ResidualHeadBase[BlockAttnResConfig, BlockAttnResStream])
         return outputs[:, :, 0].astype(stream.partial.dtype)
 
     def restart(self, stream: BlockAttnResStream, entry_stream: BlockAttnResStream) -> BlockAttnResStream:
-        _, _, num_entry_blocks, _ = entry_stream.blocks.shape
+        _, _, num_entry_sources, _ = entry_stream.sources.shape
         return BlockAttnResStream(
             blocks=entry_stream.blocks,
             partial=entry_stream.partial,
-            previous_pass=stream.sources[:, :, num_entry_blocks + 1 :],
+            previous_pass=stream.sources[:, :, num_entry_sources:],
         )

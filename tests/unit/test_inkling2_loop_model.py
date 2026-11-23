@@ -230,6 +230,35 @@ def test_chunked_decoding_matches_hf(
     assert_close(result=logits, reference=hf_logits(hf_model, token_ids), atol=atol, rtol=rtol)
 
 
+def test_suffix_prefill_matches_last_token_logits(checkpoint_path: Path) -> None:
+    device, *_ = jax.devices("cpu")
+    decoder = load_decoder(checkpoint_path, device)
+    token_ids = make_token_ids()
+    batch_size, num_tokens = token_ids.shape
+    lengths = jnp.array([num_tokens, num_tokens - 3], dtype=jnp.int32)
+    forward_pass_config = DecoderForwardPassConfig.for_tracer_tests()
+    keychain = Keychain.init(0, sharding_config=decoder.sharding_config)
+    with jax.set_mesh(decoder.sharding_config.mesh):
+        full_logits = decoder(
+            token_ids,
+            token_positions_for(token_ids),
+            forward_pass_config=forward_pass_config,
+            keychain=keychain,
+        ).logits
+        suffix_logits = decoder(
+            token_ids,
+            token_positions_for(token_ids),
+            state=decoder.init_static_state(batch_size, num_tokens, jnp.float32),
+            return_updated_state=True,
+            lengths_without_padding=lengths,
+            return_suffix_tokens=1,
+            forward_pass_config=forward_pass_config,
+            keychain=keychain,
+        ).logits
+
+    assert_close(result=suffix_logits[:, 0], reference=full_logits[jnp.arange(batch_size), lengths - 1])
+
+
 def float8_to_jax(tensor: torch.Tensor) -> Array:
     return jnp.asarray(tensor.view(torch.uint8).numpy()).view(jnp.float8_e4m3fn)
 

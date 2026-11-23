@@ -52,6 +52,12 @@ class TransformerConfig(LalamoConfig):
             raise ValueError(
                 f"layer_order must apply every one of the {len(self.layer_configs)} layers, got {self.layer_order}.",
             )
+        if any(
+            self.layer_order[step] <= self.layer_order[step - 1]
+            and self.layer_order[step] not in self.layer_order[:step]
+            for step in range(1, len(self.layer_order))
+        ):
+            raise ValueError(f"layer_order may only jump back to already applied layers, got {self.layer_order}.")
         if any(layer_config.kv_source_layer_index is not None for layer_config in self.layer_configs):
             raise ValueError("layer_order cannot be combined with KV-sharing layers.")
 
@@ -214,7 +220,6 @@ class Transformer[StreamT, MixerInputT](LalamoModule[TransformerConfig]):
             )
         else:
             last_state_owner_step = None
-            suffix_token_positions = None
             suffix_rope_embeddings = ()
             suffix_token_ids = None
 
@@ -248,7 +253,6 @@ class Transformer[StreamT, MixerInputT](LalamoModule[TransformerConfig]):
                     self.sharding_config,
                 )
             layer_token_ids = suffix_token_ids if runs_on_suffix_only else token_ids
-            layer_token_positions = suffix_token_positions if runs_on_suffix_only else token_positions
 
             kv_source_layer_index = layer.config.kv_source_layer_index
             if kv_source_layer_index is None:
@@ -271,7 +275,6 @@ class Transformer[StreamT, MixerInputT](LalamoModule[TransformerConfig]):
                 attention_parent_indices=attention_parent_indices,
                 return_suffix_tokens=return_suffix_tokens if step == last_state_owner_step else None,
                 token_ids=layer_token_ids,
-                token_positions=layer_token_positions,
                 keychain=step_keychain,
             )
 

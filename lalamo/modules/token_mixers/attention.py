@@ -1,9 +1,10 @@
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import NamedTuple
 
 import equinox as eqx
 import jax
-from einops import rearrange
+from einops import einsum, rearrange
 from jax import numpy as jnp
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
@@ -17,7 +18,7 @@ from lalamo.kernels.attention import (
     xla_attention,
     xla_sparse_attention,
 )
-from lalamo.module import Keychain, LogicalAxis
+from lalamo.module import Keychain, LalamoConfig, LogicalAxis
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
@@ -25,20 +26,30 @@ from lalamo.modules.token_mixer import (
     AttentionImplementation,
     MixerForwardPassConfig,
     PositionalEmbeddingSelector,
+    QKVInputs,
+    StateLayerBase,
     TokenMixerBase,
     TokenMixerConfig,
     TokenMixerResult,
 )
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 
+from .convolutions import CausalConvResult, SeparableCausalConv, SeparableCausalConvConfig
 from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, PagedKVCacheLayer, StaticKVCacheLayer
 
 __all__ = [
     "Attention",
     "AttentionConfig",
     "AttentionResult",
+    "ConvolvedAttention",
+    "ConvolvedAttentionConfig",
+    "ConvolvedAttentionState",
+    "KeyValueLayout",
+    "LogScalingConfig",
+    "RelativeBiasConfig",
+    "SinkSource",
     "SparseMask",
-    "attention_kernel",
+    "aligned_rows",
 ]
 
 
@@ -51,7 +62,39 @@ def _rms_normalize(
     return (upcasted_inputs * jax.lax.rsqrt(variance + eps)).astype(inputs.dtype)
 
 
-def attention_kernel(
+def aligned_rows(rows: int, alignment: int) -> int:
+    return -(-rows // alignment) * alignment
+
+
+def clip_norm(heads: Float[Array, "*dims channels"], threshold: float) -> Float[Array, "*dims channels"]:
+    upcast_heads = heads.astype(jnp.float32)
+    norms = jnp.linalg.norm(upcast_heads, axis=-1, keepdims=True)
+    return upcast_heads * jnp.minimum(threshold / (norms + 1e-6), 1.0)
+
+
+class SinkSource(StrEnum):
+    LEARNED = "learned"
+    PROJECTED = "projected"
+
+
+@dataclass(frozen=True)
+class RelativeBiasConfig(LalamoConfig):
+    num_channels: int
+    extent: int
+    clip_threshold: float
+
+
+@dataclass(frozen=True)
+class LogScalingConfig(LalamoConfig):
+    alpha: float
+    position_floor: int
+
+    def scales(self, positions: Int[Array, " tokens"]) -> Float[Array, " tokens"]:
+        relative_positions = (positions + 1).astype(jnp.float32) / self.position_floor
+        return 1 + self.alpha * jnp.log(jnp.maximum(relative_positions, 1.0))
+
+
+def _attention_kernel(
     queries: Float[Array, "dst_tokens heads head_channels"],
     keys: Float[Array, "src_tokens groups head_channels"],
     values: Float[Array, "src_tokens groups head_channels"],
@@ -163,12 +206,23 @@ class AttentionConfig(TokenMixerConfig):
     # Scale-free RMS normalization on values
     normalize_values: bool = False
     is_kv_sharing: bool = False
+    sink_source: SinkSource = SinkSource.LEARNED
+    relative_bias_config: RelativeBiasConfig | None = None
+    query_clip_threshold: float | None = None
+    key_clip_threshold: float | None = None
+    log_scaling_config: LogScalingConfig | None = None
+
+    def __post_init__(self) -> None:
+        if self.sink_source == SinkSource.PROJECTED and not self.has_sinks:
+            raise ValueError("Projected sink logits require has_sinks.")
 
     def init(
         self,
         initializer: Initializer,
         model_dim: int,
     ) -> "Attention":
+        if self.relative_bias_config is not None or self.sink_source == SinkSource.PROJECTED:
+            raise ValueError("Relative biases and projected sinks need a front end that projects them.")
         q_output_dim = self.num_heads * self.head_dim
         if self.is_kv_sharing:
             output_dims = (q_output_dim,)
@@ -219,11 +273,12 @@ def _init_attention(
     else:
         key_norm = None
 
-    if config.has_sinks:
+    if config.has_sinks and config.sink_source == SinkSource.LEARNED:
         sinks = initializer.zeros((config.num_heads,))
     else:
         sinks = None
 
+    relative_bias_config = config.relative_bias_config
     return Attention(
         config=config,
         sharding_config=initializer.sharding_config,
@@ -232,6 +287,11 @@ def _init_attention(
         query_norm=query_norm,
         key_norm=key_norm,
         sinks=sinks,
+        relative_profiles=(
+            initializer.zeros((relative_bias_config.num_channels, relative_bias_config.extent), dtype=jnp.float32)
+            if relative_bias_config is not None
+            else None
+        ),
     )
 
 
@@ -243,6 +303,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
     key_norm: Normalization | None
 
     sinks: Float[Array, " heads"] | None
+    relative_profiles: Float[Array, "relative_channels distances"] | None = None
 
     @property
     def model_dim(self) -> int:
@@ -260,7 +321,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
 
     @property
     def has_sinks(self) -> bool:
-        return self.sinks is not None
+        return self.config.has_sinks
 
     @eqx.filter_jit
     def _prepare_heads(
@@ -268,6 +329,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         projection: Float[Array, "tokens channels"],
         num_heads: int,
         norm: Normalization | None,
+        clip_threshold: float | None,
         positional_embeddings: PositionalEmbeddings | None,
     ) -> Float[Array, "tokens heads head_channels"]:
         heads = rearrange(
@@ -278,9 +340,47 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         )
         if norm is not None:
             heads = call_vmapped_twice(norm, heads)
+        if clip_threshold is not None:
+            heads = clip_norm(heads, clip_threshold).astype(heads.dtype)
         if positional_embeddings is not None:
             heads = call_vmapped(positional_embeddings.apply, heads, in_axes=1, out_axes=1)
         return heads
+
+    def prepare_query_heads(
+        self,
+        projection: Float[Array, "tokens query_channels"],
+        positional_embeddings: PositionalEmbeddings | None,
+    ) -> Float[Array, "tokens heads head_channels"]:
+        return self._prepare_heads(
+            projection,
+            self.config.num_heads,
+            self.query_norm,
+            self.config.query_clip_threshold,
+            positional_embeddings,
+        )
+
+    def prepare_key_value_heads(
+        self,
+        key_projection: Float[Array, "tokens key_value_channels"],
+        value_projection: Float[Array, "tokens key_value_channels"],
+        positional_embeddings: PositionalEmbeddings | None,
+    ) -> tuple[Float[Array, "tokens groups head_channels"], Float[Array, "tokens groups head_channels"]]:
+        keys = self._prepare_heads(
+            key_projection,
+            self.config.num_groups,
+            self.key_norm,
+            self.config.key_clip_threshold,
+            positional_embeddings,
+        )
+        values = rearrange(
+            value_projection,
+            "tokens (groups head_channels) -> tokens groups head_channels",
+            groups=self.config.num_groups,
+            head_channels=self.config.head_dim,
+        )
+        if self.config.normalize_values:
+            values = _rms_normalize(values, eps=1e-6)
+        return keys, values
 
     def project_heads(
         self,
@@ -302,7 +402,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=keychain,
         )
-        queries = self._prepare_heads(projections[0], self.config.num_heads, self.query_norm, positional_embeddings)
+        queries = self.prepare_query_heads(projections[0], positional_embeddings)
         gate = projections[-1] if self.config.has_gate else None
         if self.config.is_kv_sharing:
             return queries, None, None, None, gate
@@ -311,15 +411,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         indexer_projection = None
         if indexer:
             (indexer_projection,) = indexer
-        keys = self._prepare_heads(keys, self.config.num_groups, self.key_norm, positional_embeddings)
-        values = rearrange(
-            values,
-            "tokens (groups head_channels) -> tokens groups head_channels",
-            groups=self.config.num_groups,
-            head_channels=self.config.head_dim,
-        )
-        if self.config.normalize_values:
-            values = _rms_normalize(values, eps=1e-6)
+        keys, values = self.prepare_key_value_heads(keys, values, positional_embeddings)
         return queries, keys, values, indexer_projection, gate
 
     def project_key_value_heads(
@@ -351,7 +443,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
         reuse_cache: bool = False,
-        token_positions: Int[Array, " suffix_tokens"] | None = None,  # noqa: ARG002
         *,
         keychain: Keychain,
         sparse_mask: SparseMask | None = None,
@@ -390,11 +481,17 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         *,
         keychain: Keychain,
         sparse_mask: SparseMask | None = None,
+        relative_states: Float[Array, "tokens relative_channels"] | None = None,
+        sink_logits: Float[Array, "tokens heads"] | None = None,
     ) -> AttentionResult:
         if sparse_mask is not None and attention_parent_indices is not None:
             raise ValueError("A sparse mask cannot be combined with tree attention.")
-        if sparse_mask is not None and self.sinks is not None:
-            raise ValueError("A sparse mask cannot be combined with attention sinks.")
+        if sparse_mask is not None and (self.has_sinks or self.relative_profiles is not None):
+            raise ValueError("A sparse mask cannot be combined with attention sinks or relative biases.")
+        if attention_parent_indices is not None and (
+            self.relative_profiles is not None or self.config.log_scaling_config is not None
+        ):
+            raise ValueError("Tree attention does not support position-dependent attention logits.")
         assert reuse_cache == self.config.is_kv_sharing, "reuse_cache must match AttentionConfig.is_kv_sharing"
         num_suffix_tokens, _, _ = queries.shape
         if reuse_cache:
@@ -412,6 +509,12 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
             else:
                 updated_state = state.extend(keys, values, added_length=length_without_padding)
 
+        query_positions, key_positions = updated_state.query_key_positions(num_suffix_tokens, length_without_padding)
+        if self.config.log_scaling_config is not None:
+            position_scales = self.config.log_scaling_config.scales(query_positions - int(updated_state.has_sinks))
+            queries = queries.astype(jnp.float32) * position_scales[:, None, None]
+        else:
+            position_scales = None
         queries = queries.astype(updated_state.keys.dtype)
         if sparse_mask is not None:
             attention_output = sparse_attention_kernel(
@@ -433,17 +536,19 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
                     length_without_padding,
                     self.config.sliding_window_size,
                 )
-            if self.sinks is not None:
-                sink_bias = jnp.zeros((self.config.num_heads, *mask.shape), dtype=queries.dtype)
-                sink_bias = sink_bias.at[:, :, 0].set(self.sinks[:, None].astype(sink_bias.dtype))
-            else:
-                sink_bias = None
+            bias = self.attention_bias(
+                relative_states,
+                sink_logits,
+                query_positions,
+                key_positions,
+                position_scales,
+            )
 
-            attention_output = attention_kernel(
+            attention_output = _attention_kernel(
                 queries,
                 updated_state.keys,
                 updated_state.values,
-                bias=sink_bias,
+                bias=bias.astype(queries.dtype) if bias is not None else None,
                 mask=mask,
                 scale=self.config.scale,
                 logit_soft_cap=self.config.logit_soft_cap,
@@ -468,6 +573,68 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
             updated_state = None
         return AttentionResult(outputs=result, state=updated_state)
 
+    def relative_bias(
+        self,
+        relative_states: Float[Array, "dst_tokens relative_channels"] | None,
+        query_positions: Int[Array, " dst_tokens"],
+        key_positions: Int[Array, " src_tokens"],
+        position_scales: Float[Array, " dst_tokens"] | None,
+    ) -> Float[Array, "heads dst_tokens src_tokens"] | None:
+        relative_bias_config = self.config.relative_bias_config
+        if relative_bias_config is None or self.relative_profiles is None:
+            if relative_states is not None:
+                raise ValueError("Relative states were given to an attention without a relative bias.")
+            return None
+        if relative_states is None:
+            raise ValueError("An attention with a relative bias requires relative states.")
+        scaled_states = clip_norm(
+            rearrange(
+                relative_states, "tokens (heads channels) -> tokens heads channels", heads=self.config.num_heads
+            ),
+            relative_bias_config.clip_threshold,
+        )
+        if position_scales is not None:
+            scaled_states = scaled_states * position_scales[:, None, None]
+        distances = query_positions[:, None] - key_positions[None, :]
+        relative_logits = einsum(
+            scaled_states,
+            self.relative_profiles.astype(jnp.float32),
+            "tokens heads channels, channels distances -> tokens heads distances",
+        )
+        relative_bias = jnp.take_along_axis(
+            relative_logits,
+            jnp.clip(distances, 0, relative_bias_config.extent - 1)[:, None, :],
+            axis=2,
+        )
+        in_extent = (distances >= 0) & (distances < relative_bias_config.extent)
+        return rearrange(
+            jnp.where(in_extent[:, None, :], relative_bias, 0.0),
+            "tokens heads sources -> heads tokens sources",
+        )
+
+    def attention_bias(
+        self,
+        relative_states: Float[Array, "dst_tokens relative_channels"] | None,
+        sink_logits: Float[Array, "dst_tokens heads"] | None,
+        query_positions: Int[Array, " dst_tokens"],
+        key_positions: Int[Array, " src_tokens"],
+        position_scales: Float[Array, " dst_tokens"] | None,
+    ) -> Float[Array, "heads dst_tokens src_tokens"] | None:
+        if (sink_logits is not None) != (self.config.sink_source == SinkSource.PROJECTED):
+            raise ValueError("Sink logits must be given exactly when the attention projects its sinks.")
+        (num_queries,) = query_positions.shape
+        (num_keys,) = key_positions.shape
+        if self.sinks is not None:
+            sink_logits = jnp.broadcast_to(self.sinks, (num_queries, self.config.num_heads))
+        relative_bias = self.relative_bias(relative_states, query_positions, key_positions, position_scales)
+        if sink_logits is None:
+            return relative_bias
+        if relative_bias is None:
+            relative_bias = jnp.zeros((self.config.num_heads, num_queries, num_keys), dtype=jnp.float32)
+        return relative_bias.at[:, :, 0].set(
+            rearrange(sink_logits.astype(jnp.float32), "tokens heads -> heads tokens"),
+        )
+
     def paged_decode(
         self,
         inputs: Float[Array, "batch 1 channels"],
@@ -477,6 +644,12 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         *,
         keychain: Keychain,
     ) -> TokenMixerResult[PagedKVCacheLayer]:
+        if (
+            self.relative_profiles is not None
+            or self.config.log_scaling_config is not None
+            or self.config.sink_source == SinkSource.PROJECTED
+        ):
+            raise ValueError("Paged decoding does not support relative biases, log scaling or projected sinks.")
         qkvg_keychain, out_keychain = keychain.split(2)
         batch_axis = self.sharding_config.resolve_axis(LogicalAxis.BATCH)
         queries, keys, values, _, gate = call_vmapped(
@@ -524,4 +697,260 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
             self.config.head_dim,
             dtype,
             self.sharding_config,
+        )
+
+
+class KeyValueLayout(StrEnum):
+    STACKED_WITH_QUERY = "stacked_with_query"
+    GROUPED_WITH_CONV_TAPS = "grouped_with_conv_taps"
+
+
+class KeyValueProjection(NamedTuple):
+    states: Float[Array, "suffix_tokens channels"]
+    taps: Float[Array, "suffix_tokens taps"] | None
+
+
+class ConvolvedAttentionState(StateLayerBase):
+    kv_cache: KVCacheLayer
+    key_conv: Float[Array, "*batch tokens channels"]
+    value_conv: Float[Array, "*batch tokens channels"]
+
+
+@dataclass(frozen=True)
+class ConvolvedAttentionConfig(TokenMixerConfig):
+    attention_config: AttentionConfig
+    conv_config: SeparableCausalConvConfig
+    key_value_layout: KeyValueLayout
+    conv_kernel_size: int
+    row_alignment: int
+
+    @property
+    def query_rows(self) -> tuple[int, ...]:
+        match self.attention_config:
+            case AttentionConfig(
+                num_heads=num_heads,
+                head_dim=head_dim,
+                has_gate=True,
+                sink_source=SinkSource.PROJECTED,
+                relative_bias_config=RelativeBiasConfig(num_channels=relative_dim),
+            ):
+                return (num_heads * head_dim, num_heads * head_dim, num_heads * relative_dim, num_heads)
+        raise ValueError("Convolved attention expects a gated attention with a relative bias and projected sinks.")
+
+    @property
+    def key_value_rows(self) -> tuple[int, ...]:
+        key_value_dim = self.attention_config.num_groups * self.attention_config.head_dim
+        match self.key_value_layout:
+            case KeyValueLayout.STACKED_WITH_QUERY:
+                return (key_value_dim,)
+            case KeyValueLayout.GROUPED_WITH_CONV_TAPS:
+                return (key_value_dim, self.attention_config.num_groups * self.conv_kernel_size)
+
+    @property
+    def projection_rows(self) -> tuple[tuple[int, ...], ...]:
+        match self.key_value_layout:
+            case KeyValueLayout.STACKED_WITH_QUERY:
+                return ((*self.query_rows, *self.key_value_rows, *self.key_value_rows),)
+            case KeyValueLayout.GROUPED_WITH_CONV_TAPS:
+                return (self.query_rows, self.key_value_rows, self.key_value_rows)
+
+    def init(self, initializer: Initializer, model_dim: int) -> "ConvolvedAttention":
+        attention_config = self.attention_config
+        qkvg_dims, *key_value_dims = (
+            tuple(aligned_rows(rows, self.row_alignment) for rows in part_rows) for part_rows in self.projection_rows
+        )
+        key_value_dim = attention_config.num_groups * attention_config.head_dim
+        return ConvolvedAttention(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            attention=_init_attention(attention_config, initializer, model_dim, qkvg_dims),
+            key_value_projections=tuple(
+                attention_config.qkvg_projection_config.init(
+                    initializer,
+                    input_dim=model_dim,
+                    output_dims=output_dims,
+                    has_biases=attention_config.has_qkvg_biases,
+                )
+                for output_dims in key_value_dims
+            ),
+            key_conv=self.conv_config.init(initializer, key_value_dim, self.conv_kernel_size),
+            value_conv=self.conv_config.init(initializer, key_value_dim, self.conv_kernel_size),
+        )
+
+
+class ConvolvedAttention(TokenMixerBase[ConvolvedAttentionConfig, ConvolvedAttentionState, QKVInputs]):
+    attention: Attention
+    key_value_projections: tuple[Linear, ...]
+    key_conv: SeparableCausalConv
+    value_conv: SeparableCausalConv
+
+    @property
+    def model_dim(self) -> int:
+        return self.attention.model_dim
+
+    @property
+    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
+        return PositionalEmbeddingSelector.NONE
+
+    @property
+    def projections(self) -> tuple[Linear, ...]:
+        return (self.attention.qkvg_projection, *self.key_value_projections)
+
+    def project(
+        self,
+        projection_index: int,
+        inputs: Float[Array, "suffix_tokens channels"],
+        forward_pass_config: MixerForwardPassConfig,
+        *,
+        keychain: Keychain,
+    ) -> tuple[Float[Array, "suffix_tokens _"], ...]:
+        parts = call_vmapped(
+            self.projections[projection_index],
+            inputs,
+            forward_pass_config=forward_pass_config.matmul_config,
+            keychain=keychain,
+        )
+        return tuple(
+            part[:, :rows] for part, rows in zip(parts, self.config.projection_rows[projection_index], strict=True)
+        )
+
+    def project_parts(
+        self,
+        inputs: QKVInputs,
+        forward_pass_config: MixerForwardPassConfig,
+        *,
+        keychain: Keychain,
+    ) -> tuple[tuple[Float[Array, "suffix_tokens _"], ...], KeyValueProjection, KeyValueProjection]:
+        query_keychain, key_keychain, value_keychain = keychain.split(3)
+        match self.config.key_value_layout:
+            case KeyValueLayout.STACKED_WITH_QUERY:
+                query_stack = self.project(0, inputs.query, forward_pass_config, keychain=query_keychain)
+                key_stack = (
+                    self.project(0, inputs.key, forward_pass_config, keychain=key_keychain)
+                    if inputs.key is not None
+                    else query_stack
+                )
+                value_stack = (
+                    self.project(0, inputs.value, forward_pass_config, keychain=value_keychain)
+                    if inputs.value is not None
+                    else query_stack
+                )
+                *query_parts, _, _ = query_stack
+                *_, keys, _ = key_stack
+                *_, values = value_stack
+                return tuple(query_parts), KeyValueProjection(keys, None), KeyValueProjection(values, None)
+            case KeyValueLayout.GROUPED_WITH_CONV_TAPS:
+                keys, key_taps = self.project(
+                    1,
+                    inputs.key if inputs.key is not None else inputs.query,
+                    forward_pass_config,
+                    keychain=key_keychain,
+                )
+                values, value_taps = self.project(
+                    2,
+                    inputs.value if inputs.value is not None else inputs.query,
+                    forward_pass_config,
+                    keychain=value_keychain,
+                )
+                return (
+                    self.project(0, inputs.query, forward_pass_config, keychain=query_keychain),
+                    KeyValueProjection(keys, key_taps),
+                    KeyValueProjection(values, value_taps),
+                )
+
+    def convolve(
+        self,
+        conv: SeparableCausalConv,
+        projection: KeyValueProjection,
+        length_without_padding: Int[Array, ""] | int | None,
+        state: Float[Array, "tokens channels"] | None,
+        return_updated_state: bool,
+    ) -> CausalConvResult:
+        return conv(
+            projection.states.astype(jnp.float32),
+            length_without_padding,
+            state,
+            return_updated_state,
+            coefficient_deltas=(
+                rearrange(
+                    projection.taps.astype(jnp.float32),
+                    "tokens (groups kernel) -> tokens kernel groups",
+                    groups=self.attention.config.num_groups,
+                )
+                if projection.taps is not None
+                else None
+            ),
+        )
+
+    def __call__(
+        self,
+        inputs: QKVInputs,
+        positional_embeddings: PositionalEmbeddings | None,
+        state: ConvolvedAttentionState | None = None,
+        return_updated_state: bool = False,
+        length_without_padding: Int[Array, ""] | int | None = None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
+        attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
+        reuse_cache: bool = False,
+        *,
+        keychain: Keychain,
+    ) -> TokenMixerResult[ConvolvedAttentionState]:
+        projection_keychain, attention_keychain = keychain.split()
+        query_parts, key_projection, value_projection = self.project_parts(
+            inputs,
+            forward_pass_config,
+            keychain=projection_keychain,
+        )
+        query_projection, gate, relative_states, sink_logits = query_parts
+        key_conv = self.convolve(
+            self.key_conv,
+            key_projection,
+            length_without_padding,
+            state.key_conv if state is not None else None,
+            return_updated_state,
+        )
+        value_conv = self.convolve(
+            self.value_conv,
+            value_projection,
+            length_without_padding,
+            state.value_conv if state is not None else None,
+            return_updated_state,
+        )
+        keys, values = self.attention.prepare_key_value_heads(
+            key_conv.outputs.astype(query_projection.dtype),
+            value_conv.outputs.astype(query_projection.dtype),
+            positional_embeddings,
+        )
+        result = self.attention.attend(
+            self.attention.prepare_query_heads(query_projection, positional_embeddings),
+            keys,
+            values,
+            gate,
+            state.kv_cache if state is not None else None,
+            return_updated_state,
+            length_without_padding,
+            forward_pass_config,
+            attention_parent_indices,
+            reuse_cache,
+            keychain=attention_keychain,
+            relative_states=relative_states,
+            sink_logits=sink_logits,
+        )
+        if result.state is None:
+            return TokenMixerResult(result.outputs)
+        assert key_conv.state is not None and value_conv.state is not None
+        return TokenMixerResult(
+            result.outputs,
+            ConvolvedAttentionState(kv_cache=result.state, key_conv=key_conv.state, value_conv=value_conv.state),
+        )
+
+    def init_static_state(self, capacity: int, dtype: DTypeLike) -> ConvolvedAttentionState:
+        key_conv, value_conv = (
+            jnp.zeros((conv.kernel_size - 1, conv.input_dim), dtype=jnp.float32)
+            for conv in (self.key_conv, self.value_conv)
+        )
+        return ConvolvedAttentionState(
+            kv_cache=self.attention.init_static_state(capacity, dtype),
+            key_conv=key_conv,
+            value_conv=value_conv,
         )

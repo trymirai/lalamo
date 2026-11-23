@@ -110,7 +110,6 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer, Float[Array
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
         reuse_cache: bool = False,
-        token_positions: Int[Array, " suffix_tokens"] | None = None,  # noqa: ARG002
         *,
         keychain: Keychain,
     ) -> TokenMixerResult[ShortConvStateLayer]:
