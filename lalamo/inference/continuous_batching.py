@@ -288,17 +288,20 @@ class ContinuousBatchingEngine:
 
         state_dtype = DecoderForwardPassConfig.for_inference().embedding_forward_pass_config.activation_dtype
         state_shape = jax.eval_shape(lambda: model.decoder.init_static_state(1, 1, state_dtype))
+        # A layer's state wraps its mixer state: the KV cache of an attention layer is paged, everything else
+        # the layer keeps (a recurrent mixer, stream ops, routing state) is held per slot.
         page_bytes = config.page_size * sum(
             leaf.size // leaf.shape[1] * leaf.dtype.itemsize
             for layer in state_shape
-            if isinstance(layer, StaticKVCacheLayer)
-            for leaf in (layer.keys, layer.values)
+            if isinstance(layer.mixer, StaticKVCacheLayer)
+            for leaf in (layer.mixer.keys, layer.mixer.values)
         )
         recurrent_bytes = sum(
             leaf.size * leaf.dtype.itemsize
             for layer in state_shape
-            if not isinstance(layer, StaticKVCacheLayer)
-            for leaf in jax.tree.leaves(layer)
+            for leaf in jax.tree.leaves(
+                (layer.stream_ops, layer.routing) if isinstance(layer.mixer, StaticKVCacheLayer) else layer
+            )
         )
         vocab_size = model.decoder.vocab_size
         pages_per_slot = math.ceil(context_length / config.page_size)
