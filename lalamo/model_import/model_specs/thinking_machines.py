@@ -34,11 +34,11 @@ THINKING_MACHINES_MODELS = [
             field_name="reasoning_effort",
             reasoning_effort_to_field_value=frozendict(
                 {
-                    ReasoningEffort.NO_REASONING: "none",
-                    ReasoningEffort.LOW: "low",
-                    ReasoningEffort.MEDIUM: "medium",
-                    ReasoningEffort.HIGH: "high",
-                    ReasoningEffort.XHIGH: "xhigh",
+                    ReasoningEffort.NO_REASONING: 0.0,
+                    ReasoningEffort.LOW: 0.2,
+                    ReasoningEffort.MEDIUM: 0.7,
+                    ReasoningEffort.HIGH: 0.9,
+                    ReasoningEffort.XHIGH: 0.99,
                 },
             ),
         ),

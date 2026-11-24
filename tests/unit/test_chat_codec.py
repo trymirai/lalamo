@@ -16,6 +16,7 @@ from lalamo.model_import.model_specs.granite import GRANITE_RESPONSE_FORMAT
 from lalamo.model_import.model_specs.lfm2 import LIQUID_RESPONSE_FORMAT, LIQUID_THINKING_RESPONSE_FORMAT
 from lalamo.model_import.model_specs.qwen import QWEN_RESPONSE_FORMAT
 from lalamo.model_import.model_specs.reasoning_configs import BOOLEAN_REASONING_DEFAULT_ON_CONFIG
+from lalamo.model_import.model_specs.thinking_machines import THINKING_MACHINES_MODELS
 from lalamo.model_registry import ModelRegistry
 from lalamo.models.chat_codec import (
     THINKING_RESPONSE_FORMAT,
@@ -93,6 +94,26 @@ def test_reasoning_effort_is_rendered_through_the_configured_field() -> None:
 
     with pytest.raises(ValueError, match="not supported"):
         codec.render_request([UserMessage("hello")], reasoning_effort=ReasoningEffort.HIGH)
+
+
+@pytest.mark.parametrize(
+    ("effort", "expected"),
+    [
+        (None, "0.9"),
+        (ReasoningEffort.NO_REASONING, "0.0"),
+        (ReasoningEffort.LOW, "0.2"),
+        (ReasoningEffort.MEDIUM, "0.7"),
+        (ReasoningEffort.HIGH, "0.9"),
+        (ReasoningEffort.XHIGH, "0.99"),
+    ],
+)
+def test_inkling_renders_numeric_efforts(effort: ReasoningEffort | None, expected: str) -> None:
+    codec = _chat_codec(
+        prompt_template="{% if reasoning_effort is number %}{{ reasoning_effort }}{% endif %}",
+        reasoning_config=THINKING_MACHINES_MODELS[0].reasoning_config,
+    )
+
+    assert codec.render_request([UserMessage("hello")], reasoning_effort=effort) == expected
 
 
 def test_model_without_reasoning_config_rejects_an_explicit_effort() -> None:
