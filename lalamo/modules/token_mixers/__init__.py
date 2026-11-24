@@ -5,7 +5,7 @@ from .attention import (
     LogScalingConfig,
     ProjectionLayout,
     RelativeBiasConfig,
-    SinkSource,
+    StackedProjectionConfig,
 )
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .deltanet import DeltaNet, DeltaNetConfig
@@ -34,10 +34,10 @@ __all__ = [
     "SeparableCausalConvConfig",
     "ShortConv",
     "ShortConvConfig",
-    "SinkSource",
     "SparseAttention",
     "SparseAttentionConfig",
     "SparseAttentionIndexer",
     "SparseAttentionIndexerConfig",
     "SparseAttentionStateLayer",
+    "StackedProjectionConfig",
 ]

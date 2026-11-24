@@ -134,12 +134,12 @@ from .token_mixers import (
     SeparableCausalConvConfig,
     ShortConv,
     ShortConvConfig,
-    SinkSource,
     SparseAttention,
     SparseAttentionConfig,
     SparseAttentionIndexer,
     SparseAttentionIndexerConfig,
     SparseAttentionStateLayer,
+    StackedProjectionConfig,
 )
 from .token_mixers.indexer_cache import DynamicIndexerCacheLayer, IndexerCacheLayer, StaticIndexerCacheLayer
 from .token_mixers.kv_cache import (
@@ -268,7 +268,6 @@ __all__ = [
     "SiLU",
     "Sigmoid",
     "SigmoidRouting",
-    "SinkSource",
     "SoftCappedSiLU",
     "SoftmaxRouting",
     "SparseAttention",
@@ -278,6 +277,7 @@ __all__ = [
     "SparseAttentionStateLayer",
     "Speculator",
     "SpeculatorConfig",
+    "StackedProjectionConfig",
     "State",
     "StateLayerBase",
     "StaticIndexerCacheLayer",

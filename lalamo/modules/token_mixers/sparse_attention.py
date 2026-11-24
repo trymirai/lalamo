@@ -254,6 +254,7 @@ class SparseAttentionConfig(TokenMixerConfig):
             or config.sliding_window_size is not None
             or config.is_kv_sharing
             or config.has_qkvg_biases
+            or config.stacked_projection_config is not None
         ):
             raise ValueError("Unsupported sparse attention configuration")
 

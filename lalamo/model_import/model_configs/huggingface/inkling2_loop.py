@@ -29,7 +29,7 @@ from lalamo.modules.token_mixers.attention import (
     LogScalingConfig,
     ProjectionLayout,
     RelativeBiasConfig,
-    SinkSource,
+    StackedProjectionConfig,
     aligned_rows,
 )
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
@@ -158,17 +158,10 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
             scale=1.0,
             sliding_window_size=self.sliding_window_size if is_sliding else None,
             logit_soft_cap=None,
-            has_sinks=True,
+            has_sinks=False,
             has_qkvg_biases=self.q_bias,
             has_out_biases=self.o_bias,
-            has_gate=True,
             normalize_values=self.use_value_norm_no_gamma,
-            sink_source=SinkSource.PROJECTED,
-            relative_bias_config=RelativeBiasConfig(
-                num_channels=self.d_rel,
-                extent=self.sliding_window_size if is_sliding else self.rel_extent,
-                clip_threshold=self.rel_l2_clip_threshold,
-            ),
             query_clip_threshold=self.qk_l2_clip_threshold * head_dim**-0.5,
             key_clip_threshold=self.qk_l2_clip_threshold,
             log_scaling_config=(
@@ -176,11 +169,16 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
                 if is_sliding
                 else LogScalingConfig(alpha=self.log_scaling_alpha, position_floor=self.log_scaling_n_floor)
             ),
-            projection_layout=(
-                ProjectionLayout.STACKED_QUERY_FIRST if is_sliding else ProjectionLayout.GROUPED_WITH_CONV_TAPS
+            stacked_projection_config=StackedProjectionConfig(
+                layout=ProjectionLayout.STACKED_QUERY_FIRST if is_sliding else ProjectionLayout.GROUPED_WITH_CONV_TAPS,
+                row_alignment=ROW_ALIGNMENT,
+                relative_bias_config=RelativeBiasConfig(
+                    num_channels=self.d_rel,
+                    extent=self.sliding_window_size if is_sliding else self.rel_extent,
+                    clip_threshold=self.rel_l2_clip_threshold,
+                ),
+                key_value_conv_config=KeyValueConvConfig(conv_config=conv_config, kernel_size=self.sconv_kernel_size),
             ),
-            row_alignment=ROW_ALIGNMENT,
-            key_value_conv_config=KeyValueConvConfig(conv_config=conv_config, kernel_size=self.sconv_kernel_size),
         )
         output_conv_config = OutputConvConfig(conv_config=conv_config, kernel_size=self.sconv_kernel_size)
         moe_config = MixtureOfExpertsConfig(

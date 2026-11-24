@@ -44,8 +44,8 @@ __all__ = [
     "LogScalingConfig",
     "ProjectionLayout",
     "RelativeBiasConfig",
-    "SinkSource",
     "SparseMask",
+    "StackedProjectionConfig",
     "aligned_rows",
 ]
 
@@ -69,11 +69,6 @@ def clip_norm(heads: Float[Array, "*dims channels"], threshold: float) -> Float[
     return upcast_heads * jnp.minimum(threshold / (norms + 1e-6), 1.0)
 
 
-class SinkSource(StrEnum):
-    LEARNED = "learned"
-    PROJECTED = "projected"
-
-
 @dataclass(frozen=True)
 class RelativeBiasConfig(LalamoConfig):
     num_channels: int
@@ -92,7 +87,6 @@ class LogScalingConfig(LalamoConfig):
 
 
 class ProjectionLayout(StrEnum):
-    FUSED = "fused"
     STACKED_QUERY_FIRST = "stacked_query_first"
     GROUPED_WITH_CONV_TAPS = "grouped_with_conv_taps"
 
@@ -104,6 +98,31 @@ class KeyValueConvConfig(LalamoConfig):
 
     def init(self, initializer: Initializer, channels: int) -> SeparableCausalConv:
         return self.conv_config.init(initializer, channels, self.kernel_size)
+
+
+@dataclass(frozen=True)
+class StackedProjectionConfig(LalamoConfig):
+    layout: ProjectionLayout
+    row_alignment: int
+    relative_bias_config: RelativeBiasConfig
+    key_value_conv_config: KeyValueConvConfig
+
+    def logical_output_dims(self, num_heads: int, num_groups: int, head_dim: int) -> tuple[tuple[int, ...], ...]:
+        query_dim = num_heads * head_dim
+        key_value_dim = num_groups * head_dim
+        query_dims = (query_dim, query_dim, num_heads * self.relative_bias_config.num_channels, num_heads)
+        match self.layout:
+            case ProjectionLayout.STACKED_QUERY_FIRST:
+                return ((*query_dims, key_value_dim, key_value_dim),)
+            case ProjectionLayout.GROUPED_WITH_CONV_TAPS:
+                key_value_dims = (key_value_dim, num_groups * self.key_value_conv_config.kernel_size)
+                return (query_dims, key_value_dims, key_value_dims)
+
+    def output_dims(self, num_heads: int, num_groups: int, head_dim: int) -> tuple[tuple[int, ...], ...]:
+        return tuple(
+            tuple(aligned_rows(rows, self.row_alignment) for rows in dims)
+            for dims in self.logical_output_dims(num_heads, num_groups, head_dim)
+        )
 
 
 class KeyValueProjection(NamedTuple):
@@ -233,71 +252,32 @@ class AttentionConfig(TokenMixerConfig):
     # Scale-free RMS normalization on values
     normalize_values: bool = False
     is_kv_sharing: bool = False
-    sink_source: SinkSource = SinkSource.LEARNED
-    relative_bias_config: RelativeBiasConfig | None = None
     query_clip_threshold: float | None = None
     key_clip_threshold: float | None = None
     log_scaling_config: LogScalingConfig | None = None
-    projection_layout: ProjectionLayout = ProjectionLayout.FUSED
-    row_alignment: int = 1
-    key_value_conv_config: KeyValueConvConfig | None = None
+    stacked_projection_config: StackedProjectionConfig | None = None
 
     def __post_init__(self) -> None:
-        if self.sink_source == SinkSource.PROJECTED and not self.has_sinks:
-            raise ValueError("Projected sink logits require has_sinks.")
-        if self.projection_layout == ProjectionLayout.FUSED:
-            if (
-                self.relative_bias_config is not None
-                or self.sink_source == SinkSource.PROJECTED
-                or self.key_value_conv_config is not None
-                or self.row_alignment != 1
-            ):
-                raise ValueError(
-                    "Relative biases, projected sinks, key/value convolutions and row alignment"
-                    " need a stacked projection layout.",
-                )
-        elif (
-            not self.has_gate
-            or self.sink_source != SinkSource.PROJECTED
-            or self.relative_bias_config is None
-            or self.key_value_conv_config is None
-        ):
+        if self.stacked_projection_config is not None and (self.has_sinks or self.has_gate or self.is_kv_sharing):
             raise ValueError(
-                "Stacked projection layouts expect a gate, projected sinks, a relative bias"
-                " and key/value convolutions.",
+                "Stacked projections carry their own gate, projected sinks, keys and values;"
+                " has_sinks, has_gate and is_kv_sharing describe the fused projection only.",
             )
 
     @property
     def supports_paged_decode(self) -> bool:
-        return self.projection_layout == ProjectionLayout.FUSED and self.log_scaling_config is None
-
-    @property
-    def stacked_projection_dims(self) -> tuple[tuple[int, ...], ...]:
-        relative_bias_config = self.relative_bias_config
-        key_value_conv_config = self.key_value_conv_config
-        if relative_bias_config is None or key_value_conv_config is None:
-            raise ValueError("Stacked projections expect a relative bias and key/value convolutions.")
-        query_dim = self.num_heads * self.head_dim
-        key_value_dim = self.num_groups * self.head_dim
-        query_dims = (query_dim, query_dim, self.num_heads * relative_bias_config.num_channels, self.num_heads)
-        match self.projection_layout:
-            case ProjectionLayout.STACKED_QUERY_FIRST:
-                return ((*query_dims, key_value_dim, key_value_dim),)
-            case ProjectionLayout.GROUPED_WITH_CONV_TAPS:
-                key_value_dims = (key_value_dim, self.num_groups * key_value_conv_config.kernel_size)
-                return (query_dims, key_value_dims, key_value_dims)
-            case ProjectionLayout.FUSED:
-                raise ValueError("Fused attention projections are not stacked.")
+        return self.stacked_projection_config is None and self.log_scaling_config is None
 
     def init(
         self,
         initializer: Initializer,
         model_dim: int,
     ) -> "Attention":
-        if self.projection_layout != ProjectionLayout.FUSED:
-            qkvg_dims, *key_value_dims = (
-                tuple(aligned_rows(rows, self.row_alignment) for rows in part_dims)
-                for part_dims in self.stacked_projection_dims
+        if self.stacked_projection_config is not None:
+            qkvg_dims, *key_value_dims = self.stacked_projection_config.output_dims(
+                self.num_heads,
+                self.num_groups,
+                self.head_dim,
             )
             return _init_attention(self, initializer, model_dim, qkvg_dims, tuple(key_value_dims))
         q_output_dim = self.num_heads * self.head_dim
@@ -351,13 +331,12 @@ def _init_attention(
     else:
         key_norm = None
 
-    if config.has_sinks and config.sink_source == SinkSource.LEARNED:
+    if config.has_sinks:
         sinks = initializer.zeros((config.num_heads,))
     else:
         sinks = None
 
-    relative_bias_config = config.relative_bias_config
-    key_value_conv_config = config.key_value_conv_config
+    stacked_config = config.stacked_projection_config
     key_value_dim = config.num_groups * config.head_dim
     return Attention(
         config=config,
@@ -368,8 +347,11 @@ def _init_attention(
         key_norm=key_norm,
         sinks=sinks,
         relative_profiles=(
-            initializer.zeros((relative_bias_config.num_channels, relative_bias_config.extent), dtype=jnp.float32)
-            if relative_bias_config is not None
+            initializer.zeros(
+                (stacked_config.relative_bias_config.num_channels, stacked_config.relative_bias_config.extent),
+                dtype=jnp.float32,
+            )
+            if stacked_config is not None
             else None
         ),
         key_value_projections=tuple(
@@ -381,9 +363,15 @@ def _init_attention(
             )
             for dims in key_value_output_dims
         ),
-        key_conv=key_value_conv_config.init(initializer, key_value_dim) if key_value_conv_config is not None else None,
+        key_conv=(
+            stacked_config.key_value_conv_config.init(initializer, key_value_dim)
+            if stacked_config is not None
+            else None
+        ),
         value_conv=(
-            key_value_conv_config.init(initializer, key_value_dim) if key_value_conv_config is not None else None
+            stacked_config.key_value_conv_config.init(initializer, key_value_dim)
+            if stacked_config is not None
+            else None
         ),
     )
 
@@ -417,7 +405,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
 
     @property
     def has_sinks(self) -> bool:
-        return self.config.has_sinks
+        return self.sinks is not None or self.config.stacked_projection_config is not None
 
     @eqx.filter_jit
     def _prepare_heads(
@@ -531,6 +519,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
 
     def project_stacked(
         self,
+        stacked_config: StackedProjectionConfig,
         projection_index: int,
         inputs: Float[Array, "suffix_tokens channels"],
         forward_pass_config: MixerForwardPassConfig,
@@ -543,10 +532,12 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=keychain,
         )
-        return tuple(
-            part[:, :rows]
-            for part, rows in zip(parts, self.config.stacked_projection_dims[projection_index], strict=True)
+        logical_dims = stacked_config.logical_output_dims(
+            self.config.num_heads,
+            self.config.num_groups,
+            self.config.head_dim,
         )
+        return tuple(part[:, :rows] for part, rows in zip(parts, logical_dims[projection_index], strict=True))
 
     def convolve(
         self,
@@ -574,6 +565,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
 
     def project_stacked_heads(
         self,
+        stacked_config: StackedProjectionConfig,
         inputs: QKVInputs,
         conv_states: KeyValueConvState | None,
         length_without_padding: Int[Array, ""] | int | None,
@@ -586,16 +578,18 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         if self.key_conv is None or self.value_conv is None:
             raise ValueError("Stacked attention projections expect key/value convolutions.")
         query_keychain, key_keychain, value_keychain = keychain.split(3)
-        match self.config.projection_layout:
+        match stacked_config.layout:
             case ProjectionLayout.STACKED_QUERY_FIRST:
-                query_stack = self.project_stacked(0, inputs.query, forward_pass_config, keychain=query_keychain)
+                query_stack = self.project_stacked(
+                    stacked_config, 0, inputs.query, forward_pass_config, keychain=query_keychain
+                )
                 key_stack = (
-                    self.project_stacked(0, inputs.key, forward_pass_config, keychain=key_keychain)
+                    self.project_stacked(stacked_config, 0, inputs.key, forward_pass_config, keychain=key_keychain)
                     if inputs.key is not None
                     else query_stack
                 )
                 value_stack = (
-                    self.project_stacked(0, inputs.value, forward_pass_config, keychain=value_keychain)
+                    self.project_stacked(stacked_config, 0, inputs.value, forward_pass_config, keychain=value_keychain)
                     if inputs.value is not None
                     else query_stack
                 )
@@ -606,18 +600,21 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
                 value_projection = KeyValueProjection(value_states, None)
             case ProjectionLayout.GROUPED_WITH_CONV_TAPS:
                 query_projection, gate, relative_states, sink_logits = self.project_stacked(
+                    stacked_config,
                     0,
                     inputs.query,
                     forward_pass_config,
                     keychain=query_keychain,
                 )
                 key_states, key_taps = self.project_stacked(
+                    stacked_config,
                     1,
                     inputs.key if inputs.key is not None else inputs.query,
                     forward_pass_config,
                     keychain=key_keychain,
                 )
                 value_states, value_taps = self.project_stacked(
+                    stacked_config,
                     2,
                     inputs.value if inputs.value is not None else inputs.query,
                     forward_pass_config,
@@ -625,8 +622,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
                 )
                 key_projection = KeyValueProjection(key_states, key_taps)
                 value_projection = KeyValueProjection(value_states, value_taps)
-            case ProjectionLayout.FUSED:
-                raise ValueError("Fused attention projections are not stacked.")
         key_conv = self.convolve(
             self.key_conv,
             key_projection,
@@ -675,7 +670,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         sparse_mask: SparseMask | None = None,
     ) -> AttentionResult:
         qkvg_keychain, out_keychain = keychain.split(2)
-        if self.config.projection_layout == ProjectionLayout.FUSED:
+        stacked_config = self.config.stacked_projection_config
+        if stacked_config is None:
             if isinstance(inputs, QKVInputs):
                 raise TypeError("Fused attention projections take a single input.")
             queries, keys, values, _, gate = self.project_heads(
@@ -684,6 +680,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
             heads = ProjectedHeads(queries, keys, values, gate, None, None, None)
         else:
             heads = self.project_stacked_heads(
+                stacked_config,
                 inputs if isinstance(inputs, QKVInputs) else QKVInputs(query=inputs, key=None, value=None),
                 state.conv_states if state is not None else None,
                 length_without_padding,
@@ -826,13 +823,14 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         key_positions: Int[Array, " src_tokens"],
         position_scales: Float[Array, " dst_tokens"] | None,
     ) -> Float[Array, "heads dst_tokens src_tokens"] | None:
-        relative_bias_config = self.config.relative_bias_config
-        if relative_bias_config is None or self.relative_profiles is None:
+        stacked_config = self.config.stacked_projection_config
+        if stacked_config is None or self.relative_profiles is None:
             if relative_states is not None:
                 raise ValueError("Relative states were given to an attention without a relative bias.")
             return None
         if relative_states is None:
             raise ValueError("An attention with a relative bias requires relative states.")
+        relative_bias_config = stacked_config.relative_bias_config
         scaled_states = clip_norm(
             rearrange(
                 relative_states, "tokens (heads channels) -> tokens heads channels", heads=self.config.num_heads
@@ -866,7 +864,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         key_positions: Int[Array, " src_tokens"],
         position_scales: Float[Array, " dst_tokens"] | None,
     ) -> Float[Array, "heads dst_tokens src_tokens"] | None:
-        if (sink_logits is not None) != (self.config.sink_source == SinkSource.PROJECTED):
+        if (sink_logits is not None) != (self.config.stacked_projection_config is not None):
             raise ValueError("Sink logits must be given exactly when the attention projects its sinks.")
         (num_queries,) = query_positions.shape
         (num_keys,) = key_positions.shape

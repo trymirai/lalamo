@@ -85,14 +85,15 @@ def load_inkling_attention(
     layer_path: ParameterPath,
 ) -> Attention:
     config = attention.config
+    stacked_config = config.stacked_projection_config
     head_dim = config.head_dim
-    if attention.key_conv is None or attention.value_conv is None:
-        raise TypeError("Inkling attention expects key/value convolutions.")
+    if stacked_config is None or attention.key_conv is None or attention.value_conv is None:
+        raise TypeError("Inkling attention expects stacked projections with key/value convolutions.")
     kernel_size = attention.key_conv.kernel_size
     attention_path = layer_path / "attn"
     norm_names = (
         ("attn_norm",) * 3
-        if config.projection_layout == ProjectionLayout.STACKED_QUERY_FIRST
+        if stacked_config.layout == ProjectionLayout.STACKED_QUERY_FIRST
         else ("q_input_norm", "k_input_norm", "v_input_norm")
     )
     query_gamma, key_gamma, value_gamma = (f32(weights_dict, layer_path / name / "weight") for name in norm_names)
@@ -114,7 +115,7 @@ def load_inkling_attention(
     )
     key_rows = f32(weights_dict, attention_path / "wk_dv" / "weight") * key_gamma
     value_rows = f32(weights_dict, attention_path / "wv_dv" / "weight") * value_gamma
-    match config.projection_layout:
+    match stacked_config.layout:
         case ProjectionLayout.STACKED_QUERY_FIRST:
             projections = (stack_parts(attention.qkvg_projection, (*query_parts, key_rows, value_rows)),)
             key_conv = fold_static_conv(attention.key_conv, f32(weights_dict, attention_path / "k_sconv" / "weight"))
@@ -140,8 +141,6 @@ def load_inkling_attention(
                 attention.value_conv,
                 f32(weights_dict, attention_path / "v_sconv" / "static_w"),
             )
-        case ProjectionLayout.FUSED:
-            raise TypeError("Inkling attention uses stacked projections.")
     qkvg_projection, *key_value_projections = projections
     return load_as_at(
         lambda module: (
