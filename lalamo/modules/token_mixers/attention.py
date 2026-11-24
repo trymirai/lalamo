@@ -258,10 +258,11 @@ class AttentionConfig(TokenMixerConfig):
     stacked_projection_config: StackedProjectionConfig | None = None
 
     def __post_init__(self) -> None:
-        if self.stacked_projection_config is not None and (self.has_sinks or self.has_gate or self.is_kv_sharing):
+        if self.stacked_projection_config is not None and (
+            not self.has_sinks or not self.has_gate or self.is_kv_sharing
+        ):
             raise ValueError(
-                "Stacked projections carry their own gate, projected sinks, keys and values;"
-                " has_sinks, has_gate and is_kv_sharing describe the fused projection only.",
+                "Stacked projections always project per-token sinks and a gate, and their own keys and values."
             )
 
     @property
@@ -331,7 +332,7 @@ def _init_attention(
     else:
         key_norm = None
 
-    if config.has_sinks:
+    if config.has_sinks and config.stacked_projection_config is None:
         sinks = initializer.zeros((config.num_heads,))
     else:
         sinks = None
@@ -405,7 +406,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
 
     @property
     def has_sinks(self) -> bool:
-        return self.sinks is not None or self.config.stacked_projection_config is not None
+        return self.config.has_sinks
 
     @eqx.filter_jit
     def _prepare_heads(
