@@ -94,7 +94,13 @@ from .rope import (
     UnscaledRoPEConfig,
     YARNRoPEConfig,
 )
-from .routing_interventions import CacheConditionalRouting, ExpertCacheState
+from .routing_interventions import (
+    CacheConditionalRouting,
+    CachePriority,
+    ExpertCacheState,
+    ScoredCacheRouting,
+    ScoredCacheState,
+)
 from .speculator import Speculator, SpeculatorConfig
 from .speculators import (
     DFlashDraftConfig,
@@ -190,6 +196,7 @@ __all__ = [
     "BlockAttnResQKVConnection",
     "BlockAttnResStream",
     "CacheConditionalRouting",
+    "CachePriority",
     "Classifier",
     "ClassifierActivationTrace",
     "ClassifierConfig",
@@ -279,6 +286,8 @@ __all__ = [
     "RoutingIntervention",
     "RoutingMap",
     "RoutingPhase",
+    "ScoredCacheRouting",
+    "ScoredCacheState",
     "SeparableCausalConv",
     "SeparableCausalConvConfig",
     "ShortConv",

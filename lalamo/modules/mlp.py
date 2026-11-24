@@ -420,6 +420,19 @@ class RoutingMap(eqx.Module):
     active_expert_weights: Float[Array, "*batch_and_tokens active_experts"]
     # The logits the selection was taken over when a rule modified them (None: the router logits as they are).
     effective_logits: Float[Array, "*batch_and_tokens experts"] | None = None
+    # Which slots are dispatched (None: all of them). A rule that drops an expert keeps its index, so that the
+    # indices of a token stay distinct for the dispatch, gives it weight zero and clears its slot here.
+    dispatched: Bool[Array, "*batch_and_tokens active_experts"] | None = None
+
+    def dispatched_indices(self) -> Int[Array, "*batch_and_tokens active_experts"]:
+        """The indices with every slot that is not dispatched repeating the first expert of its token.
+
+        The distinct indices of a token are then the experts it dispatches, which is what a routing trace
+        reports. The first slot is always dispatched.
+        """
+        if self.dispatched is None:
+            return self.active_expert_indices
+        return jnp.where(self.dispatched, self.active_expert_indices, self.active_expert_indices[..., :1])
 
 
 class MoERoutingTrace(eqx.Module):
@@ -430,6 +443,7 @@ class MoERoutingTrace(eqx.Module):
     # The activations the router read, in the activation dtype (before the float32 widening): a consumer
     # can apply another router to them, e.g. a frozen reference router for a trust region.
     router_inputs: Float[Array, "batch suffix_tokens channels"]
+    # The dispatched experts: a slot whose expert a rule dropped repeats the first expert of the token.
     active_expert_indices: Int[Array, "batch suffix_tokens active_experts"]
     shared_expert_gate: Float[Array, "batch suffix_tokens shared_experts"] | None
 
@@ -478,9 +492,55 @@ class RoutingFunction(LalamoConfig, RegistryABC):
         num_active: int,
     ) -> RoutingMap: ...
 
+    def gating_scores(
+        self,
+        logits: Float[Array, "batch experts"],  # noqa: ARG002
+        biases: Float[Array, " experts"] | None = None,  # noqa: ARG002
+    ) -> Float[Array, "batch experts"]:
+        """What the top-k is taken over, in float32. A rule that re-ranks experts adds its prior to these.
+
+        Together with `weights_of` this is what a re-ranking rule needs from a routing function. A function
+        that defines neither is refused by such a rule rather than weighed by a guess.
+        """
+        raise TypeError(self._no_reranking())
+
+    def weights_of(
+        self,
+        logits: Float[Array, "batch experts"],  # noqa: ARG002
+        selected: Int[Array, "batch active"],  # noqa: ARG002
+        biases: Float[Array, " experts"] | None = None,  # noqa: ARG002
+    ) -> Float[Array, "batch active"]:
+        """The mixing weights of a given selection: what `__call__` returns had it selected these experts."""
+        raise TypeError(self._no_reranking())
+
+    def _no_reranking(self) -> str:
+        return (
+            f"{type(self).__name__} defines neither its gating scores nor the weights of a selection, so a"
+            " re-ranking rule cannot act on it; SoftmaxRouting and SigmoidRouting do"
+        )
+
 
 @dataclass(frozen=True)
 class SoftmaxRouting(RoutingFunction):
+    def gating_scores(
+        self,
+        logits: Float[Array, "batch experts"],
+        biases: Float[Array, " experts"] | None = None,
+    ) -> Float[Array, "batch experts"]:
+        assert biases is None
+        return logits.astype(jnp.float32)
+
+    def weights_of(
+        self,
+        logits: Float[Array, "batch experts"],
+        selected: Int[Array, "batch active"],
+        biases: Float[Array, " experts"] | None = None,
+    ) -> Float[Array, "batch active"]:
+        assert biases is None
+        # The gather is a one-hot contraction (exact: all but one term are zero) in the dtype of the logits.
+        one_hot = (selected[..., None] == jnp.arange(logits.shape[-1])).astype(logits.dtype)
+        return jax.nn.softmax((one_hot * logits[:, None, :]).sum(axis=-1))
+
     def call_unbatched(
         self,
         logits: Float[Array, " experts"],
@@ -512,6 +572,39 @@ class SigmoidRouting(RoutingFunction):
         if self.bias_mode is None:
             return None
         return initializer.zeros((num_experts,), dtype=jnp.float32)
+
+    def _scores(
+        self,
+        logits: Float[Array, "batch experts"],
+        biases: Float[Array, " experts"] | None,
+    ) -> tuple[Float[Array, "batch experts"], Float[Array, "batch experts"]]:
+        """(scores the top-k is taken over, scores the weights are taken from), as in `call_unbatched`."""
+        if (self.bias_mode is None) != (biases is None):
+            raise ValueError("Biases must be present exactly when a routing bias mode is configured.")
+        scores = jax.nn.sigmoid(logits)
+        if biases is None:
+            return scores, scores
+        biased_scores = scores.astype(biases.dtype) + biases
+        gating = biased_scores if self.bias_mode in (RoutingBias.GATING, RoutingBias.BOTH) else scores
+        weighting = biased_scores if self.bias_mode in (RoutingBias.WEIGHTS, RoutingBias.BOTH) else scores
+        return gating, weighting
+
+    def gating_scores(
+        self,
+        logits: Float[Array, "batch experts"],
+        biases: Float[Array, " experts"] | None = None,
+    ) -> Float[Array, "batch experts"]:
+        return self._scores(logits, biases)[0].astype(jnp.float32)
+
+    def weights_of(
+        self,
+        logits: Float[Array, "batch experts"],
+        selected: Int[Array, "batch active"],
+        biases: Float[Array, " experts"] | None = None,
+    ) -> Float[Array, "batch active"]:
+        chosen = jnp.take_along_axis(self._scores(logits, biases)[1], selected, axis=-1)
+        weights = chosen / (chosen.sum(axis=-1, keepdims=True) + 1e-6) * self.weight_scale
+        return weights.astype(logits.dtype)
 
     def call_unbatched(
         self,
@@ -561,6 +654,15 @@ class RoutingIntervention(LalamoConfig, RegistryABC):
         weights outside it with the gradient attached (see `MixtureOfExperts._route_tokens`); the forward
         values are the same either way. A rule with any other weighting keeps the default and the scan runs
         on the live logits.
+        """
+        return False
+
+    @property
+    def may_drop_experts(self) -> bool:
+        """Whether a token may dispatch fewer experts than the routing function selects.
+
+        A routing trace then repeats the first expert of the token in the dropped slots (`RoutingMap.dispatched`),
+        so a consumer that expects distinct indices at every token must ask first.
         """
         return False
 
@@ -815,7 +917,9 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         # below on the live ones. The forward values are unchanged; what changes is that reverse mode never
         # has to transpose a sequence-long scan whose float carry (the range statistic) would otherwise drag
         # it in. A rule with any other weighting keeps the scan on the live logits, weights and all.
-        detach_scan = intervention.weighs_by_softmax_over_selection
+        detach_scan = intervention.weighs_by_softmax_over_selection and isinstance(
+            self.config.routing_function, SoftmaxRouting
+        )
         final_state, routing_by_time = jax.lax.scan(
             route_step,
             routing_state,
@@ -960,7 +1064,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             router_logits=router_logits,
             effective_logits=(router_logits if routing_map.effective_logits is None else routing_map.effective_logits),
             router_inputs=inputs,
-            active_expert_indices=routing_map.active_expert_indices,
+            active_expert_indices=routing_map.dispatched_indices(),
             shared_expert_gate=shared_gate,
         )
         return MLPResult(outputs=outputs, updated_routing_state=updated_routing_state, routing_trace=routing_trace)
@@ -1286,7 +1390,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             router_logits=by_token(router_logits),
             effective_logits=by_token(flat_effective_logits),
             router_inputs=by_token(flattened_inputs),
-            active_expert_indices=by_token(routing_map.active_expert_indices),
+            active_expert_indices=by_token(routing_map.dispatched_indices()),
             shared_expert_gate=by_token(shared_gate) if shared_gate is not None else None,
         )
         return MLPResult(
