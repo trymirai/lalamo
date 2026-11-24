@@ -25,9 +25,7 @@ __all__ = ["HFQwen35ImageProcessorConfig", "HFQwen35VisionConfig"]
 class HFQwen35VisionConfig:
     """The ``vision_config`` block of a Qwen3.5 ``config.json``."""
 
-    _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
-
-    model_type: Literal["qwen3_5"]
+    model_type: Literal["qwen3_5", "qwen3_5_moe"]
     depth: int
     hidden_size: int
     hidden_act: Literal["gelu_pytorch_tanh"]
@@ -47,14 +45,6 @@ class HFQwen35VisionConfig:
             raise ValueError("Deepstack visual features are not supported.")
         if self.hidden_size % self.num_heads:
             raise ValueError("hidden_size must be divisible by num_heads.")
-
-    @classmethod
-    def from_json(cls, json_path: Path | str) -> Self:
-        with Path(json_path).open() as config_file:
-            vision_config = json.load(config_file).get("vision_config")
-        if vision_config is None:
-            raise ValueError("The checkpoint has no vision encoder configuration.")
-        return cls._converter.structure(vision_config, cls)
 
     def to_vision_encoder_config(self) -> VisionEncoderConfig:
         # HF's LayerNorm epsilon and default axial RoPE base.

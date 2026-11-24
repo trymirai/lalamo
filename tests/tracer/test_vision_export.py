@@ -1,28 +1,23 @@
 from pathlib import Path
 
 import jax.numpy as jnp
-import pytest
+import numpy as np
 
-from lalamo.exportable import Exportable
-from lalamo.model_import.loaders.vision import load_hf_vision
-from lalamo.model_import.origins import HuggingFaceOrigin
-from lalamo.modules.vision import Vision
+from lalamo.model_import.common import import_model
+from lalamo.models import LanguageModel
 from lalamo.utils.sharding import ShardingConfig
 
 
-def _assert_same_arrays(result: Exportable, reference: Exportable) -> None:
-    result_arrays = Exportable.export(result).arrays
-    reference_arrays = Exportable.export(reference).arrays
-    assert result_arrays.keys() == reference_arrays.keys()
-    mismatched = [name for name in result_arrays if not jnp.array_equal(result_arrays[name], reference_arrays[name])]
-    assert not mismatched, f"Arrays differ: {mismatched[:5]}"
-
-
-@pytest.mark.parametrize("repo", ["Qwen/Qwen3.5-0.8B"])
-def test_standalone_vision_export_loads(repo: str, tmp_path: Path) -> None:
+def test_multimodal_model_export_loads(tmp_path: Path) -> None:
     sharding_config = ShardingConfig.replicated()
-    vision = load_hf_vision(HuggingFaceOrigin(repo), sharding_config=sharding_config, dtype=jnp.bfloat16)
-    vision.save(tmp_path / "vision")
-    restored_vision = Vision.load(tmp_path / "vision", sharding_config)
-    assert restored_vision.config == vision.config
-    _assert_same_arrays(restored_vision, vision)
+    model = import_model("Qwen/Qwen3.5-0.8B", sharding_config=sharding_config, dtype=jnp.bfloat16).model
+    assert isinstance(model, LanguageModel)
+    assert model.vision_encoder is not None
+    model.save(tmp_path)
+    restored_model = LanguageModel.load(tmp_path, sharding_config)
+    assert restored_model.config == model.config
+    expected = model.export().arrays
+    actual = restored_model.export().arrays
+    assert actual.keys() == expected.keys()
+    for name in expected:
+        np.testing.assert_array_equal(actual[name], expected[name], err_msg=name)

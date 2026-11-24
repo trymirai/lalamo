@@ -289,6 +289,7 @@ def _import_language_model(
             metadata_dict=checkpoint.metadata,
             token_codec_config=token_codec_config,
             generation_config=generation_config,
+            origin=model_spec.origin,
         )
         return _load_model(
             LanguageModel,

@@ -1,5 +1,6 @@
 from itertools import accumulate, pairwise
 
+import jax
 import jax.numpy as jnp
 import pytest
 import torch
@@ -59,7 +60,8 @@ def test_rejects_unmergeable_grid() -> None:
         lalamo_encoder()(random_patches(odd_grid), odd_grid, keychain=keychain())
 
 
-def test_rejects_sharding() -> None:
+def test_encoder_weights_are_replicated_on_model_mesh() -> None:
     initializer = EmptyInitializer(default_dtype=jnp.float32, sharding_config=make_test_sharding_config())
-    with pytest.raises(ValueError, match="sharded"):
-        lalamo_encoder().config.init(initializer)
+    encoder = lalamo_encoder().config.init(initializer)
+    assert encoder.sharding_config.mesh == initializer.sharding_config.mesh
+    assert all(not any(weight.sharding.spec) for weight in jax.tree.leaves(encoder))

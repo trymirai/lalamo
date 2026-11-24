@@ -12,6 +12,7 @@ from lalamo.model_import.loaders import (
     load_huggingface_classifier,
     load_huggingface_decoder,
 )
+from lalamo.model_import.loaders.vision import load_qwen3_5_vision_encoder
 from lalamo.model_import.model_configs import ForeignClassifierConfig, ForeignLMConfig
 from lalamo.models import ClassifierModel, LanguageModel
 from lalamo.weight_matrix import CompressionImplementation
@@ -118,6 +119,9 @@ class HuggingFaceLMConfig(ForeignLMConfig):
             weights_dict=weights_dict,
             implementation=implementation,
         )
+        if model.vision_encoder is not None:
+            encoder = load_qwen3_5_vision_encoder(model.vision_encoder, weights_dict)
+            model = eqx.tree_at(lambda m: m.vision_encoder, model, encoder)
         return eqx.tree_at(lambda m: (m.decoder,), model, (decoder,))
 
 

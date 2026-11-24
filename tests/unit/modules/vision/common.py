@@ -16,7 +16,6 @@ from lalamo.model_import.loaders.vision import load_qwen3_5_vision_encoder
 from lalamo.model_import.model_configs.huggingface.qwen3_5_vision import HFQwen35VisionConfig
 from lalamo.module import Keychain
 from lalamo.modules.vision import ImageGrid, VisionEncoder
-from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from tests.helpers import make_test_sharding_config
 
@@ -94,7 +93,6 @@ def lalamo_encoder() -> VisionEncoder:
     return load_qwen3_5_vision_encoder(
         template,
         weights_dict,
-        ParameterPath("model.visual"),
     )
 
 

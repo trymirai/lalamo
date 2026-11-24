@@ -13,8 +13,10 @@ from safetensors import safe_open
 from transformers import AutoConfig
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
 
-from lalamo.model_import.loaders.vision import load_hf_vision
-from lalamo.model_import.origins import HuggingFaceOrigin, hf_resolve_weights
+from lalamo.initializer import EmptyInitializer
+from lalamo.model_import.loaders.vision import load_qwen3_5_vision_encoder
+from lalamo.model_import.model_configs.huggingface.qwen3_5 import HFQwen35Config
+from lalamo.model_import.origins import FileSpec, HuggingFaceOrigin, hf_resolve_weights
 from lalamo.module import Keychain
 from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPassConfig
 from lalamo.modules.vision import ImageGrid, VisionEncoderResult
@@ -158,16 +160,19 @@ def _match_activations(
 def run_vision_tracer(spec: VisionModelTestSpec) -> None:
     configure_precision_for_tests()
     sharding_config = _tracer_sharding_config()
-    imported = load_hf_vision(
-        HuggingFaceOrigin(spec.model_repo),
-        sharding_config=sharding_config,
-        dtype=jnp.float32,
+    origin = HuggingFaceOrigin(spec.model_repo)
+    vision_config = HFQwen35Config.from_json(origin.resolve_file(FileSpec("config.json"))).to_vision_config(origin)
+    assert vision_config is not None
+    model = _load_hf_vision_model(spec.model_repo)
+    imported = load_qwen3_5_vision_encoder(
+        vision_config.encoder_config.init(EmptyInitializer(jnp.float32, sharding_config)),
+        {f"model.visual.{name}": to_jax(tensor) for name, tensor in model.state_dict().items()},
     )
     images = [synthetic_image(width, height, seed) for seed, (width, height) in enumerate(spec.image_sizes)]
-    preprocessed = imported.config.preprocess(images)
+    preprocessed = vision_config.preprocess(images)
     patches = jax.device_put(jnp.asarray(preprocessed.patches), sharding_config.make_sharding((None, None)))
 
-    result = imported.encoder(
+    result = imported(
         patches,
         preprocessed.grids,
         MixerForwardPassConfig(
@@ -177,7 +182,6 @@ def run_vision_tracer(spec: VisionModelTestSpec) -> None:
         return_activation_trace=True,
         keychain=Keychain.init(0, sharding_config=sharding_config),
     )
-    model = _load_hf_vision_model(spec.model_repo)
     try:
         with torch.no_grad():
             _match_activations(model, result, patches, preprocessed.grids)

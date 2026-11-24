@@ -25,6 +25,7 @@ from lalamo.modules import (
 )
 from lalamo.modules.token_mixer import State
 from lalamo.modules.utils import call_vmapped
+from lalamo.modules.vision import VisionConfig, VisionEncoder
 from lalamo.sampling import SamplingPolicy
 
 __all__ = [
@@ -128,20 +129,26 @@ class GenerationConfig:
 class LanguageModelConfig(ModelConfig[ChatCodecConfig]):
     decoder_config: DecoderConfig
     generation_config: GenerationConfig
+    vision_config: VisionConfig | None = None
 
     def init(self, tokenizer: Tokenizer, initializer: Initializer) -> "LanguageModel":
         decoder = self.decoder_config.init(initializer)
         token_codec = self.token_codec_config.init(tokenizer)
+        vision_encoder = None
+        if self.vision_config is not None:
+            vision_encoder = self.vision_config.encoder_config.init(initializer)
         return LanguageModel(
             config=self,
             sharding_config=initializer.sharding_config,
             token_codec=token_codec,
             decoder=decoder,
+            vision_encoder=vision_encoder,
         )
 
 
 class LanguageModel(Model[LanguageModelConfig, ChatCodec]):
     decoder: Decoder
+    vision_encoder: VisionEncoder | None = None
 
     @eqx.filter_jit
     def _make_attention_chunks(

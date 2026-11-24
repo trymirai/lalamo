@@ -11,6 +11,7 @@ from tokenizers import Tokenizer
 
 from lalamo.initializer import EmptyInitializer
 from lalamo.model import Model, ModelConfig
+from lalamo.model_import.origins import Origin
 from lalamo.models import (
     ClassifierModelConfig,
     GenerationConfig,
@@ -21,6 +22,7 @@ from lalamo.models import (
 from lalamo.models.chat_codec import ChatCodecConfig
 from lalamo.modules.classifier import ClassifierConfig
 from lalamo.modules.decoder import DecoderConfig
+from lalamo.modules.vision import VisionConfig
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.weight_matrix import CompressionImplementation
@@ -78,16 +80,22 @@ class ForeignLMConfig(ForeignConfig[LanguageModelConfig], RegistryABC):
     @abstractmethod
     def eos_token_ids(self) -> list[int]: ...
 
+    def to_vision_config(self, origin: Origin) -> VisionConfig | None:  # noqa: ARG002
+        return None
+
     def to_lalamo_config(
         self,
         metadata_dict: Mapping[str, str],
         token_codec_config: ChatCodecConfig,
         generation_config: GenerationConfig,
+        *,
+        origin: Origin,
     ) -> LanguageModelConfig:
         return LanguageModelConfig(
             token_codec_config=token_codec_config,
             decoder_config=self.to_decoder_config(metadata_dict),
             generation_config=generation_config,
+            vision_config=self.to_vision_config(origin),
         )
 
 

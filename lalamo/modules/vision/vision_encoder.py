@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import equinox as eqx
 from einops import rearrange
@@ -13,6 +13,7 @@ from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixer import AttentionImplementation, MixerForwardPassConfig
 from lalamo.modules.utils import call_vmapped
+from lalamo.utils.sharding import ShardingConfig
 
 from .image_grid import ImageGrid
 from .position_embedding import InterpolatedPositionEmbedding, InterpolatedPositionEmbeddingConfig
@@ -67,8 +68,7 @@ class VisionEncoderConfig(LalamoConfig):
             raise ValueError(f"Attention head_dim differs from RoPE head_dim in layers {mismatched_layers}.")
 
     def init(self, initializer: Initializer) -> "VisionEncoder":
-        if initializer.sharding_config.logical_to_physical:
-            raise ValueError("Vision encoders cannot be sharded; use a replicated ShardingConfig.")
+        initializer = replace(initializer, sharding_config=ShardingConfig(mesh=initializer.sharding_config.mesh))
         merged_dim = self.model_dim * self.spatial_merge_size**2
         return VisionEncoder(
             config=self,

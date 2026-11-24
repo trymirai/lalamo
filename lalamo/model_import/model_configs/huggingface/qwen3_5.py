@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Self
 
+from lalamo.model_import.origins import FileSpec, Origin
 from lalamo.modules import AdditiveResidualConfig, SublayerConfig
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
@@ -17,8 +18,10 @@ from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.token_mixers.deltanet import DeltaNetConfig
 from lalamo.modules.transformer import TransformerConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.modules.vision import VisionConfig
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
+from .qwen3_5_vision import HFQwen35ImageProcessorConfig, HFQwen35VisionConfig
 
 __all__ = ["HFQwen35Config"]
 
@@ -62,6 +65,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
     eos_token_id: int | list[int] = field(default_factory=list)
     quantization: QuantizationConfigType | None = None
+    vision_config: HFQwen35VisionConfig | None = None
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
@@ -73,6 +77,15 @@ class HFQwen35Config(HuggingFaceLMConfig):
         text_config = config.pop("text_config", {})
         merged = {**text_config, **config}
         return cls._converter.structure(merged, cls)
+
+    def to_vision_config(self, origin: Origin) -> VisionConfig | None:
+        if self.vision_config is None:
+            return None
+        encoder_config = self.vision_config.to_vision_encoder_config()
+        preprocessing_config = HFQwen35ImageProcessorConfig.from_json(
+            origin.resolve_file(FileSpec("preprocessor_config.json")),
+        ).to_image_preprocessing_config(encoder_config)
+        return VisionConfig(encoder_config=encoder_config, preprocessing_config=preprocessing_config)
 
     def to_decoder_config(
         self,
