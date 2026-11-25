@@ -7,12 +7,13 @@ from einops import rearrange
 from jaxtyping import Array, Bool, Float, Int
 
 from lalamo.initializer import Initializer
-from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis
+from lalamo.module import Keychain, LalamoModule, LogicalAxis
 from lalamo.modules.activations import SiLU
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.mlp import DenseMLP, DenseMLPConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings, RoPE, RoPEConfig
+from lalamo.modules.speculator import DraftAdapter, DraftAdapterConfig
 from lalamo.modules.utils import call_vmapped, call_vmapped_twice
 from lalamo.utils.sharding import lookup_sharded_indices
 
@@ -30,7 +31,7 @@ class WeaverPrefix(eqx.Module):
 
 
 @dataclass(frozen=True)
-class WeaverConfig(LalamoConfig):
+class WeaverConfig(DraftAdapterConfig):
     model_dim: int
     target_model_dim: int
     target_embedding_dim: int
@@ -46,6 +47,23 @@ class WeaverConfig(LalamoConfig):
     @property
     def head_dim(self) -> int:
         return self.model_dim // self.num_heads
+
+    def validate_draft(
+        self,
+        *,
+        model_dim: int,
+        block_size: int,
+        vocab_size: int,  # noqa: ARG002
+        num_context_taps: int,  # noqa: ARG002
+    ) -> None:
+        if self.target_model_dim != model_dim:
+            raise ValueError(
+                f"Weaver target_model_dim {self.target_model_dim} does not match draft model_dim {model_dim}.",
+            )
+        if self.max_depth > block_size - 1:
+            raise ValueError(
+                f"Weaver max_depth {self.max_depth} exceeds the draft block's {block_size - 1} proposal positions.",
+            )
 
     def init(self, initializer: Initializer) -> "Weaver":
         if self.model_dim % self.num_heads != 0:
@@ -210,7 +228,7 @@ class WeaverBlock(LalamoModule[WeaverConfig]):
         return outputs[:, 0], own_keys[:, 0], own_values[:, 0]
 
 
-class Weaver(LalamoModule[WeaverConfig]):
+class Weaver(DraftAdapter[WeaverConfig]):
     embedding_norm: Normalization
     hidden_state_norm: Normalization
     embedding_projection: Linear

@@ -250,12 +250,12 @@ def convert_speculator(
     speculator = DFlashSpeculator(
         config=DFlashSpeculatorConfig(
             draft_config=draft_model.config,
-            weaver_config=weaver.config if weaver is not None else None,
+            adapter_config=weaver.config if weaver is not None else None,
             confidence_head_config=confidence_head_config,
         ),
         sharding_config=sharding_config,
         draft_model=draft_model,
-        weaver=weaver,
+        adapter=weaver,
         confidence_head=confidence_head,
     )
     speculator.save(output_dir)

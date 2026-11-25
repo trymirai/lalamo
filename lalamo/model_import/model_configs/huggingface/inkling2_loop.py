@@ -10,7 +10,7 @@ from jaxtyping import Array
 from lalamo.model import Model
 from lalamo.model_import.loaders.inkling import load_inkling2_loop_decoder
 from lalamo.models import LanguageModel
-from lalamo.modules.activations import SoftCappedSiLU
+from lalamo.modules.activations import SiLU
 from lalamo.modules.attention_residual import (
     AttnResQKVReadConfig,
     AttnResReadConfig,
@@ -26,6 +26,7 @@ from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.token_mixers.attention import (
     AttentionConfig,
     KeyValueConvConfig,
+    L2ClipConfig,
     LogScalingConfig,
     ProjectionLayout,
     RelativeBiasConfig,
@@ -163,8 +164,8 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
             has_out_biases=self.o_bias,
             has_gate=True,
             normalize_values=self.use_value_norm_no_gamma,
-            query_clip_threshold=self.qk_l2_clip_threshold * head_dim**-0.5,
-            key_clip_threshold=self.qk_l2_clip_threshold,
+            query_clip_config=L2ClipConfig(threshold=self.qk_l2_clip_threshold * head_dim**-0.5, epsilon=1e-6),
+            key_clip_config=L2ClipConfig(threshold=self.qk_l2_clip_threshold, epsilon=1e-6),
             log_scaling_config=(
                 None
                 if is_sliding
@@ -176,7 +177,7 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
                 relative_bias_config=RelativeBiasConfig(
                     num_channels=self.d_rel,
                     extent=self.sliding_window_size if is_sliding else self.rel_extent,
-                    clip_threshold=self.rel_l2_clip_threshold,
+                    clip_config=L2ClipConfig(threshold=self.rel_l2_clip_threshold, epsilon=1e-6),
                 ),
                 key_value_conv_config=KeyValueConvConfig(conv_config=conv_config, kernel_size=self.sconv_kernel_size),
             ),
@@ -185,7 +186,7 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
         moe_config = MixtureOfExpertsConfig(
             expert_config=DenseMLPConfig(
                 linear_config=linear_config,
-                activation=SoftCappedSiLU(soft_cap=self.mlp_gate_softcap),
+                activation=SiLU(soft_cap=self.mlp_gate_softcap),
                 has_up_biases=False,
                 has_down_biases=False,
                 gate_clipping=None,

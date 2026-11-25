@@ -41,6 +41,7 @@ __all__ = [
     "AttentionConfig",
     "AttentionResult",
     "KeyValueConvConfig",
+    "L2ClipConfig",
     "LogScalingConfig",
     "ProjectionLayout",
     "RelativeBiasConfig",
@@ -63,17 +64,22 @@ def aligned_rows(rows: int, alignment: int) -> int:
     return -(-rows // alignment) * alignment
 
 
-def clip_norm(heads: Float[Array, "*dims channels"], threshold: float) -> Float[Array, "*dims channels"]:
-    upcast_heads = heads.astype(jnp.float32)
-    norms = jnp.linalg.norm(upcast_heads, axis=-1, keepdims=True)
-    return upcast_heads * jnp.minimum(threshold / (norms + 1e-6), 1.0)
+@dataclass(frozen=True)
+class L2ClipConfig(LalamoConfig):
+    threshold: float
+    epsilon: float
+
+    def __call__(self, heads: Float[Array, "*dims channels"]) -> Float[Array, "*dims channels"]:
+        upcast_heads = heads.astype(jnp.float32)
+        norms = jnp.linalg.norm(upcast_heads, axis=-1, keepdims=True)
+        return upcast_heads * jnp.minimum(self.threshold / (norms + self.epsilon), 1.0)
 
 
 @dataclass(frozen=True)
 class RelativeBiasConfig(LalamoConfig):
     num_channels: int
     extent: int
-    clip_threshold: float
+    clip_config: L2ClipConfig
 
 
 @dataclass(frozen=True)
@@ -252,8 +258,8 @@ class AttentionConfig(TokenMixerConfig):
     # Scale-free RMS normalization on values
     normalize_values: bool = False
     is_kv_sharing: bool = False
-    query_clip_threshold: float | None = None
-    key_clip_threshold: float | None = None
+    query_clip_config: L2ClipConfig | None = None
+    key_clip_config: L2ClipConfig | None = None
     log_scaling_config: LogScalingConfig | None = None
     stacked_projection_config: StackedProjectionConfig | None = None
 
@@ -414,7 +420,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         projection: Float[Array, "tokens channels"],
         num_heads: int,
         norm: Normalization | None,
-        clip_threshold: float | None,
+        clip_config: L2ClipConfig | None,
         positional_embeddings: PositionalEmbeddings | None,
     ) -> Float[Array, "tokens heads head_channels"]:
         heads = rearrange(
@@ -425,8 +431,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         )
         if norm is not None:
             heads = call_vmapped_twice(norm, heads)
-        if clip_threshold is not None:
-            heads = clip_norm(heads, clip_threshold).astype(heads.dtype)
+        if clip_config is not None:
+            heads = clip_config(heads).astype(heads.dtype)
         if positional_embeddings is not None:
             heads = call_vmapped(positional_embeddings.apply, heads, in_axes=1, out_axes=1)
         return heads
@@ -440,7 +446,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
             projection,
             self.config.num_heads,
             self.query_norm,
-            self.config.query_clip_threshold,
+            self.config.query_clip_config,
             positional_embeddings,
         )
 
@@ -454,7 +460,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
             key_projection,
             self.config.num_groups,
             self.key_norm,
-            self.config.key_clip_threshold,
+            self.config.key_clip_config,
             positional_embeddings,
         )
         values = rearrange(
@@ -832,11 +838,10 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         if relative_states is None:
             raise ValueError("An attention with a relative bias requires relative states.")
         relative_bias_config = stacked_config.relative_bias_config
-        scaled_states = clip_norm(
+        scaled_states = relative_bias_config.clip_config(
             rearrange(
                 relative_states, "tokens (heads channels) -> tokens heads channels", heads=self.config.num_heads
             ),
-            relative_bias_config.clip_threshold,
         )
         if position_scales is not None:
             scaled_states = scaled_states * position_scales[:, None, None]

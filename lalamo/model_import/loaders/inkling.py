@@ -202,21 +202,18 @@ def load_message_gate(
 ) -> MessageGate:
     channels = gate.message_projection.input_dim
     return load_as_at(
-        lambda module: (module.scaled_query, module.message_projection, module.forget_gain_projection),
+        lambda module: (module.scaled_query, module.message_projection, module.forget_gain_weights),
         gate,
         (
             query.astype(jnp.float32) * channels**-0.5,
             load_linear_matrix(
                 gate.message_projection, f32(weights_dict, controller_path / "down_weight")[:, channels:]
             ),
-            load_linear_matrix(
-                gate.forget_gain_projection,
-                jnp.concatenate(
-                    [
-                        f32(weights_dict, controller_path / "forget_weight"),
-                        f32(weights_dict, controller_path / "gain_weight"),
-                    ],
-                ),
+            jnp.stack(
+                [
+                    f32(weights_dict, controller_path / "forget_weight"),
+                    f32(weights_dict, controller_path / "gain_weight"),
+                ],
             ),
         ),
     )

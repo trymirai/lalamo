@@ -13,8 +13,8 @@ from .dflash import (
     DFlashSpeculatorConfig,
 )
 from .dspark import (
-    DSparkHead,
-    DSparkHeadConfig,
+    DSpark,
+    DSparkConfig,
     MarkovHeadType,
 )
 from .weaver import (
@@ -35,8 +35,8 @@ __all__ = [
     "DFlashDraftState",
     "DFlashSpeculator",
     "DFlashSpeculatorConfig",
-    "DSparkHead",
-    "DSparkHeadConfig",
+    "DSpark",
+    "DSparkConfig",
     "MarkovHeadType",
     "Weaver",
     "WeaverBlock",

@@ -10,9 +10,8 @@ from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.residual import AdditiveResidualConfig
 from lalamo.modules.rope import RoPE, RoPEConfig
-from lalamo.modules.speculator import Speculator, SpeculatorConfig
+from lalamo.modules.speculator import DraftAdapter, DraftAdapterConfig, Speculator, SpeculatorConfig
 from lalamo.modules.speculators.dflash import _layer_attention_config
-from lalamo.modules.speculators.dspark import DSparkHead, DSparkHeadConfig
 from lalamo.modules.transformer_layer import TransformerLayer, TransformerLayerConfig
 
 __all__ = [
@@ -85,22 +84,26 @@ class DFlareDraftModel(LalamoModule[DFlareDraftConfig]):
 @dataclass(frozen=True)
 class DFlareSpeculatorConfig(SpeculatorConfig):
     draft_config: DFlareDraftConfig
-    dspark_config: DSparkHeadConfig
+    adapter_config: DraftAdapterConfig | None
+
+    def __post_init__(self) -> None:
+        if self.adapter_config is not None:
+            self.adapter_config.validate_draft(
+                model_dim=self.draft_config.model_dim,
+                block_size=self.draft_config.block_size,
+                vocab_size=self.draft_config.vocab_size,
+                num_context_taps=len(self.draft_config.target_layer_ids),
+            )
 
     def init(self, initializer: Initializer) -> "DFlareSpeculator":
         return DFlareSpeculator(
             config=self,
             sharding_config=initializer.sharding_config,
             draft_model=self.draft_config.init(initializer),
-            dspark_head=self.dspark_config.init(
-                initializer,
-                self.draft_config.model_dim,
-                self.draft_config.vocab_size,
-                len(self.draft_config.target_layer_ids),
-            ),
+            adapter=self.adapter_config.init(initializer) if self.adapter_config is not None else None,
         )
 
 
 class DFlareSpeculator(Speculator[DFlareSpeculatorConfig]):
     draft_model: DFlareDraftModel
-    dspark_head: DSparkHead
+    adapter: DraftAdapter | None

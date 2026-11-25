@@ -16,7 +16,6 @@ __all__ = [
     "Identity",
     "SiLU",
     "Sigmoid",
-    "SoftCappedSiLU",
 ]
 
 
@@ -29,18 +28,13 @@ class Activation(LalamoConfig, RegistryABC):
 @dataclass(frozen=True)
 class SiLU(Activation):
     alpha: float = 1.0
+    soft_cap: float | None = None
 
     def __call__(self, x: Float[Array, "..."]) -> Float[Array, "..."]:
-        return x * jax.nn.sigmoid(self.alpha * x)
-
-
-@dataclass(frozen=True)
-class SoftCappedSiLU(Activation):
-    soft_cap: float
-
-    def __call__(self, x: Float[Array, "..."]) -> Float[Array, "..."]:
+        if self.soft_cap is None:
+            return x * jax.nn.sigmoid(self.alpha * x)
         upcast_x = x.astype(jnp.float32)
-        return (apply_soft_capping(upcast_x, self.soft_cap) * jax.nn.sigmoid(upcast_x)).astype(x.dtype)
+        return (apply_soft_capping(upcast_x, self.soft_cap) * jax.nn.sigmoid(self.alpha * upcast_x)).astype(x.dtype)
 
 
 @dataclass(frozen=True)

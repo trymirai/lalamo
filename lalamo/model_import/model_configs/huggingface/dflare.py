@@ -10,8 +10,8 @@ from lalamo.modules.linear import LinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import UnscaledRoPEConfig
-from lalamo.modules.speculators.dflare import DFlareDraftConfig, DFlareSpeculatorConfig
-from lalamo.modules.speculators.dspark import DSparkHeadConfig, MarkovHeadType
+from lalamo.modules.speculators.dflare import DFlareDraftConfig
+from lalamo.modules.speculators.dspark import DSparkConfig, MarkovHeadType
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer_layer import SublayerConfig, TransformerLayerConfig
 
@@ -67,10 +67,22 @@ class HFDFlareConfig:
             draft_config=HFDFlareDraftConfig.from_dict(draft_config),
         )
 
-    def to_speculator_config(self) -> DFlareSpeculatorConfig:
+    @property
+    def norm_config(self) -> NormalizationConfig:
+        return NormalizationConfig(
+            epsilon=self.draft_config.rms_norm_eps,
+            scale_offset=None,
+            upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=False,
+        )
+
+    @property
+    def vocab_size(self) -> int:
+        return self.target_config.to_decoder_config({}).vocab_size
+
+    def to_dflare_draft_config(self) -> DFlareDraftConfig:
         draft = self.draft_config
         target = self.target_config
-        target_decoder_config = target.to_decoder_config({})
         num_steps = len(target.layer_order)
         if draft.hidden_size != target.hidden_size:
             raise ValueError(f"The DFlare draft width {draft.hidden_size} differs from {target.hidden_size}.")
@@ -85,12 +97,7 @@ class HFDFlareConfig:
                 f" the final output {num_steps}.",
             )
         linear_config = LinearConfig()
-        norm_config = NormalizationConfig(
-            epsilon=draft.rms_norm_eps,
-            scale_offset=None,
-            upcast_mode=UpcastMode.FULL_LAYER,
-            subtract_mean=False,
-        )
+        norm_config = self.norm_config
         rope_config = UnscaledRoPEConfig(
             base=draft.rope_theta,
             max_sequence_length=draft.max_position_embeddings,
@@ -134,27 +141,30 @@ class HFDFlareConfig:
             )
             for layer_index in range(draft.num_hidden_layers)
         )
-        return DFlareSpeculatorConfig(
-            draft_config=DFlareDraftConfig(
-                model_dim=draft.hidden_size,
-                hidden_dim=draft.intermediate_size,
-                block_size=draft.block_size,
-                target_layer_ids=tuple(layer_id - 1 for layer_id in draft.target_layer_ids),
-                num_target_layers=num_steps,
-                vocab_size=target_decoder_config.vocab_size,
-                context_projection_config=linear_config,
-                context_norm_config=norm_config,
-                rope_config=rope_config,
-                layer_configs=layer_configs,
-                output_norm_config=norm_config,
-            ),
-            dspark_config=DSparkHeadConfig(
-                markov_rank=draft.markov_rank,
-                markov_head_type=draft.markov_head_type,
-                projection_config=linear_config,
-                norm_config=norm_config,
-                logit_soft_cap=target.final_logit_softcapping,
-            ),
+        return DFlareDraftConfig(
+            model_dim=draft.hidden_size,
+            hidden_dim=draft.intermediate_size,
+            block_size=draft.block_size,
+            target_layer_ids=tuple(layer_id - 1 for layer_id in draft.target_layer_ids),
+            num_target_layers=num_steps,
+            vocab_size=self.vocab_size,
+            context_projection_config=linear_config,
+            context_norm_config=norm_config,
+            rope_config=rope_config,
+            layer_configs=layer_configs,
+            output_norm_config=norm_config,
+        )
+
+    def to_dspark_config(self) -> DSparkConfig:
+        return DSparkConfig(
+            model_dim=self.draft_config.hidden_size,
+            vocab_size=self.vocab_size,
+            num_context_taps=len(self.draft_config.target_layer_ids),
+            markov_rank=self.draft_config.markov_rank,
+            markov_head_type=self.draft_config.markov_head_type,
+            projection_config=LinearConfig(),
+            norm_config=self.norm_config,
+            logit_soft_cap=self.target_config.final_logit_softcapping,
         )
 
 

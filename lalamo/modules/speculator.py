@@ -5,13 +5,28 @@ from pathlib import Path
 
 from lalamo.initializer import Initializer
 from lalamo.model import BaseModel
-from lalamo.module import LalamoConfig
+from lalamo.module import LalamoConfig, LalamoModule
 from lalamo.utils.registry_abc import RegistryABC
 
 __all__ = [
+    "DraftAdapter",
+    "DraftAdapterConfig",
     "Speculator",
     "SpeculatorConfig",
 ]
+
+
+@dataclass(frozen=True)
+class DraftAdapterConfig(LalamoConfig, RegistryABC):
+    @abstractmethod
+    def init(self, initializer: Initializer) -> "DraftAdapter": ...
+
+    @abstractmethod
+    def validate_draft(self, *, model_dim: int, block_size: int, vocab_size: int, num_context_taps: int) -> None: ...
+
+
+class DraftAdapter[ConfigT: DraftAdapterConfig](LalamoModule[ConfigT]):
+    pass
 
 
 @dataclass(frozen=True)

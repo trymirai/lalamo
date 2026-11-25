@@ -115,13 +115,7 @@ class MessageGateConfig(LalamoConfig):
                         output_dims=(self.rank,),
                         has_biases=False,
                     ),
-                    forget_gain_projection=self.linear_config.init(
-                        initializer,
-                        input_dim=self.rank,
-                        output_dims=(model_dim, model_dim),
-                        has_biases=False,
-                        dtype=jnp.float32,
-                    ),
+                    forget_gain_weights=initializer.zeros((2, model_dim, self.rank), dtype=jnp.float32),
                 )
                 for _ in range(num_gates)
             ),
@@ -131,7 +125,7 @@ class MessageGateConfig(LalamoConfig):
 class MessageGate(LalamoModule[MessageGateConfig]):
     scaled_query: Float[Array, " channels"]
     message_projection: Linear
-    forget_gain_projection: Linear
+    forget_gain_weights: Float[Array, "2 channels rank"]
 
     def __call__(
         self,
@@ -143,25 +137,21 @@ class MessageGate(LalamoModule[MessageGateConfig]):
         *,
         keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        message_keychain, forget_gain_keychain = keychain.split()
-        added_sharding_axes = (self.sharding_config.resolve_axis(LogicalAxis.BATCH), None)
         message = attention_residual_read(self.scaled_query[None], previous_pass, epsilon)[:, :, 0]
         (message_low_rank,) = call_vmapped_twice(
             self.message_projection,
             rms_normalize(message, epsilon),
             forward_pass_config=matmul_config,
-            keychain=message_keychain,
-            added_sharding_axes=added_sharding_axes,
+            keychain=keychain,
+            added_sharding_axes=(self.sharding_config.resolve_axis(LogicalAxis.BATCH), None),
         )
-        forget_logits, gain_logits = call_vmapped_twice(
-            self.forget_gain_projection,
+        forget_logits, gain_logits = einsum(
             hidden_low_rank.astype(jnp.float32) + message_low_rank.astype(jnp.float32),
-            forward_pass_config=matmul_config,
-            keychain=forget_gain_keychain,
-            added_sharding_axes=added_sharding_axes,
+            self.forget_gain_weights,
+            "batch tokens rank, gates channels rank -> gates batch tokens channels",
         )
-        forget = jnp.tanh(forget_logits.astype(jnp.float32))
-        gain = jnp.tanh(gain_logits.astype(jnp.float32))
+        forget = jnp.tanh(forget_logits)
+        gain = jnp.tanh(gain_logits)
         return (1 - forget) * inputs.astype(jnp.float32) + gain * message
 
 

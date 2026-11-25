@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -11,7 +11,13 @@ from lalamo.model_import.common import _combine_weight_shards
 from lalamo.model_import.model_configs.huggingface.dflare import HFDFlareConfig
 from lalamo.model_import.origins import LocalOrigin, WeightFormat
 from lalamo.modules.linear import Linear
-from lalamo.modules.speculators.dflare import DFlareLayerContext, DFlareSpeculator
+from lalamo.modules.speculators.dflare import (
+    DFlareDraftModel,
+    DFlareLayerContext,
+    DFlareSpeculator,
+    DFlareSpeculatorConfig,
+)
+from lalamo.modules.speculators.dspark import DSpark
 from lalamo.utils.parameter_path import ParameterPath
 from lalamo.utils.sharding import ShardingConfig
 from lalamo.utils.surgery import load_as_at
@@ -21,7 +27,8 @@ from .huggingface import load_rmsnorm, load_transformer_layer
 from .inkling import f32, load_linear_matrix, pad_rows
 
 __all__ = [
-    "load_dflare_speculator",
+    "load_dflare_draft_model",
+    "load_dspark",
     "load_hf_dflare_speculator",
 ]
 
@@ -34,40 +41,16 @@ def load_affine(module: Linear, matrix: Array, biases: Array) -> Linear:
     )
 
 
-def load_dflare_speculator(
-    speculator: DFlareSpeculator,
+def load_dflare_draft_model(
+    draft_model: DFlareDraftModel,
     weights_dict: Mapping[str, Array],
+    layer_tap_weights: Sequence[Float[Array, "taps channels"]],
     final_norm_scales: Float[Array, " channels"],
-    unpadded_vocab_size: int,
-) -> DFlareSpeculator:
-    draft_model = speculator.draft_model
-    dspark_head = speculator.dspark_head
-    draft_config = draft_model.config
-    tap_scales = jnp.stack(
-        [
-            final_norm_scales if layer_id == draft_config.num_target_layers - 1 else jnp.ones_like(final_norm_scales)
-            for layer_id in draft_config.target_layer_ids
-        ],
-    )
-    *layer_tap_weights, head_tap_weights = (
-        jax.nn.softmax(f32(weights_dict, ParameterPath("fuse_weight")), axis=-1)[:, :, None] * tap_scales
-    )
+) -> DFlareDraftModel:
     layer_paths = tuple(ParameterPath("layers") / layer_index for layer_index in range(len(draft_model.layers)))
-    markov_path = ParameterPath("markov_head")
-    rank = dspark_head.config.markov_rank
     return load_as_at(
-        lambda module: (
-            module.draft_model.mask_embedding,
-            module.draft_model.contexts,
-            module.draft_model.layers,
-            module.draft_model.output_norm.scales,
-            module.dspark_head.context_tap_weights,
-            module.dspark_head.context_norm,
-            module.dspark_head.token_embeddings,
-            module.dspark_head.recurrence_projection,
-            module.dspark_head.output_projection,
-        ),
-        speculator,
+        lambda module: (module.mask_embedding, module.contexts, module.layers, module.output_norm.scales),
+        draft_model,
         (
             weights_dict[ParameterPath("mask_embed")],
             tuple(
@@ -110,23 +93,43 @@ def load_dflare_speculator(
                 for layer, layer_path in zip(draft_model.layers, layer_paths, strict=True)
             ),
             f32(weights_dict, ParameterPath("norm.weight")) / final_norm_scales,
-            head_tap_weights,
-            load_rmsnorm(dspark_head.context_norm, weights_dict, markov_path / "dflare_norm"),
-            pad_rows(
-                f32(weights_dict, markov_path / "markov_w1" / "weight")[:unpadded_vocab_size],
-                draft_config.vocab_size,
-            ),
+        ),
+    )
+
+
+def load_dspark(
+    dspark: DSpark,
+    weights_dict: Mapping[str, Array],
+    tap_weights: Float[Array, "taps channels"],
+    final_norm_scales: Float[Array, " channels"],
+    unpadded_vocab_size: int,
+) -> DSpark:
+    path = ParameterPath("markov_head")
+    rank = dspark.config.markov_rank
+    return load_as_at(
+        lambda module: (
+            module.context_tap_weights,
+            module.context_norm,
+            module.token_embeddings,
+            module.recurrence_projection,
+            module.output_projection,
+        ),
+        dspark,
+        (
+            tap_weights,
+            load_rmsnorm(dspark.context_norm, weights_dict, path / "dflare_norm"),
+            pad_rows(f32(weights_dict, path / "markov_w1" / "weight")[:unpadded_vocab_size], dspark.config.vocab_size),
             load_affine(
-                dspark_head.recurrence_projection,
-                f32(weights_dict, markov_path / "rnn_proj" / "weight")
-                .at[:, 2 * rank : 2 * rank + draft_config.model_dim]
+                dspark.recurrence_projection,
+                f32(weights_dict, path / "rnn_proj" / "weight")
+                .at[:, 2 * rank : 2 * rank + dspark.config.model_dim]
                 .multiply(final_norm_scales),
-                f32(weights_dict, markov_path / "rnn_proj" / "bias"),
+                f32(weights_dict, path / "rnn_proj" / "bias"),
             ),
             load_affine(
-                dspark_head.output_projection,
-                f32(weights_dict, markov_path / "hidden_out" / "weight") / final_norm_scales[:, None],
-                f32(weights_dict, markov_path / "hidden_out" / "bias") / final_norm_scales,
+                dspark.output_projection,
+                f32(weights_dict, path / "hidden_out" / "weight") / final_norm_scales[:, None],
+                f32(weights_dict, path / "hidden_out" / "bias") / final_norm_scales,
             ),
         ),
     )
@@ -145,13 +148,40 @@ def load_hf_dflare_speculator(
         weight_files=tuple(path.name for path in sorted(hf_model_dir.glob(f"*{WeightFormat.SAFETENSORS.value}"))),
         weight_format=WeightFormat.SAFETENSORS,
     )
+    initializer = EmptyInitializer(dtype, sharding_config)
+    draft_config = config.to_dflare_draft_config()
     with ExitStack() as stack:
         weights = _combine_weight_shards(
             tuple(stack.enter_context(weight_shard) for weight_shard in origin.get_weights()),
         ).weights
-        return load_dflare_speculator(
-            config.to_speculator_config().init(EmptyInitializer(dtype, sharding_config)),
+        final_norm_scales = weights[ParameterPath("model.llm.norm.weight")].astype(jnp.float32)
+        tap_scales = jnp.stack(
+            [
+                final_norm_scales
+                if layer_id == draft_config.num_target_layers - 1
+                else jnp.ones_like(final_norm_scales)
+                for layer_id in draft_config.target_layer_ids
+            ],
+        )
+        *layer_tap_weights, dspark_tap_weights = (
+            jax.nn.softmax(f32(weights, ParameterPath("fuse_weight")), axis=-1)[:, :, None] * tap_scales
+        )
+        draft_model = load_dflare_draft_model(
+            draft_config.init(initializer),
             weights,
-            weights[ParameterPath("model.llm.norm.weight")].astype(jnp.float32),
+            layer_tap_weights,
+            final_norm_scales,
+        )
+        dspark = load_dspark(
+            config.to_dspark_config().init(initializer),
+            weights,
+            dspark_tap_weights,
+            final_norm_scales,
             config.target_config.unpadded_vocab_size,
         )
+    return DFlareSpeculator(
+        config=DFlareSpeculatorConfig(draft_config=draft_model.config, adapter_config=dspark.config),
+        sharding_config=sharding_config,
+        draft_model=draft_model,
+        adapter=dspark,
+    )

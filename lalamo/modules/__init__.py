@@ -1,6 +1,6 @@
 from lalamo.module import ForwardPassMode, Keychain, KeychainBroadcastMode, LalamoConfig, LalamoModule
 
-from .activations import GELU, Activation, Identity, Sigmoid, SiLU, SoftCappedSiLU
+from .activations import GELU, Activation, Identity, Sigmoid, SiLU
 from .attention_residual import (
     AttnResQKVReadConfig,
     AttnResReadConfig,
@@ -86,7 +86,7 @@ from .rope import (
     UnscaledRoPEConfig,
     YARNRoPEConfig,
 )
-from .speculator import Speculator, SpeculatorConfig
+from .speculator import DraftAdapter, DraftAdapterConfig, Speculator, SpeculatorConfig
 from .speculators import (
     DFlashDraftConfig,
     DFlashDraftModel,
@@ -125,6 +125,7 @@ from .token_mixers import (
     DeltaNet,
     DeltaNetConfig,
     KeyValueConvConfig,
+    L2ClipConfig,
     LogScalingConfig,
     Mamba2,
     Mamba2Config,
@@ -200,6 +201,8 @@ __all__ = [
     "DeltaNetConfig",
     "DenseMLP",
     "DenseMLPConfig",
+    "DraftAdapter",
+    "DraftAdapterConfig",
     "DynamicIndexerCacheLayer",
     "DynamicKVCacheLayer",
     "EmbeddingBase",
@@ -217,6 +220,7 @@ __all__ = [
     "KeyValueConvState",
     "Keychain",
     "KeychainBroadcastMode",
+    "L2ClipConfig",
     "LalamoConfig",
     "LalamoModule",
     "Linear",
@@ -268,7 +272,6 @@ __all__ = [
     "SiLU",
     "Sigmoid",
     "SigmoidRouting",
-    "SoftCappedSiLU",
     "SoftmaxRouting",
     "SparseAttention",
     "SparseAttentionConfig",
