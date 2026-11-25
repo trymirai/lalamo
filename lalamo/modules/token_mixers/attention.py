@@ -47,7 +47,6 @@ __all__ = [
     "RelativeBiasConfig",
     "SparseMask",
     "StackedProjectionConfig",
-    "aligned_rows",
 ]
 
 
@@ -58,10 +57,6 @@ def _rms_normalize(
     upcasted_inputs = inputs.astype(jnp.float32)
     variance = jnp.mean(jnp.square(upcasted_inputs), axis=-1, keepdims=True)
     return (upcasted_inputs * jax.lax.rsqrt(variance + eps)).astype(inputs.dtype)
-
-
-def aligned_rows(rows: int, alignment: int) -> int:
-    return -(-rows // alignment) * alignment
 
 
 @dataclass(frozen=True)
@@ -109,11 +104,10 @@ class KeyValueConvConfig(LalamoConfig):
 @dataclass(frozen=True)
 class StackedProjectionConfig(LalamoConfig):
     layout: ProjectionLayout
-    row_alignment: int
     relative_bias_config: RelativeBiasConfig
     key_value_conv_config: KeyValueConvConfig
 
-    def logical_output_dims(self, num_heads: int, num_groups: int, head_dim: int) -> tuple[tuple[int, ...], ...]:
+    def output_dims(self, num_heads: int, num_groups: int, head_dim: int) -> tuple[tuple[int, ...], ...]:
         query_dim = num_heads * head_dim
         key_value_dim = num_groups * head_dim
         query_dims = (query_dim, query_dim, num_heads * self.relative_bias_config.num_channels, num_heads)
@@ -123,12 +117,6 @@ class StackedProjectionConfig(LalamoConfig):
             case ProjectionLayout.GROUPED_WITH_CONV_TAPS:
                 key_value_dims = (key_value_dim, num_groups * self.key_value_conv_config.kernel_size)
                 return (query_dims, key_value_dims, key_value_dims)
-
-    def output_dims(self, num_heads: int, num_groups: int, head_dim: int) -> tuple[tuple[int, ...], ...]:
-        return tuple(
-            tuple(aligned_rows(rows, self.row_alignment) for rows in dims)
-            for dims in self.logical_output_dims(num_heads, num_groups, head_dim)
-        )
 
 
 class KeyValueProjection(NamedTuple):
@@ -526,25 +514,18 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
 
     def project_stacked(
         self,
-        stacked_config: StackedProjectionConfig,
         projection_index: int,
         inputs: Float[Array, "suffix_tokens channels"],
         forward_pass_config: MixerForwardPassConfig,
         *,
         keychain: Keychain,
     ) -> tuple[Float[Array, "suffix_tokens _"], ...]:
-        parts = call_vmapped(
+        return call_vmapped(
             (self.qkvg_projection, *self.key_value_projections)[projection_index],
             inputs,
             forward_pass_config=forward_pass_config.matmul_config,
             keychain=keychain,
         )
-        logical_dims = stacked_config.logical_output_dims(
-            self.config.num_heads,
-            self.config.num_groups,
-            self.config.head_dim,
-        )
-        return tuple(part[:, :rows] for part, rows in zip(parts, logical_dims[projection_index], strict=True))
 
     def convolve(
         self,
@@ -587,16 +568,14 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         query_keychain, key_keychain, value_keychain = keychain.split(3)
         match stacked_config.layout:
             case ProjectionLayout.STACKED_QUERY_FIRST:
-                query_stack = self.project_stacked(
-                    stacked_config, 0, inputs.query, forward_pass_config, keychain=query_keychain
-                )
+                query_stack = self.project_stacked(0, inputs.query, forward_pass_config, keychain=query_keychain)
                 key_stack = (
-                    self.project_stacked(stacked_config, 0, inputs.key, forward_pass_config, keychain=key_keychain)
+                    self.project_stacked(0, inputs.key, forward_pass_config, keychain=key_keychain)
                     if inputs.key is not None
                     else query_stack
                 )
                 value_stack = (
-                    self.project_stacked(stacked_config, 0, inputs.value, forward_pass_config, keychain=value_keychain)
+                    self.project_stacked(0, inputs.value, forward_pass_config, keychain=value_keychain)
                     if inputs.value is not None
                     else query_stack
                 )
@@ -607,21 +586,18 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
                 value_projection = KeyValueProjection(value_states, None)
             case ProjectionLayout.GROUPED_WITH_CONV_TAPS:
                 query_projection, gate, relative_states, sink_logits = self.project_stacked(
-                    stacked_config,
                     0,
                     inputs.query,
                     forward_pass_config,
                     keychain=query_keychain,
                 )
                 key_states, key_taps = self.project_stacked(
-                    stacked_config,
                     1,
                     inputs.key if inputs.key is not None else inputs.query,
                     forward_pass_config,
                     keychain=key_keychain,
                 )
                 value_states, value_taps = self.project_stacked(
-                    stacked_config,
                     2,
                     inputs.value if inputs.value is not None else inputs.query,
                     forward_pass_config,

@@ -34,21 +34,12 @@ def f32(weights_dict: Mapping[str, Array], path: ParameterPath) -> Float[Array, 
     return weights_dict[path].astype(jnp.float32)
 
 
-def pad_rows(matrix: Float[Array, "..."], rows: int) -> Float[Array, "..."]:
-    return jnp.pad(matrix, ((0, rows - matrix.shape[0]), *((0, 0),) * (matrix.ndim - 1)))
-
-
 def load_linear_matrix(module: Linear, matrix: Array) -> Linear:
     return load_as_at(lambda linear: (linear.weights,), module, (load_full_precision(module.weights, matrix),))
 
 
 def stack_parts(module: Linear, parts: tuple[Float[Array, "_ inputs"], ...]) -> Linear:
-    return load_linear_matrix(
-        module,
-        jnp.concatenate(
-            [pad_rows(part, padded_rows) for part, padded_rows in zip(parts, module.output_dims, strict=True)],
-        ),
-    )
+    return load_linear_matrix(module, jnp.concatenate(parts))
 
 
 def fold_static_conv(conv: SeparableCausalConv, hf_kernel: Float[Array, "channels 1 kernel"]) -> SeparableCausalConv:
@@ -334,25 +325,24 @@ def load_inkling2_loop_decoder(
     decoder: Decoder,
     weights_dict: Mapping[str, Array],
     loop_start: int,
-    unpadded_vocab_size: int,
 ) -> Decoder:
     model_path = ParameterPath("model.llm")
     embedding = decoder.embedding
     head = decoder.transformer.residual_head
     if not isinstance(embedding, UntiedEmbedding) or not isinstance(head, BlockAttnResHead):
         raise TypeError("Inkling decoders need an untied embedding and a block attention residual head.")
-    embeddings = f32(weights_dict, model_path / "embed" / "weight")[:unpadded_vocab_size]
+    embeddings = f32(weights_dict, model_path / "embed" / "weight")[: decoder.vocab_size]
     normalized_embeddings = rms_normalize(embeddings, head.config.epsilon) * f32(
         weights_dict,
         model_path / "embed_norm" / "weight",
     )
-    unembedding = f32(weights_dict, model_path / "unembed" / "weight")[:unpadded_vocab_size] * f32(
+    unembedding = f32(weights_dict, model_path / "unembed" / "weight")[: decoder.vocab_size] * f32(
         weights_dict,
         model_path / "norm" / "weight",
     )
     embedding_weights: dict[str, Array] = {
-        ParameterPath("embed.weight"): pad_rows(normalized_embeddings, decoder.vocab_size),
-        ParameterPath("unembed.weight"): pad_rows(unembedding, decoder.vocab_size),
+        ParameterPath("embed.weight"): normalized_embeddings,
+        ParameterPath("unembed.weight"): unembedding,
     }
     (channels,) = head.scaled_output_query.shape
     return load_as_at(

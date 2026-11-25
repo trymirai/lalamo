@@ -4,7 +4,6 @@ from lalamo.model_import.model_configs import HFInkling2LoopConfig
 from lalamo.model_import.model_spec import ConfigMap, FileSpec, LanguageModelSpec
 from lalamo.model_import.origins import HuggingFaceOrigin
 from lalamo.models.chat_codec import ReasoningConfig, ReasoningEffort, ResponseFormat
-from lalamo.models.language_model import GenerationConfig
 
 __all__ = ["THINKING_MACHINES_MODELS"]
 
@@ -19,7 +18,6 @@ THINKING_MACHINES_MODELS = [
         config_type=HFInkling2LoopConfig,
         configs=ConfigMap(
             chat_template=FileSpec("chat_template.jinja"),
-            generation_params_overrides=GenerationConfig(banned_tokens=tuple(range(200058, 200064))),
         ),
         response_format=ResponseFormat(
             turn_pattern=(

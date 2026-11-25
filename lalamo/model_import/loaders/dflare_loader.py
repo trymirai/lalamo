@@ -24,7 +24,7 @@ from lalamo.utils.surgery import load_as_at
 
 from .common import load_full_precision
 from .huggingface import load_rmsnorm, load_transformer_layer
-from .inkling import f32, load_linear_matrix, pad_rows
+from .inkling import f32, load_linear_matrix
 
 __all__ = [
     "load_dflare_draft_model",
@@ -102,7 +102,6 @@ def load_dspark(
     weights_dict: Mapping[str, Array],
     tap_weights: Float[Array, "taps channels"],
     final_norm_scales: Float[Array, " channels"],
-    unpadded_vocab_size: int,
 ) -> DSpark:
     path = ParameterPath("markov_head")
     rank = dspark.config.markov_rank
@@ -118,7 +117,7 @@ def load_dspark(
         (
             tap_weights,
             load_rmsnorm(dspark.context_norm, weights_dict, path / "dflare_norm"),
-            pad_rows(f32(weights_dict, path / "markov_w1" / "weight")[:unpadded_vocab_size], dspark.config.vocab_size),
+            f32(weights_dict, path / "markov_w1" / "weight")[: dspark.config.vocab_size],
             load_affine(
                 dspark.recurrence_projection,
                 f32(weights_dict, path / "rnn_proj" / "weight")
@@ -177,7 +176,6 @@ def load_hf_dflare_speculator(
             weights,
             dspark_tap_weights,
             final_norm_scales,
-            config.target_config.unpadded_vocab_size,
         )
     return DFlareSpeculator(
         config=DFlareSpeculatorConfig(draft_config=draft_model.config, adapter_config=dspark.config),

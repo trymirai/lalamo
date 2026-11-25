@@ -76,10 +76,6 @@ class HFDFlareConfig:
             subtract_mean=False,
         )
 
-    @property
-    def vocab_size(self) -> int:
-        return self.target_config.to_decoder_config({}).vocab_size
-
     def to_dflare_draft_config(self) -> DFlareDraftConfig:
         draft = self.draft_config
         target = self.target_config
@@ -147,7 +143,7 @@ class HFDFlareConfig:
             block_size=draft.block_size,
             target_layer_ids=tuple(layer_id - 1 for layer_id in draft.target_layer_ids),
             num_target_layers=num_steps,
-            vocab_size=self.vocab_size,
+            vocab_size=target.unpadded_vocab_size,
             context_projection_config=linear_config,
             context_norm_config=norm_config,
             rope_config=rope_config,
@@ -158,7 +154,7 @@ class HFDFlareConfig:
     def to_dspark_config(self) -> DSparkConfig:
         return DSparkConfig(
             model_dim=self.draft_config.hidden_size,
-            vocab_size=self.vocab_size,
+            vocab_size=self.target_config.unpadded_vocab_size,
             num_context_taps=len(self.draft_config.target_layer_ids),
             markov_rank=self.draft_config.markov_rank,
             markov_head_type=self.draft_config.markov_head_type,

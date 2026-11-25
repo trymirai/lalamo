@@ -107,7 +107,6 @@ def load_decoder(checkpoint_path: Path, device: jax.Device, dtype: jnp.dtype = j
             decoder,
             weights,
             loop_start=hf_config.loop_config.core_start,
-            unpadded_vocab_size=hf_config.unpadded_vocab_size,
         )
 
 
@@ -155,9 +154,7 @@ def test_decoder_matches_hf(
                 keychain=Keychain.init(0, sharding_config=decoder.sharding_config),
             )
 
-    assert_close(
-        result=result.logits[..., :UNPADDED_VOCAB_SIZE], reference=hf_logits(hf_model, token_ids), atol=atol, rtol=rtol
-    )
+    assert_close(result=result.logits, reference=hf_logits(hf_model, token_ids), atol=atol, rtol=rtol)
 
 
 def chunked_logits(
@@ -183,7 +180,7 @@ def chunked_logits(
             )
             state = result.updated_state
             chunk_logits.append(result.logits)
-    return jnp.concatenate(chunk_logits, axis=1)[..., :UNPADDED_VOCAB_SIZE].astype(jnp.float32)
+    return jnp.concatenate(chunk_logits, axis=1).astype(jnp.float32)
 
 
 def test_bfloat16_chunked_inference_tracks_hf(hf_model: Inkling2LoopForCausalLM, checkpoint_path: Path) -> None:

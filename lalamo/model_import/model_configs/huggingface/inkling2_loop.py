@@ -31,7 +31,6 @@ from lalamo.modules.token_mixers.attention import (
     ProjectionLayout,
     RelativeBiasConfig,
     StackedProjectionConfig,
-    aligned_rows,
 )
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.modules.transformer import TransformerConfig
@@ -41,8 +40,6 @@ from lalamo.weight_matrix import CompressionImplementation
 from .common import HuggingFaceLMConfig
 
 __all__ = ["HFInkling2LoopConfig"]
-
-ROW_ALIGNMENT = 128
 
 
 @dataclass(frozen=True)
@@ -173,7 +170,6 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
             ),
             stacked_projection_config=StackedProjectionConfig(
                 layout=ProjectionLayout.STACKED_QUERY_FIRST if is_sliding else ProjectionLayout.GROUPED_WITH_CONV_TAPS,
-                row_alignment=ROW_ALIGNMENT,
                 relative_bias_config=RelativeBiasConfig(
                     num_channels=self.d_rel,
                     extent=self.sliding_window_size if is_sliding else self.rel_extent,
@@ -238,7 +234,7 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
                 hidden_dim=self.intermediate_size,
                 layer_order=self.layer_order,
             ),
-            vocab_size=aligned_rows(self.unpadded_vocab_size, ROW_ALIGNMENT),
+            vocab_size=self.unpadded_vocab_size,
         )
 
     def _load_weights(
@@ -253,6 +249,5 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
             model.decoder,
             weights_dict,
             loop_start=self.loop_config.core_start,
-            unpadded_vocab_size=self.unpadded_vocab_size,
         )
         return eqx.tree_at(lambda m: (m.decoder,), model, (decoder,))
