@@ -227,8 +227,8 @@ class AttentionConfig(TokenMixerConfig):
     qkvg_projection_config: LinearConfig
     out_projection_config: LinearConfig
 
-    query_norm_config: NormalizationConfig | None
-    key_norm_config: NormalizationConfig | None
+    query_norm_config: NormalizationConfig | L2ClipConfig | None
+    key_norm_config: NormalizationConfig | L2ClipConfig | None
 
     num_heads: int
     num_groups: int
@@ -246,8 +246,6 @@ class AttentionConfig(TokenMixerConfig):
     # Scale-free RMS normalization on values
     normalize_values: bool = False
     is_kv_sharing: bool = False
-    query_clip_config: L2ClipConfig | None = None
-    key_clip_config: L2ClipConfig | None = None
     log_scaling_config: LogScalingConfig | None = None
     stacked_projection_config: StackedProjectionConfig | None = None
 
@@ -310,7 +308,7 @@ def _init_attention(
         has_biases=config.has_out_biases,
     )
 
-    if config.query_norm_config is not None:
+    if isinstance(config.query_norm_config, NormalizationConfig):
         query_norm = config.query_norm_config.init(
             initializer,
             input_dim=config.head_dim,
@@ -318,7 +316,7 @@ def _init_attention(
     else:
         query_norm = None
 
-    if config.key_norm_config is not None and not config.is_kv_sharing:
+    if isinstance(config.key_norm_config, NormalizationConfig) and not config.is_kv_sharing:
         key_norm = config.key_norm_config.init(
             initializer,
             input_dim=config.head_dim,
@@ -408,7 +406,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         projection: Float[Array, "tokens channels"],
         num_heads: int,
         norm: Normalization | None,
-        clip_config: L2ClipConfig | None,
+        norm_config: NormalizationConfig | L2ClipConfig | None,
         positional_embeddings: PositionalEmbeddings | None,
     ) -> Float[Array, "tokens heads head_channels"]:
         heads = rearrange(
@@ -419,8 +417,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
         )
         if norm is not None:
             heads = call_vmapped_twice(norm, heads)
-        if clip_config is not None:
-            heads = clip_config(heads).astype(heads.dtype)
+        if isinstance(norm_config, L2ClipConfig):
+            heads = norm_config(heads).astype(heads.dtype)
         if positional_embeddings is not None:
             heads = call_vmapped(positional_embeddings.apply, heads, in_axes=1, out_axes=1)
         return heads
@@ -434,7 +432,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
             projection,
             self.config.num_heads,
             self.query_norm,
-            self.config.query_clip_config,
+            self.config.query_norm_config,
             positional_embeddings,
         )
 
@@ -448,7 +446,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer, Float[Array, "suff
             key_projection,
             self.config.num_groups,
             self.key_norm,
-            self.config.key_clip_config,
+            self.config.key_norm_config,
             positional_embeddings,
         )
         values = rearrange(

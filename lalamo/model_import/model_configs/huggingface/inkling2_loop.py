@@ -147,8 +147,8 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
         attention_config = AttentionConfig(
             qkvg_projection_config=linear_config,
             out_projection_config=linear_config,
-            query_norm_config=None,
-            key_norm_config=None,
+            query_norm_config=L2ClipConfig(threshold=self.qk_l2_clip_threshold * head_dim**-0.5, epsilon=1e-6),
+            key_norm_config=L2ClipConfig(threshold=self.qk_l2_clip_threshold, epsilon=1e-6),
             num_heads=self.swa_num_attention_heads if is_sliding else self.num_attention_heads,
             num_groups=self.swa_num_key_value_heads if is_sliding else self.num_key_value_heads,
             head_dim=head_dim,
@@ -161,8 +161,6 @@ class HFInkling2LoopConfig(HuggingFaceLMConfig):
             has_out_biases=self.o_bias,
             has_gate=True,
             normalize_values=self.use_value_norm_no_gamma,
-            query_clip_config=L2ClipConfig(threshold=self.qk_l2_clip_threshold * head_dim**-0.5, epsilon=1e-6),
-            key_clip_config=L2ClipConfig(threshold=self.qk_l2_clip_threshold, epsilon=1e-6),
             log_scaling_config=(
                 None
                 if is_sliding
