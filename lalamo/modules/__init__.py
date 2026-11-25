@@ -45,6 +45,7 @@ from .mlp import (
     DenseMLP,
     DenseMLPConfig,
     IdentityRoutingIntervention,
+    LayerwiseRouting,
     MixtureOfExperts,
     MixtureOfExpertsConfig,
     MLPBase,
@@ -95,11 +96,16 @@ from .rope import (
     YARNRoPEConfig,
 )
 from .routing_interventions import (
+    BlockObjective,
+    BlockSetRouting,
+    BlockState,
     CacheConditionalRouting,
     CachePriority,
     ExpertCacheState,
     ScoredCacheRouting,
     ScoredCacheState,
+    WindowedRouting,
+    WindowState,
 )
 from .speculator import Speculator, SpeculatorConfig
 from .speculators import (
@@ -195,6 +201,9 @@ __all__ = [
     "BlockAttnResHead",
     "BlockAttnResQKVConnection",
     "BlockAttnResStream",
+    "BlockObjective",
+    "BlockSetRouting",
+    "BlockState",
     "CacheConditionalRouting",
     "CachePriority",
     "Classifier",
@@ -239,6 +248,7 @@ __all__ = [
     "KeychainBroadcastMode",
     "LalamoConfig",
     "LalamoModule",
+    "LayerwiseRouting",
     "Linear",
     "LinearConfig",
     "LinearScalingRoPEConfig",
@@ -339,6 +349,8 @@ __all__ = [
     "WeaverBlock",
     "WeaverConfig",
     "WeaverPrefix",
+    "WindowState",
+    "WindowedRouting",
     "YARNRoPEConfig",
     "build_tree_attention_mask",
     "tree_ancestor_mask",

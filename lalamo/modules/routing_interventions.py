@@ -14,11 +14,17 @@ from .mlp import RoutingFunction, RoutingIntervention, RoutingMap
 from .token_mixer import StateLayerBase
 
 __all__ = [
+    "BlockObjective",
+    "BlockSetRouting",
+    "BlockState",
     "CacheConditionalRouting",
     "CachePriority",
     "ExpertCacheState",
     "ScoredCacheRouting",
     "ScoredCacheState",
+    "TreeSetRouting",
+    "WindowState",
+    "WindowedRouting",
 ]
 
 
@@ -452,6 +458,444 @@ class ScoredCacheRouting(RoutingIntervention):
             range_sum=state.range_sum + _like(token_range, state.range_sum),
             range_count=state.range_count + 1,
         )
+
+
+class WindowState(StateLayerBase):
+    """State of a windowed rule: the state of the rule it restarts and the active tokens seen so far."""
+
+    inner: StateLayerBase | None
+    active_tokens: Int[Array, "*batch"]
+
+
+@dataclass(frozen=True)
+class WindowedRouting(RoutingIntervention):
+    """A rule restarted at the start of every window of `window` active tokens.
+
+    The active tokens of a sequence are cut into consecutive windows of `window` tokens, the first window
+    starting at the first active token. Inside a window `rule` runs as on a sequence that begins with the
+    window: at the first token of every window its state is the initial one, whatever it had accumulated
+    before -- over earlier windows or over the tokens the rule was not active on. Tokens the rule is not
+    active on are routed by `rule` as inactive ones and belong to no window.
+
+    This is the rule of a verification pass that scores a block of `window` drafted tokens at once and keeps
+    nothing between passes: the experts a block reads depend on the block alone, and its first token is
+    routed by the model's own routing whenever `rule` starts from an empty history.
+    """
+
+    rule: RoutingIntervention
+    window: int
+
+    def __post_init__(self) -> None:
+        if self.window < 1:
+            raise ValueError(f"window must be positive, got {self.window}")
+        if self.phases != self.rule.phases:
+            raise ValueError(f"the window is cut over the phases of its rule: {self.phases} != {self.rule.phases}")
+
+    @property
+    def weighs_by_softmax_over_selection(self) -> bool:
+        return self.rule.weighs_by_softmax_over_selection
+
+    @property
+    def may_drop_experts(self) -> bool:
+        return self.rule.may_drop_experts
+
+    def init_state(self, num_experts: int, dtype: DTypeLike) -> StateLayerBase | None:
+        return WindowState(
+            inner=self.rule.init_state(num_experts, dtype),
+            active_tokens=jnp.zeros((), dtype=jnp.int32),
+        )
+
+    def route(
+        self,
+        router_logits: Float[Array, "batch experts"],
+        active: Bool[Array, " batch"],
+        state: StateLayerBase | None,
+        routing_function: RoutingFunction,
+        num_active: int,
+        biases: Float[Array, " experts"] | None = None,
+    ) -> tuple[RoutingMap, StateLayerBase | None]:
+        if not isinstance(state, WindowState):
+            raise TypeError(f"WindowedRouting needs a WindowState, got {type(state).__name__}")
+        counted = _like(active, state.active_tokens)
+        opens_window = counted & (state.active_tokens % self.window == 0)
+        inner = state.inner
+        if inner is not None:
+            fresh = self.rule.init_state(router_logits.shape[-1], router_logits.dtype)
+            inner = jax.tree.map(
+                lambda initial, current: jnp.where(
+                    _like(
+                        jnp.broadcast_to(
+                            opens_window.reshape((-1, *([1] * (current.ndim - 1)))),
+                            current.shape,
+                        ),
+                        current,
+                    ),
+                    jnp.broadcast_to(initial, current.shape).astype(current.dtype),
+                    current,
+                ),
+                fresh,
+                inner,
+            )
+        routing, updated = self.rule.route(router_logits, active, inner, routing_function, num_active, biases)
+        return routing, WindowState(inner=updated, active_tokens=state.active_tokens + counted.astype(jnp.int32))
+
+
+class BlockObjective(StrEnum):
+    """What the set of a block is chosen to keep."""
+
+    # The share of the model's own mixture: the experts the tokens themselves select, by their mixing weight.
+    MASS = "mass"
+    # The summed ranking score of the experts the tokens end up with inside the set, substitutes included.
+    SCORE = "score"
+
+
+class BlockState(StateLayerBase):
+    """State of a block rule: the active tokens a sequence has seen, which fixes where its blocks begin."""
+
+    active_tokens: Int[Array, "*batch"]
+
+
+@dataclass(frozen=True)
+class BlockSetRouting(RoutingIntervention):
+    """One set of experts for every block of `window` active tokens, chosen from the whole block at once.
+
+    The active tokens of a sequence are cut into consecutive blocks of `window` tokens, the first block
+    starting at the first active token. A block gets one set of experts and every token of the block is
+    routed to the experts the routing function ranks highest INSIDE that set, with the mixing weights the
+    routing function gives them. Tokens the rule is not active on keep the model's own routing.
+
+    The set keeps as much of the model's own mixture as its size allows. The mass of an expert in a block is
+    the sum, over the tokens of the block, of the share of the mixing weight the model's own routing gives
+    it (zero for the tokens that do not select it). With `size` the set is the `size` experts of the largest
+    mass, which maximises the total share the tokens keep: that total is the sum of the masses of the set.
+    With `threshold` the set is every expert whose mass is at least `threshold`, and never fewer than the
+    experts one token needs (those of the largest mass): the size then follows the block, small where the
+    tokens agree and large where they do not. Ties go to the lower expert index.
+
+    With `objective` SCORE the set is chosen for what the tokens end up with, substitutes included. The value
+    of an expert at a token is its ranking score (`RoutingFunction.gating_scores`) above the lowest score of
+    that token, divided by the sum of that quantity over the token's own experts; a token that keeps its own
+    experts therefore scores one, and a token that has to take a substitute loses only the difference
+    between the two. The score of a set is the sum over the tokens of the values of the experts each token
+    selects inside it, and the set grows greedily: at every step the expert that raises that score most is
+    added (ties to the lower index). With `size` it stops at that many experts; with `threshold` it stops
+    when the best gain falls below `threshold`, but not before the set holds the experts one token needs,
+    and never beyond `max_size` experts.
+
+    `forced_top` is a floor: the experts the routing function ranks first, second, ... up to `forced_top` at
+    any token of the block are in the set of the block whatever their mass or gain. Under MASS they are added
+    to the set the rule would choose anyway. Under SCORE the greedy takes them first (in the order of their
+    gain) and then goes on as before, so with `size` they count towards the size and a `size` smaller than
+    their number leaves some of them out.
+
+    The rule is not causal inside a block: the set depends on all its tokens, so a token is routed with
+    knowledge of the tokens after it. It stands for a verification pass that scores a block of drafted
+    tokens in parallel, where the router scores of the whole block are known before any expert runs. A block
+    is chosen from the tokens of it that one call holds: when a call ends inside a block, the rest of the
+    block is chosen on its own in the next call.
+    """
+
+    window: int
+    size: int | None = None
+    threshold: float | None = None
+    objective: BlockObjective = BlockObjective.MASS
+    max_size: int = 48
+    forced_top: int = 0
+
+    def __post_init__(self) -> None:
+        if self.window < 1:
+            raise ValueError(f"window must be positive, got {self.window}")
+        if (self.size is None) == (self.threshold is None):
+            raise ValueError("exactly one of size and threshold chooses the set of a block")
+        if self.size is not None and self.size < 1:
+            raise ValueError(f"size must be positive, got {self.size}")
+        if self.threshold is not None and self.threshold < 0.0:
+            raise ValueError(f"threshold must be non-negative, got {self.threshold}")
+        if self.max_size < 1:
+            raise ValueError(f"max_size must be positive, got {self.max_size}")
+        if self.forced_top < 0:
+            raise ValueError(f"forced_top must be non-negative, got {self.forced_top}")
+
+    @property
+    def routes_blocks(self) -> bool:
+        return True
+
+    def init_state(self, num_experts: int, dtype: DTypeLike) -> StateLayerBase | None:  # noqa: ARG002
+        return BlockState(active_tokens=jnp.zeros((), dtype=jnp.int32))
+
+    def route(
+        self,
+        router_logits: Float[Array, "batch experts"],  # noqa: ARG002
+        active: Bool[Array, " batch"],  # noqa: ARG002
+        state: StateLayerBase | None,  # noqa: ARG002
+        routing_function: RoutingFunction,  # noqa: ARG002
+        num_active: int,  # noqa: ARG002
+        biases: Float[Array, " experts"] | None = None,  # noqa: ARG002
+    ) -> tuple[RoutingMap, StateLayerBase | None]:
+        raise TypeError("BlockSetRouting chooses experts for a block of tokens at once; it has no single-token step")
+
+    def route_block(
+        self,
+        router_logits: Float[Array, "tokens batch experts"],
+        active: Bool[Array, "tokens batch"],
+        state: StateLayerBase | None,
+        routing_function: RoutingFunction,
+        num_active: int,
+        biases: Float[Array, " experts"] | None = None,
+    ) -> tuple[RoutingMap, StateLayerBase | None]:
+        if not isinstance(state, BlockState):
+            raise TypeError(f"BlockSetRouting needs a BlockState, got {type(state).__name__}")
+        num_tokens, batch_size, num_experts = router_logits.shape
+        if self.size is not None and not num_active <= self.size <= num_experts:
+            raise ValueError(
+                f"the set of a block must hold between the {num_active} experts of one token and the"
+                f" {num_experts} experts of the layer, got size {self.size}"
+            )
+        # Everything stays in the [tokens, batch, ...] layout of the call: the routing function is applied to
+        # one time step at a time, as the scan of a causal rule applies it, and no axis is merged with the
+        # (possibly sharded) batch axis.
+        scores = jax.vmap(lambda step: routing_function.gating_scores(step, biases))(router_logits)
+        base = jax.vmap(lambda step: routing_function(step, biases, num_active=num_active))(router_logits)
+        # The phase mask is built outside any mesh; everything below combines it with values derived from
+        # the logits, so it takes their sharding first.
+        active = _like(active, scores[..., 0])
+
+        # The share of the model's own mixture every expert carries at every token, as a dense table.
+        own_weights = base.active_expert_weights.astype(jnp.float32)
+        shares = own_weights / own_weights.sum(axis=-1, keepdims=True)
+        own = base.active_expert_indices[..., None] == jnp.arange(num_experts)  # [tokens, batch, active, experts]
+        share_table = (own.astype(jnp.float32) * shares[..., None]).sum(axis=2)
+
+        # Blocks: the n-th active token of a sequence lies in block n // window. Inside one call a sequence
+        # touches at most num_tokens // window + 2 blocks (a started one, whole ones, an unfinished one).
+        seen_before = _like(jnp.broadcast_to(state.active_tokens, (num_tokens, batch_size)), active)
+        counted = active.astype(jnp.int32)
+        position = seen_before + jnp.cumsum(counted, axis=0) - counted
+        slot = position // self.window - seen_before // self.window
+        num_slots = num_tokens // self.window + 2
+        member = active[:, :, None] & (slot[:, :, None] == jnp.arange(num_slots)[None, None, :])
+        mass = jnp.einsum("tbw,tbe->wbe", member.astype(jnp.float32), share_table)
+
+        # The floor: the experts ranked in the first `forced_top` places at any token of the block.
+        if self.forced_top > 0:
+            _, first = jax.lax.top_k(scores, min(self.forced_top, num_experts))
+            ranked_first = (first[..., None] == jnp.arange(num_experts)).any(axis=2)
+            forced = jnp.einsum("tbw,tbe->wbe", member.astype(jnp.float32), ranked_first.astype(jnp.float32)) > 0.5
+        else:
+            forced = mass < 0.0  # nothing: masses are non-negative
+        match self.objective:
+            case BlockObjective.MASS:
+                # Experts in the order of their mass, ties to the lower index (a stable sort of the negated mass).
+                order = jnp.argsort(-mass, axis=-1, stable=True)
+                rank = jnp.argsort(order, axis=-1, stable=True)
+                if self.size is not None:
+                    in_set = (rank < self.size) | forced
+                else:
+                    assert self.threshold is not None  # exactly one of the two is set
+                    in_set = (mass >= self.threshold) | (rank < num_active) | forced
+            case BlockObjective.SCORE:
+                above_lowest = scores - scores.min(axis=-1, keepdims=True)
+                own_total = jnp.where(own.any(axis=2), above_lowest, 0.0).sum(axis=-1, keepdims=True)
+                in_set = self._greedy_score_set(
+                    member.astype(jnp.float32), above_lowest / own_total, forced, num_active
+                )
+        token_set = jnp.einsum("tbw,wbe->tbe", member.astype(jnp.float32), in_set.astype(jnp.float32)) > 0.5
+
+        restricted = jnp.where(token_set, scores, -jnp.inf)
+        _, selected = jax.lax.top_k(restricted, num_active)
+        selected = _like(selected, base.active_expert_indices)
+        weights = jax.vmap(lambda step, chosen: routing_function.weights_of(step, chosen, biases))(
+            router_logits, selected
+        )
+        routing = RoutingMap(
+            active_expert_indices=jnp.where(active[:, :, None], selected, base.active_expert_indices),
+            active_expert_weights=jnp.where(
+                active[:, :, None], _like(weights, base.active_expert_weights), base.active_expert_weights
+            ),
+            effective_logits=jnp.where(active[:, :, None], restricted, scores),
+        )
+        seen_after = state.active_tokens + _like(counted.sum(axis=0), state.active_tokens)
+        return routing, BlockState(active_tokens=seen_after)
+
+    def _greedy_score_set(
+        self,
+        member: Float[Array, "tokens batch blocks"],
+        values: Float[Array, "tokens batch experts"],
+        forced: Bool[Array, "blocks batch experts"],
+        num_active: int,
+    ) -> Bool[Array, "blocks batch experts"]:
+        """The set of every block under the SCORE objective (see the class docstring)."""
+        num_experts = values.shape[-1]
+        steps = self.size if self.size is not None else min(self.max_size, num_experts)
+        zeros = jnp.einsum("tbw,tbe->wbe", member, values) * 0.0  # [blocks, batch, experts], sharded like a result
+        expert_ids = jnp.arange(num_experts)
+
+        def add_expert(
+            carry: tuple[Array, Array, Array, Array], _: None
+        ) -> tuple[tuple[Array, Array, Array, Array], None]:
+            taken, best_values, count, growing = carry
+            # A new expert enters the `num_active` best of a token by pushing out the weakest of them.
+            token_gain = jnp.maximum(values - best_values[..., :1], 0.0)
+            gain = jnp.where(taken, -jnp.inf, jnp.einsum("tbw,tbe->wbe", member, token_gain))
+            # The floor is laid first: while a forced expert is still out, the best of them is taken, whatever
+            # the threshold says.
+            floor_left = forced & ~taken
+            lays_floor = floor_left.any(axis=-1)
+            best = jnp.argmax(jnp.where(lays_floor[..., None] & ~floor_left, -jnp.inf, gain), axis=-1)
+            if self.threshold is None:
+                adds = growing
+            else:
+                adds = growing & (lays_floor | (count < num_active) | (gain.max(axis=-1) >= self.threshold))
+            added = (best[..., None] == expert_ids) & adds[..., None]
+            token_added = jnp.einsum("tbw,wbe->tbe", member, added.astype(jnp.float32))
+            candidate = (values * token_added).sum(axis=-1, keepdims=True)
+            best_values = jnp.sort(jnp.concatenate([best_values, candidate], axis=-1), axis=-1)[..., 1:]
+            return (taken | added, best_values, count + adds.astype(jnp.int32), adds), None
+
+        initial = (
+            zeros > 1.0,
+            values[..., :num_active] * 0.0,
+            zeros[..., 0].astype(jnp.int32),
+            zeros[..., 0] < 1.0,
+        )
+        (taken, _, _, _), _ = jax.lax.scan(add_expert, initial, None, length=steps)
+        return taken
+
+
+@dataclass(frozen=True)
+class TreeSetRouting(RoutingIntervention):
+    """One set of experts for a draft tree that a call verifies as a batch of root-to-node paths.
+
+    Every sequence of the batch holds the path from the root of the tree to one of its nodes: its active tokens
+    are that path and the LAST active token is the node the sequence stands for. The tokens before it repeat
+    nodes that other sequences stand for. A sequence without active tokens stands for nothing.
+
+    The whole call gets one set of experts. It is chosen from the nodes alone, so that a node repeated on several
+    paths counts once, by the greedy of `BlockSetRouting` under its SCORE objective with all the nodes as one
+    block: the value of an expert at a node is its ranking score above the lowest score of the node, divided by
+    the sum of that quantity over the node's own experts; the set grows by the expert that raises the summed value
+    of what the nodes select inside it most (ties to the lower index) and stops when the best gain falls below
+    `threshold`, but not before it holds the experts one token needs and never beyond `max_size`. `forced_top` is
+    the same floor: the experts ranked in the first `forced_top` places at any node are in the set and are taken
+    first.
+
+    Every active token, repeated or not, is routed to the experts the routing function ranks highest inside the
+    set. Two copies of a node have the same ancestors and the same set, hence the same routing, so the batch
+    computes what a tree-structured pass over the distinct nodes would. Tokens the rule is not active on keep the
+    model's own routing.
+    """
+
+    threshold: float
+    max_size: int = 48
+    forced_top: int = 0
+
+    def __post_init__(self) -> None:
+        if self.threshold < 0.0:
+            raise ValueError(f"threshold must be non-negative, got {self.threshold}")
+        if self.max_size < 1:
+            raise ValueError(f"max_size must be positive, got {self.max_size}")
+        if self.forced_top < 0:
+            raise ValueError(f"forced_top must be non-negative, got {self.forced_top}")
+
+    @property
+    def routes_blocks(self) -> bool:
+        return True
+
+    def init_state(self, num_experts: int, dtype: DTypeLike) -> StateLayerBase | None:  # noqa: ARG002
+        return None
+
+    def route(
+        self,
+        router_logits: Float[Array, "batch experts"],  # noqa: ARG002
+        active: Bool[Array, " batch"],  # noqa: ARG002
+        state: StateLayerBase | None,  # noqa: ARG002
+        routing_function: RoutingFunction,  # noqa: ARG002
+        num_active: int,  # noqa: ARG002
+        biases: Float[Array, " experts"] | None = None,  # noqa: ARG002
+    ) -> tuple[RoutingMap, StateLayerBase | None]:
+        raise TypeError("TreeSetRouting chooses experts for a whole tree at once; it has no single-token step")
+
+    def route_block(
+        self,
+        router_logits: Float[Array, "tokens batch experts"],
+        active: Bool[Array, "tokens batch"],
+        state: StateLayerBase | None,
+        routing_function: RoutingFunction,
+        num_active: int,
+        biases: Float[Array, " experts"] | None = None,
+    ) -> tuple[RoutingMap, StateLayerBase | None]:
+        num_experts = router_logits.shape[-1]
+        scores = jax.vmap(lambda step: routing_function.gating_scores(step, biases))(router_logits)
+        base = jax.vmap(lambda step: routing_function(step, biases, num_active=num_active))(router_logits)
+        active = _like(active, scores[..., 0])
+
+        # The node of a sequence is its last active token: the one with no active token after it.
+        counted = active.astype(jnp.int32)
+        active_from_here = jnp.cumsum(counted[::-1], axis=0)[::-1]
+        node = (active & (active_from_here == 1)).astype(jnp.float32)
+
+        own = base.active_expert_indices[..., None] == jnp.arange(num_experts)  # [tokens, batch, active, experts]
+        above_lowest = scores - scores.min(axis=-1, keepdims=True)
+        own_total = jnp.where(own.any(axis=2), above_lowest, 0.0).sum(axis=-1, keepdims=True)
+        values = above_lowest / own_total
+        if self.forced_top > 0:
+            _, first = jax.lax.top_k(scores, min(self.forced_top, num_experts))
+            ranked_first = (first[..., None] == jnp.arange(num_experts)).any(axis=2)
+            forced = jnp.einsum("tb,tbe->e", node, ranked_first.astype(jnp.float32)) > 0.5
+        else:
+            forced = jnp.zeros((num_experts,), dtype=jnp.bool_)
+        in_set = self._greedy_set(node, values, forced, num_active)
+
+        restricted = jnp.where(in_set, scores, -jnp.inf)
+        _, selected = jax.lax.top_k(restricted, num_active)
+        selected = _like(selected, base.active_expert_indices)
+        weights = jax.vmap(lambda step, chosen: routing_function.weights_of(step, chosen, biases))(
+            router_logits, selected
+        )
+        routing = RoutingMap(
+            active_expert_indices=jnp.where(active[:, :, None], selected, base.active_expert_indices),
+            active_expert_weights=jnp.where(
+                active[:, :, None], _like(weights, base.active_expert_weights), base.active_expert_weights
+            ),
+            effective_logits=jnp.where(active[:, :, None], restricted, scores),
+        )
+        return routing, state
+
+    def _greedy_set(
+        self,
+        node: Float[Array, "tokens batch"],
+        values: Float[Array, "tokens batch experts"],
+        forced: Bool[Array, " experts"],
+        num_active: int,
+    ) -> Bool[Array, " experts"]:
+        """The set of the call: the greedy of the class docstring over the tokens that `node` marks."""
+        num_experts = values.shape[-1]
+        expert_ids = jnp.arange(num_experts)
+
+        def add_expert(
+            carry: tuple[Array, Array, Array, Array], _: None
+        ) -> tuple[tuple[Array, Array, Array, Array], None]:
+            taken, best_values, count, growing = carry
+            # A new expert enters the `num_active` best of a token by pushing out the weakest of them.
+            token_gain = jnp.maximum(values - best_values[..., :1], 0.0)
+            gain = jnp.where(taken, -jnp.inf, jnp.einsum("tb,tbe->e", node, token_gain))
+            floor_left = forced & ~taken
+            lays_floor = floor_left.any()
+            best = jnp.argmax(jnp.where(lays_floor & ~floor_left, -jnp.inf, gain))
+            adds = growing & (lays_floor | (count < num_active) | (gain.max() >= self.threshold))
+            added = (best == expert_ids) & adds
+            candidate = (values * added.astype(values.dtype)).sum(axis=-1, keepdims=True)
+            best_values = jnp.sort(jnp.concatenate([best_values, candidate], axis=-1), axis=-1)[..., 1:]
+            return (taken | added, best_values, count + adds.astype(jnp.int32), adds), None
+
+        initial = (
+            jnp.zeros((num_experts,), dtype=jnp.bool_),
+            values[..., :num_active] * 0.0,
+            jnp.zeros((), dtype=jnp.int32),
+            jnp.ones((), dtype=jnp.bool_),
+        )
+        (taken, _, _, _), _ = jax.lax.scan(add_expert, initial, None, length=min(self.max_size, num_experts))
+        return taken
 
 
 def _eviction_position(

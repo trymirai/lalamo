@@ -41,6 +41,7 @@ __all__ = [
     "DenseMLP",
     "DenseMLPConfig",
     "IdentityRoutingIntervention",
+    "LayerwiseRouting",
     "MLPBase",
     "MLPConfig",
     "MLPForwardPassConfig",
@@ -666,6 +667,16 @@ class RoutingIntervention(LalamoConfig, RegistryABC):
         """
         return False
 
+    @property
+    def routes_blocks(self) -> bool:
+        """Whether the rule routes all the tokens of a call at once (`route_block`) instead of step by step.
+
+        Such a rule may let the routing of a token depend on the tokens that follow it in the same call, so it
+        is not causal: it stands for a pass that scores a block of already drafted tokens in parallel, and a
+        token-by-token decode cannot run it.
+        """
+        return False
+
     def init_state(self, num_experts: int, dtype: DTypeLike) -> StateLayerBase | None:  # noqa: ARG002
         return None
 
@@ -679,6 +690,21 @@ class RoutingIntervention(LalamoConfig, RegistryABC):
         num_active: int,
         biases: Float[Array, " experts"] | None = None,
     ) -> tuple[RoutingMap, StateLayerBase | None]: ...
+
+    def route_block(
+        self,
+        router_logits: Float[Array, "tokens batch experts"],
+        active: Bool[Array, "tokens batch"],
+        state: StateLayerBase | None,
+        routing_function: RoutingFunction,
+        num_active: int,
+        biases: Float[Array, " experts"] | None = None,
+    ) -> tuple[RoutingMap, StateLayerBase | None]:
+        """All the time steps of a call at once: the routing map with leaves [tokens, batch, ...] and the state.
+
+        Only rules that answer True to `routes_blocks` implement it. `active` is already False on padding.
+        """
+        raise NotImplementedError(f"{type(self).__name__} routes one time step at a time")
 
     def digest(self) -> str:
         return hashlib.sha256(json.dumps(self.to_json(), sort_keys=True).encode()).hexdigest()
@@ -700,6 +726,30 @@ class IdentityRoutingIntervention(RoutingIntervention):
         biases: Float[Array, " experts"] | None = None,
     ) -> tuple[RoutingMap, StateLayerBase | None]:
         return routing_function(router_logits, biases, num_active=num_active), state
+
+
+@dataclass(frozen=True)
+class LayerwiseRouting(RoutingIntervention):
+    """A rule of its own for every mixture of a model, in the order the model holds them (None: base routing).
+
+    Not a rule itself: `with_routing_intervention` hands every mixture its entry, so the mixtures never see
+    this container. A layer that a transformer applies several times (`layer_order`) keeps one rule for all
+    its applications, each application with a state of its own as under any rule.
+    """
+
+    phases: tuple[RoutingPhase, ...] = ()
+    rules: tuple[RoutingIntervention | None, ...] = ()
+
+    def route(
+        self,
+        router_logits: Float[Array, "batch experts"],  # noqa: ARG002
+        active: Bool[Array, " batch"],  # noqa: ARG002
+        state: StateLayerBase | None,  # noqa: ARG002
+        routing_function: RoutingFunction,  # noqa: ARG002
+        num_active: int,  # noqa: ARG002
+        biases: Float[Array, " experts"] | None = None,  # noqa: ARG002
+    ) -> tuple[RoutingMap, StateLayerBase | None]:
+        raise TypeError("LayerwiseRouting holds the rules of the layers; apply it with with_routing_intervention")
 
 
 @dataclass(frozen=True)
@@ -887,6 +937,30 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         active = self._active_tokens(intervention, generation_mask, (batch_size, sequence_length), mode)
         if padding_mask is None:
             padding_mask = jnp.ones((batch_size, sequence_length), dtype=jnp.bool_)
+
+        if intervention.routes_blocks:
+            if mode == ForwardPassMode.SINGLE_TOKEN:
+                raise ValueError(
+                    f"{type(intervention).__name__} routes a block of tokens at once and cannot run in a"
+                    " token-by-token decode; score the block in a multi-token pass"
+                )
+            block_routing, block_state = intervention.route_block(
+                logits_by_time,
+                rearrange(active, "batch suffix_tokens -> suffix_tokens batch")
+                & rearrange(padding_mask, "batch suffix_tokens -> suffix_tokens batch"),
+                routing_state,
+                routing_function,
+                num_active,
+                self.expert_bias,
+            )
+            block_routing = jax.tree.map(lambda leaf: checkpoint_name(leaf, ROUTING_RESIDUAL), block_routing)
+            return (
+                jax.tree.map(
+                    lambda leaf: rearrange(leaf, "suffix_tokens batch active -> (batch suffix_tokens) active"),
+                    block_routing,
+                ),
+                block_state,
+            )
 
         def route_step(
             state: StateLayerBase | None,
@@ -1408,7 +1482,24 @@ def with_routing_intervention[TreeT](tree: TreeT, intervention: RoutingIntervent
     """
     from lalamo.utils.surgery import map_nodes_of_type  # noqa: PLC0415
 
-    def overlay(mixture: MixtureOfExperts) -> MixtureOfExperts:
-        return replace(mixture, config=replace(mixture.config, routing_intervention=intervention))
+    if not isinstance(intervention, LayerwiseRouting):
 
-    return map_nodes_of_type(MixtureOfExperts, overlay, tree)
+        def overlay(mixture: MixtureOfExperts) -> MixtureOfExperts:
+            return replace(mixture, config=replace(mixture.config, routing_intervention=intervention))
+
+        return map_nodes_of_type(MixtureOfExperts, overlay, tree)
+
+    # The mixtures are visited in the order the tree holds them, which is the order of the layers.
+    remaining = list(intervention.rules)
+    visited = 0
+
+    def overlay_next(mixture: MixtureOfExperts) -> MixtureOfExperts:
+        nonlocal visited
+        visited += 1
+        rule = remaining.pop(0) if remaining else None
+        return replace(mixture, config=replace(mixture.config, routing_intervention=rule))
+
+    result = map_nodes_of_type(MixtureOfExperts, overlay_next, tree)
+    if visited != len(intervention.rules):
+        raise ValueError(f"LayerwiseRouting has {len(intervention.rules)} rules, the model {visited} mixtures")
+    return result
