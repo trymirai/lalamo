@@ -49,9 +49,10 @@ def load_dflare_speculator(
             for layer_id in draft_config.target_layer_ids
         ],
     )
-    *layer_tap_weights, head_tap_weights = (
-        jax.nn.softmax(f32(weights_dict, ParameterPath("fuse_weight")), axis=-1)[:, :, None] * tap_scales
-    )
+    # The reference rounds the mix weights back to the bfloat16 of the checkpoint.
+    mix_weights = jax.nn.softmax(f32(weights_dict, ParameterPath("fuse_weight")), axis=-1)
+    mix_weights = mix_weights.astype(jnp.bfloat16).astype(jnp.float32)
+    *layer_tap_weights, head_tap_weights = mix_weights[:, :, None] * tap_scales
     layer_paths = tuple(ParameterPath("layers") / layer_index for layer_index in range(len(draft_model.layers)))
     markov_path = ParameterPath("markov_head")
     rank = dspark_head.config.markov_rank

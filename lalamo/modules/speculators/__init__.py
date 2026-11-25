@@ -1,4 +1,5 @@
 from .dflare import (
+    DFlareContext,
     DFlareDraftConfig,
     DFlareDraftModel,
     DFlareLayerContext,
@@ -16,6 +17,7 @@ from .dspark import (
     DSparkHead,
     DSparkHeadConfig,
     MarkovHeadType,
+    mix_taps,
 )
 from .weaver import (
     Weaver,
@@ -25,6 +27,7 @@ from .weaver import (
 )
 
 __all__ = [
+    "DFlareContext",
     "DFlareDraftConfig",
     "DFlareDraftModel",
     "DFlareLayerContext",
@@ -42,4 +45,5 @@ __all__ = [
     "WeaverBlock",
     "WeaverConfig",
     "WeaverPrefix",
+    "mix_taps",
 ]
