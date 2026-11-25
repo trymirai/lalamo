@@ -226,6 +226,7 @@ class BlockAttnResConfig(ResidualConfig):
                 return BlockAttnResConnection(
                     config=self,
                     sharding_config=initializer.sharding_config,
+                    connection_config=connection_config,
                     scaled_query=initializer.zeros((model_dim,), dtype=jnp.float32),
                     message_gates=(
                         message_gate_config.init_gates(initializer, model_dim, 1, shares_hidden_projection=True)
@@ -238,7 +239,7 @@ class BlockAttnResConfig(ResidualConfig):
                 return BlockAttnResQKVConnection(
                     config=self,
                     sharding_config=initializer.sharding_config,
-                    read_config=connection_config,
+                    connection_config=connection_config,
                     scaled_queries=(
                         initializer.zeros((num_queries, model_dim), dtype=jnp.float32) if num_queries else None
                     ),
@@ -264,7 +265,12 @@ class BlockAttnResConfig(ResidualConfig):
 
 
 class BlockAttnResConnection(
-    ResidualConnectionBase[BlockAttnResConfig, BlockAttnResStream, Float[Array, "batch suffix_tokens channels"]],
+    ResidualConnectionBase[
+        BlockAttnResConfig,
+        AttnResReadConfig,
+        BlockAttnResStream,
+        Float[Array, "batch suffix_tokens channels"],
+    ],
 ):
     scaled_query: Float[Array, " channels"]
     message_gates: MessageGates | None
@@ -295,8 +301,9 @@ class BlockAttnResConnection(
         return eqx.tree_at(lambda updated: updated.partial, stream, partial), aux
 
 
-class BlockAttnResQKVConnection(ResidualConnectionBase[BlockAttnResConfig, BlockAttnResStream, QKVInputs]):
-    read_config: AttnResQKVReadConfig = eqx.field(static=True)
+class BlockAttnResQKVConnection(
+    ResidualConnectionBase[BlockAttnResConfig, AttnResQKVReadConfig, BlockAttnResStream, QKVInputs],
+):
     scaled_queries: Float[Array, "queries channels"] | None
     message_gates: MessageGates | None
 
@@ -332,7 +339,7 @@ class BlockAttnResQKVConnection(ResidualConnectionBase[BlockAttnResConfig, Block
             case _:
                 raise ValueError(f"Expected one or three attention inputs, got {len(reads)}.")
         update, aux = sublayer(inputs, sublayer_keychain)
-        if self.read_config.starts_block:
+        if self.connection_config.starts_block:
             blocks, partial = stream.sources, update
         else:
             blocks, partial = stream.blocks, stream.partial.astype(jnp.float32) + update.astype(jnp.float32)

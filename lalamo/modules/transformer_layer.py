@@ -214,7 +214,7 @@ class SublayerConfig[BodyConfigT](LalamoConfig):
         initializer: Initializer,
         model_dim: int,
         body: BodyT,
-        connection: ResidualConnectionBase[ResidualConfig, StreamT, InputT],
+        connection: ResidualConnectionBase[ResidualConfig, ConnectionConfig | None, StreamT, InputT],
     ) -> "Sublayer[BodyT, StreamT, InputT]":
         pre_norm = self.pre_norm_config.init(initializer, model_dim) if self.pre_norm_config is not None else None
         conv = self.conv_config.init(initializer, model_dim) if self.conv_config is not None else None
@@ -235,7 +235,7 @@ class SublayerConfig[BodyConfigT](LalamoConfig):
 
 
 class Sublayer[BodyT: LalamoModule, StreamT, InputT](LalamoModule[SublayerConfig]):
-    connection: ResidualConnectionBase[ResidualConfig, StreamT, InputT]
+    connection: ResidualConnectionBase[ResidualConfig, ConnectionConfig | None, StreamT, InputT]
     pre_norm: Normalization | None
     conv: TransformerLayerConv | None
     body: BodyT
