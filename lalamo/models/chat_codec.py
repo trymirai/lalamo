@@ -261,14 +261,14 @@ class ReasoningEffort(StrEnum):
 class ReasoningConfig:
     default_reasoning_effort: ReasoningEffort
     field_name: str
-    # Jinja's `is true`/`is false` tests reject string spellings, while other template fields expect strings.
-    reasoning_effort_to_field_value: frozendict[ReasoningEffort, str | bool]
+    # Jinja templates distinguish string, boolean, and numeric field values.
+    reasoning_effort_to_field_value: frozendict[ReasoningEffort, str | bool | float]
 
     def __post_init__(self) -> None:
         if self.default_reasoning_effort not in self.reasoning_effort_to_field_value:
             raise ValueError("The default reasoning effort must have a field value.")
 
-    def field_value(self, effort: ReasoningEffort | None) -> str | bool:
+    def field_value(self, effort: ReasoningEffort | None) -> str | bool | float:
         if effort is None:
             effort = self.default_reasoning_effort
         if effort not in self.reasoning_effort_to_field_value:
