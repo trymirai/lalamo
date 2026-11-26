@@ -9,7 +9,7 @@ from einops import rearrange, repeat
 from jaxtyping import Array, Float
 
 from lalamo.initializer import Initializer
-from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis
+from lalamo.module import Keychain, LalamoConfig, LalamoModule, LogicalAxis, field
 from lalamo.utils.registry_abc import RegistryABC
 from lalamo.weight_matrix import MatmulConfig
 
@@ -21,6 +21,7 @@ __all__ = [
     "AdditiveResidualConfig",
     "AdditiveResidualConnection",
     "AdditiveResidualHead",
+    "ConnectionConfig",
     "GatedResidualConfig",
     "GatedResidualConnection",
     "GatedResidualHead",
@@ -40,23 +41,37 @@ def normalize_streams(
 
 
 @dataclass(frozen=True)
+class ConnectionConfig(LalamoConfig, RegistryABC):
+    pass
+
+
+@dataclass(frozen=True)
 class ResidualConfig(LalamoConfig, RegistryABC):
     @abstractmethod
-    def init_connection(self, initializer: Initializer, model_dim: int) -> "ResidualConnectionBase": ...
+    def init_connection(
+        self,
+        initializer: Initializer,
+        model_dim: int,
+        connection_config: ConnectionConfig | None,
+    ) -> "ResidualConnectionBase": ...
 
     @abstractmethod
     def init_head(self, initializer: Initializer, model_dim: int) -> "ResidualHeadBase": ...
 
 
-class ResidualConnectionBase[ConfigT: ResidualConfig, StreamT](LalamoModule[ConfigT]):
+class ResidualConnectionBase[
+    ConfigT: ResidualConfig,
+    ConnectionConfigT: ConnectionConfig | None,
+    StreamT,
+    InputT,
+](LalamoModule[ConfigT]):
+    connection_config: ConnectionConfigT = field(static=True)
+
     @abstractmethod
     def __call__[AuxT](
         self,
         stream: StreamT,
-        sublayer: Callable[
-            [Float[Array, "batch suffix_tokens channels"], Keychain],
-            tuple[Float[Array, "batch suffix_tokens channels"], AuxT],
-        ],
+        sublayer: Callable[[InputT, Keychain], tuple[Float[Array, "batch suffix_tokens channels"], AuxT]],
         matmul_config: MatmulConfig,
         *,
         keychain: Keychain,
@@ -76,18 +91,37 @@ class ResidualHeadBase[ConfigT: ResidualConfig, StreamT](LalamoModule[ConfigT]):
         keychain: Keychain,
     ) -> Float[Array, "batch suffix_tokens channels"]: ...
 
+    def restart(self, stream: StreamT, entry_stream: StreamT) -> StreamT:  # noqa: ARG002
+        return stream
+
 
 @dataclass(frozen=True)
 class AdditiveResidualConfig(ResidualConfig):
-    def init_connection(self, initializer: Initializer, model_dim: int) -> "AdditiveResidualConnection":  # noqa: ARG002
-        return AdditiveResidualConnection(config=self, sharding_config=initializer.sharding_config)
+    def init_connection(
+        self,
+        initializer: Initializer,
+        model_dim: int,  # noqa: ARG002
+        connection_config: ConnectionConfig | None,
+    ) -> "AdditiveResidualConnection":
+        if connection_config is not None:
+            raise ValueError(f"Additive residuals take no connection config, got {connection_config}.")
+        return AdditiveResidualConnection(
+            config=self,
+            sharding_config=initializer.sharding_config,
+            connection_config=None,
+        )
 
     def init_head(self, initializer: Initializer, model_dim: int) -> "AdditiveResidualHead":  # noqa: ARG002
         return AdditiveResidualHead(config=self, sharding_config=initializer.sharding_config)
 
 
 class AdditiveResidualConnection(
-    ResidualConnectionBase[AdditiveResidualConfig, Float[Array, "batch suffix_tokens channels"]],
+    ResidualConnectionBase[
+        AdditiveResidualConfig,
+        None,
+        Float[Array, "batch suffix_tokens channels"],
+        Float[Array, "batch suffix_tokens channels"],
+    ],
 ):
     def __call__[AuxT](
         self,
@@ -153,10 +187,18 @@ class GatedResidualConfig(ResidualConfig):
             ),
         )
 
-    def init_connection(self, initializer: Initializer, model_dim: int) -> "GatedResidualConnection":
+    def init_connection(
+        self,
+        initializer: Initializer,
+        model_dim: int,
+        connection_config: ConnectionConfig | None,
+    ) -> "GatedResidualConnection":
+        if connection_config is not None:
+            raise ValueError(f"Gated residuals take no connection config, got {connection_config}.")
         return GatedResidualConnection(
             config=self,
             sharding_config=initializer.sharding_config,
+            connection_config=None,
             reader=self.init_reader(initializer, model_dim),
             injection=self.linear_config.init(
                 initializer,
@@ -216,7 +258,12 @@ class GatedStreamReader(LalamoModule[GatedResidualConfig]):
 
 
 class GatedResidualConnection(
-    ResidualConnectionBase[GatedResidualConfig, Float[Array, "batch suffix_tokens streams channels"]],
+    ResidualConnectionBase[
+        GatedResidualConfig,
+        None,
+        Float[Array, "batch suffix_tokens streams channels"],
+        Float[Array, "batch suffix_tokens channels"],
+    ],
 ):
     reader: GatedStreamReader
     injection: Linear

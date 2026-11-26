@@ -1,5 +1,5 @@
 from abc import abstractmethod
-from typing import Self
+from typing import NamedTuple, Self
 
 import equinox as eqx
 import jax
@@ -10,7 +10,14 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int
 from lalamo.modules.token_mixer import StateLayerBase
 from lalamo.utils.sharding import ShardingConfig
 
-__all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "PagedKVCacheLayer", "PagedKVCachePool", "StaticKVCacheLayer"]
+__all__ = [
+    "DynamicKVCacheLayer",
+    "KVCacheLayer",
+    "KeyValueConvState",
+    "PagedKVCacheLayer",
+    "PagedKVCachePool",
+    "StaticKVCacheLayer",
+]
 
 
 @eqx.filter_jit
@@ -64,10 +71,16 @@ def build_tree_attention_mask(
     return mask
 
 
+class KeyValueConvState(NamedTuple):
+    keys: Float[Array, "*batch tail_tokens channels"]
+    values: Float[Array, "*batch tail_tokens channels"]
+
+
 class KVCacheLayer(StateLayerBase):
     has_sinks: bool = eqx.field(static=True)
     keys: Float[Array, "*batch tokens groups head_channels"]
     values: Float[Array, "*batch tokens groups head_channels"]
+    conv_states: KeyValueConvState | None = eqx.field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.keys.ndim not in (3, 4):
@@ -89,6 +102,13 @@ class KVCacheLayer(StateLayerBase):
     @property
     @abstractmethod
     def padding_mask(self) -> Bool[Array, " tokens"] | None: ...
+
+    @abstractmethod
+    def query_key_positions(
+        self,
+        suffix_length: int,
+        suffix_length_without_padding: Int[Array, ""] | int | None = None,
+    ) -> tuple[Int[Array, " suffix_tokens"], Int[Array, " tokens"]]: ...
 
     @abstractmethod
     def attention_mask(
@@ -223,6 +243,23 @@ class DynamicKVCacheLayer(KVCacheLayer):
                 padding_mask = jnp.concatenate([true, padding_mask], axis=0)
         return cls(has_sinks=has_sinks, keys=keys, values=values, padding_mask=padding_mask)
 
+    def query_key_positions(
+        self,
+        suffix_length: int,
+        suffix_length_without_padding: Int[Array, ""] | int | None = None,
+    ) -> tuple[Int[Array, " suffix_tokens"], Int[Array, " tokens"]]:
+        self._raise_if_batched()
+        num_tokens, _, _ = self.keys.shape
+        if suffix_length_without_padding is None:
+            suffix_length_without_padding = suffix_length
+
+        if self.padding_mask is None:
+            query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
+            return num_tokens + query_offsets, jnp.arange(num_tokens, dtype=jnp.int32)
+        key_positions = jnp.cumsum(self.padding_mask.astype(jnp.int32)) - 1
+        query_physical_indices = num_tokens - suffix_length + jnp.arange(suffix_length, dtype=jnp.int32)
+        return key_positions[query_physical_indices], key_positions
+
     def attention_mask(
         self,
         suffix_length: int,
@@ -232,17 +269,7 @@ class DynamicKVCacheLayer(KVCacheLayer):
     ) -> Bool[Array, "suffix_tokens tokens"]:
         self._raise_if_batched()
         num_tokens, _, _ = self.keys.shape
-        if suffix_length_without_padding is None:
-            suffix_length_without_padding = suffix_length
-
-        if self.padding_mask is None:
-            query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
-            query_positions = num_tokens + query_offsets
-            key_positions = jnp.arange(num_tokens, dtype=jnp.int32)
-        else:
-            key_positions = jnp.cumsum(self.padding_mask.astype(jnp.int32)) - 1
-            query_physical_indices = num_tokens - suffix_length + jnp.arange(suffix_length, dtype=jnp.int32)
-            query_positions = key_positions[query_physical_indices]
+        query_positions, key_positions = self.query_key_positions(suffix_length, suffix_length_without_padding)
 
         if is_causal:
             result = query_positions[:, None] >= key_positions[None, :]
@@ -302,6 +329,17 @@ class StaticKVCacheLayer(KVCacheLayer):
         self._raise_if_batched()
         return positions + int(self.has_sinks)
 
+    def query_key_positions(
+        self,
+        suffix_length: int,
+        suffix_length_without_padding: Int[Array, ""] | int | None = None,
+    ) -> tuple[Int[Array, " suffix_tokens"], Int[Array, " tokens"]]:
+        self._raise_if_batched()
+        if suffix_length_without_padding is None:
+            suffix_length_without_padding = suffix_length
+        query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
+        return self.current_length + query_offsets, jnp.arange(self.capacity, dtype=jnp.int32)
+
     def attention_mask(
         self,
         suffix_length: int,
@@ -310,11 +348,7 @@ class StaticKVCacheLayer(KVCacheLayer):
         sliding_window_size: int | None = None,
     ) -> Bool[Array, "suffix_tokens tokens"]:
         self._raise_if_batched()
-        if suffix_length_without_padding is None:
-            suffix_length_without_padding = suffix_length
-        query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
-        query_indices = self.current_length + query_offsets
-        key_indices = jnp.arange(self.capacity, dtype=jnp.int32)
+        query_indices, key_indices = self.query_key_positions(suffix_length, suffix_length_without_padding)
 
         if is_causal:
             result = query_indices[:, None] >= key_indices[None, :]

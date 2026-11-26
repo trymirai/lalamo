@@ -1,4 +1,13 @@
-from .attention import Attention, AttentionConfig
+from .attention import (
+    Attention,
+    AttentionConfig,
+    KeyValueConvConfig,
+    L2ClipConfig,
+    LogScalingConfig,
+    ProjectionLayout,
+    RelativeBiasConfig,
+    StackedProjectionConfig,
+)
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .deltanet import DeltaNet, DeltaNetConfig
 from .mamba import Mamba2, Mamba2Config
@@ -16,8 +25,13 @@ __all__ = [
     "AttentionConfig",
     "DeltaNet",
     "DeltaNetConfig",
+    "KeyValueConvConfig",
+    "L2ClipConfig",
+    "LogScalingConfig",
     "Mamba2",
     "Mamba2Config",
+    "ProjectionLayout",
+    "RelativeBiasConfig",
     "SeparableCausalConv",
     "SeparableCausalConvConfig",
     "ShortConv",
@@ -27,4 +41,5 @@ __all__ = [
     "SparseAttentionIndexer",
     "SparseAttentionIndexerConfig",
     "SparseAttentionStateLayer",
+    "StackedProjectionConfig",
 ]

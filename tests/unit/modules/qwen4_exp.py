@@ -249,7 +249,7 @@ def load_decoder_layer(
         (
             prologue,
             load_gated_residual_connection(
-                residual_config.init_connection(initializer, HIDDEN_SIZE),
+                residual_config.init_connection(initializer, HIDDEN_SIZE, None),
                 weights,
                 ParameterPath("attn_hyper_connection"),
             ),
@@ -260,7 +260,7 @@ def load_decoder_layer(
                 permute_conv=False,
             ),
             load_gated_residual_connection(
-                residual_config.init_connection(initializer, HIDDEN_SIZE),
+                residual_config.init_connection(initializer, HIDDEN_SIZE, None),
                 weights,
                 ParameterPath("mlp_hyper_connection"),
             ),

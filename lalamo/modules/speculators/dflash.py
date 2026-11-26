@@ -13,9 +13,8 @@ from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.residual import AdditiveResidualConfig
 from lalamo.modules.rope import PositionalEmbeddings, RoPE, RoPEConfig
-from lalamo.modules.speculator import Speculator, SpeculatorConfig
+from lalamo.modules.speculator import DraftAdapter, DraftAdapterConfig, Speculator, SpeculatorConfig
 from lalamo.modules.speculators.confidence_head import ConfidenceHead, ConfidenceHeadConfig
-from lalamo.modules.speculators.weaver import Weaver, WeaverConfig
 from lalamo.modules.token_mixer import TransformerLayerState
 from lalamo.modules.token_mixers.attention import Attention, AttentionConfig
 from lalamo.modules.token_mixers.kv_cache import StaticKVCacheLayer
@@ -313,7 +312,7 @@ class DFlashDraftModel(LalamoModule[DFlashDraftConfig]):
 @dataclass(frozen=True)
 class DFlashSpeculatorConfig(SpeculatorConfig):
     draft_config: DFlashDraftConfig
-    weaver_config: WeaverConfig | None
+    adapter_config: DraftAdapterConfig | None
     confidence_head_config: ConfidenceHeadConfig | None = None
 
     def to_json(self) -> JSON:
@@ -322,24 +321,19 @@ class DFlashSpeculatorConfig(SpeculatorConfig):
         return {name: value for name, value in config.items() if name != "confidence_head_config" or value is not None}
 
     def __post_init__(self) -> None:
-        if self.weaver_config is None:
-            return
-        if self.weaver_config.target_model_dim != self.draft_config.model_dim:
-            raise ValueError(
-                f"Weaver target_model_dim {self.weaver_config.target_model_dim} does not match"
-                f" draft model_dim {self.draft_config.model_dim}.",
-            )
-        if self.weaver_config.max_depth > self.draft_config.block_size - 1:
-            raise ValueError(
-                f"Weaver max_depth {self.weaver_config.max_depth} exceeds the draft block's"
-                f" {self.draft_config.block_size - 1} proposal positions.",
+        if self.adapter_config is not None:
+            self.adapter_config.validate_draft(
+                model_dim=self.draft_config.model_dim,
+                block_size=self.draft_config.block_size,
+                vocab_size=self.draft_config.vocab_size,
+                num_context_taps=len(self.draft_config.target_layer_ids),
             )
 
     def init(self, initializer: Initializer) -> "DFlashSpeculator":
         draft_model = self.draft_config.init(initializer)
-        weaver = None
-        if self.weaver_config is not None:
-            weaver = self.weaver_config.init(initializer)
+        adapter = None
+        if self.adapter_config is not None:
+            adapter = self.adapter_config.init(initializer)
         confidence_head = None
         if self.confidence_head_config is not None:
             confidence_head = self.confidence_head_config.init(initializer, self.draft_config.model_dim)
@@ -347,12 +341,12 @@ class DFlashSpeculatorConfig(SpeculatorConfig):
             config=self,
             sharding_config=initializer.sharding_config,
             draft_model=draft_model,
-            weaver=weaver,
+            adapter=adapter,
             confidence_head=confidence_head,
         )
 
 
 class DFlashSpeculator(Speculator[DFlashSpeculatorConfig]):
     draft_model: DFlashDraftModel
-    weaver: Weaver | None
+    adapter: DraftAdapter | None
     confidence_head: ConfidenceHead | None

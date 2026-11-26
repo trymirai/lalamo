@@ -27,6 +27,7 @@ from .phi import PHI_MODELS
 from .polaris import POLARIS_MODELS
 from .qwen import QWEN_MODELS
 from .reka import REKA_MODELS
+from .thinking_machines import THINKING_MACHINES_MODELS
 
 __all__ = [
     "ALL_MODEL_LISTS",
@@ -56,6 +57,7 @@ ALL_MODEL_LISTS = [
     POLARIS_MODELS,
     QWEN_MODELS,
     REKA_MODELS,
+    THINKING_MACHINES_MODELS,
     MIRAI_CLASSIFIER_MODELS,
     NANBEIGE_MODELS,
     RNJ_MODELS,

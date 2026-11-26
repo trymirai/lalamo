@@ -43,6 +43,35 @@ class TransformerConfig(LalamoConfig):
     output_norm_config: NormalizationConfig | None
     model_dim: int
     hidden_dim: int
+    layer_order: tuple[int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.layer_order is None:
+            return
+        if sorted(set(self.layer_order)) != list(range(len(self.layer_configs))):
+            raise ValueError(
+                f"layer_order must apply every one of the {len(self.layer_configs)} layers, got {self.layer_order}.",
+            )
+        if any(
+            self.layer_order[step] <= self.layer_order[step - 1]
+            and self.layer_order[step] not in self.layer_order[:step]
+            for step in range(1, len(self.layer_order))
+        ):
+            raise ValueError(f"layer_order may only jump back to already applied layers, got {self.layer_order}.")
+        if any(layer_config.kv_source_layer_index is not None for layer_config in self.layer_configs):
+            raise ValueError("layer_order cannot be combined with KV-sharing layers.")
+
+    @property
+    def step_layer_indices(self) -> tuple[int, ...]:
+        return self.layer_order if self.layer_order is not None else tuple(range(len(self.layer_configs)))
+
+    @property
+    def state_owner_steps(self) -> tuple[int, ...]:
+        return tuple(
+            step
+            for step, layer_index in enumerate(self.step_layer_indices)
+            if self.layer_configs[layer_index].kv_source_layer_index is None
+        )
 
     def _init_ropes(self, initializer: Initializer) -> tuple[tuple[RoPE, ...], tuple[int, ...]]:
         rope_cache: dict[RoPEConfig, int] = {}
@@ -76,29 +105,22 @@ class TransformerConfig(LalamoConfig):
         output_norm = (
             self.output_norm_config.init(initializer, self.model_dim) if self.output_norm_config is not None else None
         )
-
         return Transformer(
             config=self,
             sharding_config=initializer.sharding_config,
             ropes=ropes,
             rope_indices=rope_indices,
-            kv_source_layer_indices=tuple(
-                layer_index
-                for layer_index, layer_config in enumerate(self.layer_configs)
-                if layer_config.kv_source_layer_index is None
-            ),
             residual_head=residual_head,
             layers=layers,
             output_norm=output_norm,
         )
 
 
-class Transformer[StreamT](LalamoModule[TransformerConfig]):
+class Transformer[StreamT, MixerInputT](LalamoModule[TransformerConfig]):
     ropes: tuple[RoPE, ...]
     rope_indices: tuple[int, ...] = field(static=True)
-    kv_source_layer_indices: tuple[int, ...] = field(static=True)
     residual_head: ResidualHeadBase[ResidualConfig, StreamT]
-    layers: tuple[TransformerLayer[StreamT], ...]
+    layers: tuple[TransformerLayer[StreamT, MixerInputT], ...]
     output_norm: Normalization | None
 
     @eqx.filter_jit
@@ -137,9 +159,9 @@ class Transformer[StreamT](LalamoModule[TransformerConfig]):
                 )
             if attention_parent_indices is not None:
                 raise ValueError("return_suffix_tokens cannot be combined with attention_parent_indices.")
-            if not self.kv_source_layer_indices:
+            if not self.config.state_owner_steps:
                 raise ValueError("return_suffix_tokens requires at least one layer that owns its state.")
-            has_trailing_shared_layers = self.kv_source_layer_indices[-1] < len(self.layers) - 1
+            has_trailing_shared_layers = self.config.state_owner_steps[-1] < len(self.config.step_layer_indices) - 1
             if (
                 return_suffix_tokens > 1
                 and has_trailing_shared_layers
@@ -152,8 +174,8 @@ class Transformer[StreamT](LalamoModule[TransformerConfig]):
                     "return_suffix_tokens > 1 on padded batches requires a preallocated state"
                     " when the model has trailing KV-sharing layers.",
                 )
-        state_by_layer = (
-            {layer_index: state[state_index] for state_index, layer_index in enumerate(self.kv_source_layer_indices)}
+        state_by_step = (
+            {step: state[state_index] for state_index, step in enumerate(self.config.state_owner_steps)}
             if state is not None
             else {}
         )
@@ -168,13 +190,13 @@ class Transformer[StreamT](LalamoModule[TransformerConfig]):
             )
             for rope in self.ropes
         )
-        has_kv_sharing = len(self.kv_source_layer_indices) < len(self.layers)
+        has_kv_sharing = len(self.config.state_owner_steps) < len(self.config.step_layer_indices)
         must_return_state = return_updated_state or has_kv_sharing
 
         # In suffix mode, every layer past the last state-owning one only affects the returned
         # suffix outputs, so those layers run on the gathered suffix instead of the full sequence.
         if return_suffix_tokens is not None:
-            last_state_owner_index = self.kv_source_layer_indices[-1]
+            last_state_owner_step = self.config.state_owner_steps[-1]
             suffix_token_positions = gather_suffix_tokens(
                 token_positions,
                 lengths_without_padding,
@@ -197,19 +219,26 @@ class Transformer[StreamT](LalamoModule[TransformerConfig]):
                 else None
             )
         else:
-            last_state_owner_index = None
+            last_state_owner_step = None
             suffix_rope_embeddings = ()
             suffix_token_ids = None
 
         residual_dtype = inner_features.dtype
         stream = self.residual_head.expand(inner_features)
-        *layer_keychains, readout_keychain = keychain.split(len(self.layers) + 1)
+        *step_keychains, readout_keychain = keychain.split(len(self.config.step_layer_indices) + 1)
         updated_states: dict[int, TransformerLayerState | None] = {}
+        entry_streams: dict[int, StreamT] = {}
         layer_results = []
 
-        for layer_index, (layer, layer_keychain) in enumerate(zip(self.layers, layer_keychains, strict=True)):
+        for step, (layer_index, step_keychain) in enumerate(
+            zip(self.config.step_layer_indices, step_keychains, strict=True)
+        ):
+            if step > 0 and layer_index <= self.config.step_layer_indices[step - 1]:
+                stream = self.residual_head.restart(stream, entry_streams[layer_index])
+            entry_streams.setdefault(layer_index, stream)
             assert all(leaf.dtype == residual_dtype for leaf in jax.tree.leaves(stream))
-            runs_on_suffix_only = last_state_owner_index is not None and layer_index > last_state_owner_index
+            layer = self.layers[layer_index]
+            runs_on_suffix_only = last_state_owner_step is not None and step > last_state_owner_step
             rope_index = self.rope_indices[layer_index]
             active_rope_embeddings = suffix_rope_embeddings if runs_on_suffix_only else rope_embeddings
             positional_embeddings = active_rope_embeddings[rope_index] if rope_index >= 0 else None
@@ -227,11 +256,11 @@ class Transformer[StreamT](LalamoModule[TransformerConfig]):
 
             kv_source_layer_index = layer.config.kv_source_layer_index
             if kv_source_layer_index is None:
-                effective_state = state_by_layer.get(layer_index)
+                effective_state = state_by_step.get(step)
             else:
                 effective_state = updated_states.get(
                     kv_source_layer_index,
-                    state_by_layer.get(kv_source_layer_index),
+                    state_by_step.get(kv_source_layer_index),
                 )
 
             layer_result = layer(
@@ -244,16 +273,16 @@ class Transformer[StreamT](LalamoModule[TransformerConfig]):
                 forward_pass_config=forward_pass_config,
                 per_layer_input=per_layer_input,
                 attention_parent_indices=attention_parent_indices,
-                return_suffix_tokens=return_suffix_tokens if layer_index == last_state_owner_index else None,
+                return_suffix_tokens=return_suffix_tokens if step == last_state_owner_step else None,
                 token_ids=layer_token_ids,
-                keychain=layer_keychain,
+                keychain=step_keychain,
             )
 
             stream = layer_result.outputs
             layer_results.append(layer_result)
 
             if kv_source_layer_index is None:
-                updated_states[layer_index] = layer_result.updated_state
+                updated_states[step] = layer_result.updated_state
 
         outputs = self.residual_head.readout(
             stream,
@@ -266,10 +295,10 @@ class Transformer[StreamT](LalamoModule[TransformerConfig]):
 
         if return_updated_state:
             compact_state_layers = []
-            for layer_index in self.kv_source_layer_indices:
-                layer_state = updated_states[layer_index]
+            for step in self.config.state_owner_steps:
+                layer_state = updated_states[step]
                 if layer_state is None:
-                    raise ValueError(f"Layer {layer_index} did not return an updated state.")
+                    raise ValueError(f"Step {step} did not return an updated state.")
                 compact_state_layers.append(layer_state)
             compact_state = State(tuple(compact_state_layers))
         else:
@@ -285,6 +314,6 @@ class Transformer[StreamT](LalamoModule[TransformerConfig]):
     @eqx.filter_jit
     def init_static_state(self, batch_size: int, capacity: int, dtype: DTypeLike) -> State:
         return State(
-            self.layers[layer_index].init_static_state(batch_size, capacity, dtype)
-            for layer_index in self.kv_source_layer_indices
+            self.layers[self.config.step_layer_indices[step]].init_static_state(batch_size, capacity, dtype)
+            for step in self.config.state_owner_steps
         )
