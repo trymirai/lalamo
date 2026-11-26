@@ -1,6 +1,6 @@
 <p align="center">
   <picture>
-    <img alt="Mirai" src="https://artifacts.trymirai.com/social/github/lalamo-header.jpg" style="max-width: 100%;">
+    <img alt="Mirai" src="https://assets.trymirai.com/images/github/lalamo-cover-v1.png" style="max-width: 100%;">
   </picture>
 </p>
 
