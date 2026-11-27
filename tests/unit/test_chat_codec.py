@@ -6,7 +6,7 @@ import pytest
 from cattrs.errors import ClassValidationError
 from frozendict import frozendict
 from tokenizers import Tokenizer
-from tokenizers.decoders import ByteFallback, ByteLevel, Decoder
+from tokenizers.decoders import ByteFallback, ByteLevel, Decoder, Fuse, Metaspace, Replace, Sequence, Strip
 from tokenizers.models import BPE, WordLevel
 
 from lalamo.data.huggingface_message import HFConversation, load_hf_parquet
@@ -498,3 +498,17 @@ def test_token_bytes_keep_partial_utf8_sequences(vocabulary: dict[str, int], dec
     tokenizer.decoder = decoder
     codec = _chat_codec().config.init(tokenizer)
     assert [codec.decode_token_bytes(token_id) for token_id in (0, 1)] == [b"\xc3", b"\xa9"]
+
+
+@pytest.mark.parametrize(
+    "decoder",
+    [
+        Sequence([Replace("\u2581", " "), ByteFallback(), Fuse(), Strip(" ", 1, 0)]),
+        Sequence([Metaspace(), ByteFallback(), Fuse()]),
+    ],
+)
+def test_decoding_keeps_the_space_after_byte_fallback_tokens(decoder: Decoder) -> None:
+    tokenizer = Tokenizer(BPE(vocab={"<0xC3>": 0, "<0xA9>": 1, "\u2581caf": 2, "\u2581noir": 3}, merges=[]))
+    tokenizer.decoder = decoder
+    codec = _chat_codec().config.init(tokenizer)
+    assert codec.decode_tokens([2, 0, 1, 3]) == tokenizer.decode([2, 0, 1, 3]) == "caf\u00e9 noir"
