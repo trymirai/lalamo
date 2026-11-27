@@ -500,11 +500,17 @@ class ChatCodec(TokenCodec[ChatCodecConfig]):
 
     def _token_groups(self, tokens: list[int]) -> Iterable[bytes]:
         byte_token_ids = self._byte_token_ids
-        for is_byte, group in itertools.groupby(tokens, key=lambda tid: tid in byte_token_ids):
-            if is_byte:
+        groups = [list(group) for _, group in itertools.groupby(tokens, key=lambda tid: tid in byte_token_ids)]
+        for previous_group, group in itertools.pairwise([[], *groups]):
+            if group[0] in byte_token_ids:
                 yield bytes(byte_token_ids[tid] for tid in group)
             else:
-                yield self.tokenizer.decode(list(group), skip_special_tokens=False).encode("utf-8")
+                # SentencePiece decoders strip the leading space of the text they decode, so a group that follows
+                # byte tokens is decoded after the last of them and the text of that token is cut off again.
+                context = previous_group[-1:]
+                context_text = self.tokenizer.decode(context, skip_special_tokens=False)
+                text = self.tokenizer.decode([*context, *group], skip_special_tokens=False)
+                yield text.removeprefix(context_text).encode("utf-8")
 
     def decode_token_bytes(self, token_id: int) -> bytes:
         """The bytes of one token, including partial UTF-8 sequences that decoding to text would replace."""
