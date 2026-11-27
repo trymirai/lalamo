@@ -7,6 +7,7 @@ import pytest
 from cattrs import ClassValidationError
 from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 
+from lalamo.model_import.huggingface_tokenizer_config import HFTokenizerConfig
 from lalamo.model_import.model_configs.huggingface.common import (
     AWQQuantizationConfig,
     GPTQQuantizationConfig,
@@ -76,6 +77,23 @@ def test_quantization_config_defaults_missing_tag_to_mlx(tmp_path: Path) -> None
 
     assert config.quantization is None
     assert isinstance(config.quantization_config, MLXQuantizationConfig)
+
+
+def test_tokenizer_config_reads_special_tokens_serialized_as_added_tokens(tmp_path: Path) -> None:
+    config_path = tmp_path / "tokenizer_config.json"
+    serialized_bos_token = {
+        "__type": "AddedToken",
+        "content": "<s>",
+        "lstrip": False,
+        "normalized": True,
+        "rstrip": False,
+        "single_word": False,
+    }
+    _write_config(config_path, {"bos_token": serialized_bos_token, "eos_token": "</s>"})
+
+    config = HFTokenizerConfig.from_json(config_path)
+
+    assert (config.bos_token, config.eos_token) == ("<s>", "</s>")
 
 
 @pytest.mark.parametrize("interleaved", [True, False])
